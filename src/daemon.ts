@@ -59,7 +59,7 @@ async function main(): Promise<void> {
 
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);
-  console.log(`  reserve   -> ${Math.round(cfg.subscriptionInteractiveReservePct * 100)}% interactive headroom of $${cfg.budgetWindowUsd}`);
+  console.log("  usage     -> measured from ~/.claude transcripts (/usage); throttling opt-in via caps later");
   console.log(`  ledger    -> data/ledger.db (${ledger.listRecent().length} prior orders)`);
   console.log(`  admin     -> ${admin.adminId() ?? "unclaimed (first Telegram message becomes admin)"}`);
   console.log(`  idle      -> close after ${IDLE_CLOSE_MS / 60000}m quiet, sweep every ${IDLE_POLL_MS / 1000}s`);
