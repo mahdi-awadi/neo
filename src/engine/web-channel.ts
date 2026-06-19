@@ -4,6 +4,8 @@
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
 import { handleMessage, type PipelineDeps } from "./pipeline";
+import { handleCommand } from "./commands";
+import type { UsageMeter } from "./usage";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -21,7 +23,7 @@ export interface WebChannel {
   resolveApproval(id: string, decision: "allow" | "deny"): boolean;
 }
 
-export function createWebChannel(opts: { engine: EngineDeps; chatId: number }): WebChannel {
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter }): WebChannel {
   const events: WebEvent[] = [];
   const listeners = new Set<(e: WebEvent) => void>();
   const pending = new Map<string, (d: "allow" | "deny") => void>();
@@ -43,7 +45,20 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number }): 
   };
 
   return {
-    send: (text) => handleMessage(text, opts.chatId, deps).then(() => undefined),
+    send: async (text) => {
+      // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
+      // else is an order or follow-up for the pipeline.
+      const command = handleCommand(text, opts.chatId, {
+        registry: opts.engine.registry,
+        ledger: opts.engine.ledger,
+        usage: opts.usage,
+      });
+      if (command !== null) {
+        emit({ type: "message", text: command });
+        return;
+      }
+      await handleMessage(text, opts.chatId, deps);
+    },
     subscribe(listener) {
       for (const e of events) listener(e); // replay history, then go live
       listeners.add(listener);

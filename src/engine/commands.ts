@@ -4,11 +4,14 @@
 // the order pipeline. (Operator command shape inspired by operant, trimmed to the SDK model.)
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
+import type { UsageMeter } from "./usage";
 import type { SessionInfo } from "../types";
 
 export interface CommandDeps {
   registry: Registry;
   ledger: Ledger;
+  /** Measured subscription usage (for /usage). Optional so tests/glue can omit it. */
+  usage?: UsageMeter;
   /** Injectable clock (session ages). Defaults to Date.now. */
   now?: () => number;
 }
@@ -55,6 +58,12 @@ const COMMANDS: Command[] = [
     usage: "/recent",
     summary: "recent orders + outcomes",
     run: ({ deps }) => renderRecent(deps.ledger),
+  },
+  {
+    name: "usage",
+    usage: "/usage",
+    summary: "subscription token usage (hourly/daily/weekly)",
+    run: ({ deps, now }) => renderUsage(deps.usage, now),
   },
   {
     name: "help",
@@ -132,6 +141,30 @@ function renderRecent(ledger: Ledger): string {
       return `${icon} ${o.folder} — "${task}"${status}`;
     })
     .join("\n");
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+function renderUsage(usage: UsageMeter | undefined, now: number): string {
+  if (!usage) return "Usage tracking unavailable.";
+  const s = usage.snapshot(now);
+  const win = (label: string, w: { consumedTokens: number; capTokens: number | null; remaining: number | null }) => {
+    const cap = w.capTokens != null ? ` · ${formatTokens(w.remaining ?? 0)} left of ${formatTokens(w.capTokens)}` : "";
+    return `${label}: ${formatTokens(w.consumedTokens)} tokens${cap}`;
+  };
+  const reset = s.weeklyResetAt ? `\nweekly resets ${new Date(s.weeklyResetAt).toUTCString()}` : "";
+  return [
+    "📊 subscription usage (measured from transcripts)",
+    win("hourly", s.perWindow.hourly),
+    win("daily ", s.perWindow.daily),
+    win("weekly", s.perWindow.weekly),
+    `context: ${formatTokens(s.contextOccupancy)} in the last turn${reset}`,
+  ].join("\n");
 }
 
 function renderHelp(): string {

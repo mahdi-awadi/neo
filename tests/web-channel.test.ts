@@ -88,6 +88,19 @@ test("subscribers opened after activity get the replayed events", async () => {
   expect(texts).toContain("earlier output");
 });
 
+test("send routes a slash-command through handleCommand and emits the reply", async () => {
+  const f = fakeStart();
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  await ch.send("/help");
+
+  const texts = events.filter((e) => e.type === "message").map((e) => (e as { text: string }).text);
+  // "/list" appears in the help text but NOT in handleMessage's "not an order" error.
+  expect(texts.some((t) => t.includes("/list"))).toBe(true);
+});
+
 test("resolveApproval returns false for an unknown id", () => {
   const f = fakeStart();
   const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });

@@ -8,6 +8,7 @@ import type { Ledger } from "../engine/ledger";
 import type { Registry } from "../engine/registry";
 import type { Meter } from "../engine/budget";
 import type { AdminStore } from "../engine/admin";
+import type { UsageMeter } from "../engine/usage";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { handleMessage } from "../engine/pipeline";
@@ -23,6 +24,7 @@ export function startTelegram(
     reservePct: cfg.subscriptionInteractiveReservePct,
     windowMs: cfg.budgetWindowMs,
   }),
+  usage?: UsageMeter,
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);
@@ -41,7 +43,7 @@ export function startTelegram(
 
     // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
     // order or a follow-up handled by the pipeline.
-    const command = handleCommand(ctx.message.text, chatId, { registry, ledger });
+    const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage });
     if (command !== null) {
       void bot.api.sendMessage(chatId, command);
       return;

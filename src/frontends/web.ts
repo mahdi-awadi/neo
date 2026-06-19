@@ -6,6 +6,7 @@
 import type { Ledger } from "../engine/ledger";
 import type { AdminStore } from "../engine/admin";
 import type { SessionStore } from "../engine/web-session";
+import type { UsageMeter } from "../engine/usage";
 import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
 
@@ -14,6 +15,7 @@ const COOKIE = "neo_session";
 
 export interface WebAppDeps {
   engine: EngineDeps; // cfg, ledger, registry, meter, start? — shared with Telegram
+  usage?: UsageMeter; // measured subscription usage (for /usage)
   botToken: string;
   botUsername: string; // for the Login Widget (resolved via getMe at startup)
   sessions: SessionStore;
@@ -28,7 +30,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage });
 
   function sessionUser(req: Request): number | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));

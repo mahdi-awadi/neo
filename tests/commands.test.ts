@@ -14,11 +14,31 @@ function order(over: Partial<Order> = {}): Order {
     createdAt: 1,
   };
 }
-function deps(over: { registry?: ReturnType<typeof createRegistry>; ledger?: ReturnType<typeof openLedger> } = {}) {
+function deps(
+  over: {
+    registry?: ReturnType<typeof createRegistry>;
+    ledger?: ReturnType<typeof openLedger>;
+    usage?: { snapshot: () => any };
+  } = {},
+) {
   return {
     registry: over.registry ?? createRegistry(),
     ledger: over.ledger ?? openLedger(":memory:"),
+    usage: over.usage,
     now: () => 100000,
+  };
+}
+
+function fakeUsage(over: Partial<Record<"hourly" | "daily" | "weekly", number>> = {}) {
+  const w = (consumedTokens: number) => ({ consumedTokens, consumedInput: 0, consumedOutput: 0, capTokens: null, remaining: null });
+  return {
+    snapshot: () => ({
+      perWindow: { hourly: w(over.hourly ?? 41_800_000), daily: w(over.daily ?? 1_100_000_000), weekly: w(over.weekly ?? 5_000_000_000) },
+      contextOccupancy: 477_000,
+      weeklyResetAt: Date.parse("2026-06-22T10:00:00.000Z"),
+      turnCount: 100,
+      computedAt: 0,
+    }),
   };
 }
 
@@ -105,6 +125,20 @@ test("/recent shows recent orders with their outcomes", () => {
 
 test("/recent with no orders reports none", () => {
   expect(handleCommand("/recent", 1, deps())!.toLowerCase()).toContain("no orders");
+});
+
+test("/usage renders hourly/daily/weekly token usage + weekly reset, no dollars", () => {
+  const out = handleCommand("/usage", 1, deps({ usage: fakeUsage() }))!;
+  expect(out).toContain("41.8M");
+  expect(out).toContain("1.1B");
+  expect(out).toContain("5.0B");
+  expect(out.toLowerCase()).toContain("weekly");
+  expect(out).toContain("resets");
+  expect(out).not.toContain("$"); // measured tokens, not a dollar budget
+});
+
+test("/usage degrades gracefully when no meter is wired", () => {
+  expect(handleCommand("/usage", 1, deps())!.toLowerCase()).toContain("unavailable");
 });
 
 test("returns null for /open and unknown input so the pipeline handles them", () => {

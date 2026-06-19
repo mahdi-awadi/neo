@@ -3,11 +3,14 @@
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
 import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "./config";
 import { openLedger } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
 import { createMeter } from "./engine/budget";
+import { createUsageMeter } from "./engine/usage";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { startTelegram } from "./frontends/telegram";
@@ -45,6 +48,11 @@ async function main(): Promise<void> {
     reservePct: cfg.subscriptionInteractiveReservePct,
     windowMs: cfg.budgetWindowMs,
   });
+  // Measured subscription usage from Claude Code's own transcripts (for /usage).
+  const usage = createUsageMeter({
+    projectsDir: join(homedir(), ".claude", "projects"),
+    claudeJsonPath: join(homedir(), ".claude.json"),
+  });
 
   // Idle watchdog — shares the registry the pipeline registers sessions in.
   setInterval(() => sweepIdle(registry, ledger, { idleMs: IDLE_CLOSE_MS, now: Date.now() }), IDLE_POLL_MS);
@@ -57,8 +65,8 @@ async function main(): Promise<void> {
   console.log(`  idle      -> close after ${IDLE_CLOSE_MS / 60000}m quiet, sweep every ${IDLE_POLL_MS / 1000}s`);
 
   if (cfg.telegramToken) {
-    startTelegram(cfg, ledger, admin, registry, meter);
-    console.log("  telegram  -> started. /open <folder> <task> · follow up by chatting · /status · /kill <name>");
+    startTelegram(cfg, ledger, admin, registry, meter, usage);
+    console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
 
     // Web console shares the same engine + admin; auth is Telegram-login (TOFU admin).
     const sessions = createSessionStore({
@@ -66,7 +74,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken);
     startWeb(
-      { engine: { cfg, ledger, registry, meter }, botToken: cfg.telegramToken, botUsername, sessions, admin },
+      { engine: { cfg, ledger, registry, meter }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin },
       WEB_PORT,
       WEB_HOST,
     );
