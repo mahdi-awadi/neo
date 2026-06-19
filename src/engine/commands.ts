@@ -1,7 +1,9 @@
 // Frontend-agnostic engine commands, as a small registry so /help auto-lists them and new
-// commands are one-liners. handleCommand parses the leading /word, dispatches, and returns the
-// reply string — or null for /open and anything unregistered, so the caller falls through to
-// the order pipeline. (Operator command shape inspired by operant, trimmed to the SDK model.)
+// commands are one-liners. handleCommand parses the leading /word, dispatches, and returns a
+// CommandResult { text, select? } — or null for /open and anything unregistered, so the
+// caller falls through to the order pipeline. `select` is the set of tappable projects for
+// /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
+// two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { UsageMeter, RateLimitInfo } from "./usage";
@@ -16,6 +18,19 @@ export interface CommandDeps {
   now?: () => number;
 }
 
+/** A tappable project in a /list result — frontends render these as buttons. */
+export interface SelectableProject {
+  label: string;
+  id: string;
+  active: boolean;
+}
+
+/** What a command returns: text to show, plus optional tappable projects. */
+export interface CommandResult {
+  text: string;
+  select?: SelectableProject[];
+}
+
 interface CommandContext {
   chatId: number;
   args: string;
@@ -28,7 +43,7 @@ interface Command {
   aliases?: string[];
   usage: string;
   summary: string;
-  run(ctx: CommandContext): string;
+  run(ctx: CommandContext): CommandResult;
 }
 
 const COMMANDS: Command[] = [
@@ -36,7 +51,7 @@ const COMMANDS: Command[] = [
     name: "list",
     aliases: ["ls", "status"],
     usage: "/list",
-    summary: "open projects (★ = active · name · folder · status · age · task)",
+    summary: "open projects (★ = active · tap a name to switch)",
     run: ({ deps, now, chatId }) => renderList(deps.registry, now, chatId),
   },
   {
@@ -44,43 +59,50 @@ const COMMANDS: Command[] = [
     aliases: ["switch"],
     usage: "/use <name>",
     summary: "make a project active (your messages follow up on it)",
-    run: ({ deps, args, chatId }) => useSession(args.trim(), chatId, deps.registry),
+    run: ({ deps, args, chatId }) => ({ text: useSession(args.trim(), chatId, deps.registry) }),
   },
   {
     name: "kill",
     usage: "/kill <name>",
     summary: "stop a project",
-    run: ({ deps, args }) => killSession(args.trim(), deps.registry),
+    run: ({ deps, args }) => ({ text: killSession(args.trim(), deps.registry) }),
   },
   {
     name: "recent",
     aliases: ["history"],
     usage: "/recent",
     summary: "recent orders + outcomes",
-    run: ({ deps }) => renderRecent(deps.ledger),
+    run: ({ deps }) => ({ text: renderRecent(deps.ledger) }),
   },
   {
     name: "usage",
     usage: "/usage",
     summary: "subscription token usage (hourly/daily/weekly)",
-    run: ({ deps, now }) => renderUsage(deps.usage, now),
+    run: ({ deps, now }) => ({ text: renderUsage(deps.usage, now) }),
   },
   {
     name: "help",
     aliases: ["h"],
     usage: "/help",
     summary: "this list",
-    run: () => renderHelp(),
+    run: () => ({ text: renderHelp() }),
   },
 ];
 
-export function handleCommand(text: string, chatId: number, deps: CommandDeps): string | null {
+export function handleCommand(text: string, chatId: number, deps: CommandDeps): CommandResult | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
   const [word, ...rest] = trimmed.slice(1).split(/\s+/);
   const cmd = COMMANDS.find((c) => c.name === word || c.aliases?.includes(word));
   if (!cmd) return null; // /open + unknown -> let the pipeline handle it
   return cmd.run({ chatId, args: rest.join(" "), now: (deps.now ?? (() => Date.now()))(), deps });
+}
+
+/** Make a project active (from a tapped /list button) and return the refreshed list. The one
+ * place the switch happens — both Telegram and the web console call this on a tap. */
+export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
+  deps.registry.setActive(chatId, id);
+  return renderList(deps.registry, (deps.now ?? (() => Date.now()))(), chatId);
 }
 
 function humanAge(ms: number): string {
@@ -97,17 +119,19 @@ function statusIcon(status: SessionInfo["status"]): string {
   return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
 }
 
-function renderList(registry: Registry, now: number, chatId: number): string {
+function renderList(registry: Registry, now: number, chatId: number): CommandResult {
   const sessions = registry.list();
-  if (sessions.length === 0) return "No open projects.";
+  if (sessions.length === 0) return { text: "No open projects." };
   const activeId = registry.findByChat(chatId)?.id;
-  return sessions
+  const select: SelectableProject[] = sessions.map((s) => ({ label: s.name, id: s.id, active: s.id === activeId }));
+  const text = sessions
     .map((s) => {
       const star = s.id === activeId ? "★ " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
       return `${star}${statusIcon(s.status)} ${s.name} · ${s.order.folder} · ${s.status} · ${humanAge(now - s.startedAt)} · "${task}"`;
     })
     .join("\n");
+  return { text, select };
 }
 
 function useSession(name: string, chatId: number, registry: Registry): string {

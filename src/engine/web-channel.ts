@@ -55,7 +55,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
       });
       if (command !== null) {
-        emit({ type: "message", text: command });
+        emit({ type: "message", text: command.text });
         return;
       }
       await handleMessage(text, opts.chatId, deps);

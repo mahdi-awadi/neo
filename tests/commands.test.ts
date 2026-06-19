@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { handleCommand } from "../src/engine/commands";
+import { handleCommand, selectProject } from "../src/engine/commands";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import type { Order } from "../src/types";
@@ -44,7 +44,7 @@ function fakeUsage(over: { hourly?: number; daily?: number; weekly?: number; rat
 }
 
 test("/help lists the available commands including /open", () => {
-  const out = handleCommand("/help", 1, deps())!;
+  const out = handleCommand("/help", 1, deps())!.text;
   expect(out).toContain("/open");
   expect(out).toContain("/list");
   expect(out).toContain("/kill");
@@ -53,27 +53,27 @@ test("/help lists the available commands including /open", () => {
 test("/list shows open projects with name, folder, status, and task", () => {
   const registry = createRegistry();
   registry.add(order({ folder: "/proj/app", task: "add tests to math" }), 1000);
-  const out = handleCommand("/list", 1, deps({ registry }))!;
+  const out = handleCommand("/list", 1, deps({ registry }))!.text;
   expect(out).toContain("app");
   expect(out).toContain("/proj/app");
   expect(out).toContain("add tests");
 });
 
 test("/list reports none when there are no open projects", () => {
-  expect(handleCommand("/list", 1, deps())!.toLowerCase()).toContain("no open projects");
+  expect(handleCommand("/list", 1, deps())!.text.toLowerCase()).toContain("no open projects");
 });
 
 test("/status is an alias of /list", () => {
   const registry = createRegistry();
   registry.add(order({ folder: "/p/x" }), 1);
   const d = deps({ registry });
-  expect(handleCommand("/status", 1, d)).toBe(handleCommand("/list", 1, d));
+  expect(handleCommand("/status", 1, d)!.text).toBe(handleCommand("/list", 1, d)!.text);
 });
 
 test("there is NO budget/dollar readout anymore", () => {
   const registry = createRegistry();
   registry.add(order(), 1);
-  const out = handleCommand("/list", 1, deps({ registry }))!;
+  const out = handleCommand("/list", 1, deps({ registry }))!.text;
   expect(out).not.toContain("$");
   expect(out.toLowerCase()).not.toContain("budget");
 });
@@ -84,15 +84,15 @@ test("/kill interrupts a named session and drops it", () => {
   registry.add(o, 1);
   let interrupted = false;
   registry.attachControl(o.id, { followUp: () => {}, interrupt: async () => void (interrupted = true) });
-  const out = handleCommand("/kill app", 1, deps({ registry }))!;
+  const out = handleCommand("/kill app", 1, deps({ registry }))!.text;
   expect(out).toContain("Killed");
   expect(interrupted).toBe(true);
   expect(registry.findByName("app")).toBeUndefined();
 });
 
 test("/kill an unknown name returns a friendly error; no name returns usage", () => {
-  expect(handleCommand("/kill ghost", 1, deps())!).toContain("not found");
-  expect(handleCommand("/kill", 1, deps())!.toLowerCase()).toContain("usage");
+  expect(handleCommand("/kill ghost", 1, deps())!.text).toContain("not found");
+  expect(handleCommand("/kill", 1, deps())!.text.toLowerCase()).toContain("usage");
 });
 
 test("/use makes a project active and /list marks it with a star", () => {
@@ -100,8 +100,8 @@ test("/use makes a project active and /list marks it with a star", () => {
   registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
   registry.add(order({ folder: "/p/beta", chatId: 1 }), 2);
   const d = deps({ registry });
-  expect(handleCommand("/use alpha", 1, d)!.toLowerCase()).toContain("now on alpha");
-  const list = handleCommand("/list", 1, d)!;
+  expect(handleCommand("/use alpha", 1, d)!.text.toLowerCase()).toContain("now on alpha");
+  const list = handleCommand("/list", 1, d)!.text;
   const alphaLine = list.split("\n").find((l) => l.includes("alpha"))!;
   const betaLine = list.split("\n").find((l) => l.includes("beta"))!;
   expect(alphaLine).toContain("★");
@@ -109,7 +109,7 @@ test("/use makes a project active and /list marks it with a star", () => {
 });
 
 test("/use an unknown project is a friendly error", () => {
-  expect(handleCommand("/use ghost", 1, deps())!).toContain("not found");
+  expect(handleCommand("/use ghost", 1, deps())!.text).toContain("not found");
 });
 
 test("/recent shows recent orders with their outcomes", () => {
@@ -117,7 +117,7 @@ test("/recent shows recent orders with their outcomes", () => {
   ledger.recordOrder(order({ id: "a", folder: "/p/alpha", task: "add tests", createdAt: 1 }));
   ledger.recordOutcome("a", "done", "added 3 tests");
   ledger.recordOrder(order({ id: "b", folder: "/p/beta", task: "fix bug", createdAt: 2 }));
-  const out = handleCommand("/recent", 1, deps({ ledger }))!;
+  const out = handleCommand("/recent", 1, deps({ ledger }))!.text;
   expect(out).toContain("alpha");
   expect(out).toContain("add tests");
   expect(out).toContain("done");
@@ -125,11 +125,11 @@ test("/recent shows recent orders with their outcomes", () => {
 });
 
 test("/recent with no orders reports none", () => {
-  expect(handleCommand("/recent", 1, deps())!.toLowerCase()).toContain("no orders");
+  expect(handleCommand("/recent", 1, deps())!.text.toLowerCase()).toContain("no orders");
 });
 
 test("/usage renders hourly/daily/weekly token usage + weekly reset, no dollars", () => {
-  const out = handleCommand("/usage", 1, deps({ usage: fakeUsage() }))!;
+  const out = handleCommand("/usage", 1, deps({ usage: fakeUsage() }))!.text;
   expect(out).toContain("41.8M");
   expect(out).toContain("1.1B");
   expect(out).toContain("5.0B");
@@ -139,7 +139,7 @@ test("/usage renders hourly/daily/weekly token usage + weekly reset, no dollars"
 });
 
 test("/usage degrades gracefully when no meter is wired", () => {
-  expect(handleCommand("/usage", 1, deps())!.toLowerCase()).toContain("unavailable");
+  expect(handleCommand("/usage", 1, deps())!.text.toLowerCase()).toContain("unavailable");
 });
 
 test("/usage shows per-window limit status and % left when the SDK provides it", () => {
@@ -149,12 +149,33 @@ test("/usage shows per-window limit status and % left when the SDK provides it",
       { status: "allowed_warning", rateLimitType: "seven_day", resetsAt: 1782000000, utilization: 0.88 },
     ],
   });
-  const out = handleCommand("/usage", 1, deps({ usage }))!;
+  const out = handleCommand("/usage", 1, deps({ usage }))!.text;
   expect(out).toContain("5-hour");
   expect(out.toLowerCase()).toContain("within limit"); // five_hour, no utilization sent
   expect(out).toContain("7-day");
   expect(out).toContain("88% used"); // seven_day utilization 0.88
   expect(out).toContain("12% left");
+});
+
+test("/list returns selectable projects with the active one flagged", () => {
+  const registry = createRegistry();
+  registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  const b = registry.add(order({ folder: "/p/beta", chatId: 1 }), 2);
+  registry.setActive(1, b.id);
+  const res = handleCommand("/list", 1, deps({ registry }))!;
+  expect(res.select?.map((s) => s.label)).toEqual(["alpha", "beta"]);
+  const beta = res.select?.find((s) => s.label === "beta");
+  expect(beta?.active).toBe(true);
+  expect(beta?.id).toBe(b.id);
+});
+
+test("selectProject sets the active project and returns the refreshed list", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  registry.add(order({ folder: "/p/beta", chatId: 1 }), 2);
+  const res = selectProject(a.id, 1, deps({ registry }));
+  expect(registry.findByChat(1)?.id).toBe(a.id);
+  expect(res.select?.find((s) => s.label === "alpha")?.active).toBe(true);
 });
 
 test("returns null for /open and unknown input so the pipeline handles them", () => {

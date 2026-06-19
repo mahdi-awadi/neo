@@ -45,7 +45,7 @@ export function startTelegram(
     // order or a follow-up handled by the pipeline.
     const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage });
     if (command !== null) {
-      void bot.api.sendMessage(chatId, command);
+      void bot.api.sendMessage(chatId, command.text);
       return;
     }
 
