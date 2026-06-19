@@ -101,6 +101,25 @@ test("send routes a slash-command through handleCommand and emits the reply", as
   expect(texts.some((t) => t.includes("/list"))).toBe(true);
 });
 
+test("/list over the web emits a projects event with items; selectProject switches active", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  await ch.send(`/open ${dir} build`);
+  await ch.send("/list");
+
+  const proj = events.find((e) => e.type === "projects") as { type: "projects"; items: Array<{ id: string }> } | undefined;
+  expect(proj).toBeTruthy();
+  expect(proj!.items.length).toBe(1);
+
+  ch.selectProject(proj!.items[0].id);
+  expect(eng.registry.findByChat(42)?.id).toBe(proj!.items[0].id);
+});
+
 test("resolveApproval returns false for an unknown id", () => {
   const f = fakeStart();
   const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });

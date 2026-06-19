@@ -4,7 +4,7 @@
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
 import { handleMessage, type PipelineDeps } from "./pipeline";
-import { handleCommand } from "./commands";
+import { handleCommand, selectProject as engineSelectProject, type SelectableProject } from "./commands";
 import type { UsageMeter } from "./usage";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -12,7 +12,8 @@ export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
 
 export type WebEvent =
   | { type: "message"; text: string }
-  | { type: "escalation"; id: string; reason: string };
+  | { type: "escalation"; id: string; reason: string }
+  | { type: "projects"; text: string; items: SelectableProject[] };
 
 export interface WebChannel {
   /** Operator sent a message — drive the pipeline; streamed output arrives as events. */
@@ -21,6 +22,8 @@ export interface WebChannel {
   subscribe(listener: (e: WebEvent) => void): () => void;
   /** Resolve a pending escalation (POST /approve). Returns false if the id is unknown. */
   resolveApproval(id: string, decision: "allow" | "deny"): boolean;
+  /** Make a project active from a clicked /list chip (the shared engine selectProject). */
+  selectProject(id: string): void;
 }
 
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter }): WebChannel {
@@ -55,7 +58,11 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
       });
       if (command !== null) {
-        emit({ type: "message", text: command.text });
+        if (command.select?.length) {
+          emit({ type: "projects", text: command.text, items: command.select });
+        } else {
+          emit({ type: "message", text: command.text });
+        }
         return;
       }
       await handleMessage(text, opts.chatId, deps);
@@ -71,6 +78,14 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       pending.delete(id);
       resolve(decision);
       return true;
+    },
+    selectProject(id) {
+      const result = engineSelectProject(id, opts.chatId, {
+        registry: opts.engine.registry,
+        ledger: opts.engine.ledger,
+        usage: opts.usage,
+      });
+      emit({ type: "projects", text: result.text, items: result.select ?? [] });
     },
   };
 }

@@ -85,6 +85,12 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json({ ok });
     }
 
+    if (req.method === "POST" && path === "/select") {
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown };
+      if (typeof body.id === "string") channel.selectProject(body.id);
+      return Response.json({ ok: true });
+    }
+
     if (req.method === "GET" && path === "/stream") {
       const stream = new ReadableStream({
         start(controller) {
@@ -147,9 +153,22 @@ function consolePage(): string {
 <script>
 const log=document.getElementById('log');
 function line(html,cls){const d=document.createElement('div');d.className=cls||'msg';d.innerHTML=html;log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
+let projectsEl=null;
+function renderProjects(e){
+  if(projectsEl)projectsEl.remove();
+  projectsEl=line('','esc');
+  const t=document.createElement('div');t.innerHTML=escapeHtml(e.text).replace(/\\n/g,'<br>');projectsEl.appendChild(t);
+  const bar=document.createElement('div');bar.style.marginTop='6px';
+  for(const p of e.items){const b=document.createElement('button');b.style.marginRight='6px';
+    b.textContent=(p.active?'★ ':'')+p.label;
+    b.onclick=()=>fetch('/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:p.id})});
+    bar.appendChild(b);}
+  projectsEl.appendChild(bar);log.scrollTop=log.scrollHeight;
+}
 const es=new EventSource('/stream');
 es.onmessage=(ev)=>{const e=JSON.parse(ev.data);
   if(e.type==='message'){line(escapeHtml(e.text));}
+  else if(e.type==='projects'){renderProjects(e);}
   else if(e.type==='escalation'){const d=line('⚠️ '+escapeHtml(e.reason)+'<br>','esc');
     for(const dec of ['allow','deny']){const b=document.createElement('button');b.textContent=dec;
       b.onclick=()=>{fetch('/approve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:e.id,decision:dec})});d.remove();};
