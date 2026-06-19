@@ -10,6 +10,7 @@ import type { Meter } from "../engine/budget";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { handleMessage } from "../engine/pipeline";
+import { handleCommand } from "../engine/commands";
 
 export function startTelegram(
   cfg: NeoConfig,
@@ -30,6 +31,14 @@ export function startTelegram(
     const userId = ctx.from?.id;
     if (userId === undefined || (allow.size > 0 && !allow.has(userId))) return;
     const chatId = ctx.chat.id;
+
+    // Engine commands (/status, /kill) resolve synchronously; everything else is an order
+    // or a follow-up handled by the pipeline.
+    const command = handleCommand(ctx.message.text, { registry, meter });
+    if (command !== null) {
+      void bot.api.sendMessage(chatId, command);
+      return;
+    }
 
     await handleMessage(ctx.message.text, chatId, {
       cfg,
