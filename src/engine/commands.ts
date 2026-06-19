@@ -50,6 +50,13 @@ const COMMANDS: Command[] = [
     run: ({ deps, args }) => killSession(args.trim(), deps.registry),
   },
   {
+    name: "recent",
+    aliases: ["history"],
+    usage: "/recent",
+    summary: "recent orders + outcomes",
+    run: ({ deps }) => renderRecent(deps.ledger),
+  },
+  {
     name: "help",
     aliases: ["h"],
     usage: "/help",
@@ -111,6 +118,20 @@ function killSession(name: string, registry: Registry): string {
   registry.setStatus(session.id, "done");
   registry.remove(session.id);
   return `Killed session ${name}`;
+}
+
+function renderRecent(ledger: Ledger): string {
+  const orders = ledger.listRecent(10);
+  if (orders.length === 0) return "No orders yet.";
+  return orders
+    .map((o) => {
+      const outcome = ledger.getOutcome(o.id);
+      const icon = !outcome ? "⏳" : outcome.status === "done" ? "✓" : "✗";
+      const task = o.task.length > 40 ? `${o.task.slice(0, 40)}…` : o.task;
+      const status = outcome ? ` (${outcome.status})` : " (pending)";
+      return `${icon} ${o.folder} — "${task}"${status}`;
+    })
+    .join("\n");
 }
 
 function renderHelp(): string {

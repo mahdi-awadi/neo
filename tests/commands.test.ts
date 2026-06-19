@@ -91,6 +91,22 @@ test("/use an unknown project is a friendly error", () => {
   expect(handleCommand("/use ghost", 1, deps())!).toContain("not found");
 });
 
+test("/recent shows recent orders with their outcomes", () => {
+  const ledger = openLedger(":memory:");
+  ledger.recordOrder(order({ id: "a", folder: "/p/alpha", task: "add tests", createdAt: 1 }));
+  ledger.recordOutcome("a", "done", "added 3 tests");
+  ledger.recordOrder(order({ id: "b", folder: "/p/beta", task: "fix bug", createdAt: 2 }));
+  const out = handleCommand("/recent", 1, deps({ ledger }))!;
+  expect(out).toContain("alpha");
+  expect(out).toContain("add tests");
+  expect(out).toContain("done");
+  expect(out).toContain("beta"); // newest, still pending
+});
+
+test("/recent with no orders reports none", () => {
+  expect(handleCommand("/recent", 1, deps())!.toLowerCase()).toContain("no orders");
+});
+
 test("returns null for /open and unknown input so the pipeline handles them", () => {
   expect(handleCommand("/open /x do it", 1, deps())).toBeNull();
   expect(handleCommand("just chatting", 1, deps())).toBeNull();
