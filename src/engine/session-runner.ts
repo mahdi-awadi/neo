@@ -2,31 +2,19 @@
 // Claude Agent SDK and streams its work back to the engine. Replaces operant's tmux +
 // shim + Ink-scraping entirely.
 //
-// Verified SDK surface (https://code.claude.com/docs/en/agent-sdk/typescript):
-//   import { query } from "@anthropic-ai/claude-agent-sdk";
-//   const q = query({
-//     prompt: order.task,
-//     options: {
-//       cwd: order.folder,                                   // "open the project"
-//       settingSources: ["project", "local"],                // load its CLAUDE.md / .mcp.json / settings
-//       systemPrompt: { type: "preset", preset: "claude_code" },
-//       permissionMode: "default",
-//       canUseTool: (tool, input) => governor.decide(tool, input),  // governance hook
-//       mcpServers: { /* operant tools: worker -> engine callback */ },
-//     },
-//   });
-//   for await (const msg of q) { /* msg.type: "assistant" | "result" | "system" | ... */ }
-//
-// Auth: draws from your Claude subscription (current behavior; see README + plan).
+// Verified SDK surface (docs/sdk-notes.md):
+//   query({ prompt, options }) -> async generator of messages.
+//   options: cwd, settingSources:["project"] (loads the folder's CLAUDE.md/.mcp.json),
+//            systemPrompt:{type:"preset",preset:"claude_code"}, permissionMode, canUseTool.
 //
 // SPIKE FINDING (docs/sdk-notes.md): the canUseTool ALLOW decision MUST echo
-// `updatedInput` — return { behavior: "allow", updatedInput: input }. A bare
-// { behavior: "allow" } is rejected by the SDK with a ZodError and the tool fails.
-// So when translating the governor's Verdict -> PermissionResult, carry updatedInput.
+// `updatedInput` — { behavior:"allow", updatedInput: input }. A bare { behavior:"allow" }
+// is rejected by the SDK with a ZodError and the tool fails.
 //
-// Phase 1 (TDD): implement runOrder against a mocked `query()`; assert safe tools
-// auto-allow, risky tools route to onEscalation, messages forward, result returns.
+// Auth: draws from your Claude subscription (current behavior; see README + plan).
+import { query as realQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { Order } from "../types";
+import { decide } from "./governor";
 
 export interface RunHandlers {
   /** Stream a human-readable line from the worker back to the channel. */
@@ -40,8 +28,61 @@ export interface RunResult {
   /** SDK session id, for resume/fork. */
   sessionId: string;
   summary: string;
+  costUsd: number;
 }
 
-export async function runOrder(_order: Order, _handlers: RunHandlers): Promise<RunResult> {
-  throw new Error("not implemented (Phase 1)");
+// Loosely-typed view of the SDK so the runner is testable with an injected fake.
+type SdkMessage = { type: string; [k: string]: unknown };
+type QueryFn = (args: { prompt: string; options: Record<string, unknown> }) => AsyncIterable<SdkMessage>;
+
+export async function runOrder(
+  order: Order,
+  handlers: RunHandlers,
+  deps: { query?: QueryFn } = {},
+): Promise<RunResult> {
+  const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
+
+  // The governance hook: governor decides; risky tools escalate to the human.
+  const canUseTool = async (tool: string, input: Record<string, unknown>) => {
+    const verdict = decide(tool, input);
+    if ("allow" in verdict) {
+      return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
+    }
+    const decision = await handlers.onEscalation(verdict.escalate);
+    if (decision === "allow") return { behavior: "allow", updatedInput: input };
+    return { behavior: "deny", message: `denied by Neo: ${verdict.escalate}` };
+  };
+
+  let ok = false;
+  let sessionId = "";
+  let summary = "";
+  let costUsd = 0;
+
+  for await (const msg of query({
+    prompt: order.task,
+    options: {
+      cwd: order.folder,
+      settingSources: ["project"],
+      systemPrompt: { type: "preset", preset: "claude_code" },
+      permissionMode: "default",
+      canUseTool,
+    },
+  })) {
+    if (typeof msg.session_id === "string") sessionId = msg.session_id;
+
+    if (msg.type === "assistant") {
+      const content = (msg.message as { content?: unknown } | undefined)?.content;
+      if (Array.isArray(content)) {
+        for (const b of content as Array<{ type?: string; text?: string }>) {
+          if (b?.type === "text" && b.text?.trim()) handlers.onMessage(b.text.trim());
+        }
+      }
+    } else if (msg.type === "result") {
+      ok = msg.subtype === "success";
+      summary = typeof msg.result === "string" ? msg.result : "";
+      costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
+    }
+  }
+
+  return { ok, sessionId, summary, costUsd };
 }
