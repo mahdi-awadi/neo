@@ -70,14 +70,14 @@ tests/
 
 - [x] git init, `package.json`/`tsconfig`/`bunfig`/`.gitignore`/`.env.example`, dirs.
 - [x] Typed module stubs + real `config.ts`/`types.ts` + runnable `daemon.ts` banner + smoke test.
-- [ ] `bun install` (`@anthropic-ai/claude-agent-sdk`, `grammy`, `@types/bun`, `typescript`).
-- [ ] `bunx tsc --noEmit` + `bun test` green.
-- [ ] **Live spike** (`src/spike.ts`, throwaway): run `query()` headless against a scratch folder
-      with a `canUseTool` that auto-allows `Write`/`Read` and denies `Bash`; confirm (a) it runs on
-      the **subscription** (no API key), (b) `canUseTool` fires, (c) the file is written, (d)
-      messages arrive as structured objects, (e) a folder with a `CLAUDE.md` is honored. Record the
-      verified behavior in `docs/sdk-notes.md`, then delete the spike. **Gate: Phase 1 builds on
-      `docs/sdk-notes.md`.**
+- [x] `bun install` — Agent SDK `0.3.183`, grammy `1.44.0`, `@types/bun`, `typescript`.
+- [x] `bunx tsc --noEmit` + `bun test` green; `bun run src/daemon.ts` banner runs.
+- [x] **Live spike (passed)** — `query()` ran headless against a scratch folder: `canUseTool` fired,
+      `Bash` denied, `hello.txt` written, the folder's `CLAUDE.md` loaded and honored (MARKER.txt),
+      messages streamed as structured objects, `result` subtype `success`. Findings in
+      `docs/sdk-notes.md` (key gotcha: the `allow` decision MUST echo `updatedInput`). Spike deleted.
+
+**Phase 0 complete — Phase 1 builds on `docs/sdk-notes.md`.**
 
 ## Phase 1 — Walking skeleton: order → open project → govern → stream back  *(the MVP)*
 

@@ -18,6 +18,12 @@
 //   for await (const msg of q) { /* msg.type: "assistant" | "result" | "system" | ... */ }
 //
 // Auth: draws from your Claude subscription (current behavior; see README + plan).
+//
+// SPIKE FINDING (docs/sdk-notes.md): the canUseTool ALLOW decision MUST echo
+// `updatedInput` — return { behavior: "allow", updatedInput: input }. A bare
+// { behavior: "allow" } is rejected by the SDK with a ZodError and the tool fails.
+// So when translating the governor's Verdict -> PermissionResult, carry updatedInput.
+//
 // Phase 1 (TDD): implement runOrder against a mocked `query()`; assert safe tools
 // auto-allow, risky tools route to onEscalation, messages forward, result returns.
 import type { Order } from "../types";
