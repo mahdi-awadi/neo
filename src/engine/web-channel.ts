@@ -1,0 +1,60 @@
+// Web operator channel: a thin adapter that drives the SAME engine pipeline as Telegram
+// (handleMessage, source "neo" -> Agent SDK on the subscription), but renders streamed
+// worker output + escalations as events an HTTP/SSE layer can fan out, and resolves
+// Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
+// All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
+import { handleMessage, type PipelineDeps } from "./pipeline";
+
+/** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
+export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
+
+export type WebEvent =
+  | { type: "message"; text: string }
+  | { type: "escalation"; id: string; reason: string };
+
+export interface WebChannel {
+  /** Operator sent a message — drive the pipeline; streamed output arrives as events. */
+  send(text: string): Promise<void>;
+  /** Subscribe an SSE listener; past events are replayed first (reconnect-safe). */
+  subscribe(listener: (e: WebEvent) => void): () => void;
+  /** Resolve a pending escalation (POST /approve). Returns false if the id is unknown. */
+  resolveApproval(id: string, decision: "allow" | "deny"): boolean;
+}
+
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number }): WebChannel {
+  const events: WebEvent[] = [];
+  const listeners = new Set<(e: WebEvent) => void>();
+  const pending = new Map<string, (d: "allow" | "deny") => void>();
+
+  function emit(e: WebEvent): void {
+    events.push(e);
+    for (const l of listeners) l(e);
+  }
+
+  const deps: PipelineDeps = {
+    ...opts.engine,
+    reply: (_chatId, text) => emit({ type: "message", text }),
+    askApproval: (_chatId, reason) =>
+      new Promise<"allow" | "deny">((resolve) => {
+        const id = crypto.randomUUID();
+        pending.set(id, resolve);
+        emit({ type: "escalation", id, reason });
+      }),
+  };
+
+  return {
+    send: (text) => handleMessage(text, opts.chatId, deps).then(() => undefined),
+    subscribe(listener) {
+      for (const e of events) listener(e); // replay history, then go live
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+    resolveApproval(id, decision) {
+      const resolve = pending.get(id);
+      if (!resolve) return false;
+      pending.delete(id);
+      resolve(decision);
+      return true;
+    },
+  };
+}
