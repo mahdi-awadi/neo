@@ -43,14 +43,18 @@ prompt:
 
 ## Current status
 
-**Phase 1 complete — the walking skeleton works end-to-end** (verified with a real SDK run): a
-`/open <folder> <task>` order is parsed, routed through the firewall, and run by a headless Claude
-worker that opens the folder and is governed via `canUseTool`, with progress streamed back and the
-outcome recorded in the ledger. All engine modules are implemented and tested (`bun test` green,
-`tsc` clean). The Telegram frontend is wired (grammy) but needs a `TELEGRAM_TOKEN` to run live.
+**Phase 2 complete — live, concurrent, governed sessions** (verified with a real SDK run): on top of
+the Phase 1 skeleton, the engine now holds **live SDK sessions** you can talk to. Plain-text messages
+stream as **follow-ups into the running worker**; quiet sessions **idle-close** and persist their SDK
+id so a later `/open` **resumes** them; a rolling **budget meter** reserves interactive headroom and
+throttles background work; multiple projects run **concurrently** in a registry; and `/status` + `/kill`
+give visibility and control. All TDD (`bun test` green — 58 tests, `tsc` clean). The real-SDK
+build-then-verify run confirmed streaming input, mid-run follow-ups, interrupt, and resume, and fixed
+two shaping bugs (see `docs/sdk-notes.md` → Phase 2). The Telegram frontend needs a `TELEGRAM_TOKEN`
+to run live.
 
-Next: Phase 2 (live follow-ups + resume + full budget), then Phase 3 (the Gemini customer path),
-then Phase 4 (port web/finance). Keep building **phase by phase, TDD**, per `MVP-PLAN.md`.
+Next: Phase 3 (the Gemini customer path), then Phase 4 (port web/finance). Keep building **phase by
+phase, TDD**, per `MVP-PLAN.md`.
 
 ## How to work here
 

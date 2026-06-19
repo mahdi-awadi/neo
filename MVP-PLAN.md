@@ -106,9 +106,24 @@ Eight TDD tasks (each: failing test → minimal code → green → commit):
 math.ts and a test"` → progress streams in → safe edits auto-approve → a `Bash` test-run escalates
 → tap Allow → tests run → outcome recorded. No tmux, no terminal, no `cd`.
 
-## Phase 2 — Live follow-ups + resume + full budget  *(own sub-plan)*
-Follow-up messages into a live session; idle-close + `resume`; full headroom metering; concurrent
-sessions; `/status`, `/kill`.
+## Phase 2 — Live follow-ups + resume + full budget  *(DONE ✅)*
+
+**Status: complete** (`bun test` green — 58 tests, `tsc` clean). Built TDD in 8 tasks, one commit each,
+then verified end-to-end against the **real** SDK (build-then-verify), which surfaced + fixed two
+shaping bugs (see `docs/sdk-notes.md` → Phase 2):
+
+- **T2.1 registry** — concurrent live sessions keyed by order id, addressable by name + chat.
+- **T2.2 budget** — rolling-window meter + `spent`/`remaining` for `/status`.
+- **T2.3 session-runner** — `startOrder`: streaming input channel + `followUp`/`interrupt` handle.
+- **T2.4 session-runner** — `resume` option + `onCost` callback.
+- **T2.5 ledger** — persist + look up the SDK session id (resume target).
+- **T2.6 idle watchdog** — `sweepIdle` closes stale sessions, persists their id; registry holds control handles.
+- **T2.7 pipeline** — `handleMessage`: follow-up routing · resume · budget gate · register + supervise.
+- **T2.8 commands + daemon** — `/status` + `/kill`; daemon owns the shared registry + meter + idle sweep.
+
+**Verified (real SDK run):** a live `/open` worker created a file; a follow-up pushed into the
+*running* session created a second file; `interrupt()` resolved cleanly; `resume` continued the same
+session and recalled its prior work. Firewall assertion preserved (customer → never the subscription).
 
 ## Phase 3 — Customer path (Gemini)  *(own sub-plan)*
 One customer channel (email webhook or web form) → Gemini reads → `Order(source:"customer")` →
