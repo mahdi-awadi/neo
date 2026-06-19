@@ -8,6 +8,7 @@ import type { Order, OrderSource } from "../types";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
+import type { UsageMeter } from "./usage";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun } from "./session-runner";
@@ -22,6 +23,8 @@ export interface PipelineDeps {
   registry: Registry;
   /** Shared budget guard protecting interactive headroom. */
   meter: Meter;
+  /** Usage meter — receives rate_limit_event info from runs (for /usage). */
+  usage?: UsageMeter;
   reply: (chatId: number, text: string) => void | Promise<void>;
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
   start?: StartFn;
@@ -85,6 +88,7 @@ export async function handleMessage(
     {
       onMessage: (t) => void deps.reply(chatId, t),
       onEscalation: (reason) => deps.askApproval(chatId, reason),
+      onRateLimit: (info) => deps.usage?.noteRateLimit(info),
     },
     resume ? { resume } : {},
   );

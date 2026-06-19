@@ -54,6 +54,7 @@ export function startTelegram(
       ledger,
       registry,
       meter,
+      usage,
       reply: (cid, text) => void bot.api.sendMessage(cid, text),
       askApproval: (cid, reason) =>
         new Promise<"allow" | "deny">((resolve) => {

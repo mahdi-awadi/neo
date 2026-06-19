@@ -35,6 +35,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
 
   const deps: PipelineDeps = {
     ...opts.engine,
+    usage: opts.usage,
     reply: (_chatId, text) => emit({ type: "message", text }),
     askApproval: (_chatId, reason) =>
       new Promise<"allow" | "deny">((resolve) => {

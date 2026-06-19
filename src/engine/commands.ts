@@ -4,7 +4,7 @@
 // the order pipeline. (Operator command shape inspired by operant, trimmed to the SDK model.)
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
-import type { UsageMeter } from "./usage";
+import type { UsageMeter, RateLimitInfo } from "./usage";
 import type { SessionInfo } from "../types";
 
 export interface CommandDeps {
@@ -150,21 +150,49 @@ function formatTokens(n: number): string {
   return String(Math.round(n));
 }
 
+function rateLimitName(t?: string): string {
+  switch (t) {
+    case "five_hour":
+      return "5-hour";
+    case "seven_day":
+      return "7-day";
+    case "seven_day_opus":
+      return "7-day (Opus)";
+    case "seven_day_sonnet":
+      return "7-day (Sonnet)";
+    case "overage":
+      return "overage";
+    default:
+      return t ?? "limit";
+  }
+}
+
+// Claude only sends a precise `utilization` as you approach the limit; otherwise it sends
+// just status + reset. Render the % when present, else the status — never a fabricated number.
+function renderRateLine(r: RateLimitInfo): string {
+  const name = rateLimitName(r.rateLimitType);
+  const reset = r.resetsAt ? ` · resets ${new Date(r.resetsAt * 1000).toUTCString()}` : "";
+  if (typeof r.utilization === "number") {
+    const used = Math.round(r.utilization <= 1 ? r.utilization * 100 : r.utilization);
+    const icon = r.status === "rejected" ? "⛔" : used >= 80 ? "⚠️" : "🟢";
+    return `${icon} ${name}: ${used}% used · ${100 - used}% left${reset}`;
+  }
+  const icon = r.status === "rejected" ? "⛔" : r.status === "allowed_warning" ? "⚠️" : "✅";
+  const label = r.status === "rejected" ? "limit reached" : r.status === "allowed_warning" ? "near limit" : "within limit";
+  return `${icon} ${name}: ${label}${reset}`;
+}
+
 function renderUsage(usage: UsageMeter | undefined, now: number): string {
   if (!usage) return "Usage tracking unavailable.";
   const s = usage.snapshot(now);
-  const win = (label: string, w: { consumedTokens: number; capTokens: number | null; remaining: number | null }) => {
-    const cap = w.capTokens != null ? ` · ${formatTokens(w.remaining ?? 0)} left of ${formatTokens(w.capTokens)}` : "";
-    return `${label}: ${formatTokens(w.consumedTokens)} tokens${cap}`;
-  };
-  const reset = s.weeklyResetAt ? `\nweekly resets ${new Date(s.weeklyResetAt).toUTCString()}` : "";
-  return [
-    "📊 subscription usage (measured from transcripts)",
-    win("hourly", s.perWindow.hourly),
-    win("daily ", s.perWindow.daily),
-    win("weekly", s.perWindow.weekly),
-    `context: ${formatTokens(s.contextOccupancy)} in the last turn${reset}`,
-  ].join("\n");
+  const lines = ["📊 subscription usage"];
+  if (s.rateLimits.length === 0) lines.push("(limit status shows after the first run since restart)");
+  for (const r of s.rateLimits) lines.push(renderRateLine(r));
+  lines.push(
+    `measured: hourly ${formatTokens(s.perWindow.hourly.consumedTokens)} · daily ${formatTokens(s.perWindow.daily.consumedTokens)} · weekly ${formatTokens(s.perWindow.weekly.consumedTokens)} tokens · context ${formatTokens(s.contextOccupancy)}`,
+  );
+  if (s.weeklyResetAt) lines.push(`weekly resets ${new Date(s.weeklyResetAt).toUTCString()}`);
+  return lines.join("\n");
 }
 
 function renderHelp(): string {

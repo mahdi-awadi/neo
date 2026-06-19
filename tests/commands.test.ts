@@ -29,13 +29,14 @@ function deps(
   };
 }
 
-function fakeUsage(over: Partial<Record<"hourly" | "daily" | "weekly", number>> = {}) {
+function fakeUsage(over: { hourly?: number; daily?: number; weekly?: number; rateLimits?: any[] } = {}) {
   const w = (consumedTokens: number) => ({ consumedTokens, consumedInput: 0, consumedOutput: 0, capTokens: null, remaining: null });
   return {
     snapshot: () => ({
       perWindow: { hourly: w(over.hourly ?? 41_800_000), daily: w(over.daily ?? 1_100_000_000), weekly: w(over.weekly ?? 5_000_000_000) },
       contextOccupancy: 477_000,
       weeklyResetAt: Date.parse("2026-06-22T10:00:00.000Z"),
+      rateLimits: over.rateLimits ?? [],
       turnCount: 100,
       computedAt: 0,
     }),
@@ -139,6 +140,21 @@ test("/usage renders hourly/daily/weekly token usage + weekly reset, no dollars"
 
 test("/usage degrades gracefully when no meter is wired", () => {
   expect(handleCommand("/usage", 1, deps())!.toLowerCase()).toContain("unavailable");
+});
+
+test("/usage shows per-window limit status and % left when the SDK provides it", () => {
+  const usage = fakeUsage({
+    rateLimits: [
+      { status: "allowed", rateLimitType: "five_hour", resetsAt: 1781923200 },
+      { status: "allowed_warning", rateLimitType: "seven_day", resetsAt: 1782000000, utilization: 0.88 },
+    ],
+  });
+  const out = handleCommand("/usage", 1, deps({ usage }))!;
+  expect(out).toContain("5-hour");
+  expect(out.toLowerCase()).toContain("within limit"); // five_hour, no utilization sent
+  expect(out).toContain("7-day");
+  expect(out).toContain("88% used"); // seven_day utilization 0.88
+  expect(out).toContain("12% left");
 });
 
 test("returns null for /open and unknown input so the pipeline handles them", () => {
