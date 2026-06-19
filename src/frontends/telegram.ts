@@ -7,6 +7,7 @@ import type { NeoConfig } from "../config";
 import type { Ledger } from "../engine/ledger";
 import type { Registry } from "../engine/registry";
 import type { Meter } from "../engine/budget";
+import type { AdminStore } from "../engine/admin";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { handleMessage } from "../engine/pipeline";
@@ -15,6 +16,7 @@ import { handleCommand } from "../engine/commands";
 export function startTelegram(
   cfg: NeoConfig,
   ledger: Ledger,
+  admin: AdminStore,
   registry: Registry = createRegistry(),
   meter: Meter = createMeter({
     windowBudgetUsd: cfg.budgetWindowUsd,
@@ -27,9 +29,14 @@ export function startTelegram(
   // Pending approvals keyed by a per-request token: callback press -> resolver.
   const pending = new Map<string, (decision: "allow" | "deny") => void>();
 
+  // Gate: an optional pre-allowlist, then trust-on-first-use — the first allowed id to
+  // message the bot becomes the sole admin (shared with the web console).
+  const isOperator = (userId: number | undefined): userId is number =>
+    userId !== undefined && !(allow.size > 0 && !allow.has(userId)) && admin.claimAdmin(userId);
+
   bot.on("message:text", async (ctx) => {
     const userId = ctx.from?.id;
-    if (userId === undefined || (allow.size > 0 && !allow.has(userId))) return;
+    if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
 
     // Engine commands (/status, /kill) resolve synchronously; everything else is an order
@@ -57,6 +64,10 @@ export function startTelegram(
   });
 
   bot.on("callback_query:data", async (ctx) => {
+    if (!admin.isAdmin(ctx.from?.id ?? -1)) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
     const [kind, token] = ctx.callbackQuery.data.split(":");
     const resolve = token ? pending.get(token) : undefined;
     if (resolve) {
