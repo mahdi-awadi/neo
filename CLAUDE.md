@@ -89,6 +89,29 @@ Next: **Phase 3b** (the deferred Gemini customer path), then Phase 4 (finance/bo
 - Operator is addressed as **Neo** (not "Mahdi" — that's only the repo-author handle).
 - End commit messages with: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
+## Workflow patterns (field notes — only what fits Neo)
+
+Distilled from how expert agent-coders work. The tool-specific bits (Cursor/Codex cloud agents,
+Greptile) are noted but not adopted; these principles are:
+
+- **Skillify anything done more than once.** A recurring task (review pass, release check, a port)
+  becomes a skill/command, not a re-typed prompt. Keep leaning on `superpowers` skills.
+- **Loops & automations ARE Neo's product model.** An *automation* = `trigger → prompt`; a *loop* =
+  `trigger → repeated action → goal` (stops when the goal is met). That is exactly the company-engine
+  autonomy: a department is *triggered* (cron / board event) → *acts* (works a board task via an SDK
+  worker) → until a *goal* (task done / board drained). Design the scheduler around this
+  trigger/action/goal shape. Loops worth stealing: nightly **docs-sweep** (sync docs to the day's
+  diff), nightly **error-sweep** (scan logs → fix → record), a **coverage** loop (write tests until
+  green).
+- **Quality flywheel: tests + docs + logs, always green.** TDD covers tests. Also keep docs synced to
+  the code (don't let them drift) and log enough that an agent can diagnose any failure from logs
+  alone. Cheap, compounding.
+- **Be concise.** Short, plain-English summaries of what changed — never essays. Applies to how Neo
+  reports progress, too.
+- **Parallelism needs isolation.** Many agents on one repo conflict → git worktrees per agent (Neo's
+  concurrent sessions already isolate by folder). Agent-scale merge/deploy is genuinely unsolved —
+  batch and be patient.
+
 ## Why these decisions (so you don't relitigate them)
 
 - **New project, not an evolution of operant:** operant's spine (socket-server + shim + tmux +
