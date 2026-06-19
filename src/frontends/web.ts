@@ -59,7 +59,11 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     if (req.method === "GET" && path === "/") {
       const uid = sessionUser(req);
       const html = uid === undefined ? loginPage(deps.botUsername) : consolePage();
-      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+      // never cache: the login page embeds the bot username, and a stale copy (e.g. an old
+      // bot handle behind Cloudflare/browser cache) silently breaks Telegram login.
+      return new Response(html, {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, must-revalidate" },
+      });
     }
 
     // --- everything below requires a valid session ---
