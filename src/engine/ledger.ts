@@ -7,6 +7,10 @@ export interface Ledger {
   recordOrder(order: Order): void;
   recordOutcome(orderId: string, status: string, summary: string): void;
   getOutcome(orderId: string): { status: string; summary: string } | undefined;
+  /** Persist the worker's SDK session id against an order, so it can later be resumed. */
+  recordSession(orderId: string, sdkSessionId: string): void;
+  /** The most recently recorded SDK session id for a folder/chat (for resume), if any. */
+  lastSessionFor(folder: string, chatId: number): string | undefined;
   listRecent(limit?: number): Order[];
 }
 
@@ -15,9 +19,15 @@ export function openLedger(path: string): Ledger {
   db.run(
     `CREATE TABLE IF NOT EXISTS orders (
        id TEXT PRIMARY KEY, source TEXT NOT NULL, folder TEXT NOT NULL,
-       task TEXT NOT NULL, chat_id INTEGER NOT NULL, created_at INTEGER NOT NULL
+       task TEXT NOT NULL, chat_id INTEGER NOT NULL, created_at INTEGER NOT NULL,
+       sdk_session_id TEXT
      )`,
   );
+  // Migrate dbs created before sdk_session_id existed.
+  const cols = db.query(`PRAGMA table_info(orders)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "sdk_session_id")) {
+    db.run(`ALTER TABLE orders ADD COLUMN sdk_session_id TEXT`);
+  }
   db.run(
     `CREATE TABLE IF NOT EXISTS outcomes (
        order_id TEXT PRIMARY KEY, status TEXT NOT NULL, summary TEXT, at INTEGER NOT NULL
@@ -41,6 +51,19 @@ export function openLedger(path: string): Ledger {
         .query(`SELECT status, summary FROM outcomes WHERE order_id = ?`)
         .get(orderId) as { status: string; summary: string } | null;
       return row ?? undefined;
+    },
+    recordSession(orderId, sdkSessionId) {
+      db.query(`UPDATE orders SET sdk_session_id = ? WHERE id = ?`).run(sdkSessionId, orderId);
+    },
+    lastSessionFor(folder, chatId) {
+      const row = db
+        .query(
+          `SELECT sdk_session_id FROM orders
+           WHERE folder = ? AND chat_id = ? AND sdk_session_id IS NOT NULL AND sdk_session_id != ''
+           ORDER BY created_at DESC LIMIT 1`,
+        )
+        .get(folder, chatId) as { sdk_session_id: string } | null;
+      return row?.sdk_session_id ?? undefined;
     },
     listRecent(limit = 20) {
       const rows = db

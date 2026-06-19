@@ -29,3 +29,26 @@ test("recordOutcome is retrievable via getOutcome", () => {
   led.recordOutcome("a", "done", "added function");
   expect(led.getOutcome("a")).toEqual({ status: "done", summary: "added function" });
 });
+
+test("recordSession persists the SDK session id for an order; lastSessionFor reads it back", () => {
+  const led = openLedger(":memory:");
+  led.recordOrder(order({ id: "a", folder: "/proj", chatId: 9 }));
+  led.recordSession("a", "sdk-123");
+  expect(led.lastSessionFor("/proj", 9)).toBe("sdk-123");
+});
+
+test("lastSessionFor returns the most recent session id for a folder/chat", () => {
+  const led = openLedger(":memory:");
+  led.recordOrder(order({ id: "a", folder: "/proj", chatId: 9, createdAt: 1 }));
+  led.recordOrder(order({ id: "b", folder: "/proj", chatId: 9, createdAt: 2 }));
+  led.recordSession("a", "sdk-old");
+  led.recordSession("b", "sdk-new");
+  expect(led.lastSessionFor("/proj", 9)).toBe("sdk-new");
+});
+
+test("lastSessionFor is undefined when no session was recorded for that folder/chat", () => {
+  const led = openLedger(":memory:");
+  led.recordOrder(order({ id: "a", folder: "/proj", chatId: 9 }));
+  expect(led.lastSessionFor("/proj", 9)).toBeUndefined();
+  expect(led.lastSessionFor("/other", 9)).toBeUndefined();
+});
