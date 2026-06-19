@@ -1,12 +1,20 @@
 // THE COMPLIANCE FIREWALL. Maps an order to the provider allowed to run it.
-//   source "neo"      -> subscription (your own work, via the Claude Agent SDK)
-//   source "customer" -> gemini       (a customer never touches the subscription)
-// Reads config so a future Anthropic plan change is a config flip, not a rewrite.
-// Phase 1 (TDD): MUST refuse, in code, any attempt to route customer work to the
-// subscription — assert that branch explicitly.
+//   source "neo"      -> the configured own-work provider (default: subscription, via the SDK)
+//   source "customer" -> NEVER the subscription. MVP refuses (Gemini path is Phase 3).
+// The customer->subscription block is a HARD rule here, independent of config, so a
+// misconfigured `customerWork` can never leak customer work onto the subscription.
 import type { NeoConfig } from "../config";
 import type { Order, RouteResult } from "../types";
 
-export function route(_order: Order, _cfg: NeoConfig): RouteResult {
-  throw new Error("not implemented (Phase 1)");
+export function route(order: Order, cfg: NeoConfig): RouteResult {
+  if (order.source === "customer") {
+    // Hard firewall: customers never touch the Claude subscription, regardless of config.
+    // The Gemini worker path is not built yet (Phase 3), so refuse with a clear reason.
+    return {
+      refuse:
+        "customer-direct work cannot use the Claude subscription; the Gemini path is not built yet (Phase 3)",
+    };
+  }
+  // Neo's own work -> configured provider (default subscription).
+  return { provider: cfg.providers.ownWork };
 }
