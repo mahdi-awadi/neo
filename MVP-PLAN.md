@@ -125,9 +125,30 @@ shaping bugs (see `docs/sdk-notes.md` → Phase 2):
 *running* session created a second file; `interrupt()` resolved cleanly; `resume` continued the same
 session and recalled its prior work. Firewall assertion preserved (customer → never the subscription).
 
-## Phase 3 — Customer path (Gemini)  *(own sub-plan)*
+## Phase 3 — Operator web console  *(DONE ✅ — reprioritized)*
+
+**Status: complete** (`bun test` green — 82 tests, `tsc` clean; live-verified over the real domain).
+Reprioritized from the Gemini customer path to a **second operator frontend**: a web console at
+`neo.tech-gate.online` where Neo talks to the engine exactly like Telegram (`source:"neo"` → Agent
+SDK on the subscription). The engine is unchanged — the web frontend is thin glue over the existing
+`handleMessage`, sharing the registry/meter/ledger/admin with Telegram. Built TDD in 7 tasks:
+
+- **T3.1 admin** — trust-on-first-use: the first Telegram id to message claims admin; only that id
+  acts on both the bot and the web login.
+- **T3.2 telegram-auth** — verify the Telegram Login Widget hash (key `SHA256(bot_token)`) + freshness.
+- **T3.3 web-session** — stateless HMAC-signed session cookies.
+- **T3.4 web-channel** — adapter driving `handleMessage` from the web, streaming worker output +
+  escalations as events (SSE), resolving Allow/Deny out-of-band.
+- **T3.5 frontends/web** — `Bun.serve` app (login/console UI); auth + routing unit-tested via `fetch`.
+- **T3.6 daemon** — Telegram gate swapped to the TOFU admin; daemon owns admin + web session stores,
+  resolves the bot @username, serves the console on `172.20.0.1:3003`.
+- **T3.7 Traefik** — `/home/traefik/dynamic/neo.yml` (mirrors `operant.yml`) → `neo.tech-gate.online`.
+  Live-verified: HTTPS 200 + valid cert + login page over the real domain.
+
+## Phase 3b — Customer path (Gemini)  *(deferred — own sub-plan)*
 One customer channel (email webhook or web form) → Gemini reads → `Order(source:"customer")` →
-engine executes via trusted code. Prove customer work never touches the subscription.
+engine executes via trusted code. Prove customer work never touches the subscription. The firewall
+already refuses `customer` → subscription; this builds the Gemini path behind it.
 
 ## Phase 4 — Port the rest  *(own sub-plan)*
 Web dashboard, finance/reminders, multi-project board — onto the SDK core.

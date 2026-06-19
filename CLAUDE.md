@@ -53,8 +53,15 @@ build-then-verify run confirmed streaming input, mid-run follow-ups, interrupt, 
 two shaping bugs (see `docs/sdk-notes.md` → Phase 2). The Telegram frontend needs a `TELEGRAM_TOKEN`
 to run live.
 
-Next: Phase 3 (the Gemini customer path), then Phase 4 (port web/finance). Keep building **phase by
-phase, TDD**, per `MVP-PLAN.md`.
+**Phase 3 complete — the operator web console** (reprioritized from the Gemini customer path): a
+second operator frontend at `neo.tech-gate.online` (Telegram-Login auth → trust-on-first-use admin →
+signed session cookie) where Neo talks to the engine over the web exactly like Telegram — same
+`source:"neo"` SDK pipeline, sharing the registry/meter/ledger/admin. Behind Traefik
+(`/home/traefik/dynamic/neo.yml` → `172.20.0.1:3003`); live-verified HTTPS + valid cert. `bun test`
+green (82 tests), `tsc` clean.
+
+Next: **Phase 3b** (the deferred Gemini customer path), then Phase 4 (finance/board). Keep building
+**phase by phase, TDD**, per `MVP-PLAN.md`.
 
 ## How to work here
 

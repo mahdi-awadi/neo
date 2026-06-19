@@ -1,24 +1,32 @@
-# Kickoff prompt — continue Neo (Phase 3)
+# Kickoff prompt — continue Neo (Phase 3b: Gemini customer path)
 
 Open Claude Code inside `/home/neo` and paste the prompt below.
 
 ---
 
-You're picking up the **Neo** project. First read `CLAUDE.md` and `MVP-PLAN.md` in this folder — they are the source of truth.
+You're picking up the **Neo** project. First read `CLAUDE.md` and `MVP-PLAN.md` — they are the source of truth.
 
-**Status:** Phases 0, 1, and 2 are complete. `bun test` is green (58 tests) and `bunx tsc --noEmit` is clean. Phase 2 was verified end-to-end against the **real** Agent SDK (build-then-verify): a `/open` starts a live, governed worker; plain-text messages stream as **follow-ups into the running session**; quiet sessions **idle-close** and persist their SDK id so a later `/open` **resumes** them; a rolling **budget meter** reserves interactive headroom; multiple projects run concurrently in a registry; `/status` + `/kill` work. The verified streaming/interrupt/resume surface (and two shaping fixes) are recorded in `docs/sdk-notes.md` → Phase 2.
+**Status:** Phases 0–3 complete. `bun test` green (82 tests), `tsc` clean.
+- Phase 1: walking skeleton (`/open` → governed headless Claude worker → streamed → ledger).
+- Phase 2: live follow-ups, idle-close + resume, budget meter, concurrency, `/status` + `/kill` — verified against the real SDK.
+- Phase 3 (reprioritized): the **operator web console** at `neo.tech-gate.online` — Telegram-Login → trust-on-first-use admin → signed session cookie → the same `source:"neo"` SDK pipeline as Telegram, behind Traefik. Live-verified (HTTPS + valid cert).
 
-**Your job: build Phase 3 — the customer path (Gemini).** One customer channel (email webhook or a web form) → Gemini *reads* the customer message → produces an `Order(source:"customer")` → the engine executes it via trusted code. The whole point is to **prove, in code, that customer work never touches the Claude subscription** — the provider firewall already refuses `source:"customer"` → subscription; Phase 3 builds the Gemini execution path behind it.
+**Your job: build Phase 3b — the customer path (Gemini)**, the originally-planned Phase 3 that was deferred. One customer channel (email webhook or a public web form, distinct from the operator console) → Gemini **reads** the customer message → `Order(source:"customer")` → the engine executes via **Gemini, never the Agent SDK / subscription**. Prove the firewall end-to-end: customer work never touches the Claude subscription.
 
 **How to work (non-negotiable — see CLAUDE.md):**
-1. **First write a bite-sized sub-plan for Phase 3** — one task per independently testable deliverable — and show it to me before coding. Phases 3–4 each get their own detailed plan.
-2. Then implement **strictly TDD**: write the failing test → run it and watch it fail for the right reason → minimal code to pass → refactor → commit. One task = one commit.
-3. `bunx tsc --noEmit` **and** `bun test` must be GREEN before every commit.
-4. **Never break the firewall:** customer-source work must never route to the subscription — keep that assertion in the tests. The Claude subscription is personal-use; Gemini is the *only* brain customers reach, and Neo must never offer customers a Claude login.
-5. **No AI in the engine.** AI lives only inside SDK workers (Claude) and customer-message reads (Gemini). The engine routes, governs, meters, records.
-6. **Do not make real network calls in unit tests** — inject a fake Gemini client, exactly like the Agent SDK is faked in `tests/session-runner.test.ts` and the runner/pipeline in the existing tests.
-7. Secrets stay in `.env` (gitignored). `GEMINI_API_KEY` is already in config.
+1. **First write a bite-sized sub-plan** — one task per independently testable deliverable — and show it before coding.
+2. **Strictly TDD**: failing test → watch it fail → minimal code → refactor → commit. One task = one commit. `bunx tsc --noEmit` + `bun test` green before every commit.
+3. **Never break the firewall:** `provider-router` currently refuses `customer` → subscription; flip it to `customer` → `{provider:"gemini"}` once the path exists, and keep the test that customer can never resolve to `subscription` even if misconfigured.
+4. **No AI in the engine.** AI only inside SDK workers (Claude) and customer-message reads (Gemini). Don't make real Gemini/network calls in unit tests — inject a fake client (like the SDK is faked in `tests/session-runner.test.ts`).
+5. Secrets in `.env` (gitignored). `GEMINI_API_KEY` is in config but currently empty — add it for the live verify.
 
-Start by proposing the Phase 3 sub-plan.
+Start by proposing the Phase 3b sub-plan.
 
 ---
+
+## Operator notes (to actually run what's already built)
+
+- **Launch:** `bun run src/daemon.ts` (needs `TELEGRAM_TOKEN` in `.env`, already set). It starts the Telegram bot + the web console on `172.20.0.1:3003` (Traefik → `https://neo.tech-gate.online`).
+- **Become admin:** the FIRST Telegram id to message the bot claims admin (stored in `data/admin.db`). Start the daemon and message your bot yourself before anyone else. To reset admin: delete `data/admin.db`.
+- **Web console:** open `https://neo.tech-gate.online` → "Log in with Telegram" → you're in (only the admin id is accepted).
+- **Security:** the bot token was pasted in chat once — consider rotating it via BotFather. Optionally set `telegramAllowFrom` (your numeric id) in a `config.json` to pre-restrict who can even claim admin.
