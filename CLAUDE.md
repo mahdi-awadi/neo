@@ -127,3 +127,5 @@ Greptile) are noted but not adopted; these principles are:
 - `MVP-PLAN.md` — the phased build plan. Phase 0 (scaffold) done; Phase 1 is the walking skeleton.
 - `src/` — engine modules; each file header states its responsibility + its Phase 1 TODO.
 - `/home/operant` — the predecessor. Mine it for proven code to port.
+- `docs/loops.md` — loops & automations reference (trigger → action → goal); the autonomy model for
+  the company-engine scheduler.
