@@ -43,9 +43,14 @@ prompt:
 
 ## Current status
 
-**Phase 0 scaffold.** `config.ts` and `types.ts` are real. Every `engine/*` and `frontends/*`
-module is a **typed stub** that `throw new Error("not implemented (Phase 1)")`. Build it out
-**phase by phase, TDD**, per `MVP-PLAN.md`.
+**Phase 1 complete — the walking skeleton works end-to-end** (verified with a real SDK run): a
+`/open <folder> <task>` order is parsed, routed through the firewall, and run by a headless Claude
+worker that opens the folder and is governed via `canUseTool`, with progress streamed back and the
+outcome recorded in the ledger. All engine modules are implemented and tested (`bun test` green,
+`tsc` clean). The Telegram frontend is wired (grammy) but needs a `TELEGRAM_TOKEN` to run live.
+
+Next: Phase 2 (live follow-ups + resume + full budget), then Phase 3 (the Gemini customer path),
+then Phase 4 (port web/finance). Keep building **phase by phase, TDD**, per `MVP-PLAN.md`.
 
 ## How to work here
 

@@ -79,7 +79,12 @@ tests/
 
 **Phase 0 complete — Phase 1 builds on `docs/sdk-notes.md`.**
 
-## Phase 1 — Walking skeleton: order → open project → govern → stream back  *(the MVP)*
+## Phase 1 — Walking skeleton: order → open project → govern → stream back  *(the MVP — DONE ✅)*
+
+**Status: complete.** All 8 tasks implemented TDD (`bun test` green, `tsc` clean). Verified
+end-to-end with a real SDK run: `/open <folder> <task>` → parse → route (firewall) → headless
+Claude worker opened the folder → governed via `canUseTool` → wrote the file → outcome recorded.
+The frontend-agnostic pipeline lives in `engine/pipeline.ts`; Telegram is thin grammy glue.
 
 Eight TDD tasks (each: failing test → minimal code → green → commit):
 
