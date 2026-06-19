@@ -63,3 +63,29 @@ the budget guard.
 Headless run → opened folder → loaded+honored its CLAUDE.md → governed tools via `canUseTool`
 (allow Write, deny Bash) → wrote `hello.txt` in the folder → streamed structured messages →
 `result: success`. The whole Neo execution model works; Phase 1 is implementation, not discovery.
+
+## Phase 2 — streaming input + interrupt + resume (verified 2026-06-19)
+
+Confirmed against `sdk.d.ts` (the installed types are authoritative) **and** a real `src/spike-p2.ts`
+run (now deleted). Findings:
+
+- **Streaming input works.** `query({ prompt })` accepts `prompt: string | AsyncIterable<SDKUserMessage>`.
+  Passing a pushable async-iterable keeps one session alive across turns — a message pushed mid-run
+  reaches the **running** worker (spike: a follow-up created `two.txt` in the live session). This is
+  Neo's `startOrder` model.
+- **`SDKUserMessage` requires `parent_tool_use_id`.** Shape is
+  `{ type:"user", message: MessageParam, parent_tool_use_id: string | null, ... }`. The
+  `parent_tool_use_id` field is **required** (use `null`); omitting it is the streaming analogue of the
+  Phase-0 `updatedInput` gotcha. `message` is the Anthropic `MessageParam` — `{ role:"user", content }`
+  with `content` as a plain string accepted. → `session-runner.userMessage()` builds exactly this.
+- **`Query.interrupt(): Promise<void>` exists** (the returned `Query extends AsyncGenerator<SDKMessage>`).
+  **Gotcha:** interrupting **mid-tool-use** makes the SDK *throw* from `readMessages`
+  (`[ede_diagnostic] … stop_reason=tool_use`) rather than ending cleanly. → `consumeStream` wraps its
+  loop in try/catch and treats a throw as the session **ending** (resolves `done`, summary
+  `"interrupted"`) so idle-close / `/kill` never leak a session or crash the supervisor.
+- **Resume works.** `query({ options: { resume: <sessionId> } })` continues a prior session (spike: the
+  resumed worker recalled the files it created). Resume keeps the **same** session id (not a fork).
+- **Cost** streams per turn via `result.total_cost_usd` (cumulative); fed to `RunHandlers.onCost` and
+  noted into the budget meter on completion.
+
+The whole Phase 2 surface (live follow-ups, idle-close+resume, interrupt) is implementation-verified.

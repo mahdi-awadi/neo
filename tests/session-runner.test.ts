@@ -131,6 +131,24 @@ test("startOrder escalates a risky tool over the streaming path and denies on hu
   expect(f.decisions[0].behavior).toBe("deny");
 });
 
+test("startOrder resolves done (not rejects) when the SDK stream throws on interrupt", async () => {
+  // The real SDK throws from readMessages when a turn is interrupted mid-tool-use
+  // (verified via the P2 spike). done must still resolve so supervise/cleanup runs.
+  const q = (_args: { prompt: any; options: any }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "s" };
+      yield { type: "assistant", message: { content: [{ type: "text", text: "working" }] } };
+      throw new Error("Claude Code returned an error result: interrupted");
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  const msgs: string[] = [];
+  const run = startOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q });
+  const result = await run.done; // must NOT throw
+  expect(result.ok).toBe(false);
+  expect(msgs).toContain("working");
+});
+
 test("startOrder forwards a resume id into the SDK options", async () => {
   const f = fakeStreaming();
   const run = startOrder(

@@ -53,7 +53,12 @@ export interface SessionRun extends SessionControl {
 
 // Loosely-typed view of the SDK so the runner is testable with an injected fake.
 type SdkMessage = { type: string; [k: string]: unknown };
-type SdkUserMessage = { type: "user"; message: { role: "user"; content: string } };
+// Shape matches the SDK's SDKUserMessage (sdk.d.ts): parent_tool_use_id is REQUIRED.
+type SdkUserMessage = {
+  type: "user";
+  message: { role: "user"; content: string };
+  parent_tool_use_id: string | null;
+};
 type QueryObject = AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void> };
 type QueryFn = (args: {
   prompt: string | AsyncIterable<SdkUserMessage>;
@@ -61,7 +66,7 @@ type QueryFn = (args: {
 }) => QueryObject;
 
 function userMessage(text: string): SdkUserMessage {
-  return { type: "user", message: { role: "user", content: text } };
+  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
 }
 
 // The governance hook: governor decides; risky tools escalate to the human. The allow
@@ -100,22 +105,29 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
   let summary = "";
   let costUsd = 0;
 
-  for await (const msg of queryObj) {
-    if (typeof msg.session_id === "string") sessionId = msg.session_id;
+  try {
+    for await (const msg of queryObj) {
+      if (typeof msg.session_id === "string") sessionId = msg.session_id;
 
-    if (msg.type === "assistant") {
-      const content = (msg.message as { content?: unknown } | undefined)?.content;
-      if (Array.isArray(content)) {
-        for (const b of content as Array<{ type?: string; text?: string }>) {
-          if (b?.type === "text" && b.text?.trim()) handlers.onMessage(b.text.trim());
+      if (msg.type === "assistant") {
+        const content = (msg.message as { content?: unknown } | undefined)?.content;
+        if (Array.isArray(content)) {
+          for (const b of content as Array<{ type?: string; text?: string }>) {
+            if (b?.type === "text" && b.text?.trim()) handlers.onMessage(b.text.trim());
+          }
         }
+      } else if (msg.type === "result") {
+        ok = msg.subtype === "success";
+        summary = typeof msg.result === "string" ? msg.result : "";
+        costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
+        handlers.onCost?.(costUsd);
       }
-    } else if (msg.type === "result") {
-      ok = msg.subtype === "success";
-      summary = typeof msg.result === "string" ? msg.result : "";
-      costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
-      handlers.onCost?.(costUsd);
     }
+  } catch {
+    // The SDK throws from readMessages when a turn is interrupted mid-tool-use
+    // (idle-close / kill — verified via the P2 spike). Treat it as the session ending,
+    // not a crash, so `done` resolves and the pipeline's supervise/cleanup still runs.
+    if (!summary) summary = "interrupted";
   }
 
   return { ok, sessionId, summary, costUsd };
