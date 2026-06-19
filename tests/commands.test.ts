@@ -74,6 +74,23 @@ test("/kill an unknown name returns a friendly error; no name returns usage", ()
   expect(handleCommand("/kill", 1, deps())!.toLowerCase()).toContain("usage");
 });
 
+test("/use makes a project active and /list marks it with a star", () => {
+  const registry = createRegistry();
+  registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  registry.add(order({ folder: "/p/beta", chatId: 1 }), 2);
+  const d = deps({ registry });
+  expect(handleCommand("/use alpha", 1, d)!.toLowerCase()).toContain("now on alpha");
+  const list = handleCommand("/list", 1, d)!;
+  const alphaLine = list.split("\n").find((l) => l.includes("alpha"))!;
+  const betaLine = list.split("\n").find((l) => l.includes("beta"))!;
+  expect(alphaLine).toContain("★");
+  expect(betaLine).not.toContain("★");
+});
+
+test("/use an unknown project is a friendly error", () => {
+  expect(handleCommand("/use ghost", 1, deps())!).toContain("not found");
+});
+
 test("returns null for /open and unknown input so the pipeline handles them", () => {
   expect(handleCommand("/open /x do it", 1, deps())).toBeNull();
   expect(handleCommand("just chatting", 1, deps())).toBeNull();

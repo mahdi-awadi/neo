@@ -132,6 +132,26 @@ test("wires worker escalations through askApproval", async () => {
   expect(decision).toBe("allow");
 });
 
+test("a follow-up routes to the actively-selected project", async () => {
+  const dirA = scratch();
+  const dirB = scratch();
+  const followed: string[] = [];
+  const start = (o: Order, _h: RunHandlers): SessionRun => ({
+    followUp: (t) => void followed.push(`${o.folder}:${t}`),
+    interrupt: async () => {},
+    done: new Promise<RunResult>(() => {}),
+  });
+  const h = harness({ start });
+  await handleMessage(`/open ${dirA} a`, 5, h.base);
+  await handleMessage(`/open ${dirB} b`, 5, h.base);
+
+  const aId = h.registry.list().find((s) => s.order.folder === dirA)!.id;
+  h.registry.setActive(5, aId);
+  await handleMessage("keep going", 5, h.base);
+
+  expect(followed).toContain(`${dirA}:keep going`);
+});
+
 test("resumes when a prior session id exists for the folder/chat", async () => {
   const dir = scratch();
   const f = fakeStart();

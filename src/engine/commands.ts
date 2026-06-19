@@ -33,8 +33,15 @@ const COMMANDS: Command[] = [
     name: "list",
     aliases: ["ls", "status"],
     usage: "/list",
-    summary: "open projects (name · folder · status · age · task)",
-    run: ({ deps, now }) => renderList(deps.registry, now),
+    summary: "open projects (★ = active · name · folder · status · age · task)",
+    run: ({ deps, now, chatId }) => renderList(deps.registry, now, chatId),
+  },
+  {
+    name: "use",
+    aliases: ["switch"],
+    usage: "/use <name>",
+    summary: "make a project active (your messages follow up on it)",
+    run: ({ deps, args, chatId }) => useSession(args.trim(), chatId, deps.registry),
   },
   {
     name: "kill",
@@ -74,15 +81,26 @@ function statusIcon(status: SessionInfo["status"]): string {
   return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
 }
 
-function renderList(registry: Registry, now: number): string {
+function renderList(registry: Registry, now: number, chatId: number): string {
   const sessions = registry.list();
   if (sessions.length === 0) return "No open projects.";
+  const activeId = registry.findByChat(chatId)?.id;
   return sessions
     .map((s) => {
+      const star = s.id === activeId ? "★ " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
-      return `${statusIcon(s.status)} ${s.name} · ${s.order.folder} · ${s.status} · ${humanAge(now - s.startedAt)} · "${task}"`;
+      return `${star}${statusIcon(s.status)} ${s.name} · ${s.order.folder} · ${s.status} · ${humanAge(now - s.startedAt)} · "${task}"`;
     })
     .join("\n");
+}
+
+function useSession(name: string, chatId: number, registry: Registry): string {
+  if (!name) return "Usage: /use <name>";
+  const s = registry.findByName(name);
+  if (!s) return `Project not found: ${name}`;
+  if (s.status !== "running" && s.status !== "idle") return `${name} is closed.`;
+  registry.setActive(chatId, s.id);
+  return `Now on ${name} — your messages follow up on it.`;
 }
 
 function killSession(name: string, registry: Registry): string {

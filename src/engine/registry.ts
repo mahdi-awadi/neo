@@ -15,8 +15,11 @@ export interface Registry {
   get(id: string): SessionInfo | undefined;
   list(): SessionInfo[];
   remove(id: string): void;
-  /** The most recently active OPEN session for a chat — the natural follow-up target. */
+  /** The follow-up target for a chat: the explicitly-selected active session if still OPEN,
+   * else the most recently active OPEN session. */
   findByChat(chatId: number): SessionInfo | undefined;
+  /** Pin the active session a chat's follow-ups route to (the `/use` command). */
+  setActive(chatId: number, id: string): void;
   findByName(name: string): SessionInfo | undefined;
   setStatus(id: string, status: SessionInfo["status"]): void;
   setSdkSessionId(id: string, sdkSessionId: string): void;
@@ -29,6 +32,7 @@ export interface Registry {
 export function createRegistry(): Registry {
   const sessions = new Map<string, SessionInfo>();
   const controls = new Map<string, SessionControl>();
+  const active = new Map<number, string>(); // chatId -> selected session id
 
   function uniqueName(base: string): string {
     const taken = new Set([...sessions.values()].map((s) => s.name));
@@ -62,10 +66,16 @@ export function createRegistry(): Registry {
     attachControl: (id, control) => void controls.set(id, control),
     getControl: (id) => controls.get(id),
     findByChat(chatId) {
+      const activeId = active.get(chatId);
+      if (activeId) {
+        const a = sessions.get(activeId);
+        if (a && OPEN.has(a.status)) return a;
+      }
       return [...sessions.values()]
         .filter((s) => s.order.chatId === chatId && OPEN.has(s.status))
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0];
     },
+    setActive: (chatId, id) => void active.set(chatId, id),
     findByName: (name) => [...sessions.values()].find((s) => s.name === name),
     setStatus(id, status) {
       const s = sessions.get(id);

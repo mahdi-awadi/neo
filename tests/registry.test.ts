@@ -53,6 +53,17 @@ test("findByChat returns the most recent OPEN session and excludes closed ones",
   expect(reg.findByChat(5)?.id).toBe(first.id); // closed session excluded
 });
 
+test("setActive makes findByChat prefer the active session, falling back when it closes", () => {
+  const reg = createRegistry();
+  const a = reg.add(order({ folder: "/p/a", chatId: 5 }), 1);
+  const b = reg.add(order({ folder: "/p/b", chatId: 5 }), 2);
+  expect(reg.findByChat(5)?.id).toBe(b.id); // most recent by default
+  reg.setActive(5, a.id);
+  expect(reg.findByChat(5)?.id).toBe(a.id); // active wins
+  reg.setStatus(a.id, "done");
+  expect(reg.findByChat(5)?.id).toBe(b.id); // active closed -> fall back to most recent
+});
+
 test("attachControl stores a control handle retrievable by id and cleared on remove", () => {
   const reg = createRegistry();
   const o = order();
