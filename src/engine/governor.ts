@@ -11,6 +11,17 @@ export const RISKY_BASH =
 /** Tools that are always safe to auto-allow (read-only / in-folder). */
 export const SAFE_TOOLS = new Set(["Read", "Glob", "Grep"]);
 
-export function decide(_tool: string, _input: Record<string, unknown>): Verdict {
-  throw new Error("not implemented (Phase 1)");
+export function decide(tool: string, input: Record<string, unknown>): Verdict {
+  if (SAFE_TOOLS.has(tool)) return { allow: true };
+
+  if (tool === "Bash") {
+    const command = typeof input.command === "string" ? input.command : "";
+    if (RISKY_BASH.test(command)) {
+      return { escalate: `risky shell command: ${command}` };
+    }
+    return { allow: true };
+  }
+
+  // Other tools (Write, Edit, ...) act within the project folder — allow.
+  return { allow: true };
 }
