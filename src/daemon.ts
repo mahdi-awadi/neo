@@ -19,15 +19,19 @@ const IDLE_POLL_MS = 60 * 1000;
 const WEB_HOST = "172.20.0.1"; // docker-bridge IP — reachable by Traefik, not public
 const WEB_PORT = 3003; // Traefik routes neo.tech-gate.online -> 172.20.0.1:3003 (3001=operant, 3002=taken)
 
-// Resolve the bot's @username (needed by the web Login Widget) — read-only, no polling.
+// Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME in
+// .env wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
 async function resolveBotUsername(token: string): Promise<string> {
+  if (process.env.BOT_USERNAME) return process.env.BOT_USERNAME;
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
     const j = (await r.json()) as { result?: { username?: string } };
-    return j.result?.username ?? "neo_bot";
+    if (j.result?.username) return j.result.username;
   } catch {
-    return "neo_bot";
+    // fall through to the warning below
   }
+  console.log("  WARN: bot username unresolved (set BOT_USERNAME in .env) — web login will not work");
+  return "";
 }
 
 async function main(): Promise<void> {
