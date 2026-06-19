@@ -1,0 +1,6 @@
+{
+  "telegramAllowFrom": [],
+  "providers": { "ownWork": "subscription", "customerWork": "gemini" },
+  "subscriptionInteractiveReservePct": 0.2,
+  "workRoot": "/home"
+}

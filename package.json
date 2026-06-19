@@ -1,0 +1,21 @@
+{
+  "name": "neo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Neo — a personal work engine. Orders arrive via channels (Telegram/email/WhatsApp); project work is fired to the Claude Agent SDK; customer-facing reading uses Gemini.",
+  "scripts": {
+    "dev": "bun run src/daemon.ts",
+    "start": "bun run src/daemon.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "grammy": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}

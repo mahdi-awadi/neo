@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.db
+*.sqlite
+dist/
+# Runtime company/tenant data + secrets live here once ported — never committed.
+company/
