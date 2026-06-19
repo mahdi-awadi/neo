@@ -16,7 +16,8 @@ import { startWeb } from "./frontends/web";
 // Idle-close: a session quiet this long is closed (its sdk id persisted for resume).
 const IDLE_CLOSE_MS = 10 * 60 * 1000;
 const IDLE_POLL_MS = 60 * 1000;
-const WEB_PORT = 3002; // Traefik routes neo.tech-gate.online -> 172.20.0.1:3002
+const WEB_HOST = "172.20.0.1"; // docker-bridge IP — reachable by Traefik, not public
+const WEB_PORT = 3003; // Traefik routes neo.tech-gate.online -> 172.20.0.1:3003 (3001=operant, 3002=taken)
 
 // Resolve the bot's @username (needed by the web Login Widget) — read-only, no polling.
 async function resolveBotUsername(token: string): Promise<string> {
@@ -63,8 +64,9 @@ async function main(): Promise<void> {
     startWeb(
       { engine: { cfg, ledger, registry, meter }, botToken: cfg.telegramToken, botUsername, sessions, admin },
       WEB_PORT,
+      WEB_HOST,
     );
-    console.log(`  web       -> http://0.0.0.0:${WEB_PORT} (sign in as @${botUsername}) · route neo.tech-gate.online here`);
+    console.log(`  web       -> http://${WEB_HOST}:${WEB_PORT} (sign in as @${botUsername}) · https://neo.tech-gate.online`);
   } else {
     console.log("  telegram  -> NOT configured (set TELEGRAM_TOKEN in .env). Web console disabled (needs the bot for login).");
   }

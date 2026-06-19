@@ -105,10 +105,11 @@ export function createWebApp(deps: WebAppDeps): WebApp {
   return { fetch };
 }
 
-/** Bun.serve bind for the daemon (e2e-verified). */
-export function startWeb(deps: WebAppDeps, port: number): ReturnType<typeof Bun.serve> {
+/** Bun.serve bind for the daemon (e2e-verified). Binds the docker-bridge IP by default so
+ * only Traefik (TLS front door) can reach it — never exposed publicly bypassing HTTPS. */
+export function startWeb(deps: WebAppDeps, port: number, hostname = "0.0.0.0"): ReturnType<typeof Bun.serve> {
   const appHandler = createWebApp(deps);
-  return Bun.serve({ port, fetch: (req) => appHandler.fetch(req) });
+  return Bun.serve({ port, hostname, fetch: (req) => appHandler.fetch(req) });
 }
 
 function loginPage(botUsername: string): string {
