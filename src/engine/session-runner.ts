@@ -19,6 +19,7 @@
 // Auth: draws from your Claude subscription (current behavior; see README + plan).
 import { query as realQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { Order, SessionControl } from "../types";
+import type { RateLimitInfo } from "./usage";
 import { decide } from "./governor";
 
 export interface RunHandlers {
@@ -28,6 +29,8 @@ export interface RunHandlers {
   onEscalation: (reason: string) => Promise<"allow" | "deny">;
   /** Reported the SDK's running cost (`total_cost_usd`) as each turn completes. */
   onCost?: (usd: number) => void;
+  /** Reported subscription rate-limit info from the SDK's rate_limit_event. */
+  onRateLimit?: (info: RateLimitInfo) => void;
 }
 
 /** Per-run dependencies/config: an injectable query (tests) and an optional resume id. */
@@ -116,6 +119,9 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
             if (b?.type === "text" && b.text?.trim()) handlers.onMessage(b.text.trim());
           }
         }
+      } else if (msg.type === "rate_limit_event") {
+        const info = msg.rate_limit_info as RateLimitInfo | undefined;
+        if (info) handlers.onRateLimit?.(info);
       } else if (msg.type === "result") {
         ok = msg.subtype === "success";
         summary = typeof msg.result === "string" ? msg.result : "";

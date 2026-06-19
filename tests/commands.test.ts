@@ -18,13 +18,13 @@ function deps(
   over: {
     registry?: ReturnType<typeof createRegistry>;
     ledger?: ReturnType<typeof openLedger>;
-    usage?: { snapshot: () => any };
+    usage?: any;
   } = {},
 ) {
   return {
     registry: over.registry ?? createRegistry(),
     ledger: over.ledger ?? openLedger(":memory:"),
-    usage: over.usage,
+    usage: over.usage as any,
     now: () => 100000,
   };
 }

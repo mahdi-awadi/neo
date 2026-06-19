@@ -74,6 +74,18 @@ test("readPlanLimitsEndDate extracts the weekly reset, or null on any miss", () 
   expect(readPlanLimitsEndDate(null)).toBeNull();
 });
 
+test("the meter retains the latest rate-limit info per window type", () => {
+  const meter = createUsageMeter({ projectsDir: "/nonexistent-neo" });
+  meter.noteRateLimit({ status: "allowed", rateLimitType: "five_hour", resetsAt: 100 });
+  meter.noteRateLimit({ status: "allowed_warning", rateLimitType: "five_hour", resetsAt: 200, utilization: 0.9 });
+  meter.noteRateLimit({ status: "allowed", rateLimitType: "seven_day", resetsAt: 999 });
+  const rl = meter.snapshot(0).rateLimits;
+  const five = rl.find((r) => r.rateLimitType === "five_hour")!;
+  expect(five.resetsAt).toBe(200); // latest wins
+  expect(five.utilization).toBe(0.9);
+  expect(rl.find((r) => r.rateLimitType === "seven_day")).toBeTruthy();
+});
+
 test("createUsageMeter aggregates transcripts across the projects dir", () => {
   const projectsDir = mkdtempSync(join(tmpdir(), "neo-usage-"));
   const proj = join(projectsDir, "-home-neo-alpha");

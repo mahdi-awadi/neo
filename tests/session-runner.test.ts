@@ -161,6 +161,25 @@ test("startOrder forwards a resume id into the SDK options", async () => {
   expect(f.options().resume).toBe("sess-prev");
 });
 
+test("startOrder forwards rate_limit_event info via onRateLimit", async () => {
+  const q = (_args: { prompt: any; options: any }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "s" };
+      yield { type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt: 1781923200 } };
+      yield { type: "result", subtype: "success", result: "ok", total_cost_usd: 0, session_id: "s" };
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  const seen: Array<{ rateLimitType?: string }> = [];
+  const run = startOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onRateLimit: (i) => seen.push(i) },
+    { query: q },
+  );
+  await run.done;
+  expect(seen[0]?.rateLimitType).toBe("five_hour");
+});
+
 test("startOrder reports streamed cost via onCost", async () => {
   const f = fakeStreaming();
   const costs: number[] = [];

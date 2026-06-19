@@ -26,10 +26,21 @@ export type WindowUsage = {
   remaining: number | null;
 };
 
+/** Live subscription rate-limit info from the SDK's rate_limit_event (claude.ai plans).
+ * `utilization` (a fraction near the limit; absent when well within) and `resetsAt` (epoch
+ * SECONDS) are what Claude itself reports — far better than a guessed cap. */
+export type RateLimitInfo = {
+  status?: string; // allowed | allowed_warning | rejected
+  rateLimitType?: string; // five_hour | seven_day | seven_day_opus | seven_day_sonnet | overage
+  resetsAt?: number; // epoch seconds
+  utilization?: number; // present as you approach the limit
+};
+
 export type UsageSnapshot = {
   perWindow: { hourly: WindowUsage; daily: WindowUsage; weekly: WindowUsage };
   contextOccupancy: number; // last turn's live context fill (health signal)
   weeklyResetAt: number | null; // authoritative weekly reset from claude.json
+  rateLimits: RateLimitInfo[]; // latest per window type, from rate_limit_event
   turnCount: number;
   computedAt: number;
 };
@@ -120,7 +131,7 @@ function windowUsage(turns: UsageTurn[], now: number, span: number, cap?: number
 export function computeUsageSnapshot(
   turns: UsageTurn[],
   now: number,
-  opts?: { caps?: UsageCaps; weeklyResetAt?: number | null },
+  opts?: { caps?: UsageCaps; weeklyResetAt?: number | null; rateLimits?: RateLimitInfo[] },
 ): UsageSnapshot {
   const caps = opts?.caps ?? {};
   return {
@@ -131,6 +142,7 @@ export function computeUsageSnapshot(
     },
     contextOccupancy: contextOccupancy(turns),
     weeklyResetAt: opts?.weeklyResetAt ?? null,
+    rateLimits: opts?.rateLimits ?? [],
     turnCount: turns.length,
     computedAt: now,
   };
@@ -140,6 +152,8 @@ export function computeUsageSnapshot(
 
 export interface UsageMeter {
   snapshot(now?: number): UsageSnapshot;
+  /** Record a rate_limit_event from a worker run (latest per window type is retained). */
+  noteRateLimit(info: RateLimitInfo): void;
 }
 
 /** Walks ~/.claude/projects, tails each transcript incrementally (cached byte offset),
@@ -150,6 +164,7 @@ export function createUsageMeter(opts: {
   caps?: UsageCaps;
 }): UsageMeter {
   const files = new Map<string, { offset: number; turns: UsageTurn[] }>();
+  const rateLimits = new Map<string, RateLimitInfo>(); // latest per rateLimitType
 
   function listTranscripts(): string[] {
     const out: string[] = [];
@@ -214,7 +229,14 @@ export function createUsageMeter(opts: {
 
   return {
     snapshot(now = Date.now()) {
-      return computeUsageSnapshot(refresh(now), now, { caps: opts.caps, weeklyResetAt: weeklyResetAt() });
+      return computeUsageSnapshot(refresh(now), now, {
+        caps: opts.caps,
+        weeklyResetAt: weeklyResetAt(),
+        rateLimits: [...rateLimits.values()],
+      });
+    },
+    noteRateLimit(info) {
+      if (info.rateLimitType) rateLimits.set(info.rateLimitType, info);
     },
   };
 }
