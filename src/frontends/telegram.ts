@@ -12,7 +12,7 @@ import type { UsageMeter } from "../engine/usage";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { handleMessage } from "../engine/pipeline";
-import { handleCommand } from "../engine/commands";
+import { handleCommand, selectProject, type SelectableProject } from "../engine/commands";
 
 export function startTelegram(
   cfg: NeoConfig,
@@ -45,7 +45,11 @@ export function startTelegram(
     // order or a follow-up handled by the pipeline.
     const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage });
     if (command !== null) {
-      void bot.api.sendMessage(chatId, command.text);
+      if (command.select?.length) {
+        void bot.api.sendMessage(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
+      } else {
+        void bot.api.sendMessage(chatId, command.text);
+      }
       return;
     }
 
@@ -71,6 +75,23 @@ export function startTelegram(
       await ctx.answerCallbackQuery();
       return;
     }
+
+    // Tap a project in /list to make it active (the shared engine selectProject).
+    if (ctx.callbackQuery.data.startsWith("use:")) {
+      const id = ctx.callbackQuery.data.slice("use:".length);
+      const result = selectProject(id, ctx.chat?.id ?? 0, { registry, ledger, usage });
+      await ctx.answerCallbackQuery("switched");
+      try {
+        await ctx.editMessageText(
+          result.text,
+          result.select?.length ? { reply_markup: projectKeyboard(result.select) } : undefined,
+        );
+      } catch {
+        // "message is not modified" when re-tapping the active project — ignore
+      }
+      return;
+    }
+
     const [kind, token] = ctx.callbackQuery.data.split(":");
     const resolve = token ? pending.get(token) : undefined;
     if (resolve) {
@@ -85,4 +106,11 @@ export function startTelegram(
 
   void bot.start();
   return bot;
+}
+
+/** One button per open project; the active one is starred. Tapping fires a `use:<id>` callback. */
+function projectKeyboard(select: SelectableProject[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const p of select) kb.text(p.active ? `★ ${p.label}` : p.label, `use:${p.id}`).row();
+  return kb;
 }
