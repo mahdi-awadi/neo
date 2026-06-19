@@ -26,6 +26,15 @@ export interface RunHandlers {
   onMessage: (text: string) => void;
   /** Ask the human to approve a risky tool; resolves with their decision. */
   onEscalation: (reason: string) => Promise<"allow" | "deny">;
+  /** Reported the SDK's running cost (`total_cost_usd`) as each turn completes. */
+  onCost?: (usd: number) => void;
+}
+
+/** Per-run dependencies/config: an injectable query (tests) and an optional resume id. */
+export interface RunDeps {
+  query?: QueryFn;
+  /** Resume a prior SDK session id (idle-close → resume). */
+  resume?: string;
 }
 
 export interface RunResult {
@@ -109,6 +118,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
       ok = msg.subtype === "success";
       summary = typeof msg.result === "string" ? msg.result : "";
       costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
+      handlers.onCost?.(costUsd);
     }
   }
 
@@ -148,25 +158,31 @@ function createInputChannel(first: SdkUserMessage) {
   };
 }
 
+// Only-defined keys survive into the SDK options (so an absent resume isn't sent as undefined).
+function runConfig(deps: RunDeps): Record<string, unknown> {
+  return deps.resume ? { resume: deps.resume } : {};
+}
+
 /** Single-shot: open `order.folder` and run one task to completion. */
 export async function runOrder(
   order: Order,
   handlers: RunHandlers,
-  deps: { query?: QueryFn } = {},
+  deps: RunDeps = {},
 ): Promise<RunResult> {
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
-  return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers) }), handlers);
+  const options = sdkOptions(order, handlers, runConfig(deps));
+  return consumeStream(query({ prompt: order.task, options }), handlers);
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
 export function startOrder(
   order: Order,
   handlers: RunHandlers,
-  deps: { query?: QueryFn } = {},
+  deps: RunDeps = {},
 ): SessionRun {
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const channel = createInputChannel(userMessage(order.task));
-  const queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers) });
+  const queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers, runConfig(deps)) });
   const done = consumeStream(queryObj, handlers);
 
   return {

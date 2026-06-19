@@ -33,7 +33,9 @@ function fakeStreaming(reqs: Array<{ tool: string; input: Record<string, unknown
   const received: string[] = [];
   const decisions: Array<{ behavior: string; updatedInput?: unknown; message?: string }> = [];
   let interruptCalls = 0;
+  let optionsSeen: any;
   const q = (args: { prompt: any; options: any }) => {
+    optionsSeen = args.options;
     const gen = (async function* () {
       yield { type: "system", subtype: "init", session_id: "sess-1" };
       let first = true;
@@ -49,7 +51,7 @@ function fakeStreaming(reqs: Array<{ tool: string; input: Record<string, unknown
     })();
     return Object.assign(gen, { interrupt: async () => void interruptCalls++ });
   };
-  return { q, received, decisions, interruptCalls: () => interruptCalls };
+  return { q, received, decisions, interruptCalls: () => interruptCalls, options: () => optionsSeen };
 }
 
 test("runOrder auto-allows a safe tool (echoing updatedInput), forwards text, returns result", async () => {
@@ -127,4 +129,29 @@ test("startOrder escalates a risky tool over the streaming path and denies on hu
   await run.done;
   expect(reason).toContain("rm");
   expect(f.decisions[0].behavior).toBe("deny");
+});
+
+test("startOrder forwards a resume id into the SDK options", async () => {
+  const f = fakeStreaming();
+  const run = startOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    { query: f.q, resume: "sess-prev" },
+  );
+  await run.interrupt();
+  await run.done;
+  expect(f.options().resume).toBe("sess-prev");
+});
+
+test("startOrder reports streamed cost via onCost", async () => {
+  const f = fakeStreaming();
+  const costs: number[] = [];
+  const run = startOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onCost: (u) => costs.push(u) },
+    { query: f.q },
+  );
+  await run.interrupt();
+  await run.done;
+  expect(costs).toEqual([0.01]);
 });
