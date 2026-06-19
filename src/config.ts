@@ -17,12 +17,18 @@ export interface NeoConfig {
   subscriptionInteractiveReservePct: number;
   /** Default root under which worker project folders live. */
   workRoot: string;
+  /** Per-window USD budget for background SDK work (the budget guard). */
+  budgetWindowUsd: number;
+  /** Rolling budget window in ms (default 5h, matching the subscription's usage window). */
+  budgetWindowMs: number;
 }
 
 const DEFAULTS = {
   providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider },
   subscriptionInteractiveReservePct: 0.2,
   workRoot: process.env.HOME ?? "/home",
+  budgetWindowUsd: 20,
+  budgetWindowMs: 5 * 60 * 60 * 1000,
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -59,5 +65,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     subscriptionInteractiveReservePct:
       fileCfg.subscriptionInteractiveReservePct ?? DEFAULTS.subscriptionInteractiveReservePct,
     workRoot: fileCfg.workRoot ?? DEFAULTS.workRoot,
+    budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
+    budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
   };
 }

@@ -5,9 +5,22 @@
 import { Bot, InlineKeyboard } from "grammy";
 import type { NeoConfig } from "../config";
 import type { Ledger } from "../engine/ledger";
-import { handleOrder } from "../engine/pipeline";
+import type { Registry } from "../engine/registry";
+import type { Meter } from "../engine/budget";
+import { createRegistry } from "../engine/registry";
+import { createMeter } from "../engine/budget";
+import { handleMessage } from "../engine/pipeline";
 
-export function startTelegram(cfg: NeoConfig, ledger: Ledger): Bot {
+export function startTelegram(
+  cfg: NeoConfig,
+  ledger: Ledger,
+  registry: Registry = createRegistry(),
+  meter: Meter = createMeter({
+    windowBudgetUsd: cfg.budgetWindowUsd,
+    reservePct: cfg.subscriptionInteractiveReservePct,
+    windowMs: cfg.budgetWindowMs,
+  }),
+): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);
   // Pending approvals keyed by a per-request token: callback press -> resolver.
@@ -18,9 +31,11 @@ export function startTelegram(cfg: NeoConfig, ledger: Ledger): Bot {
     if (userId === undefined || (allow.size > 0 && !allow.has(userId))) return;
     const chatId = ctx.chat.id;
 
-    await handleOrder(ctx.message.text, chatId, {
+    await handleMessage(ctx.message.text, chatId, {
       cfg,
       ledger,
+      registry,
+      meter,
       reply: (cid, text) => void bot.api.sendMessage(cid, text),
       askApproval: (cid, reason) =>
         new Promise<"allow" | "deny">((resolve) => {

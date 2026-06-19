@@ -2,10 +2,12 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { handleOrder } from "../src/engine/pipeline";
+import { handleMessage } from "../src/engine/pipeline";
 import { openLedger } from "../src/engine/ledger";
+import { createRegistry } from "../src/engine/registry";
+import { createMeter, type Meter } from "../src/engine/budget";
 import type { NeoConfig } from "../src/config";
-import type { RunHandlers, RunResult } from "../src/engine/session-runner";
+import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
 function cfg(): NeoConfig {
@@ -16,59 +18,129 @@ function cfg(): NeoConfig {
     providers: { ownWork: "subscription", customerWork: "gemini" },
     subscriptionInteractiveReservePct: 0.2,
     workRoot: "/home",
+    budgetWindowUsd: 100,
+    budgetWindowMs: 3_600_000,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));
 
-test("handleOrder replies with a usage hint for a bad command", async () => {
-  const replies: string[] = [];
-  await handleOrder("nonsense", 1, {
-    cfg: cfg(),
-    ledger: openLedger(":memory:"),
-    reply: (_c, t) => void replies.push(t),
-    askApproval: async () => "deny",
+// A controllable fake live session: completes only when finish() is called.
+function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
+  let resolveDone!: (r: RunResult) => void;
+  const done = new Promise<RunResult>((res) => {
+    resolveDone = res;
   });
-  expect(replies.some((r) => r.includes("/open"))).toBe(true);
-});
-
-test("handleOrder runs a valid order, forwards worker text, and records the outcome", async () => {
-  const dir = scratch();
-  const led = openLedger(":memory:");
-  const replies: string[] = [];
-  const fakeRun = async (_o: Order, h: RunHandlers): Promise<RunResult> => {
-    h.onMessage("doing work");
-    return { ok: true, sessionId: "s1", summary: "completed", costUsd: 0.02 };
+  let resumeSeen: string | undefined;
+  const followUps: string[] = [];
+  const start = (_o: Order, h: RunHandlers, d?: { resume?: string }): SessionRun => {
+    resumeSeen = d?.resume;
+    opts.onStart?.(h);
+    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, done };
   };
-  await handleOrder(`/open ${dir} do the thing`, 9, {
+  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, followUps: () => followUps };
+}
+
+function harness(over: { meter?: Meter; start?: ReturnType<typeof fakeStart>["start"] } = {}) {
+  const replies: string[] = [];
+  const ledger = openLedger(":memory:");
+  const registry = createRegistry();
+  const meter = over.meter ?? createMeter({ windowBudgetUsd: 100, reservePct: 0.2 });
+  const base = {
     cfg: cfg(),
-    ledger: led,
-    reply: (_c, t) => void replies.push(t),
-    askApproval: async () => "allow",
-    run: fakeRun,
-  });
-  expect(replies).toContain("doing work");
-  expect(replies.some((r) => r.includes("completed"))).toBe(true);
-  const recent = led.listRecent();
-  expect(recent.length).toBe(1);
-  expect(led.getOutcome(recent[0].id)?.status).toBe("done");
+    ledger,
+    registry,
+    meter,
+    reply: (_c: number, t: string) => void replies.push(t),
+    askApproval: async () => "allow" as const,
+    start: over.start,
+  };
+  return { replies, ledger, registry, meter, base };
+}
+
+test("replies with a usage hint for a non-order message when no session is live", async () => {
+  const h = harness();
+  await handleMessage("nonsense", 1, h.base);
+  expect(h.replies.some((r) => r.includes("/open"))).toBe(true);
 });
 
-test("handleOrder wires worker escalations through askApproval", async () => {
+test("starts a live order, streams text, registers it, then records the outcome on completion", async () => {
+  const dir = scratch();
+  const f = fakeStart({ onStart: (h) => h.onMessage("doing work") });
+  const h = harness({ start: f.start });
+
+  const run = await handleMessage(`/open ${dir} do the thing`, 9, h.base);
+  expect(h.replies).toContain("doing work");
+  expect(h.registry.list().length).toBe(1); // registered while running
+
+  f.finish({ ok: true, sessionId: "sdk-1", summary: "completed", costUsd: 0.02 });
+  await run!.done;
+
+  expect(h.replies.some((r) => r.includes("completed"))).toBe(true);
+  const recent = h.ledger.listRecent();
+  expect(h.ledger.getOutcome(recent[0].id)?.status).toBe("done");
+  expect(h.registry.list().length).toBe(0); // cleaned up after done
+});
+
+test("routes a plain-text message to the live session as a follow-up", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  await handleMessage("also write a README", 5, h.base);
+
+  expect(f.followUps()).toContain("also write a README");
+  expect(h.replies.some((r) => r.includes("added"))).toBe(true);
+});
+
+test("throttles a new order when the meter is over the reserve, and does not start it", async () => {
+  const dir = scratch();
+  const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // available $8
+  meter.note({ costUsd: 9 }); // over reserve
+  const f = fakeStart();
+  const h = harness({ start: f.start, meter });
+
+  await handleMessage(`/open ${dir} do it`, 1, h.base);
+
+  expect(h.replies.some((r) => r.toLowerCase().includes("throttle"))).toBe(true);
+  expect(h.registry.list().length).toBe(0);
+});
+
+test("refuses a customer-source order (firewall) and never starts it", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+
+  await handleMessage(`/open ${dir} do it`, 1, h.base, "customer");
+
+  expect(h.replies.some((r) => r.includes("refused"))).toBe(true);
+  expect(h.registry.list().length).toBe(0);
+});
+
+test("wires worker escalations through askApproval", async () => {
   const dir = scratch();
   let asked = "";
-  const replies: string[] = [];
-  const fakeRun = async (_o: Order, h: RunHandlers): Promise<RunResult> => {
-    const d = await h.onEscalation("risky shell command: rm -rf build");
-    h.onMessage(`approval was ${d}`);
-    return { ok: true, sessionId: "s", summary: "ok", costUsd: 0 };
-  };
-  await handleOrder(`/open ${dir} go`, 3, {
-    cfg: cfg(),
-    ledger: openLedger(":memory:"),
-    reply: (_c, t) => void replies.push(t),
-    askApproval: async (_c, reason) => ((asked = reason), "allow"),
-    run: fakeRun,
-  });
+  let captured!: RunHandlers;
+  const f = fakeStart({ onStart: (h) => void (captured = h) });
+  const h = harness({ start: f.start });
+  const base = { ...h.base, askApproval: async (_c: number, reason: string) => ((asked = reason), "allow" as const) };
+
+  await handleMessage(`/open ${dir} go`, 3, base);
+  const decision = await captured.onEscalation("risky shell command: rm -rf build");
+
   expect(asked).toContain("rm");
-  expect(replies).toContain("approval was allow");
+  expect(decision).toBe("allow");
+});
+
+test("resumes when a prior session id exists for the folder/chat", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.ledger.recordOrder({ id: "prev", source: "neo", folder: dir, task: "t", chatId: 7, createdAt: 1 });
+  h.ledger.recordSession("prev", "sdk-prev");
+
+  await handleMessage(`/open ${dir} continue`, 7, h.base);
+
+  expect(f.resumeSeen()).toBe("sdk-prev");
+  expect(h.replies.some((r) => r.toLowerCase().includes("resum"))).toBe(true);
 });

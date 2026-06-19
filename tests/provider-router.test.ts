@@ -11,6 +11,8 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     providers: { ownWork: "subscription", customerWork: "gemini", ...over },
     subscriptionInteractiveReservePct: 0.2,
     workRoot: "/home",
+    budgetWindowUsd: 20,
+    budgetWindowMs: 18_000_000,
   };
 }
 
