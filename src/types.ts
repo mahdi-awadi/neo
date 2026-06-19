@@ -35,9 +35,15 @@ export type Verdict =
 
 /** A live worker session the engine is driving (an in-process SDK handle). */
 export interface SessionInfo {
-  /** SDK session id (used for resume/fork). */
+  /** Stable engine key — the order id, known from registration (before the SDK id exists). */
   id: string;
+  /** Short, unique, human-facing name (folder basename) for `/status` and `/kill`. */
+  name: string;
+  /** SDK session id (used for resume/fork). Empty until the first message arrives. */
+  sdkSessionId: string;
   order: Order;
   status: "running" | "idle" | "done" | "error";
   startedAt: number;
+  /** Last time the worker produced output or took input — drives idle-close. */
+  lastActivityAt: number;
 }
