@@ -1,16 +1,15 @@
 import { test, expect } from "bun:test";
-import { runOrder } from "../src/engine/session-runner";
+import { runOrder, startOrder } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
 function order(task = "do it", folder = "/tmp"): Order {
   return { id: "o1", source: "neo", folder, task, chatId: 1, createdAt: 1 };
 }
 
-// A fake SDK `query` that drives options.canUseTool with the given tool requests,
-// records each decision it got back, and yields a realistic message stream.
+// --- Single-shot fake (Phase-1 runOrder): ignores prompt, yields a finite stream. ---
 function fakeQuery(reqs: Array<{ tool: string; input: Record<string, unknown> }>) {
   const decisions: Array<{ behavior: string; updatedInput?: unknown; message?: string }> = [];
-  const q = (args: { prompt: string; options: any }) =>
+  const q = (args: { prompt: any; options: any }) =>
     (async function* () {
       yield { type: "system", subtype: "init", session_id: "sess-1" };
       yield { type: "assistant", message: { content: [{ type: "text", text: "working" }] } };
@@ -26,6 +25,31 @@ function fakeQuery(reqs: Array<{ tool: string; input: Record<string, unknown> }>
       };
     })();
   return { q, decisions };
+}
+
+// --- Streaming fake (Phase-2 startOrder): consumes the input channel, acks each user
+// message, runs governance after the first, and ends when the channel closes. ---
+function fakeStreaming(reqs: Array<{ tool: string; input: Record<string, unknown> }> = []) {
+  const received: string[] = [];
+  const decisions: Array<{ behavior: string; updatedInput?: unknown; message?: string }> = [];
+  let interruptCalls = 0;
+  const q = (args: { prompt: any; options: any }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-1" };
+      let first = true;
+      for await (const userMsg of args.prompt as AsyncIterable<any>) {
+        received.push(userMsg.message.content);
+        yield { type: "assistant", message: { content: [{ type: "text", text: `ack:${userMsg.message.content}` }] } };
+        if (first) {
+          for (const r of reqs) decisions.push(await args.options.canUseTool(r.tool, r.input));
+          first = false;
+        }
+        yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0.01, session_id: "sess-1" };
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => void interruptCalls++ });
+  };
+  return { q, received, decisions, interruptCalls: () => interruptCalls };
 }
 
 test("runOrder auto-allows a safe tool (echoing updatedInput), forwards text, returns result", async () => {
@@ -66,4 +90,41 @@ test("runOrder lets the human approve an escalated tool (allow, with updatedInpu
   );
   expect(decisions[0].behavior).toBe("allow");
   expect(decisions[0].updatedInput).toEqual({ command: "git push" });
+});
+
+test("startOrder delivers the initial task and a follow-up as user messages", async () => {
+  const f = fakeStreaming();
+  const run = startOrder(order("do it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: f.q });
+  run.followUp("more please");
+  await run.interrupt();
+  await run.done;
+  expect(f.received).toEqual(["do it", "more please"]);
+});
+
+test("startOrder.interrupt ends the stream, resolves done, and signals the SDK", async () => {
+  const f = fakeStreaming();
+  const run = startOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: f.q });
+  await run.interrupt();
+  const result = await run.done;
+  expect(result.ok).toBe(true);
+  expect(result.summary).toBe("done");
+  expect(f.interruptCalls()).toBe(1);
+});
+
+test("startOrder auto-allows a safe tool over the streaming path, echoing updatedInput", async () => {
+  const f = fakeStreaming([{ tool: "Write", input: { file_path: "/x", content: "y" } }]);
+  const run = startOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: f.q });
+  await run.interrupt();
+  await run.done;
+  expect(f.decisions[0]).toEqual({ behavior: "allow", updatedInput: { file_path: "/x", content: "y" } });
+});
+
+test("startOrder escalates a risky tool over the streaming path and denies on human deny", async () => {
+  let reason = "";
+  const f = fakeStreaming([{ tool: "Bash", input: { command: "rm -rf /" } }]);
+  const run = startOrder(order(), { onMessage: () => {}, onEscalation: async (r) => ((reason = r), "deny") }, { query: f.q });
+  await run.interrupt();
+  await run.done;
+  expect(reason).toContain("rm");
+  expect(f.decisions[0].behavior).toBe("deny");
 });
