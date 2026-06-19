@@ -39,9 +39,9 @@ export function startTelegram(
     if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
 
-    // Engine commands (/status, /kill) resolve synchronously; everything else is an order
-    // or a follow-up handled by the pipeline.
-    const command = handleCommand(ctx.message.text, { registry, meter });
+    // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
+    // order or a follow-up handled by the pipeline.
+    const command = handleCommand(ctx.message.text, chatId, { registry, ledger });
     if (command !== null) {
       void bot.api.sendMessage(chatId, command);
       return;

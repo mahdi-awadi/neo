@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { handleCommand } from "../src/engine/commands";
 import { createRegistry } from "../src/engine/registry";
-import { createMeter } from "../src/engine/budget";
+import { openLedger } from "../src/engine/ledger";
 import type { Order } from "../src/types";
 
 function order(over: Partial<Order> = {}): Order {
@@ -9,56 +9,72 @@ function order(over: Partial<Order> = {}): Order {
     id: over.id ?? crypto.randomUUID(),
     source: "neo",
     folder: over.folder ?? "/proj/app",
-    task: "t",
+    task: over.task ?? "do the thing",
     chatId: over.chatId ?? 1,
     createdAt: 1,
   };
 }
-const meter = () => createMeter({ windowBudgetUsd: 10, reservePct: 0.2 });
+function deps(over: { registry?: ReturnType<typeof createRegistry>; ledger?: ReturnType<typeof openLedger> } = {}) {
+  return {
+    registry: over.registry ?? createRegistry(),
+    ledger: over.ledger ?? openLedger(":memory:"),
+    now: () => 100000,
+  };
+}
 
-test("/status lists live sessions and the budget headroom", () => {
-  const registry = createRegistry();
-  const m = meter();
-  m.note({ costUsd: 2 });
-  registry.add(order({ folder: "/proj/app" }), 1);
-
-  const out = handleCommand("/status", { registry, meter: m })!;
-
-  expect(out).toContain("app"); // session name
-  expect(out).toContain("running");
-  expect(out.toLowerCase()).toContain("budget");
+test("/help lists the available commands including /open", () => {
+  const out = handleCommand("/help", 1, deps())!;
+  expect(out).toContain("/open");
+  expect(out).toContain("/list");
+  expect(out).toContain("/kill");
 });
 
-test("/status reports when there are no live sessions", () => {
-  const out = handleCommand("/status", { registry: createRegistry(), meter: meter() })!;
-  expect(out.toLowerCase()).toContain("no live sessions");
+test("/list shows open projects with name, folder, status, and task", () => {
+  const registry = createRegistry();
+  registry.add(order({ folder: "/proj/app", task: "add tests to math" }), 1000);
+  const out = handleCommand("/list", 1, deps({ registry }))!;
+  expect(out).toContain("app");
+  expect(out).toContain("/proj/app");
+  expect(out).toContain("add tests");
 });
 
-test("/kill interrupts a named session and drops it from the registry", () => {
+test("/list reports none when there are no open projects", () => {
+  expect(handleCommand("/list", 1, deps())!.toLowerCase()).toContain("no open projects");
+});
+
+test("/status is an alias of /list", () => {
   const registry = createRegistry();
-  const o = order({ folder: "/proj/app" });
+  registry.add(order({ folder: "/p/x" }), 1);
+  const d = deps({ registry });
+  expect(handleCommand("/status", 1, d)).toBe(handleCommand("/list", 1, d));
+});
+
+test("there is NO budget/dollar readout anymore", () => {
+  const registry = createRegistry();
+  registry.add(order(), 1);
+  const out = handleCommand("/list", 1, deps({ registry }))!;
+  expect(out).not.toContain("$");
+  expect(out.toLowerCase()).not.toContain("budget");
+});
+
+test("/kill interrupts a named session and drops it", () => {
+  const registry = createRegistry();
+  const o = order({ folder: "/p/app" });
   registry.add(o, 1);
   let interrupted = false;
   registry.attachControl(o.id, { followUp: () => {}, interrupt: async () => void (interrupted = true) });
-
-  const out = handleCommand("/kill app", { registry, meter: meter() })!;
-
+  const out = handleCommand("/kill app", 1, deps({ registry }))!;
   expect(out).toContain("Killed");
   expect(interrupted).toBe(true);
   expect(registry.findByName("app")).toBeUndefined();
 });
 
-test("/kill an unknown name returns a friendly error", () => {
-  const out = handleCommand("/kill ghost", { registry: createRegistry(), meter: meter() })!;
-  expect(out).toContain("not found");
+test("/kill an unknown name returns a friendly error; no name returns usage", () => {
+  expect(handleCommand("/kill ghost", 1, deps())!).toContain("not found");
+  expect(handleCommand("/kill", 1, deps())!.toLowerCase()).toContain("usage");
 });
 
-test("/kill with no name returns usage", () => {
-  const out = handleCommand("/kill", { registry: createRegistry(), meter: meter() })!;
-  expect(out.toLowerCase()).toContain("usage");
-});
-
-test("handleCommand returns null for a non-command message", () => {
-  const out = handleCommand("/open /x do it", { registry: createRegistry(), meter: meter() });
-  expect(out).toBeNull();
+test("returns null for /open and unknown input so the pipeline handles them", () => {
+  expect(handleCommand("/open /x do it", 1, deps())).toBeNull();
+  expect(handleCommand("just chatting", 1, deps())).toBeNull();
 });
