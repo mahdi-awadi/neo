@@ -53,6 +53,17 @@ test("findByChat returns the most recent OPEN session and excludes closed ones",
   expect(reg.findByChat(5)?.id).toBe(first.id); // closed session excluded
 });
 
+test("attachControl stores a control handle retrievable by id and cleared on remove", () => {
+  const reg = createRegistry();
+  const o = order();
+  reg.add(o, 1);
+  const ctrl = { followUp: () => {}, interrupt: async () => {} };
+  reg.attachControl(o.id, ctrl);
+  expect(reg.getControl(o.id)).toBe(ctrl);
+  reg.remove(o.id);
+  expect(reg.getControl(o.id)).toBeUndefined();
+});
+
 test("touch, setStatus, setSdkSessionId, and remove mutate the entry", () => {
   const reg = createRegistry();
   const o = order();

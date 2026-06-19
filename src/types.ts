@@ -33,6 +33,16 @@ export type Verdict =
   | { allow: true; updatedInput?: Record<string, unknown> }
   | { escalate: string };
 
+/**
+ * The live control surface of a running session, held by the registry so that
+ * follow-up routing, `/kill`, and idle-close can all reach the same handle.
+ * `SessionRun` (session-runner) is the concrete implementation.
+ */
+export interface SessionControl {
+  followUp(text: string): void;
+  interrupt(): Promise<void>;
+}
+
 /** A live worker session the engine is driving (an in-process SDK handle). */
 export interface SessionInfo {
   /** Stable engine key — the order id, known from registration (before the SDK id exists). */

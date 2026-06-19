@@ -4,7 +4,7 @@
 // Keyed by the stable order id; addressable by short name (for /kill) and by chat (for
 // follow-up routing). The unique-name scheme is ported from operant, trimmed.
 import { basename } from "node:path";
-import type { Order, SessionInfo } from "../types";
+import type { Order, SessionControl, SessionInfo } from "../types";
 
 /** Statuses for a session that is still live (followable / killable). */
 const OPEN: ReadonlySet<SessionInfo["status"]> = new Set(["running", "idle"]);
@@ -21,10 +21,14 @@ export interface Registry {
   setStatus(id: string, status: SessionInfo["status"]): void;
   setSdkSessionId(id: string, sdkSessionId: string): void;
   touch(id: string, now?: number): void;
+  /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
+  attachControl(id: string, control: SessionControl): void;
+  getControl(id: string): SessionControl | undefined;
 }
 
 export function createRegistry(): Registry {
   const sessions = new Map<string, SessionInfo>();
+  const controls = new Map<string, SessionControl>();
 
   function uniqueName(base: string): string {
     const taken = new Set([...sessions.values()].map((s) => s.name));
@@ -51,7 +55,12 @@ export function createRegistry(): Registry {
     },
     get: (id) => sessions.get(id),
     list: () => [...sessions.values()],
-    remove: (id) => void sessions.delete(id),
+    remove: (id) => {
+      sessions.delete(id);
+      controls.delete(id);
+    },
+    attachControl: (id, control) => void controls.set(id, control),
+    getControl: (id) => controls.get(id),
     findByChat(chatId) {
       return [...sessions.values()]
         .filter((s) => s.order.chatId === chatId && OPEN.has(s.status))

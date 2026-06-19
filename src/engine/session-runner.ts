@@ -18,7 +18,7 @@
 //
 // Auth: draws from your Claude subscription (current behavior; see README + plan).
 import { query as realQuery } from "@anthropic-ai/claude-agent-sdk";
-import type { Order } from "../types";
+import type { Order, SessionControl } from "../types";
 import { decide } from "./governor";
 
 export interface RunHandlers {
@@ -46,11 +46,7 @@ export interface RunResult {
 }
 
 /** A live, long-running session: push follow-ups, interrupt, await the final result. */
-export interface SessionRun {
-  /** Inject another user message into the running session (streaming input). */
-  followUp(text: string): void;
-  /** Close the input and stop the worker; `done` then resolves. */
-  interrupt(): Promise<void>;
+export interface SessionRun extends SessionControl {
   /** Resolves when the session ends (interrupt / idle-close / worker completion). */
   done: Promise<RunResult>;
 }
