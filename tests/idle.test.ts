@@ -67,3 +67,19 @@ test("sweepIdle ignores already-closed sessions", () => {
 
   expect(closed).toEqual([]);
 });
+
+test("sweepIdle never closes the default project, however old", () => {
+  const reg = createRegistry();
+  const led = openLedger(":memory:");
+  const o = order({ id: "company", folder: "/home/neo/agent", chatId: -1 });
+  reg.add(o, 0); // lastActivityAt = 0 (ancient)
+  reg.setStatus(o.id, "idle");
+  reg.setDefault(o.id);
+  reg.attachControl(o.id, fakeControl());
+
+  const closed = sweepIdle(reg, led, { idleMs: 1000, now: 9_999_999 });
+
+  expect(closed).toEqual([]);
+  expect(reg.get("company")).toBeDefined(); // still registered
+  expect(reg.getDefault()?.id).toBe("company");
+});

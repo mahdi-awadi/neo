@@ -17,6 +17,7 @@ export function sweepIdle(
   const closed: SessionInfo[] = [];
 
   for (const s of registry.list()) {
+    if (s.id === registry.getDefault()?.id) continue; // the company is always-on — never close it
     const open = s.status === "running" || s.status === "idle";
     if (!open || now - s.lastActivityAt <= idleMs) continue;
 
