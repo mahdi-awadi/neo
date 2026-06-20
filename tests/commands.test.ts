@@ -3,6 +3,7 @@ import { handleCommand, selectProject, killProject } from "../src/engine/command
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { openTrustStore } from "../src/engine/trust";
+import { openInbox } from "../src/engine/inbox";
 import type { Order } from "../src/types";
 
 function order(over: Partial<Order> = {}): Order {
@@ -20,6 +21,7 @@ function deps(
     registry?: ReturnType<typeof createRegistry>;
     ledger?: ReturnType<typeof openLedger>;
     usage?: any;
+    inbox?: ReturnType<typeof openInbox>;
   } = {},
 ) {
   return {
@@ -27,6 +29,7 @@ function deps(
     ledger: over.ledger ?? openLedger(":memory:"),
     usage: over.usage as any,
     trust: openTrustStore(":memory:"),
+    inbox: over.inbox,
     now: () => 100000,
   };
 }
@@ -44,6 +47,26 @@ function fakeUsage(over: { hourly?: number; daily?: number; weekly?: number; rat
     }),
   };
 }
+
+test("/inbox lists queued customer messages newest-first with tappable entries", () => {
+  const inbox = openInbox(":memory:");
+  inbox.record({ from: "a@x.com", fromName: "Ann", subject: "Quote?", text: "How much?" }, 1000);
+  const b = inbox.record({ from: "b@x.com", subject: "Refund", text: "please" }, 2000);
+  const res = handleCommand("/inbox", 1, deps({ inbox }))!;
+  expect(res.text).toContain("Ann");
+  expect(res.text).toContain("Refund");
+  expect(res.inbox?.map((i) => i.id)).toEqual([b.id, inbox.list()[1].id]); // newest first
+});
+
+test("/inbox reports an empty inbox", () => {
+  const res = handleCommand("/inbox", 1, deps({ inbox: openInbox(":memory:") }))!;
+  expect(res.text.toLowerCase()).toContain("empty");
+  expect(res.inbox).toEqual([]);
+});
+
+test("/inbox degrades gracefully when no inbox is wired", () => {
+  expect(handleCommand("/inbox", 1, deps())!.text.toLowerCase()).toContain("unavailable");
+});
 
 test("/help lists the available commands including /open", () => {
   const out = handleCommand("/help", 1, deps())!.text;

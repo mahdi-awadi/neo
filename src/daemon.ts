@@ -68,8 +68,9 @@ async function main(): Promise<void> {
   console.log(`  admin     -> ${admin.adminId() ?? "unclaimed (first Telegram message becomes admin)"}`);
   console.log(`  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every ${IDLE_POLL_MS / 1000}s (company exempt)`);
 
+  const gatewaySendUrl = process.env.GATEWAY_SEND_URL ?? "https://neo-api.tech-gate.online/send";
   if (cfg.telegramToken) {
-    startTelegram(cfg, ledger, admin, registry, meter, trust, usage);
+    startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl);
     console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
 
     // Web console shares the same engine + admin; auth is Telegram-login (TOFU admin).
@@ -78,7 +79,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl: process.env.GATEWAY_SEND_URL ?? "https://neo-api.tech-gate.online/send" },
+      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl },
       WEB_PORT,
       WEB_HOST,
     );

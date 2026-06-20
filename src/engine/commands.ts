@@ -8,6 +8,8 @@ import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { UsageMeter, RateLimitInfo } from "./usage";
 import type { TrustStore } from "./trust";
+import type { Inbox } from "./inbox";
+import { renderInboxList, type InboxListEntry } from "./inbox-actions";
 import type { SessionInfo } from "../types";
 
 export interface CommandDeps {
@@ -19,6 +21,8 @@ export interface CommandDeps {
   now?: () => number;
   /** Per-project trust store (for /trust and the 🔓 marker). */
   trust: TrustStore;
+  /** Customer inbox (for /inbox). Optional so tests/glue can omit it. */
+  inbox?: Inbox;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -30,10 +34,12 @@ export interface SelectableProject {
   status: string;
 }
 
-/** What a command returns: text to show, plus optional tappable projects. */
+/** What a command returns: text to show, plus optional tappable projects or inbox items. */
 export interface CommandResult {
   text: string;
   select?: SelectableProject[];
+  /** Tappable customer-inbox rows (for /inbox) — frontends render these as buttons. */
+  inbox?: InboxListEntry[];
 }
 
 interface CommandContext {
@@ -77,6 +83,12 @@ const COMMANDS: Command[] = [
     usage: "/trust [on|off]",
     summary: "auto-approve all actions for the active project (no Allow/Deny prompts)",
     run: ({ deps, args, chatId }) => trustCommand(args.trim(), chatId, deps),
+  },
+  {
+    name: "inbox",
+    usage: "/inbox",
+    summary: "review queued customer messages (tap one to view & reply)",
+    run: ({ deps }) => inboxCommand(deps),
   },
   {
     name: "recent",
@@ -129,6 +141,12 @@ export function killProject(id: string, chatId: number, deps: CommandDeps): Comm
     deps.registry.remove(id);
   }
   return renderList(deps.registry, deps.trust, now, chatId);
+}
+
+function inboxCommand(deps: CommandDeps): CommandResult {
+  if (!deps.inbox) return { text: "Inbox unavailable." };
+  const { text, items } = renderInboxList(deps.inbox);
+  return { text, inbox: items };
 }
 
 function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandResult {

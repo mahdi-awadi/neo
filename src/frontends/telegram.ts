@@ -11,12 +11,14 @@ import type { Meter } from "../engine/budget";
 import type { AdminStore } from "../engine/admin";
 import type { UsageMeter } from "../engine/usage";
 import type { TrustStore } from "../engine/trust";
+import type { Inbox } from "../engine/inbox";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
+import { renderInboxItem, type InboxListEntry } from "../engine/inbox-actions";
 import { mdToHtml } from "../engine/format";
 
 async function downloadTelegramFile(token: string, filePath: string): Promise<Uint8Array> {
@@ -51,11 +53,15 @@ export function startTelegram(
   }),
   trust: TrustStore,
   usage?: UsageMeter,
+  inbox?: Inbox,
+  gatewaySendUrl?: string,
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);
   // Pending approvals keyed by a per-request token: callback press -> resolver.
   const pending = new Map<string, (decision: "allow" | "deny") => void>();
+  // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
+  const pendingInboxEdit = new Map<number, string>();
 
   // Gate: an optional pre-allowlist, then trust-on-first-use — the first allowed id to
   // message the bot becomes the sole admin (shared with the web console).
@@ -120,10 +126,12 @@ export function startTelegram(
 
     // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
     // order or a follow-up handled by the pipeline.
-    const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage, trust });
+    const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage, trust, inbox });
     if (command !== null) {
       if (command.select?.length) {
         void bot.api.sendMessage(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
+      } else if (command.inbox?.length) {
+        void bot.api.sendMessage(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
       } else {
         void bot.api.sendMessage(chatId, command.text);
       }
@@ -171,6 +179,20 @@ export function startTelegram(
       return;
     }
 
+    // Tap an inbox row to view the full customer message (plain data — no AI).
+    if (cb.startsWith("inbox:")) {
+      const id = cb.slice("inbox:".length);
+      const view = inbox ? renderInboxItem(inbox, id) : undefined;
+      await ctx.answerCallbackQuery();
+      if (!view) {
+        await ctx.reply("That message is no longer in the inbox.");
+        return;
+      }
+      const kb = inboxItemKeyboard(view.item.id, view.item.status);
+      await ctx.reply(view.text, kb ? { reply_markup: kb } : undefined);
+      return;
+    }
+
     // Tap a loop run button.
     if (cb.startsWith("runloop:")) {
       const loop = matchLoop(cb.slice("runloop:".length));
@@ -200,4 +222,18 @@ function projectKeyboard(select: SelectableProject[]): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const p of select) kb.text(p.active ? `★ ${p.label}` : p.label, `use:${p.id}`).text("✕", `kill:${p.id}`).row();
   return kb;
+}
+
+/** One button per inbox row; tapping fires `inbox:<id>` to open the full message. */
+function inboxKeyboard(items: InboxListEntry[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const i of items) kb.text(i.label.slice(0, 60), `inbox:${i.id}`).row();
+  return kb;
+}
+
+/** Per-item action buttons, gated by status — mirrors the web review loop's per-row actions.
+ *  Returns undefined when a status offers no actions (e.g. while drafting or once replied).
+ *  Slice 1 is view-only; the draft/edit/send actions are wired in later slices. */
+function inboxItemKeyboard(_id: string, _status: string): InlineKeyboard | undefined {
+  return undefined;
 }
