@@ -3,6 +3,7 @@
 // worker output + escalations as events an HTTP/SSE layer can fan out, and resolves
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
+import { basename } from "node:path";
 import { handleMessage, type PipelineDeps } from "./pipeline";
 import {
   handleCommand,
@@ -22,7 +23,8 @@ export type WebEvent =
   | { type: "message"; text: string; project?: string }
   | { type: "escalation"; id: string; reason: string }
   | { type: "projects"; text: string; items: SelectableProject[] }
-  | { type: "loops"; items: LoopInfo[] };
+  | { type: "loops"; items: LoopInfo[] }
+  | { type: "file"; name: string; url: string; project?: string };
 
 export interface WebChannel {
   /** Operator sent a message — drive the pipeline; streamed output arrives as events. */
@@ -43,6 +45,10 @@ export interface WebChannel {
   state(): DashState;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
   notify(text: string, project?: string): void;
+  /** Resolve a token issued by an outbound file event to its on-disk path (for GET /file). */
+  getFile(token: string): string | undefined;
+  /** Test/seam hook: deliver a file as if a worker called send_file. Returns the token. */
+  _testSendFile(path: string, caption?: string): string;
 }
 
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter }): WebChannel {
@@ -58,6 +64,16 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   // formatting (bold, code, bullets) instead of raw ** and #.
   const message = (text: string, project?: string) => emit({ type: "message", text: mdToHtml(text), project });
 
+  const files = new Map<string, string>(); // token -> absolute path
+
+  function deliverFile(path: string, caption?: string): string {
+    const token = crypto.randomUUID();
+    files.set(token, path);
+    emit({ type: "file", name: basename(path), url: `/file?token=${encodeURIComponent(token)}` });
+    if (caption) message(caption);
+    return token;
+  }
+
   const deps: PipelineDeps = {
     ...opts.engine,
     usage: opts.usage,
@@ -68,6 +84,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         pending.set(id, resolve);
         emit({ type: "escalation", id, reason });
       }),
+    sendFile: (_chatId, path, caption) => void deliverFile(path, caption),
   };
 
   return {
@@ -147,5 +164,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     notify(text: string, project?: string) {
       message(text, project); // reuse the existing markdown→HTML message emitter
     },
+    getFile: (token) => files.get(token),
+    _testSendFile: (path, caption) => deliverFile(path, caption),
   };
 }

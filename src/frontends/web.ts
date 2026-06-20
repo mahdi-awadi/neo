@@ -10,6 +10,8 @@ import type { UsageMeter } from "../engine/usage";
 import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
 import { runCompanyBrief } from "../engine/ingress";
+import { saveInbound } from "../engine/files";
+import { basename } from "node:path";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
 const COOKIE = "neo_session";
@@ -97,6 +99,28 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const body = (await req.json().catch(() => ({}))) as { text?: unknown };
       if (typeof body.text === "string" && body.text.trim()) void channel.send(body.text.trim());
       return Response.json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/upload") {
+      const form = await req.formData().catch(() => null);
+      const f = form?.get("file");
+      if (!(f instanceof File)) return Response.json({ ok: false }, { status: 400 });
+      const target = deps.engine.registry.findByChat(WEB_CHAT_ID) ?? deps.engine.registry.getDefault();
+      if (!target) return Response.json({ ok: false, error: "no active project" }, { status: 409 });
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const saved = saveInbound(target.order.folder, f.name || "file", bytes);
+      const caption = typeof form?.get("caption") === "string" ? (form.get("caption") as string) : "";
+      void channel.send(`📎 operator attached \`${basename(saved)}\` at \`${saved}\`\n${caption}`);
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === "GET" && path === "/file") {
+      const token = url.searchParams.get("token") ?? "";
+      const abs = channel.getFile(token);
+      if (!abs) return new Response("not found", { status: 404 });
+      return new Response(Bun.file(abs), {
+        headers: { "content-disposition": `attachment; filename="${basename(abs)}"`, "cache-control": "no-store" },
+      });
     }
 
     if (req.method === "POST" && path === "/approve") {
@@ -323,7 +347,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
   <div class="view on" id="vactivity">
    <div id="fbar"></div>
    <div id="feed"><div class="fe" id="ph">Open a project, or select one on the left — its activity streams here.</div></div>
-   <form class="compose" id="ff"><input id="msg" autocomplete="off" placeholder="message the active project — a follow-up for the AI…"><button type="submit">Send</button></form>
+   <form class="compose" id="ff"><input id="msg" autocomplete="off" placeholder="message the active project — a follow-up for the AI…"><input type="file" id="file" style="display:none" onchange="uploadFile()"><button class="chip" type="button" onclick="document.getElementById('file').click()">📎</button><button type="submit">Send</button></form>
   </div>
   <div class="view" id="vloops"></div>
   <div class="view" id="vusage"></div>
@@ -411,6 +435,7 @@ function clearFilter(){filterProject=null;refreshFeed();}
 function pushFeed(node,kind,project){node._kind=kind;node._project=project||null;feedNodes.push(node);feed.appendChild(node);refreshFeed();}
 function feedMsg(html,kind,project){var d=document.createElement('div');d.className='row '+(kind==='me'?'me':'out');d.innerHTML=html;pushFeed(d,kind,project);return d;}
 function say(text){var v=(text||'').trim();if(!v)return;feedMsg('› '+esc(v),'me',filterProject);post('/msg',{text:v});}
+function uploadFile(){var i=document.getElementById('file');if(!i.files.length)return;var fd=new FormData();fd.append('file',i.files[0]);fetch('/upload',{method:'POST',body:fd});i.value='';}
 
 var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);
@@ -422,6 +447,7 @@ es.onmessage=function(ev){var e=JSON.parse(ev.data);
   ['allow','deny'].forEach(function(dec){var b=document.createElement('button');b.className='chip '+(dec==='allow'?'ok':'no');b.textContent=dec;
    b.onclick=function(){post('/approve',{id:e.id,decision:dec});c.remove();refreshFeed();};a.appendChild(b);});
   c.appendChild(a);pushFeed(c,'esc',null);tab('activity');}
+ else if(e.type==='file'){var d=document.createElement('div');d.className='row out';d.innerHTML='📎 <a href="'+e.url+'">'+esc(e.name)+'</a>';pushFeed(d,'out',e.project);}
 };
 document.getElementById('ff').onsubmit=function(ev){ev.preventDefault();var m=document.getElementById('msg');say(m.value);m.value='';};
 loadState();setInterval(loadState,15000);

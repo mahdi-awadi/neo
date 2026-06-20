@@ -192,3 +192,17 @@ test("resolveApproval returns false for an unknown id", () => {
   const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
   expect(ch.resolveApproval("nope", "deny")).toBe(false);
 });
+
+test("sendFile emits a file event and registers a token getFile can resolve", () => {
+  const f = fakeStart();
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 0 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  const token = ch._testSendFile("/tmp/report.pdf", "done"); // test seam added in Step 3
+
+  const fileEvent = events.find((e) => e.type === "file") as { type: "file"; name: string; url: string };
+  expect(fileEvent.name).toBe("report.pdf");
+  expect(fileEvent.url).toContain(encodeURIComponent(token));
+  expect(ch.getFile(token)).toBe("/tmp/report.pdf");
+});
