@@ -22,6 +22,8 @@ func main() {
 	ingress := neoIngress(cfg.NeoIngressURL, cfg.NeoIngressSecret, &http.Client{Timeout: 4 * time.Minute})
 	sender := newWorkerSender(cfg.WorkerSendURL, cfg.GatewayWorkerSecret, cfg.EmailFrom, cfg.EmailFromName, &http.Client{Timeout: 30 * time.Second})
 	inbox := neoInbox(cfg.NeoInboxURL, cfg.NeoIngressSecret, &http.Client{Timeout: 30 * time.Second})
+	// Shared by the WhatsApp + voice front-desks: post a conversation summary to the Neo inbox.
+	handoff := neoHandoff(cfg.NeoInboxURL, cfg.NeoIngressSecret, &http.Client{Timeout: 30 * time.Second})
 
 	gw := &gateway{
 		gatewaySecret: cfg.GatewayWorkerSecret,
@@ -33,22 +35,29 @@ func main() {
 		replyFn: func(ctx context.Context, history []conversationMessage, userText string) (string, error) {
 			return replyForInbound(ctx, reg, ingress, history, userText)
 		},
+		// Voice front-desk wiring (active when Twilio creds + Gemini key are present).
+		twilioAuthToken: cfg.TwilioAuthToken,
+		publicURL:       cfg.PublicURL,
+		geminiAPIKey:    cfg.GeminiAPIKey,
+		geminiLiveURL:   cfg.GeminiLiveURL,
+		ingressFn:       ingress,
+		handoffFn:       handoff,
 	}
 
-	// WhatsApp (Gemini front-desk channel) — optional; activates when Twilio creds are present.
+	// WhatsApp (Gemini front-desk channel) — optional; activates when Twilio + a WhatsApp From are set.
 	if cfg.TwilioAccountSID != "" && cfg.TwilioAuthToken != "" && cfg.TwilioWhatsAppFrom != "" {
-		handoff := neoHandoff(cfg.NeoInboxURL, cfg.NeoIngressSecret, &http.Client{Timeout: 30 * time.Second})
 		gw.waSender = twiliowa.New(twiliowa.Config{
 			AccountSID: cfg.TwilioAccountSID,
 			AuthToken:  cfg.TwilioAuthToken,
 			From:       cfg.TwilioWhatsAppFrom,
 		}, nil)
-		gw.twilioAuthToken = cfg.TwilioAuthToken
-		gw.publicURL = cfg.PublicURL
 		gw.waReplyFn = func(ctx context.Context, sender, name string, history []conversationMessage, userText string) (string, error) {
 			return replyForWhatsApp(ctx, reg, ingress, handoff, sender, name, history, userText)
 		}
 		log.Printf("neo-gateway: WhatsApp front-desk enabled (Gemini triage → operator handoff, from=%s)", cfg.TwilioWhatsAppFrom)
+	}
+	if cfg.TwilioAuthToken != "" {
+		log.Printf("neo-gateway: voice front-desk enabled (Gemini Live ⇄ Twilio Media Streams at %s/voice/stream)", wssStreamURL(cfg.PublicURL))
 	}
 
 	log.Printf("neo-gateway listening on %s (from=%s)", cfg.ListenAddr, cfg.EmailFrom)

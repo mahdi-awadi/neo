@@ -8,4 +8,11 @@ use (
 	../../gopkg/communication/provider
 	../../gopkg/communication/email/cloudflare
 	../../gopkg/communication/whatsapp/twilio
+	../../gopkg/voice/pipeline
+	../../gopkg/voice/llm/gemini
+	../../gopkg/voice/transport/twilio
+	../../gopkg/voice/toolexec
+	../../gopkg/voice/holdfiller/twilio
+	../../gopkg/audio/codec
+	../../gopkg/id
 )

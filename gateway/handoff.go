@@ -21,16 +21,23 @@ type handoffMsg struct {
 // DATA — like the email inbox path, it is just stored and shown to the operator (no auto-reply).
 type handoffFunc func(ctx context.Context, h handoffMsg) error
 
-// intentSubject maps an intent to the inbox subject line the operator sees.
-func intentSubject(intent string) string {
+// handoffSubject maps a channel + intent to the inbox subject line the operator sees.
+func handoffSubject(channel, intent string) string {
+	prefix := "Message"
+	switch channel {
+	case "whatsapp":
+		prefix = "WhatsApp"
+	case "voice":
+		prefix = "Voice call"
+	}
+	label := "New message"
 	switch intent {
 	case "quote":
-		return "WhatsApp · Quote request"
+		label = "Quote request"
 	case "support":
-		return "WhatsApp · Support issue"
-	default:
-		return "WhatsApp · New message"
+		label = "Support issue"
 	}
+	return prefix + " · " + label
 }
 
 // neoHandoff posts the summary to Neo's /inbox endpoint (same endpoint + secret as the email inbox
@@ -43,7 +50,7 @@ func neoHandoff(url, secret string, hc *http.Client) handoffFunc {
 		}
 		raw, err := json.Marshal(map[string]string{
 			"channel": channel, "from": h.From, "fromName": h.FromName,
-			"subject": intentSubject(h.Intent), "text": h.Summary,
+			"subject": handoffSubject(channel, h.Intent), "text": h.Summary,
 		})
 		if err != nil {
 			return err

@@ -106,38 +106,56 @@ sender asserts recipient/body + persisted turns; bad signature → 401; empty bo
 handoff dispatcher posts a correctly-shaped summary (channel/from/subject/text) to a fake inbox;
 intent → subject label mapping.
 
-## Voice calling (3b.4) — next phase (outlined)
+## Voice calling (3b.4) — implemented (WS bridge on the same gateway subdomain)
 
 **Transport:** Twilio Programmable Voice → **Media Streams** (a WebSocket of base64 μ-law/8k frames,
-bidirectional). gopkg already provides `voice/transport` (Twilio media-stream framing),
-`voice/llm/gemini` (`LiveModel = "models/gemini-3.1-flash-live-preview"`, bidi audio),
-`voice/pipeline`, `voice/toolexec` (tool calls mid-call → `dispatch_to_company`), and
-`voice/holdfiller` (play a tone/filler while the company works so the line isn't dead).
+bidirectional), bridged to **Gemini Live** (`gemini.LiveEndpoint`, model
+`models/gemini-3.1-flash-live-preview`). Built directly on the gopkg voice stack — `voice/pipeline`
+(orchestrator), `voice/transport/twilio` (`NewTransport`), `voice/llm/gemini` (`NewLLM` over a
+dialed WS), `voice/toolexec`, `voice/holdfiller/twilio` — wiring validated against the proven
+`/home/saffar/apps/comms` implementation (same TwiML, handshake parse, and dial).
 
-**Flow (sketch):** incoming call → Twilio webhook returns TwiML `<Connect><Stream url=".../voice/stream">`
-→ gateway upgrades the WebSocket → bridge Twilio audio ⇄ Gemini Live; on a Gemini tool call, run
-`dispatch_to_company` (async — see below) while `holdfiller` keeps the caller company; stream
-Gemini's audio back. Barge-in (caller interrupts) is handled by the pipeline.
+**Same subdomain.** Both endpoints live on the existing gateway (`neo-api.tech-gate.online`), so no
+new Traefik route is needed — Traefik proxies the WebSocket `Upgrade` on the same router:
+- `POST /voice/incoming` — Twilio Voice webhook. Validates `X-Twilio-Signature`, returns TwiML
+  `<Connect><Stream url="wss://neo-api.tech-gate.online/voice/stream"><Parameter name="from" .../></Stream>`.
+- `GET /voice/stream` — upgrades to a WebSocket, reads Twilio's `connected`/`start` handshake
+  (→ `streamSid` + caller `from`), dials Gemini Live, and runs `pipeline.Run(transport, llm,
+  executor, setup)` until the caller hangs up. Hold-filler keeps the line alive during company work;
+  barge-in is handled by the pipeline.
 
-**Why it needs async ingress:** a live call can't block on a multi-minute company brief. This phase
-requires the **async delivery** noted as future work in the email spec (ingress returns a ticket;
-the company result arrives via callback/poll), plus a hold-filler. That's the main new
-infrastructure voice adds on top of the WhatsApp slice.
+**WhatsApp Calling = same path.** Twilio delivers WhatsApp voice calls through the same Voice webhook
+with `From="whatsapp:+…"`; the stream handler strips the prefix. One bridge serves PSTN + WhatsApp voice.
+
+**Same triage/handoff.** The voice tools mirror WhatsApp: `dispatch_to_company` and
+`handoff_to_operator` (intent=quote/support) → a summary posted to the Neo inbox
+(`channel="voice"`, subject "Voice call · …"). The caller hears "the team will follow up."
+
+**Config (new env):** `GEMINI_LIVE_URL` (optional dial override). Reuses `TWILIO_AUTH_TOKEN`
+(signature) + `GEMINI_API_KEY` (dial) + `PUBLIC_URL` (stream URL).
+
+**Tests (Go, TDD):** `wssStreamURL` (https→wss, same host); TwiML shape + attribute escaping;
+`readTwilioStart` over a real WS pair (streamSid + custom `from`); voice tool routing
+(handoff channel="voice", dispatch, empty/unknown rejected). The live audio bridge itself is
+verified by a real test call (the gopkg pipeline is already unit-tested in gopkg).
+
+**Known follow-up:** the company brief currently runs **synchronously** inside a tool call. For long
+work the hold-filler covers the gap, but true **async ingress** (ingress returns a ticket; result
+arrives via callback) is still desirable for multi-minute briefs — noted as future work in the email
+spec. Also: on abnormal WS close, send Twilio an explicit stop so the call doesn't linger (saffar note).
 
 ## Build order (each its own TDD task group)
 
-1. **WhatsApp text** (this slice): `twilioSignatureValid` + `handleInboundWhatsApp` + config + route
-   + main wiring; reuse the orchestrator + conversation cache. Go `go test ./...` green.
-2. **WhatsApp deploy:** Twilio number + WhatsApp sender; webhook → `https://neo-api…/inbound/whatsapp`;
-   secrets; live round-trip.
-3. **Voice spine:** async ingress (ticket + callback) on Neo + gateway; hold-filler wiring.
-4. **Voice call:** TwiML connect + `/voice/stream` WebSocket bridge (Twilio ⇄ Gemini Live) +
-   `voice/toolexec` → `dispatch_to_company`; barge-in; live test call.
+1. **WhatsApp text** (done): `twilioSignatureValid` + `handleInboundWhatsApp` + front-desk triage.
+2. **Voice WS bridge** (done): `/voice/incoming` TwiML + `/voice/stream` Twilio⇄Gemini-Live bridge on
+   the same subdomain, same triage/handoff.
+3. **Deploy:** Twilio number(s) — WhatsApp webhook → `…/inbound/whatsapp`; Voice webhook →
+   `…/voice/incoming`; enable WhatsApp Calling; secrets; live round-trips.
+4. **Async ingress** (future): ticket + callback so long company work doesn't hold the call/HTTP.
 
 ## Out of scope here
 
-Website "contact us" (3b.1). Async-ingress detail and voice get their own task groups before
-implementation (build order 3–4).
+Website "contact us" (3b.1). Async ingress (build order 4) is its own task group.
 
 ## What the operator provides
 

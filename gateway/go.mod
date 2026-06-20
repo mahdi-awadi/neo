@@ -10,11 +10,27 @@ require (
 	github.com/mahdi-awadi/gopkg/communication/email/cloudflare v0.1.0
 	github.com/mahdi-awadi/gopkg/communication/provider v0.1.0
 	github.com/mahdi-awadi/gopkg/communication/whatsapp/twilio v0.1.0
+	github.com/mahdi-awadi/gopkg/voice/holdfiller/twilio v0.1.0
+	github.com/mahdi-awadi/gopkg/voice/llm/gemini v0.1.0
+	github.com/mahdi-awadi/gopkg/voice/pipeline v0.1.0
+	github.com/mahdi-awadi/gopkg/voice/toolexec v0.1.0
+	github.com/mahdi-awadi/gopkg/voice/transport/twilio v0.1.0
+	github.com/gorilla/websocket v1.5.3
 )
 
 replace github.com/mahdi-awadi/gopkg/communication/email/cloudflare => ../../gopkg/communication/email/cloudflare
 
 replace github.com/mahdi-awadi/gopkg/communication/whatsapp/twilio => ../../gopkg/communication/whatsapp/twilio
+
+replace (
+	github.com/mahdi-awadi/gopkg/audio/codec => ../../gopkg/audio/codec
+	github.com/mahdi-awadi/gopkg/id => ../../gopkg/id
+	github.com/mahdi-awadi/gopkg/voice/holdfiller/twilio => ../../gopkg/voice/holdfiller/twilio
+	github.com/mahdi-awadi/gopkg/voice/llm/gemini => ../../gopkg/voice/llm/gemini
+	github.com/mahdi-awadi/gopkg/voice/pipeline => ../../gopkg/voice/pipeline
+	github.com/mahdi-awadi/gopkg/voice/toolexec => ../../gopkg/voice/toolexec
+	github.com/mahdi-awadi/gopkg/voice/transport/twilio => ../../gopkg/voice/transport/twilio
+)
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

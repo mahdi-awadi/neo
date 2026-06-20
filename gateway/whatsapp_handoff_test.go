@@ -11,11 +11,18 @@ import (
 	"github.com/mahdi-awadi/gopkg/ai/llm"
 )
 
-func TestIntentSubject(t *testing.T) {
-	cases := map[string]string{"quote": "WhatsApp · Quote request", "support": "WhatsApp · Support issue", "weird": "WhatsApp · New message", "": "WhatsApp · New message"}
-	for in, want := range cases {
-		if got := intentSubject(in); got != want {
-			t.Fatalf("intentSubject(%q) = %q, want %q", in, got, want)
+func TestHandoffSubject(t *testing.T) {
+	cases := []struct{ channel, intent, want string }{
+		{"whatsapp", "quote", "WhatsApp · Quote request"},
+		{"whatsapp", "support", "WhatsApp · Support issue"},
+		{"whatsapp", "weird", "WhatsApp · New message"},
+		{"voice", "quote", "Voice call · Quote request"},
+		{"voice", "support", "Voice call · Support issue"},
+		{"", "", "Message · New message"},
+	}
+	for _, c := range cases {
+		if got := handoffSubject(c.channel, c.intent); got != c.want {
+			t.Fatalf("handoffSubject(%q,%q) = %q, want %q", c.channel, c.intent, got, c.want)
 		}
 	}
 }

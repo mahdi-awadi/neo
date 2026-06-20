@@ -42,6 +42,12 @@ type gateway struct {
 	// waReplyFn runs the Gemini front-desk for one inbound WhatsApp message: it carries the
 	// sender's phone/name so the handoff_to_operator tool can post a summary for that customer.
 	waReplyFn func(ctx context.Context, sender, name string, history []conversationMessage, userText string) (string, error)
+
+	// Voice (Gemini Live front-desk over Twilio Media Streams). Shares twilioAuthToken + publicURL.
+	geminiAPIKey  string      // dials the Gemini Live WS
+	geminiLiveURL string      // override dial endpoint (default gemini.LiveEndpoint)
+	ingressFn     ingressFunc // dispatch_to_company → Neo company
+	handoffFn     handoffFunc // handoff_to_operator → Neo inbox
 }
 
 func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,7 @@ type Config struct {
 	TwilioAuthToken    string
 	TwilioWhatsAppFrom string // "whatsapp:+…" or bare "+…"; the provider adds the prefix
 	PublicURL          string // gateway's externally-visible base URL (for webhook signature validation)
+	GeminiLiveURL      string // optional override for the Gemini Live dial endpoint (voice)
 }
 
 func loadConfig() (Config, error) {
@@ -41,6 +42,7 @@ func loadConfig() (Config, error) {
 		TwilioAuthToken:     os.Getenv("TWILIO_AUTH_TOKEN"),
 		TwilioWhatsAppFrom:  os.Getenv("TWILIO_WHATSAPP_FROM"),
 		PublicURL:           envOr("PUBLIC_URL", "https://neo-api.tech-gate.online"),
+		GeminiLiveURL:       os.Getenv("GEMINI_LIVE_URL"), // empty → gemini.LiveEndpoint
 	}
 	for k, v := range map[string]string{"GEMINI_API_KEY": c.GeminiAPIKey, "GATEWAY_WORKER_SECRET": c.GatewayWorkerSecret, "WORKER_SEND_URL": c.WorkerSendURL, "NEO_INGRESS_URL": c.NeoIngressURL, "NEO_INBOX_URL": c.NeoInboxURL, "NEO_INGRESS_SECRET": c.NeoIngressSecret} {
 		if v == "" {
