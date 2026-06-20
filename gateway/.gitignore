@@ -3,3 +3,5 @@ neo-gateway
 /.superpowers/
 /bin/
 /Dockerfile.bin
+node_modules/
+worker/node_modules/
