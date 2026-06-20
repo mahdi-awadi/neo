@@ -3,6 +3,7 @@
 // data (no AI); drafting runs the company via runCompanyBrief exactly as the web path does;
 // sending posts the approved reply to the gateway. Neither frontend forks the brief or send path.
 import type { Inbox, InboxItem } from "./inbox";
+import { runCompanyBrief, type IngressDeps } from "./ingress";
 
 const STATUS_ICON: Record<string, string> = {
   new: "🆕",
@@ -61,4 +62,34 @@ export function renderInboxItem(inbox: Inbox, id: string): InboxItemView | undef
   ];
   if (item.draft) lines.push("", "📝 Draft:", item.draft);
   return { text: lines.join("\n"), item };
+}
+
+// ── Drafting: send an item to the company to draft a reply (the exact web /api/inbox/draft path) ──
+
+/** The drafting brief — VERBATIM the string POST /api/inbox/draft builds, so neither frontend
+ *  forks the prompt. `instructions` (optional) steers it; a prior draft is carried for revision. */
+export function buildDraftBrief(item: InboxItem, instructions = ""): string {
+  const instr = instructions.trim();
+  return (
+    "A customer emailed the business. Draft a reply that NEO (the operator) will review, edit if needed, and SEND — you are NOT contacting the customer yourself; Neo sends it. Output ONLY the reply body, ready to send.\n\n" +
+    `From: ${item.fromName || item.from} <${item.from}>\nSubject: ${item.subject}\n\n${item.text}` +
+    (instr ? `\n\nNeo's instructions for this reply: ${instr}` : "") +
+    (item.draft ? `\n\nYour previous draft (revise it per Neo's instructions above):\n${item.draft}` : "")
+  );
+}
+
+/** Send an inbox item to the company to draft a reply: mark it with-agent, run the company on the
+ *  shared brief, store the draft (→ status 'drafted'). NEVER sent — awaits operator approval. */
+export async function draftInboxReply(
+  inbox: Inbox,
+  id: string,
+  instructions: string,
+  briefDeps: IngressDeps,
+): Promise<string | undefined> {
+  const item = inbox.get(id);
+  if (!item) return undefined;
+  inbox.setStatus(item.id, "with-agent");
+  const draft = await runCompanyBrief(buildDraftBrief(item, instructions), briefDeps);
+  inbox.setDraft(item.id, draft);
+  return draft;
 }

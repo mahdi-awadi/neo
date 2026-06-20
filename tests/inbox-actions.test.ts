@@ -1,6 +1,37 @@
 import { test, expect } from "bun:test";
 import { openInbox } from "../src/engine/inbox";
-import { renderInboxList, renderInboxItem, shortId } from "../src/engine/inbox-actions";
+import { renderInboxList, renderInboxItem, shortId, buildDraftBrief, draftInboxReply } from "../src/engine/inbox-actions";
+import { createRegistry } from "../src/engine/registry";
+import { openLedger } from "../src/engine/ledger";
+import { createMeter } from "../src/engine/budget";
+import { openTrustStore } from "../src/engine/trust";
+import { registerDefaultProject } from "../src/engine/default-project";
+import type { Order } from "../src/types";
+import type { RunHandlers, RunResult } from "../src/engine/session-runner";
+
+/** A brief-deps bundle whose fake run captures the order.task (= the brief) and returns a draft. */
+function briefHarness(draft: string) {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  registerDefaultProject(registry, ledger, () => 1);
+  let seenBrief = "";
+  const fakeRun = async (o: Order, _h: RunHandlers): Promise<RunResult> => {
+    seenBrief = o.task;
+    return { ok: true, sessionId: "co-1", summary: draft, costUsd: 0.01 };
+  };
+  return {
+    seen: () => seenBrief,
+    deps: {
+      cfg: {} as never, ledger, registry,
+      meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+      trust: openTrustStore(":memory:"),
+      reply: () => {},
+      askApproval: async () => "deny" as const,
+      run: fakeRun as never,
+      now: () => 2,
+    },
+  };
+}
 
 test("renderInboxList lists items newest-first with status + from/subject + short id (no AI)", () => {
   const ib = openInbox(":memory:");
@@ -48,4 +79,41 @@ test("renderInboxItem includes the stored draft once drafted", () => {
   const x = ib.record({ from: "d@x.com", subject: "S", text: "body" });
   ib.setDraft(x.id, "Hi — thanks for reaching out.");
   expect(renderInboxItem(ib, x.id)!.text).toContain("Hi — thanks for reaching out.");
+});
+
+test("buildDraftBrief matches the web path: opening line, sender/subject/body, instructions, prior draft", () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", fromName: "Ann", subject: "Quote?", text: "How much for 10 units?" });
+  // base brief
+  const base = buildDraftBrief(ib.get(item.id)!);
+  expect(base).toContain("A customer emailed the business.");
+  expect(base).toContain("Output ONLY the reply body");
+  expect(base).toContain("From: Ann <a@x.com>");
+  expect(base).toContain("Subject: Quote?");
+  expect(base).toContain("How much for 10 units?");
+  expect(base).not.toContain("Neo's instructions");
+  // with instructions + a prior draft to revise
+  ib.setDraft(item.id, "Old draft text");
+  const revised = buildDraftBrief(ib.get(item.id)!, "be warmer, offer a discount");
+  expect(revised).toContain("Neo's instructions for this reply: be warmer, offer a discount");
+  expect(revised).toContain("Old draft text");
+});
+
+test("draftInboxReply runs the company, stores the draft, and lands the item in 'drafted'", async () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", fromName: "Ann", subject: "Quote?", text: "How much?" });
+  const h = briefHarness("Hi Ann — happy to help, it's $20/unit.");
+
+  const draft = await draftInboxReply(ib, item.id, "", h.deps);
+
+  expect(draft).toBe("Hi Ann — happy to help, it's $20/unit.");
+  expect(h.seen()).toContain("How much?"); // the company received the real brief
+  const after = ib.get(item.id)!;
+  expect(after.draft).toBe("Hi Ann — happy to help, it's $20/unit.");
+  expect(after.status).toBe("drafted");
+});
+
+test("draftInboxReply returns undefined for an unknown id", async () => {
+  const ib = openInbox(":memory:");
+  expect(await draftInboxReply(ib, "nope", "", briefHarness("x").deps)).toBeUndefined();
 });

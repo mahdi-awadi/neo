@@ -10,6 +10,7 @@ import type { UsageMeter } from "../engine/usage";
 import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
 import { runCompanyBrief } from "../engine/ingress";
+import { draftInboxReply } from "../engine/inbox-actions";
 import { saveInbound } from "../engine/files";
 import type { Inbox } from "../engine/inbox";
 import { basename } from "node:path";
@@ -153,20 +154,14 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const b = (await req.json().catch(() => ({}))) as { id?: unknown; instructions?: unknown };
       const item = typeof b.id === "string" ? deps.inbox?.get(b.id) : undefined;
       if (!item || !deps.inbox) return Response.json({ ok: false }, { status: 404, headers: { "cache-control": "no-store" } });
-      deps.inbox.setStatus(item.id, "with-agent");
       const instr = typeof b.instructions === "string" ? b.instructions.trim() : "";
-      const brief =
-        "A customer emailed the business. Draft a reply that NEO (the operator) will review, edit if needed, and SEND — you are NOT contacting the customer yourself; Neo sends it. Output ONLY the reply body, ready to send.\n\n" +
-        `From: ${item.fromName || item.from} <${item.from}>\nSubject: ${item.subject}\n\n${item.text}` +
-        (instr ? `\n\nNeo's instructions for this reply: ${instr}` : "") +
-        (item.draft ? `\n\nYour previous draft (revise it per Neo's instructions above):\n${item.draft}` : "");
-      const draft = await runCompanyBrief(brief, {
+      // Shared with the Telegram /inbox loop — single source of truth for the brief (inbox-actions).
+      const draft = await draftInboxReply(deps.inbox, item.id, instr, {
         cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
         meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage,
         reply: (_c, text, project) => channel.notify(text, project),
         askApproval: async () => "deny",
       });
-      deps.inbox.setDraft(item.id, draft);
       return Response.json({ ok: true, draft }, { headers: { "cache-control": "no-store" } });
     }
 

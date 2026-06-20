@@ -18,7 +18,8 @@ import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
-import { renderInboxItem, type InboxListEntry } from "../engine/inbox-actions";
+import { renderInboxItem, draftInboxReply, type InboxListEntry } from "../engine/inbox-actions";
+import type { IngressDeps } from "../engine/ingress";
 import { mdToHtml } from "../engine/format";
 
 async function downloadTelegramFile(token: string, filePath: string): Promise<Uint8Array> {
@@ -87,6 +88,21 @@ export function startTelegram(
       }),
     sendFile: (cid, path, caption) =>
       void bot.api.sendDocument(cid, new InputFile(path), caption ? { caption } : {}),
+  });
+
+  // Deps for running the company to draft a customer reply — identical to the web path: stream
+  // progress back to this chat, and auto-deny risky tools (customer work never auto-approves).
+  const briefDeps = (chatId: number): IngressDeps => ({
+    cfg,
+    ledger,
+    registry,
+    meter,
+    usage,
+    trust,
+    // runCompanyBrief replies on the internal CUSTOMER_CHAT id; ignore it and stream to the
+    // operator's chat (the web path likewise ignores the cid and notifies its own channel).
+    reply: (_cid, text, project) => void sendFormatted(bot, chatId, text, project),
+    askApproval: async () => "deny",
   });
 
   // Receive a document or photo from the operator: save to the active project's inbox,
@@ -193,6 +209,27 @@ export function startTelegram(
       return;
     }
 
+    // Send an inbox item to the company to draft a reply (same logic as POST /api/inbox/draft).
+    if (cb.startsWith("inbox-draft:")) {
+      const id = cb.slice("inbox-draft:".length);
+      const chatId = ctx.chat?.id ?? 0;
+      await ctx.answerCallbackQuery("drafting…");
+      if (!inbox) return;
+      await ctx.editMessageReplyMarkup(); // drop the button while the company drafts
+      void bot.api.sendMessage(chatId, "⏳ the company is drafting a reply…");
+      const draft = await draftInboxReply(inbox, id, "", briefDeps(chatId));
+      if (draft === undefined) {
+        await bot.api.sendMessage(chatId, "That message is no longer in the inbox.");
+        return;
+      }
+      const view = renderInboxItem(inbox, id);
+      if (view) {
+        const kb = inboxItemKeyboard(view.item.id, view.item.status);
+        await bot.api.sendMessage(chatId, view.text, kb ? { reply_markup: kb } : undefined);
+      }
+      return;
+    }
+
     // Tap a loop run button.
     if (cb.startsWith("runloop:")) {
       const loop = matchLoop(cb.slice("runloop:".length));
@@ -232,8 +269,8 @@ function inboxKeyboard(items: InboxListEntry[]): InlineKeyboard {
 }
 
 /** Per-item action buttons, gated by status — mirrors the web review loop's per-row actions.
- *  Returns undefined when a status offers no actions (e.g. while drafting or once replied).
- *  Slice 1 is view-only; the draft/edit/send actions are wired in later slices. */
-function inboxItemKeyboard(_id: string, _status: string): InlineKeyboard | undefined {
+ *  Returns undefined when a status offers no actions (e.g. while drafting or once replied). */
+function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefined {
+  if (status === "new") return new InlineKeyboard().text("🤖 Send to agent", `inbox-draft:${id}`);
   return undefined;
 }
