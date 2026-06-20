@@ -239,6 +239,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;animation:fade .5s .0
 .row{padding:6px 0;line-height:1.55;white-space:pre-wrap;word-break:break-word}
 .row.me{color:var(--muted);font-family:var(--mono);font-size:12.5px}
 .row.out{border-left:2px solid var(--accent-dim);padding-left:13px;margin:5px 0}
+.ptag{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border));padding:1px 7px;border-radius:6px;margin-right:8px;vertical-align:1px}
 .fe{margin:auto;color:var(--faint);font-family:var(--mono);font-size:12px;text-align:center;line-height:1.7}
 .compose{display:flex;gap:10px;padding:13px 18px;border-top:1px solid var(--border);background:var(--panel)}
 .compose input{flex:1;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:var(--ink);color:var(--fg);font-family:var(--sans);font-size:14px;outline:none}
@@ -366,7 +367,7 @@ function say(text){var v=(text||'').trim();if(!v)return;feedAdd('› '+esc(v),'m
 
 var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);
- if(e.type==='message'){feedAdd(esc(e.text),'out');}
+ if(e.type==='message'){feedAdd((e.project?'<span class="ptag">'+esc(e.project)+'</span>':'')+esc(e.text),'out');}
  else if(e.type==='projects'){loadState();}
  else if(e.type==='escalation'){if(fempty){feed.innerHTML='';fempty=false;}
   var c=document.createElement('div');c.className='escc';c.innerHTML='⚠ '+esc(e.reason);

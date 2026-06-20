@@ -69,7 +69,7 @@ export function startTelegram(
       registry,
       meter,
       usage,
-      reply: (cid, text) => void bot.api.sendMessage(cid, text),
+      reply: (cid, text, project) => void bot.api.sendMessage(cid, project ? `[${project}] ${text}` : text),
       askApproval: (cid, reason) =>
         new Promise<"allow" | "deny">((resolve) => {
           const token = crypto.randomUUID();

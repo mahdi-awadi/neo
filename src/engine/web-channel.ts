@@ -18,7 +18,7 @@ import type { UsageMeter } from "./usage";
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
 
 export type WebEvent =
-  | { type: "message"; text: string }
+  | { type: "message"; text: string; project?: string }
   | { type: "escalation"; id: string; reason: string }
   | { type: "projects"; text: string; items: SelectableProject[] }
   | { type: "loops"; items: LoopInfo[] };
@@ -55,7 +55,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   const deps: PipelineDeps = {
     ...opts.engine,
     usage: opts.usage,
-    reply: (_chatId, text) => emit({ type: "message", text }),
+    reply: (_chatId, text, project) => emit({ type: "message", text, project }),
     askApproval: (_chatId, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
         const id = crypto.randomUUID();

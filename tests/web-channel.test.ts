@@ -57,6 +57,22 @@ test("send drives the pipeline and emits worker messages as events", async () =>
   expect(texts).toContain("hi from worker");
 });
 
+test("worker messages are tagged with the project they came from", async () => {
+  const dir = scratch();
+  const f = fakeStart((h) => h.onMessage("hi from worker"));
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  await ch.send(`/open ${dir} do it`);
+
+  const msg = events.find((e) => e.type === "message" && e.text === "hi from worker") as
+    | { project?: string }
+    | undefined;
+  expect(msg?.project).toBe(eng.registry.list()[0].name); // the session's short name
+});
+
 test("escalations emit an event resolvable via resolveApproval", async () => {
   const dir = scratch();
   let captured!: RunHandlers;

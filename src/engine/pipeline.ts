@@ -25,7 +25,9 @@ export interface PipelineDeps {
   meter: Meter;
   /** Usage meter — receives rate_limit_event info from runs (for /usage). */
   usage?: UsageMeter;
-  reply: (chatId: number, text: string) => void | Promise<void>;
+  /** Send a line to the channel. `project` (a session's short name) tags worker output so a
+   *  multi-project feed can show which project each message came from. */
+  reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
@@ -113,10 +115,11 @@ function startSession(
   resume?: string,
 ): SessionRun {
   const { registry, meter, ledger } = deps;
+  const project = registry.get(registryId)?.name; // tag worker output with the project name
   const run = start(
     order,
     {
-      onMessage: (t) => void deps.reply(chatId, t),
+      onMessage: (t) => void deps.reply(chatId, t, project),
       onEscalation: (reason) => deps.askApproval(chatId, reason),
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
     },
@@ -135,7 +138,7 @@ function startSession(
     registry.setStatus(registryId, "idle");
     registry.touch(registryId, now());
     registry.detachControl(registryId);
-    void deps.reply(chatId, result.ok ? `✓ ${result.summary}` : `✗ ${result.summary || "failed"}`);
+    void deps.reply(chatId, result.ok ? `✓ ${result.summary}` : `✗ ${result.summary || "failed"}`, project);
   });
 
   return run;
