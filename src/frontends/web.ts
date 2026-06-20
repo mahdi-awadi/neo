@@ -118,8 +118,9 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const token = url.searchParams.get("token") ?? "";
       const abs = channel.getFile(token);
       if (!abs) return new Response("not found", { status: 404 });
+      const safeName = basename(abs).replace(/[\r\n"]/g, "_");
       return new Response(Bun.file(abs), {
-        headers: { "content-disposition": `attachment; filename="${basename(abs)}"`, "cache-control": "no-store" },
+        headers: { "content-disposition": `attachment; filename="${safeName}"`, "cache-control": "no-store" },
       });
     }
 

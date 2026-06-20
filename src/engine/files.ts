@@ -6,7 +6,8 @@ import { join, basename, extname } from "node:path";
 
 /** Save `bytes` to `<folder>/inbox/<sanitized filename>`, deduping collisions. Returns the path. */
 export function saveInbound(folder: string, filename: string, bytes: Uint8Array): string {
-  const safe = basename(filename).replace(/[^A-Za-z0-9._-]/g, "_") || "file";
+  let safe = basename(filename).replace(/[^A-Za-z0-9._-]/g, "_") || "file";
+  if (safe === "." || safe === "..") safe = "file";
   const dir = join(folder, "inbox");
   mkdirSync(dir, { recursive: true });
   let target = join(dir, safe);

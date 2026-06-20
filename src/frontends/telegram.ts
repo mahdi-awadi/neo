@@ -50,8 +50,8 @@ export function startTelegram(
     reservePct: cfg.subscriptionInteractiveReservePct,
     windowMs: cfg.budgetWindowMs,
   }),
+  trust: TrustStore,
   usage?: UsageMeter,
-  trust: TrustStore = openTrustStore("data/trust.db"),
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);

@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   console.log(`  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every ${IDLE_POLL_MS / 1000}s (company exempt)`);
 
   if (cfg.telegramToken) {
-    startTelegram(cfg, ledger, admin, registry, meter, usage, trust);
+    startTelegram(cfg, ledger, admin, registry, meter, trust, usage);
     console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
 
     // Web console shares the same engine + admin; auth is Telegram-login (TOFU admin).

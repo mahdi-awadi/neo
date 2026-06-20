@@ -34,9 +34,10 @@ export async function runCompanyBrief(brief: string, deps: IngressDeps): Promise
         onEscalation: async () => "deny", // customer-driven work never auto-performs risky actions
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       },
-      { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: neoMcpServers(deps, CUSTOMER_CHAT, { dispatch: true, folder: company.order.folder }) },
+      { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: neoMcpServers(deps, CUSTOMER_CHAT, { dispatch: false, folder: company.order.folder }) },
     );
   } catch (e) {
+    deps.ledger.recordOutcome(order.id, "error", e instanceof Error ? e.message : String(e));
     deps.registry.setStatus(company.id, "idle");
     return `The company hit an error: ${e instanceof Error ? e.message : String(e)}`;
   }
@@ -46,6 +47,7 @@ export async function runCompanyBrief(brief: string, deps: IngressDeps): Promise
     deps.ledger.recordSession(order.id, result.sessionId);
   }
   deps.meter.note({ costUsd: result.costUsd }, now());
+  deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary ?? "");
   deps.registry.setStatus(company.id, "idle");
   deps.registry.touch(company.id, now());
   return result.summary || (result.ok ? "Done." : "The company couldn't complete that.");

@@ -3,7 +3,7 @@
 // tracked, governed Neo sub-project (registry → dashboard, escalations → operator, metered),
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -127,10 +127,19 @@ export async function sendProjectFile(
   path: string,
   caption?: string,
 ): Promise<string> {
-  const root = resolve(folder);
-  const abs = resolve(folder, path);
-  if (abs !== root && !abs.startsWith(root + sep)) return `refused: ${path} is outside the project folder`;
-  if (!existsSync(abs)) return `not found: ${path}`;
+  const root = realpathSync(resolve(folder));
+  // Lexical pre-check: reject obvious traversal before touching the filesystem.
+  const lexAbs = resolve(folder, path);
+  if (lexAbs === root || !lexAbs.startsWith(root + sep)) return `refused: ${path} is outside project`;
+  // Symlink-safe check: resolve symlinks for existing paths and re-verify confinement.
+  let abs: string;
+  try {
+    abs = realpathSync(lexAbs);
+  } catch {
+    return `not found: ${path}`;
+  }
+  if (abs === root || !abs.startsWith(root + sep)) return `refused: ${path} is outside project`;
+  if (!statSync(abs).isFile()) return `refused: ${path} is not a regular file`;
   await deps.sendFile?.(chatId, abs, caption);
   return `sent ${path}`;
 }

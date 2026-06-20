@@ -212,7 +212,7 @@ test("killProject refuses to kill the default company project", () => {
   expect(registry.get("company")).toBeDefined(); // not removed
 });
 
-test("/trust on then /trust toggles and reports trust for the active project", () => {
+test("/trust on refuses blanket-trust on the company fallback (no explicit project selected)", () => {
   const registry = createRegistry();
   const o = order({ id: "company", folder: "/home/neo/agent", chatId: -1 });
   registry.add(o, 0);
@@ -220,9 +220,26 @@ test("/trust on then /trust toggles and reports trust for the active project", (
   const trust = openTrustStore(":memory:");
   const d = { registry, ledger: openLedger(":memory:"), trust, now: () => 1 };
 
+  // /trust on must refuse when the company is the only fallback target
+  const result = handleCommand("/trust on", 5, d)!;
+  expect(result.text).toContain("Use /use <project> first");
+  expect(trust.isTrusted("/home/neo/agent")).toBe(false);
+});
+
+test("/trust on then /trust toggles and reports trust when a project is explicitly selected", () => {
+  const registry = createRegistry();
+  const company = order({ id: "company", folder: "/home/neo/agent", chatId: -1 });
+  registry.add(company, 0);
+  registry.setDefault(company.id);
+  const proj = order({ id: "proj1", folder: "/home/neo/myproject", chatId: 5 });
+  registry.add(proj, 0);
+  registry.setActive(5, proj.id); // chatId 5 has explicitly selected proj1
+  const trust = openTrustStore(":memory:");
+  const d = { registry, ledger: openLedger(":memory:"), trust, now: () => 1 };
+
   expect(handleCommand("/trust on", 5, d)!.text).toContain("🔓");
-  expect(trust.isTrusted("/home/neo/agent")).toBe(true);
+  expect(trust.isTrusted("/home/neo/myproject")).toBe(true);
   expect(handleCommand("/trust", 5, d)!.text).toContain("trusted");
   expect(handleCommand("/trust off", 5, d)!.text).toContain("🔒");
-  expect(trust.isTrusted("/home/neo/agent")).toBe(false);
+  expect(trust.isTrusted("/home/neo/myproject")).toBe(false);
 });
