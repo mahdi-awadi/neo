@@ -6,6 +6,23 @@ function order(task = "do it", folder = "/tmp"): Order {
   return { id: "o1", source: "neo", folder, task, chatId: 1, createdAt: 1 };
 }
 
+test("runOrder forwards effort and mcpServers into the SDK options", async () => {
+  let seen: { effort?: unknown; mcpServers?: unknown } = {};
+  const q = (args: { prompt: unknown; options: { effort?: unknown; mcpServers?: unknown } }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    { query: q as never, effort: "low", mcpServers: { neo: { x: 1 } } },
+  );
+  expect(seen.effort).toBe("low");
+  expect(seen.mcpServers).toEqual({ neo: { x: 1 } });
+});
+
 // --- Single-shot fake (Phase-1 runOrder): ignores prompt, yields a finite stream. ---
 function fakeQuery(reqs: Array<{ tool: string; input: Record<string, unknown> }>) {
   const decisions: Array<{ behavior: string; updatedInput?: unknown; message?: string }> = [];

@@ -33,11 +33,18 @@ export interface RunHandlers {
   onRateLimit?: (info: RateLimitInfo) => void;
 }
 
-/** Per-run dependencies/config: an injectable query (tests) and an optional resume id. */
+/** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Per-run dependencies/config: an injectable query (tests) and optional SDK options. */
 export interface RunDeps {
   query?: QueryFn;
   /** Resume a prior SDK session id (idle-close → resume). */
   resume?: string;
+  /** Reasoning effort for this session (the chief-of-staff runs "low" for fast routing). */
+  effort?: EffortLevel;
+  /** Extra in-process MCP servers/tools (e.g. the default project's `dispatch` tool). */
+  mcpServers?: Record<string, unknown>;
 }
 
 export interface RunResult {
@@ -172,9 +179,13 @@ function createInputChannel(first: SdkUserMessage) {
   };
 }
 
-// Only-defined keys survive into the SDK options (so an absent resume isn't sent as undefined).
+// Only-defined keys survive into the SDK options (so absent fields aren't sent as undefined).
 function runConfig(deps: RunDeps): Record<string, unknown> {
-  return deps.resume ? { resume: deps.resume } : {};
+  const c: Record<string, unknown> = {};
+  if (deps.resume) c.resume = deps.resume;
+  if (deps.effort) c.effort = deps.effort;
+  if (deps.mcpServers) c.mcpServers = deps.mcpServers;
+  return c;
 }
 
 /** Single-shot: open `order.folder` and run one task to completion. */

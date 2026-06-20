@@ -11,10 +11,11 @@ import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
-import { startOrder, type RunHandlers, type SessionRun } from "./session-runner";
+import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
+import { dispatchMcpServers } from "./dispatch";
 
 /** Start a live session. Injectable for tests; defaults to the real SDK-backed runner. */
-type StartFn = (order: Order, handlers: RunHandlers, deps?: { resume?: string }) => SessionRun;
+type StartFn = (order: Order, handlers: RunHandlers, deps?: RunDeps) => SessionRun;
 
 export interface PipelineDeps {
   cfg: NeoConfig;
@@ -66,7 +67,7 @@ export async function handleMessage(
     registry.setStatus(live.id, "running");
     registry.touch(live.id, now());
     await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
-    return startSession(resumed, live.id, chatId, deps, now, start, live.sdkSessionId || undefined);
+    return startSession(resumed, live.id, chatId, deps, now, start, runConfigFor(live.id, registry, deps, chatId, live.sdkSessionId));
   }
 
   // 2. Parse a new order.
@@ -97,7 +98,24 @@ export async function handleMessage(
 
   // 6. Register the project and start its live session (control handle for follow-up/kill/idle).
   const session = registry.add(parsed, now());
-  return startSession(parsed, session.id, chatId, deps, now, start, resume || undefined);
+  return startSession(parsed, session.id, chatId, deps, now, start, { resume: resume || undefined });
+}
+
+/**
+ * Build the SDK run-config for a session. The default project ("the company") runs at "low" effort
+ * (fast routing/deciding) and gets the `dispatch` tool wired to this channel; every other project
+ * just carries its resume id.
+ */
+function runConfigFor(
+  id: string,
+  registry: Registry,
+  deps: PipelineDeps,
+  chatId: number,
+  sdkSessionId: string,
+): RunDeps {
+  const base: RunDeps = { resume: sdkSessionId || undefined };
+  if (registry.getDefault()?.id !== id) return base;
+  return { ...base, effort: "low", mcpServers: dispatchMcpServers(deps, chatId) };
 }
 
 /**
@@ -113,7 +131,7 @@ function startSession(
   deps: PipelineDeps,
   now: () => number,
   start: StartFn,
-  resume?: string,
+  runDeps: RunDeps = {},
 ): SessionRun {
   const { registry, meter, ledger } = deps;
   const project = registry.get(registryId)?.name; // tag worker output with the project name
@@ -124,7 +142,7 @@ function startSession(
       onEscalation: (reason) => deps.askApproval(chatId, reason),
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
     },
-    resume ? { resume } : {},
+    runDeps,
   );
   registry.attachControl(registryId, run);
 
