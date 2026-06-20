@@ -13,6 +13,7 @@ import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { handleMessage } from "../engine/pipeline";
 import { handleCommand, selectProject, type SelectableProject } from "../engine/commands";
+import { handleLoop } from "../engine/loops";
 
 export function startTelegram(
   cfg: NeoConfig,
@@ -40,6 +41,9 @@ export function startTelegram(
     const userId = ctx.from?.id;
     if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
+
+    // /loop runs a long verifiable loop in the background (streams its own progress).
+    if (handleLoop(ctx.message.text, chatId, { reply: (cid, t) => void bot.api.sendMessage(cid, t) })) return;
 
     // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
     // order or a follow-up handled by the pipeline.

@@ -5,6 +5,7 @@
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
 import { handleMessage, type PipelineDeps } from "./pipeline";
 import { handleCommand, selectProject as engineSelectProject, type SelectableProject } from "./commands";
+import { handleLoop } from "./loops";
 import type { UsageMeter } from "./usage";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -50,6 +51,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
 
   return {
     send: async (text) => {
+      // /loop runs a long verifiable loop in the background, streaming progress as messages.
+      if (handleLoop(text, opts.chatId, { reply: (_c, t) => emit({ type: "message", text: t }) })) return;
+
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
       const command = handleCommand(text, opts.chatId, {
