@@ -4,8 +4,8 @@
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
 import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { join, resolve, sep } from "node:path";
+import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Order } from "../types";
 import type { Ledger } from "./ledger";
@@ -32,6 +32,8 @@ export interface DispatchDeps {
   trust: TrustStore;
   reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
+  /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
+  sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
 }
 
 type RunFn = typeof runOrder;
@@ -117,12 +119,45 @@ export async function dispatchToProject(
   return result.summary || (result.ok ? "Done." : "Failed.");
 }
 
-/** Build the `mcpServers` record giving the default project its `dispatch` tool. */
-export function dispatchMcpServers(deps: DispatchDeps, replyChat: number): Record<string, unknown> {
-  const server = createSdkMcpServer({
-    name: "neo",
-    version: "1.0.0",
-    tools: [
+/** Send a file the worker produced, but only if `path` is inside `folder`. Returns a status string. */
+export async function sendProjectFile(
+  deps: { sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void> },
+  chatId: number,
+  folder: string,
+  path: string,
+  caption?: string,
+): Promise<string> {
+  const root = resolve(folder);
+  const abs = resolve(folder, path);
+  if (abs !== root && !abs.startsWith(root + sep)) return `refused: ${path} is outside the project folder`;
+  if (!existsSync(abs)) return `not found: ${path}`;
+  await deps.sendFile?.(chatId, abs, caption);
+  return `sent ${path}`;
+}
+
+/** Build the project's in-process MCP tools: `send_file` always; `dispatch` only for the company. */
+export function neoMcpServers(
+  deps: DispatchDeps,
+  replyChat: number,
+  opts: { dispatch: boolean; folder: string },
+): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: SdkMcpToolDefinition<any>[] = [
+    tool(
+      "send_file",
+      "Send a file you produced in THIS project back to the operator (Telegram/web). `path` must be inside the project folder.",
+      {
+        path: z.string().describe("path to the file to send, inside the project folder"),
+        caption: z.string().optional().describe("optional caption / note"),
+      },
+      async (args: { path: string; caption?: string }) => {
+        const out = await sendProjectFile(deps, replyChat, opts.folder, args.path, args.caption);
+        return { content: [{ type: "text" as const, text: out }] };
+      },
+    ),
+  ];
+  if (opts.dispatch) {
+    tools.push(
       tool(
         "dispatch",
         "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. eticket-v3, gold). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt.",
@@ -135,7 +170,8 @@ export function dispatchMcpServers(deps: DispatchDeps, replyChat: number): Recor
           return { content: [{ type: "text" as const, text: out }] };
         },
       ),
-    ],
-  });
+    );
+  }
+  const server = createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
   return { neo: server };
 }

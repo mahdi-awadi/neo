@@ -13,7 +13,7 @@ import type { TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { dispatchMcpServers } from "./dispatch";
+import { neoMcpServers } from "./dispatch";
 
 /** Start a live session. Injectable for tests; defaults to the real SDK-backed runner. */
 type StartFn = (order: Order, handlers: RunHandlers, deps?: RunDeps) => SessionRun;
@@ -27,6 +27,8 @@ export interface PipelineDeps {
   meter: Meter;
   /** Usage meter — receives rate_limit_event info from runs (for /usage). */
   usage?: UsageMeter;
+  /** Deliver a worker-produced file back to the channel (the `send_file` tool calls this). */
+  sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
   /** Per-project trust — when a folder is trusted, risky tools auto-approve. */
   trust: TrustStore;
   /** Send a line to the channel. `project` (a session's short name) tags worker output so a
@@ -101,13 +103,15 @@ export async function handleMessage(
 
   // 6. Register the project and start its live session (control handle for follow-up/kill/idle).
   const session = registry.add(parsed, now());
-  return startSession(parsed, session.id, chatId, deps, now, start, { resume: resume || undefined });
+  return startSession(parsed, session.id, chatId, deps, now, start, {
+    resume: resume || undefined,
+    mcpServers: neoMcpServers(deps, chatId, { dispatch: false, folder: parsed.folder }),
+  });
 }
 
 /**
- * Build the SDK run-config for a session. The default project ("the company") runs at "low" effort
- * (fast routing/deciding) and gets the `dispatch` tool wired to this channel; every other project
- * just carries its resume id.
+ * Build the SDK run-config for a session. Every project gets `send_file`. The default project
+ * ("the company") also gets the `dispatch` tool and runs at "low" effort (fast routing/deciding).
  */
 function runConfigFor(
   id: string,
@@ -116,9 +120,13 @@ function runConfigFor(
   chatId: number,
   sdkSessionId: string,
 ): RunDeps {
-  const base: RunDeps = { resume: sdkSessionId || undefined };
-  if (registry.getDefault()?.id !== id) return base;
-  return { ...base, effort: "low", mcpServers: dispatchMcpServers(deps, chatId) };
+  const folder = registry.get(id)?.order.folder ?? "/";
+  const isCompany = registry.getDefault()?.id === id;
+  const base: RunDeps = {
+    resume: sdkSessionId || undefined,
+    mcpServers: neoMcpServers(deps, chatId, { dispatch: isCompany, folder }),
+  };
+  return isCompany ? { ...base, effort: "low" } : base;
 }
 
 /**

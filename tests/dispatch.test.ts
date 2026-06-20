@@ -1,8 +1,8 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveProject, dispatchToProject, type DispatchDeps } from "../src/engine/dispatch";
+import { resolveProject, dispatchToProject, sendProjectFile, type DispatchDeps } from "../src/engine/dispatch";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -88,4 +88,19 @@ test("dispatchToProject reports a clear error for an unknown project (and never 
     root: "/nonexistent",
   });
   expect(out.toLowerCase()).toContain("no project");
+});
+
+test("sendProjectFile sends a file inside the folder and refuses one outside it", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "neo-send-"));
+  writeFileSync(join(folder, "report.txt"), "ok");
+  const sent: Array<{ path: string; caption?: string }> = [];
+  const deps = { sendFile: (_c: number, path: string, caption?: string) => void sent.push({ path, caption }) };
+
+  const ok = await sendProjectFile(deps, 1, folder, "report.txt", "here");
+  expect(ok).toContain("sent");
+  expect(sent[0].path).toBe(join(folder, "report.txt"));
+
+  const bad = await sendProjectFile(deps, 1, folder, "../escape.txt");
+  expect(bad).toContain("outside");
+  expect(sent.length).toBe(1); // not sent
 });

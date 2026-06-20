@@ -3,7 +3,7 @@
 import type { NeoConfig } from "../config";
 import type { Order } from "../types";
 import { runOrder, type RunResult } from "./session-runner";
-import { dispatchMcpServers, type DispatchDeps } from "./dispatch";
+import { neoMcpServers, type DispatchDeps } from "./dispatch";
 
 /** Reserved chat id for company runs driven by a customer brief (never a real operator chat). */
 export const CUSTOMER_CHAT = -3;
@@ -34,7 +34,7 @@ export async function runCompanyBrief(brief: string, deps: IngressDeps): Promise
         onEscalation: async () => "deny", // customer-driven work never auto-performs risky actions
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       },
-      { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: dispatchMcpServers(deps, CUSTOMER_CHAT) },
+      { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: neoMcpServers(deps, CUSTOMER_CHAT, { dispatch: true, folder: company.order.folder }) },
     );
   } catch (e) {
     deps.registry.setStatus(company.id, "idle");
