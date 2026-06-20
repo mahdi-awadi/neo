@@ -9,6 +9,7 @@ import { openAdminStore } from "../src/engine/admin";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
 import { createSessionStore } from "../src/engine/web-session";
+import { openTrustStore } from "../src/engine/trust";
 import type { NeoConfig } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
@@ -58,7 +59,7 @@ function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnTy
     registry,
     admin,
     instance: createWebApp({
-      engine: { cfg: cfg(), ledger: openLedger(":memory:"), registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), start: over.start },
+      engine: { cfg: cfg(), ledger: openLedger(":memory:"), registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
       botToken: TOKEN,
       botUsername: "neo_bot",
       sessions: createSessionStore({ secret: "websecret", ttlSec: 100000 }),

@@ -9,6 +9,7 @@ import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
+import type { TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
@@ -26,6 +27,8 @@ export interface PipelineDeps {
   meter: Meter;
   /** Usage meter — receives rate_limit_event info from runs (for /usage). */
   usage?: UsageMeter;
+  /** Per-project trust — when a folder is trusted, risky tools auto-approve. */
+  trust: TrustStore;
   /** Send a line to the channel. `project` (a session's short name) tags worker output so a
    *  multi-project feed can show which project each message came from. */
   reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
@@ -144,6 +147,11 @@ function startSession(
       },
       onEscalation: (reason) => deps.askApproval(chatId, reason),
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
+      autoApprove: () => deps.trust.isTrusted(order.folder),
+      onAutoApprove: (reason) => {
+        ledger.recordAutoApproval(order.id, reason);
+        void deps.reply(chatId, `🔓 auto-approved: ${reason}`, project);
+      },
     },
     runDeps,
   );

@@ -9,8 +9,10 @@ import type { Registry } from "../engine/registry";
 import type { Meter } from "../engine/budget";
 import type { AdminStore } from "../engine/admin";
 import type { UsageMeter } from "../engine/usage";
+import type { TrustStore } from "../engine/trust";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
+import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
@@ -42,6 +44,7 @@ export function startTelegram(
     windowMs: cfg.budgetWindowMs,
   }),
   usage?: UsageMeter,
+  trust: TrustStore = openTrustStore("data/trust.db"),
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);
@@ -85,6 +88,7 @@ export function startTelegram(
       registry,
       meter,
       usage,
+      trust,
       reply: (cid, text, project) => void sendFormatted(bot, cid, text, project),
       askApproval: (cid, reason) =>
         new Promise<"allow" | "deny">((resolve) => {

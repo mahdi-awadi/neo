@@ -11,6 +11,7 @@ import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
 import { createMeter } from "./engine/budget";
 import { createUsageMeter } from "./engine/usage";
+import { openTrustStore } from "./engine/trust";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { startTelegram } from "./frontends/telegram";
@@ -43,6 +44,7 @@ async function main(): Promise<void> {
   const ledger = openLedger("data/ledger.db");
   const admin = openAdminStore("data/admin.db");
   const registry = createRegistry();
+  const trust = openTrustStore("data/trust.db");
   const meter = createMeter({
     windowBudgetUsd: cfg.budgetWindowUsd,
     reservePct: cfg.subscriptionInteractiveReservePct,
@@ -65,7 +67,7 @@ async function main(): Promise<void> {
   console.log(`  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every ${IDLE_POLL_MS / 1000}s (company exempt)`);
 
   if (cfg.telegramToken) {
-    startTelegram(cfg, ledger, admin, registry, meter, usage);
+    startTelegram(cfg, ledger, admin, registry, meter, usage, trust);
     console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
 
     // Web console shares the same engine + admin; auth is Telegram-login (TOFU admin).
@@ -74,7 +76,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken);
     startWeb(
-      { engine: { cfg, ledger, registry, meter }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret },
+      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret },
       WEB_PORT,
       WEB_HOST,
     );

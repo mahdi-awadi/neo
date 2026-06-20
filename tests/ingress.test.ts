@@ -3,6 +3,7 @@ import { runCompanyBrief } from "../src/engine/ingress";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
+import { openTrustStore } from "../src/engine/trust";
 import { registerDefaultProject } from "../src/engine/default-project";
 import type { Order } from "../src/types";
 import type { RunHandlers, RunResult } from "../src/engine/session-runner";
@@ -22,6 +23,7 @@ test("runCompanyBrief runs the brief on the company and returns its result", asy
   const out = await runCompanyBrief("A customer asks: where is order #7? Answer them.", {
     cfg: {} as never, ledger, registry,
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
     reply: (_c, t) => void replies.push(t),
     askApproval: async () => "deny",
     run: fakeRun as never, now: () => 2,

@@ -6,6 +6,7 @@ import { resolveProject, dispatchToProject, type DispatchDeps } from "../src/eng
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
+import { openTrustStore } from "../src/engine/trust";
 import type { Order } from "../src/types";
 import type { RunHandlers, RunResult } from "../src/engine/session-runner";
 
@@ -32,6 +33,7 @@ function makeDeps() {
     ledger: openLedger(":memory:"),
     registry: createRegistry(),
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
     reply: (_c, text, project) => void replies.push({ text, project }),
     askApproval: async () => "deny",
   };

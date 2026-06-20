@@ -6,6 +6,7 @@ import { createWebChannel, type WebEvent } from "../src/engine/web-channel";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
+import { openTrustStore } from "../src/engine/trust";
 import type { NeoConfig } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
@@ -42,6 +43,7 @@ function engine(start: ReturnType<typeof fakeStart>["start"]) {
     ledger: openLedger(":memory:"),
     registry: createRegistry(),
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
     start,
   };
 }

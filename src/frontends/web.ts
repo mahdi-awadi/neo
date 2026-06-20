@@ -83,7 +83,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       }
       const result = await runCompanyBrief(body.brief.trim(), {
         cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
-        meter: deps.engine.meter, usage: deps.usage,
+        meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage,
         reply: (_c, text, project) => channel.notify(text, project),
         askApproval: async () => "deny",
       });

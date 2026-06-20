@@ -6,6 +6,7 @@ import { handleMessage } from "../src/engine/pipeline";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
+import { openTrustStore } from "../src/engine/trust";
 import type { NeoConfig } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
@@ -52,6 +53,7 @@ function harness(over: { meter?: Meter; start?: ReturnType<typeof fakeStart>["st
     ledger,
     registry,
     meter,
+    trust: openTrustStore(":memory:"),
     reply: (_c: number, t: string) => void replies.push(t),
     askApproval: async () => "allow" as const,
     start: over.start,
@@ -221,4 +223,22 @@ test("worker output touches the session so producing output counts as activity",
   handlers!.onMessage("progress line"); // worker emits output at t=5000
 
   expect(h.registry.get(id)?.lastActivityAt).toBe(5000);
+});
+
+test("a trusted project auto-approves: onAutoApprove records to the ledger and replies", async () => {
+  let handlers: RunHandlers | undefined;
+  const fs = fakeStart({ onStart: (h) => (handlers = h) });
+  const folder = scratch();
+  const trust = openTrustStore(":memory:");
+  trust.setTrust(folder, true);
+  const h = harness({ start: fs.start });
+
+  await handleMessage("/open " + folder + " do it", 7, { ...h.base, trust });
+
+  expect(handlers!.autoApprove?.()).toBe(true);
+  handlers!.onAutoApprove?.("risky shell command: git push");
+
+  const orderId = h.ledger.listRecent(1)[0].id;
+  expect(h.ledger.autoApprovalsFor(orderId)).toContain("risky shell command: git push");
+  expect(h.replies.some((r) => r.includes("auto-approved"))).toBe(true);
 });

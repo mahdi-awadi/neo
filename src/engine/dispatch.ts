@@ -12,6 +12,7 @@ import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
+import type { TrustStore } from "./trust";
 import { runOrder, type RunResult } from "./session-runner";
 import { DEFAULT_PROJECT } from "./default-project";
 
@@ -28,6 +29,7 @@ export interface DispatchDeps {
   registry: Registry;
   meter: Meter;
   usage?: UsageMeter;
+  trust: TrustStore;
   reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
 }
@@ -91,6 +93,11 @@ export async function dispatchToProject(
         onMessage: (t) => void deps.reply(replyChat, t, name),
         onEscalation: (reason) => deps.askApproval(replyChat, reason),
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
+        autoApprove: () => deps.trust.isTrusted(folder),
+        onAutoApprove: (reason) => {
+          deps.ledger.recordAutoApproval(order.id, reason);
+          void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
+        },
       },
       { resume },
     );
