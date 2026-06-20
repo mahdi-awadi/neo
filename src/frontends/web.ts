@@ -367,7 +367,7 @@ function say(text){var v=(text||'').trim();if(!v)return;feedAdd('› '+esc(v),'m
 
 var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);
- if(e.type==='message'){feedAdd((e.project?'<span class="ptag">'+esc(e.project)+'</span>':'')+esc(e.text),'out');}
+ if(e.type==='message'){feedAdd((e.project?'<span class="ptag">'+esc(e.project)+'</span>':'')+e.text,'out');}
  else if(e.type==='projects'){loadState();}
  else if(e.type==='escalation'){if(fempty){feed.innerHTML='';fempty=false;}
   var c=document.createElement('div');c.className='escc';c.innerHTML='⚠ '+esc(e.reason);

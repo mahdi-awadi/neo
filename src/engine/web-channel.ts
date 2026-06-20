@@ -12,6 +12,7 @@ import {
 } from "./commands";
 import { handleLoop, listLoops, matchLoop, startLoop, type LoopInfo } from "./loops";
 import { dashboardSnapshot, type DashState } from "./dashboard";
+import { mdToHtml } from "./format";
 import type { UsageMeter } from "./usage";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -51,11 +52,14 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     events.push(e);
     for (const l of listeners) l(e);
   }
+  // Worker/engine lines are Markdown — render to safe HTML once, here, so the feed shows
+  // formatting (bold, code, bullets) instead of raw ** and #.
+  const message = (text: string, project?: string) => emit({ type: "message", text: mdToHtml(text), project });
 
   const deps: PipelineDeps = {
     ...opts.engine,
     usage: opts.usage,
-    reply: (_chatId, text, project) => emit({ type: "message", text, project }),
+    reply: (_chatId, text, project) => message(text, project),
     askApproval: (_chatId, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
         const id = crypto.randomUUID();
@@ -72,7 +76,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => emit({ type: "message", text: t }) })) return;
+      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t) })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
@@ -85,7 +89,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         if (command.select?.length) {
           emit({ type: "projects", text: command.text, items: command.select });
         } else {
-          emit({ type: "message", text: command.text });
+          message(command.text);
         }
         return;
       }
@@ -125,7 +129,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     runLoop(name) {
       const loop = matchLoop(name);
-      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => emit({ type: "message", text: t }) });
+      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t) });
     },
     state() {
       return dashboardSnapshot({

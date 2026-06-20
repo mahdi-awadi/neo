@@ -14,6 +14,22 @@ import { createMeter } from "../engine/budget";
 import { handleMessage } from "../engine/pipeline";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
+import { mdToHtml } from "../engine/format";
+
+/** Send worker output as formatted HTML (bold/code/bullets), falling back to plain text if
+ *  Telegram rejects the markup. `project` tags which project the line came from. */
+async function sendFormatted(bot: Bot, chatId: number, text: string, project?: string): Promise<void> {
+  const tag = project ? `<b>[${project.replace(/[&<>]/g, "")}]</b> ` : "";
+  try {
+    await bot.api.sendMessage(chatId, tag + mdToHtml(text), { parse_mode: "HTML" });
+  } catch {
+    try {
+      await bot.api.sendMessage(chatId, (project ? `[${project}] ` : "") + text);
+    } catch {
+      // give up silently — a dropped progress line shouldn't crash the bot
+    }
+  }
+}
 
 export function startTelegram(
   cfg: NeoConfig,
@@ -69,7 +85,7 @@ export function startTelegram(
       registry,
       meter,
       usage,
-      reply: (cid, text, project) => void bot.api.sendMessage(cid, project ? `[${project}] ${text}` : text),
+      reply: (cid, text, project) => void sendFormatted(bot, cid, text, project),
       askApproval: (cid, reason) =>
         new Promise<"allow" | "deny">((resolve) => {
           const token = crypto.randomUUID();
