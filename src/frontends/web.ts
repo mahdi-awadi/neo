@@ -240,6 +240,13 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;animation:fade .5s .0
 .row.me{color:var(--muted);font-family:var(--mono);font-size:12.5px}
 .row.out{border-left:2px solid var(--accent-dim);padding-left:13px;margin:5px 0}
 .ptag{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border));padding:1px 7px;border-radius:6px;margin-right:8px;vertical-align:1px}
+.row.out code{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+.row.out pre{font-family:var(--mono);font-size:12px;background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:11px 13px;overflow-x:auto;margin:8px 0;line-height:1.45}
+.row.out a{color:var(--accent)}
+table.md{border-collapse:collapse;margin:9px 0;font-size:13px;width:auto;max-width:100%;display:block;overflow-x:auto}
+table.md th,table.md td{border:1px solid var(--border);padding:6px 12px;text-align:left;white-space:nowrap}
+table.md th{background:color-mix(in srgb,var(--accent) 9%,var(--panel));color:var(--fg);font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;font-weight:500}
+table.md tbody tr:nth-child(even){background:var(--panel2)}
 .fe{margin:auto;color:var(--faint);font-family:var(--mono);font-size:12px;text-align:center;line-height:1.7}
 .compose{display:flex;gap:10px;padding:13px 18px;border-top:1px solid var(--border);background:var(--panel)}
 .compose input{flex:1;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:var(--ink);color:var(--fg);font-family:var(--sans);font-size:14px;outline:none}

@@ -21,7 +21,7 @@ import { mdToHtml } from "../engine/format";
 async function sendFormatted(bot: Bot, chatId: number, text: string, project?: string): Promise<void> {
   const tag = project ? `<b>[${project.replace(/[&<>]/g, "")}]</b> ` : "";
   try {
-    await bot.api.sendMessage(chatId, tag + mdToHtml(text), { parse_mode: "HTML" });
+    await bot.api.sendMessage(chatId, tag + mdToHtml(text, { tables: "pre" }), { parse_mode: "HTML" });
   } catch {
     try {
       await bot.api.sendMessage(chatId, (project ? `[${project}] ` : "") + text);

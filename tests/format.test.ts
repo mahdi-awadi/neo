@@ -40,3 +40,29 @@ test("a script injection is neutralised, not rendered", () => {
 test("newlines are preserved", () => {
   expect(mdToHtml("a\nb")).toBe("a\nb");
 });
+
+const TABLE = "| City | Region |\n|------|--------|\n| Baghdad | Central |\n| Erbil | North |";
+
+test("renders a Markdown table as an HTML <table> for the web", () => {
+  const html = mdToHtml(TABLE);
+  expect(html).toContain("<table");
+  expect(html).toContain("<th>City</th>");
+  expect(html).toContain("<td>Baghdad</td>");
+  expect(html).toContain("<td>North</td>");
+  expect(html).not.toContain("|---"); // no raw pipes left
+});
+
+test("renders a table as an aligned <pre> block for Telegram", () => {
+  const tg = mdToHtml(TABLE, { tables: "pre" });
+  expect(tg).toContain("<pre>");
+  expect(tg).not.toContain("<table");
+  expect(tg).toContain("Baghdad");
+  expect(tg).toContain("City  "); // padded/aligned column
+});
+
+test("a table with surrounding prose keeps the prose and renders the table", () => {
+  const html = mdToHtml(`Here is the market:\n${TABLE}\nThat's all.`);
+  expect(html).toContain("Here is the market:");
+  expect(html).toContain("<table");
+  expect(html).toContain("That&#39;s all.".replace("&#39;", "'")); // apostrophe not escaped
+});
