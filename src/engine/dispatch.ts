@@ -127,7 +127,12 @@ export async function sendProjectFile(
   path: string,
   caption?: string,
 ): Promise<string> {
-  const root = realpathSync(resolve(folder));
+  let root: string;
+  try {
+    root = realpathSync(resolve(folder));
+  } catch {
+    return `refused: project folder does not exist`;
+  }
   // Lexical pre-check: reject obvious traversal before touching the filesystem.
   const lexAbs = resolve(folder, path);
   if (lexAbs === root || !lexAbs.startsWith(root + sep)) return `refused: ${path} is outside project`;
