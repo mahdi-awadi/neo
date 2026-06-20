@@ -167,6 +167,8 @@ test("/list returns selectable projects with the active one flagged", () => {
   const beta = res.select?.find((s) => s.label === "beta");
   expect(beta?.active).toBe(true);
   expect(beta?.id).toBe(b.id);
+  expect(beta?.folder).toBe("/p/beta");
+  expect(beta?.status).toBe("running");
 });
 
 test("selectProject sets the active project and returns the refreshed list", () => {

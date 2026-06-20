@@ -18,11 +18,13 @@ export interface CommandDeps {
   now?: () => number;
 }
 
-/** A tappable project in a /list result — frontends render these as buttons. */
+/** A tappable project in a /list result — frontends render these as buttons/rows. */
 export interface SelectableProject {
   label: string;
   id: string;
   active: boolean;
+  folder: string;
+  status: string;
 }
 
 /** What a command returns: text to show, plus optional tappable projects. */
@@ -123,7 +125,13 @@ function renderList(registry: Registry, now: number, chatId: number): CommandRes
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
   const activeId = registry.findByChat(chatId)?.id;
-  const select: SelectableProject[] = sessions.map((s) => ({ label: s.name, id: s.id, active: s.id === activeId }));
+  const select: SelectableProject[] = sessions.map((s) => ({
+    label: s.name,
+    id: s.id,
+    active: s.id === activeId,
+    folder: s.order.folder,
+    status: s.status,
+  }));
   const text = sessions
     .map((s) => {
       const star = s.id === activeId ? "★ " : "";
