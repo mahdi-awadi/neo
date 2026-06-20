@@ -6,3 +6,6 @@ data/
 dist/
 # Runtime company/tenant data + secrets live here once ported — never committed.
 company/
+
+# The default project ("the company") — runtime config, memory, secrets
+/agent/

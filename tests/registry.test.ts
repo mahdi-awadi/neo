@@ -28,6 +28,16 @@ test("add registers a session addressable by id, name, and chat", () => {
   expect(reg.findByName("alpha")).toEqual(s);
 });
 
+test("tracks a default (fallback) session, gone once removed", () => {
+  const reg = createRegistry();
+  const s = reg.add(order({ folder: "/home/neo/agent", chatId: -1 }), 1);
+  expect(reg.getDefault()).toBeUndefined();
+  reg.setDefault(s.id);
+  expect(reg.getDefault()?.id).toBe(s.id);
+  reg.remove(s.id);
+  expect(reg.getDefault()).toBeUndefined();
+});
+
 test("tracks two concurrent sessions independently", () => {
   const reg = createRegistry();
   const a = reg.add(order({ folder: "/p/alpha", chatId: 1 }), 1);

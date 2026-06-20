@@ -116,6 +116,25 @@ test("routes a plain-text message to the live session as a follow-up", async () 
   expect(h.replies.some((r) => r.includes("added"))).toBe(true);
 });
 
+test("a free-text order with no active project routes to the default project", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  // a default (idle, resumable) project is registered — the chief-of-staff fallback
+  const def = h.registry.add(
+    { id: "def", source: "neo", folder: "/home/neo/agent", task: "init", chatId: -1, createdAt: 1 },
+    1,
+  );
+  h.registry.setDefault(def.id);
+  h.registry.setStatus(def.id, "idle");
+  h.registry.setSdkSessionId(def.id, "sdk-def");
+
+  await handleMessage("check docker status in eticket-v3", 9, h.base);
+
+  expect(f.resumeSeen()).toBe("sdk-def"); // resumed the default project
+  expect(h.replies.some((r) => r.includes("not an order"))).toBe(false);
+  expect(h.replies.some((r) => r.toLowerCase().includes("resum"))).toBe(true);
+});
+
 test("throttles a new order when the meter is over the reserve, and does not start it", async () => {
   const dir = scratch();
   const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // available $8

@@ -29,12 +29,17 @@ export interface Registry {
   /** Drop the control handle when a run ends, keeping the session (now resumable, not live). */
   detachControl(id: string): void;
   getControl(id: string): SessionControl | undefined;
+  /** Mark the always-on default project — the fallback target for free-text with no active session. */
+  setDefault(id: string): void;
+  /** The default project if it's still registered (else undefined). */
+  getDefault(): SessionInfo | undefined;
 }
 
 export function createRegistry(): Registry {
   const sessions = new Map<string, SessionInfo>();
   const controls = new Map<string, SessionControl>();
   const active = new Map<number, string>(); // chatId -> selected session id
+  let defaultId: string | undefined; // the always-on default project (fallback target)
 
   function uniqueName(base: string): string {
     const taken = new Set([...sessions.values()].map((s) => s.name));
@@ -68,6 +73,8 @@ export function createRegistry(): Registry {
     attachControl: (id, control) => void controls.set(id, control),
     detachControl: (id) => void controls.delete(id),
     getControl: (id) => controls.get(id),
+    setDefault: (id) => void (defaultId = id),
+    getDefault: () => (defaultId ? sessions.get(defaultId) : undefined),
     findByChat(chatId) {
       const activeId = active.get(chatId);
       if (activeId) {

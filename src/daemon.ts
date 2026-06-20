@@ -15,6 +15,8 @@ import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { startTelegram } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
+import { startDefaultProject } from "./engine/pipeline";
+import { DEFAULT_PROJECT } from "./engine/default-project";
 
 // Idle-close: a session quiet this long is closed (its sdk id persisted for resume).
 const IDLE_CLOSE_MS = 10 * 60 * 1000;
@@ -82,6 +84,20 @@ async function main(): Promise<void> {
   } else {
     console.log("  telegram  -> NOT configured (set TELEGRAM_TOKEN in .env). Web console disabled (needs the bot for login).");
   }
+
+  // The always-on default project ("the company"): the fallback for free-text orders with no
+  // active project. Its startup turn just confirms readiness (logged); real orders arrive via the
+  // channels and reach it through registry.getDefault(). Risky tools in that init turn auto-deny.
+  startDefaultProject({
+    cfg,
+    ledger,
+    registry,
+    meter,
+    usage,
+    reply: (_cid, text) => console.log(`  company>  ${text}`),
+    askApproval: async () => "deny",
+  });
+  console.log(`  company   -> default project online at ${DEFAULT_PROJECT.folder} (always-on)`);
 }
 
 void main();
