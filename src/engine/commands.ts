@@ -110,12 +110,16 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
 /** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
  * frontends; same effect as /kill <name>, but addressed by the stable session id. */
 export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
+  const now = (deps.now ?? (() => Date.now()))();
+  if (deps.registry.getDefault()?.id === id) {
+    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, now, chatId).select };
+  }
   if (deps.registry.get(id)) {
     void deps.registry.getControl(id)?.interrupt();
     deps.registry.setStatus(id, "done");
     deps.registry.remove(id);
   }
-  return renderList(deps.registry, (deps.now ?? (() => Date.now()))(), chatId);
+  return renderList(deps.registry, now, chatId);
 }
 
 function humanAge(ms: number): string {
@@ -166,6 +170,7 @@ function killSession(name: string, registry: Registry): string {
   if (!name) return "Usage: /kill <name>";
   const session = registry.findByName(name);
   if (!session) return `Session not found: ${name}`;
+  if (registry.getDefault()?.id === session.id) return "🔒 the company is always-on and can't be stopped.";
   void registry.getControl(session.id)?.interrupt(); // ends the run; supervise records the outcome
   registry.setStatus(session.id, "done");
   registry.remove(session.id);

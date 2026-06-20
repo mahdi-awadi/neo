@@ -196,3 +196,16 @@ test("returns null for /open and unknown input so the pipeline handles them", ()
   expect(handleCommand("/open /x do it", 1, deps())).toBeNull();
   expect(handleCommand("just chatting", 1, deps())).toBeNull();
 });
+
+test("killProject refuses to kill the default company project", () => {
+  const registry = createRegistry();
+  const o = order({ id: "company", folder: "/home/neo/agent", chatId: -1 });
+  registry.add(o, 0);
+  registry.setDefault(o.id);
+  const d = deps({ registry });
+
+  const result = killProject("company", 1, d);
+
+  expect(result.text).toContain("always-on");
+  expect(registry.get("company")).toBeDefined(); // not removed
+});
