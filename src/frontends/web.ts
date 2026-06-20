@@ -99,7 +99,10 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 
     // --- dashboard API: structured state + form-driven actions (no command typing) ---
     if (req.method === "GET" && path === "/api/state") {
-      return Response.json(channel.state());
+      // MUST be uncacheable: Cloudflare was caching this GET (max-age=14400) and serving the
+      // dashboard a stale, empty snapshot — projects never appeared even while live. The client
+      // also appends a cache-buster query. (Telegram /list was unaffected — it bypasses the web.)
+      return Response.json(channel.state(), { headers: { "cache-control": "no-store, must-revalidate" } });
     }
 
     if (req.method === "POST" && path === "/api/open") {
@@ -300,7 +303,7 @@ function post(p,b){return fetch(p,{method:'POST',headers:{'content-type':'applic
 function fmt(n){n=n||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'k';return ''+Math.round(n);}
 function age(ms){var s=Math.floor((ms||0)/1000);if(s<60)return s+'s';var m=Math.floor(s/60);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h';return Math.floor(h/24)+'d';}
 
-function loadState(){return fetch('/api/state').then(function(r){return r.json();}).then(function(d){S=d;renderAll();});}
+function loadState(){return fetch('/api/state?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){S=d;renderAll();});}
 function renderAll(){renderRepos();renderProjects();renderLoops();renderUsage();renderRecent();}
 
 function renderRepos(){var sel=document.getElementById('repo');if(sel.dataset.n==String(S.repos.length))return;sel.dataset.n=String(S.repos.length);
