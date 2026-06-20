@@ -240,6 +240,9 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;animation:fade .5s .0
 .row.me{color:var(--muted);font-family:var(--mono);font-size:12.5px}
 .row.out{border-left:2px solid var(--accent-dim);padding-left:13px;margin:5px 0}
 .ptag{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border));padding:1px 7px;border-radius:6px;margin-right:8px;vertical-align:1px}
+#fbar{display:none;align-items:center;gap:8px;padding:8px 22px;border-bottom:1px solid var(--border);background:var(--panel);font-family:var(--mono);font-size:11px;color:var(--muted)}
+#fbar.on{display:flex}#fbar b{color:var(--accent)}
+#fbar a{margin-left:auto;color:var(--muted);cursor:pointer;text-decoration:underline;text-underline-offset:2px}#fbar a:hover{color:var(--fg)}
 .row.out code{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
 .row.out pre{font-family:var(--mono);font-size:12px;background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:11px 13px;overflow-x:auto;margin:8px 0;line-height:1.45}
 .row.out a{color:var(--accent)}
@@ -289,14 +292,15 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
  </aside>
  <main>
   <div class="top">
-   <button class="tab on" data-v="activity" onclick="tab('activity')">Activity</button>
+   <button class="tab on" data-v="activity" onclick="tab('activity');clearFilter()">Activity</button>
    <button class="tab" data-v="loops" onclick="tab('loops')">Loops</button>
    <button class="tab" data-v="usage" onclick="tab('usage')">Usage</button>
    <button class="tab" data-v="recent" onclick="tab('recent')">Recent</button>
    <span class="spacer"></span><span class="who" id="who">no active project</span>
   </div>
   <div class="view on" id="vactivity">
-   <div id="feed"><div class="fe">Open a project, or select one on the left —<br>its activity streams here.</div></div>
+   <div id="fbar"></div>
+   <div id="feed"><div class="fe" id="ph">Open a project, or select one on the left — its activity streams here.</div></div>
    <form class="compose" id="ff"><input id="msg" autocomplete="off" placeholder="message the active project — a follow-up for the AI…"><button type="submit">Send</button></form>
   </div>
   <div class="view" id="vloops"></div>
@@ -324,7 +328,7 @@ function renderProjects(){var box=document.getElementById('projects');document.g
  box.innerHTML='';var active=null;
  S.projects.forEach(function(p){var d=document.createElement('div');d.className='proj'+(p.active?' on':'');
   d.innerHTML='<span class="dot '+(p.status==='running'?'running':(p.status==='idle'?'idle':''))+'"></span><div class="meta"><div class="nm">'+esc(p.name)+'</div><div class="fo">'+esc(p.folder)+' · '+p.status+' · '+age(p.ageMs)+'</div></div>';
-  d.onclick=function(){post('/select',{id:p.id}).then(loadState);};
+  d.onclick=function(){setFilter(p.name);tab('activity');post('/select',{id:p.id}).then(loadState);};
   var k=document.createElement('button');k.className='kbtn';k.textContent='✕';k.title='kill';
   k.onclick=function(ev){ev.stopPropagation();post('/kill',{id:p.id}).then(loadState);};
   d.appendChild(k);box.appendChild(d);if(p.active)active=p;});
@@ -368,20 +372,34 @@ function tab(name){['activity','loops','usage','recent'].forEach(function(n){
  document.getElementById('v'+n).classList.toggle('on',n===name);
  var b=document.querySelector('.tab[data-v="'+n+'"]');if(b)b.classList.toggle('on',n===name);});}
 
-var feed=document.getElementById('feed');var fempty=true;
-function feedAdd(html,cls){if(fempty){feed.innerHTML='';fempty=false;}var d=document.createElement('div');d.className='row '+(cls||'');d.innerHTML=html;feed.appendChild(d);feed.scrollTop=feed.scrollHeight;return d;}
-function say(text){var v=(text||'').trim();if(!v)return;feedAdd('› '+esc(v),'me');post('/msg',{text:v});}
+var feed=document.getElementById('feed');var ph=document.getElementById('ph');var fbar=document.getElementById('fbar');
+var feedNodes=[];var filterProject=null; // null = show every project's activity
+function nodeVisible(n){return filterProject===null||n._kind==='esc'||n._project===filterProject;}
+function refreshFeed(){
+ var any=false;
+ for(var i=0;i<feedNodes.length;i++){var n=feedNodes[i];if(!n.isConnected){continue;}var v=nodeVisible(n);n.style.display=v?'':'none';if(v)any=true;}
+ ph.style.display=any?'none':'';
+ ph.textContent=filterProject?('No activity yet for '+filterProject+'.'):'Open a project, or select one on the left — its activity streams here.';
+ fbar.classList.toggle('on',filterProject!==null);
+ if(filterProject!==null)fbar.innerHTML='Showing <b>'+esc(filterProject)+'</b><a onclick="clearFilter()">show all activity</a>';
+ if(any)feed.scrollTop=feed.scrollHeight;
+}
+function setFilter(p){filterProject=p;refreshFeed();}
+function clearFilter(){filterProject=null;refreshFeed();}
+function pushFeed(node,kind,project){node._kind=kind;node._project=project||null;feedNodes.push(node);feed.appendChild(node);refreshFeed();}
+function feedMsg(html,kind,project){var d=document.createElement('div');d.className='row '+(kind==='me'?'me':'out');d.innerHTML=html;pushFeed(d,kind,project);return d;}
+function say(text){var v=(text||'').trim();if(!v)return;feedMsg('› '+esc(v),'me',filterProject);post('/msg',{text:v});}
 
 var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);
- if(e.type==='message'){feedAdd((e.project?'<span class="ptag">'+esc(e.project)+'</span>':'')+e.text,'out');}
+ if(e.type==='message'){feedMsg((e.project?'<span class="ptag">'+esc(e.project)+'</span>':'')+e.text,'out',e.project);}
  else if(e.type==='projects'){loadState();}
- else if(e.type==='escalation'){if(fempty){feed.innerHTML='';fempty=false;}
+ else if(e.type==='escalation'){
   var c=document.createElement('div');c.className='escc';c.innerHTML='⚠ '+esc(e.reason);
   var a=document.createElement('div');a.className='acts';
   ['allow','deny'].forEach(function(dec){var b=document.createElement('button');b.className='chip '+(dec==='allow'?'ok':'no');b.textContent=dec;
-   b.onclick=function(){post('/approve',{id:e.id,decision:dec});c.remove();};a.appendChild(b);});
-  c.appendChild(a);feed.appendChild(c);feed.scrollTop=feed.scrollHeight;tab('activity');}
+   b.onclick=function(){post('/approve',{id:e.id,decision:dec});c.remove();refreshFeed();};a.appendChild(b);});
+  c.appendChild(a);pushFeed(c,'esc',null);tab('activity');}
 };
 document.getElementById('ff').onsubmit=function(ev){ev.preventDefault();var m=document.getElementById('msg');say(m.value);m.value='';};
 loadState();setInterval(loadState,15000);
