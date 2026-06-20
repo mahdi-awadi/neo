@@ -52,3 +52,14 @@ test("lastSessionFor is undefined when no session was recorded for that folder/c
   expect(led.lastSessionFor("/proj", 9)).toBeUndefined();
   expect(led.lastSessionFor("/other", 9)).toBeUndefined();
 });
+
+test("records and reads auto-approvals for an order", () => {
+  const led = openLedger(":memory:");
+  led.recordAutoApproval("o1", "risky shell command: git push");
+  led.recordAutoApproval("o1", "risky shell command: rm -rf build");
+  expect(led.autoApprovalsFor("o1")).toEqual([
+    "risky shell command: git push",
+    "risky shell command: rm -rf build",
+  ]);
+  expect(led.autoApprovalsFor("o2")).toEqual([]);
+});

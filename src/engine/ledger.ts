@@ -12,6 +12,9 @@ export interface Ledger {
   /** The most recently recorded SDK session id for a folder/chat (for resume), if any. */
   lastSessionFor(folder: string, chatId: number): string | undefined;
   listRecent(limit?: number): Order[];
+  /** Audit: a risky action that trust auto-approved (the compensating control for the bypassed gate). */
+  recordAutoApproval(orderId: string, reason: string): void;
+  autoApprovalsFor(orderId: string): string[];
 }
 
 export function openLedger(path: string): Ledger {
@@ -31,6 +34,11 @@ export function openLedger(path: string): Ledger {
   db.run(
     `CREATE TABLE IF NOT EXISTS outcomes (
        order_id TEXT PRIMARY KEY, status TEXT NOT NULL, summary TEXT, at INTEGER NOT NULL
+     )`,
+  );
+  db.run(
+    `CREATE TABLE IF NOT EXISTS auto_approvals (
+       order_id TEXT NOT NULL, reason TEXT NOT NULL, at INTEGER NOT NULL
      )`,
   );
 
@@ -87,6 +95,14 @@ export function openLedger(path: string): Ledger {
         chatId: r.chat_id,
         createdAt: r.created_at,
       }));
+    },
+    recordAutoApproval(orderId, reason) {
+      db.query(`INSERT INTO auto_approvals (order_id, reason, at) VALUES (?, ?, ?)`).run(orderId, reason, Date.now());
+    },
+    autoApprovalsFor(orderId) {
+      return (
+        db.query(`SELECT reason FROM auto_approvals WHERE order_id = ? ORDER BY at`).all(orderId) as Array<{ reason: string }>
+      ).map((r) => r.reason);
     },
   };
 }
