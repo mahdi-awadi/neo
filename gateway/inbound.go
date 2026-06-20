@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -41,9 +42,11 @@ func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	in, err := cloudflare.ParseInbound(raw)
 	if err != nil {
+		log.Printf("inbound: bad payload: %v", err)
 		http.Error(w, "bad payload", http.StatusUnprocessableEntity)
 		return
 	}
+	log.Printf("inbound from %s subj=%q", in.From, in.Subject)
 	ctx := r.Context()
 	key := conversation.KeyForUser("email", in.From)
 	history, _ := g.store.Recent(ctx, key, 20)
@@ -51,6 +54,7 @@ func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 
 	answer, err := g.replyFn(ctx, history, in.Text)
 	if err != nil {
+		log.Printf("inbound: reply generation failed for %s: %v", in.From, err)
 		http.Error(w, "processing error", http.StatusBadGateway)
 		return
 	}
@@ -68,8 +72,10 @@ func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 		RecipientEmail: in.From, Subject: subject, Body: answer, Options: opts,
 	})
 	if sendErr != nil {
+		log.Printf("inbound: send failed to %s: %v", in.From, sendErr)
 		http.Error(w, "send failed", http.StatusBadGateway)
 		return
 	}
+	log.Printf("inbound: replied to %s", in.From)
 	w.WriteHeader(http.StatusOK)
 }
