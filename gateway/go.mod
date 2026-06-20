@@ -9,9 +9,12 @@ require (
 	github.com/mahdi-awadi/gopkg/ai/orchestrator v0.1.0
 	github.com/mahdi-awadi/gopkg/communication/email/cloudflare v0.1.0
 	github.com/mahdi-awadi/gopkg/communication/provider v0.1.0
+	github.com/mahdi-awadi/gopkg/communication/whatsapp/twilio v0.1.0
 )
 
 replace github.com/mahdi-awadi/gopkg/communication/email/cloudflare => ../../gopkg/communication/email/cloudflare
+
+replace github.com/mahdi-awadi/gopkg/communication/whatsapp/twilio => ../../gopkg/communication/whatsapp/twilio
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

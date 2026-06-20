@@ -16,6 +16,13 @@ type Config struct {
 	NeoIngressURL       string
 	NeoInboxURL         string
 	NeoIngressSecret    string
+
+	// WhatsApp (Twilio transport, autonomous Gemini channel). Optional: when unset the gateway
+	// still serves email; the /inbound/whatsapp route returns 503 until configured.
+	TwilioAccountSID   string
+	TwilioAuthToken    string
+	TwilioWhatsAppFrom string // "whatsapp:+…" or bare "+…"; the provider adds the prefix
+	PublicURL          string // gateway's externally-visible base URL (for webhook signature validation)
 }
 
 func loadConfig() (Config, error) {
@@ -30,6 +37,10 @@ func loadConfig() (Config, error) {
 		NeoIngressURL:       os.Getenv("NEO_INGRESS_URL"),
 		NeoInboxURL:         os.Getenv("NEO_INBOX_URL"),
 		NeoIngressSecret:    os.Getenv("NEO_INGRESS_SECRET"),
+		TwilioAccountSID:    os.Getenv("TWILIO_ACCOUNT_SID"),
+		TwilioAuthToken:     os.Getenv("TWILIO_AUTH_TOKEN"),
+		TwilioWhatsAppFrom:  os.Getenv("TWILIO_WHATSAPP_FROM"),
+		PublicURL:           envOr("PUBLIC_URL", "https://neo-api.tech-gate.online"),
 	}
 	for k, v := range map[string]string{"GEMINI_API_KEY": c.GeminiAPIKey, "GATEWAY_WORKER_SECRET": c.GatewayWorkerSecret, "WORKER_SEND_URL": c.WorkerSendURL, "NEO_INGRESS_URL": c.NeoIngressURL, "NEO_INBOX_URL": c.NeoInboxURL, "NEO_INGRESS_SECRET": c.NeoIngressSecret} {
 		if v == "" {

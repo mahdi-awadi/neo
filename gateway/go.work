@@ -7,4 +7,5 @@ use (
 	../../gopkg/ai/orchestrator
 	../../gopkg/communication/provider
 	../../gopkg/communication/email/cloudflare
+	../../gopkg/communication/whatsapp/twilio
 )

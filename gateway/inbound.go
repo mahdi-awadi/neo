@@ -29,10 +29,16 @@ type gateway struct {
 	inboxFn       inboxFunc // inbound → Neo inbox (no AI). The only thing handleInbound needs.
 	neoSecret     string    // Neo→gateway shared secret for POST /send (operator-approved replies)
 	sender        emailSender
-	// Kept for later operator-triggered draft steps, not the inbound path:
+	// Conversation memory + the Gemini reply orchestrator. Dormant on email (human-in-the-loop),
+	// ACTIVE on the autonomous WhatsApp/voice channels.
 	store     conversation.Cache
 	replyFn   replyFunc
 	fromEmail string
+
+	// WhatsApp (autonomous Gemini channel) — Twilio transport + webhook-signature auth.
+	waSender        whatsappSender
+	twilioAuthToken string // validates inbound Twilio webhook signatures
+	publicURL       string // gateway's externally-visible base URL (for signature validation)
 }
 
 func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {

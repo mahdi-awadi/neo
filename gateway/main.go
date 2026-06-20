@@ -8,6 +8,7 @@ import (
 
 	"github.com/mahdi-awadi/gopkg/ai/llm"
 	"github.com/mahdi-awadi/gopkg/ai/llm/geminitext"
+	twiliowa "github.com/mahdi-awadi/gopkg/communication/whatsapp/twilio"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func main() {
 
 	gw := &gateway{
 		gatewaySecret: cfg.GatewayWorkerSecret,
-		inboxFn:       inbox, // inbound mail → Neo inbox (no AI, no auto-reply)
+		inboxFn:       inbox,                // inbound mail → Neo inbox (no AI, no auto-reply)
 		neoSecret:     cfg.NeoIngressSecret, // Neo→gateway auth for POST /send
 		sender:        sender,
 		store:         newMemCache(),
@@ -33,6 +34,19 @@ func main() {
 			return replyForInbound(ctx, reg, ingress, history, userText)
 		},
 	}
+
+	// WhatsApp (autonomous Gemini channel) — optional; activates when Twilio creds are present.
+	if cfg.TwilioAccountSID != "" && cfg.TwilioAuthToken != "" && cfg.TwilioWhatsAppFrom != "" {
+		gw.waSender = twiliowa.New(twiliowa.Config{
+			AccountSID: cfg.TwilioAccountSID,
+			AuthToken:  cfg.TwilioAuthToken,
+			From:       cfg.TwilioWhatsAppFrom,
+		}, nil)
+		gw.twilioAuthToken = cfg.TwilioAuthToken
+		gw.publicURL = cfg.PublicURL
+		log.Printf("neo-gateway: WhatsApp channel enabled (autonomous Gemini, from=%s)", cfg.TwilioWhatsAppFrom)
+	}
+
 	log.Printf("neo-gateway listening on %s (from=%s)", cfg.ListenAddr, cfg.EmailFrom)
 	log.Fatal(http.ListenAndServe(cfg.ListenAddr, gw.routes()))
 }
