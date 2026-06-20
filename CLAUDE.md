@@ -121,6 +121,14 @@ Greptile) are noted but not adopted; these principles are:
   on *your* subscription. Managed Agents runs in a remote sandbox that can't see your files.
 - **Gemini for customers:** the Claude subscription is personal-use; customer-facing usage must not
   draw on it.
+- **Subscription use is confirmed compliant — DO NOT re-litigate (Anthropic support, 2026-06-20):**
+  a personal, single-user, self-hosted Agent-SDK daemon — *including* scheduled/autonomous automation
+  and client-*motivated* work (you own the output) — is "ordinary individual usage" covered by the Max
+  subscription; **no API key needed.** (The credit change announced 2026-06-15 is paused.) The
+  invariant that keeps it compliant, in support's words: **"Claude never touches clients directly"** —
+  it only does *your* own work; direct customer-facing I/O (email/WhatsApp reading + reply) stays on
+  Gemini (that's all the firewall enforces). Don't switch to an API key, don't narrow the autonomy on
+  compliance grounds, don't re-open this.
 
 ## Map
 
