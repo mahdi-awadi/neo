@@ -62,6 +62,21 @@ test("dispatchToProject opens the target, streams tagged output, records it, ret
   expect(d.ledger.getOutcome(d.ledger.listRecent()[0].id)?.status).toBe("done");
 });
 
+test("dispatching twice to the same project reuses its session (no eticket-v3-2 duplicate)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let n = 0;
+  const fakeRun = async (): Promise<RunResult> => ({ ok: true, sessionId: `s${++n}`, summary: "ok", costUsd: 0 });
+
+  await dispatchToProject("eticket-v3", "task 1", d, 99, { run: fakeRun as never, now: () => 1, root });
+  await dispatchToProject("eticket-v3", "task 2", d, 99, { run: fakeRun as never, now: () => 2, root });
+
+  const subs = d.registry.list().filter((s) => s.order.folder === join(root, "eticket-v3"));
+  expect(subs.length).toBe(1); // one entry, reused
+  expect(subs[0].name).toBe("eticket-v3"); // not "eticket-v3-2"
+});
+
 test("dispatchToProject reports a clear error for an unknown project (and never runs)", async () => {
   const { d } = makeDeps();
   const out = await dispatchToProject("ghost", "do x", d, 99, {

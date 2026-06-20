@@ -21,6 +21,8 @@ export interface Registry {
   /** Pin the active session a chat's follow-ups route to (the `/use` command). */
   setActive(chatId: number, id: string): void;
   findByName(name: string): SessionInfo | undefined;
+  /** The most-recently-active OPEN session for a folder (so dispatch reuses it, not a duplicate). */
+  findByFolder(folder: string): SessionInfo | undefined;
   setStatus(id: string, status: SessionInfo["status"]): void;
   setSdkSessionId(id: string, sdkSessionId: string): void;
   touch(id: string, now?: number): void;
@@ -87,6 +89,10 @@ export function createRegistry(): Registry {
     },
     setActive: (chatId, id) => void active.set(chatId, id),
     findByName: (name) => [...sessions.values()].find((s) => s.name === name),
+    findByFolder: (folder) =>
+      [...sessions.values()]
+        .filter((s) => s.order.folder === folder && OPEN.has(s.status))
+        .sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0],
     setStatus(id, status) {
       const s = sessions.get(id);
       if (s) s.status = status;

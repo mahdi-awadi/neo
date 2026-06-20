@@ -71,10 +71,18 @@ export async function dispatchToProject(
 
   const order: Order = { id: crypto.randomUUID(), source: "neo", folder, task, chatId: SUB_CHAT, createdAt: now() };
   deps.ledger.recordOrder(order);
-  const session = deps.registry.add(order, now());
+  // Reuse an already-open session for this folder (resume it) instead of duplicating it as
+  // "<name>-2"; only register a fresh entry when nothing is open for the folder.
+  const existing = deps.registry.findByFolder(folder);
+  const session = existing ?? deps.registry.add(order, now());
+  if (existing) {
+    deps.registry.setStatus(existing.id, "running");
+    deps.registry.touch(existing.id, now());
+  }
   const name = session.name;
   await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
 
+  const resume = existing?.sdkSessionId || deps.ledger.lastSessionFor(folder, SUB_CHAT) || undefined;
   let result: RunResult;
   try {
     result = await run(
@@ -84,7 +92,7 @@ export async function dispatchToProject(
         onEscalation: (reason) => deps.askApproval(replyChat, reason),
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       },
-      { resume: deps.ledger.lastSessionFor(folder, SUB_CHAT) || undefined },
+      { resume },
     );
   } catch (e) {
     deps.registry.setStatus(session.id, "error");
