@@ -149,11 +149,16 @@ export async function sendProjectFile(
   return `sent ${path}`;
 }
 
-/** Build the project's in-process MCP tools: `send_file` always; `dispatch` only for the company. */
+/** Google Stitch MCP server (HTTP transport) — design generation for operator workers. */
+export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
+
+/** Build the project's in-process MCP tools: `send_file` always; `dispatch` only for the company.
+ *  When `opts.stitch` is set AND a `opts.stitchKey` is configured, the operator's Stitch HTTP MCP
+ *  server is attached too. Stitch is OFF by default so the customer/ingress path never gets it. */
 export function neoMcpServers(
   deps: DispatchDeps,
   replyChat: number,
-  opts: { dispatch: boolean; folder: string },
+  opts: { dispatch: boolean; folder: string; stitch?: boolean; stitchKey?: string },
 ): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: SdkMcpToolDefinition<any>[] = [
@@ -187,5 +192,11 @@ export function neoMcpServers(
     );
   }
   const server = createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
-  return { neo: server };
+  const servers: Record<string, unknown> = { neo: server };
+  // Operator-only: attach the Google Stitch HTTP MCP server when enabled and a key is configured.
+  // (SDK McpHttpServerConfig shape: { type: "http", url, headers? }.) Never on the customer path.
+  if (opts.stitch && opts.stitchKey) {
+    servers.stitch = { type: "http", url: STITCH_MCP_URL, headers: { "X-Goog-Api-Key": opts.stitchKey } };
+  }
+  return servers;
 }

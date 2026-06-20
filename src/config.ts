@@ -25,6 +25,9 @@ export interface NeoConfig {
   agentIngressSecret: string;
   /** Idle-close threshold for NORMAL projects in ms (the company is exempt). Default 24h. */
   idleCloseMs: number;
+  /** Google Stitch MCP API key (from STITCH_API_KEY env). When set, OPERATOR workers get the
+   *  Stitch design-generation MCP server; the customer/ingress path never does (compliance). */
+  stitchApiKey: string;
 }
 
 const DEFAULTS = {
@@ -74,5 +77,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
+    stitchApiKey: process.env.STITCH_API_KEY ?? "",
   };
 }

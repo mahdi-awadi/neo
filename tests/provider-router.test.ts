@@ -15,6 +15,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     budgetWindowMs: 18_000_000,
     agentIngressSecret: "",
     idleCloseMs: 24 * 60 * 60 * 1000,
+    stitchApiKey: "",
   };
 }
 

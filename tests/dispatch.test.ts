@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveProject, dispatchToProject, sendProjectFile, type DispatchDeps } from "../src/engine/dispatch";
+import { resolveProject, dispatchToProject, sendProjectFile, neoMcpServers, STITCH_MCP_URL, type DispatchDeps } from "../src/engine/dispatch";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -103,4 +103,26 @@ test("sendProjectFile sends a file inside the folder and refuses one outside it"
   const bad = await sendProjectFile(deps, 1, folder, "../escape.txt");
   expect(bad).toContain("outside");
   expect(sent.length).toBe(1); // not sent
+});
+
+test("neoMcpServers attaches the Stitch HTTP server only when enabled AND a key is set (operator path)", () => {
+  const { d } = makeDeps();
+  const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent", stitch: true, stitchKey: "k-123" });
+  expect(servers.neo).toBeDefined(); // the in-process server is always present
+  const stitch = servers.stitch as { type: string; url: string; headers: Record<string, string> };
+  expect(stitch).toBeDefined();
+  expect(stitch.type).toBe("http"); // SDK McpHttpServerConfig shape
+  expect(stitch.url).toBe(STITCH_MCP_URL);
+  expect(stitch.url).toBe("https://stitch.googleapis.com/mcp");
+  expect(stitch.headers["X-Goog-Api-Key"]).toBe("k-123");
+});
+
+test("neoMcpServers OMITS Stitch on the customer path (stitch:false) and when no key is configured", () => {
+  const { d } = makeDeps();
+  // customer/ingress path: stitch flag off → never attached, even with a key present
+  expect(neoMcpServers(d, 1, { dispatch: true, folder: "/x", stitch: false, stitchKey: "k-123" }).stitch).toBeUndefined();
+  // operator path but no key configured → nothing to attach
+  expect(neoMcpServers(d, 1, { dispatch: true, folder: "/x", stitch: true, stitchKey: "" }).stitch).toBeUndefined();
+  // default (no stitch opts) → off
+  expect(neoMcpServers(d, 1, { dispatch: false, folder: "/x" }).stitch).toBeUndefined();
 });
