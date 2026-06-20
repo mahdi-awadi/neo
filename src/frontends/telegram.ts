@@ -2,7 +2,9 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, InputFile } from "grammy";
+import { basename } from "node:path";
+import { saveInbound } from "../engine/files";
 import type { NeoConfig } from "../config";
 import type { Ledger } from "../engine/ledger";
 import type { Registry } from "../engine/registry";
@@ -17,6 +19,11 @@ import { handleMessage } from "../engine/pipeline";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { mdToHtml } from "../engine/format";
+
+async function downloadTelegramFile(token: string, filePath: string): Promise<Uint8Array> {
+  const r = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
 
 /** Send worker output as formatted HTML (bold/code/bullets), falling back to plain text if
  *  Telegram rejects the markup. `project` tags which project the line came from. */
@@ -56,6 +63,48 @@ export function startTelegram(
   const isOperator = (userId: number | undefined): userId is number =>
     userId !== undefined && !(allow.size > 0 && !allow.has(userId)) && admin.claimAdmin(userId);
 
+  // Factory: build the full PipelineDeps object, closing over bot/pending/cfg/ledger/etc.
+  // Used by both the message:text and file intake handlers so deps are never duplicated.
+  const pipelineDeps = (): import("../engine/pipeline").PipelineDeps => ({
+    cfg,
+    ledger,
+    registry,
+    meter,
+    usage,
+    trust,
+    reply: (cid, text, project) => void sendFormatted(bot, cid, text, project),
+    askApproval: (cid, reason) =>
+      new Promise<"allow" | "deny">((resolve) => {
+        const token = crypto.randomUUID();
+        pending.set(token, resolve);
+        const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
+        void bot.api.sendMessage(cid, `⚠️ Approve this action?\n${reason}`, { reply_markup: kb });
+      }),
+    sendFile: (cid, path, caption) =>
+      void bot.api.sendDocument(cid, new InputFile(path), caption ? { caption } : {}),
+  });
+
+  // Receive a document or photo from the operator: save to the active project's inbox,
+  // then feed an augmented message to the pipeline so the worker knows the file arrived.
+  async function intakeFile(ctx: any, name: string, captionText: string): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!isOperator(userId)) return;
+    const chatId = ctx.chat.id;
+    const target = registry.findByChat(chatId) ?? registry.getDefault();
+    if (!target) {
+      void bot.api.sendMessage(chatId, "No active project to receive the file.");
+      return;
+    }
+    const file = await ctx.getFile();
+    const bytes = await downloadTelegramFile(cfg.telegramToken, file.file_path!);
+    const path = saveInbound(target.order.folder, name, bytes);
+    await handleMessage(
+      `📎 operator attached \`${name}\` at \`${path}\`\n${captionText}`,
+      chatId,
+      pipelineDeps(),
+    );
+  }
+
   bot.on("message:text", async (ctx) => {
     const userId = ctx.from?.id;
     if (!isOperator(userId)) return;
@@ -82,22 +131,19 @@ export function startTelegram(
       return;
     }
 
-    await handleMessage(ctx.message.text, chatId, {
-      cfg,
-      ledger,
-      registry,
-      meter,
-      usage,
-      trust,
-      reply: (cid, text, project) => void sendFormatted(bot, cid, text, project),
-      askApproval: (cid, reason) =>
-        new Promise<"allow" | "deny">((resolve) => {
-          const token = crypto.randomUUID();
-          pending.set(token, resolve);
-          const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
-          void bot.api.sendMessage(cid, `⚠️ Approve this action?\n${reason}`, { reply_markup: kb });
-        }),
-    });
+    await handleMessage(ctx.message.text, chatId, pipelineDeps());
+  });
+
+  bot.on("message:document", (ctx) =>
+    intakeFile(
+      ctx,
+      ctx.message.document.file_name ?? `file-${ctx.message.document.file_unique_id}`,
+      ctx.message.caption ?? "",
+    ),
+  );
+  bot.on("message:photo", (ctx) => {
+    const photo = ctx.message.photo.at(-1)!; // largest size
+    return intakeFile(ctx, `photo-${photo.file_unique_id}.jpg`, ctx.message.caption ?? "");
   });
 
   bot.on("callback_query:data", async (ctx) => {
