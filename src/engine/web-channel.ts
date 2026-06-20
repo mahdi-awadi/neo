@@ -86,6 +86,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,
+        trust: opts.engine.trust,
       });
       if (command !== null) {
         if (command.select?.length) {
@@ -114,6 +115,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,
+        trust: opts.engine.trust,
       });
       emit({ type: "projects", text: result.text, items: result.select ?? [] });
     },
@@ -122,6 +124,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,
+        trust: opts.engine.trust,
       });
       emit({ type: "projects", text: result.text, items: result.select ?? [] });
     },

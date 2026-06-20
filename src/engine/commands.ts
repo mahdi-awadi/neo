@@ -7,6 +7,7 @@
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { UsageMeter, RateLimitInfo } from "./usage";
+import type { TrustStore } from "./trust";
 import type { SessionInfo } from "../types";
 
 export interface CommandDeps {
@@ -16,6 +17,8 @@ export interface CommandDeps {
   usage?: UsageMeter;
   /** Injectable clock (session ages). Defaults to Date.now. */
   now?: () => number;
+  /** Per-project trust store (for /trust and the 🔓 marker). */
+  trust: TrustStore;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -54,7 +57,7 @@ const COMMANDS: Command[] = [
     aliases: ["ls", "status"],
     usage: "/list",
     summary: "open projects (★ = active · tap a name to switch)",
-    run: ({ deps, now, chatId }) => renderList(deps.registry, now, chatId),
+    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId),
   },
   {
     name: "use",
@@ -68,6 +71,12 @@ const COMMANDS: Command[] = [
     usage: "/kill <name>",
     summary: "stop a project",
     run: ({ deps, args }) => ({ text: killSession(args.trim(), deps.registry) }),
+  },
+  {
+    name: "trust",
+    usage: "/trust [on|off]",
+    summary: "auto-approve all actions for the active project (no Allow/Deny prompts)",
+    run: ({ deps, args, chatId }) => trustCommand(args.trim(), chatId, deps),
   },
   {
     name: "recent",
@@ -104,7 +113,7 @@ export function handleCommand(text: string, chatId: number, deps: CommandDeps): 
  * place the switch happens — both Telegram and the web console call this on a tap. */
 export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   deps.registry.setActive(chatId, id);
-  return renderList(deps.registry, (deps.now ?? (() => Date.now()))(), chatId);
+  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId);
 }
 
 /** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
@@ -112,14 +121,33 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
 export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   const now = (deps.now ?? (() => Date.now()))();
   if (deps.registry.getDefault()?.id === id) {
-    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, now, chatId).select };
+    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId).select };
   }
   if (deps.registry.get(id)) {
     void deps.registry.getControl(id)?.interrupt();
     deps.registry.setStatus(id, "done");
     deps.registry.remove(id);
   }
-  return renderList(deps.registry, now, chatId);
+  return renderList(deps.registry, deps.trust, now, chatId);
+}
+
+function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandResult {
+  const target = deps.registry.findByChat(chatId) ?? deps.registry.getDefault();
+  if (!target) return { text: "No active project to trust." };
+  const folder = target.order.folder;
+  if (arg === "on" || arg === "off") {
+    deps.trust.setTrust(folder, arg === "on");
+    return {
+      text:
+        arg === "on"
+          ? `🔓 trusting ${target.name} (${folder}) — actions auto-approve, no prompts.`
+          : `🔒 no longer trusting ${target.name} (${folder}) — actions will prompt again.`,
+    };
+  }
+  const here = deps.trust.isTrusted(folder) ? "🔓 trusted" : "🔒 not trusted";
+  const all = deps.trust.list();
+  const list = all.length ? `\nTrusted: ${all.join(", ")}` : "";
+  return { text: `${target.name} (${folder}): ${here}\nUsage: /trust on · /trust off${list}` };
 }
 
 function humanAge(ms: number): string {
@@ -136,7 +164,7 @@ function statusIcon(status: SessionInfo["status"]): string {
   return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
 }
 
-function renderList(registry: Registry, now: number, chatId: number): CommandResult {
+function renderList(registry: Registry, trust: CommandDeps["trust"], now: number, chatId: number): CommandResult {
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
   const activeId = registry.findByChat(chatId)?.id;
@@ -150,8 +178,9 @@ function renderList(registry: Registry, now: number, chatId: number): CommandRes
   const text = sessions
     .map((s) => {
       const star = s.id === activeId ? "★ " : "";
+      const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
-      return `${star}${statusIcon(s.status)} ${s.name} · ${s.order.folder} · ${s.status} · ${humanAge(now - s.startedAt)} · "${task}"`;
+      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${s.status} · ${humanAge(now - s.startedAt)} · "${task}"`;
     })
     .join("\n");
   return { text, select };

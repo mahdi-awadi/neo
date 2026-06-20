@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { handleCommand, selectProject, killProject } from "../src/engine/commands";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
+import { openTrustStore } from "../src/engine/trust";
 import type { Order } from "../src/types";
 
 function order(over: Partial<Order> = {}): Order {
@@ -25,6 +26,7 @@ function deps(
     registry: over.registry ?? createRegistry(),
     ledger: over.ledger ?? openLedger(":memory:"),
     usage: over.usage as any,
+    trust: openTrustStore(":memory:"),
     now: () => 100000,
   };
 }
@@ -208,4 +210,19 @@ test("killProject refuses to kill the default company project", () => {
 
   expect(result.text).toContain("always-on");
   expect(registry.get("company")).toBeDefined(); // not removed
+});
+
+test("/trust on then /trust toggles and reports trust for the active project", () => {
+  const registry = createRegistry();
+  const o = order({ id: "company", folder: "/home/neo/agent", chatId: -1 });
+  registry.add(o, 0);
+  registry.setDefault(o.id); // free-text falls back to the company
+  const trust = openTrustStore(":memory:");
+  const d = { registry, ledger: openLedger(":memory:"), trust, now: () => 1 };
+
+  expect(handleCommand("/trust on", 5, d)!.text).toContain("🔓");
+  expect(trust.isTrusted("/home/neo/agent")).toBe(true);
+  expect(handleCommand("/trust", 5, d)!.text).toContain("trusted");
+  expect(handleCommand("/trust off", 5, d)!.text).toContain("🔒");
+  expect(trust.isTrusted("/home/neo/agent")).toBe(false);
 });
