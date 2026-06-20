@@ -31,6 +31,10 @@ export interface RunHandlers {
   onCost?: (usd: number) => void;
   /** Reported subscription rate-limit info from the SDK's rate_limit_event. */
   onRateLimit?: (info: RateLimitInfo) => void;
+  /** When true (read per escalation), risky tools auto-approve instead of escalating. */
+  autoApprove?: () => boolean;
+  /** Called with the escalation reason when trust auto-approves it (for audit/FYI). */
+  onAutoApprove?: (reason: string) => void;
 }
 
 /** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
@@ -86,6 +90,11 @@ function buildCanUseTool(handlers: RunHandlers) {
     const verdict = decide(tool, input);
     if ("allow" in verdict) {
       return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
+    }
+    // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start)
+    if (handlers.autoApprove?.()) {
+      handlers.onAutoApprove?.(verdict.escalate);
+      return { behavior: "allow", updatedInput: input };
     }
     const decision = await handlers.onEscalation(verdict.escalate);
     if (decision === "allow") return { behavior: "allow", updatedInput: input };
