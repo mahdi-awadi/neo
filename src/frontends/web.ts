@@ -121,7 +121,17 @@ export function createWebApp(deps: WebAppDeps): WebApp {
         start(controller) {
           const enc = new TextEncoder();
           const unsub = channel.subscribe((e) => controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`)));
+          // Keepalive comment every 15s so Bun's idleTimeout never closes this long-lived
+          // SSE connection (the default 10s drop was killing live dashboard updates).
+          const ping = setInterval(() => {
+            try {
+              controller.enqueue(enc.encode(`: ping\n\n`));
+            } catch {
+              clearInterval(ping);
+            }
+          }, 15000);
           req.signal.addEventListener("abort", () => {
+            clearInterval(ping);
             unsub();
             try {
               controller.close();
@@ -146,7 +156,9 @@ export function createWebApp(deps: WebAppDeps): WebApp {
  * only Traefik (TLS front door) can reach it — never exposed publicly bypassing HTTPS. */
 export function startWeb(deps: WebAppDeps, port: number, hostname = "0.0.0.0"): ReturnType<typeof Bun.serve> {
   const appHandler = createWebApp(deps);
-  return Bun.serve({ port, hostname, fetch: (req) => appHandler.fetch(req) });
+  // idleTimeout 0 = no per-request idle drop; the SSE /stream is long-lived (kept warm by its
+  // own 15s keepalive). Without this Bun closed connections after 10s, stalling live updates.
+  return Bun.serve({ port, hostname, idleTimeout: 0, fetch: (req) => appHandler.fetch(req) });
 }
 
 function loginPage(botUsername: string): string {

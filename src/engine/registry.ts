@@ -26,6 +26,8 @@ export interface Registry {
   touch(id: string, now?: number): void;
   /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
   attachControl(id: string, control: SessionControl): void;
+  /** Drop the control handle when a run ends, keeping the session (now resumable, not live). */
+  detachControl(id: string): void;
   getControl(id: string): SessionControl | undefined;
 }
 
@@ -64,6 +66,7 @@ export function createRegistry(): Registry {
       controls.delete(id);
     },
     attachControl: (id, control) => void controls.set(id, control),
+    detachControl: (id) => void controls.delete(id),
     getControl: (id) => controls.get(id),
     findByChat(chatId) {
       const activeId = active.get(chatId);

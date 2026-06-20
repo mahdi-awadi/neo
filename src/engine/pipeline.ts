@@ -46,13 +46,24 @@ export async function handleMessage(
   const now = deps.now ?? (() => Date.now());
   const start = deps.start ?? startOrder;
 
-  // 1. Plain-text follow-up into the live session for this chat (commands start with "/").
+  // 1. Plain-text follow-up into the session for this chat (commands start with "/").
   const live = registry.findByChat(chatId);
   if (live && !text.trim().startsWith("/")) {
-    registry.getControl(live.id)?.followUp(text.trim());
+    const control = registry.getControl(live.id);
+    if (control && live.status === "running") {
+      // Live worker — push the follow-up into the running turn.
+      control.followUp(text.trim());
+      registry.touch(live.id, now());
+      await deps.reply(chatId, `↩︎ added to ${live.name}`);
+      return null;
+    }
+    // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
+    const resumed: Order = { ...live.order, id: crypto.randomUUID(), task: text.trim(), createdAt: now() };
+    ledger.recordOrder(resumed);
+    registry.setStatus(live.id, "running");
     registry.touch(live.id, now());
-    await deps.reply(chatId, `↩︎ added to ${live.name}`);
-    return null;
+    await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
+    return startSession(resumed, live.id, chatId, deps, now, start, live.sdkSessionId || undefined);
   }
 
   // 2. Parse a new order.
@@ -81,10 +92,29 @@ export async function handleMessage(
   ledger.recordOrder(parsed);
   await deps.reply(chatId, `opening ${parsed.folder} (${decision.provider})${resume ? " — resuming" : ""}…`);
 
-  // 6. Start the live session and register it (control handle for follow-up / kill / idle).
+  // 6. Register the project and start its live session (control handle for follow-up/kill/idle).
   const session = registry.add(parsed, now());
+  return startSession(parsed, session.id, chatId, deps, now, start, resume || undefined);
+}
+
+/**
+ * Start a worker run, attach its control handle to the registry entry, and supervise it.
+ * On completion the project is kept as IDLE (resumable/selectable) — only the live control
+ * handle is dropped; the idle watchdog or /kill removes the entry later. This is what lets
+ * opened projects stay visible in /list and the web dashboard after a task finishes.
+ */
+function startSession(
+  order: Order,
+  registryId: string,
+  chatId: number,
+  deps: PipelineDeps,
+  now: () => number,
+  start: StartFn,
+  resume?: string,
+): SessionRun {
+  const { registry, meter, ledger } = deps;
   const run = start(
-    parsed,
+    order,
     {
       onMessage: (t) => void deps.reply(chatId, t),
       onEscalation: (reason) => deps.askApproval(chatId, reason),
@@ -92,18 +122,19 @@ export async function handleMessage(
     },
     resume ? { resume } : {},
   );
-  registry.attachControl(session.id, run);
+  registry.attachControl(registryId, run);
 
-  // 7. Supervise: when the session ends (completion / idle-close / kill), record + clean up.
   void run.done.then((result) => {
     if (result.sessionId) {
-      registry.setSdkSessionId(session.id, result.sessionId);
-      ledger.recordSession(parsed.id, result.sessionId);
+      registry.setSdkSessionId(registryId, result.sessionId);
+      ledger.recordSession(order.id, result.sessionId);
     }
     meter.note({ costUsd: result.costUsd }, now());
-    ledger.recordOutcome(parsed.id, result.ok ? "done" : "error", result.summary);
-    registry.setStatus(session.id, result.ok ? "done" : "error");
-    registry.remove(session.id);
+    ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
+    // Keep the project listed as idle; drop the dead handle so the next follow-up resumes.
+    registry.setStatus(registryId, "idle");
+    registry.touch(registryId, now());
+    registry.detachControl(registryId);
     void deps.reply(chatId, result.ok ? `✓ ${result.summary}` : `✗ ${result.summary || "failed"}`);
   });
 

@@ -78,7 +78,30 @@ test("starts a live order, streams text, registers it, then records the outcome 
   expect(h.replies.some((r) => r.includes("completed"))).toBe(true);
   const recent = h.ledger.listRecent();
   expect(h.ledger.getOutcome(recent[0].id)?.status).toBe("done");
-  expect(h.registry.list().length).toBe(0); // cleaned up after done
+  // The finished project stays listed as IDLE (resumable/selectable), not deleted — the
+  // idle watchdog or /kill removes it later. (Removing it on completion made opened
+  // projects vanish from /list and the web dashboard within a second.)
+  expect(h.registry.list().length).toBe(1);
+  expect(h.registry.list()[0].status).toBe("idle");
+  expect(h.registry.getControl(h.registry.list()[0].id)).toBeUndefined(); // dead handle dropped
+});
+
+test("a follow-up to a completed (idle) session resumes it carrying its sdk id", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+
+  const run = await handleMessage(`/open ${dir} start`, 4, h.base);
+  f.finish({ ok: true, sessionId: "sdk-42", summary: "done", costUsd: 0 });
+  await run!.done;
+  await new Promise((r) => setTimeout(r, 0)); // let the supervisor mark it idle
+  expect(h.registry.list()[0].status).toBe("idle");
+
+  await handleMessage("now do part two", 4, h.base);
+
+  expect(f.resumeSeen()).toBe("sdk-42"); // resumed with the persisted sdk session id
+  expect(h.replies.some((r) => r.toLowerCase().includes("resum"))).toBe(true);
+  expect(h.registry.list().length).toBe(1); // still the same single project
 });
 
 test("routes a plain-text message to the live session as a follow-up", async () => {
