@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { openInbox } from "../src/engine/inbox";
-import { renderInboxList, renderInboxItem, shortId, buildDraftBrief, draftInboxReply } from "../src/engine/inbox-actions";
+import { renderInboxList, renderInboxItem, shortId, buildDraftBrief, draftInboxReply, replySubject, sendInboxReply } from "../src/engine/inbox-actions";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -116,4 +116,40 @@ test("draftInboxReply runs the company, stores the draft, and lands the item in 
 test("draftInboxReply returns undefined for an unknown id", async () => {
   const ib = openInbox(":memory:");
   expect(await draftInboxReply(ib, "nope", "", briefHarness("x").deps)).toBeUndefined();
+});
+
+test("replySubject prefixes Re: once and falls back when absent", () => {
+  const ib = openInbox(":memory:");
+  expect(replySubject(ib.record({ from: "a@x", subject: "Quote?" }))).toBe("Re: Quote?");
+  expect(replySubject(ib.record({ from: "a@x", subject: "Re: Quote?" }))).toBe("Re: Quote?"); // not doubled
+  expect(replySubject(ib.record({ from: "a@x", subject: "" }))).toBe("Re:");
+});
+
+test("sendInboxReply posts the reply to the gateway and marks the item 'replied'", async () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", subject: "Quote?", text: "?", messageId: "<orig>" });
+  let seen: any = null;
+  const fakeFetch = async (url: any, init: any) => {
+    seen = { url, init, body: JSON.parse(init.body), auth: init.headers.authorization };
+    return { ok: true } as Response;
+  };
+  const ok = await sendInboxReply(ib, item.id, "  Here is your quote: $20  ", { url: "https://gw/send", secret: "sek" }, fakeFetch as any);
+
+  expect(ok).toBe(true);
+  expect(seen.url).toBe("https://gw/send");
+  expect(seen.auth).toBe("Bearer sek");
+  expect(seen.body).toEqual({ to: "a@x.com", subject: "Re: Quote?", text: "Here is your quote: $20", inReplyTo: "<orig>" });
+  expect(ib.get(item.id)!.status).toBe("replied");
+});
+
+test("sendInboxReply leaves status untouched on a gateway failure or empty/unknown input", async () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", subject: "S", text: "?" });
+  ib.setDraft(item.id, "d"); // status 'drafted'
+  const failFetch = async () => ({ ok: false }) as Response;
+
+  expect(await sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, failFetch as any)).toBe(false);
+  expect(ib.get(item.id)!.status).toBe("drafted"); // unchanged on failure
+  expect(await sendInboxReply(ib, item.id, "   ", { url: "u", secret: "s" }, failFetch as any)).toBe(false); // empty reply
+  expect(await sendInboxReply(ib, "nope", "hi", { url: "u", secret: "s" }, failFetch as any)).toBe(false); // unknown id
 });

@@ -18,7 +18,7 @@ import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
-import { renderInboxItem, draftInboxReply, type InboxListEntry } from "../engine/inbox-actions";
+import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
 import { mdToHtml } from "../engine/format";
 
@@ -131,6 +131,21 @@ export function startTelegram(
     if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
 
+    // A pending inbox edit takes the next message as the revised reply (not an order/command).
+    const editId = pendingInboxEdit.get(chatId);
+    if (editId !== undefined && inbox) {
+      pendingInboxEdit.delete(chatId);
+      const item = inbox.get(editId);
+      if (!item) {
+        void bot.api.sendMessage(chatId, "That message is no longer in the inbox.");
+        return;
+      }
+      inbox.setDraft(editId, ctx.message.text); // stages the edited reply (status stays 'drafted')
+      const view = renderInboxItem(inbox, editId)!;
+      void bot.api.sendMessage(chatId, view.text, { reply_markup: inboxItemKeyboard(editId, view.item.status)! });
+      return;
+    }
+
     // Bare /loop → tappable run buttons; /loop <name> starts a background loop (streams progress).
     if (ctx.message.text.trim() === "/loop") {
       const kb = new InlineKeyboard();
@@ -230,6 +245,46 @@ export function startTelegram(
       return;
     }
 
+    // Edit the draft: capture the operator's next text message as the revised reply.
+    if (cb.startsWith("inbox-edit:")) {
+      const id = cb.slice("inbox-edit:".length);
+      const chatId = ctx.chat?.id ?? 0;
+      await ctx.answerCallbackQuery();
+      if (!inbox || !inbox.get(id)) {
+        await ctx.reply("That message is no longer in the inbox.");
+        return;
+      }
+      pendingInboxEdit.set(chatId, id);
+      await bot.api.sendMessage(chatId, "✏️ Send the revised reply as your next message — I'll stage it for sending.");
+      return;
+    }
+
+    // Send the approved reply to the customer (same path as POST /api/inbox/send). Sending to a
+    // real person is an external action, so it goes through the engine's Allow/Deny approval gate.
+    if (cb.startsWith("inbox-send:")) {
+      const id = cb.slice("inbox-send:".length);
+      const chatId = ctx.chat?.id ?? 0;
+      await ctx.answerCallbackQuery();
+      const view = inbox ? renderInboxItem(inbox, id) : undefined;
+      if (!view || !gatewaySendUrl || !cfg.agentIngressSecret) {
+        await bot.api.sendMessage(chatId, "Can't send — the gateway isn't configured or the item is gone.");
+        return;
+      }
+      const reply = view.item.draft;
+      if (!reply.trim()) {
+        await bot.api.sendMessage(chatId, "Nothing to send yet — draft a reply first.");
+        return;
+      }
+      const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${reply}`);
+      if (decision !== "allow") {
+        await bot.api.sendMessage(chatId, "Send cancelled.");
+        return;
+      }
+      const sent = await sendInboxReply(inbox!, id, reply, { url: gatewaySendUrl, secret: cfg.agentIngressSecret });
+      await bot.api.sendMessage(chatId, sent ? `✅ replied to ${view.item.from}.` : "⚠️ send failed — the reply was not delivered.");
+      return;
+    }
+
     // Tap a loop run button.
     if (cb.startsWith("runloop:")) {
       const loop = matchLoop(cb.slice("runloop:".length));
@@ -272,5 +327,11 @@ function inboxKeyboard(items: InboxListEntry[]): InlineKeyboard {
  *  Returns undefined when a status offers no actions (e.g. while drafting or once replied). */
 function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefined {
   if (status === "new") return new InlineKeyboard().text("🤖 Send to agent", `inbox-draft:${id}`);
+  if (status === "drafted")
+    return new InlineKeyboard()
+      .text("✏️ Edit", `inbox-edit:${id}`)
+      .text("📤 Send", `inbox-send:${id}`)
+      .row()
+      .text("↩ Re-draft", `inbox-draft:${id}`);
   return undefined;
 }

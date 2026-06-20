@@ -10,7 +10,7 @@ import type { UsageMeter } from "../engine/usage";
 import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
 import { runCompanyBrief } from "../engine/ingress";
-import { draftInboxReply } from "../engine/inbox-actions";
+import { draftInboxReply, sendInboxReply } from "../engine/inbox-actions";
 import { saveInbound } from "../engine/files";
 import type { Inbox } from "../engine/inbox";
 import { basename } from "node:path";
@@ -33,24 +33,6 @@ export interface WebAppDeps {
   inbox?: Inbox;
   /** Gateway /send URL — Neo calls it to email an approved reply (Neo holds no Cloudflare creds). */
   gatewaySendUrl?: string;
-}
-
-/** POST an approved reply to the gateway's /send (which relays it via the Cloudflare Worker). */
-async function sendViaGateway(
-  url: string,
-  secret: string,
-  msg: { to: string; subject: string; text: string; inReplyTo?: string },
-): Promise<boolean> {
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
-      body: JSON.stringify(msg),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
 }
 
 export interface WebApp {
@@ -173,15 +155,9 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       if (!item || !reply || !deps.inbox || !deps.gatewaySendUrl || !deps.ingressSecret) {
         return Response.json({ ok: false }, { status: 400, headers: { "cache-control": "no-store" } });
       }
-      const subject = item.subject && !item.subject.startsWith("Re:") ? "Re: " + item.subject : item.subject || "Re:";
-      const sent = await sendViaGateway(deps.gatewaySendUrl, deps.ingressSecret, {
-        to: item.from,
-        subject,
-        text: reply,
-        inReplyTo: item.messageId,
-      });
+      // Shared with the Telegram /inbox loop — single source of truth for the gateway send path.
+      const sent = await sendInboxReply(deps.inbox, item.id, reply, { url: deps.gatewaySendUrl, secret: deps.ingressSecret });
       if (!sent) return Response.json({ ok: false, error: "send failed" }, { status: 502, headers: { "cache-control": "no-store" } });
-      deps.inbox.setStatus(item.id, "replied");
       return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
     }
 

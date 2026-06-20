@@ -93,3 +93,55 @@ export async function draftInboxReply(
   inbox.setDraft(item.id, draft);
   return draft;
 }
+
+// ── Sending: post the approved reply to the gateway (the exact web /api/inbox/send path) ──
+
+type FetchFn = typeof fetch;
+
+/** POST an approved reply to the gateway's /send (which relays it via the Cloudflare Worker).
+ *  VERBATIM the helper web.ts used — Neo holds no Cloudflare creds, so the gateway sends. */
+export async function sendViaGateway(
+  url: string,
+  secret: string,
+  msg: { to: string; subject: string; text: string; inReplyTo?: string },
+  fetchImpl: FetchFn = fetch,
+): Promise<boolean> {
+  try {
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+      body: JSON.stringify(msg),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Reply subject: prefix "Re:" once (web parity), falling back to "Re:" when there is no subject. */
+export function replySubject(item: InboxItem): string {
+  return item.subject && !item.subject.startsWith("Re:") ? "Re: " + item.subject : item.subject || "Re:";
+}
+
+/** Send the operator-approved (possibly edited) reply to the customer via the gateway, then mark
+ *  the item 'replied'. On any failure or empty/unknown input, the status is left untouched. The
+ *  caller is responsible for the approval gate before invoking this (external action). */
+export async function sendInboxReply(
+  inbox: Inbox,
+  id: string,
+  reply: string,
+  gateway: { url: string; secret: string },
+  fetchImpl: FetchFn = fetch,
+): Promise<boolean> {
+  const item = inbox.get(id);
+  const text = reply.trim();
+  if (!item || !text) return false;
+  const sent = await sendViaGateway(
+    gateway.url,
+    gateway.secret,
+    { to: item.from, subject: replySubject(item), text, inReplyTo: item.messageId },
+    fetchImpl,
+  );
+  if (sent) inbox.setStatus(item.id, "replied");
+  return sent;
+}
