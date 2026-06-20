@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox },
+      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl: process.env.GATEWAY_SEND_URL ?? "https://neo-api.tech-gate.online/send" },
       WEB_PORT,
       WEB_HOST,
     );

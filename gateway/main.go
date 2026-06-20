@@ -25,6 +25,7 @@ func main() {
 	gw := &gateway{
 		gatewaySecret: cfg.GatewayWorkerSecret,
 		inboxFn:       inbox, // inbound mail → Neo inbox (no AI, no auto-reply)
+		neoSecret:     cfg.NeoIngressSecret, // Neo→gateway auth for POST /send
 		sender:        sender,
 		store:         newMemCache(),
 		fromEmail:     cfg.EmailFrom,

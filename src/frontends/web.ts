@@ -30,6 +30,26 @@ export interface WebAppDeps {
   ingressSecret?: string;
   /** Customer message inbox (plain data — no AI). The gateway POSTs inbound mail here. */
   inbox?: Inbox;
+  /** Gateway /send URL — Neo calls it to email an approved reply (Neo holds no Cloudflare creds). */
+  gatewaySendUrl?: string;
+}
+
+/** POST an approved reply to the gateway's /send (which relays it via the Cloudflare Worker). */
+async function sendViaGateway(
+  url: string,
+  secret: string,
+  msg: { to: string; subject: string; text: string; inReplyTo?: string },
+): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+      body: JSON.stringify(msg),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export interface WebApp {
@@ -125,6 +145,49 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     // Inbox list for the dashboard (operator-only).
     if (req.method === "GET" && path === "/api/inbox") {
       return Response.json({ items: deps.inbox?.list() ?? [] }, { headers: { "cache-control": "no-store" } });
+    }
+
+    // Operator sends an inbox item to the agent → the COMPANY drafts a reply (stored as a draft,
+    // never sent). `instructions` (optional) steers it; on a re-draft it carries the revision notes.
+    if (req.method === "POST" && path === "/api/inbox/draft") {
+      const b = (await req.json().catch(() => ({}))) as { id?: unknown; instructions?: unknown };
+      const item = typeof b.id === "string" ? deps.inbox?.get(b.id) : undefined;
+      if (!item || !deps.inbox) return Response.json({ ok: false }, { status: 404, headers: { "cache-control": "no-store" } });
+      deps.inbox.setStatus(item.id, "with-agent");
+      const instr = typeof b.instructions === "string" ? b.instructions.trim() : "";
+      const brief =
+        "A customer emailed the business. Draft a reply that NEO (the operator) will review, edit if needed, and SEND — you are NOT contacting the customer yourself; Neo sends it. Output ONLY the reply body, ready to send.\n\n" +
+        `From: ${item.fromName || item.from} <${item.from}>\nSubject: ${item.subject}\n\n${item.text}` +
+        (instr ? `\n\nNeo's instructions for this reply: ${instr}` : "") +
+        (item.draft ? `\n\nYour previous draft (revise it per Neo's instructions above):\n${item.draft}` : "");
+      const draft = await runCompanyBrief(brief, {
+        cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
+        meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage,
+        reply: (_c, text, project) => channel.notify(text, project),
+        askApproval: async () => "deny",
+      });
+      deps.inbox.setDraft(item.id, draft);
+      return Response.json({ ok: true, draft }, { headers: { "cache-control": "no-store" } });
+    }
+
+    // Operator approves & sends the (possibly edited) reply to the customer, via the gateway.
+    if (req.method === "POST" && path === "/api/inbox/send") {
+      const b = (await req.json().catch(() => ({}))) as { id?: unknown; reply?: unknown };
+      const item = typeof b.id === "string" ? deps.inbox?.get(b.id) : undefined;
+      const reply = typeof b.reply === "string" ? b.reply.trim() : "";
+      if (!item || !reply || !deps.inbox || !deps.gatewaySendUrl || !deps.ingressSecret) {
+        return Response.json({ ok: false }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
+      const subject = item.subject && !item.subject.startsWith("Re:") ? "Re: " + item.subject : item.subject || "Re:";
+      const sent = await sendViaGateway(deps.gatewaySendUrl, deps.ingressSecret, {
+        to: item.from,
+        subject,
+        text: reply,
+        inReplyTo: item.messageId,
+      });
+      if (!sent) return Response.json({ ok: false, error: "send failed" }, { status: 502, headers: { "cache-control": "no-store" } });
+      deps.inbox.setStatus(item.id, "replied");
+      return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
     }
 
     if (req.method === "POST" && path === "/msg") {
@@ -355,6 +418,12 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .ist{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid var(--border)}
 .ist-new{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--border));background:color-mix(in srgb,var(--warn) 8%,transparent)}
 .ist-with-agent{color:#6db3ff;border-color:#2f4a6a}.ist-drafted{color:var(--accent);border-color:var(--accent-dim)}.ist-replied{color:var(--muted)}
+.iact{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:9px}
+.iinp{flex:1;min-width:160px;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:7px 11px;font-size:12.5px;outline:none}
+.iinp:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
+.itx{width:100%;min-height:120px;margin-top:6px;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:9px;padding:10px 12px;font-family:var(--sans);font-size:13.5px;line-height:1.5;resize:vertical;outline:none}
+.itx:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
+.run.ok{border-color:color-mix(in srgb,var(--accent) 60%,var(--border));background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
 .escc{border:1px solid color-mix(in srgb,var(--warn) 50%,var(--border));background:color-mix(in srgb,var(--warn) 7%,var(--panel));border-radius:13px;padding:13px 15px;margin:9px 0}
 .acts{display:flex;gap:8px;margin-top:11px}
 .chip{padding:6px 13px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-family:var(--mono);font-size:11px;cursor:pointer}
@@ -464,14 +533,31 @@ function renderInbox(items){
  var bd=document.getElementById('ibadge'); if(bd){bd.textContent=nw?(' '+nw):'';bd.className='ibadge'+(nw?' on':'');}
  var v=document.getElementById('vinbox');
  if(!items.length){v.innerHTML='<div class="card"><h3>Inbox — customer messages</h3><div class="empty">No customer messages yet.</div></div>';return;}
- var h='<div class="card"><h3>Inbox — customer messages (you review &amp; reply; never auto-sent)</h3>';
+ var h='<div class="card"><h3>Inbox — you review &amp; reply; never auto-sent</h3>';
  items.forEach(function(i){
-  h+='<div class="irow"><div class="imeta"><span class="ist ist-'+esc(i.status)+'">'+esc(i.status)+'</span> <b>'+esc(i.fromName||i.from)+'</b> <span class="rfo">&lt;'+esc(i.from)+'&gt; · '+esc(i.channel)+'</span></div>'
-    +'<div class="isubj">'+esc(i.subject||'(no subject)')+'</div>'
-    +'<div class="ibody">'+esc((i.text||'').slice(0,500))+'</div></div>';
+  h+='<div class="irow" id="ir-'+i.id+'">';
+  h+='<div class="imeta"><span class="ist ist-'+esc(i.status)+'">'+esc(i.status)+'</span> <b>'+esc(i.fromName||i.from)+'</b> <span class="rfo">&lt;'+esc(i.from)+'&gt; · '+esc(i.channel)+'</span></div>';
+  h+='<div class="isubj">'+esc(i.subject||'(no subject)')+'</div>';
+  h+='<div class="ibody">'+esc((i.text||'').slice(0,800))+'</div>';
+  if(i.status==='new'){
+   h+='<div class="iact"><input class="iinp" id="instr-'+i.id+'" placeholder="optional instructions for the agent…"><button class="run" onclick="sendToAgent(\''+i.id+'\')">▶ Send to agent</button></div>';
+  }else if(i.status==='with-agent'){
+   h+='<div class="iact"><span class="rfo">⏳ the company is drafting a reply…</span></div>';
+  }else if(i.status==='drafted'){
+   h+='<div class="rfo" style="margin-top:9px">DRAFT — edit it, then send (or send back to the agent to revise):</div>';
+   h+='<textarea class="itx" id="draft-'+i.id+'">'+esc(i.draft||'')+'</textarea>';
+   h+='<div class="iact"><button class="run ok" onclick="sendReply(\''+i.id+'\')">✓ Send to customer</button>';
+   h+='<input class="iinp" id="notes-'+i.id+'" placeholder="revision notes…"><button class="run" onclick="redraft(\''+i.id+'\')">↩ Send back to agent</button></div>';
+  }else if(i.status==='replied'){
+   h+='<div class="rfo" style="margin-top:7px">✓ replied'+(i.draft?(' — "'+esc(i.draft.slice(0,90))+'…"'):'')+'</div>';
+  }
+  h+='</div>';
  });
  h+='</div>';v.innerHTML=h;
 }
+function sendToAgent(id){var el=document.getElementById('instr-'+id);var instr=el?el.value:'';var row=document.getElementById('ir-'+id);if(row)row.style.opacity='0.55';post('/api/inbox/draft',{id:id,instructions:instr}).then(loadInbox).catch(loadInbox);setTimeout(loadInbox,800);}
+function redraft(id){var el=document.getElementById('notes-'+id);var notes=el?el.value:'';var row=document.getElementById('ir-'+id);if(row)row.style.opacity='0.55';post('/api/inbox/draft',{id:id,instructions:notes}).then(loadInbox).catch(loadInbox);setTimeout(loadInbox,800);}
+function sendReply(id){var el=document.getElementById('draft-'+id);var reply=el?el.value:'';if(!reply.trim())return;if(!confirm('Send this reply to the customer?'))return;post('/api/inbox/send',{id:id,reply:reply}).then(function(r){return r.json();}).then(function(d){if(!d.ok)alert('Send failed.');loadInbox();}).catch(function(){alert('Send failed.');});}
 
 function tab(name){['activity','loops','usage','recent','inbox'].forEach(function(n){
  document.getElementById('v'+n).classList.toggle('on',n===name);

@@ -32,6 +32,10 @@ export interface Inbox {
   /** Newest-first list for the dashboard. */
   list(limit?: number): InboxItem[];
   get(id: string): InboxItem | undefined;
+  /** Update status (e.g. "with-agent" while drafting, "replied" after the operator sends). */
+  setStatus(id: string, status: InboxStatus): void;
+  /** Store the agent's draft reply and mark the item "drafted" (awaiting operator approval). */
+  setDraft(id: string, draft: string): void;
 }
 
 type Row = {
@@ -112,6 +116,12 @@ export function openInbox(path: string): Inbox {
     get(id) {
       const r = db.query(`SELECT * FROM inbox WHERE id = ?`).get(id) as Row | null;
       return r ? rowToItem(r) : undefined;
+    },
+    setStatus(id, status) {
+      db.run(`UPDATE inbox SET status = ? WHERE id = ?`, [status, id]);
+    },
+    setDraft(id, draft) {
+      db.run(`UPDATE inbox SET draft = ?, status = 'drafted' WHERE id = ?`, [draft, id]);
     },
   };
 }

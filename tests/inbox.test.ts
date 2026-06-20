@@ -19,6 +19,17 @@ test("records and lists inbound customer messages, newest first (plain data, no 
   expect(ib.get(a.id)?.text).toBe("hello");
 });
 
+test("setDraft stores the draft and marks 'drafted'; setStatus updates status", () => {
+  const ib = openInbox(":memory:");
+  const x = ib.record({ from: "a@x.com", subject: "s", text: "t" });
+  ib.setDraft(x.id, "Hi, thanks for reaching out.");
+  const d = ib.get(x.id)!;
+  expect(d.draft).toBe("Hi, thanks for reaching out.");
+  expect(d.status).toBe("drafted");
+  ib.setStatus(x.id, "replied");
+  expect(ib.get(x.id)?.status).toBe("replied");
+});
+
 test("record defaults receivedAt and assigns a unique id; status starts 'new'", () => {
   const ib = openInbox(":memory:");
   const x = ib.record({ from: "c@x.com", subject: "s", text: "t" });

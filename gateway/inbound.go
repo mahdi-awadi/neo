@@ -27,8 +27,9 @@ type replyFunc func(ctx context.Context, history []conversationMessage, userText
 type gateway struct {
 	gatewaySecret string
 	inboxFn       inboxFunc // inbound → Neo inbox (no AI). The only thing handleInbound needs.
-	// Kept for the operator-triggered draft/send steps (later slices), not the inbound path:
-	sender    emailSender
+	neoSecret     string    // Neo→gateway shared secret for POST /send (operator-approved replies)
+	sender        emailSender
+	// Kept for later operator-triggered draft steps, not the inbound path:
 	store     conversation.Cache
 	replyFn   replyFunc
 	fromEmail string
