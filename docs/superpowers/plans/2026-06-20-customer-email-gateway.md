@@ -28,8 +28,8 @@
 - `/home/neo/src/frontends/web.ts` — add `POST /agent/ingress` (Bearer-secret) + `channel.notify`. **(Task 3)**
 - `/home/neo/src/engine/web-channel.ts` — add `notify(text, project)`. **(Task 3)**
 - `/home/neo/src/daemon.ts` / `src/config.ts` — thread `AGENT_INGRESS_SECRET`. **(Task 3)**
-- `/home/neo-gateway/` — the gateway module: `main.go`, `config.go`, `server.go`, `inbound.go`, `orchestrate.go`, `memstore.go`, `ingress.go`, `*_test.go`, `go.mod`, `go.work`, `Dockerfile`, `.env.example`. **(Tasks 4, 6)**
-- `/home/neo-gateway/worker/` — `worker.js`, `wrangler.toml`, `package.json`. **(Task 5)**
+- `/home/neo/gateway/` — the gateway module: `main.go`, `config.go`, `server.go`, `inbound.go`, `orchestrate.go`, `memstore.go`, `ingress.go`, `*_test.go`, `go.mod`, `go.work`, `Dockerfile`, `.env.example`. **(Tasks 4, 6)**
+- `/home/neo/gateway/worker/` — `worker.js`, `wrangler.toml`, `package.json`. **(Task 5)**
 - `/home/traefik/dynamic/neo-api.yml` — Traefik route. **(Task 6)**
 
 ---
@@ -591,7 +591,7 @@ git add src/ tests/ && git commit -m "feat(neo): /agent/ingress — run a custom
 
 ## Task 4: The Go gateway service
 
-**Files (all under `/home/neo-gateway/`):** `go.mod`, `go.work`, `config.go`, `memstore.go`, `ingress.go`, `orchestrate.go`, `inbound.go`, `server.go`, `main.go`, and tests `orchestrate_test.go`, `inbound_test.go`. `.env.example`.
+**Files (all under `/home/neo/gateway/`):** `go.mod`, `go.work`, `config.go`, `memstore.go`, `ingress.go`, `orchestrate.go`, `inbound.go`, `server.go`, `main.go`, and tests `orchestrate_test.go`, `inbound_test.go`. `.env.example`.
 
 **Interfaces:**
 - Consumes: `communication/email/cloudflare` (`New`, `Config`, `ParseInbound`, `Inbound`), `communication/provider` (`EmailProvider`, `SendRequest`), `ai/llm` (`NewRegistry`, `Registry`, `ToolDecl`, `ToolSchema`, `ToolProperty`, `ToolCall`), `ai/llm/geminitext` (`New`), `ai/orchestrator` (`Process`, `Config`, `ToolDispatcher`, `Result`), `ai/conversation` (`Message`, `Cache`, `KeyForUser`).
@@ -600,8 +600,8 @@ git add src/ tests/ && git commit -m "feat(neo): /agent/ingress — run a custom
 - [ ] **Step 1: Scaffold the module + workspace**
 
 ```bash
-mkdir -p /home/neo-gateway
-cd /home/neo-gateway
+mkdir -p /home/neo/gateway
+cd /home/neo/gateway
 go mod init github.com/mahdi-awadi/neo-gateway
 cat > go.work <<'EOF'
 go 1.26
@@ -818,7 +818,7 @@ func replyForInbound(ctx context.Context, reg *llm.Registry, ingress ingressFunc
 - [ ] **Step 5: Run — expect PASS**
 
 ```bash
-cd /home/neo-gateway && go mod tidy && go test ./...
+cd /home/neo/gateway && go mod tidy && go test ./...
 ```
 
 - [ ] **Step 6: Inbound handler — failing test** `inbound_test.go`:
@@ -985,7 +985,7 @@ func (g *gateway) routes() *http.ServeMux {
 - [ ] **Step 8: Run — expect PASS**
 
 ```bash
-cd /home/neo-gateway && go test ./...
+cd /home/neo/gateway && go test ./...
 ```
 
 - [ ] **Step 9: Implement `config.go` + `main.go` (wiring; no new test — covered by the unit tests + the live e2e in Task 6)**
@@ -1088,7 +1088,7 @@ func main() {
 - [ ] **Step 10: Build + commit**
 
 ```bash
-cd /home/neo-gateway && go build ./... && go test ./...
+cd /home/neo/gateway && go build ./... && go test ./...
 git init -q && git add -A && git commit -q -m "feat(neo-gateway): Go customer gateway — inbound email → Gemini → dispatch_to_company → reply"
 # (Decide with the operator whether neo-gateway is its own repo or a subtree; default: its own repo.)
 ```
@@ -1097,7 +1097,7 @@ git init -q && git add -A && git commit -q -m "feat(neo-gateway): Go customer ga
 
 ## Task 5: Cloudflare Email Worker (inbound bridge)
 
-**Files (under `/home/neo-gateway/worker/`):** `worker.js`, `wrangler.toml`, `package.json`. Verified by live round-trip (no unit test — it runs on Cloudflare).
+**Files (under `/home/neo/gateway/worker/`):** `worker.js`, `wrangler.toml`, `package.json`. Verified by live round-trip (no unit test — it runs on Cloudflare).
 
 - [ ] **Step 1: `package.json`** (pull in the MIME parser)
 
@@ -1147,7 +1147,7 @@ GATEWAY_URL = "https://neo-api.tech-gate.online/inbound/email"
 - [ ] **Step 4: Deploy + route (operator runs)**
 
 ```bash
-cd /home/neo-gateway/worker && npm install
+cd /home/neo/gateway/worker && npm install
 npx wrangler secret put INBOUND_WEBHOOK_SECRET     # paste the same secret the gateway uses
 npx wrangler deploy
 # In the Cloudflare dashboard → Email → Email Routing: route support@tech-gate.online to this Worker.
@@ -1156,14 +1156,14 @@ npx wrangler deploy
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/neo-gateway && git add worker && git commit -q -m "feat(neo-gateway): Cloudflare Email Worker — inbound mail → gateway"
+cd /home/neo/gateway && git add worker && git commit -q -m "feat(neo-gateway): Cloudflare Email Worker — inbound mail → gateway"
 ```
 
 ---
 
 ## Task 6: Containerize + Traefik + live end-to-end
 
-**Files:** `/home/neo-gateway/Dockerfile`, `/home/neo-gateway/.dockerignore`, `/home/neo-gateway/.env.example`, `/home/traefik/dynamic/neo-api.yml`, and a compose entry.
+**Files:** `/home/neo/gateway/Dockerfile`, `/home/neo/gateway/.dockerignore`, `/home/neo/gateway/.env.example`, `/home/traefik/dynamic/neo-api.yml`, and a compose entry.
 
 - [ ] **Step 1: `Dockerfile`** (build context is `/home` so it can copy both `gopkg` and `neo-gateway` + the workspace)
 
@@ -1202,10 +1202,10 @@ NEO_INGRESS_SECRET=
 - [ ] **Step 3: Build + run the container**
 
 ```bash
-docker build -f /home/neo-gateway/Dockerfile -t neo-gateway /home
+docker build -f /home/neo/gateway/Dockerfile -t neo-gateway /home
 docker run -d --name neo-gateway --restart unless-stopped \
   --add-host=host.docker.internal:host-gateway \
-  --env-file /home/neo-gateway/.env \
+  --env-file /home/neo/gateway/.env \
   --network <the-traefik-docker-network> \
   --label "traefik.enable=true" \
   --label "traefik.http.routers.neoapi.rule=Host(\`neo-api.tech-gate.online\`)" \
@@ -1235,7 +1235,7 @@ curl -s -X POST http://172.20.0.1:3003/agent/ingress \
 - [ ] **Step 5: Commit + record**
 
 ```bash
-cd /home/neo-gateway && git add Dockerfile .dockerignore .env.example && \
+cd /home/neo/gateway && git add Dockerfile .dockerignore .env.example && \
 git commit -q -m "feat(neo-gateway): containerize + Traefik route (neo-api.tech-gate.online) + live e2e"
 # Update /home/neo/docs and MVP-PLAN.md Phase 3b: email slice complete.
 ```

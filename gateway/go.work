@@ -1,0 +1,10 @@
+go 1.26
+use (
+	.
+	../../gopkg/ai/conversation
+	../../gopkg/ai/llm
+	../../gopkg/ai/llm/geminitext
+	../../gopkg/ai/orchestrator
+	../../gopkg/communication/provider
+	../../gopkg/communication/email/cloudflare
+)

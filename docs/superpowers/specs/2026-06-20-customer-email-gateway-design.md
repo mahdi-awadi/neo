@@ -32,6 +32,18 @@ Gemini composes the reply and sends it back over Cloudflare.
 - **Synchronous ingress for the MVP.** The gateway's tool call blocks on the company's result with a
   generous timeout. Async/callback delivery is a later improvement (noted under Future work).
 
+## Amendment (2026-06-20): outbound via the Workers `send_email` binding
+
+Outbound email is sent through the Cloudflare **Email Worker** (`env.EMAIL.send(...)` via a
+`[[send_email]]` binding), **not** the REST API. The Worker gains a `fetch()` handler the gateway
+POSTs replies to (auth = the shared gateway↔Worker secret). Result: **the gateway container holds no
+Cloudflare credentials at all** — both inbound and outbound go through the operator-deployed Worker;
+the only secrets in the container are the gateway↔Worker shared secret and the Neo ingress secret.
+This is a strictly cleaner compliance/security boundary than putting a Cloudflare API token (and the
+DNS-edit power that comes with reusing the existing Traefik token) inside the container. The gopkg
+`communication/email/cloudflare` REST `Sender` (Tasks 1–2) stays as a reusable library provider; the
+gateway uses a small `workerSender` instead. A verified sender domain (DKIM) is still required.
+
 ## Architecture
 
 ```
@@ -180,7 +192,7 @@ Gateway container `.env` (no Claude creds): `GEMINI_API_KEY`, `CF_ACCOUNT_ID`, `
 
 Neo `.env`: `AGENT_INGRESS_SECRET` (= the gateway's `NEO_INGRESS_SECRET`).
 
-Email Worker vars: `GATEWAY_URL` (e.g. `https://gw.tech-gate.online/inbound/email`),
+Email Worker vars: `GATEWAY_URL` (e.g. `https://neo-api.tech-gate.online/inbound/email`),
 `INBOUND_WEBHOOK_SECRET`.
 
 All secrets `chmod 600`, gitignored, never logged.
@@ -188,7 +200,7 @@ All secrets `chmod 600`, gitignored, never logged.
 ## Deployment
 
 - **Gateway**: a Docker image (multi-stage Go build) run via compose; routed by Traefik on a new
-  subdomain (e.g. `gw.tech-gate.online`) so the Cloudflare Email Worker can POST inbound. Reaches Neo
+  subdomain (e.g. `neo-api.tech-gate.online`) so the Cloudflare Email Worker can POST inbound. Reaches Neo
   at `172.20.0.1:3003` over the docker bridge.
 - **Neo ingress**: added to the existing Bun server. Protected by `AGENT_INGRESS_SECRET`; a Traefik
   rule may additionally block `/agent/ingress` from the public router (defense in depth) — the secret
@@ -245,4 +257,4 @@ gateway, the Neo ingress, and the orchestrator built in this slice.
 
 - Cloudflare account + domain with Email Routing enabled; confirm `support@tech-gate.online`.
 - A verified sender domain with DKIM for Email Service; an API token scoped to email send.
-- The gateway subdomain (default `gw.tech-gate.online`).
+- The gateway subdomain (default `neo-api.tech-gate.online`).
