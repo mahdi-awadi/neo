@@ -11,6 +11,7 @@ import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
 import { runCompanyBrief } from "../engine/ingress";
 import { saveInbound } from "../engine/files";
+import type { Inbox } from "../engine/inbox";
 import { basename } from "node:path";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
@@ -25,8 +26,10 @@ export interface WebAppDeps {
   admin: AdminStore;
   /** Epoch SECONDS clock (auth_date freshness + session expiry). Defaults to wall clock. */
   now?: () => number;
-  /** Shared secret for machine-to-machine POST /agent/ingress. Required to enable the endpoint. */
+  /** Shared secret for machine-to-machine POST /agent/ingress + /inbox. Required to enable them. */
   ingressSecret?: string;
+  /** Customer message inbox (plain data — no AI). The gateway POSTs inbound mail here. */
+  inbox?: Inbox;
 }
 
 export interface WebApp {
@@ -92,8 +95,37 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json({ ok: true, result }, { headers: { "cache-control": "no-store" } });
     }
 
+    // --- machine-to-machine: POST /inbox — the gateway parks a customer message here. PLAIN DATA,
+    //     no AI: it is just stored and shown in the dashboard for the operator to review. ---
+    if (req.method === "POST" && path === "/inbox") {
+      const auth = req.headers.get("authorization") ?? "";
+      if (!deps.ingressSecret || auth !== `Bearer ${deps.ingressSecret}`) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!deps.inbox || typeof b.from !== "string" || !b.from.trim()) {
+        return Response.json({ ok: false }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
+      const item = deps.inbox.record({
+        channel: typeof b.channel === "string" ? b.channel : "email",
+        from: b.from,
+        fromName: typeof b.fromName === "string" ? b.fromName : "",
+        to: typeof b.to === "string" ? b.to : "",
+        subject: typeof b.subject === "string" ? b.subject : "",
+        text: typeof b.text === "string" ? b.text : "",
+        html: typeof b.html === "string" ? b.html : "",
+        messageId: typeof b.messageId === "string" ? b.messageId : "",
+      });
+      return Response.json({ ok: true, id: item.id }, { headers: { "cache-control": "no-store" } });
+    }
+
     // --- everything below requires a valid session ---
     if (sessionUser(req) === undefined) return new Response("unauthorized", { status: 401 });
+
+    // Inbox list for the dashboard (operator-only).
+    if (req.method === "GET" && path === "/api/inbox") {
+      return Response.json({ items: deps.inbox?.list() ?? [] }, { headers: { "cache-control": "no-store" } });
+    }
 
     if (req.method === "POST" && path === "/msg") {
       const body = (await req.json().catch(() => ({}))) as { text?: unknown };

@@ -12,6 +12,7 @@ import { createRegistry } from "./engine/registry";
 import { createMeter } from "./engine/budget";
 import { createUsageMeter } from "./engine/usage";
 import { openTrustStore } from "./engine/trust";
+import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { startTelegram } from "./frontends/telegram";
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
   const admin = openAdminStore("data/admin.db");
   const registry = createRegistry();
   const trust = openTrustStore("data/trust.db");
+  const inbox = openInbox("data/inbox.db"); // customer messages — plain data, shown in the web
   const meter = createMeter({
     windowBudgetUsd: cfg.budgetWindowUsd,
     reservePct: cfg.subscriptionInteractiveReservePct,
@@ -76,7 +78,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret },
+      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox },
       WEB_PORT,
       WEB_HOST,
     );

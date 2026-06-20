@@ -7,26 +7,20 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mahdi-awadi/gopkg/communication/provider"
+	"github.com/mahdi-awadi/gopkg/communication/email/cloudflare"
 )
 
-// fakeSender records the reply instead of calling Cloudflare.
-type fakeSender struct{ last *provider.SendRequest }
-
-func (f *fakeSender) Send(_ context.Context, r *provider.SendRequest) (*provider.SendResponse, error) {
-	f.last = r
-	return &provider.SendResponse{Success: true}, nil
-}
-
-func TestHandleInboundDispatchesAndReplies(t *testing.T) {
-	sender := &fakeSender{}
-	// a reply func that doesn't touch Gemini: pretend the model answered using the tool result.
-	reply := func(_ context.Context, _ []conversationMessage, userText string) (string, error) {
-		return "Thanks for reaching out — " + userText, nil
+func TestHandleInboundForwardsToInbox(t *testing.T) {
+	var got cloudflare.Inbound
+	gw := &gateway{
+		gatewaySecret: "s",
+		inboxFn: func(_ context.Context, in cloudflare.Inbound) error {
+			got = in
+			return nil
+		},
 	}
-	gw := &gateway{sender: sender, store: newMemCache(), gatewaySecret: "s", replyFn: reply, fromEmail: "support@tech-gate.online"}
 
-	body := []byte(`{"from":"cust@example.com","subject":"hi","text":"where is my order","messageId":"<m1>"}`)
+	body := []byte(`{"from":"cust@example.com","fromName":"Cust","subject":"hi","text":"where is my order","messageId":"<m1>"}`)
 	req := httptest.NewRequest(http.MethodPost, "/inbound/email", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer s")
 	rec := httptest.NewRecorder()
@@ -35,16 +29,13 @@ func TestHandleInboundDispatchesAndReplies(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status %d", rec.Code)
 	}
-	if sender.last == nil || sender.last.RecipientEmail != "cust@example.com" {
-		t.Fatalf("reply not sent to sender: %+v", sender.last)
-	}
-	if sender.last.Body == "" {
-		t.Fatalf("empty reply body")
+	if got.From != "cust@example.com" || got.Subject != "hi" || got.Text != "where is my order" {
+		t.Fatalf("inbox got wrong message: %+v", got)
 	}
 }
 
 func TestHandleInboundRejectsBadSecret(t *testing.T) {
-	gw := &gateway{gatewaySecret: "s", store: newMemCache()}
+	gw := &gateway{gatewaySecret: "s"}
 	req := httptest.NewRequest(http.MethodPost, "/inbound/email", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set("Authorization", "Bearer wrong")
 	rec := httptest.NewRecorder()

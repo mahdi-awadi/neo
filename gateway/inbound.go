@@ -5,8 +5,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/mahdi-awadi/gopkg/ai/conversation"
 	"github.com/mahdi-awadi/gopkg/communication/email/cloudflare"
@@ -27,11 +25,13 @@ func toConvHistory(h []conversationMessage) []conversation.Message { return h }
 type replyFunc func(ctx context.Context, history []conversationMessage, userText string) (string, error)
 
 type gateway struct {
-	sender        emailSender
-	store         conversation.Cache
 	gatewaySecret string
-	replyFn       replyFunc
-	fromEmail     string
+	inboxFn       inboxFunc // inbound → Neo inbox (no AI). The only thing handleInbound needs.
+	// Kept for the operator-triggered draft/send steps (later slices), not the inbound path:
+	sender    emailSender
+	store     conversation.Cache
+	replyFn   replyFunc
+	fromEmail string
 }
 
 func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
@@ -46,36 +46,14 @@ func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad payload", http.StatusUnprocessableEntity)
 		return
 	}
-	log.Printf("inbound from %s subj=%q", in.From, in.Subject)
-	ctx := r.Context()
-	key := conversation.KeyForUser("email", in.From)
-	history, _ := g.store.Recent(ctx, key, 20)
-	_ = g.store.Append(ctx, key, conversation.Message{Role: "user", Channel: "email", Content: in.Text, Timestamp: time.Now()})
-
-	answer, err := g.replyFn(ctx, history, in.Text)
-	if err != nil {
-		log.Printf("inbound: reply generation failed for %s: %v", in.From, err)
-		http.Error(w, "processing error", http.StatusBadGateway)
+	// Park it in Neo's inbox for the operator to review. NO AI, NO auto-reply — the customer's
+	// message is just stored and shown in the dashboard. The agent is invoked later, only when
+	// the operator sends the item to it.
+	if err := g.inboxFn(r.Context(), in); err != nil {
+		log.Printf("inbound: forward to inbox failed for %s: %v", in.From, err)
+		http.Error(w, "inbox unavailable", http.StatusBadGateway)
 		return
 	}
-	_ = g.store.Append(ctx, key, conversation.Message{Role: "model", Channel: "email", Content: answer, Timestamp: time.Now()})
-
-	subject := in.Subject
-	if subject != "" && !strings.HasPrefix(subject, "Re:") {
-		subject = "Re: " + subject
-	}
-	opts := map[string]any{}
-	if in.MessageID != "" {
-		opts["headers"] = map[string]string{"In-Reply-To": in.MessageID, "References": in.MessageID}
-	}
-	_, sendErr := g.sender.Send(ctx, &provider.SendRequest{
-		RecipientEmail: in.From, Subject: subject, Body: answer, Options: opts,
-	})
-	if sendErr != nil {
-		log.Printf("inbound: send failed to %s: %v", in.From, sendErr)
-		http.Error(w, "send failed", http.StatusBadGateway)
-		return
-	}
-	log.Printf("inbound: replied to %s", in.From)
+	log.Printf("inbound queued from %s subj=%q", in.From, in.Subject)
 	w.WriteHeader(http.StatusOK)
 }

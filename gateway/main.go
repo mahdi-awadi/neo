@@ -20,11 +20,13 @@ func main() {
 
 	ingress := neoIngress(cfg.NeoIngressURL, cfg.NeoIngressSecret, &http.Client{Timeout: 4 * time.Minute})
 	sender := newWorkerSender(cfg.WorkerSendURL, cfg.GatewayWorkerSecret, cfg.EmailFrom, cfg.EmailFromName, &http.Client{Timeout: 30 * time.Second})
+	inbox := neoInbox(cfg.NeoInboxURL, cfg.NeoIngressSecret, &http.Client{Timeout: 30 * time.Second})
 
 	gw := &gateway{
+		gatewaySecret: cfg.GatewayWorkerSecret,
+		inboxFn:       inbox, // inbound mail → Neo inbox (no AI, no auto-reply)
 		sender:        sender,
 		store:         newMemCache(),
-		gatewaySecret: cfg.GatewayWorkerSecret,
 		fromEmail:     cfg.EmailFrom,
 		replyFn: func(ctx context.Context, history []conversationMessage, userText string) (string, error) {
 			return replyForInbound(ctx, reg, ingress, history, userText)
