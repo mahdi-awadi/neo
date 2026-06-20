@@ -347,6 +347,14 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .pill.ok{border-color:color-mix(in srgb,var(--accent) 45%,var(--border));color:var(--accent)}.pill.warn{border-color:color-mix(in srgb,var(--warn) 50%,var(--border));color:var(--warn)}
 .rrow{display:flex;gap:11px;padding:9px 0;border-top:1px solid var(--border);font-size:13px}.rrow:first-of-type{border-top:0}
 .rfo{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:1px}
+.ibadge{font-family:var(--mono);font-size:10px;color:var(--warn);font-weight:700}.ibadge.on::before{content:"●";margin-left:5px}
+.irow{padding:12px 0;border-top:1px solid var(--border)}.irow:first-of-type{border-top:0}
+.imeta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.isubj{font-weight:600;font-size:14px;margin:4px 0 3px}
+.ibody{font-size:13px;color:var(--muted);white-space:pre-wrap;word-break:break-word;line-height:1.5;max-height:7em;overflow:hidden}
+.ist{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid var(--border)}
+.ist-new{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--border));background:color-mix(in srgb,var(--warn) 8%,transparent)}
+.ist-with-agent{color:#6db3ff;border-color:#2f4a6a}.ist-drafted{color:var(--accent);border-color:var(--accent-dim)}.ist-replied{color:var(--muted)}
 .escc{border:1px solid color-mix(in srgb,var(--warn) 50%,var(--border));background:color-mix(in srgb,var(--warn) 7%,var(--panel));border-radius:13px;padding:13px 15px;margin:9px 0}
 .acts{display:flex;gap:8px;margin-top:11px}
 .chip{padding:6px 13px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-family:var(--mono);font-size:11px;cursor:pointer}
@@ -375,6 +383,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
    <button class="tab" data-v="loops" onclick="tab('loops')">Loops</button>
    <button class="tab" data-v="usage" onclick="tab('usage')">Usage</button>
    <button class="tab" data-v="recent" onclick="tab('recent')">Recent</button>
+   <button class="tab" data-v="inbox" onclick="tab('inbox');loadInbox()">Inbox<span id="ibadge" class="ibadge"></span></button>
    <span class="spacer"></span><span class="who" id="who">no active project</span>
   </div>
   <div class="view on" id="vactivity">
@@ -385,6 +394,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
   <div class="view" id="vloops"></div>
   <div class="view" id="vusage"></div>
   <div class="view" id="vrecent"></div>
+  <div class="view" id="vinbox"></div>
  </main>
 </div>
 <script>
@@ -447,7 +457,23 @@ function renderRecent(){var v=document.getElementById('vrecent');var h='<div cla
   h+='<div class="rrow"><span>'+ic+'</span><div style="flex:1;min-width:0"><div>'+esc(o.task)+'</div><div class="rfo">'+esc(o.folder)+'</div></div></div>';});
  h+='</div>';v.innerHTML=h;}
 
-function tab(name){['activity','loops','usage','recent'].forEach(function(n){
+// Inbox — customer messages the operator reviews (plain data, no AI until 'send to agent').
+function loadInbox(){return fetch('/api/inbox?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){renderInbox(d.items||[]);}).catch(function(){});}
+function renderInbox(items){
+ var nw=items.filter(function(i){return i.status==='new';}).length;
+ var bd=document.getElementById('ibadge'); if(bd){bd.textContent=nw?(' '+nw):'';bd.className='ibadge'+(nw?' on':'');}
+ var v=document.getElementById('vinbox');
+ if(!items.length){v.innerHTML='<div class="card"><h3>Inbox — customer messages</h3><div class="empty">No customer messages yet.</div></div>';return;}
+ var h='<div class="card"><h3>Inbox — customer messages (you review &amp; reply; never auto-sent)</h3>';
+ items.forEach(function(i){
+  h+='<div class="irow"><div class="imeta"><span class="ist ist-'+esc(i.status)+'">'+esc(i.status)+'</span> <b>'+esc(i.fromName||i.from)+'</b> <span class="rfo">&lt;'+esc(i.from)+'&gt; · '+esc(i.channel)+'</span></div>'
+    +'<div class="isubj">'+esc(i.subject||'(no subject)')+'</div>'
+    +'<div class="ibody">'+esc((i.text||'').slice(0,500))+'</div></div>';
+ });
+ h+='</div>';v.innerHTML=h;
+}
+
+function tab(name){['activity','loops','usage','recent','inbox'].forEach(function(n){
  document.getElementById('v'+n).classList.toggle('on',n===name);
  var b=document.querySelector('.tab[data-v="'+n+'"]');if(b)b.classList.toggle('on',n===name);});}
 
@@ -483,6 +509,6 @@ es.onmessage=function(ev){var e=JSON.parse(ev.data);
  else if(e.type==='file'){var d=document.createElement('div');d.className='row out';d.innerHTML='📎 <a href="'+e.url+'">'+esc(e.name)+'</a>';pushFeed(d,'out',e.project);}
 };
 document.getElementById('ff').onsubmit=function(ev){ev.preventDefault();var m=document.getElementById('msg');say(m.value);m.value='';};
-loadState();setInterval(loadState,15000);
+loadState();loadInbox();setInterval(function(){loadState();loadInbox();},15000);
 </script></body></html>`;
 }
