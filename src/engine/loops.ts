@@ -48,6 +48,17 @@ export function matchLoop(args: string): LoopDef | undefined {
   return LOOPS.find((l) => l.name === key);
 }
 
+export interface LoopInfo {
+  name: string;
+  usage: string;
+  summary: string;
+}
+
+/** The available loops as render-friendly buttons (name to run via /loop <name>). */
+export function listLoops(): LoopInfo[] {
+  return LOOPS.map((l) => ({ name: l.name, usage: l.usage, summary: l.summary }));
+}
+
 function formatLoops(): string {
   return ["Available loops:", ...LOOPS.map((l) => `${l.usage} — ${l.summary}`)].join("\n");
 }

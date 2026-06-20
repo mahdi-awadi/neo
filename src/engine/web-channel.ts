@@ -4,8 +4,13 @@
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
 import { handleMessage, type PipelineDeps } from "./pipeline";
-import { handleCommand, selectProject as engineSelectProject, type SelectableProject } from "./commands";
-import { handleLoop } from "./loops";
+import {
+  handleCommand,
+  selectProject as engineSelectProject,
+  killProject as engineKillProject,
+  type SelectableProject,
+} from "./commands";
+import { handleLoop, listLoops, type LoopInfo } from "./loops";
 import type { UsageMeter } from "./usage";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -14,7 +19,8 @@ export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
 export type WebEvent =
   | { type: "message"; text: string }
   | { type: "escalation"; id: string; reason: string }
-  | { type: "projects"; text: string; items: SelectableProject[] };
+  | { type: "projects"; text: string; items: SelectableProject[] }
+  | { type: "loops"; items: LoopInfo[] };
 
 export interface WebChannel {
   /** Operator sent a message — drive the pipeline; streamed output arrives as events. */
@@ -25,6 +31,8 @@ export interface WebChannel {
   resolveApproval(id: string, decision: "allow" | "deny"): boolean;
   /** Make a project active from a clicked /list chip (the shared engine selectProject). */
   selectProject(id: string): void;
+  /** Kill a project from a clicked ✕ (the shared engine killProject), refreshing the list. */
+  killProject(id: string): void;
 }
 
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter }): WebChannel {
@@ -51,7 +59,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
 
   return {
     send: async (text) => {
-      // /loop runs a long verifiable loop in the background, streaming progress as messages.
+      // Bare /loop → a loops event the UI renders as run buttons (vs Telegram's text list).
+      if (text.trim() === "/loop") {
+        emit({ type: "loops", items: listLoops() });
+        return;
+      }
+      // /loop <name> runs a long verifiable loop in the background, streaming progress.
       if (handleLoop(text, opts.chatId, { reply: (_c, t) => emit({ type: "message", text: t }) })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
@@ -85,6 +98,14 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     selectProject(id) {
       const result = engineSelectProject(id, opts.chatId, {
+        registry: opts.engine.registry,
+        ledger: opts.engine.ledger,
+        usage: opts.usage,
+      });
+      emit({ type: "projects", text: result.text, items: result.select ?? [] });
+    },
+    killProject(id) {
+      const result = engineKillProject(id, opts.chatId, {
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,

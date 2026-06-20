@@ -12,8 +12,8 @@ import type { UsageMeter } from "../engine/usage";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { handleMessage } from "../engine/pipeline";
-import { handleCommand, selectProject, type SelectableProject } from "../engine/commands";
-import { handleLoop } from "../engine/loops";
+import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
+import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 
 export function startTelegram(
   cfg: NeoConfig,
@@ -42,7 +42,13 @@ export function startTelegram(
     if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
 
-    // /loop runs a long verifiable loop in the background (streams its own progress).
+    // Bare /loop → tappable run buttons; /loop <name> starts a background loop (streams progress).
+    if (ctx.message.text.trim() === "/loop") {
+      const kb = new InlineKeyboard();
+      for (const l of listLoops()) kb.text(`▶ ${l.usage.replace("/loop ", "")}`, `runloop:${l.name}`).row();
+      void bot.api.sendMessage(chatId, "Run a loop:", { reply_markup: kb });
+      return;
+    }
     if (handleLoop(ctx.message.text, chatId, { reply: (cid, t) => void bot.api.sendMessage(cid, t) })) return;
 
     // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
@@ -80,19 +86,31 @@ export function startTelegram(
       return;
     }
 
-    // Tap a project in /list to make it active (the shared engine selectProject).
-    if (ctx.callbackQuery.data.startsWith("use:")) {
-      const id = ctx.callbackQuery.data.slice("use:".length);
-      const result = selectProject(id, ctx.chat?.id ?? 0, { registry, ledger, usage });
-      await ctx.answerCallbackQuery("switched");
+    // Tap a project to make it active (use:) or kill it (kill:) — shared engine functions.
+    const cb = ctx.callbackQuery.data;
+    if (cb.startsWith("use:") || cb.startsWith("kill:")) {
+      const id = cb.slice(cb.indexOf(":") + 1);
+      const chatId = ctx.chat?.id ?? 0;
+      const result = cb.startsWith("use:")
+        ? selectProject(id, chatId, { registry, ledger, usage })
+        : killProject(id, chatId, { registry, ledger, usage });
+      await ctx.answerCallbackQuery(cb.startsWith("use:") ? "switched" : "killed");
       try {
         await ctx.editMessageText(
           result.text,
           result.select?.length ? { reply_markup: projectKeyboard(result.select) } : undefined,
         );
       } catch {
-        // "message is not modified" when re-tapping the active project — ignore
+        // "message is not modified" — ignore
       }
+      return;
+    }
+
+    // Tap a loop run button.
+    if (cb.startsWith("runloop:")) {
+      const loop = matchLoop(cb.slice("runloop:".length));
+      await ctx.answerCallbackQuery(loop ? "running" : "unknown loop");
+      if (loop) void startLoop(loop, ctx.chat?.id ?? 0, { reply: (cid, t) => void bot.api.sendMessage(cid, t) });
       return;
     }
 
@@ -115,6 +133,6 @@ export function startTelegram(
 /** One button per open project; the active one is starred. Tapping fires a `use:<id>` callback. */
 function projectKeyboard(select: SelectableProject[]): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const p of select) kb.text(p.active ? `★ ${p.label}` : p.label, `use:${p.id}`).row();
+  for (const p of select) kb.text(p.active ? `★ ${p.label}` : p.label, `use:${p.id}`).text("✕", `kill:${p.id}`).row();
   return kb;
 }

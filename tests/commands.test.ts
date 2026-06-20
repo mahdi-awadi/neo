@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { handleCommand, selectProject } from "../src/engine/commands";
+import { handleCommand, selectProject, killProject } from "../src/engine/commands";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import type { Order } from "../src/types";
@@ -169,6 +169,18 @@ test("/list returns selectable projects with the active one flagged", () => {
   expect(beta?.id).toBe(b.id);
   expect(beta?.folder).toBe("/p/beta");
   expect(beta?.status).toBe("running");
+});
+
+test("killProject interrupts + removes the session and returns the refreshed list", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  registry.add(order({ folder: "/p/beta", chatId: 1 }), 2);
+  let interrupted = false;
+  registry.attachControl(a.id, { followUp: () => {}, interrupt: async () => void (interrupted = true) });
+  const res = killProject(a.id, 1, deps({ registry }));
+  expect(interrupted).toBe(true);
+  expect(registry.get(a.id)).toBeUndefined();
+  expect(res.select?.map((s) => s.label)).toEqual(["beta"]);
 });
 
 test("selectProject sets the active project and returns the refreshed list", () => {

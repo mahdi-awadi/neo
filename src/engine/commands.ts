@@ -107,6 +107,17 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
   return renderList(deps.registry, (deps.now ?? (() => Date.now()))(), chatId);
 }
 
+/** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
+ * frontends; same effect as /kill <name>, but addressed by the stable session id. */
+export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
+  if (deps.registry.get(id)) {
+    void deps.registry.getControl(id)?.interrupt();
+    deps.registry.setStatus(id, "done");
+    deps.registry.remove(id);
+  }
+  return renderList(deps.registry, (deps.now ?? (() => Date.now()))(), chatId);
+}
+
 function humanAge(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;

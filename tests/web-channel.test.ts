@@ -120,6 +120,38 @@ test("/list over the web emits a projects event with items; selectProject switch
   expect(eng.registry.findByChat(42)?.id).toBe(proj!.items[0].id);
 });
 
+test("killProject removes the session and emits a refreshed projects event", async () => {
+  const dir1 = scratch();
+  const dir2 = scratch();
+  const f = fakeStart();
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send(`/open ${dir1} a`);
+  await ch.send(`/open ${dir2} b`);
+
+  const id = eng.registry.list()[0].id;
+  ch.killProject(id);
+
+  expect(eng.registry.get(id)).toBeUndefined();
+  const proj = events.filter((e) => e.type === "projects").pop() as { items: unknown[] } | undefined;
+  expect(proj?.items.length).toBe(1);
+});
+
+test("/loop alone emits a loops event with runnable items", async () => {
+  const f = fakeStart();
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  await ch.send("/loop");
+
+  const loops = events.find((e) => e.type === "loops") as { items: Array<{ name: string }> } | undefined;
+  expect(loops).toBeTruthy();
+  expect(loops?.items.find((l) => l.name === "gold-gofmt")).toBeTruthy();
+});
+
 test("resolveApproval returns false for an unknown id", () => {
   const f = fakeStart();
   const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });

@@ -91,6 +91,12 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json({ ok: true });
     }
 
+    if (req.method === "POST" && path === "/kill") {
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown };
+      if (typeof body.id === "string") channel.killProject(body.id);
+      return Response.json({ ok: true });
+    }
+
     if (req.method === "GET" && path === "/stream") {
       const stream = new ReadableStream({
         start(controller) {
@@ -183,6 +189,8 @@ aside{width:290px;min-width:290px;background:linear-gradient(180deg,var(--panel)
 .meta{flex:1;min-width:0}
 .nm{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fo{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.kbtn{opacity:0;background:transparent;border:0;color:var(--faint);cursor:pointer;font-size:13px;line-height:1;padding:3px 5px;border-radius:6px;transition:opacity .12s,color .12s,background .12s}
+.proj:hover .kbtn{opacity:1}.kbtn:hover{color:var(--danger);background:rgba(255,107,107,.08)}
 .empty{padding:16px 18px;color:var(--muted);font-size:12.5px;line-height:1.7}
 .empty b{color:var(--accent);font-family:var(--mono);font-weight:500}
 .foot{padding:11px 18px;border-top:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--muted);display:flex;justify-content:space-between;letter-spacing:.04em}
@@ -199,7 +207,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;animation:fade .5s .0
 .row.out{border-left:2px solid var(--accent-dim);padding-left:13px;margin:5px 0;color:var(--fg)}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:13px 15px;margin:9px 0;white-space:pre-wrap}
 .card.esc{border-color:color-mix(in srgb,var(--warn) 50%,var(--border));background:color-mix(in srgb,var(--warn) 7%,var(--panel))}
-.acts{display:flex;gap:8px;margin-top:11px}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px}
 .chip{padding:6px 13px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .12s}
 .chip:hover{border-color:var(--accent-dim)}
 .chip.ok{border-color:color-mix(in srgb,var(--accent) 60%,var(--border));color:var(--accent)}
@@ -251,6 +259,9 @@ function renderProjects(items){
   var d=document.createElement('div');d.className='proj'+(p.active?' on':'');
   d.innerHTML='<span class="dot '+dotcls(p.status)+'"></span><div class="meta"><div class="nm">'+esc(p.label)+'</div><div class="fo">'+esc(p.folder||'')+'</div></div>';
   d.onclick=function(){post('/select',{id:p.id});};
+  var k=document.createElement('button');k.className='kbtn';k.textContent='✕';k.title='kill';
+  k.onclick=function(ev){ev.stopPropagation();post('/kill',{id:p.id});};
+  d.appendChild(k);
   box.appendChild(d);if(p.active)active=p;
  })(items[i]);}
  document.getElementById('now').innerHTML=active?('active · <b>'+esc(active.label)+'</b>'):(items.length+' open · none active');
@@ -259,6 +270,12 @@ var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);
  if(e.type==='message'){add(esc(e.text),'out');}
  else if(e.type==='projects'){renderProjects(e.items);}
+ else if(e.type==='loops'){
+  var lc=document.createElement('div');lc.className='card';lc.innerHTML='<div class="fo" style="margin-bottom:9px">RUN A LOOP</div>';
+  var la=document.createElement('div');la.className='acts';
+  (e.items||[]).forEach(function(l){var b=document.createElement('button');b.className='chip';b.title=l.summary;
+   b.textContent='▶ '+l.usage.replace('/loop ','');b.onclick=function(){send('/loop '+l.name);};la.appendChild(b);});
+  lc.appendChild(la);log.appendChild(lc);log.scrollTop=log.scrollHeight;}
  else if(e.type==='escalation'){
   var c=document.createElement('div');c.className='card esc';c.innerHTML='⚠ '+esc(e.reason);
   var acts=document.createElement('div');acts.className='acts';
