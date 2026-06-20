@@ -1,0 +1,4 @@
+# Ship only the prebuilt static binary into the image (never source or the .env).
+*
+!bin
+!bin/neo-gateway

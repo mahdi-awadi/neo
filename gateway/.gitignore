@@ -1,3 +1,5 @@
 neo-gateway
 *.env
 /.superpowers/
+/bin/
+/Dockerfile.bin
