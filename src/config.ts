@@ -23,6 +23,8 @@ export interface NeoConfig {
   budgetWindowMs: number;
   /** Shared secret for machine-to-machine POST /agent/ingress (from AGENT_INGRESS_SECRET env). */
   agentIngressSecret: string;
+  /** Idle-close threshold for NORMAL projects in ms (the company is exempt). Default 24h. */
+  idleCloseMs: number;
 }
 
 const DEFAULTS = {
@@ -31,6 +33,7 @@ const DEFAULTS = {
   workRoot: process.env.HOME ?? "/home",
   budgetWindowUsd: 20,
   budgetWindowMs: 5 * 60 * 60 * 1000,
+  idleCloseMs: 24 * 60 * 60 * 1000,
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -70,5 +73,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
+    idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
   };
 }

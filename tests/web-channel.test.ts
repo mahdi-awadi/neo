@@ -21,6 +21,7 @@ function cfg(): NeoConfig {
     budgetWindowUsd: 100,
     budgetWindowMs: 3_600_000,
     agentIngressSecret: "",
+    idleCloseMs: 24 * 60 * 60 * 1000,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-web-"));

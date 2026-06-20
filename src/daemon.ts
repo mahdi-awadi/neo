@@ -17,8 +17,7 @@ import { startTelegram } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject, DEFAULT_PROJECT } from "./engine/default-project";
 
-// Idle-close: a session quiet this long is closed (its sdk id persisted for resume).
-const IDLE_CLOSE_MS = 10 * 60 * 1000;
+// Idle-close poll interval.
 const IDLE_POLL_MS = 60 * 1000;
 const WEB_HOST = "172.20.0.1"; // docker-bridge IP — reachable by Traefik, not public
 const WEB_PORT = 3003; // Traefik routes neo.tech-gate.online -> 172.20.0.1:3003 (3001=operant, 3002=taken)
@@ -55,15 +54,15 @@ async function main(): Promise<void> {
     claudeJsonPath: join(homedir(), ".claude.json"),
   });
 
-  // Idle watchdog — shares the registry the pipeline registers sessions in.
-  setInterval(() => sweepIdle(registry, ledger, { idleMs: IDLE_CLOSE_MS, now: Date.now() }), IDLE_POLL_MS);
+  // Idle watchdog — shares the registry the pipeline registers sessions in. The company is exempt.
+  setInterval(() => sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now() }), IDLE_POLL_MS);
 
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);
   console.log("  usage     -> measured from ~/.claude transcripts (/usage); throttling opt-in via caps later");
   console.log(`  ledger    -> data/ledger.db (${ledger.listRecent().length} prior orders)`);
   console.log(`  admin     -> ${admin.adminId() ?? "unclaimed (first Telegram message becomes admin)"}`);
-  console.log(`  idle      -> close after ${IDLE_CLOSE_MS / 60000}m quiet, sweep every ${IDLE_POLL_MS / 1000}s`);
+  console.log(`  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every ${IDLE_POLL_MS / 1000}s (company exempt)`);
 
   if (cfg.telegramToken) {
     startTelegram(cfg, ledger, admin, registry, meter, usage);

@@ -14,6 +14,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     budgetWindowUsd: 20,
     budgetWindowMs: 18_000_000,
     agentIngressSecret: "",
+    idleCloseMs: 24 * 60 * 60 * 1000,
   };
 }
 
