@@ -41,6 +41,8 @@ export interface WebChannel {
   runLoop(name: string): void;
   /** Structured snapshot for the dashboard (projects · usage · loops · recent · repos). */
   state(): DashState;
+  /** Push a line into the operator feed (used to surface customer-driven company work). */
+  notify(text: string, project?: string): void;
 }
 
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter }): WebChannel {
@@ -138,6 +140,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         chatId: opts.chatId,
       });
+    },
+    notify(text: string, project?: string) {
+      message(text, project); // reuse the existing markdown→HTML message emitter
     },
   };
 }

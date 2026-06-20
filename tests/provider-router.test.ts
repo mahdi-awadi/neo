@@ -13,6 +13,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     workRoot: "/home",
     budgetWindowUsd: 20,
     budgetWindowMs: 18_000_000,
+    agentIngressSecret: "",
   };
 }
 

@@ -75,7 +75,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken);
     startWeb(
-      { engine: { cfg, ledger, registry, meter }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin },
+      { engine: { cfg, ledger, registry, meter }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret },
       WEB_PORT,
       WEB_HOST,
     );

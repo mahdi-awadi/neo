@@ -20,6 +20,7 @@ function cfg(): NeoConfig {
     workRoot: "/home",
     budgetWindowUsd: 100,
     budgetWindowMs: 3_600_000,
+    agentIngressSecret: "",
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));

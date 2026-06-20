@@ -21,6 +21,8 @@ export interface NeoConfig {
   budgetWindowUsd: number;
   /** Rolling budget window in ms (default 5h, matching the subscription's usage window). */
   budgetWindowMs: number;
+  /** Shared secret for machine-to-machine POST /agent/ingress (from AGENT_INGRESS_SECRET env). */
+  agentIngressSecret: string;
 }
 
 const DEFAULTS = {
@@ -67,5 +69,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     workRoot: fileCfg.workRoot ?? DEFAULTS.workRoot,
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
+    agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
   };
 }

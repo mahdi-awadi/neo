@@ -36,6 +36,7 @@ function cfg(): NeoConfig {
     providers: { ownWork: "subscription", customerWork: "gemini" },
     subscriptionInteractiveReservePct: 0.2, workRoot: "/home",
     budgetWindowUsd: 100, budgetWindowMs: 3_600_000,
+    agentIngressSecret: "",
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-webapp-"));

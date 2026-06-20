@@ -9,6 +9,7 @@ import type { SessionStore } from "../engine/web-session";
 import type { UsageMeter } from "../engine/usage";
 import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
+import { runCompanyBrief } from "../engine/ingress";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
 const COOKIE = "neo_session";
@@ -22,6 +23,8 @@ export interface WebAppDeps {
   admin: AdminStore;
   /** Epoch SECONDS clock (auth_date freshness + session expiry). Defaults to wall clock. */
   now?: () => number;
+  /** Shared secret for machine-to-machine POST /agent/ingress. Required to enable the endpoint. */
+  ingressSecret?: string;
 }
 
 export interface WebApp {
@@ -66,6 +69,25 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, must-revalidate" },
       });
+    }
+
+    // --- machine-to-machine: POST /agent/ingress (bearer auth, no session cookie) ---
+    if (req.method === "POST" && path === "/agent/ingress") {
+      const auth = req.headers.get("authorization") ?? "";
+      if (!deps.ingressSecret || auth !== `Bearer ${deps.ingressSecret}`) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const body = (await req.json().catch(() => ({}))) as { brief?: unknown };
+      if (typeof body.brief !== "string" || !body.brief.trim()) {
+        return Response.json({ ok: false, result: "missing brief" }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
+      const result = await runCompanyBrief(body.brief.trim(), {
+        cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
+        meter: deps.engine.meter, usage: deps.usage,
+        reply: (_c, text, project) => channel.notify(text, project),
+        askApproval: async () => "deny",
+      });
+      return Response.json({ ok: true, result }, { headers: { "cache-control": "no-store" } });
     }
 
     // --- everything below requires a valid session ---
