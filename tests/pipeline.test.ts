@@ -208,3 +208,17 @@ test("resumes when a prior session id exists for the folder/chat", async () => {
   expect(f.resumeSeen()).toBe("sdk-prev");
   expect(h.replies.some((r) => r.toLowerCase().includes("resum"))).toBe(true);
 });
+
+test("worker output touches the session so producing output counts as activity", async () => {
+  let handlers: RunHandlers | undefined;
+  const fs = fakeStart({ onStart: (h) => (handlers = h) });
+  const h = harness({ start: fs.start });
+  let clock = 1000;
+  await handleMessage("/open " + scratch() + " do work", 7, { ...h.base, now: () => clock });
+
+  const id = h.registry.list()[0].id;
+  clock = 5000;
+  handlers!.onMessage("progress line"); // worker emits output at t=5000
+
+  expect(h.registry.get(id)?.lastActivityAt).toBe(5000);
+});

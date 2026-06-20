@@ -138,7 +138,10 @@ function startSession(
   const run = start(
     order,
     {
-      onMessage: (t) => void deps.reply(chatId, t, project),
+      onMessage: (t) => {
+        registry.touch(registryId, now());
+        void deps.reply(chatId, t, project);
+      },
       onEscalation: (reason) => deps.askApproval(chatId, reason),
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
     },
