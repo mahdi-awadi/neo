@@ -35,8 +35,9 @@ func main() {
 		},
 	}
 
-	// WhatsApp (autonomous Gemini channel) — optional; activates when Twilio creds are present.
+	// WhatsApp (Gemini front-desk channel) — optional; activates when Twilio creds are present.
 	if cfg.TwilioAccountSID != "" && cfg.TwilioAuthToken != "" && cfg.TwilioWhatsAppFrom != "" {
+		handoff := neoHandoff(cfg.NeoInboxURL, cfg.NeoIngressSecret, &http.Client{Timeout: 30 * time.Second})
 		gw.waSender = twiliowa.New(twiliowa.Config{
 			AccountSID: cfg.TwilioAccountSID,
 			AuthToken:  cfg.TwilioAuthToken,
@@ -44,7 +45,10 @@ func main() {
 		}, nil)
 		gw.twilioAuthToken = cfg.TwilioAuthToken
 		gw.publicURL = cfg.PublicURL
-		log.Printf("neo-gateway: WhatsApp channel enabled (autonomous Gemini, from=%s)", cfg.TwilioWhatsAppFrom)
+		gw.waReplyFn = func(ctx context.Context, sender, name string, history []conversationMessage, userText string) (string, error) {
+			return replyForWhatsApp(ctx, reg, ingress, handoff, sender, name, history, userText)
+		}
+		log.Printf("neo-gateway: WhatsApp front-desk enabled (Gemini triage → operator handoff, from=%s)", cfg.TwilioWhatsAppFrom)
 	}
 
 	log.Printf("neo-gateway listening on %s (from=%s)", cfg.ListenAddr, cfg.EmailFrom)

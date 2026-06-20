@@ -49,7 +49,30 @@ customer ──call──▶ Twilio Voice ──Media Streams (WebSocket, μ-law
 The gateway owns the **customer** conversation; Neo owns the **company's** work. They talk only via
 the brief + result over the authenticated ingress.
 
-## WhatsApp text (3b.2) — implemented this slice
+## Behavioral model — AI front-desk that triages by intent and hands off
+
+WhatsApp/voice are **not** blanket auto-reply. Gemini holds a natural conversation to understand the
+customer's **intent**, then routes to an operator handoff (the customer never gets a quote or a
+resolution from the AI — only the operator/company does that):
+
+- **Quote / sales** — ask the concise questions needed to scope the project (what they want, scope,
+  timeline, budget, contact), then call `handoff_to_operator(intent="quote", summary=…)` and tell
+  the customer the team will review and get back with a quote.
+- **Support** — capture the issue (what's wrong, order/account, urgency), call
+  `handoff_to_operator(intent="support", summary=…)`, and tell the customer **the team will contact
+  them shortly**.
+- **Simple questions** — answer directly; for a real lookup/action use `dispatch_to_company`.
+
+**Handoff destination = the Neo inbox.** `handoff_to_operator` posts the conversation summary to
+Neo's `/inbox` (`channel:"whatsapp"`, `from`=phone, `subject`=intent label, `text`=summary) — the
+**same queue the operator already reviews** in Telegram `/inbox` and the web console. "Send me a
+summary" = a new inbox item the operator triages and follows up. The AI never promises prices,
+deadlines, or actions it hasn't confirmed.
+
+This keeps the customer experience responsive (live chat) while the **business response stays with
+the human/company** — consistent with the firewall and the operator-in-the-loop principle.
+
+## WhatsApp text (3b.2) — implemented
 
 **Transport:** Twilio WhatsApp (`gopkg/communication/whatsapp/twilio`). Inbound is Twilio's
 form-encoded webhook (`From="whatsapp:+…"`, `Body`, `ProfileName`, `MessageSid`, `WaId`). Outbound
@@ -61,20 +84,27 @@ sorted POST params)). The gateway validates it (`twilioSignatureValid`); no shar
 
 **Flow (`handleInboundWhatsApp`):**
 1. `ParseForm` → validate `X-Twilio-Signature` against `publicURL + "/inbound/whatsapp"`.
-2. Extract sender (`strings.TrimPrefix(From, "whatsapp:")`) and `Body`; ignore empty/status callbacks.
+2. Extract sender (`strings.TrimPrefix(From, "whatsapp:")`), `ProfileName`, and `Body`; ignore
+   empty/status callbacks.
 3. Load recent history for `whatsapp:<sender>` from the conversation cache.
-4. `replyFn(ctx, history, body)` → the existing Gemini orchestrator (`replyForInbound`, now active),
-   which calls `dispatch_to_company` when real work is needed.
-5. `waSender.Send(RecipientPhone=sender, Body=reply)`.
+4. `waReplyFn(ctx, sender, name, history, body)` → the Gemini orchestrator with **two tools**:
+   `dispatch_to_company` (real work) and `handoff_to_operator` (post a summary to the Neo inbox,
+   closing over this sender's phone/name).
+5. `waSender.Send(RecipientPhone=sender, Body=reply)` — the AI's customer-facing message.
 6. Append both turns to the conversation cache; return 200.
+
+**Operator follow-up:** the summary appears in `/inbox` (subject e.g. "WhatsApp · Quote request").
+The operator contacts the customer to close the loop. (Routing an operator inbox *reply* back out
+over WhatsApp — vs the current email send path — is a follow-up; for now follow-up is operator-driven.)
 
 **Config (new env):** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`
 (`whatsapp:+…` or bare `+…`), `PUBLIC_URL` (the gateway's externally-visible base URL, for
 signature validation behind Traefik).
 
 **Tests (Go, TDD):** signature validation (valid/invalid/missing); inbound → fake reply → fake
-sender asserts the dispatched body + recipient and the persisted turns; bad signature → 401; empty
-body → 200 no-op.
+sender asserts recipient/body + persisted turns; bad signature → 401; empty body → 200 no-op; the
+handoff dispatcher posts a correctly-shaped summary (channel/from/subject/text) to a fake inbox;
+intent → subject label mapping.
 
 ## Voice calling (3b.4) — next phase (outlined)
 

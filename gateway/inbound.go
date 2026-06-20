@@ -35,10 +35,13 @@ type gateway struct {
 	replyFn   replyFunc
 	fromEmail string
 
-	// WhatsApp (autonomous Gemini channel) — Twilio transport + webhook-signature auth.
+	// WhatsApp (Gemini front-desk channel) — Twilio transport + webhook-signature auth.
 	waSender        whatsappSender
 	twilioAuthToken string // validates inbound Twilio webhook signatures
 	publicURL       string // gateway's externally-visible base URL (for signature validation)
+	// waReplyFn runs the Gemini front-desk for one inbound WhatsApp message: it carries the
+	// sender's phone/name so the handoff_to_operator tool can post a summary for that customer.
+	waReplyFn func(ctx context.Context, sender, name string, history []conversationMessage, userText string) (string, error)
 }
 
 func (g *gateway) handleInbound(w http.ResponseWriter, r *http.Request) {

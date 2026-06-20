@@ -42,6 +42,7 @@ func (g *gateway) handleInboundWhatsApp(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	sender := strings.TrimPrefix(r.PostForm.Get("From"), "whatsapp:")
+	name := r.PostForm.Get("ProfileName")
 	body := strings.TrimSpace(r.PostForm.Get("Body"))
 	if sender == "" || body == "" {
 		w.WriteHeader(http.StatusOK) // status callback / empty — nothing to answer
@@ -50,7 +51,10 @@ func (g *gateway) handleInboundWhatsApp(w http.ResponseWriter, r *http.Request) 
 	key := "whatsapp:" + sender
 
 	history, _ := g.store.Recent(r.Context(), key, 20)
-	reply, err := g.replyFn(r.Context(), history, body)
+	// The Gemini front-desk: discusses to understand intent, hands a summary to the operator
+	// (handoff_to_operator → Neo inbox), and answers/dispatches as needed. Reply = what the
+	// customer sees; the handoff is a side-effect posted to the inbox.
+	reply, err := g.waReplyFn(r.Context(), sender, name, history, body)
 	if err != nil {
 		log.Printf("whatsapp: reply failed for %s: %v", maskPhone(sender), err)
 		http.Error(w, "reply failed", http.StatusBadGateway)

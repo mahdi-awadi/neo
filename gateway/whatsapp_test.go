@@ -70,9 +70,9 @@ func newWAGateway(token string, sender *fakeWASender) (*gateway, string) {
 		waSender:        sender,
 		twilioAuthToken: token,
 		publicURL:       "https://gw.example",
-		replyFn: func(_ context.Context, history []conversationMessage, userText string) (string, error) {
-			// echo-with-history so the test can assert the orchestrator was driven with context
-			return "reply to: " + userText + " (hist=" + itoa(len(history)) + ")", nil
+		waReplyFn: func(_ context.Context, sender, name string, history []conversationMessage, userText string) (string, error) {
+			// echo-with-context so the test can assert sender/name/history reach the front-desk
+			return "reply to " + name + "(" + sender + "): " + userText + " (hist=" + itoa(len(history)) + ")", nil
 		},
 	}
 	return gw, u
