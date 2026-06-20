@@ -17,6 +17,15 @@ test("resolveProject finds a folder by name under root or by absolute path", () 
   expect(resolveProject("nope", root)).toBeUndefined();
 });
 
+test("resolveProject resolves a desk name (research, dev, …), projects winning ties", () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-root-"));
+  const desks = mkdtempSync(join(tmpdir(), "neo-desks-"));
+  mkdirSync(join(desks, "research"));
+  expect(resolveProject("research", root, desks)).toBe(join(desks, "research")); // no project → desk
+  mkdirSync(join(root, "research"));
+  expect(resolveProject("research", root, desks)).toBe(join(root, "research")); // a real project wins
+});
+
 function makeDeps() {
   const replies: Array<{ text: string; project?: string }> = [];
   const d: DispatchDeps = {

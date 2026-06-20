@@ -13,10 +13,14 @@ import type { Registry } from "./registry";
 import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
 import { runOrder, type RunResult } from "./session-runner";
+import { DEFAULT_PROJECT } from "./default-project";
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
 export const SUB_CHAT = -2;
+
+/** Function-scoped scratch workspaces (research, dev, marketing, …) for work with no project home. */
+export const DESKS_DIR = join(DEFAULT_PROJECT.folder, "desks");
 
 /** Everything dispatch needs — a structural subset of the pipeline's deps. */
 export interface DispatchDeps {
@@ -30,9 +34,13 @@ export interface DispatchDeps {
 
 type RunFn = typeof runOrder;
 
-/** Resolve a project reference (a bare name under `root`, or an absolute path) to a folder. */
-export function resolveProject(project: string, root = "/home"): string | undefined {
-  const candidates = project.startsWith("/") ? [project] : [join(root, project)];
+/**
+ * Resolve a project reference to a folder: an absolute path, else a repo under `root` (/home),
+ * else a desk under `desks` (the agent's function workspaces). A real project wins over a
+ * same-named desk.
+ */
+export function resolveProject(project: string, root = "/home", desks = DESKS_DIR): string | undefined {
+  const candidates = project.startsWith("/") ? [project] : [join(root, project), join(desks, project)];
   for (const c of candidates) {
     try {
       if (existsSync(c) && statSync(c).isDirectory()) return c;
@@ -54,12 +62,12 @@ export async function dispatchToProject(
   task: string,
   deps: DispatchDeps,
   replyChat: number,
-  opts: { run?: RunFn; now?: () => number; root?: string } = {},
+  opts: { run?: RunFn; now?: () => number; root?: string; desks?: string } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
   const run = opts.run ?? runOrder;
-  const folder = resolveProject(project, opts.root);
-  if (!folder) return `No project named "${project}" was found under /home — check the name.`;
+  const folder = resolveProject(project, opts.root, opts.desks);
+  if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 
   const order: Order = { id: crypto.randomUUID(), source: "neo", folder, task, chatId: SUB_CHAT, createdAt: now() };
   deps.ledger.recordOrder(order);
