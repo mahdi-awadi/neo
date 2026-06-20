@@ -12,7 +12,6 @@ import type { UsageMeter } from "./usage";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun } from "./session-runner";
-import { defaultOrder } from "./default-project";
 
 /** Start a live session. Injectable for tests; defaults to the real SDK-backed runner. */
 type StartFn = (order: Order, handlers: RunHandlers, deps?: { resume?: string }) => SessionRun;
@@ -99,20 +98,6 @@ export async function handleMessage(
   // 6. Register the project and start its live session (control handle for follow-up/kill/idle).
   const session = registry.add(parsed, now());
   return startSession(parsed, session.id, chatId, deps, now, start, resume || undefined);
-}
-
-/**
- * Open the always-on default project ("the company") and mark it as the registry default, so
- * free-text orders with no active project route to it. Its first turn just confirms readiness;
- * the daemon supplies a logging reply for that turn (real orders arrive later via the channels).
- */
-export function startDefaultProject(deps: PipelineDeps): SessionRun {
-  const now = deps.now ?? (() => Date.now());
-  const order = defaultOrder(now());
-  deps.ledger.recordOrder(order);
-  const session = deps.registry.add(order, now());
-  deps.registry.setDefault(session.id);
-  return startSession(order, session.id, order.chatId, deps, now, deps.start ?? startOrder);
 }
 
 /**
