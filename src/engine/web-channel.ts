@@ -10,7 +10,8 @@ import {
   killProject as engineKillProject,
   type SelectableProject,
 } from "./commands";
-import { handleLoop, listLoops, type LoopInfo } from "./loops";
+import { handleLoop, listLoops, matchLoop, startLoop, type LoopInfo } from "./loops";
+import { dashboardSnapshot, type DashState } from "./dashboard";
 import type { UsageMeter } from "./usage";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -33,6 +34,12 @@ export interface WebChannel {
   selectProject(id: string): void;
   /** Kill a project from a clicked ✕ (the shared engine killProject), refreshing the list. */
   killProject(id: string): void;
+  /** Start a project from the dashboard's New-work form (folder + task, not a typed command). */
+  openProject(folder: string, task: string): Promise<void>;
+  /** Run a named loop from a dashboard button. */
+  runLoop(name: string): void;
+  /** Structured snapshot for the dashboard (projects · usage · loops · recent · repos). */
+  state(): DashState;
 }
 
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter }): WebChannel {
@@ -111,6 +118,22 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
       });
       emit({ type: "projects", text: result.text, items: result.select ?? [] });
+    },
+    openProject(folder, task) {
+      // The user used a form; we construct the order. Reuses the governed pipeline.
+      return handleMessage(`/open ${folder} ${task}`, opts.chatId, deps).then(() => undefined);
+    },
+    runLoop(name) {
+      const loop = matchLoop(name);
+      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => emit({ type: "message", text: t }) });
+    },
+    state() {
+      return dashboardSnapshot({
+        registry: opts.engine.registry,
+        ledger: opts.engine.ledger,
+        usage: opts.usage,
+        chatId: opts.chatId,
+      });
     },
   };
 }

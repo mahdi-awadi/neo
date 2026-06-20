@@ -152,6 +152,21 @@ test("/loop alone emits a loops event with runnable items", async () => {
   expect(loops?.items.find((l) => l.name === "gold-gofmt")).toBeTruthy();
 });
 
+test("openProject starts a project (form-driven) and it shows in state()", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+
+  await ch.openProject(dir, "build it");
+
+  expect(eng.registry.list().length).toBe(1);
+  const st = ch.state();
+  expect(st.projects[0].folder).toBe(dir);
+  expect(st.projects[0].task).toBe("build it");
+  expect(st.loops.find((l) => l.name === "gold-gofmt")).toBeTruthy();
+});
+
 test("resolveApproval returns false for an unknown id", () => {
   const f = fakeStart();
   const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
