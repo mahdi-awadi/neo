@@ -109,7 +109,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       if (!target) return Response.json({ ok: false, error: "no active project" }, { status: 409 });
       const bytes = new Uint8Array(await f.arrayBuffer());
       const saved = saveInbound(target.order.folder, f.name || "file", bytes);
-      const caption = typeof form?.get("caption") === "string" ? (form.get("caption") as string) : "";
+      const cap = form?.get("caption"); const caption = typeof cap === "string" ? cap : "";
       void channel.send(`📎 operator attached \`${basename(saved)}\` at \`${saved}\`\n${caption}`);
       return Response.json({ ok: true });
     }
@@ -436,7 +436,7 @@ function clearFilter(){filterProject=null;refreshFeed();}
 function pushFeed(node,kind,project){node._kind=kind;node._project=project||null;feedNodes.push(node);feed.appendChild(node);refreshFeed();}
 function feedMsg(html,kind,project){var d=document.createElement('div');d.className='row '+(kind==='me'?'me':'out');d.innerHTML=html;pushFeed(d,kind,project);return d;}
 function say(text){var v=(text||'').trim();if(!v)return;feedMsg('› '+esc(v),'me',filterProject);post('/msg',{text:v});}
-function uploadFile(){var i=document.getElementById('file');if(!i.files.length)return;var fd=new FormData();fd.append('file',i.files[0]);fetch('/upload',{method:'POST',body:fd});i.value='';}
+function uploadFile(){var i=document.getElementById('file');if(!i.files.length)return;var fd=new FormData();fd.append('file',i.files[0]);fetch('/upload',{method:'POST',body:fd}).then(function(r){if(!r.ok)alert('upload failed ('+r.status+')');});i.value='';}
 
 var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);

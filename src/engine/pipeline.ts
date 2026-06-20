@@ -120,7 +120,7 @@ function runConfigFor(
   chatId: number,
   sdkSessionId: string,
 ): RunDeps {
-  const folder = registry.get(id)?.order.folder ?? "/";
+  const folder = registry.get(id)?.order.folder ?? "/nonexistent-neo-session";
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,

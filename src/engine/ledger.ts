@@ -101,7 +101,7 @@ export function openLedger(path: string): Ledger {
     },
     autoApprovalsFor(orderId) {
       return (
-        db.query(`SELECT reason FROM auto_approvals WHERE order_id = ? ORDER BY at`).all(orderId) as Array<{ reason: string }>
+        db.query(`SELECT reason FROM auto_approvals WHERE order_id = ? ORDER BY at, rowid`).all(orderId) as Array<{ reason: string }>
       ).map((r) => r.reason);
     },
   };

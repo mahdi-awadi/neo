@@ -212,7 +212,7 @@ test("killProject refuses to kill the default company project", () => {
   expect(registry.get("company")).toBeDefined(); // not removed
 });
 
-test("/trust on refuses blanket-trust on the company fallback (no explicit project selected)", () => {
+test("/trust on trusts the company when it is the fallback target, then /trust off untrusts", () => {
   const registry = createRegistry();
   const o = order({ id: "company", folder: "/home/neo/agent", chatId: -1 });
   registry.add(o, 0);
@@ -220,9 +220,10 @@ test("/trust on refuses blanket-trust on the company fallback (no explicit proje
   const trust = openTrustStore(":memory:");
   const d = { registry, ledger: openLedger(":memory:"), trust, now: () => 1 };
 
-  // /trust on must refuse when the company is the only fallback target
-  const result = handleCommand("/trust on", 5, d)!;
-  expect(result.text).toContain("Use /use <project> first");
+  expect(handleCommand("/trust on", 5, d)!.text).toContain("🔓");
+  expect(trust.isTrusted("/home/neo/agent")).toBe(true);
+  expect(handleCommand("/trust", 5, d)!.text).toContain("trusted");
+  expect(handleCommand("/trust off", 5, d)!.text).toContain("🔒");
   expect(trust.isTrusted("/home/neo/agent")).toBe(false);
 });
 

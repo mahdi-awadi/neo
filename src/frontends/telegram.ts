@@ -3,7 +3,6 @@
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
 import { Bot, InlineKeyboard, InputFile } from "grammy";
-import { basename } from "node:path";
 import { saveInbound } from "../engine/files";
 import type { NeoConfig } from "../config";
 import type { Ledger } from "../engine/ledger";

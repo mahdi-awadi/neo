@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { runCompanyBrief } from "../src/engine/ingress";
+import { runCompanyBrief, denyAllTrust } from "../src/engine/ingress";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -7,6 +7,13 @@ import { openTrustStore } from "../src/engine/trust";
 import { registerDefaultProject } from "../src/engine/default-project";
 import type { Order } from "../src/types";
 import type { RunHandlers, RunResult } from "../src/engine/session-runner";
+
+test("denyAllTrust never trusts any folder (customer-path dispatch cannot auto-approve)", () => {
+  const t = denyAllTrust();
+  expect(t.isTrusted("/home/neo/agent")).toBe(false);
+  expect(t.isTrusted("/anything")).toBe(false);
+  expect(t.list()).toEqual([]);
+});
 
 test("runCompanyBrief runs the brief on the company and returns its result", async () => {
   const registry = createRegistry();

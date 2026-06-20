@@ -132,13 +132,8 @@ export function killProject(id: string, chatId: number, deps: CommandDeps): Comm
 }
 
 function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandResult {
-  const explicit = deps.registry.findByChat(chatId);
-  const target = explicit ?? deps.registry.getDefault();
+  const target = deps.registry.findByChat(chatId) ?? deps.registry.getDefault();
   if (!target) return { text: "No active project to trust." };
-  const isCompanyFallback = !explicit && target.id === deps.registry.getDefault()?.id;
-  if (arg === "on" && isCompanyFallback) {
-    return { text: "Use /use <project> first — the always-on company project cannot be blanket-trusted." };
-  }
   const folder = target.order.folder;
   if (arg === "on" || arg === "off") {
     deps.trust.setTrust(folder, arg === "on");
