@@ -67,11 +67,20 @@ export function renderInboxItem(inbox: Inbox, id: string): InboxItemView | undef
 // ── Drafting: send an item to the company to draft a reply (the exact web /api/inbox/draft path) ──
 
 /** The drafting brief — VERBATIM the string POST /api/inbox/draft builds, so neither frontend
- *  forks the prompt. `instructions` (optional) steers it; a prior draft is carried for revision. */
-export function buildDraftBrief(item: InboxItem, instructions = ""): string {
+ *  forks the prompt. The reply is a COMPLETE one-shot email (answer + a brief on what we do + a
+ *  meeting CTA), never a back-and-forth chat. `meetingLink` (optional) is the booking URL the CTA
+ *  points at; with none, it gracefully invites the customer to propose times. `instructions`
+ *  (optional) steers it; a prior draft is carried for revision. */
+export function buildDraftBrief(item: InboxItem, instructions = "", meetingLink = ""): string {
   const instr = instructions.trim();
+  const link = meetingLink.trim();
   return (
-    "A customer emailed the business. Draft a reply that NEO (the operator) will review, edit if needed, and SEND — you are NOT contacting the customer yourself; Neo sends it. Output ONLY the reply body, ready to send.\n\n" +
+    "A customer emailed the business. Draft a COMPLETE one-shot email reply that NEO (the operator) will review, edit if needed, and SEND — you are NOT contacting the customer yourself; Neo sends it. Output ONLY the reply body, ready to send.\n\n" +
+    "Write it as an email, NOT a chat: do NOT ask the customer follow-up questions and do NOT end on a question. Answer what they asked directly and confidently, add one or two sentences on what we do that is relevant to their inquiry, and close with a clear call to action to book a short meeting" +
+    (link
+      ? ` — point them to this booking link to pick a time: ${link}`
+      : " — invite them to a short intro call and ask them to propose two or three times that suit them") +
+    ".\n\n" +
     `From: ${item.fromName || item.from} <${item.from}>\nSubject: ${item.subject}\n\n${item.text}` +
     (instr ? `\n\nNeo's instructions for this reply: ${instr}` : "") +
     (item.draft ? `\n\nYour previous draft (revise it per Neo's instructions above):\n${item.draft}` : "")
@@ -89,7 +98,7 @@ export async function draftInboxReply(
   const item = inbox.get(id);
   if (!item) return undefined;
   inbox.setStatus(item.id, "with-agent");
-  const draft = await runCompanyBrief(buildDraftBrief(item, instructions), briefDeps);
+  const draft = await runCompanyBrief(buildDraftBrief(item, instructions, briefDeps.cfg.meetingLink), briefDeps);
   inbox.setDraft(item.id, draft);
   return draft;
 }

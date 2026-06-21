@@ -28,6 +28,9 @@ export interface NeoConfig {
   /** Google Stitch MCP API key (from STITCH_API_KEY env). When set, OPERATOR workers get the
    *  Stitch design-generation MCP server; the customer/ingress path never does (compliance). */
   stitchApiKey: string;
+  /** Booking link the customer-reply CTA points at, so customers pick a meeting time themselves
+   *  (from MEETING_LINK env). Empty → the reply invites them to propose times instead. */
+  meetingLink: string;
 }
 
 const DEFAULTS = {
@@ -78,5 +81,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
+    meetingLink: process.env.MEETING_LINK ?? fileCfg.meetingLink ?? "",
   };
 }

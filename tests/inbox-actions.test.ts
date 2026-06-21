@@ -92,6 +92,16 @@ test("buildDraftBrief matches the web path: opening line, sender/subject/body, i
   expect(base).toContain("Subject: Quote?");
   expect(base).toContain("How much for 10 units?");
   expect(base).not.toContain("Neo's instructions");
+  // a one-shot EMAIL, not a chat: never ask the customer questions back; answer + brief us + a CTA
+  expect(base).toContain("do NOT ask the customer follow-up questions");
+  expect(base).toContain("what we do");
+  expect(base).toContain("book a short meeting");
+  // no booking link configured → graceful fallback (no dead link, still a clear next step)
+  expect(base).toContain("propose two or three times");
+  // with a booking link → the email points them at it to pick a time
+  const linked = buildDraftBrief(ib.get(item.id)!, "", "https://cal.com/mahdi");
+  expect(linked).toContain("https://cal.com/mahdi");
+  expect(linked).not.toContain("propose two or three times");
   // with instructions + a prior draft to revise
   ib.setDraft(item.id, "Old draft text");
   const revised = buildDraftBrief(ib.get(item.id)!, "be warmer, offer a discount");
