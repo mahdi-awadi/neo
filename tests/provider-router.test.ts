@@ -17,6 +17,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     idleCloseMs: 24 * 60 * 60 * 1000,
     stitchApiKey: "",
     meetingLink: "",
+    businessName: "",
   };
 }
 

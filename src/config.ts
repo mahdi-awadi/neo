@@ -31,6 +31,9 @@ export interface NeoConfig {
   /** Booking link the customer-reply CTA points at, so customers pick a meeting time themselves
    *  (from MEETING_LINK env). Empty → the reply invites them to propose times instead. */
   meetingLink: string;
+  /** Customer-facing business name the email replies sign off as (from BUSINESS_NAME env).
+   *  Empty → the reply signs off generically as "the business"; never as "Neo". */
+  businessName: string;
 }
 
 const DEFAULTS = {
@@ -82,5 +85,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
     meetingLink: process.env.MEETING_LINK ?? fileCfg.meetingLink ?? "",
+    businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
   };
 }

@@ -87,7 +87,7 @@ test("buildDraftBrief matches the web path: opening line, sender/subject/body, i
   // base brief
   const base = buildDraftBrief(ib.get(item.id)!);
   expect(base).toContain("A customer emailed the business.");
-  expect(base).toContain("Output ONLY the reply body");
+  expect(base).toContain("Output ONLY the email body");
   expect(base).toContain("From: Ann <a@x.com>");
   expect(base).toContain("Subject: Quote?");
   expect(base).toContain("How much for 10 units?");
@@ -96,10 +96,18 @@ test("buildDraftBrief matches the web path: opening line, sender/subject/body, i
   expect(base).toContain("do NOT ask the customer follow-up questions");
   expect(base).toContain("what we do");
   expect(base).toContain("book a short meeting");
+  // output discipline: just the email body, no "Here's the draft" preamble / --- separators
+  expect(base).toContain("no preamble");
+  // no business name configured → signs off as "the business", and NEVER as "Neo"
+  expect(base).toContain("Sign the email off as the business");
+  expect(base).toContain('never as "Neo"');
   // no booking link configured → graceful fallback (no dead link, still a clear next step)
   expect(base).toContain("propose two or three times");
+  // a configured business name is used in the sign-off
+  const named = buildDraftBrief(ib.get(item.id)!, "", { businessName: "Tech Gate" });
+  expect(named).toContain("Sign the email off as Tech Gate");
   // with a booking link → the email points them at it to pick a time
-  const linked = buildDraftBrief(ib.get(item.id)!, "", "https://cal.com/mahdi");
+  const linked = buildDraftBrief(ib.get(item.id)!, "", { meetingLink: "https://cal.com/mahdi" });
   expect(linked).toContain("https://cal.com/mahdi");
   expect(linked).not.toContain("propose two or three times");
   // with instructions + a prior draft to revise

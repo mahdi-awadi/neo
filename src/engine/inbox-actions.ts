@@ -66,21 +66,29 @@ export function renderInboxItem(inbox: Inbox, id: string): InboxItemView | undef
 
 // ── Drafting: send an item to the company to draft a reply (the exact web /api/inbox/draft path) ──
 
+/** Config the brief weaves in: the booking URL the CTA points at, and the customer-facing name the
+ *  email signs off as. Both optional — empty values fall back gracefully. */
+export interface DraftBriefOpts {
+  meetingLink?: string;
+  businessName?: string;
+}
+
 /** The drafting brief — VERBATIM the string POST /api/inbox/draft builds, so neither frontend
  *  forks the prompt. The reply is a COMPLETE one-shot email (answer + a brief on what we do + a
- *  meeting CTA), never a back-and-forth chat. `meetingLink` (optional) is the booking URL the CTA
- *  points at; with none, it gracefully invites the customer to propose times. `instructions`
- *  (optional) steers it; a prior draft is carried for revision. */
-export function buildDraftBrief(item: InboxItem, instructions = "", meetingLink = ""): string {
+ *  meeting CTA), never a back-and-forth chat, signed off as the business (never as "Neo").
+ *  `meetingLink` is the booking URL the CTA points at; with none, it invites the customer to
+ *  propose times. `instructions` (optional) steers it; a prior draft is carried for revision. */
+export function buildDraftBrief(item: InboxItem, instructions = "", opts: DraftBriefOpts = {}): string {
   const instr = instructions.trim();
-  const link = meetingLink.trim();
+  const link = (opts.meetingLink ?? "").trim();
+  const business = (opts.businessName ?? "").trim();
   return (
-    "A customer emailed the business. Draft a COMPLETE one-shot email reply that NEO (the operator) will review, edit if needed, and SEND — you are NOT contacting the customer yourself; Neo sends it. Output ONLY the reply body, ready to send.\n\n" +
+    "A customer emailed the business. Draft a COMPLETE one-shot email reply that NEO (the operator) will review, edit if needed, and SEND — you are NOT contacting the customer yourself; Neo sends it. Output ONLY the email body, ready to send: no preamble, no headings, no '---' separators — start at the greeting.\n\n" +
     "Write it as an email, NOT a chat: do NOT ask the customer follow-up questions and do NOT end on a question. Answer what they asked directly and confidently, add one or two sentences on what we do that is relevant to their inquiry, and close with a clear call to action to book a short meeting" +
     (link
       ? ` — point them to this booking link to pick a time: ${link}`
       : " — invite them to a short intro call and ask them to propose two or three times that suit them") +
-    ".\n\n" +
+    `.\n\nSign the email off as ${business || "the business"} — never as "Neo" or "the operator".\n\n` +
     `From: ${item.fromName || item.from} <${item.from}>\nSubject: ${item.subject}\n\n${item.text}` +
     (instr ? `\n\nNeo's instructions for this reply: ${instr}` : "") +
     (item.draft ? `\n\nYour previous draft (revise it per Neo's instructions above):\n${item.draft}` : "")
@@ -98,7 +106,13 @@ export async function draftInboxReply(
   const item = inbox.get(id);
   if (!item) return undefined;
   inbox.setStatus(item.id, "with-agent");
-  const draft = await runCompanyBrief(buildDraftBrief(item, instructions, briefDeps.cfg.meetingLink), briefDeps);
+  const draft = await runCompanyBrief(
+    buildDraftBrief(item, instructions, {
+      meetingLink: briefDeps.cfg.meetingLink,
+      businessName: briefDeps.cfg.businessName,
+    }),
+    briefDeps,
+  );
   inbox.setDraft(item.id, draft);
   return draft;
 }
