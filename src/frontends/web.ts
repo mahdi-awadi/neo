@@ -305,7 +305,7 @@ function loginPage(botUsername: string): string {
 </div></body></html>`;
 }
 
-function consolePage(): string {
+export function consolePage(): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Neo · dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -511,14 +511,14 @@ function renderInbox(items){
   h+='<div class="isubj">'+esc(i.subject||'(no subject)')+'</div>';
   h+='<div class="ibody">'+esc((i.text||'').slice(0,800))+'</div>';
   if(i.status==='new'){
-   h+='<div class="iact"><input class="iinp" id="instr-'+i.id+'" placeholder="optional instructions for the agent…"><button class="run" onclick="sendToAgent(\''+i.id+'\')">▶ Send to agent</button></div>';
+   h+='<div class="iact"><input class="iinp" id="instr-'+i.id+'" placeholder="optional instructions for the agent…"><button class="run" onclick="sendToAgent(\\''+i.id+'\\')">▶ Send to agent</button></div>';
   }else if(i.status==='with-agent'){
    h+='<div class="iact"><span class="rfo">⏳ the company is drafting a reply…</span></div>';
   }else if(i.status==='drafted'){
    h+='<div class="rfo" style="margin-top:9px">DRAFT — edit it, then send (or send back to the agent to revise):</div>';
    h+='<textarea class="itx" id="draft-'+i.id+'">'+esc(i.draft||'')+'</textarea>';
-   h+='<div class="iact"><button class="run ok" onclick="sendReply(\''+i.id+'\')">✓ Send to customer</button>';
-   h+='<input class="iinp" id="notes-'+i.id+'" placeholder="revision notes…"><button class="run" onclick="redraft(\''+i.id+'\')">↩ Send back to agent</button></div>';
+   h+='<div class="iact"><button class="run ok" onclick="sendReply(\\''+i.id+'\\')">✓ Send to customer</button>';
+   h+='<input class="iinp" id="notes-'+i.id+'" placeholder="revision notes…"><button class="run" onclick="redraft(\\''+i.id+'\\')">↩ Send back to agent</button></div>';
   }else if(i.status==='replied'){
    h+='<div class="rfo" style="margin-top:7px">✓ replied'+(i.draft?(' — "'+esc(i.draft.slice(0,90))+'…"'):'')+'</div>';
   }
