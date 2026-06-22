@@ -27,3 +27,9 @@ test("governor escalates git push", () => {
 test("governor escalates network calls (curl)", () => {
   expect("escalate" in decide("Bash", { command: "curl https://evil.example" })).toBe(true);
 });
+
+test("governor denies AskUserQuestion, steering the worker to ask in plain text", () => {
+  const v = decide("AskUserQuestion", { questions: [{ question: "language?" }] });
+  expect("deny" in v).toBe(true);
+  if ("deny" in v) expect(v.deny.toLowerCase()).toContain("plain text");
+});

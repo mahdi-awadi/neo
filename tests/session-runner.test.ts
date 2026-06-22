@@ -23,6 +23,19 @@ test("runOrder forwards effort and mcpServers into the SDK options", async () =>
   expect(seen.mcpServers).toEqual({ neo: { x: 1 } });
 });
 
+test("workers are started with all skills enabled, so superpowers is always ready", async () => {
+  let seen: { skills?: unknown; settingSources?: unknown } = {};
+  const q = (args: { prompt: unknown; options: { skills?: unknown; settingSources?: unknown } }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(seen.skills).toBe("all");
+  expect(seen.settingSources).toEqual(["user", "project"]); // "user" discovers the operator's plugin skills
+});
+
 // --- Single-shot fake (Phase-1 runOrder): ignores prompt, yields a finite stream. ---
 function fakeQuery(reqs: Array<{ tool: string; input: Record<string, unknown> }>) {
   const decisions: Array<{ behavior: string; updatedInput?: unknown; message?: string }> = [];
@@ -228,6 +241,31 @@ test("trust auto-approves a risky tool: allows, records via onAutoApprove, skips
   expect(decisions[0].updatedInput).toEqual({ command: "git push" });
   expect(auto[0]).toContain("git push");
   expect(escalated).toBe(false);
+});
+
+test("runOrder denies AskUserQuestion with guidance and never escalates to the human", async () => {
+  const { q, decisions } = fakeQuery([{ tool: "AskUserQuestion", input: { questions: [] } }]);
+  let escalated = false;
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => ((escalated = true), "allow") },
+    { query: q },
+  );
+  expect(decisions[0].behavior).toBe("deny");
+  expect(String(decisions[0].message).toLowerCase()).toContain("plain text");
+  expect(escalated).toBe(false);
+});
+
+test("a trusted project still denies AskUserQuestion (never auto-approves the broken tool)", async () => {
+  const { q, decisions } = fakeQuery([{ tool: "AskUserQuestion", input: { questions: [] } }]);
+  const auto: string[] = [];
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "allow", autoApprove: () => true, onAutoApprove: (r) => auto.push(r) },
+    { query: q },
+  );
+  expect(decisions[0].behavior).toBe("deny");
+  expect(auto).toEqual([]);
 });
 
 test("trust off still escalates a risky tool", async () => {

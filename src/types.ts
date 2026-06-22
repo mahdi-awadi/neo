@@ -31,7 +31,8 @@ export type RouteResult = { provider: Provider } | { refuse: string };
  */
 export type Verdict =
   | { allow: true; updatedInput?: Record<string, unknown> }
-  | { escalate: string };
+  | { escalate: string }
+  | { deny: string };
 
 /**
  * The live control surface of a running session, held by the registry so that

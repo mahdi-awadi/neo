@@ -8,7 +8,7 @@
 //                engine can push follow-up messages mid-run, then interrupt / idle-close it.
 //
 // Verified SDK surface (docs/sdk-notes.md): query({ prompt, options }) -> async generator.
-//   options: cwd, settingSources:["project"], systemPrompt preset, permissionMode, canUseTool.
+//   options: cwd, settingSources:["user","project"], systemPrompt preset, permissionMode, canUseTool.
 //
 // ASSUMED (build-then-verify, isolated here): `prompt` may be an AsyncIterable<SDKUserMessage>
 // for streaming input, the returned Query exposes interrupt(), and options.resume resumes a
@@ -91,6 +91,11 @@ function buildCanUseTool(handlers: RunHandlers) {
     if ("allow" in verdict) {
       return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
     }
+    // deny verdict — refuse outright (never escalate, never auto-approve); the message reaches
+    // the worker as the tool result, steering it (e.g. AskUserQuestion → ask in plain text).
+    if ("deny" in verdict) {
+      return { behavior: "deny", message: verdict.deny };
+    }
     // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start)
     if (handlers.autoApprove?.()) {
       handlers.onAutoApprove?.(verdict.escalate);
@@ -109,7 +114,12 @@ function sdkOptions(
 ): Record<string, unknown> {
   return {
     cwd: order.folder,
-    settingSources: ["project"],
+    // "user" loads ~/.claude enabledPlugins (superpowers + workflow skills); "project" loads the folder's CLAUDE.md/.claude/.mcp.
+    settingSources: ["user", "project"],
+    // Explicitly enable every discovered skill. Omitting this leaves skills to ambient CLI
+    // defaults (fragile across hosts); "all" makes superpowers + workflow skills always ready
+    // for the worker, in any project folder. (SDK: the single switch to turn skills on.)
+    skills: "all",
     systemPrompt: { type: "preset", preset: "claude_code" },
     permissionMode: "default",
     canUseTool: buildCanUseTool(handlers),

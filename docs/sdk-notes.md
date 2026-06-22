@@ -16,10 +16,19 @@ terminal, no TTY, no tmux**. Confirmed headless.
 ## Options that matter for Neo (all verified working)
 
 - `cwd: string` — the project folder the worker opens ("open the project").
-- `settingSources: ["project"]` — **loads the folder's `CLAUDE.md` (+ `.claude/` settings, `.mcp.json`).**
-  Confirmed: the worker read the seeded CLAUDE.md and followed its rule.
+- `settingSources: ["user", "project"]` — **`user` loads `~/.claude` `enabledPlugins` so workers get the
+  operator's plugin skills (superpowers etc.); `project` loads the folder's `CLAUDE.md` (+ `.claude/` settings, `.mcp.json`).**
+  Confirmed: the worker read the seeded CLAUDE.md and followed its rule. (No global `~/.claude/CLAUDE.md` exists, so user
+  scope adds plugins without injecting global instructions; the firewall stays in `canUseTool`, independent of settings.)
+- `skills: "all"` — **the single switch that turns skills on.** Omitting it leaves skills to ambient CLI
+  defaults (fragile across hosts); `"all"` enables every discovered skill, so superpowers + workflow skills
+  are always ready for the worker in any folder. Discovery still comes from `settingSources: ["user"]` →
+  `~/.claude` `enabledPlugins`, so the superpowers plugin must stay enabled there.
 - `systemPrompt: { type: "preset", preset: "claude_code" }` — full Claude Code behavior.
-- `permissionMode: "default"` — sends non-pre-approved tools through `canUseTool`.
+- `permissionMode: "default"` — sends non-pre-approved tools through `canUseTool`. `AskUserQuestion` is
+  **denied** here (the governor) with guidance to ask in plain text — its structured options can't reach the
+  operator's channel and there's no answer-bridge, so left enabled the worker reads the empty result as "you
+  didn't pick" and guesses. Plain-text questions surface via `onMessage`; the reply returns as a follow-up.
 - `maxTurns: number` — bounds the agentic loop.
 - `canUseTool` — the governance hook (see below).
 - (for Phase 1) `mcpServers`, `resume`, `model`.

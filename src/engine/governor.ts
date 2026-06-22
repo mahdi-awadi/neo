@@ -12,6 +12,17 @@ export const RISKY_BASH =
 export const SAFE_TOOLS = new Set(["Read", "Glob", "Grep"]);
 
 export function decide(tool: string, input: Record<string, unknown>): Verdict {
+  // The SDK's structured-question tool can't be serviced headlessly: its options never reach
+  // the operator's channel (only assistant text does) and there's no path to feed an answer
+  // back, so the worker reads the empty result as "you didn't pick" and guesses. Deny it and
+  // steer the worker to ask in plain text — which the channel surfaces and the operator's reply
+  // returns as a follow-up.
+  if (tool === "AskUserQuestion") {
+    return {
+      deny: "Neo has no structured-question UI. Ask the operator your question in plain text instead; their reply arrives as a normal follow-up message. Do not assume a default — wait for the answer.",
+    };
+  }
+
   if (SAFE_TOOLS.has(tool)) return { allow: true };
 
   if (tool === "Bash") {
