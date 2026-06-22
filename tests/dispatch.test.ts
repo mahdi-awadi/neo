@@ -8,7 +8,7 @@ import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import type { Order } from "../src/types";
-import type { RunHandlers, RunResult } from "../src/engine/session-runner";
+import { runOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
 
 test("resolveProject finds a folder by name under root or by absolute path", () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
@@ -196,4 +196,24 @@ test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolati
   });
   expect(seen!.task).toBe("CRAFTED BRIEF for the project"); // exactly the brief, nothing else
   expect(seen!.chatId).toBe(-2); // SUB_CHAT — isolated from the operator's routing
+});
+
+test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged with the project name", async () => {
+  // End-to-end: the real consumeStream (via runOrder) surfaces a tool milestone, which
+  // dispatchToProject forwards to the operator's reply path tagged with the project name —
+  // while the final result still returns to the caller for its summary.
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "docker ps" } }] } };
+      yield { type: "result", subtype: "success", result: "3 containers up", total_cost_usd: 0, session_id: "sub-1" };
+    })();
+  const run = (o: Order, h: RunHandlers, dd?: Record<string, unknown>) => runOrder(o, h, { ...dd, query: q as never });
+
+  const out = await dispatchToProject("eticket-v3", "check docker", d, 99, { run: run as never, now: () => 1, root });
+
+  expect(out).toBe("3 containers up"); // final result returned to the chief-of-staff
+  expect(replies.some((r) => r.text.includes("Bash") && r.text.includes("docker ps") && r.project === "eticket-v3")).toBe(true);
 });

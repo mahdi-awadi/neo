@@ -17,10 +17,40 @@
 // SPIKE FINDING (docs/sdk-notes.md): the canUseTool ALLOW decision MUST echo `updatedInput`.
 //
 // Auth: draws from your Claude subscription (current behavior; see README + plan).
+import { basename } from "node:path";
 import { query as realQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { Order, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide } from "./governor";
+
+// High-frequency, low-signal read/navigation tools — surfacing every one would spam the operator,
+// so the stream stays quiet for these (the worker's assistant text + the milestones below carry it).
+const QUIET_TOOLS = new Set(["Read", "Glob", "Grep", "TodoWrite", "NotebookRead", "ListMcpResources"]);
+
+/** A short, human target for a tool call, drawn from whichever common input field is present. */
+function toolDetail(input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const i = input as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const trunc = (s: string) => (s.length > 60 ? s.slice(0, 57) + "…" : s);
+  if (str(i.file_path)) return basename(str(i.file_path));
+  if (str(i.path)) return basename(str(i.path));
+  if (str(i.command)) return trunc(str(i.command));
+  if (str(i.pattern)) return trunc(str(i.pattern));
+  if (str(i.url)) return trunc(str(i.url));
+  if (str(i.project)) return str(i.project);
+  if (str(i.description)) return trunc(str(i.description));
+  return "";
+}
+
+/** Turn a tool_use block into a concise "🔧 Tool: target" milestone, or undefined to stay quiet.
+ *  MCP tool names (mcp__server__tool) are shortened to the bare tool name. */
+function toolMilestone(name: string, input: unknown): string | undefined {
+  const short = name.startsWith("mcp__") ? name.split("__").pop() ?? name : name;
+  if (QUIET_TOOLS.has(short)) return undefined;
+  const detail = toolDetail(input);
+  return `🔧 ${short}${detail ? `: ${detail}` : ""}`;
+}
 
 export interface RunHandlers {
   /** Stream a human-readable line from the worker back to the channel. */
@@ -141,8 +171,16 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
       if (msg.type === "assistant") {
         const content = (msg.message as { content?: unknown } | undefined)?.content;
         if (Array.isArray(content)) {
-          for (const b of content as Array<{ type?: string; text?: string }>) {
-            if (b?.type === "text" && b.text?.trim()) handlers.onMessage(b.text.trim());
+          for (const b of content as Array<{ type?: string; text?: string; name?: string; input?: unknown }>) {
+            if (b?.type === "text" && b.text?.trim()) {
+              handlers.onMessage(b.text.trim());
+            } else if (b?.type === "tool_use" && typeof b.name === "string") {
+              // Surface what the worker is DOING (edits, bash, dispatches, …) so long tool-only
+              // stretches aren't silent — for dispatched sub-sessions this is what reaches the
+              // operator tagged with the project name.
+              const line = toolMilestone(b.name, b.input);
+              if (line) handlers.onMessage(line);
+            }
           }
         }
       } else if (msg.type === "rate_limit_event") {

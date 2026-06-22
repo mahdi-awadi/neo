@@ -279,3 +279,33 @@ test("trust off still escalates a risky tool", async () => {
   expect(escalated).toBe(true);
   expect(decisions[0].behavior).toBe("deny");
 });
+
+// --- Problem 2: surface TOOL ACTIVITY in the stream, so a worker doing a long stretch of
+// edits/bash/tests (little assistant text) isn't invisible to the operator. ---
+
+test("surfaces tool activity as a milestone in the stream (long tool-only work isn't silent)", async () => {
+  const msgs: string[] = [];
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "text", text: "let me edit that" }] } };
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "/p/src/foo.ts" } }] } };
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "bun test" } }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  expect(msgs).toContain("let me edit that"); // assistant text still streamed
+  expect(msgs.some((m) => m.includes("Edit") && m.includes("foo.ts"))).toBe(true); // a tool milestone
+  expect(msgs.some((m) => m.includes("Bash") && m.includes("bun test"))).toBe(true);
+});
+
+test("does NOT surface high-frequency read-only tool calls (Read/Glob/Grep) — avoids spam", async () => {
+  const msgs: string[] = [];
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/p/a.ts" } }] } };
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Grep", input: { pattern: "foo" } }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  expect(msgs.length).toBe(0); // read-only navigation is quiet
+});
