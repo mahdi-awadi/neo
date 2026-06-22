@@ -158,7 +158,15 @@ export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
 export function neoMcpServers(
   deps: DispatchDeps,
   replyChat: number,
-  opts: { dispatch: boolean; folder: string; stitch?: boolean; stitchKey?: string },
+  opts: {
+    dispatch: boolean;
+    folder: string;
+    stitch?: boolean;
+    stitchKey?: string;
+    /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
+    gitnexusBin?: string;
+    codebaseMemoryBin?: string;
+  },
 ): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: SdkMcpToolDefinition<any>[] = [
@@ -197,6 +205,14 @@ export function neoMcpServers(
   // (SDK McpHttpServerConfig shape: { type: "http", url, headers? }.) Never on the customer path.
   if (opts.stitch && opts.stitchKey) {
     servers.stitch = { type: "http", url: STITCH_MCP_URL, headers: { "X-Goog-Api-Key": opts.stitchKey } };
+  }
+  // Operator-only local stdio MCP servers: gitnexus (git/code intelligence) + codebase-memory.
+  // Attached only when a bin path is configured; the customer/ingress path passes none → never gets them.
+  if (opts.gitnexusBin) {
+    servers.gitnexus = { type: "stdio", command: opts.gitnexusBin, args: ["mcp"], env: {} };
+  }
+  if (opts.codebaseMemoryBin) {
+    servers["codebase-memory"] = { type: "stdio", command: opts.codebaseMemoryBin, args: [], env: {} };
   }
   return servers;
 }

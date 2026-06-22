@@ -28,6 +28,12 @@ export interface NeoConfig {
   /** Google Stitch MCP API key (from STITCH_API_KEY env). When set, OPERATOR workers get the
    *  Stitch design-generation MCP server; the customer/ingress path never does (compliance). */
   stitchApiKey: string;
+  /** Path to the gitnexus binary; when set, OPERATOR workers get the gitnexus git/code-intelligence
+   *  MCP server (from GITNEXUS_BIN env). Empty → off. The customer/ingress path never gets it. */
+  gitnexusBin: string;
+  /** Path to the codebase-memory MCP binary; when set, OPERATOR workers get the codebase-memory
+   *  server (from CODEBASE_MEMORY_BIN env). Empty → off. Customer/ingress path never gets it. */
+  codebaseMemoryBin: string;
   /** Booking link the customer-reply CTA points at, so customers pick a meeting time themselves
    *  (from MEETING_LINK env). Empty → the reply invites them to propose times instead. */
   meetingLink: string;
@@ -84,6 +90,9 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
+    gitnexusBin: process.env.GITNEXUS_BIN ?? fileCfg.gitnexusBin ?? "/usr/bin/gitnexus",
+    codebaseMemoryBin:
+      process.env.CODEBASE_MEMORY_BIN ?? fileCfg.codebaseMemoryBin ?? "/root/.local/bin/codebase-memory-mcp",
     meetingLink: process.env.MEETING_LINK ?? fileCfg.meetingLink ?? "",
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
   };

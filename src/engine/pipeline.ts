@@ -105,7 +105,7 @@ export async function handleMessage(
   const session = registry.add(parsed, now());
   return startSession(parsed, session.id, chatId, deps, now, start, {
     resume: resume || undefined,
-    mcpServers: neoMcpServers(deps, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey }),
+    mcpServers: neoMcpServers(deps, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
   });
 }
 
@@ -124,7 +124,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers(deps, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey }),
+    mcpServers: neoMcpServers(deps, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
   };
   return isCompany ? { ...base, effort: "low" } : base;
 }
