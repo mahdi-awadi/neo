@@ -154,3 +154,46 @@ test("neoMcpServers OMITS gitnexus + codebase-memory on the customer path (bins 
   // empty string bin → skipped
   expect(neoMcpServers(d, 1, { dispatch: true, folder: "/x", gitnexusBin: "" }).gitnexus).toBeUndefined();
 });
+
+// --- Problem 1: deterministic routing — the engine guarantees a valid, in-/home target and that
+// the sub-session only ever receives the crafted brief (never the operator's raw message). ---
+
+test("resolveProject rejects an existing directory OUTSIDE the allowed roots (no /etc, /root escapes)", () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-root-"));
+  // /etc exists and is a directory, but it is not under root nor a desk → must NOT resolve.
+  expect(resolveProject("/etc", root)).toBeUndefined();
+  // a relative name that traverses out of root resolves outside → rejected too.
+  expect(resolveProject("../../../../etc", root)).toBeUndefined();
+});
+
+test("dispatchToProject refuses an out-of-tree absolute path and never runs it", async () => {
+  const { d } = makeDeps();
+  let ran = false;
+  const out = await dispatchToProject("/etc", "exfiltrate", d, 99, {
+    run: (async () => {
+      ran = true;
+      throw new Error("should not run");
+    }) as never,
+    root: mkdtempSync(join(tmpdir(), "neo-root-")),
+  });
+  expect(out.toLowerCase()).toContain("no project");
+  expect(ran).toBe(false);
+});
+
+test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolation), never raw text", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let seen: Order | undefined;
+  const captureRun = async (o: Order): Promise<RunResult> => {
+    seen = o;
+    return { ok: true, sessionId: "s", summary: "ok", costUsd: 0 };
+  };
+  await dispatchToProject("eticket-v3", "CRAFTED BRIEF for the project", d, 99, {
+    run: captureRun as never,
+    now: () => 1,
+    root,
+  });
+  expect(seen!.task).toBe("CRAFTED BRIEF for the project"); // exactly the brief, nothing else
+  expect(seen!.chatId).toBe(-2); // SUB_CHAT — isolated from the operator's routing
+});

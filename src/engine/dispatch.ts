@@ -43,11 +43,24 @@ type RunFn = typeof runOrder;
  * else a desk under `desks` (the agent's function workspaces). A real project wins over a
  * same-named desk.
  */
+/** True when `folder` resolves to (or inside) one of the allowed roots. The deterministic guard
+ *  that keeps a dispatch target under /home (+ the agent's desks) — never an out-of-tree absolute
+ *  path (/etc, /root, …) or a `..` traversal that escapes the project root. */
+function containedInAny(folder: string, roots: string[]): boolean {
+  const f = resolve(folder);
+  return roots.some((r) => {
+    const rr = resolve(r);
+    return f === rr || f.startsWith(rr + sep);
+  });
+}
+
 export function resolveProject(project: string, root = "/home", desks = DESKS_DIR): string | undefined {
   const candidates = project.startsWith("/") ? [project] : [join(root, project), join(desks, project)];
   for (const c of candidates) {
     try {
-      if (existsSync(c) && statSync(c).isDirectory()) return c;
+      // Must be a real directory AND contained under an allowed root — so the company can only
+      // dispatch into the operator's projects/desks, never an arbitrary absolute path.
+      if (existsSync(c) && statSync(c).isDirectory() && containedInAny(c, [root, desks])) return c;
     } catch {
       // ignore and try the next candidate
     }
