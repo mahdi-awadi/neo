@@ -19,6 +19,11 @@ export interface Ledger {
   recordMessage(chatId: number, role: string, content: string): void;
   /** The full transcript for a chat, oldest-first; `limit` keeps only the most recent N. */
   conversation(chatId: number, limit?: number): ConversationMessage[];
+  /** Loop scheduler state — last fire time + explicit enable override (implements LoopStateStore). */
+  getLastRun(name: string): number | undefined;
+  setLastRun(name: string, at: number): void;
+  isEnabled(name: string): boolean | undefined;
+  setEnabled(name: string, on: boolean): void;
 }
 
 export interface ConversationMessage {
@@ -58,6 +63,12 @@ export function openLedger(path: string): Ledger {
      )`,
   );
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages (chat_id, at)`);
+  // Loop scheduler state — last fire time + explicit enable override, so cron loops survive restart.
+  db.run(
+    `CREATE TABLE IF NOT EXISTS loop_state (
+       name TEXT PRIMARY KEY, last_run INTEGER, enabled INTEGER
+     )`,
+  );
 
   return {
     recordOrder(o) {
@@ -141,6 +152,30 @@ export function openLedger(path: string): Ledger {
         )
         .all(chatId, limit) as Array<{ role: string; content: string; at: number }>;
       return rows;
+    },
+    getLastRun(name) {
+      const row = db.query(`SELECT last_run FROM loop_state WHERE name = ?`).get(name) as
+        | { last_run: number | null }
+        | null;
+      return row && row.last_run != null ? row.last_run : undefined;
+    },
+    setLastRun(name, at) {
+      db.query(
+        `INSERT INTO loop_state (name, last_run) VALUES (?, ?)
+         ON CONFLICT(name) DO UPDATE SET last_run = excluded.last_run`,
+      ).run(name, at);
+    },
+    isEnabled(name) {
+      const row = db.query(`SELECT enabled FROM loop_state WHERE name = ?`).get(name) as
+        | { enabled: number | null }
+        | null;
+      return row && row.enabled != null ? row.enabled === 1 : undefined;
+    },
+    setEnabled(name, on) {
+      db.query(
+        `INSERT INTO loop_state (name, enabled) VALUES (?, ?)
+         ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled`,
+      ).run(name, on ? 1 : 0);
     },
   };
 }
