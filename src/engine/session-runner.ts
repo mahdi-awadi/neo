@@ -79,6 +79,8 @@ export interface RunDeps {
   effort?: EffortLevel;
   /** Extra in-process MCP servers/tools (e.g. the default project's `dispatch` tool). */
   mcpServers?: Record<string, unknown>;
+  /** Tools the worker must NOT use (e.g. read-only judge runs deny Write/Edit/Bash). */
+  disallowedTools?: string[];
 }
 
 export interface RunResult {
@@ -237,11 +239,12 @@ function createInputChannel(first: SdkUserMessage) {
 }
 
 // Only-defined keys survive into the SDK options (so absent fields aren't sent as undefined).
-function runConfig(deps: RunDeps): Record<string, unknown> {
+export function runConfig(deps: RunDeps): Record<string, unknown> {
   const c: Record<string, unknown> = {};
   if (deps.resume) c.resume = deps.resume;
   if (deps.effort) c.effort = deps.effort;
   if (deps.mcpServers) c.mcpServers = deps.mcpServers;
+  if (deps.disallowedTools) c.disallowedTools = deps.disallowedTools;
   return c;
 }
 
