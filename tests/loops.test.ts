@@ -54,3 +54,30 @@ test("startLoop runs the loop, streams progress, and reports the outcome", async
   expect(replies.some((r) => r.toLowerCase().includes("start"))).toBe(true);
   expect(replies.some((r) => r.toLowerCase().includes("goal met"))).toBe(true);
 });
+
+test("/loop <name> on enables a scheduled loop via the store", () => {
+  const replies: string[] = [];
+  const enabled = new Map<string, boolean>();
+  const store = {
+    getLastRun: () => undefined,
+    setLastRun: () => {},
+    isEnabled: (n: string) => enabled.get(n),
+    setEnabled: (n: string, on: boolean) => void enabled.set(n, on),
+  };
+  const handled = handleLoop("/loop docs-sweep on", 1, { reply: (_c, t) => void replies.push(t), store });
+  expect(handled).toBe(true);
+  expect(enabled.get("docs-sweep")).toBe(true);
+  expect(replies.join("\n").toLowerCase()).toContain("on");
+});
+
+test("/loop <name> off disables it", () => {
+  const enabled = new Map<string, boolean>([["docs-sweep", true]]);
+  const store = {
+    getLastRun: () => undefined,
+    setLastRun: () => {},
+    isEnabled: (n: string) => enabled.get(n),
+    setEnabled: (n: string, on: boolean) => void enabled.set(n, on),
+  };
+  handleLoop("/loop docs-sweep off", 1, { reply: () => {}, store });
+  expect(enabled.get("docs-sweep")).toBe(false);
+});
