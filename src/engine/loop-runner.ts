@@ -7,13 +7,16 @@
 
 export interface LoopSpec {
   /** Run one iteration (a governed worker run). Receives the prior SDK session id to resume
-   * (undefined on the first), and the 1-based iteration number. Returns the new session id. */
-  iterate: (resumeId: string | undefined, n: number) => Promise<{ sessionId: string; summary: string }>;
+   * (undefined on the first), and the 1-based iteration number. Returns the new session id +
+   * the run's cost (USD), so the loop can enforce a budget ceiling. */
+  iterate: (resumeId: string | undefined, n: number) => Promise<{ sessionId: string; summary: string; costUsd?: number }>;
   /** Verifiable goal check — deterministic, engine-side. Returns whether it's met + a one-liner. */
   check: () => Promise<{ met: boolean; detail: string }>;
   /** Hard bound: give up after this many iterations even if the goal isn't met. */
   maxIterations: number;
-  /** Optional kill-switch checked before each iteration (usage cap, /kill, etc.). */
+  /** Optional cost ceiling (USD), summed across iterations. */
+  budgetUsd?: number;
+  /** Optional kill-switch / throttle checked before each iteration (usage cap, /kill, etc.). */
   shouldStop?: () => boolean;
   /** Optional progress reporter (one line per iteration). */
   onProgress?: (msg: string) => void;
@@ -22,23 +25,28 @@ export interface LoopSpec {
 export interface LoopOutcome {
   met: boolean;
   iterations: number;
-  reason: "goal-met" | "max-iterations" | "stopped";
+  reason: "goal-met" | "max-iterations" | "over-budget" | "stopped";
   lastDetail: string;
+  spentUsd: number;
 }
 
 export async function runLoop(spec: LoopSpec): Promise<LoopOutcome> {
   let resumeId: string | undefined;
   let lastDetail = "";
+  let spentUsd = 0;
 
   for (let n = 0; ; n++) {
     const goal = await spec.check();
     lastDetail = goal.detail;
-    if (goal.met) return { met: true, iterations: n, reason: "goal-met", lastDetail };
-    if (n >= spec.maxIterations) return { met: false, iterations: n, reason: "max-iterations", lastDetail };
-    if (spec.shouldStop?.()) return { met: false, iterations: n, reason: "stopped", lastDetail };
+    if (goal.met) return { met: true, iterations: n, reason: "goal-met", lastDetail, spentUsd };
+    if (n >= spec.maxIterations) return { met: false, iterations: n, reason: "max-iterations", lastDetail, spentUsd };
+    if (spec.budgetUsd !== undefined && spentUsd >= spec.budgetUsd)
+      return { met: false, iterations: n, reason: "over-budget", lastDetail, spentUsd };
+    if (spec.shouldStop?.()) return { met: false, iterations: n, reason: "stopped", lastDetail, spentUsd };
 
     spec.onProgress?.(`iteration ${n + 1}: ${goal.detail}`);
     const r = await spec.iterate(resumeId, n + 1);
     resumeId = r.sessionId;
+    spentUsd += r.costUsd ?? 0;
   }
 }

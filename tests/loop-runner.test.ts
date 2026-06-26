@@ -62,3 +62,29 @@ test("runLoop stops early when shouldStop fires (e.g. usage cap)", async () => {
   expect(out.met).toBe(false);
   expect(iterated).toBe(1);
 });
+
+test("runLoop stops with over-budget once spent reaches budgetUsd", async () => {
+  let iterated = 0;
+  const out = await runLoop({
+    check: async () => ({ met: false, detail: "red" }),
+    iterate: async () => (iterated++, { sessionId: "s", summary: "", costUsd: 2 }),
+    maxIterations: 10,
+    budgetUsd: 3,
+  });
+  // iter1 spends 2 (<3, continue), iter2 spends 2 → 4 (≥3, stop before iter3)
+  expect(out.reason).toBe("over-budget");
+  expect(iterated).toBe(2);
+  expect(out.spentUsd).toBe(4);
+});
+
+test("runLoop accumulates spentUsd across iterations", async () => {
+  const checks = [false, true];
+  let ci = 0;
+  const out = await runLoop({
+    check: async () => ({ met: checks[ci++], detail: "c" }),
+    iterate: async () => ({ sessionId: "s", summary: "", costUsd: 1.5 }),
+    maxIterations: 5,
+  });
+  expect(out.met).toBe(true);
+  expect(out.spentUsd).toBe(1.5);
+});
