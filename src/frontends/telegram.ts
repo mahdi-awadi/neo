@@ -16,6 +16,7 @@ import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
+import { createMessageRoutes } from "../engine/message-routes";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
@@ -28,16 +29,27 @@ async function downloadTelegramFile(token: string, filePath: string): Promise<Ui
 }
 
 /** Send worker output as formatted HTML (bold/code/bullets), falling back to plain text if
- *  Telegram rejects the markup. `project` tags which project the line came from. */
-async function sendFormatted(bot: Bot, chatId: number, text: string, project?: string): Promise<void> {
+ *  Telegram rejects the markup. `project` tags which project the line came from. Returns the sent
+ *  message id (so the caller can route a later reply back to the right session), or undefined if
+ *  the send failed. Worker output is sent as plain messages — NOT quote-replies to the operator's
+ *  order — so a streamed run doesn't show every line threaded under one old message. */
+async function sendFormatted(
+  bot: Bot,
+  chatId: number,
+  text: string,
+  project?: string,
+): Promise<number | undefined> {
   const tag = project ? `<b>[${project.replace(/[&<>]/g, "")}]</b> ` : "";
   try {
-    await bot.api.sendMessage(chatId, tag + mdToHtml(text, { tables: "pre" }), { parse_mode: "HTML" });
+    const m = await bot.api.sendMessage(chatId, tag + mdToHtml(text, { tables: "pre" }), { parse_mode: "HTML" });
+    return m.message_id;
   } catch {
     try {
-      await bot.api.sendMessage(chatId, (project ? `[${project}] ` : "") + text);
+      const m = await bot.api.sendMessage(chatId, (project ? `[${project}] ` : "") + text);
+      return m.message_id;
     } catch {
       // give up silently — a dropped progress line shouldn't crash the bot
+      return undefined;
     }
   }
 }
@@ -61,6 +73,28 @@ export function startTelegram(
   const allow = new Set(cfg.telegramAllowFrom);
   // Pending approvals keyed by a per-request token: callback press -> resolver.
   const pending = new Map<string, (decision: "allow" | "deny") => void>();
+  // Remembers which session each sent worker message came from, so replying to a specific
+  // message routes the follow-up back to that project (see send() + the reply handling below).
+  const routes = createMessageRoutes();
+
+  // Send a worker line and record which session it belongs to, so the operator can REPLY to that
+  // specific message to route a follow-up into its project (see routeByReply). The line itself is
+  // a normal message, not a quote-reply.
+  async function send(chatId: number, text: string, project?: string): Promise<void> {
+    const messageId = await sendFormatted(bot, chatId, text, project);
+    if (messageId !== undefined && project) {
+      const session = registry.findByName(project);
+      if (session) routes.remember(messageId, session.id);
+    }
+  }
+
+  // If this message is a reply to a tracked worker message, make that project active so the
+  // pipeline routes the follow-up into it (overriding whichever project was active in the feed).
+  function routeByReply(chatId: number, repliedToMessageId: number | undefined): void {
+    if (repliedToMessageId === undefined) return;
+    const sessionId = routes.sessionFor(repliedToMessageId);
+    if (sessionId && registry.get(sessionId)) registry.setActive(chatId, sessionId);
+  }
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
 
@@ -78,7 +112,7 @@ export function startTelegram(
     meter,
     usage,
     trust,
-    reply: (cid, text, project) => void sendFormatted(bot, cid, text, project),
+    reply: (cid, text, project) => void send(cid, text, project),
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
@@ -111,6 +145,8 @@ export function startTelegram(
     const userId = ctx.from?.id;
     if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
+    // A reply on the attachment targets that project; pick it before resolving where to save.
+    routeByReply(chatId, ctx.message?.reply_to_message?.message_id);
     const target = registry.findByChat(chatId) ?? registry.getDefault();
     if (!target) {
       void bot.api.sendMessage(chatId, "No active project to receive the file.");
@@ -169,6 +205,8 @@ export function startTelegram(
       return;
     }
 
+    // If the operator replied to a specific worker message, route this follow-up to that project.
+    routeByReply(chatId, ctx.message.reply_to_message?.message_id);
     await handleMessage(ctx.message.text, chatId, pipelineDeps());
   });
 

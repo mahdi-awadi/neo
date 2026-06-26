@@ -53,6 +53,27 @@ test("lastSessionFor is undefined when no session was recorded for that folder/c
   expect(led.lastSessionFor("/other", 9)).toBeUndefined();
 });
 
+test("records conversation messages and reads them back chronologically per chat", () => {
+  const led = openLedger(":memory:");
+  led.recordMessage(7, "user", "do the thing");
+  led.recordMessage(7, "assistant", "doing work");
+  led.recordMessage(7, "assistant", "done");
+  led.recordMessage(8, "user", "a different conversation");
+  expect(led.conversation(7).map((m) => [m.role, m.content])).toEqual([
+    ["user", "do the thing"],
+    ["assistant", "doing work"],
+    ["assistant", "done"],
+  ]);
+  expect(led.conversation(8).map((m) => m.content)).toEqual(["a different conversation"]);
+  expect(led.conversation(9)).toEqual([]);
+});
+
+test("conversation(limit) returns the most recent N messages, still oldest-first", () => {
+  const led = openLedger(":memory:");
+  for (let i = 1; i <= 5; i++) led.recordMessage(1, "user", `m${i}`);
+  expect(led.conversation(1, 2).map((m) => m.content)).toEqual(["m4", "m5"]);
+});
+
 test("records and reads auto-approvals for an order", () => {
   const led = openLedger(":memory:");
   led.recordAutoApproval("o1", "risky shell command: git push");

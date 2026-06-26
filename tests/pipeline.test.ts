@@ -95,6 +95,35 @@ test("starts a live order, streams text, registers it, then records the outcome 
   expect(h.registry.getControl(h.registry.list()[0].id)).toBeUndefined(); // dead handle dropped
 });
 
+test("logs the full conversation: inbound user text and every outbound reply", async () => {
+  const dir = scratch();
+  const f = fakeStart({ onStart: (h) => h.onMessage("doing work") });
+  const h = harness({ start: f.start });
+
+  const run = await handleMessage(`/open ${dir} do the thing`, 9, h.base);
+  f.finish({ ok: true, sessionId: "sdk-1", summary: "completed", costUsd: 0 });
+  await run!.done;
+
+  const convo = h.ledger.conversation(9);
+  expect(convo[0]).toMatchObject({ role: "user", content: `/open ${dir} do the thing` });
+  expect(convo.some((m) => m.role === "assistant" && m.content === "doing work")).toBe(true);
+  expect(convo.some((m) => m.role === "assistant" && m.content.includes("completed"))).toBe(true);
+});
+
+test("logs approval prompts and the operator's decision into the conversation", async () => {
+  const dir = scratch();
+  let captured!: RunHandlers;
+  const f = fakeStart({ onStart: (h) => void (captured = h) });
+  const h = harness({ start: f.start });
+
+  await handleMessage(`/open ${dir} go`, 3, h.base);
+  await captured.onEscalation("risky shell command: rm -rf build");
+
+  const convo = h.ledger.conversation(3);
+  expect(convo.some((m) => m.role === "assistant" && m.content.includes("rm -rf build"))).toBe(true);
+  expect(convo.some((m) => m.role === "user" && m.content.includes("allow"))).toBe(true);
+});
+
 test("a follow-up to a completed (idle) session resumes it carrying its sdk id", async () => {
   const dir = scratch();
   const f = fakeStart();

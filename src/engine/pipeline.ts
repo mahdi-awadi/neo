@@ -54,6 +54,26 @@ export async function handleMessage(
   const now = deps.now ?? (() => Date.now());
   const start = deps.start ?? startOrder;
 
+  // Durable conversation log: capture the inbound line, then wrap reply/askApproval so every
+  // outbound line and approval round-trip is recorded too. Done once here, the single choke
+  // point both directions pass through, so the whole transcript persists (Telegram + web alike).
+  ledger.recordMessage(chatId, "user", text);
+  const rawReply = deps.reply;
+  const rawAskApproval = deps.askApproval;
+  deps = {
+    ...deps,
+    reply: (c, t, project) => {
+      ledger.recordMessage(c, "assistant", t);
+      return rawReply(c, t, project);
+    },
+    askApproval: async (c, reason) => {
+      ledger.recordMessage(c, "assistant", `⚠ approve? ${reason}`);
+      const decision = await rawAskApproval(c, reason);
+      ledger.recordMessage(c, "user", `approval: ${decision}`);
+      return decision;
+    },
+  };
+
   // 1. Plain-text follow-up into the session for this chat, or — when nothing is active — into the
   //    always-on default project ("the company"), which decides what to do with the order.
   const live = registry.findByChat(chatId) ?? registry.getDefault();

@@ -15,6 +15,16 @@ export interface Ledger {
   /** Audit: a risky action that trust auto-approved (the compensating control for the bypassed gate). */
   recordAutoApproval(orderId: string, reason: string): void;
   autoApprovalsFor(orderId: string): string[];
+  /** Append one line of a conversation (keyed by chat = the thread), e.g. "user"/"assistant". */
+  recordMessage(chatId: number, role: string, content: string): void;
+  /** The full transcript for a chat, oldest-first; `limit` keeps only the most recent N. */
+  conversation(chatId: number, limit?: number): ConversationMessage[];
+}
+
+export interface ConversationMessage {
+  role: string;
+  content: string;
+  at: number;
 }
 
 export function openLedger(path: string): Ledger {
@@ -41,6 +51,13 @@ export function openLedger(path: string): Ledger {
        order_id TEXT NOT NULL, reason TEXT NOT NULL, at INTEGER NOT NULL
      )`,
   );
+  // The full conversation transcript — every line in/out of a chat, durable across restarts.
+  db.run(
+    `CREATE TABLE IF NOT EXISTS messages (
+       chat_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, at INTEGER NOT NULL
+     )`,
+  );
+  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages (chat_id, at)`);
 
   return {
     recordOrder(o) {
@@ -103,6 +120,27 @@ export function openLedger(path: string): Ledger {
       return (
         db.query(`SELECT reason FROM auto_approvals WHERE order_id = ? ORDER BY at, rowid`).all(orderId) as Array<{ reason: string }>
       ).map((r) => r.reason);
+    },
+    recordMessage(chatId, role, content) {
+      db.query(`INSERT INTO messages (chat_id, role, content, at) VALUES (?, ?, ?, ?)`).run(
+        chatId,
+        role,
+        content,
+        Date.now(),
+      );
+    },
+    conversation(chatId, limit = 500) {
+      // Pull the most recent `limit` (rowid breaks ties when many share one ms), then re-sort
+      // oldest-first so the result reads as a transcript.
+      const rows = db
+        .query(
+          `SELECT role, content, at FROM (
+             SELECT rowid, role, content, at FROM messages
+             WHERE chat_id = ? ORDER BY at DESC, rowid DESC LIMIT ?
+           ) ORDER BY at ASC, rowid ASC`,
+        )
+        .all(chatId, limit) as Array<{ role: string; content: string; at: number }>;
+      return rows;
     },
   };
 }
