@@ -28,6 +28,7 @@ function cfg(): NeoConfig {
     codebaseMemoryBin: "",
     meetingLink: "",
     businessName: "",
+    loopSchedulerEnabled: true,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-web-"));

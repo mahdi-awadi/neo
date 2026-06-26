@@ -20,6 +20,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     codebaseMemoryBin: "",
     meetingLink: "",
     businessName: "",
+    loopSchedulerEnabled: true,
   };
 }
 

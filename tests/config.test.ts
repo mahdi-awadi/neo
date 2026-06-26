@@ -29,3 +29,16 @@ test("stitchApiKey reads STITCH_API_KEY from env (empty when unset)", () => {
     else process.env.STITCH_API_KEY = saved;
   }
 });
+
+test("loopSchedulerEnabled defaults to true; NEO_LOOP_SCHEDULER=0 disables it", () => {
+  const saved = process.env.NEO_LOOP_SCHEDULER;
+  try {
+    delete process.env.NEO_LOOP_SCHEDULER;
+    expect(loadConfig(dir()).loopSchedulerEnabled).toBe(true);
+    process.env.NEO_LOOP_SCHEDULER = "0";
+    expect(loadConfig(dir()).loopSchedulerEnabled).toBe(false);
+  } finally {
+    if (saved === undefined) delete process.env.NEO_LOOP_SCHEDULER;
+    else process.env.NEO_LOOP_SCHEDULER = saved;
+  }
+});

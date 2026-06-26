@@ -40,6 +40,8 @@ export interface NeoConfig {
   /** Customer-facing business name the email replies sign off as (from BUSINESS_NAME env).
    *  Empty → the reply signs off generically as "the business"; never as "Neo". */
   businessName: string;
+  /** When true (default), the daemon runs the loop scheduler. Disable with NEO_LOOP_SCHEDULER=0. */
+  loopSchedulerEnabled: boolean;
 }
 
 const DEFAULTS = {
@@ -95,5 +97,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
       process.env.CODEBASE_MEMORY_BIN ?? fileCfg.codebaseMemoryBin ?? "/root/.local/bin/codebase-memory-mcp",
     meetingLink: process.env.MEETING_LINK ?? fileCfg.meetingLink ?? "",
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
+    loopSchedulerEnabled:
+      process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
   };
 }

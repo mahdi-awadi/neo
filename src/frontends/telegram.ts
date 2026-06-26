@@ -189,7 +189,14 @@ export function startTelegram(
       void bot.api.sendMessage(chatId, "Run a loop:", { reply_markup: kb });
       return;
     }
-    if (handleLoop(ctx.message.text, chatId, { reply: (cid, t) => void bot.api.sendMessage(cid, t) })) return;
+    if (
+      handleLoop(ctx.message.text, chatId, {
+        reply: (cid, t) => void bot.api.sendMessage(cid, t),
+        store: ledger,
+        shouldStop: () => meter.shouldThrottle(),
+      })
+    )
+      return;
 
     // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
     // order or a follow-up handled by the pipeline.
@@ -327,7 +334,12 @@ export function startTelegram(
     if (cb.startsWith("runloop:")) {
       const loop = matchLoop(cb.slice("runloop:".length));
       await ctx.answerCallbackQuery(loop ? "running" : "unknown loop");
-      if (loop) void startLoop(loop, ctx.chat?.id ?? 0, { reply: (cid, t) => void bot.api.sendMessage(cid, t) });
+      if (loop)
+        void startLoop(loop, ctx.chat?.id ?? 0, {
+          reply: (cid, t) => void bot.api.sendMessage(cid, t),
+          store: ledger,
+          shouldStop: () => meter.shouldThrottle(),
+        });
       return;
     }
 
