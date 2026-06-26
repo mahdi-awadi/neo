@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { runProjectLoop } from "../src/engine/project-loop";
 import type { RunResult } from "../src/engine/session-runner";
 
-const ok = (sessionId: string): RunResult => ({ ok: true, sessionId, summary: "", costUsd: 0 });
+const ok = (sessionId: string, costUsd = 0): RunResult => ({ ok: true, sessionId, summary: "", costUsd });
 
 test("runProjectLoop runs the worker until the goal passes, resuming each time", async () => {
   const checks = [false, false, true];
@@ -10,7 +10,7 @@ test("runProjectLoop runs the worker until the goal passes, resuming each time",
   let runs = 0;
   const resumes: Array<string | undefined> = [];
   const out = await runProjectLoop(
-    { folder: "/p/gold", prompt: "make tests pass", goalCommand: ["true"], maxIterations: 5 },
+    { folder: "/p/gold", prompt: "make tests pass", goal: { kind: "command", command: ["true"] }, bounds: { maxIterations: 5 } },
     {
       run: async (_o, h, d) => {
         runs++;
@@ -29,7 +29,7 @@ test("runProjectLoop runs the worker until the goal passes, resuming each time",
 test("loop workers auto-deny risky escalations (no autonomous push/deploy)", async () => {
   let decision: "allow" | "deny" | undefined;
   await runProjectLoop(
-    { folder: "/p/gold", prompt: "x", goalCommand: ["true"], maxIterations: 1 },
+    { folder: "/p/gold", prompt: "x", goal: { kind: "command", command: ["true"] }, bounds: { maxIterations: 1 } },
     {
       run: async (_o, h) => {
         decision = await h.onEscalation("git push");
@@ -39,4 +39,12 @@ test("loop workers auto-deny risky escalations (no autonomous push/deploy)", asy
     },
   );
   expect(decision).toBe("deny");
+});
+
+test("runProjectLoop stops over-budget using worker cost", async () => {
+  const out = await runProjectLoop(
+    { folder: "/p", prompt: "x", goal: { kind: "command", command: ["false"] }, bounds: { maxIterations: 10, budgetUsd: 1 } },
+    { run: async (_o, _h) => ok("s", 1), check: async () => ({ met: false, detail: "" }) },
+  );
+  expect(out.reason).toBe("over-budget");
 });
