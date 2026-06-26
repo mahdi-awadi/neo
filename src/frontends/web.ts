@@ -161,6 +161,14 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
     }
 
+    // Operator deletes (dismisses) a customer inbox item. Local-only data change — no external send.
+    if (req.method === "DELETE" && path.startsWith("/api/inbox/")) {
+      const id = decodeURIComponent(path.slice("/api/inbox/".length));
+      if (!id || !deps.inbox) return Response.json({ ok: false }, { status: 404, headers: { "cache-control": "no-store" } });
+      deps.inbox.delete(id);
+      return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+    }
+
     if (req.method === "POST" && path === "/msg") {
       const body = (await req.json().catch(() => ({}))) as { text?: unknown };
       if (typeof body.text === "string" && body.text.trim()) void channel.send(body.text.trim());
@@ -374,6 +382,8 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .lrow{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border)}.lrow:first-of-type{border-top:0}
 .lm{flex:1;min-width:0}.lt{font-weight:600;font-size:13px}.ls{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px}
 .run{padding:7px 15px;border-radius:8px;border:1px solid color-mix(in srgb,var(--accent) 50%,var(--border));background:transparent;color:var(--accent);font-family:var(--mono);font-size:11px;cursor:pointer;transition:background .12s}
+.idel{float:right;padding:3px 9px;border-radius:7px;border:1px solid color-mix(in srgb,#e5484d 45%,var(--border));background:transparent;color:#e5484d;font-family:var(--mono);font-size:10px;cursor:pointer;opacity:.7;transition:opacity .12s}
+.idel:hover{opacity:1}
 .run:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .gauge{margin:11px 0}.glabel{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:5px}.glabel b{color:var(--fg);font-weight:500}
 .gbar{height:7px;background:var(--panel2);border-radius:6px;overflow:hidden}.gfill{height:100%;background:linear-gradient(90deg,var(--accent-dim),var(--accent));border-radius:6px}
@@ -507,7 +517,7 @@ function renderInbox(items){
  var h='<div class="card"><h3>Inbox — you review &amp; reply; never auto-sent</h3>';
  items.forEach(function(i){
   h+='<div class="irow" id="ir-'+i.id+'">';
-  h+='<div class="imeta"><span class="ist ist-'+esc(i.status)+'">'+esc(i.status)+'</span> <b>'+esc(i.fromName||i.from)+'</b> <span class="rfo">&lt;'+esc(i.from)+'&gt; · '+esc(i.channel)+'</span></div>';
+  h+='<div class="imeta"><span class="ist ist-'+esc(i.status)+'">'+esc(i.status)+'</span> <b>'+esc(i.fromName||i.from)+'</b> <span class="rfo">&lt;'+esc(i.from)+'&gt; · '+esc(i.channel)+'</span><button class="idel" title="Delete this message" onclick="deleteInbox(\\''+i.id+'\\')">🗑 Delete</button></div>';
   h+='<div class="isubj">'+esc(i.subject||'(no subject)')+'</div>';
   h+='<div class="ibody">'+esc((i.text||'').slice(0,800))+'</div>';
   if(i.status==='new'){
@@ -529,6 +539,7 @@ function renderInbox(items){
 function sendToAgent(id){var el=document.getElementById('instr-'+id);var instr=el?el.value:'';var row=document.getElementById('ir-'+id);if(row)row.style.opacity='0.55';post('/api/inbox/draft',{id:id,instructions:instr}).then(loadInbox).catch(loadInbox);setTimeout(loadInbox,800);}
 function redraft(id){var el=document.getElementById('notes-'+id);var notes=el?el.value:'';var row=document.getElementById('ir-'+id);if(row)row.style.opacity='0.55';post('/api/inbox/draft',{id:id,instructions:notes}).then(loadInbox).catch(loadInbox);setTimeout(loadInbox,800);}
 function sendReply(id){var el=document.getElementById('draft-'+id);var reply=el?el.value:'';if(!reply.trim())return;if(!confirm('Send this reply to the customer?'))return;post('/api/inbox/send',{id:id,reply:reply}).then(function(r){return r.json();}).then(function(d){if(!d.ok)alert('Send failed.');loadInbox();}).catch(function(){alert('Send failed.');});}
+function deleteInbox(id){if(!confirm('Delete this message? This cannot be undone.'))return;var row=document.getElementById('ir-'+id);if(row)row.style.opacity='0.4';fetch('/api/inbox/'+encodeURIComponent(id),{method:'DELETE'}).then(loadInbox).catch(loadInbox);}
 
 function tab(name){['activity','loops','usage','recent','inbox'].forEach(function(n){
  document.getElementById('v'+n).classList.toggle('on',n===name);

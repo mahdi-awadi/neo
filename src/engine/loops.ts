@@ -89,7 +89,23 @@ const DOCS_SWEEP: LoopDef = {
   enabledByDefault: false,
 };
 
-export const LOOPS: LoopDef[] = [GOLD_GOFMT, GREEN, ERROR_SWEEP, DOCS_SWEEP];
+const INBOX_DELETE: LoopDef = {
+  name: "inbox-delete",
+  usage: "/loop inbox-delete",
+  summary: "add a delete button to the web frontend's inbox until tested green (never pushes)",
+  folder: "/home/neo",
+  prompt:
+    "Add the ability to delete a customer-inbox item from the operator web frontend. Work TDD: first write `tests/inbox-delete.test.ts` covering (1) `Inbox.delete(id)` removes the item so `get(id)` returns undefined and it drops out of `list()`, and (2) the web frontend exposes a delete affordance and a `DELETE /api/inbox/:id` route that calls it. Then implement the minimal code to pass: add `delete(id)` to the `Inbox` interface + its bun:sqlite impl in `src/engine/inbox.ts`, a `DELETE /api/inbox/:id` handler in `src/frontends/web.ts`, and a delete button on each inbox row in the rendered console page that hits it. Keep `bunx tsc --noEmit` clean. Commit per logical piece. Do NOT push or deploy.",
+  goal: {
+    kind: "command",
+    command: ["sh", "-c", "bun test tests/inbox-delete.test.ts && bunx tsc --noEmit"],
+    timeoutMs: 300_000,
+  },
+  trigger: { kind: "manual" },
+  bounds: { maxIterations: 6, budgetUsd: 8 },
+};
+
+export const LOOPS: LoopDef[] = [GOLD_GOFMT, GREEN, ERROR_SWEEP, DOCS_SWEEP, INBOX_DELETE];
 
 export function matchLoop(args: string): LoopDef | undefined {
   const key = args.trim().toLowerCase().replace(/\s+/g, "-");

@@ -36,6 +36,8 @@ export interface Inbox {
   setStatus(id: string, status: InboxStatus): void;
   /** Store the agent's draft reply and mark the item "drafted" (awaiting operator approval). */
   setDraft(id: string, draft: string): void;
+  /** Permanently remove an item (operator dismisses a customer message). No-op if unknown. */
+  delete(id: string): void;
 }
 
 type Row = {
@@ -122,6 +124,9 @@ export function openInbox(path: string): Inbox {
     },
     setDraft(id, draft) {
       db.run(`UPDATE inbox SET draft = ?, status = 'drafted' WHERE id = ?`, [draft, id]);
+    },
+    delete(id) {
+      db.run(`DELETE FROM inbox WHERE id = ?`, [id]);
     },
   };
 }
