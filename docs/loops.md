@@ -3,6 +3,16 @@
 Saved because Neo's company-engine autonomy **is** a loop runtime. Distilled from field practice;
 the last section maps it onto Neo.
 
+> **Status (2026-06-26): the core loop runtime is implemented.** The trigger→action→goal model
+> below is now engine-native: `Goal` union (verifiable command + LLM-judge worker) in
+> `src/engine/goal.ts`; `Trigger` union (manual/interval/cron) + matcher in `src/engine/trigger.ts`;
+> per-loop bounds (`maxIterations` + `budgetUsd`) wired to the budget meter in
+> `src/engine/loop-runner.ts`; a deterministic scheduler in `src/engine/scheduler.ts` fired from the
+> daemon; the loop library + `/loop` command in `src/engine/loops.ts`. Design + plan:
+> `docs/superpowers/specs/2026-06-26-loop-runtime-design.md`,
+> `docs/superpowers/plans/2026-06-26-loop-runtime.md`. Deferred: event triggers, the in-iteration
+> Stop-hook guard, dynamic self-paced intervals.
+
 ## What a loop is
 
 A way to let an AI agent work autonomously toward a goal, removing the human from the inner cycle.
