@@ -60,8 +60,23 @@ signed session cookie) where Neo talks to the engine over the web exactly like T
 (`/home/traefik/dynamic/neo.yml` → `172.20.0.1:3003`); live-verified HTTPS + valid cert. `bun test`
 green (82 tests), `tsc` clean.
 
-Next: **Phase 3b** (the deferred Gemini customer path), then Phase 4 (finance/board). Keep building
-**phase by phase, TDD**, per `MVP-PLAN.md`.
+**Loop runtime — live** (the autonomy model is now engine-native): a `trigger → action → goal` loop
+runtime drives autonomous work through the same governed worker. `Goal` union (verifiable command +
+LLM-judge worker), `Trigger` union (manual/interval/cron, dependency-free matcher), per-loop `Bounds`
+(maxIterations + budgetUsd) wired to the meter, a deterministic `scheduler` fired from the daemon
+every 60s (`NEO_LOOP_SCHEDULER`, default on), and a `/loop` command (list · run · on/off) over a
+code-defined loop library (`src/engine/loops.ts`). Loop enable/last-run persist in the ledger; every
+iteration stays firewalled + escalation-auto-denied (loops never push/deploy). Specs:
+`docs/superpowers/specs/2026-06-26-loop-runtime-design.md`, `docs/loops.md`.
+
+**Customer inbox — live:** inbound customer mail queues in a bun:sqlite store for operator review (no
+auto-reply); reachable from both Telegram `/inbox` and the web console (view · send-to-agent draft ·
+edit · approval-gated send · **delete**).
+
+Next: **data-driven loop CRUD** — make loop *definitions* data (author/edit/delete from the admin
+console, no restart), spec'd in `docs/superpowers/specs/2026-06-27-loop-crud-design.md` (not yet
+built); then **Phase 3b** (the deferred Gemini customer path) and Phase 4 (finance/board). Keep
+building **phase by phase, TDD**, per `MVP-PLAN.md`.
 
 ## How to work here
 

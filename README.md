@@ -29,14 +29,18 @@ AI **decides**; the engine **acts and governs**.
 
 ## Status
 
-Phase 0 scaffold. Engine modules are typed stubs; `config.ts`/`types.ts` are real. See
-`MVP-PLAN.md` for the phased plan. Implementation is Phase 1 (TDD).
+Phases 1–3 complete: the order → open → govern → stream engine, live follow-ups + resume + budget,
+and an operator **web console** (`neo.tech-gate.online`) alongside Telegram. On top of that, a
+**loop runtime** (trigger → action → goal) now runs scheduled/manual autonomous loops through the
+governed worker, and a **customer inbox** queues inbound mail for operator review (no auto-reply).
+Next: data-driven loop CRUD (spec'd) and the Gemini customer path (Phase 3b). See `MVP-PLAN.md` for
+the phased plan and `docs/loops.md` for the autonomy model.
 
 ## Run
 
 ```bash
 bun install
-bun run src/daemon.ts   # prints the scaffold banner
-bun test                # smoke test
-bunx tsc --noEmit       # typecheck
+bun run src/daemon.ts   # serves the Telegram bot + web console + loop scheduler
+bun test ./tests/*.test.ts   # Neo's suite (239 green)
+bunx tsc --noEmit            # typecheck
 ```

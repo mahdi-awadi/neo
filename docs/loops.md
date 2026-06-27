@@ -8,10 +8,19 @@ the last section maps it onto Neo.
 > `src/engine/goal.ts`; `Trigger` union (manual/interval/cron) + matcher in `src/engine/trigger.ts`;
 > per-loop bounds (`maxIterations` + `budgetUsd`) wired to the budget meter in
 > `src/engine/loop-runner.ts`; a deterministic scheduler in `src/engine/scheduler.ts` fired from the
-> daemon; the loop library + `/loop` command in `src/engine/loops.ts`. Design + plan:
+> daemon (every 60s, `NEO_LOOP_SCHEDULER`); the loop library + `/loop` command (list · run · on/off)
+> in `src/engine/loops.ts`. Design + plan:
 > `docs/superpowers/specs/2026-06-26-loop-runtime-design.md`,
 > `docs/superpowers/plans/2026-06-26-loop-runtime.md`. Deferred: event triggers, the in-iteration
 > Stop-hook guard, dynamic self-paced intervals.
+>
+> **Shipped built-in loops** (code-defined in `src/engine/loops.ts`): `gold-gofmt`, `green` (test +
+> tsc until green), `error-sweep` (nightly), `docs-sweep` (nightly LLM-judge), `inbox-delete`. Each
+> runs through `runProjectLoop`, so it's governed + escalation-auto-denied (never pushes/deploys).
+>
+> **Next (2026-06-27, spec'd not built): data-driven loop CRUD.** Make loop *definitions* data
+> (built-ins ∪ custom, hot-read each tick) so an operator authors/edits/deletes loops from the admin
+> console with no restart: `docs/superpowers/specs/2026-06-27-loop-crud-design.md`.
 
 ## What a loop is
 

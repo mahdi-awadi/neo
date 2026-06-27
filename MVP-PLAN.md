@@ -145,6 +145,31 @@ SDK on the subscription). The engine is unchanged — the web frontend is thin g
 - **T3.7 Traefik** — `/home/traefik/dynamic/neo.yml` (mirrors `operant.yml`) → `neo.tech-gate.online`.
   Live-verified: HTTPS 200 + valid cert + login page over the real domain.
 
+## Loop runtime — trigger → action → goal  *(DONE ✅ — the autonomy backbone)*
+
+**Status: complete** (`bun test` green, `tsc` clean). The company-engine autonomy from `docs/loops.md`
+is now engine-native: autonomous loops run through the **same governed worker** (firewall + approval
+gate + budget every iteration; escalations auto-deny, so loops never push/deploy). Built TDD per the
+plan (`docs/superpowers/plans/2026-06-26-loop-runtime.md`; design
+`docs/superpowers/specs/2026-06-26-loop-runtime-design.md`):
+
+- **`goal.ts`** — `Goal` union: verifiable command (deterministic check) + LLM-judge (read-only
+  worker via `disallowedTools`); `makeGoalCheck` resolves either to a `met` boolean.
+- **`trigger.ts`** — `Trigger` union (manual / interval / cron) + a dependency-free 5-field cron
+  matcher (`isDue`).
+- **`loop-runner.ts` / `project-loop.ts`** — iterate the worker toward the goal under `Bounds`
+  (`maxIterations` + `budgetUsd`); stop on goal-met, bound, or throttle, with `spentUsd` accounting.
+- **`scheduler.ts`** — deterministic tick: fire a loop only when **due + enabled + a free slot +
+  unthrottled**. `LoopStateStore` (ledger) persists each loop's `enabled` + `lastRun`.
+- **`loops.ts`** — a code-defined loop library (`gold-gofmt`, `green`, `error-sweep`, `docs-sweep`,
+  `inbox-delete`) + the `/loop` command (list · run-now · `on|off` a schedule).
+- **`daemon.ts`** — runs the scheduler tick every 60s (`NEO_LOOP_SCHEDULER`, default on), wiring the
+  ledger as the state store and the meter as the throttle.
+
+**Next (spec'd, not built):** data-driven loop CRUD — loop *definitions* become data authored from the
+admin console (built-ins ∪ custom, read fresh each tick, no restart):
+`docs/superpowers/specs/2026-06-27-loop-crud-design.md`.
+
 ## Phase 3b — Customer path (Gemini)  *(deferred — own sub-plan)*
 One customer channel (email webhook or web form) → Gemini reads → `Order(source:"customer")` →
 engine executes via trusted code. Prove customer work never touches the subscription. The firewall
