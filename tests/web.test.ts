@@ -116,6 +116,49 @@ test("POST /msg with a valid session drives the pipeline", async () => {
   expect(a.registry.list().length).toBe(1); // a live session was started
 });
 
+test("POST /api/loop/create without a session is unauthorized (401)", async () => {
+  const a = app();
+  const res = await a.instance.fetch(new Request("http://neo.test/api/loop/create", { method: "POST", body: "{}" }));
+  expect(res.status).toBe(401);
+});
+
+test("POST /api/loop/create with a session creates a custom loop", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const res = await a.instance.fetch(
+    new Request("http://neo.test/api/loop/create", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "tidy",
+        summary: "tidy up",
+        folder: "/home/neo",
+        prompt: "tidy",
+        goalKind: "command",
+        goalCommand: "true",
+        triggerKind: "manual",
+        maxIterations: 1,
+      }),
+    }),
+  );
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ ok: true });
+});
+
+test("POST /api/loop/create rejects invalid input with ok:false", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const res = await a.instance.fetch(
+    new Request("http://neo.test/api/loop/create", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ name: "", folder: "/nope", goalKind: "command", triggerKind: "manual", maxIterations: 1 }),
+    }),
+  );
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ ok: false });
+});
+
 test("GET / serves the login page when unauthenticated and the console when authenticated", async () => {
   const a = app();
   const anon = await a.instance.fetch(new Request("http://neo.test/"));

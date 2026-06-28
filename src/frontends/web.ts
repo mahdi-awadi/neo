@@ -240,6 +240,29 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json({ ok: true });
     }
 
+    if (req.method === "POST" && path === "/api/loop/create") {
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      return Response.json(channel.createLoop(body as never));
+    }
+
+    if (req.method === "POST" && path === "/api/loop/update") {
+      const body = (await req.json().catch(() => ({}))) as { name?: unknown };
+      if (typeof body.name !== "string") return Response.json({ ok: false, error: "name required" });
+      return Response.json(channel.updateLoop(body.name, body as never));
+    }
+
+    if (req.method === "POST" && path === "/api/loop/delete") {
+      const body = (await req.json().catch(() => ({}))) as { name?: unknown };
+      if (typeof body.name !== "string") return Response.json({ ok: false, error: "name required" });
+      return Response.json(channel.deleteLoop(body.name));
+    }
+
+    if (req.method === "POST" && path === "/api/loop/enable") {
+      const body = (await req.json().catch(() => ({}))) as { name?: unknown; on?: unknown };
+      if (typeof body.name === "string") channel.setLoopEnabled(body.name, body.on === true);
+      return Response.json({ ok: true });
+    }
+
     if (req.method === "GET" && path === "/stream") {
       const stream = new ReadableStream({
         start(controller) {
@@ -404,6 +427,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .iinp:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
 .itx{width:100%;min-height:120px;margin-top:6px;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:9px;padding:10px 12px;font-family:var(--sans);font-size:13.5px;line-height:1.5;resize:vertical;outline:none}
 .itx:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
+.lci{width:100%;margin-top:6px;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:9px;padding:9px 11px;font-family:var(--sans);font-size:13px;outline:none}
 .run.ok{border-color:color-mix(in srgb,var(--accent) 60%,var(--border));background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
 .escc{border:1px solid color-mix(in srgb,var(--warn) 50%,var(--border));background:color-mix(in srgb,var(--warn) 7%,var(--panel));border-radius:13px;padding:13px 15px;margin:9px 0}
 .acts{display:flex;gap:8px;margin-top:11px}
@@ -478,14 +502,44 @@ function openProject(){var folder=document.getElementById('repo').value;var task
  post('/api/open',{folder:folder,task:task}).then(function(){document.getElementById('task').value='';tab('activity');setTimeout(loadState,500);});}
 
 function renderLoops(){var v=document.getElementById('vloops');v.innerHTML='';
- var card=document.createElement('div');card.className='card';card.innerHTML='<h3>Loops — run a verifiable job</h3>';
+ var form=document.createElement('div');form.className='card';
+ form.innerHTML='<h3>New loop</h3>'+
+  '<input id="lc-name" placeholder="name (e.g. nightly-fmt)" class="lci">'+
+  '<input id="lc-sum" placeholder="summary" class="lci">'+
+  '<input id="lc-folder" placeholder="folder (under /home)" class="lci">'+
+  '<textarea id="lc-prompt" class="itx" placeholder="what the worker does each iteration"></textarea>'+
+  '<select id="lc-gk" class="lci"><option value="command">goal: command (verifiable)</option><option value="judge">goal: judge (LLM)</option></select>'+
+  '<input id="lc-gv" placeholder="shell command, or judge criteria" class="lci">'+
+  '<select id="lc-tk" class="lci"><option value="manual">trigger: manual</option><option value="interval">trigger: interval</option><option value="cron">trigger: cron</option></select>'+
+  '<input id="lc-tv" placeholder="interval minutes, or cron expr (0 4 * * *)" class="lci">'+
+  '<input id="lc-mi" type="number" value="3" placeholder="max iterations" class="lci">'+
+  '<input id="lc-bud" type="number" placeholder="budget USD (optional)" class="lci">'+
+  '<button class="btn" onclick="submitLoop()">Create loop</button>'+
+  '<div id="lc-err" class="ls" style="color:var(--danger)"></div>';
+ v.appendChild(form);
+ var card=document.createElement('div');card.className='card';card.innerHTML='<h3>Loops</h3>';
  if(!S.loops.length){var e=document.createElement('div');e.className='empty';e.textContent='No loops configured.';card.appendChild(e);}
  S.loops.forEach(function(l){var row=document.createElement('div');row.className='lrow';
-  row.innerHTML='<div class="lm"><div class="lt">'+esc(l.usage.replace('/loop ',''))+'</div><div class="ls">'+esc(l.summary)+'</div></div>';
-  var b=document.createElement('button');b.className='run';b.textContent='▶ Run';
-  b.onclick=function(){post('/api/loop',{name:l.name}).then(function(){tab('activity');});};
-  row.appendChild(b);card.appendChild(row);});
+  var badge=l.custom?' · custom':' · built-in';
+  row.innerHTML='<div class="lm"><div class="lt">'+esc(l.name)+'</div><div class="ls">'+esc(l.summary)+' · '+esc(l.triggerDesc||'')+badge+'</div></div>';
+  var run=document.createElement('button');run.className='run';run.textContent='▶ Run';
+  run.onclick=function(){post('/api/loop',{name:l.name}).then(function(){tab('activity');});};
+  row.appendChild(run);
+  if(l.scheduled){var tg=document.createElement('button');tg.className='chip'+(l.enabled?' ok':'');tg.textContent=l.enabled?'on':'off';
+   tg.onclick=function(){post('/api/loop/enable',{name:l.name,on:!l.enabled}).then(loadState);};row.appendChild(tg);}
+  if(l.custom){var del=document.createElement('button');del.className='chip no';del.textContent='Delete';
+   del.onclick=function(){if(confirm('Delete loop '+l.name+'?'))post('/api/loop/delete',{name:l.name}).then(loadState);};row.appendChild(del);}
+  card.appendChild(row);});
  v.appendChild(card);}
+function submitLoop(){var g=function(id){var el=document.getElementById(id);return el?el.value:'';};
+ var body={name:g('lc-name'),summary:g('lc-sum'),folder:g('lc-folder'),prompt:g('lc-prompt'),
+  goalKind:g('lc-gk'),triggerKind:g('lc-tk'),maxIterations:Number(g('lc-mi'))||1};
+ if(body.goalKind==='command')body.goalCommand=g('lc-gv');else body.goalCriteria=g('lc-gv');
+ if(body.triggerKind==='interval')body.intervalMinutes=Number(g('lc-tv'))||0;
+ if(body.triggerKind==='cron')body.cronExpr=g('lc-tv');
+ var bud=g('lc-bud');if(bud)body.budgetUsd=Number(bud);
+ post('/api/loop/create',body).then(function(r){return r.json();}).then(function(d){
+  if(d.ok){loadState();}else{document.getElementById('lc-err').textContent=d.error||'invalid';}});}
 
 function renderUsage(){var v=document.getElementById('vusage');var u=S.usage;
  if(!u){v.innerHTML='<div class="card"><h3>Subscription usage</h3><div class="empty">Usage unavailable.</div></div>';return;}
