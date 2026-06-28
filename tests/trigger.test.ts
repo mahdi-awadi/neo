@@ -1,5 +1,17 @@
 import { test, expect } from "bun:test";
-import { cronMatches, isDue } from "../src/engine/trigger";
+import { cronMatches, isDue, isValidCron } from "../src/engine/trigger";
+
+test("isValidCron accepts well-formed 5-field expressions", () => {
+  for (const e of ["* * * * *", "30 3 * * *", "*/15 * * * *", "0 9-17 * * 1-5", "0 0 1,15 * *", "0 0 * * 7"]) {
+    expect(isValidCron(e)).toBe(true);
+  }
+});
+
+test("isValidCron rejects malformed or out-of-range expressions", () => {
+  for (const e of ["* * * *", "", "abc", "60 * * * *", "0 24 * * *", "0 0 * * 8", "0 0 0 * *", "*/0 * * * *"]) {
+    expect(isValidCron(e)).toBe(false);
+  }
+});
 
 const at = (s: string) => new Date(s).getTime(); // local time
 

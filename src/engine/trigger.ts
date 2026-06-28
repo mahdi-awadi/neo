@@ -55,6 +55,38 @@ export function cronMatches(expr: string, at: number): boolean {
   );
 }
 
+/** Structural + range validity of a 5-field cron expression (min hour dom month dow). */
+export function isValidCron(expr: string): boolean {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  const ranges: Array<[number, number]> = [
+    [0, 59],
+    [0, 23],
+    [1, 31],
+    [1, 12],
+    [0, 7],
+  ];
+  return parts.every((field, i) =>
+    field.split(",").every((part) => {
+      let range = part;
+      let step = "1";
+      const slash = part.indexOf("/");
+      if (slash !== -1) {
+        range = part.slice(0, slash);
+        step = part.slice(slash + 1);
+      }
+      if (!/^\d+$/.test(step) || Number(step) < 1) return false;
+      if (range === "*") return true;
+      const m = range.match(/^(\d+)(?:-(\d+))?$/);
+      if (!m) return false;
+      const lo = Number(m[1]);
+      const hi = m[2] !== undefined ? Number(m[2]) : lo;
+      const [min, max] = ranges[i];
+      return lo >= min && hi <= max && lo <= hi;
+    }),
+  );
+}
+
 /** Is this trigger due to fire now, given when it last ran? Manual never fires via the scheduler. */
 export function isDue(trigger: Trigger, lastRun: number | undefined, now: number): boolean {
   switch (trigger.kind) {
