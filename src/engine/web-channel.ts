@@ -11,7 +11,17 @@ import {
   killProject as engineKillProject,
   type SelectableProject,
 } from "./commands";
-import { handleLoop, listLoops, matchLoop, startLoop, type LoopInfo } from "./loops";
+import {
+  handleLoop,
+  listLoops,
+  matchLoop,
+  startLoop,
+  createLoop as defCreateLoop,
+  updateLoop as defUpdateLoop,
+  deleteLoop as defDeleteLoop,
+  type LoopInfo,
+} from "./loops";
+import type { LoopInput } from "./loop-validate";
 import { dashboardSnapshot, type DashState } from "./dashboard";
 import { mdToHtml } from "./format";
 import type { UsageMeter } from "./usage";
@@ -41,6 +51,14 @@ export interface WebChannel {
   openProject(folder: string, task: string): Promise<void>;
   /** Run a named loop from a dashboard button. */
   runLoop(name: string): void;
+  /** Create a custom loop from the console form (validated; persisted to the ledger). */
+  createLoop(input: LoopInput): { ok: boolean; error?: string };
+  /** Edit a custom loop (built-ins are rejected). */
+  updateLoop(name: string, input: LoopInput): { ok: boolean; error?: string };
+  /** Delete a custom loop (built-ins are rejected). */
+  deleteLoop(name: string): { ok: boolean; error?: string };
+  /** Enable/disable a loop's schedule. */
+  setLoopEnabled(name: string, on: boolean): void;
   /** Structured snapshot for the dashboard (projects · usage · loops · recent · repos). */
   state(): DashState;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
@@ -91,11 +109,11 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     send: async (text) => {
       // Bare /loop → a loops event the UI renders as run buttons (vs Telegram's text list).
       if (text.trim() === "/loop") {
-        emit({ type: "loops", items: listLoops() });
+        emit({ type: "loops", items: listLoops(opts.engine.ledger) });
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t) })) return;
+      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
@@ -150,8 +168,27 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       return handleMessage(`/open ${folder} ${task}`, opts.chatId, deps).then(() => undefined);
     },
     runLoop(name) {
-      const loop = matchLoop(name);
-      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t) });
+      const loop = matchLoop(name, opts.engine.ledger);
+      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger });
+    },
+    createLoop(input) {
+      const r = defCreateLoop(input, opts.engine.ledger);
+      if (r.ok) emit({ type: "loops", items: listLoops(opts.engine.ledger) });
+      return r.ok ? { ok: true } : { ok: false, error: r.error };
+    },
+    updateLoop(name, input) {
+      const r = defUpdateLoop(name, input, opts.engine.ledger);
+      if (r.ok) emit({ type: "loops", items: listLoops(opts.engine.ledger) });
+      return r.ok ? { ok: true } : { ok: false, error: r.error };
+    },
+    deleteLoop(name) {
+      const r = defDeleteLoop(name, opts.engine.ledger);
+      if (r.ok) emit({ type: "loops", items: listLoops(opts.engine.ledger) });
+      return r;
+    },
+    setLoopEnabled(name, on) {
+      opts.engine.ledger.setEnabled(name, on);
+      emit({ type: "loops", items: listLoops(opts.engine.ledger) });
     },
     state() {
       return dashboardSnapshot({

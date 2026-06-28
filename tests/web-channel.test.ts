@@ -199,6 +199,33 @@ test("resolveApproval returns false for an unknown id", () => {
   expect(ch.resolveApproval("nope", "deny")).toBe(false);
 });
 
+test("createLoop validates, persists, and emits a refreshed loops event", () => {
+  const f = fakeStart();
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  const bad = ch.createLoop({ name: "", summary: "", folder: "/nope", prompt: "", goalKind: "command", triggerKind: "manual", maxIterations: 1 });
+  expect(bad.ok).toBe(false);
+  expect(eng.ledger.listLoopDefs()).toEqual([]);
+
+  const ok = ch.createLoop({ name: "tidy", summary: "tidy up", folder: "/home/neo", prompt: "tidy", goalKind: "command", goalCommand: "true", triggerKind: "manual", maxIterations: 2 });
+  expect(ok.ok).toBe(true);
+  expect(eng.ledger.listLoopDefs().map((r) => r.name)).toContain("tidy");
+  const loops = events.filter((e) => e.type === "loops") as Array<{ items: Array<{ name: string }> }>;
+  expect(loops.some((e) => e.items.some((i) => i.name === "tidy"))).toBe(true);
+});
+
+test("deleteLoop removes a custom loop", () => {
+  const f = fakeStart();
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  ch.createLoop({ name: "tidy", summary: "t", folder: "/home/neo", prompt: "p", goalKind: "command", goalCommand: "true", triggerKind: "manual", maxIterations: 1 });
+  expect(ch.deleteLoop("tidy").ok).toBe(true);
+  expect(eng.ledger.listLoopDefs()).toEqual([]);
+});
+
 test("sendFile emits a file event and registers a token getFile can resolve", () => {
   const f = fakeStart();
   const ch = createWebChannel({ engine: engine(f.start), chatId: 0 });
