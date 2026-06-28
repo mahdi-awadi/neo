@@ -15,7 +15,7 @@ import { openTrustStore } from "./engine/trust";
 import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
-import { LOOPS, startLoop } from "./engine/loops";
+import { effectiveLoops, startLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
 import { startTelegram } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     setInterval(
       () =>
         tickScheduler({
-          loops: LOOPS,
+          loops: effectiveLoops(ledger), // built-in ∪ custom, re-read each tick (no restart for new loops)
           store: ledger, // Ledger implements LoopStateStore
           isFolderBusy: (folder) => registry.findByFolder(folder) !== undefined,
           throttled: () => meter.shouldThrottle(),
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
         }),
       LOOP_TICK_MS,
     );
-    console.log(`  loops     -> scheduler on, tick every ${LOOP_TICK_MS / 1000}s (${LOOPS.length} loops)`);
+    console.log(`  loops     -> scheduler on, tick every ${LOOP_TICK_MS / 1000}s (${effectiveLoops(ledger).length} loops)`);
   } else {
     console.log("  loops     -> scheduler OFF (NEO_LOOP_SCHEDULER=0)");
   }

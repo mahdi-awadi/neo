@@ -185,7 +185,7 @@ export function startTelegram(
     // Bare /loop → tappable run buttons; /loop <name> starts a background loop (streams progress).
     if (ctx.message.text.trim() === "/loop") {
       const kb = new InlineKeyboard();
-      for (const l of listLoops()) kb.text(`▶ ${l.usage.replace("/loop ", "")}`, `runloop:${l.name}`).row();
+      for (const l of listLoops(ledger)) kb.text(`▶ ${l.usage.replace("/loop ", "")}`, `runloop:${l.name}`).row();
       void bot.api.sendMessage(chatId, "Run a loop:", { reply_markup: kb });
       return;
     }
@@ -332,7 +332,7 @@ export function startTelegram(
 
     // Tap a loop run button.
     if (cb.startsWith("runloop:")) {
-      const loop = matchLoop(cb.slice("runloop:".length));
+      const loop = matchLoop(cb.slice("runloop:".length), ledger);
       await ctx.answerCallbackQuery(loop ? "running" : "unknown loop");
       if (loop)
         void startLoop(loop, ctx.chat?.id ?? 0, {

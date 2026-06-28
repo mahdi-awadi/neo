@@ -71,7 +71,7 @@ export function dashboardSnapshot(opts: {
   return {
     projects,
     usage: opts.usage ? opts.usage.snapshot(now) : null,
-    loops: listLoops(),
+    loops: listLoops(opts.ledger),
     recent,
     repos: listRepos(opts.reposRoot),
   };
