@@ -18,9 +18,12 @@ the last section maps it onto Neo.
 > tsc until green), `error-sweep` (nightly), `docs-sweep` (nightly LLM-judge), `inbox-delete`. Each
 > runs through `runProjectLoop`, so it's governed + escalation-auto-denied (never pushes/deploys).
 >
-> **Next (2026-06-27, spec'd not built): data-driven loop CRUD.** Make loop *definitions* data
-> (built-ins ∪ custom, hot-read each tick) so an operator authors/edits/deletes loops from the admin
-> console with no restart: `docs/superpowers/specs/2026-06-27-loop-crud-design.md`.
+> **Data-driven loop CRUD — live (2026-06-28).** Loop *definitions* are data (ledger `loop_defs`),
+> merged with the built-in library by `effectiveLoops()` and re-read each tick, so an operator
+> authors/edits/deletes loops from the admin web console (Loops tab + `/api/loop/{create,update,delete,enable}`)
+> with no restart. Validated input + `/home` folder fence (`src/engine/loop-validate.ts`), admin-gated;
+> built-ins stay run/toggle-only. Spec/plan:
+> `docs/superpowers/specs/2026-06-27-loop-crud-design.md`, `docs/superpowers/plans/2026-06-28-loop-crud.md`.
 
 ## What a loop is
 

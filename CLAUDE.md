@@ -73,10 +73,16 @@ iteration stays firewalled + escalation-auto-denied (loops never push/deploy). S
 auto-reply); reachable from both Telegram `/inbox` and the web console (view · send-to-agent draft ·
 edit · approval-gated send · **delete**).
 
-Next: **data-driven loop CRUD** — make loop *definitions* data (author/edit/delete from the admin
-console, no restart), spec'd in `docs/superpowers/specs/2026-06-27-loop-crud-design.md` (not yet
-built); then **Phase 3b** (the deferred Gemini customer path) and Phase 4 (finance/board). Keep
-building **phase by phase, TDD**, per `MVP-PLAN.md`.
+**Data-driven loop CRUD — live:** loop *definitions* are now data (ledger `loop_defs`), merged with
+the built-in library by `effectiveLoops()` and re-read each scheduler tick, so an operator can
+author/edit/delete loops from the admin web console (`/api/loop/{create,update,delete,enable}` +
+the Loops tab) with **no restart**. Validated input (`loop-validate.ts`, `/home` folder fence),
+admin-gated, built-ins are run/toggle-only. Spec/plan:
+`docs/superpowers/specs/2026-06-27-loop-crud-design.md`, `docs/superpowers/plans/2026-06-28-loop-crud.md`.
+
+Next: **Phase 3b** (the deferred Gemini customer path), then Phase 4 (finance/board). Keep building
+**phase by phase, TDD**, per `MVP-PLAN.md`. Deferred loop follow-ons (reuse the same data layer):
+Telegram `/loop new` guided flow, an agent/MCP `create_loop` tool, and edit-prefill in the web form.
 
 ## How to work here
 
