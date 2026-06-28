@@ -24,6 +24,10 @@ export interface Ledger {
   setLastRun(name: string, at: number): void;
   isEnabled(name: string): boolean | undefined;
   setEnabled(name: string, on: boolean): void;
+  /** Custom loop definitions (data-driven loop CRUD) — opaque JSON keyed by name. */
+  saveLoopDef(name: string, json: string): void;
+  listLoopDefs(): Array<{ name: string; json: string }>;
+  deleteLoopDef(name: string): void;
 }
 
 export interface ConversationMessage {
@@ -69,6 +73,8 @@ export function openLedger(path: string): Ledger {
        name TEXT PRIMARY KEY, last_run INTEGER, enabled INTEGER
      )`,
   );
+  // Custom (operator-authored) loop definitions — opaque JSON, merged with the built-in library.
+  db.run(`CREATE TABLE IF NOT EXISTS loop_defs (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
 
   return {
     recordOrder(o) {
@@ -176,6 +182,19 @@ export function openLedger(path: string): Ledger {
         `INSERT INTO loop_state (name, enabled) VALUES (?, ?)
          ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled`,
       ).run(name, on ? 1 : 0);
+    },
+    saveLoopDef(name, json) {
+      db.query(
+        `INSERT INTO loop_defs (name, json) VALUES (?, ?)
+         ON CONFLICT(name) DO UPDATE SET json = excluded.json`,
+      ).run(name, json);
+    },
+    listLoopDefs() {
+      return db.query(`SELECT name, json FROM loop_defs ORDER BY name`).all() as Array<{ name: string; json: string }>;
+    },
+    deleteLoopDef(name) {
+      db.query(`DELETE FROM loop_defs WHERE name = ?`).run(name);
+      db.query(`DELETE FROM loop_state WHERE name = ?`).run(name);
     },
   };
 }
