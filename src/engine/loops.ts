@@ -9,6 +9,16 @@ import type { Trigger } from "./trigger";
 import type { SchedulableLoop, LoopStateStore } from "./scheduler";
 import type { LoopOutcome } from "./loop-runner";
 import type { runOrder } from "./session-runner";
+import { validateLoopInput, type LoopInput } from "./loop-validate";
+
+/** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
+export interface LoopDefStore {
+  listLoopDefs(): Array<{ name: string; json: string }>;
+  saveLoopDef(name: string, json: string): void;
+  deleteLoopDef(name: string): void;
+}
+/** The ledger satisfies both halves; commands/UX take the combined store. */
+export type LoopStore = LoopDefStore & LoopStateStore;
 
 export interface LoopDef extends SchedulableLoop {
   name: string; // canonical key, e.g. "gold-gofmt"
@@ -30,8 +40,8 @@ export interface LoopDeps {
   check?: GoalCheck;
   /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottle). */
   shouldStop?: () => boolean;
-  /** Loop state store (for /loop <name> on|off and schedule status). */
-  store?: LoopStateStore;
+  /** Loop store (def CRUD + state) for /loop <name> on|off, custom-loop run, and schedule status. */
+  store?: LoopStore;
   now?: () => number;
 }
 
@@ -107,9 +117,35 @@ const INBOX_DELETE: LoopDef = {
 
 export const LOOPS: LoopDef[] = [GOLD_GOFMT, GREEN, ERROR_SWEEP, DOCS_SWEEP, INBOX_DELETE];
 
-export function matchLoop(args: string): LoopDef | undefined {
+export function isBuiltin(name: string): boolean {
+  return LOOPS.some((l) => l.name === name);
+}
+
+function isLoopDef(x: unknown): x is LoopDef {
+  const d = x as Record<string, unknown> | null;
+  return !!d && typeof d.name === "string" && typeof d.folder === "string" && !!d.goal && !!d.trigger && !!d.bounds;
+}
+
+/** Built-in loops (code) ∪ custom loops (store). Built-ins win on a name clash; bad rows are skipped. */
+export function effectiveLoops(store?: LoopDefStore): LoopDef[] {
+  const rows = typeof store?.listLoopDefs === "function" ? store.listLoopDefs() : [];
+  const builtinNames = new Set(LOOPS.map((l) => l.name));
+  const custom: LoopDef[] = [];
+  for (const row of rows) {
+    if (builtinNames.has(row.name)) continue;
+    try {
+      const d = JSON.parse(row.json);
+      if (isLoopDef(d)) custom.push(d);
+    } catch {
+      // skip a corrupt/hand-edited row rather than crash a scheduler tick
+    }
+  }
+  return [...LOOPS, ...custom];
+}
+
+export function matchLoop(args: string, store?: LoopDefStore): LoopDef | undefined {
   const key = args.trim().toLowerCase().replace(/\s+/g, "-");
-  return LOOPS.find((l) => l.name === key);
+  return effectiveLoops(store).find((l) => l.name === key);
 }
 
 export interface LoopInfo {
@@ -117,29 +153,64 @@ export interface LoopInfo {
   usage: string;
   summary: string;
   scheduled: boolean;
+  custom: boolean;
+  triggerDesc: string;
   enabled?: boolean;
 }
 
-/** The available loops as render-friendly rows. Pass the store to include schedule on/off state. */
-export function listLoops(store?: LoopStateStore): LoopInfo[] {
-  return LOOPS.map((l) => ({
+function triggerDesc(t: Trigger): string {
+  return t.kind === "manual" ? "manual" : t.kind === "cron" ? `cron ${t.expr}` : `every ${Math.round(t.everyMs / 60_000)}m`;
+}
+
+/** The available loops as render-friendly rows. Pass the store to merge custom loops + show on/off. */
+export function listLoops(store?: LoopStore): LoopInfo[] {
+  return effectiveLoops(store).map((l) => ({
     name: l.name,
     usage: l.usage,
     summary: l.summary,
     scheduled: l.trigger.kind !== "manual",
+    custom: !isBuiltin(l.name),
+    triggerDesc: triggerDesc(l.trigger),
     enabled: store ? (store.isEnabled(l.name) ?? l.enabledByDefault ?? false) : undefined,
   }));
 }
 
-function schedLabel(l: LoopDef, store?: LoopStateStore): string {
+type CrudResult = { ok: true; def: LoopDef } | { ok: false; error: string };
+
+export function createLoop(input: LoopInput, store: LoopDefStore): CrudResult {
+  const res = validateLoopInput(input, { existingNames: effectiveLoops(store).map((l) => l.name) });
+  if ("error" in res) return { ok: false, error: res.error };
+  store.saveLoopDef(res.def.name, JSON.stringify(res.def));
+  return { ok: true, def: res.def };
+}
+
+export function updateLoop(name: string, input: LoopInput, store: LoopDefStore): CrudResult {
+  if (isBuiltin(name)) return { ok: false, error: "built-in loops can't be edited" };
+  if (!effectiveLoops(store).some((l) => l.name === name)) return { ok: false, error: `no custom loop "${name}"` };
+  const existingNames = effectiveLoops(store)
+    .map((l) => l.name)
+    .filter((n) => n !== name);
+  const res = validateLoopInput({ ...input, name }, { existingNames });
+  if ("error" in res) return { ok: false, error: res.error };
+  store.saveLoopDef(res.def.name, JSON.stringify(res.def));
+  return { ok: true, def: res.def };
+}
+
+export function deleteLoop(name: string, store: LoopDefStore): { ok: true } | { ok: false; error: string } {
+  if (isBuiltin(name)) return { ok: false, error: "built-in loops can't be deleted" };
+  store.deleteLoopDef(name);
+  return { ok: true };
+}
+
+function schedLabel(l: LoopDef, store?: LoopStore): string {
   if (l.trigger.kind === "manual") return "";
   const cadence = l.trigger.kind === "cron" ? l.trigger.expr : `every ${Math.round(l.trigger.everyMs / 60_000)}m`;
   const on = store?.isEnabled(l.name) ?? l.enabledByDefault ?? false;
   return ` [${cadence}: ${on ? "on" : "off"}]`;
 }
 
-function formatLoops(store?: LoopStateStore): string {
-  return ["Available loops:", ...LOOPS.map((l) => `${l.usage} — ${l.summary}${schedLabel(l, store)}`)].join("\n");
+function formatLoops(store?: LoopStore): string {
+  return ["Available loops:", ...effectiveLoops(store).map((l) => `${l.usage} — ${l.summary}${schedLabel(l, store)}`)].join("\n");
 }
 
 /** Run a loop end to end, streaming progress and a final outcome line to the channel. */
@@ -175,7 +246,7 @@ export function handleLoop(text: string, chatId: number, deps: LoopDeps): boolea
   // "<name> on|off" — toggle a schedule.
   const toggle = args.match(/^(.*?)\s+(on|off)$/i);
   if (toggle) {
-    const loop = matchLoop(toggle[1]);
+    const loop = matchLoop(toggle[1], deps.store);
     if (!loop) {
       void deps.reply(chatId, `No loop "${toggle[1]}".\n\n${formatLoops(deps.store)}`);
       return true;
@@ -189,7 +260,7 @@ export function handleLoop(text: string, chatId: number, deps: LoopDeps): boolea
     void deps.reply(chatId, `🔁 ${loop.name}: schedule ${on ? "on" : "off"}`);
     return true;
   }
-  const loop = matchLoop(args);
+  const loop = matchLoop(args, deps.store);
   if (!loop) {
     void deps.reply(chatId, `No loop "${args}".\n\n${formatLoops(deps.store)}`);
     return true;
