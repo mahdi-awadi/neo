@@ -112,6 +112,7 @@ export async function draftInboxReply(
       businessName: briefDeps.cfg.businessName,
     }),
     briefDeps,
+    { tainted: true }, // customer email is untrusted input — the drafting worker gets zero tools
   );
   inbox.setDraft(item.id, draft);
   return draft;
