@@ -40,3 +40,52 @@ test("runCompanyBrief runs the brief on the company and returns its result", asy
   expect(replies).toContain("looked it up");                 // streamed for observability
   expect(registry.getDefault()?.status).toBe("idle");        // company left idle
 });
+
+test("tainted brief runs with zero mutating tools and no MCP servers", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  registerDefaultProject(registry, ledger, () => 1);
+  let seenDeps: { disallowedTools?: string[]; mcpServers?: unknown } | undefined;
+  const fakeRun = async (_o: Order, _h: RunHandlers, d?: { disallowedTools?: string[]; mcpServers?: unknown }): Promise<RunResult> => {
+    seenDeps = d;
+    return { ok: true, sessionId: "co-2", summary: "draft text", costUsd: 0 };
+  };
+
+  const out = await runCompanyBrief("draft a reply", {
+    cfg: {} as never, ledger, registry,
+    meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
+    reply: () => {},
+    askApproval: async () => "deny",
+    run: fakeRun as never, now: () => 2,
+  }, { tainted: true });
+
+  expect(out).toBe("draft text");
+  expect(seenDeps?.mcpServers).toBeUndefined();
+  for (const t of ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "KillShell"]) {
+    expect(seenDeps?.disallowedTools).toContain(t);
+  }
+});
+
+test("untainted brief keeps MCP servers and no disallowedTools (unchanged path)", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  registerDefaultProject(registry, ledger, () => 1);
+  let seenDeps: { disallowedTools?: string[]; mcpServers?: unknown } | undefined;
+  const fakeRun = async (_o: Order, _h: RunHandlers, d?: { disallowedTools?: string[]; mcpServers?: unknown }): Promise<RunResult> => {
+    seenDeps = d;
+    return { ok: true, sessionId: "co-3", summary: "ok", costUsd: 0 };
+  };
+
+  await runCompanyBrief("normal brief", {
+    cfg: {} as never, ledger, registry,
+    meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
+    reply: () => {},
+    askApproval: async () => "deny",
+    run: fakeRun as never, now: () => 2,
+  });
+
+  expect(seenDeps?.mcpServers).toBeDefined();
+  expect(seenDeps?.disallowedTools).toBeUndefined();
+});

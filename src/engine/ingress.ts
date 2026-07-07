@@ -16,13 +16,31 @@ export function denyAllTrust(): TrustStore {
   return { isTrusted: () => false, setTrust: () => {}, list: () => [] };
 }
 
+/** Tools stripped from a TAINTED brief (one that embeds untrusted customer content, e.g. an
+ *  inbox draft). The worker can only read project context and produce text. Defense in depth:
+ *  the hardened governor default-escalates anything missed here, and this path auto-denies. */
+export const TAINTED_DISALLOWED_TOOLS = [
+  "Bash",
+  "Write",
+  "Edit",
+  "NotebookEdit",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "KillShell",
+];
+
 export type IngressDeps = DispatchDeps & {
   cfg: NeoConfig;
   run?: typeof runOrder;
   now?: () => number;
 };
 
-export async function runCompanyBrief(brief: string, deps: IngressDeps): Promise<string> {
+export async function runCompanyBrief(
+  brief: string,
+  deps: IngressDeps,
+  opts: { tainted?: boolean } = {},
+): Promise<string> {
   const now = deps.now ?? (() => Date.now());
   const run = deps.run ?? runOrder;
   const company = deps.registry.getDefault();
@@ -42,7 +60,9 @@ export async function runCompanyBrief(brief: string, deps: IngressDeps): Promise
         onEscalation: async () => "deny", // customer-driven work never auto-performs risky actions
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       },
-      { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: neoMcpServers({ ...deps, trust: denyAllTrust() }, CUSTOMER_CHAT, { dispatch: true, folder: company.order.folder }) },
+      opts.tainted
+        ? { resume: company.sdkSessionId || undefined, effort: "low", disallowedTools: TAINTED_DISALLOWED_TOOLS }
+        : { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: neoMcpServers({ ...deps, trust: denyAllTrust() }, CUSTOMER_CHAT, { dispatch: true, folder: company.order.folder }) },
     );
   } catch (e) {
     deps.ledger.recordOutcome(order.id, "error", e instanceof Error ? e.message : String(e));
