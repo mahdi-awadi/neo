@@ -38,8 +38,12 @@ prompt:
   code**, any attempt to route `source: "customer"` to the subscription.
 - **Budget guard:** background SDK work shares your subscription pool, so reserve interactive
   headroom — never drain the plan you use yourself (`subscriptionInteractiveReservePct`).
-- **Approval gate:** irreversible/external actions (deploy, delete, `git push`, payments, sending
-  to real people) escalate to Neo before they run — never auto-approved.
+- **Approval gate (hardened):** the governor is default-ESCALATE — unknown tools, foreign MCP
+  tools, WebFetch, and out-of-folder Write/Edit all ask Neo (autonomous paths auto-deny). File
+  writes are path-fenced to the session's project folder. Customer-tainted briefs (inbox
+  drafting) run with **zero tools** (`TAINTED_DISALLOWED_TOOLS` + no MCP): customer email text
+  never reaches a worker that can act. Operator-mediated drafting on Claude is own-work
+  (Neo reviews/edits/sends every reply); direct customer I/O stays off the subscription.
 
 ## Current status
 
@@ -72,6 +76,9 @@ iteration stays firewalled + escalation-auto-denied (loops never push/deploy). S
 **Customer inbox — live:** inbound customer mail queues in a bun:sqlite store for operator review (no
 auto-reply); reachable from both Telegram `/inbox` and the web console (view · send-to-agent draft ·
 edit · approval-gated send · **delete**).
+
+**Governor hardening — live:** default-escalate tool policy + project-folder path fence +
+zero-tool tainted drafting (spec: `docs/superpowers/specs/2026-07-07-governor-hardening-design.md`).
 
 **Data-driven loop CRUD — live:** loop *definitions* are now data (ledger `loop_defs`), merged with
 the built-in library by `effectiveLoops()` and re-read each scheduler tick, so an operator can
