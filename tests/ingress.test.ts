@@ -62,9 +62,33 @@ test("tainted brief runs with zero mutating tools and no MCP servers", async () 
 
   expect(out).toBe("draft text");
   expect(seenDeps?.mcpServers).toBeUndefined();
-  for (const t of ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "KillShell"]) {
+  for (const t of ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent", "SlashCommand", "KillShell"]) {
     expect(seenDeps?.disallowedTools).toContain(t);
   }
+});
+
+test("tainted brief is a fully isolated one-shot: no resume, and it never persists a session id", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  registerDefaultProject(registry, ledger, () => 1);
+  registry.setSdkSessionId(registry.getDefault()!.id, "prior-company-session");
+  let seenDeps: { resume?: string } | undefined;
+  const fakeRun = async (_o: Order, _h: RunHandlers, d?: { resume?: string }): Promise<RunResult> => {
+    seenDeps = d;
+    return { ok: true, sessionId: "co-2", summary: "draft text", costUsd: 0 };
+  };
+
+  await runCompanyBrief("draft a reply", {
+    cfg: {} as never, ledger, registry,
+    meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
+    reply: () => {},
+    askApproval: async () => "deny",
+    run: fakeRun as never, now: () => 2,
+  }, { tainted: true });
+
+  expect(seenDeps?.resume).toBeUndefined();
+  expect(registry.getDefault()?.sdkSessionId).toBe("prior-company-session");
 });
 
 test("untainted brief keeps MCP servers and no disallowedTools (unchanged path)", async () => {

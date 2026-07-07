@@ -27,6 +27,8 @@ export const TAINTED_DISALLOWED_TOOLS = [
   "WebFetch",
   "WebSearch",
   "Task",
+  "Agent",
+  "SlashCommand",
   "KillShell",
 ];
 
@@ -61,7 +63,9 @@ export async function runCompanyBrief(
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       },
       opts.tainted
-        ? { resume: company.sdkSessionId || undefined, effort: "low", disallowedTools: TAINTED_DISALLOWED_TOOLS }
+        // Tainted runs are fully isolated one-shots: no resume (must not see prior company/
+        // operator conversation history) and no persisted session id (see below).
+        ? { effort: "low", disallowedTools: TAINTED_DISALLOWED_TOOLS }
         : { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: neoMcpServers({ ...deps, trust: denyAllTrust() }, CUSTOMER_CHAT, { dispatch: true, folder: company.order.folder }) },
     );
   } catch (e) {
@@ -70,7 +74,9 @@ export async function runCompanyBrief(
     return `The company hit an error: ${e instanceof Error ? e.message : String(e)}`;
   }
 
-  if (result.sessionId) {
+  // Never persist a tainted session id: it must not become the company session that a later
+  // untainted run resumes into (that would hand the poisoned context tools).
+  if (result.sessionId && !opts.tainted) {
     deps.registry.setSdkSessionId(company.id, result.sessionId);
     deps.ledger.recordSession(order.id, result.sessionId);
   }

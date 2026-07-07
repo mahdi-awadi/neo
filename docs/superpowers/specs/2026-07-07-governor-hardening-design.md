@@ -61,9 +61,15 @@ When `tainted: true` (set by `draftInboxReply`, the only caller that embeds untr
 content):
 
 - **`disallowedTools`** (existing `RunDeps` passthrough → SDK) blocks everything except text:
-  `["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "KillShell"]`.
+  `["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent",
+  "SlashCommand", "KillShell"]` (`Agent`/`SlashCommand` included alongside `Task` since the
+  governor treats `Agent` as a safe alias of `Task`).
 - **No MCP servers:** the `mcpServers`/`dispatch` option is omitted entirely — a tainted brief
   cannot dispatch sub-workers.
+- **No `resume` and no persisted session id:** a tainted run never passes `resume` (even if the
+  company has a prior `sdkSessionId`) and never calls `registry.setSdkSessionId`/
+  `ledger.recordSession` on its result — it is a fully isolated one-shot, so the poisoned session
+  can never become the company session that a later untainted run resumes into.
 - Escalations remain auto-denied (already the case on this path).
 
 Result: a drafting worker can read the project's CLAUDE.md context and produce an email body,
@@ -97,3 +103,23 @@ change covers both frontends (no forked paths — existing invariant).
   are the real guards).
 - Changing the trust model, loop runtime, or the Gemini customer path (Phase 3b).
 - Network egress control beyond tool gating.
+
+## Accepted risk: the path fence is lexical, not a full guarantee
+
+`decide`'s path fence normalizes and resolves the target path against `ctx.folder`, but it never
+calls `realpath` — a symlink created via an allowed `Bash` command (Bash remains allow-by-default
+for non-risky commands) can point out of the fenced folder and be walked through by a later
+`Write`/`Edit` whose literal path still looks in-fence. This is one layer of defense, paired with
+default-escalate on everything else, not a complete guarantee against a determined in-fence actor.
+Revisit if a scenario needs it closed (e.g. resolving through `realpath` before the fence check).
+
+## Accepted risk: Gemini-mediated ingress briefs stay untainted by design
+
+The gateway's `/agent/ingress` route runs Gemini-authored, customer-derived briefs through
+`runCompanyBrief` **untainted** (with `dispatch` MCP available) — this is a previously made
+operator decision, not an oversight, because that path needs lookups/dispatch to answer customer
+questions usefully. It is firewall-safe via `denyAllTrust()` (dispatch can never auto-approve) and
+auto-deny on every escalation, matching the customer-work invariant. Gemini summarization is not
+sanitization, though: a sufficiently crafted customer message could still shape the brief Gemini
+hands to the company session, so residual prompt-injection risk on this path is accepted for now
+and should be revisited in Phase 3b alongside the rest of the Gemini customer path.
