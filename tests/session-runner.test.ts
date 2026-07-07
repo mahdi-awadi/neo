@@ -85,7 +85,7 @@ function fakeStreaming(reqs: Array<{ tool: string; input: Record<string, unknown
 }
 
 test("runOrder auto-allows a safe tool (echoing updatedInput), forwards text, returns result", async () => {
-  const { q, decisions } = fakeQuery([{ tool: "Write", input: { file_path: "/x", content: "y" } }]);
+  const { q, decisions } = fakeQuery([{ tool: "Write", input: { file_path: "/tmp/x", content: "y" } }]);
   const messages: string[] = [];
   const result = await runOrder(
     order(),
@@ -93,7 +93,7 @@ test("runOrder auto-allows a safe tool (echoing updatedInput), forwards text, re
     { query: q },
   );
 
-  expect(decisions[0]).toEqual({ behavior: "allow", updatedInput: { file_path: "/x", content: "y" } });
+  expect(decisions[0]).toEqual({ behavior: "allow", updatedInput: { file_path: "/tmp/x", content: "y" } });
   expect(messages).toContain("working");
   expect(result.ok).toBe(true);
   expect(result.summary).toBe("done");
@@ -144,11 +144,11 @@ test("startOrder.interrupt ends the stream, resolves done, and signals the SDK",
 });
 
 test("startOrder auto-allows a safe tool over the streaming path, echoing updatedInput", async () => {
-  const f = fakeStreaming([{ tool: "Write", input: { file_path: "/x", content: "y" } }]);
+  const f = fakeStreaming([{ tool: "Write", input: { file_path: "/tmp/x", content: "y" } }]);
   const run = startOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: f.q });
   await run.interrupt();
   await run.done;
-  expect(f.decisions[0]).toEqual({ behavior: "allow", updatedInput: { file_path: "/x", content: "y" } });
+  expect(f.decisions[0]).toEqual({ behavior: "allow", updatedInput: { file_path: "/tmp/x", content: "y" } });
 });
 
 test("startOrder escalates a risky tool over the streaming path and denies on human deny", async () => {

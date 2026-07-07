@@ -117,9 +117,9 @@ function userMessage(text: string): SdkUserMessage {
 
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
-function buildCanUseTool(handlers: RunHandlers) {
+function buildCanUseTool(handlers: RunHandlers, folder: string) {
   return async (tool: string, input: Record<string, unknown>) => {
-    const verdict = decide(tool, input);
+    const verdict = decide(tool, input, { folder });
     if ("allow" in verdict) {
       return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
     }
@@ -154,7 +154,7 @@ function sdkOptions(
     skills: "all",
     systemPrompt: { type: "preset", preset: "claude_code" },
     permissionMode: "default",
-    canUseTool: buildCanUseTool(handlers),
+    canUseTool: buildCanUseTool(handlers, order.folder),
     ...extra,
   };
 }
