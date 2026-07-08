@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveProject, dispatchToProject, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, type DispatchDeps } from "../src/engine/dispatch";
+import { resolveProject, dispatchToProject, briefWithProjectDocs, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, type DispatchDeps } from "../src/engine/dispatch";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -418,7 +418,9 @@ test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolati
     now: () => 1,
     root,
   });
-  expect(seen!.task).toBe("CRAFTED BRIEF for the project"); // exactly the brief, nothing else
+  // the crafted brief verbatim (never the operator's raw text), preceded only by the docs preamble
+  expect(seen!.task.endsWith("CRAFTED BRIEF for the project")).toBe(true);
+  expect(seen!.task).toBe(briefWithProjectDocs("CRAFTED BRIEF for the project"));
   expect(seen!.chatId).toBe(-2); // SUB_CHAT — isolated from the operator's routing
 });
 
@@ -525,4 +527,23 @@ test("dispatch with a 'keep' verdict passes the prior resume id through unchange
   });
   await new Promise((r) => setTimeout(r, 0));
   expect(seenResume).toBe("fat-session-id");
+});
+
+// --- Project-docs preamble (2026-07-08: only CLAUDE.md auto-loads; AGENTS.md/DESIGN.md/docs never
+// reach a dispatched worker unless the brief tells it to read them). ---
+
+test("dispatch prepends a read-the-project-docs preamble to the brief", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let seenTask = "";
+  const fakeStart = (o: Order) => {
+    seenTask = o.task;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "report docker status", d, 1, { start: fakeStart as never, root });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(seenTask).toContain("report docker status"); // the original brief survives verbatim
+  expect(seenTask).toContain(".md"); // and is preceded by the docs-reading rule
+  expect(seenTask.toLowerCase()).toContain("agents.md");
 });

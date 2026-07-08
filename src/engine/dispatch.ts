@@ -92,6 +92,18 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
   return undefined;
 }
 
+/** Only CLAUDE.md auto-loads into a worker (verified 2026-07-08) — AGENTS.md, DESIGN.md and the
+ *  rest of a project's rule/docs .md files never reach it unless the brief says so. Every
+ *  dispatched brief gets this preamble so the worker reads its own rules before acting. */
+export function briefWithProjectDocs(task: string): string {
+  return (
+    "Before starting, read this project's rule and doc .md files so you work by its rules: " +
+    "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
+    "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
+    task
+  );
+}
+
 /**
  * Open `project` as a tracked Neo sub-project, run `task` to completion (single-shot), streaming
  * its output to the operator tagged with the project name and escalating risky tools to them, then
@@ -120,7 +132,14 @@ export async function dispatchToProject(
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 
-  const order: Order = { id: crypto.randomUUID(), source: "neo", folder, task, chatId: SUB_CHAT, createdAt: now() };
+  const order: Order = {
+    id: crypto.randomUUID(),
+    source: "neo",
+    folder,
+    task: briefWithProjectDocs(task),
+    chatId: SUB_CHAT,
+    createdAt: now(),
+  };
   deps.ledger.recordOrder(order);
   // Reuse an already-open session for this folder (resume it) instead of duplicating it as
   // "<name>-2"; only register a fresh entry when nothing is open for the folder.
