@@ -7,6 +7,7 @@ import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import type { UsageMeter, UsageSnapshot } from "./usage";
 import { listLoops, type LoopInfo } from "./loops";
+import { sessionContext, type ContextSignals } from "./context-policy";
 
 export interface DashProject {
   id: string;
@@ -18,6 +19,7 @@ export interface DashProject {
   ageMs: number;
   activity?: { label: string; since: number };
   queued?: number;
+  ctxPct?: number;
 }
 
 export interface DashState {
@@ -53,20 +55,33 @@ export function dashboardSnapshot(opts: {
   chatId: number;
   now?: number;
   reposRoot?: string;
+  signals?: (folder: string, sdkSessionId: string) => ContextSignals;
 }): DashState {
   const now = opts.now ?? Date.now();
   const activeId = opts.registry.findByChat(opts.chatId)?.id;
-  const projects: DashProject[] = opts.registry.list().map((s) => ({
-    id: s.id,
-    name: s.name,
-    folder: s.order.folder,
-    status: s.status,
-    task: s.order.task,
-    active: s.id === activeId,
-    ageMs: now - s.startedAt,
-    activity: s.activity,
-    queued: opts.registry.getControl(s.id)?.queued?.() ?? 0,
-  }));
+  const projects: DashProject[] = opts.registry.list().map((s) => {
+    let ctxPct: number | undefined;
+    if (s.sdkSessionId && opts.signals) {
+      try {
+        const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId);
+        ctxPct = Math.round(sig.occupancy * 100);
+      } catch {
+        // skip on error
+      }
+    }
+    return {
+      id: s.id,
+      name: s.name,
+      folder: s.order.folder,
+      status: s.status,
+      task: s.order.task,
+      active: s.id === activeId,
+      ageMs: now - s.startedAt,
+      activity: s.activity,
+      queued: opts.registry.getControl(s.id)?.queued?.() ?? 0,
+      ctxPct,
+    };
+  });
   const recent = opts.ledger.listRecent(8).map((o) => ({
     folder: o.folder,
     task: o.task,

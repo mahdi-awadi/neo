@@ -11,6 +11,7 @@ import type { TrustStore } from "./trust";
 import type { Inbox } from "./inbox";
 import { renderInboxList, type InboxListEntry } from "./inbox-actions";
 import type { SessionInfo } from "../types";
+import { sessionContext, type ContextSignals } from "./context-policy";
 
 export interface CommandDeps {
   registry: Registry;
@@ -23,6 +24,8 @@ export interface CommandDeps {
   trust: TrustStore;
   /** Customer inbox (for /inbox). Optional so tests/glue can omit it. */
   inbox?: Inbox;
+  /** Context signal function for measuring session occupancy. Optional for tests. */
+  signals?: (folder: string, sdkSessionId: string) => ContextSignals;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -63,7 +66,7 @@ const COMMANDS: Command[] = [
     aliases: ["ls", "status"],
     usage: "/list",
     summary: "open projects (★ = active · tap a name to switch)",
-    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId),
+    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId, deps.signals),
   },
   {
     name: "use",
@@ -125,7 +128,7 @@ export function handleCommand(text: string, chatId: number, deps: CommandDeps): 
  * place the switch happens — both Telegram and the web console call this on a tap. */
 export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   deps.registry.setActive(chatId, id);
-  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId);
+  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals);
 }
 
 /** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
@@ -133,14 +136,14 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
 export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   const now = (deps.now ?? (() => Date.now()))();
   if (deps.registry.getDefault()?.id === id) {
-    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId).select };
+    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId, deps.signals).select };
   }
   if (deps.registry.get(id)) {
     void deps.registry.getControl(id)?.interrupt();
     deps.registry.setStatus(id, "done");
     deps.registry.remove(id);
   }
-  return renderList(deps.registry, deps.trust, now, chatId);
+  return renderList(deps.registry, deps.trust, now, chatId, deps.signals);
 }
 
 function inboxCommand(deps: CommandDeps): CommandResult {
@@ -182,7 +185,7 @@ function statusIcon(status: SessionInfo["status"]): string {
   return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
 }
 
-function renderList(registry: Registry, trust: CommandDeps["trust"], now: number, chatId: number): CommandResult {
+function renderList(registry: Registry, trust: CommandDeps["trust"], now: number, chatId: number, signals?: CommandDeps["signals"]): CommandResult {
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
   const activeId = registry.findByChat(chatId)?.id;
@@ -201,7 +204,16 @@ function renderList(registry: Registry, trust: CommandDeps["trust"], now: number
       const act = s.status === "running" && s.activity ? ` · ${s.activity.label} ${humanAge(now - s.activity.since)}` : "";
       const q = registry.getControl(s.id)?.queued?.() ?? 0;
       const queued = q > 0 ? ` · ${q} queued` : "";
-      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${s.status}${act}${queued} · ${humanAge(now - s.startedAt)} · "${task}"`;
+      let ctx = "";
+      if (s.sdkSessionId && signals) {
+        try {
+          const sig = (signals ?? sessionContext)(s.order.folder, s.sdkSessionId);
+          ctx = ` · ctx ${Math.round(sig.occupancy * 100)}%`;
+        } catch {
+          // skip on error
+        }
+      }
+      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${s.status}${act}${queued}${ctx} · ${humanAge(now - s.startedAt)} · "${task}"`;
     })
     .join("\n");
   return { text, select };

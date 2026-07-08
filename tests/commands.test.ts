@@ -281,3 +281,12 @@ test("/status shows current activity, busy duration, and queue depth for running
   expect(out.text).toContain("4m");
   expect(out.text).toContain("2 queued");
 });
+
+test("/status shows ctx% for sessions with a persisted sdk session id", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "cx", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-x");
+  const d = deps({ registry });
+  const out = handleCommand("/status", 1, { ...d, signals: () => ({ occupancy: 0.42, turns: 3, ageMs: 0 }) })!;
+  expect(out.text).toContain("ctx 42%");
+});

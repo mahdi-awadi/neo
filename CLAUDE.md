@@ -80,6 +80,13 @@ edit · approval-gated send · **delete**).
 **Governor hardening — live:** default-escalate tool policy + project-folder path fence +
 zero-tool tainted drafting (spec: `docs/superpowers/specs/2026-07-07-governor-hardening-design.md`).
 
+**Context policy + session liveness — live:** sessions are measured (transcript-derived ctx%) and
+handoff-cleared at safe boundaries before they rot or hit the wall (`context-policy.ts`, HANDOFF.md
+notes); dispatch is non-blocking (the company is always free; sub-runs report back, bounded by
+`dispatchTimeoutMs`); a stuck-watchdog alerts the admin when a running session goes silent. Specs:
+`docs/superpowers/specs/2026-07-08-context-policy-design.md`,
+`docs/superpowers/specs/2026-07-08-session-liveness-design.md`.
+
 **Data-driven loop CRUD — live:** loop *definitions* are now data (ledger `loop_defs`), merged with
 the built-in library by `effectiveLoops()` and re-read each scheduler tick, so an operator can
 author/edit/delete loops from the admin web console (`/api/loop/{create,update,delete,enable}` +
@@ -90,6 +97,7 @@ admin-gated, built-ins are run/toggle-only. Spec/plan:
 Next: **Phase 3b** (the deferred Gemini customer path), then Phase 4 (finance/board). Keep building
 **phase by phase, TDD**, per `MVP-PLAN.md`. Deferred loop follow-ons (reuse the same data layer):
 Telegram `/loop new` guided flow, an agent/MCP `create_loop` tool, and edit-prefill in the web form.
+Wire the context policy into the loop-runner path.
 
 ## How to work here
 
