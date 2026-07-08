@@ -5,6 +5,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import type { Order, SessionInfo } from "../types";
+import type { Registry } from "./registry";
+import type { Ledger } from "./ledger";
+import { runOrder } from "./session-runner";
 
 export const CONTEXT_WINDOW_TOKENS = 200_000;
 
@@ -74,5 +78,46 @@ export function sessionContext(
     };
   } catch {
     return none; // fail OPEN
+  }
+}
+
+export const HANDOFF_PROMPT =
+  "Write a concise state-of-work handoff to HANDOFF.md in the project root: what is in flight, " +
+  "decisions made, blockers, and next steps. Overwrite any existing HANDOFF.md. Then stop — do not continue other work.";
+
+export interface HandoffDeps {
+  registry: Registry;
+  ledger: Ledger;
+  run?: typeof runOrder;
+  now?: () => number;
+}
+
+/** Run the handoff turn against the fat session (bounded), then ALWAYS clear its resume state. */
+export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
+  const run = deps.run ?? runOrder;
+  const now = deps.now ?? (() => Date.now());
+  const sig = sessionContext(session.order.folder, session.sdkSessionId);
+  const order: Order = {
+    id: crypto.randomUUID(),
+    source: "neo",
+    folder: session.order.folder,
+    task: HANDOFF_PROMPT,
+    chatId: session.order.chatId,
+    createdAt: now(),
+  };
+  try {
+    await Promise.race([
+      run(order, { onMessage: () => {}, onEscalation: async () => "deny" }, { resume: session.sdkSessionId || undefined, effort: "low" }),
+      new Promise((res) => setTimeout(res, cfg.handoffTimeoutMs)),
+    ]);
+  } catch {
+    // the clear below is the point; a failed handoff turn must not prevent it
+  }
+  try {
+    deps.registry.setSdkSessionId(session.id, "");
+    deps.ledger.clearSessionsFor(session.order.folder);
+    deps.ledger.recordContextEvent(session.order.folder, "handoff", sig.occupancy, now());
+  } catch {
+    // observer-grade bookkeeping — never throw into a worker path
   }
 }

@@ -84,3 +84,15 @@ test("records and reads auto-approvals for an order", () => {
   ]);
   expect(led.autoApprovalsFor("o2")).toEqual([]);
 });
+
+test("context events record + list, and clearSessionsFor wipes resume targets", () => {
+  const l = openLedger(":memory:");
+  l.recordContextEvent("/p/gold", "handoff", 0.71, 123);
+  expect(l.listContextEvents()[0]).toMatchObject({ folder: "/p/gold", verdict: "handoff", occupancy: 0.71, at: 123 });
+  const o = order({ id: "o9", folder: "/p/gold", chatId: 5 });
+  l.recordOrder(o);
+  l.recordSession("o9", "sess-9");
+  expect(l.lastSessionFor("/p/gold", 5)).toBe("sess-9");
+  l.clearSessionsFor("/p/gold");
+  expect(l.lastSessionFor("/p/gold", 5)).toBeUndefined();
+});

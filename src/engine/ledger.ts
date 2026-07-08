@@ -28,6 +28,11 @@ export interface Ledger {
   saveLoopDef(name: string, json: string): void;
   listLoopDefs(): Array<{ name: string; json: string }>;
   deleteLoopDef(name: string): void;
+  /** Audit: a context-policy verdict (e.g. a handoff) fired for a folder. */
+  recordContextEvent(folder: string, verdict: string, occupancy: number, at?: number): void;
+  listContextEvents(limit?: number): Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
+  /** Wipe the resume-target session id for every order in this folder (fresh start after a handoff/clear). */
+  clearSessionsFor(folder: string): void;
 }
 
 export interface ConversationMessage {
@@ -75,6 +80,12 @@ export function openLedger(path: string): Ledger {
   );
   // Custom (operator-authored) loop definitions — opaque JSON, merged with the built-in library.
   db.run(`CREATE TABLE IF NOT EXISTS loop_defs (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
+  // Audit trail of context-policy verdicts (handoff/clear) fired per folder.
+  db.run(
+    `CREATE TABLE IF NOT EXISTS context_events (
+       folder TEXT NOT NULL, verdict TEXT NOT NULL, occupancy REAL NOT NULL, at INTEGER NOT NULL
+     )`,
+  );
 
   return {
     recordOrder(o) {
@@ -195,6 +206,21 @@ export function openLedger(path: string): Ledger {
     deleteLoopDef(name) {
       db.query(`DELETE FROM loop_defs WHERE name = ?`).run(name);
       db.query(`DELETE FROM loop_state WHERE name = ?`).run(name);
+    },
+    recordContextEvent(folder, verdict, occupancy, at = Date.now()) {
+      db.query(
+        `INSERT INTO context_events (folder, verdict, occupancy, at) VALUES (?, ?, ?, ?)`,
+      ).run(folder, verdict, occupancy, at);
+    },
+    listContextEvents(limit = 50) {
+      return db
+        .query(`SELECT folder, verdict, occupancy, at FROM context_events ORDER BY at DESC LIMIT ?`)
+        .all(limit) as Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
+    },
+    clearSessionsFor(folder) {
+      // Sessions are stored as sdk_session_id on the orders row; wipe the resume target for
+      // every order in this folder, so lastSessionFor(folder, *) returns undefined afterward.
+      db.query(`UPDATE orders SET sdk_session_id = NULL WHERE folder = ?`).run(folder);
     },
   };
 }

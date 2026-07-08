@@ -2,7 +2,11 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { decideContext, sessionContext, encodeCwd, CONTEXT_WINDOW_TOKENS } from "../src/engine/context-policy";
+import { decideContext, sessionContext, encodeCwd, CONTEXT_WINDOW_TOKENS, runHandoff } from "../src/engine/context-policy";
+import { createRegistry } from "../src/engine/registry";
+import { openLedger } from "../src/engine/ledger";
+import type { Order } from "../src/types";
+import type { RunHandlers } from "../src/engine/session-runner";
 
 const CFG = { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 };
 
@@ -39,4 +43,37 @@ test("sessionContext reads occupancy/turns/age from the transcript JSONL", () =>
 
 test("sessionContext fails OPEN on a missing transcript", () => {
   expect(sessionContext("/nowhere", "nope", { projectsDir: "/nonexistent" })).toEqual({ occupancy: 0, turns: 0, ageMs: 0 });
+});
+
+test("runHandoff runs the handoff turn against the persisted session, then clears it", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h1", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
+  registry.setSdkSessionId(s.id, "fat-session");
+  const order = { id: "h1", source: "neo" as const, folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 };
+  ledger.recordOrder(order);
+  ledger.recordSession("h1", "fat-session");
+  let sawResume: string | undefined;
+  let sawTask: string | undefined;
+  const fakeRun = async (o: Order, _h: RunHandlers, d?: { resume?: string }) => {
+    sawResume = d?.resume;
+    sawTask = o.task;
+    return { ok: true, sessionId: "fat-session", summary: "written", costUsd: 0 };
+  };
+  await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never, now: () => 9 });
+  expect(sawResume).toBe("fat-session");
+  expect(sawTask).toContain("HANDOFF.md");
+  expect(registry.get(s.id)?.sdkSessionId).toBe(""); // cleared
+  expect(ledger.lastSessionFor("/p/gold", 1)).toBeUndefined(); // cleared
+  expect(ledger.listContextEvents()[0]?.verdict).toBe("handoff");
+});
+
+test("runHandoff clears even when the handoff turn times out", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h2", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
+  registry.setSdkSessionId(s.id, "fat-2");
+  const never = () => new Promise<never>(() => {});
+  await runHandoff(s, { ...CFG, handoffTimeoutMs: 5 }, { registry, ledger, run: never as never });
+  expect(registry.get(s.id)?.sdkSessionId).toBe("");
 });
