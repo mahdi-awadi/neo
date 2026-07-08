@@ -66,3 +66,31 @@ test("a table with surrounding prose keeps the prose and renders the table", () 
   expect(html).toContain("<table");
   expect(html).toContain("That&#39;s all.".replace("&#39;", "'")); // apostrophe not escaped
 });
+
+// --- projectHashtag: clickable Telegram hashtags per project ---
+import { projectHashtag } from "../src/engine/format";
+
+test("projectHashtag: plain name", () => {
+  expect(projectHashtag("waselni")).toBe("#waselni");
+});
+
+test("projectHashtag: hyphen becomes underscore (eticket-v3)", () => {
+  expect(projectHashtag("eticket-v3")).toBe("#eticket_v3");
+});
+
+test("projectHashtag: lowercases and maps dots/spaces, collapsing repeats", () => {
+  expect(projectHashtag("Tech Gate.online")).toBe("#tech_gate_online");
+  expect(projectHashtag("a--b..c")).toBe("#a_b_c");
+});
+
+test("projectHashtag: leading digit gets p_ prefix", () => {
+  expect(projectHashtag("3dprint")).toBe("#p_3dprint");
+});
+
+test("projectHashtag: too-short result gets p_ prefix", () => {
+  expect(projectHashtag("x")).toBe("#p_x");
+});
+
+test("projectHashtag: trims stray edge underscores from sanitizing", () => {
+  expect(projectHashtag("-neo-")).toBe("#neo");
+});
