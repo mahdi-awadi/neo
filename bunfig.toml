@@ -1,2 +1,5 @@
 [test]
-# Bun's test runner picks up *.test.ts under tests/ automatically.
+# Scope discovery to the engine's own tests. Without this, a bare `bun test` from the repo root
+# also sweeps agent/desks/** workspace checkouts (template tests with missing deps) and pollutes
+# the CI signal with failures that are not Neo's.
+root = "tests"
