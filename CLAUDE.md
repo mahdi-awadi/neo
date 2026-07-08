@@ -92,6 +92,19 @@ alerts the admin when a running session goes silent. `bun test` is scoped to `te
 `docs/superpowers/specs/2026-07-08-context-policy-design.md`,
 `docs/superpowers/specs/2026-07-08-session-liveness-design.md`.
 
+**Graceful daemon reload — live:** engine code deploys without losing open project sessions.
+`SIGTERM` (e.g. `systemctl restart neo`) or the operator `/reload` command (Telegram + web) drains:
+the lifecycle gate refuses new orders/dispatches, every RUNNING worker gets a wrap-up follow-up
+(commit green work + WIP note — the dispatch grace-window pattern), the engine waits a bounded
+`drainWindowMs` (default 90 s, config) then hard-interrupts stragglers, snapshots every open
+session (folder + SDK resume id) into the ledger (`open_sessions`), and exits 0 so systemd
+(`Restart=always`) starts the new code. On boot `restoreSessions()` consumes the snapshot and
+re-registers each session as idle+resumable — the next follow-up/dispatch resumes it. Operator
+flow: pull/edit code → `/reload` (or `systemctl restart neo`) → sessions reappear in `/list` as
+idle. NOTE: if `drainWindowMs` is raised past ~90 s, also raise `TimeoutStopSec` in
+`/etc/systemd/system/neo.service` (systemd's default stop timeout is 90 s and would SIGKILL
+mid-drain). Module: `src/engine/reload.ts`.
+
 **Data-driven loop CRUD — live:** loop *definitions* are now data (ledger `loop_defs`), merged with
 the built-in library by `effectiveLoops()` and re-read each scheduler tick, so an operator can
 author/edit/delete loops from the admin web console (`/api/loop/{create,update,delete,enable}` +

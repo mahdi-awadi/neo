@@ -15,6 +15,7 @@ import { openTrustStore } from "./engine/trust";
 import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
+import { createLifecycle, drainAndPersist, restoreSessions } from "./engine/reload";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
@@ -62,6 +63,24 @@ async function main(): Promise<void> {
     projectsDir: join(homedir(), ".claude", "projects"),
     claudeJsonPath: join(homedir(), ".claude.json"),
   });
+
+  // Graceful reload: SIGTERM (supervisor) or /reload (operator) → stop accepting new work,
+  // ask running workers to wrap up (commit green work + WIP note), wait a bounded drain window,
+  // persist every open session's resume id, then exit 0 so the supervisor restarts us.
+  const lifecycle = createLifecycle();
+  let drainStarted = false;
+  const shutdown = (why: string): void => {
+    if (drainStarted) return;
+    drainStarted = true;
+    console.log(`[reload] ${why}: draining running sessions (≤${cfg.drainWindowMs / 1000}s), saving open sessions…`);
+    void drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs })
+      .then((r) => console.log(`[reload] drained ${r.drained.length} · interrupted ${r.interrupted.length} · persisted ${r.persisted} — exiting for restart`))
+      .catch((e) => console.log(`[reload] drain error: ${e instanceof Error ? e.message : e}`))
+      .finally(() => process.exit(0));
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  const requestReload = (): void => shutdown("/reload");
 
   // Idle watchdog + stuck-watchdog — shares the registry the pipeline registers sessions in. The company is exempt.
   setInterval(() => {
@@ -119,7 +138,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = process.env.GATEWAY_SEND_URL ?? "https://neo-api.tech-gate.online/send";
   if (cfg.telegramToken) {
-    startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl);
+    startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload });
     console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
 
     // Web console shares the same engine + admin; auth is Telegram-login (TOFU admin).
@@ -128,7 +147,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust }, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl },
       WEB_PORT,
       WEB_HOST,
     );
@@ -142,6 +161,11 @@ async function main(): Promise<void> {
   // with the calling channel's reply, so the worker's output goes back to whoever asked.
   registerDefaultProject(registry, ledger);
   console.log(`  company   -> default project registered at ${DEFAULT_PROJECT.folder} (always-on, idle)`);
+
+  // Re-register the sessions that were open at the last graceful shutdown as idle+resumable
+  // entries — a follow-up or dispatch to their folder resumes them (fresh CLAUDE.md injection).
+  const restored = restoreSessions(registry, ledger);
+  console.log(`  sessions  -> restored ${restored.length} open session(s) from the last shutdown (idle, resumable)`);
 }
 
 void main();

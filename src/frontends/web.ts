@@ -33,6 +33,8 @@ export interface WebAppDeps {
   inbox?: Inbox;
   /** Gateway /send URL — Neo calls it to email an approved reply (Neo holds no Cloudflare creds). */
   gatewaySendUrl?: string;
+  /** Graceful reload trigger (daemon-injected drain-then-exit) — enables /reload on the web too. */
+  requestReload?: () => void;
 }
 
 export interface WebApp {
@@ -41,7 +43,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload });
 
   function sessionUser(req: Request): number | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));

@@ -75,6 +75,8 @@ export function startTelegram(
   usage?: UsageMeter,
   inbox?: Inbox,
   gatewaySendUrl?: string,
+  /** Graceful reload (daemon-injected): the drain gate + the /reload trigger. */
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void },
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);
@@ -119,6 +121,7 @@ export function startTelegram(
     meter,
     usage,
     trust,
+    lifecycle: reload?.lifecycle,
     reply: (cid, text, project) => void send(cid, text, project),
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
@@ -207,7 +210,7 @@ export function startTelegram(
 
     // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
     // order or a follow-up handled by the pipeline.
-    const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage, trust, inbox });
+    const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage, trust, inbox, requestReload: reload?.requestReload });
     if (command !== null) {
       if (command.select?.length) {
         void bot.api.sendMessage(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
