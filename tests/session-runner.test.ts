@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { runOrder, startOrder } from "../src/engine/session-runner";
+import { runOrder, startOrder, type RunResult } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
 function order(task = "do it", folder = "/tmp"): Order {
@@ -335,6 +335,30 @@ test("onActivity reports every tool_use and text block; queued() counts waiting 
   await run.done;
   expect(labels).toContain("Bash: bun test");
   expect(labels).toContain("replying");
+});
+
+// --- Turn-boundary completion (2026-07-08: dispatch never detected sub-run completion — the
+// input channel stays open forever, so run.done only resolved via interrupt, and every dispatch
+// ended as a false "stall" timeout losing the worker's real report). startOrder must signal each
+// turn boundary and offer a graceful close() that ends the stream WITHOUT an interrupt. ---
+
+test("startOrder fires onTurnComplete with the turn's result, and close() ends the stream without interrupt", async () => {
+  const f = fakeStreaming();
+  const turns: RunResult[] = [];
+  const run = startOrder(
+    order("do it"),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnComplete: (r) => void turns.push(r) },
+    { query: f.q },
+  );
+  // wait for the first turn boundary to be signalled
+  while (turns.length === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(turns[0].ok).toBe(true);
+  expect(turns[0].summary).toBe("done");
+  run.close(); // graceful: drain + end, no SDK interrupt
+  const result = await run.done;
+  expect(result.ok).toBe(true);
+  expect(result.summary).toBe("done"); // the worker's own final text survives
+  expect(f.interruptCalls()).toBe(0); // never hard-interrupted
 });
 
 test("reports 'waiting' on the SDK result message (turn boundary)", async () => {

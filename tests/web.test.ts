@@ -62,7 +62,7 @@ function fakeStart(onStart?: (h: RunHandlers) => void) {
   const done = new Promise<RunResult>(() => {});
   const start = (_o: Order, h: RunHandlers): SessionRun => {
     onStart?.(h);
-    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done };
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done };
   };
   return start;
 }

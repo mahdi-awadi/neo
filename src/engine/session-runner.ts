@@ -67,6 +67,9 @@ export interface RunHandlers {
   onAutoApprove?: (reason: string) => void;
   /** Reports what the worker is doing (each tool_use as "Tool: detail", each text as "replying"). */
   onActivity?: (label: string) => void;
+  /** Fires at each SDK "result" message (turn boundary) with that turn's result. A single-brief
+   *  caller (dispatch) uses this to detect completion — the stream itself stays open. */
+  onTurnComplete?: (result: RunResult) => void;
 }
 
 /** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
@@ -99,6 +102,9 @@ export interface SessionRun extends SessionControl {
   done: Promise<RunResult>;
   /** Follow-ups waiting behind the in-flight turn. */
   queued(): number;
+  /** Graceful close: end the input channel WITHOUT interrupting the SDK — the stream drains and
+   *  `done` resolves with the last turn's result. The session stays resumable. */
+  close(): void;
 }
 
 // Loosely-typed view of the SDK so the runner is testable with an injected fake.
@@ -201,6 +207,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // Turn boundary: the worker is waiting for the next input, not mid-turn — the
         // watchdog must not treat this as silence or a grinding activity (F1).
         handlers.onActivity?.("waiting");
+        handlers.onTurnComplete?.({ ok, sessionId, summary, costUsd });
       }
     }
   } catch {
@@ -292,6 +299,7 @@ export function startOrder(
       }
     },
     queued: () => channel.queued(),
+    close: () => channel.close(),
     done,
   };
 }
