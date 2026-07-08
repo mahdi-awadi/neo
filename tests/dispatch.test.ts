@@ -152,6 +152,32 @@ test("dispatching twice to the same folder reuses one registry entry (no '<name>
   expect(forFolder[0].name).toBe("eticket-v3"); // never "eticket-v3-2"
 });
 
+test("a timed-out dispatch is removed from the registry, and the next dispatch reuses the base name (no zombie accumulation)", async () => {
+  // Regression (2026-07-08): 18 sequential dispatches to one project each hit dispatchTimeoutMs,
+  // were left as status:"error" zombies, and every retry registered "<name>-N".
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "waselni"));
+  const { d } = makeDeps();
+  const hangingStart = () => ({
+    followUp: () => {},
+    queued: () => 0,
+    interrupt: async () => {},
+    done: new Promise<RunResult>(() => {}),
+  });
+  await dispatchToProject("waselni", "task 1", { ...d, dispatchTimeoutMs: 5 }, 1, { start: hangingStart as never, root });
+  await new Promise((r) => setTimeout(r, 25)); // let the timeout fire and bookkeeping settle
+
+  expect(d.registry.list().filter((s) => s.order.folder === join(root, "waselni"))).toHaveLength(0);
+
+  await dispatchToProject("waselni", "task 2", { ...d, dispatchTimeoutMs: 5 }, 1, { start: hangingStart as never, root });
+  await new Promise((r) => setTimeout(r, 25));
+  await dispatchToProject("waselni", "task 3", { ...d, dispatchTimeoutMs: 5 }, 1, { start: hangingStart as never, root });
+
+  const forFolder = d.registry.list().filter((s) => s.order.folder === join(root, "waselni"));
+  expect(forFolder).toHaveLength(1); // only the live third run
+  expect(forFolder[0].name).toBe("waselni"); // never "waselni-2"
+});
+
 test("dispatchToProject reports a clear error for an unknown project (and never runs)", async () => {
   const { d } = makeDeps();
   const out = await dispatchToProject("ghost", "do x", d, 99, {

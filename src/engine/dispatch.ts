@@ -200,9 +200,17 @@ export async function dispatchToProject(
       }
       deps.meter.note({ costUsd: result.costUsd }, now());
       deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
-      deps.registry.setStatus(session.id, timedOut || !result.ok ? "error" : "idle");
-      deps.registry.touch(session.id, now());
-      deps.registry.detachControl(session.id);
+      if (timedOut || !result.ok) {
+        // A dead run must not linger: an "error" session is invisible to findByFolder (never
+        // reused) and to sweepIdle (never reaped), so it would sit as a zombie and force the next
+        // dispatch to register "<name>-2", "-3", … Remove it; the ledger keeps the error outcome,
+        // and any sdkSessionId was persisted above for resume.
+        deps.registry.remove(session.id);
+      } else {
+        deps.registry.setStatus(session.id, "idle");
+        deps.registry.touch(session.id, now());
+        deps.registry.detachControl(session.id);
+      }
       const line = result.ok ? `✅ ${name} finished: ${result.summary || "done"}` : `⛔ ${name}: ${result.summary || "failed"}`;
       await deps.reply(replyChat, line, name);
       // Feed the result back into the live company session so it can act on it next turn.
