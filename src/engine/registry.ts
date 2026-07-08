@@ -35,6 +35,10 @@ export interface Registry {
   setDefault(id: string): void;
   /** The default project if it's still registered (else undefined). */
   getDefault(): SessionInfo | undefined;
+  /** Record what the session is doing right now; `since` is kept while the label is unchanged. */
+  noteActivity(id: string, label: string, now?: number): void;
+  /** Stamp the last stuck-alert time (watchdog dedup). */
+  noteAlert(id: string, now?: number): void;
 }
 
 export function createRegistry(): Registry {
@@ -104,6 +108,15 @@ export function createRegistry(): Registry {
     touch(id, now = Date.now()) {
       const s = sessions.get(id);
       if (s) s.lastActivityAt = now;
+    },
+    noteActivity(id, label, now = Date.now()) {
+      const s = sessions.get(id);
+      if (!s) return;
+      if (s.activity?.label !== label) s.activity = { label, since: now };
+    },
+    noteAlert(id, now = Date.now()) {
+      const s = sessions.get(id);
+      if (s) s.alertedAt = now;
     },
   };
 }

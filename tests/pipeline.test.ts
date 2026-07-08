@@ -44,7 +44,7 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
   const start = (_o: Order, h: RunHandlers, d?: { resume?: string }): SessionRun => {
     resumeSeen = d?.resume;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, done };
+    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, done };
   };
   return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, followUps: () => followUps };
 }
@@ -220,6 +220,7 @@ test("a follow-up routes to the actively-selected project", async () => {
   const start = (o: Order, _h: RunHandlers): SessionRun => ({
     followUp: (t) => void followed.push(`${o.folder}:${t}`),
     interrupt: async () => {},
+    queued: () => 0,
     done: new Promise<RunResult>(() => {}),
   });
   const h = harness({ start });

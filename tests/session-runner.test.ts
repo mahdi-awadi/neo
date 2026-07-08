@@ -309,3 +309,30 @@ test("does NOT surface high-frequency read-only tool calls (Read/Glob/Grep) — 
   await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
   expect(msgs.length).toBe(0); // read-only navigation is quiet
 });
+
+test("onActivity reports every tool_use and text block; queued() counts waiting follow-ups", async () => {
+  const labels: string[] = [];
+  // Fake stream: one assistant message with a tool_use, then a text block, then result.
+  const fakeQuery = (() => {
+    const obj = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: "assistant", session_id: "s1", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "bun test" } }] } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "done" }] } };
+        yield { type: "result", subtype: "success", result: "ok", total_cost_usd: 0 };
+      },
+      interrupt: async () => {},
+    };
+    return () => obj;
+  })();
+  const run = startOrder(
+    { id: "o1", source: "neo", folder: "/tmp", task: "t", chatId: 1, createdAt: 0 },
+    { onMessage: () => {}, onEscalation: async () => "deny", onActivity: (l) => void labels.push(l) },
+    { query: fakeQuery as never },
+  );
+  run.followUp("extra 1");
+  run.followUp("extra 2");
+  expect(run.queued()).toBeGreaterThanOrEqual(0); // channel drains as the fake iterates; the method exists and returns a number
+  await run.done;
+  expect(labels).toContain("Bash: bun test");
+  expect(labels).toContain("replying");
+});

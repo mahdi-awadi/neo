@@ -99,3 +99,21 @@ test("touch, setStatus, setSdkSessionId, and remove mutate the entry", () => {
   reg.remove(o.id);
   expect(reg.get(o.id)).toBeUndefined();
 });
+
+test("noteActivity sets the label and keeps `since` while the label is unchanged", () => {
+  const r = createRegistry();
+  const s = r.add({ id: "a1", source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: 0 }, 0);
+  r.noteActivity(s.id, "Bash: bun test", 100);
+  expect(r.get(s.id)?.activity).toEqual({ label: "Bash: bun test", since: 100 });
+  r.noteActivity(s.id, "Bash: bun test", 500); // same label -> since unchanged (measures how long it's ground on it)
+  expect(r.get(s.id)?.activity).toEqual({ label: "Bash: bun test", since: 100 });
+  r.noteActivity(s.id, "replying", 900); // new label -> since resets
+  expect(r.get(s.id)?.activity).toEqual({ label: "replying", since: 900 });
+});
+
+test("noteAlert stamps alertedAt", () => {
+  const r = createRegistry();
+  const s = r.add({ id: "a2", source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: 0 }, 0);
+  r.noteAlert(s.id, 42);
+  expect(r.get(s.id)?.alertedAt).toBe(42);
+});

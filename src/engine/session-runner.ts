@@ -65,6 +65,8 @@ export interface RunHandlers {
   autoApprove?: () => boolean;
   /** Called with the escalation reason when trust auto-approves it (for audit/FYI). */
   onAutoApprove?: (reason: string) => void;
+  /** Reports what the worker is doing (each tool_use as "Tool: detail", each text as "replying"). */
+  onActivity?: (label: string) => void;
 }
 
 /** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
@@ -95,6 +97,8 @@ export interface RunResult {
 export interface SessionRun extends SessionControl {
   /** Resolves when the session ends (interrupt / idle-close / worker completion). */
   done: Promise<RunResult>;
+  /** Follow-ups waiting behind the in-flight turn. */
+  queued(): number;
 }
 
 // Loosely-typed view of the SDK so the runner is testable with an injected fake.
@@ -175,11 +179,12 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         if (Array.isArray(content)) {
           for (const b of content as Array<{ type?: string; text?: string; name?: string; input?: unknown }>) {
             if (b?.type === "text" && b.text?.trim()) {
+              handlers.onActivity?.("replying");
               handlers.onMessage(b.text.trim());
             } else if (b?.type === "tool_use" && typeof b.name === "string") {
-              // Surface what the worker is DOING (edits, bash, dispatches, …) so long tool-only
-              // stretches aren't silent — for dispatched sub-sessions this is what reaches the
-              // operator tagged with the project name.
+              const short = b.name.startsWith("mcp__") ? b.name.split("__").pop() ?? b.name : b.name;
+              const detail = toolDetail(b.input);
+              handlers.onActivity?.(`${short}${detail ? `: ${detail}` : ""}`);
               const line = toolMilestone(b.name, b.input);
               if (line) handlers.onMessage(line);
             }
@@ -235,6 +240,9 @@ function createInputChannel(first: SdkUserMessage) {
       wake?.();
       wake = null;
     },
+    queued() {
+      return queue.length;
+    },
   };
 }
 
@@ -280,6 +288,7 @@ export function startOrder(
         // best-effort — the worker may already be ending
       }
     },
+    queued: () => channel.queued(),
     done,
   };
 }

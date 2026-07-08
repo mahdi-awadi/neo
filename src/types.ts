@@ -42,6 +42,8 @@ export type Verdict =
 export interface SessionControl {
   followUp(text: string): void;
   interrupt(): Promise<void>;
+  /** Follow-ups waiting behind the in-flight turn (observability; optional for old fakes). */
+  queued?(): number;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */
@@ -57,4 +59,8 @@ export interface SessionInfo {
   startedAt: number;
   /** Last time the worker produced output or took input — drives idle-close. */
   lastActivityAt: number;
+  /** What the worker is doing right now (last tool/text), for /status + the stuck-watchdog. */
+  activity?: { label: string; since: number };
+  /** Last time the stuck-watchdog alerted about this session (dedup). */
+  alertedAt?: number;
 }
