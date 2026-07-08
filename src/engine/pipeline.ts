@@ -170,7 +170,7 @@ export async function handleMessage(
   const session = registry.add(parsed, now());
   return startSession(parsed, session.id, chatId, deps, now, start, {
     resume: resume || undefined,
-    mcpServers: neoMcpServers({ ...deps, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+    mcpServers: neoMcpServers({ ...deps, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, contextPolicy: deps.cfg.contextPolicy }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
   });
 }
 
@@ -189,7 +189,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers({ ...deps, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+    mcpServers: neoMcpServers({ ...deps, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, contextPolicy: deps.cfg.contextPolicy }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
   };
   return isCompany ? { ...base, effort: "low" } : base;
 }

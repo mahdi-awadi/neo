@@ -2,13 +2,22 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveProject, dispatchToProject, sendProjectFile, neoMcpServers, STITCH_MCP_URL, type DispatchDeps } from "../src/engine/dispatch";
+import { resolveProject, dispatchToProject, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, type DispatchDeps } from "../src/engine/dispatch";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import type { Order } from "../src/types";
 import { startOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
+import type { ContextPolicyCfg, ContextSignals } from "../src/engine/context-policy";
+
+const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
+  handoffPct: 0.65,
+  emergencyPct: 0.85,
+  maxTurns: 200,
+  maxAgeMs: 7 * 24 * 3600 * 1000,
+  handoffTimeoutMs: 180_000,
+};
 
 test("resolveProject finds a folder by name under root or by absolute path", () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
@@ -263,4 +272,87 @@ test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged
   await new Promise((r) => setTimeout(r, 0)); // let the background continuation run
   expect(replies.some((r) => r.text.includes("Bash") && r.text.includes("docker ps") && r.project === "eticket-v3")).toBe(true);
   expect(replies.some((r) => r.text.includes("finished") && r.text.includes("3 containers up"))).toBe(true);
+});
+
+// --- context-policy gate on dispatch reuse (2026-07-08 finding: repeated dispatch into one
+// folder must not resume a session forever without ever checking its context load). ---
+
+test("dispatch with a 'clear' verdict drops resume, clears the ledger session, and records a clear event", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const folder = join(root, "eticket-v3");
+  d.ledger.recordOrder({ id: "prev", source: "neo", folder, task: "x", chatId: SUB_CHAT, createdAt: 0 });
+  d.ledger.recordSession("prev", "fat-session-id");
+  const deps: DispatchDeps = { ...d, contextPolicy: TEST_CONTEXT_POLICY };
+  let seenResume: string | undefined = "unset";
+  const fakeStart = (_o: Order, _h: RunHandlers, dd?: { resume?: string }) => {
+    seenResume = dd?.resume;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.9, turns: 5, ageMs: 0 }); // >= emergencyPct → clear
+  await dispatchToProject("eticket-v3", "task", deps, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+    signals: fakeSignals,
+  });
+  await new Promise((r) => setTimeout(r, 0)); // let the background continuation run the gate + start
+  expect(seenResume).toBeUndefined();
+  expect(d.ledger.lastSessionFor(folder, SUB_CHAT)).toBeUndefined();
+});
+
+test("dispatch with a 'handoff' verdict runs the handoff BEFORE start, and drops resume", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const folder = join(root, "eticket-v3");
+  d.ledger.recordOrder({ id: "prev", source: "neo", folder, task: "x", chatId: SUB_CHAT, createdAt: 0 });
+  d.ledger.recordSession("prev", "fat-session-id");
+  const deps: DispatchDeps = { ...d, contextPolicy: TEST_CONTEXT_POLICY };
+  const order: string[] = [];
+  let seenResume: string | undefined = "unset";
+  const fakeStart = (_o: Order, _h: RunHandlers, dd?: { resume?: string }) => {
+    seenResume = dd?.resume;
+    order.push("start");
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.7, turns: 5, ageMs: 0 }); // >= handoffPct, < emergencyPct → handoff
+  const fakeHandoff = async () => {
+    order.push("handoff");
+  };
+  await dispatchToProject("eticket-v3", "task", deps, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+    signals: fakeSignals,
+    handoff: fakeHandoff as never,
+  });
+  await new Promise((r) => setTimeout(r, 0)); // let the background continuation run the gate + start
+  expect(order).toEqual(["handoff", "start"]);
+  expect(seenResume).toBeUndefined();
+});
+
+test("dispatch with a 'keep' verdict passes the prior resume id through unchanged", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const folder = join(root, "eticket-v3");
+  d.ledger.recordOrder({ id: "prev", source: "neo", folder, task: "x", chatId: SUB_CHAT, createdAt: 0 });
+  d.ledger.recordSession("prev", "fat-session-id");
+  const deps: DispatchDeps = { ...d, contextPolicy: TEST_CONTEXT_POLICY };
+  let seenResume: string | undefined;
+  const fakeStart = (_o: Order, _h: RunHandlers, dd?: { resume?: string }) => {
+    seenResume = dd?.resume;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.1, turns: 5, ageMs: 0 }); // well under handoffPct → keep
+  await dispatchToProject("eticket-v3", "task", deps, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+    signals: fakeSignals,
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(seenResume).toBe("fat-session-id");
 });

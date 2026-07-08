@@ -7,7 +7,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { Order } from "../types";
+import type { Order, SessionInfo } from "../types";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -15,6 +15,7 @@ import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { DEFAULT_PROJECT } from "./default-project";
+import { decideContext, sessionContext, runHandoff, type ContextPolicyCfg } from "./context-policy";
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
@@ -36,6 +37,10 @@ export interface DispatchDeps {
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
   /** Kill a dispatched background sub-run after this long (ms). Default DISPATCH_TIMEOUT_MS_DEFAULT. */
   dispatchTimeoutMs?: number;
+  /** When set, gate dispatch's session reuse through the same context policy the interactive
+   *  pipeline uses — a resumed sub-project session must not grow unbounded (see
+   *  docs/superpowers/specs/2026-07-08-context-policy-design.md, Boundaries #3). */
+  contextPolicy?: ContextPolicyCfg;
 }
 
 type RunFn = typeof runOrder;
@@ -84,7 +89,16 @@ export async function dispatchToProject(
   task: string,
   deps: DispatchDeps,
   replyChat: number,
-  opts: { start?: typeof startOrder; run?: RunFn; now?: () => number; root?: string; desks?: string } = {},
+  opts: {
+    start?: typeof startOrder;
+    run?: RunFn;
+    now?: () => number;
+    root?: string;
+    desks?: string;
+    /** Test seams for the context policy (default: real transcript measurement + handoff run). */
+    signals?: typeof sessionContext;
+    handoff?: typeof runHandoff;
+  } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
   const folder = resolveProject(project, opts.root, opts.desks);
@@ -112,32 +126,57 @@ export async function dispatchToProject(
   const start = opts.start ?? startOrder;
   const timeoutMs = deps.dispatchTimeoutMs ?? DISPATCH_TIMEOUT_MS_DEFAULT;
 
-  const run = start(
-    order,
-    {
-      onMessage: (t) => void deps.reply(replyChat, t, name),
-      onEscalation: (reason) => deps.askApproval(replyChat, reason),
-      onRateLimit: (info) => deps.usage?.noteRateLimit(info),
-      autoApprove: () => deps.trust.isTrusted(folder),
-      onAutoApprove: (reason) => {
-        deps.ledger.recordAutoApproval(order.id, reason);
-        void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
-      },
-      onActivity: (label) => {
-        try {
-          deps.registry.noteActivity(session.id, label, now());
-        } catch {
-          /* observer only */
-        }
-      },
-    },
-    { resume },
-  );
-  deps.registry.attachControl(session.id, run);
-
   // Background continuation: bounded await, then bookkeeping + report-back. NEVER awaited here —
   // the company's turn ends immediately (operator requirement: the main agent is always free).
+  // The context-policy gate + start(...) + attachControl also live in here (not before it) so
+  // the gate's occasional real await (the "handoff" verdict runs a bounded worker turn) never
+  // delays the string this function returns to the calling company session.
   void (async () => {
+    let gatedResume = resume;
+    if (gatedResume && deps.contextPolicy) {
+      try {
+        const signals = opts.signals ?? sessionContext;
+        const sig = signals(folder, gatedResume);
+        const verdict = decideContext(sig, deps.contextPolicy);
+        if (verdict === "clear") {
+          gatedResume = undefined;
+          deps.ledger.clearSessionsFor(folder);
+          deps.ledger.recordContextEvent(folder, "clear", sig.occupancy);
+        } else if (verdict === "handoff") {
+          const handoff = opts.handoff ?? runHandoff;
+          const target: SessionInfo = { ...session, sdkSessionId: session.sdkSessionId || gatedResume };
+          await handoff(target, deps.contextPolicy, { registry: deps.registry, ledger: deps.ledger });
+          gatedResume = undefined;
+        }
+        // "keep" leaves gatedResume unchanged.
+      } catch {
+        // context-policy is best-effort observer work — fail OPEN, keep the original resume id.
+      }
+    }
+
+    const run = start(
+      order,
+      {
+        onMessage: (t) => void deps.reply(replyChat, t, name),
+        onEscalation: (reason) => deps.askApproval(replyChat, reason),
+        onRateLimit: (info) => deps.usage?.noteRateLimit(info),
+        autoApprove: () => deps.trust.isTrusted(folder),
+        onAutoApprove: (reason) => {
+          deps.ledger.recordAutoApproval(order.id, reason);
+          void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
+        },
+        onActivity: (label) => {
+          try {
+            deps.registry.noteActivity(session.id, label, now());
+          } catch {
+            /* observer only */
+          }
+        },
+      },
+      { resume: gatedResume },
+    );
+    deps.registry.attachControl(session.id, run);
+
     let result: RunResult;
     let timedOut = false;
     const timer = new Promise<"timeout">((res) => setTimeout(() => res("timeout"), timeoutMs));
