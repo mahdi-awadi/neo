@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleMessage } from "../src/engine/pipeline";
@@ -282,6 +282,86 @@ test("a trusted project auto-approves: onAutoApprove records to the ledger and r
   const orderId = h.ledger.listRecent(1)[0].id;
   expect(h.ledger.autoApprovalsFor(orderId)).toContain("risky shell command: git push");
   expect(h.replies.some((r) => r.includes("auto-approved"))).toBe(true);
+});
+
+test("pre-resume: clear verdict starts fresh instead of resuming a near-full session", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.ledger.recordOrder({ id: "p1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h.ledger.recordSession("p1", "fat-id");
+
+  await handleMessage(`/open ${dir} continue`, 9, {
+    ...h.base,
+    signals: () => ({ occupancy: 0.9, turns: 10, ageMs: 0 }), // emergency
+  });
+
+  expect(f.resumeSeen()).toBeUndefined(); // fresh, not resumed
+  expect(h.ledger.lastSessionFor(dir, 9)).toBeUndefined(); // cleared
+  expect(h.ledger.listContextEvents()[0]?.verdict).toBe("clear");
+});
+
+test("pre-resume: handoff verdict runs the handoff first, then starts fresh", async () => {
+  const dir = scratch();
+  const calls: string[] = [];
+  const start = (_o: Order, _h: RunHandlers, d?: { resume?: string }): SessionRun => {
+    calls.push(`start:${d?.resume ?? "fresh"}`);
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+  };
+  const h = harness({ start });
+  h.ledger.recordOrder({ id: "p2", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h.ledger.recordSession("p2", "fat-2");
+
+  await handleMessage(`/open ${dir} continue`, 9, {
+    ...h.base,
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0 }),
+    handoff: async (s) => {
+      calls.push("handoff");
+      h.ledger.clearSessionsFor(s.order.folder);
+    },
+  });
+
+  expect(calls[0]).toBe("handoff");
+  expect(calls[1]).toBe("start:fresh");
+});
+
+test("fresh start reads HANDOFF.md when it exists", async () => {
+  const dir = scratch();
+  writeFileSync(join(dir, "HANDOFF.md"), "state");
+  let seenTask = "";
+  const start = (o: Order): SessionRun => {
+    seenTask = o.task;
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+  };
+  const h = harness({ start });
+
+  await handleMessage(`/open ${dir} continue the work`, 9, h.base);
+
+  expect(seenTask.startsWith("Read HANDOFF.md first")).toBe(true);
+});
+
+test("post-completion handoff fires when the finished session is fat", async () => {
+  const dir = scratch();
+  let resolveDone!: (r: RunResult) => void;
+  const done = new Promise<RunResult>((res) => {
+    resolveDone = res;
+  });
+  const start = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, done }) as unknown as SessionRun;
+  let handoffCalled = false;
+  const h = harness({ start });
+
+  await handleMessage(`/open ${dir} work`, 9, {
+    ...h.base,
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0 }),
+    handoff: async () => {
+      handoffCalled = true;
+    },
+  });
+  resolveDone({ ok: true, sessionId: "s-done", summary: "done", costUsd: 0 });
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(handoffCalled).toBe(true);
 });
 
 test("startSession wires onActivity into registry.noteActivity", async () => {

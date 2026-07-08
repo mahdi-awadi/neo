@@ -3,8 +3,10 @@
 // Frontends (Telegram, later email/WhatsApp) supply `reply` and `askApproval`; the engine
 // owns the logic + the live-session registry + the budget meter, so it's all testable
 // without any channel.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { NeoConfig } from "../config";
-import type { Order, OrderSource } from "../types";
+import type { Order, OrderSource, SessionInfo } from "../types";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -14,6 +16,7 @@ import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers } from "./dispatch";
+import { sessionContext, decideContext, runHandoff } from "./context-policy";
 
 /** Start a live session. Injectable for tests; defaults to the real SDK-backed runner. */
 type StartFn = (order: Order, handlers: RunHandlers, deps?: RunDeps) => SessionRun;
@@ -38,6 +41,46 @@ export interface PipelineDeps {
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
   now?: () => number;
+  /** Test seams for the context policy (default: real transcript measurement + handoff run). */
+  signals?: typeof sessionContext;
+  handoff?: typeof runHandoff;
+}
+
+/** Apply the context policy to a persisted resume id. Returns the id to actually resume with
+ *  ("" = start fresh). Never throws (fail open = keep the id). */
+async function applyContextPolicy(
+  folder: string,
+  sessionInfo: SessionInfo | undefined,
+  resumeId: string,
+  deps: PipelineDeps,
+): Promise<string> {
+  if (!resumeId) return "";
+  try {
+    const signals = deps.signals ?? sessionContext;
+    const sig = signals(folder, resumeId);
+    const verdict = decideContext(sig, deps.cfg.contextPolicy);
+    if (verdict === "keep") return resumeId;
+    if (verdict === "clear") {
+      deps.ledger.clearSessionsFor(folder);
+      deps.ledger.recordContextEvent(folder, "clear", sig.occupancy);
+      return "";
+    }
+    // handoff: run it against the fat session (bounded), which clears; then fresh.
+    const handoff = deps.handoff ?? runHandoff;
+    const target: SessionInfo = sessionInfo ?? {
+      id: "",
+      name: "",
+      sdkSessionId: resumeId,
+      order: { id: "", source: "neo", folder, task: "", chatId: 0, createdAt: 0 },
+      status: "idle",
+      startedAt: 0,
+      lastActivityAt: 0,
+    };
+    await handoff(target, deps.cfg.contextPolicy, { registry: deps.registry, ledger: deps.ledger });
+    return "";
+  } catch {
+    return resumeId; // fail open
+  }
 }
 
 /**
@@ -92,7 +135,8 @@ export async function handleMessage(
     registry.setStatus(live.id, "running");
     registry.touch(live.id, now());
     await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
-    return startSession(resumed, live.id, chatId, deps, now, start, runConfigFor(live.id, registry, deps, chatId, live.sdkSessionId));
+    const resumeId = live.sdkSessionId ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps) : "";
+    return startSession(resumed, live.id, chatId, deps, now, start, runConfigFor(live.id, registry, deps, chatId, resumeId));
   }
 
   // 2. Parse a new order.
@@ -116,7 +160,8 @@ export async function handleMessage(
   }
 
   // 5. Resume a prior session for this folder/chat, if one was recorded.
-  const resume = ledger.lastSessionFor(parsed.folder, parsed.chatId);
+  const priorResume = ledger.lastSessionFor(parsed.folder, parsed.chatId);
+  const resume = priorResume ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps) : "";
 
   ledger.recordOrder(parsed);
   await deps.reply(chatId, `opening ${parsed.folder} (${decision.provider})${resume ? " — resuming" : ""}…`);
@@ -156,7 +201,7 @@ function runConfigFor(
  * opened projects stay visible in /list and the web dashboard after a task finishes.
  */
 function startSession(
-  order: Order,
+  initialOrder: Order,
   registryId: string,
   chatId: number,
   deps: PipelineDeps,
@@ -166,6 +211,10 @@ function startSession(
 ): SessionRun {
   const { registry, meter, ledger } = deps;
   const project = registry.get(registryId)?.name; // tag worker output with the project name
+  let order = initialOrder;
+  if (!runDeps.resume && existsSync(join(order.folder, "HANDOFF.md"))) {
+    order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
+  }
   const run = start(
     order,
     {
@@ -203,6 +252,19 @@ function startSession(
     registry.setStatus(registryId, "idle");
     registry.touch(registryId, now());
     registry.detachControl(registryId);
+    try {
+      if (result.sessionId) {
+        const signals = deps.signals ?? sessionContext;
+        const sig = signals(order.folder, result.sessionId);
+        if (decideContext(sig, deps.cfg.contextPolicy) !== "keep") {
+          const handoff = deps.handoff ?? runHandoff;
+          const info = registry.get(registryId);
+          if (info) void handoff(info, deps.cfg.contextPolicy, { registry, ledger });
+        }
+      }
+    } catch {
+      // policy is an observer — never break the completion path
+    }
     void deps.reply(chatId, result.ok ? `✓ ${result.summary}` : `✗ ${result.summary || "failed"}`, project);
   });
 
