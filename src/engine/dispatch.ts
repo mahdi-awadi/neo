@@ -35,8 +35,16 @@ export interface DispatchDeps {
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
-  /** Kill a dispatched background sub-run after this long (ms). Default DISPATCH_TIMEOUT_MS_DEFAULT. */
+  /** Default per-dispatch ceiling (ms) when the caller doesn't request one. Default DISPATCH_TIMEOUT_MS_DEFAULT. */
   dispatchTimeoutMs?: number;
+  /** Hard cap (ms) on any caller-requested ceiling. Default DISPATCH_TIMEOUT_MAX_MS_DEFAULT (2h). */
+  dispatchTimeoutMaxMs?: number;
+  /** Abort a sub-run with NO activity for this long (ms) — a busy worker stays alive up to the
+   *  ceiling. Default DISPATCH_STALL_MS_DEFAULT (5m). */
+  dispatchStallMs?: number;
+  /** Grace window (ms): on a limit, tell the worker to commit green work + write a WIP note,
+   *  then hard-abort. Default DISPATCH_GRACE_MS_DEFAULT (75s). */
+  dispatchGraceMs?: number;
   /** When set, gate dispatch's session reuse through the same context policy the interactive
    *  pipeline uses — a resumed sub-project session must not grow unbounded (see
    *  docs/superpowers/specs/2026-07-08-context-policy-design.md, Boundaries #3). */
@@ -45,8 +53,14 @@ export interface DispatchDeps {
 
 type RunFn = typeof runOrder;
 
-/** Default background sub-run timeout (ms) — 15 minutes. */
+/** Default per-dispatch ceiling (ms) — 15 minutes. */
 export const DISPATCH_TIMEOUT_MS_DEFAULT = 900_000;
+/** Hard cap on any caller-requested ceiling (ms) — 2 hours. */
+export const DISPATCH_TIMEOUT_MAX_MS_DEFAULT = 7_200_000;
+/** Liveness stall limit (ms) — 5 minutes of NO activity aborts a sub-run. */
+export const DISPATCH_STALL_MS_DEFAULT = 300_000;
+/** Wrap-up grace window (ms) — 75 seconds between the limit firing and the hard abort. */
+export const DISPATCH_GRACE_MS_DEFAULT = 75_000;
 
 /**
  * Resolve a project reference to a folder: an absolute path, else a repo under `root` (/home),
@@ -98,6 +112,8 @@ export async function dispatchToProject(
     /** Test seams for the context policy (default: real transcript measurement + handoff run). */
     signals?: typeof sessionContext;
     handoff?: typeof runHandoff;
+    /** Caller-requested per-dispatch ceiling (ms) — clamped to dispatchTimeoutMaxMs. */
+    timeoutMs?: number;
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
@@ -124,7 +140,12 @@ export async function dispatchToProject(
 
   const resume = existing?.sdkSessionId || deps.ledger.lastSessionFor(folder, SUB_CHAT) || undefined;
   const start = opts.start ?? startOrder;
-  const timeoutMs = deps.dispatchTimeoutMs ?? DISPATCH_TIMEOUT_MS_DEFAULT;
+  // Per-dispatch ceiling: the caller (the company knows if this is a 2-minute lookup or a
+  // 2-hour build) may request one, hard-capped so a dispatch can never run unbounded.
+  const maxMs = deps.dispatchTimeoutMaxMs ?? DISPATCH_TIMEOUT_MAX_MS_DEFAULT;
+  const ceilingMs = Math.min(opts.timeoutMs ?? deps.dispatchTimeoutMs ?? DISPATCH_TIMEOUT_MS_DEFAULT, maxMs);
+  const stallMs = deps.dispatchStallMs ?? DISPATCH_STALL_MS_DEFAULT;
+  const graceMs = deps.dispatchGraceMs ?? DISPATCH_GRACE_MS_DEFAULT;
 
   // Background continuation: bounded await, then bookkeeping + report-back. NEVER awaited here —
   // the company's turn ends immediately (operator requirement: the main agent is always free).
@@ -154,10 +175,15 @@ export async function dispatchToProject(
       }
     }
 
+    const startedAt = now();
+    let lastActivityAt = startedAt;
     const run = start(
       order,
       {
-        onMessage: (t) => void deps.reply(replyChat, t, name),
+        onMessage: (t) => {
+          lastActivityAt = now();
+          void deps.reply(replyChat, t, name);
+        },
         onEscalation: (reason) => deps.askApproval(replyChat, reason),
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
         autoApprove: () => deps.trust.isTrusted(folder),
@@ -166,6 +192,7 @@ export async function dispatchToProject(
           void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
         },
         onActivity: (label) => {
+          lastActivityAt = now();
           try {
             deps.registry.noteActivity(session.id, label, now());
             deps.registry.touch(session.id, now());
@@ -178,17 +205,46 @@ export async function dispatchToProject(
     );
     deps.registry.attachControl(session.id, run);
 
+    // Liveness monitor: the timeout protects against a HUNG worker, not a busy one. A dispatch
+    // is aborted when the sub-run has produced no activity for stallMs, OR when the per-dispatch
+    // ceiling is hit — a worker streaming output for 90 minutes stays alive (up to the ceiling).
+    const sleep = (ms: number) => new Promise<"tick">((res) => setTimeout(() => res("tick"), ms));
+    const doneOrTick = (ms: number) => Promise.race([run.done.then((r) => ({ done: r })), sleep(ms)]);
+    const checkMs = Math.max(1, Math.floor(Math.min(stallMs, ceilingMs) / 4));
     let result: RunResult;
     let timedOut = false;
-    const timer = new Promise<"timeout">((res) => setTimeout(() => res("timeout"), timeoutMs));
     try {
-      const settled = await Promise.race([run.done, timer]);
-      if (settled === "timeout") {
+      let limit: "stall" | "ceiling" | undefined;
+      for (;;) {
+        const settled = await doneOrTick(checkMs);
+        if (settled !== "tick") {
+          result = settled.done;
+          break;
+        }
+        const t = now();
+        if (t - startedAt >= ceilingMs) limit = "ceiling";
+        else if (t - lastActivityAt >= stallMs) limit = "stall";
+        if (!limit) continue;
+        // Graceful wrap-up: give the worker a short grace window to commit green work and leave
+        // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
+        run.followUp(
+          `⏱ Neo dispatch ${limit === "stall" ? "stall" : "time"} limit reached — stop working now. ` +
+            `Commit any green work and write a brief WIP note (plan doc or WIP.md) so a follow-up run can resume. ` +
+            `You have ~${Math.round(graceMs / 1000)}s before this session is aborted.`,
+        );
+        const graced = await doneOrTick(graceMs);
+        if (graced !== "tick") {
+          result = graced.done; // wrapped up in time — keep the worker's own result
+          break;
+        }
         timedOut = true;
         await run.interrupt();
-        result = { ok: false, sessionId: "", summary: `timed out after ${Math.round(timeoutMs / 60000)}m and was aborted`, costUsd: 0 };
-      } else {
-        result = settled;
+        const detail =
+          limit === "stall"
+            ? `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`
+            : `hit the ${Math.round(ceilingMs / 60000)}m dispatch ceiling`;
+        result = { ok: false, sessionId: "", summary: `timed out: ${detail} — asked to wrap up, then aborted`, costUsd: 0 };
+        break;
       }
     } catch (e) {
       result = { ok: false, sessionId: "", summary: e instanceof Error ? e.message : String(e), costUsd: 0 };
@@ -297,9 +353,18 @@ export function neoMcpServers(
         {
           project: z.string().describe('project folder name under /home, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
+          timeoutMinutes: z
+            .number()
+            .positive()
+            .optional()
+            .describe(
+              "expected ceiling for this task in minutes — size it to the task (2 for a quick lookup, 60–120 for a real build). Capped by the engine; a hung (silent) worker is still aborted early regardless.",
+            ),
         },
-        async (args: { project: string; task: string }) => {
-          const out = await dispatchToProject(args.project, args.task, deps, replyChat);
+        async (args: { project: string; task: string; timeoutMinutes?: number }) => {
+          const out = await dispatchToProject(args.project, args.task, deps, replyChat, {
+            timeoutMs: args.timeoutMinutes ? Math.round(args.timeoutMinutes * 60_000) : undefined,
+          });
           return { content: [{ type: "text" as const, text: out }] };
         },
       ),

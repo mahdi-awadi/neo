@@ -110,7 +110,7 @@ test("background completion books the result and reports back to operator + comp
   expect(companyFollowUps.some((t) => t.includes("[dispatch result]") && t.includes("built the thing"))).toBe(true);
 });
 
-test("background timeout interrupts the sub-run and records an error outcome", async () => {
+test("background ceiling timeout interrupts the sub-run, names the ceiling, and records an error outcome", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
   const { d } = makeDeps();
@@ -124,13 +124,137 @@ test("background timeout interrupts the sub-run and records an error outcome", a
     done: new Promise<RunResult>(() => {}),
   });
   const replies: string[] = [];
-  await dispatchToProject("eticket-v3", "task", { ...d, dispatchTimeoutMs: 5, reply: (_c, t) => void replies.push(t) }, 1, {
-    start: fakeStart as never,
-    root,
-  });
-  await new Promise((r) => setTimeout(r, 25));
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, dispatchTimeoutMs: 5, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
+    1,
+    { start: fakeStart as never, root },
+  );
+  await new Promise((r) => setTimeout(r, 60));
   expect(interrupted).toBe(true);
-  expect(replies.some((t) => t.includes("timed out"))).toBe(true);
+  expect(replies.some((t) => t.includes("timed out") && t.includes("ceiling"))).toBe(true);
+});
+
+// --- Liveness-based dispatch timeout (2026-07-08: 18 long builds in a row were killed by the
+// fixed 15m wall clock; the timeout must protect against a HUNG worker, not a busy one). ---
+
+test("a silent sub-run is aborted by the STALL limit and the result names the stall", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let interrupted = false;
+  const fakeStart = () => ({
+    followUp: () => {},
+    queued: () => 0,
+    interrupt: async () => {
+      interrupted = true;
+    },
+    done: new Promise<RunResult>(() => {}),
+  });
+  const replies: string[] = [];
+  // huge ceiling, tiny stall → only the stall limit can fire
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 10, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
+    1,
+    { start: fakeStart as never, root },
+  );
+  await new Promise((r) => setTimeout(r, 80));
+  expect(interrupted).toBe(true);
+  expect(replies.some((t) => t.includes("timed out") && t.includes("stall"))).toBe(true);
+});
+
+test("a BUSY sub-run (streaming activity) is NOT stall-aborted even long past the stall window", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let interrupted = false;
+  let handlers: RunHandlers | undefined;
+  const fakeStart = (_o: Order, h: RunHandlers) => {
+    handlers = h;
+    return {
+      followUp: () => {},
+      queued: () => 0,
+      interrupt: async () => {
+        interrupted = true;
+      },
+      done: new Promise<RunResult>(() => {}),
+    };
+  };
+  await dispatchToProject(
+    "eticket-v3",
+    "long build",
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 20, dispatchGraceMs: 5 },
+    1,
+    { start: fakeStart as never, root },
+  );
+  // keep the worker "busy": activity every 5ms, well inside the 20ms stall window
+  const beat = setInterval(() => handlers?.onActivity?.("Bash"), 5);
+  await new Promise((r) => setTimeout(r, 100)); // 5× the stall window
+  clearInterval(beat);
+  expect(interrupted).toBe(false);
+});
+
+test("on timeout the worker first gets a wrap-up follow-up, and finishing within the grace window keeps its result", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let interrupted = false;
+  const followUps: string[] = [];
+  let resolveDone!: (r: RunResult) => void;
+  const fakeStart = () => ({
+    followUp: (t: string) => {
+      followUps.push(t);
+      // the worker "wraps up" when told: commit + WIP note, then finish within the grace window
+      setTimeout(() => resolveDone({ ok: true, sessionId: "sub-1", summary: "committed green work + WIP note", costUsd: 0 }), 5);
+    },
+    queued: () => 0,
+    interrupt: async () => {
+      interrupted = true;
+    },
+    done: new Promise<RunResult>((res) => {
+      resolveDone = res;
+    }),
+  });
+  const replies: string[] = [];
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 10, dispatchGraceMs: 200, reply: (_c, t) => void replies.push(t) },
+    1,
+    { start: fakeStart as never, root },
+  );
+  await new Promise((r) => setTimeout(r, 120));
+  expect(followUps.some((t) => t.toLowerCase().includes("commit") && t.toLowerCase().includes("wip"))).toBe(true);
+  expect(interrupted).toBe(false); // wrapped up gracefully — never hard-aborted
+  expect(replies.some((t) => t.includes("finished") && t.includes("committed green work"))).toBe(true);
+});
+
+test("a caller-requested timeoutMs is honoured but clamped to dispatchTimeoutMaxMs", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let interrupted = false;
+  const fakeStart = () => ({
+    followUp: () => {},
+    queued: () => 0,
+    interrupt: async () => {
+      interrupted = true;
+    },
+    done: new Promise<RunResult>(() => {}),
+  });
+  // caller asks for a huge ceiling, but the hard max is 5ms → the ceiling still fires
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, dispatchTimeoutMs: 60_000, dispatchTimeoutMaxMs: 5, dispatchGraceMs: 5 },
+    1,
+    { start: fakeStart as never, root, timeoutMs: 3_600_000 },
+  );
+  await new Promise((r) => setTimeout(r, 60));
+  expect(interrupted).toBe(true);
 });
 
 test("dispatching twice to the same folder reuses one registry entry (no '<name>-2' duplicate)", async () => {
@@ -164,14 +288,15 @@ test("a timed-out dispatch is removed from the registry, and the next dispatch r
     interrupt: async () => {},
     done: new Promise<RunResult>(() => {}),
   });
-  await dispatchToProject("waselni", "task 1", { ...d, dispatchTimeoutMs: 5 }, 1, { start: hangingStart as never, root });
-  await new Promise((r) => setTimeout(r, 25)); // let the timeout fire and bookkeeping settle
+  const fast = { ...d, dispatchTimeoutMs: 5, dispatchGraceMs: 5 };
+  await dispatchToProject("waselni", "task 1", fast, 1, { start: hangingStart as never, root });
+  await new Promise((r) => setTimeout(r, 60)); // let the timeout + grace fire and bookkeeping settle
 
   expect(d.registry.list().filter((s) => s.order.folder === join(root, "waselni"))).toHaveLength(0);
 
-  await dispatchToProject("waselni", "task 2", { ...d, dispatchTimeoutMs: 5 }, 1, { start: hangingStart as never, root });
-  await new Promise((r) => setTimeout(r, 25));
-  await dispatchToProject("waselni", "task 3", { ...d, dispatchTimeoutMs: 5 }, 1, { start: hangingStart as never, root });
+  await dispatchToProject("waselni", "task 2", fast, 1, { start: hangingStart as never, root });
+  await new Promise((r) => setTimeout(r, 60));
+  await dispatchToProject("waselni", "task 3", fast, 1, { start: hangingStart as never, root });
 
   const forFolder = d.registry.list().filter((s) => s.order.folder === join(root, "waselni"));
   expect(forFolder).toHaveLength(1); // only the live third run

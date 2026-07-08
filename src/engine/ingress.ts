@@ -70,7 +70,7 @@ export async function runCompanyBrief(
             resume: company.sdkSessionId || undefined,
             effort: "low",
             mcpServers: neoMcpServers(
-              { ...deps, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, contextPolicy: deps.cfg.contextPolicy },
+              { ...deps, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy },
               CUSTOMER_CHAT,
               { dispatch: true, folder: company.order.folder },
             ),

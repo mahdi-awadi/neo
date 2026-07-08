@@ -43,8 +43,16 @@ export interface NeoConfig {
   businessName: string;
   /** When true (default), the daemon runs the loop scheduler. Disable with NEO_LOOP_SCHEDULER=0. */
   loopSchedulerEnabled: boolean;
-  /** Kill a dispatched background sub-run after this long (ms). Default 15 min. */
+  /** Default per-dispatch ceiling (ms) when the caller doesn't request one. Default 15 min. */
   dispatchTimeoutMs: number;
+  /** Hard cap (ms) on any per-dispatch ceiling a caller may request. Default 2 h. */
+  dispatchTimeoutMaxMs: number;
+  /** Abort a dispatched sub-run that has produced NO activity for this long (ms). Default 5 min.
+   *  A busy worker streaming output stays alive regardless of wall clock (up to the ceiling). */
+  dispatchStallMs: number;
+  /** Grace window (ms) after a limit fires: the worker is told to commit green work + write a
+   *  WIP note before the hard abort. Default 75 s. */
+  dispatchGraceMs: number;
   /** Alert when a running session has produced nothing for this long (ms). Default 10 min. */
   stuckAfterMs: number;
   /** Alert when one activity label has run this long (ms). Default 20 min. */
@@ -63,6 +71,9 @@ const DEFAULTS = {
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
   dispatchTimeoutMs: 15 * 60 * 1000,
+  dispatchTimeoutMaxMs: 2 * 60 * 60 * 1000,
+  dispatchStallMs: 5 * 60 * 1000,
+  dispatchGraceMs: 75 * 1000,
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
@@ -116,6 +127,9 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     loopSchedulerEnabled:
       process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
     dispatchTimeoutMs: fileCfg.dispatchTimeoutMs ?? DEFAULTS.dispatchTimeoutMs,
+    dispatchTimeoutMaxMs: fileCfg.dispatchTimeoutMaxMs ?? DEFAULTS.dispatchTimeoutMaxMs,
+    dispatchStallMs: fileCfg.dispatchStallMs ?? DEFAULTS.dispatchStallMs,
+    dispatchGraceMs: fileCfg.dispatchGraceMs ?? DEFAULTS.dispatchGraceMs,
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

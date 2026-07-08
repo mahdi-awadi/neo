@@ -47,6 +47,13 @@ test("dispatchTimeoutMs defaults to 900000 and reads config.json", () => {
   expect(loadConfig("/nonexistent-dir").dispatchTimeoutMs).toBe(900_000);
 });
 
+test("dispatch liveness knobs default per spec (ceiling 2h, stall 5m, grace 75s)", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.dispatchTimeoutMaxMs).toBe(7_200_000);
+  expect(c.dispatchStallMs).toBe(300_000);
+  expect(c.dispatchGraceMs).toBe(75_000);
+});
+
 test("watchdog thresholds default per spec", () => {
   const c = loadConfig("/nonexistent-dir");
   expect(c.stuckAfterMs).toBe(600_000);
