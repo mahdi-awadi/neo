@@ -27,10 +27,23 @@ delegates; it never blocks on delegated work.
    The company's turn can end; new operator messages route normally.
 2. The background run streams to the operator tagged with the project name (unchanged), is
    metered/ledgered on completion (unchanged bookkeeping, moved into the background
-   continuation), and is bounded by `dispatchTimeoutMs` (config, default **900_000** = 15 min):
-   on timeout the engine interrupts the sub-session and records outcome `error: timed out`.
-   To make interruption possible, the dispatch run switches from single-shot `runOrder` to
-   `startOrder` (which exposes `.interrupt()` and `.done`).
+   continuation), and is bounded by a **liveness monitor** (revised 2026-07-08 — the original
+   fixed 15 min wall clock killed 18 long builds in a row; the timeout must protect against a
+   HUNG worker, not a busy one):
+   - **Stall limit:** the sub-run is aborted when it has produced **no activity** (no tool
+     milestone, no assistant text) for `dispatchStallMs` (default **300_000** = 5 min). A worker
+     streaming output for 90 minutes stays alive.
+   - **Per-dispatch ceiling:** the `dispatch` tool accepts an optional `timeoutMinutes` — the
+     company sizes it to the task (2 for a lookup, 60–120 for a build). Unset →
+     `dispatchTimeoutMs` (default 15 min). Always clamped to `dispatchTimeoutMaxMs`
+     (default **7_200_000** = 2 h) so a caller can never run unbounded.
+   - **Graceful wrap-up:** when either limit fires, the engine first pushes a follow-up telling
+     the worker to commit green work + write a brief WIP note, waits `dispatchGraceMs`
+     (default **75_000** = 75 s), then hard-interrupts. A worker that finishes within the grace
+     window keeps its own result (no error recorded). The timed-out result text names which
+     limit fired (stall vs ceiling).
+   To make interruption + the wrap-up follow-up possible, the dispatch run uses `startOrder`
+   (which exposes `.followUp()`, `.interrupt()` and `.done`).
 3. **Completion report-back:** when the background run settles (done / error / timeout), the
    engine (a) replies to the operator (`✅ gold finished: <summary>` / `⛔ gold timed out after
    15m`), and (b) if the company session is live, pushes a follow-up into it:
@@ -74,7 +87,8 @@ thrown into a worker path.
 
 ## Config
 
-`dispatchTimeoutMs` (900_000), `stuckAfterMs` (600_000), `longTurnAlertMs` (1_200_000),
+`dispatchTimeoutMs` (900_000), `dispatchTimeoutMaxMs` (7_200_000), `dispatchStallMs` (300_000),
+`dispatchGraceMs` (75_000), `stuckAfterMs` (600_000), `longTurnAlertMs` (1_200_000),
 `alertRepeatMs` (900_000) — all in `config.ts` with standard precedence.
 
 ## Testing (TDD, bun test)
