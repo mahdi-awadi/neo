@@ -21,6 +21,13 @@ import { sessionContext, decideContext, runHandoff } from "./context-policy";
 /** Start a live session. Injectable for tests; defaults to the real SDK-backed runner. */
 type StartFn = (order: Order, handlers: RunHandlers, deps?: RunDeps) => SessionRun;
 
+// Registry ids currently mid pre-resume-handoff (F3): the idle-resume branch sets
+// status "running" up front but has no control handle attached until AFTER the (possibly
+// minutes-wide) applyContextPolicy await settles and startSession runs. Without this guard,
+// a second inbound message during that window sees status "running" + no control and takes
+// the SAME idle-resume branch again, starting a second concurrent resume of the same entry.
+const resuming = new Set<string>();
+
 export interface PipelineDeps {
   cfg: NeoConfig;
   ledger: Ledger;
@@ -130,13 +137,22 @@ export async function handleMessage(
       return null;
     }
     // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
+    if (resuming.has(live.id)) {
+      await deps.reply(chatId, `⏳ ${live.name} is reopening — send that again in a moment`);
+      return null;
+    }
     const resumed: Order = { ...live.order, id: crypto.randomUUID(), task: text.trim(), createdAt: now() };
     ledger.recordOrder(resumed);
     registry.setStatus(live.id, "running");
     registry.touch(live.id, now());
     await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
-    const resumeId = live.sdkSessionId ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps) : "";
-    return startSession(resumed, live.id, chatId, deps, now, start, runConfigFor(live.id, registry, deps, chatId, resumeId));
+    resuming.add(live.id);
+    try {
+      const resumeId = live.sdkSessionId ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps) : "";
+      return startSession(resumed, live.id, chatId, deps, now, start, runConfigFor(live.id, registry, deps, chatId, resumeId));
+    } finally {
+      resuming.delete(live.id);
+    }
   }
 
   // 2. Parse a new order.
@@ -232,6 +248,7 @@ function startSession(
       onActivity: (label) => {
         try {
           registry.noteActivity(registryId, label, now());
+          registry.touch(registryId, now());
         } catch {
           // observer only — never break the worker path
         }

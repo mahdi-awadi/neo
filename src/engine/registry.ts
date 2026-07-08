@@ -76,7 +76,16 @@ export function createRegistry(): Registry {
       sessions.delete(id);
       controls.delete(id);
     },
-    attachControl: (id, control) => void controls.set(id, control),
+    attachControl(id, control) {
+      // Defensive against F5: /kill during a pending gate can remove the session before the
+      // (possibly async) caller reaches attachControl. Storing it then would leak an orphan
+      // control no one will ever detach/interrupt via the registry again.
+      if (!sessions.has(id)) {
+        void control.interrupt?.();
+        return;
+      }
+      controls.set(id, control);
+    },
     detachControl: (id) => void controls.delete(id),
     getControl: (id) => controls.get(id),
     setDefault: (id) => void (defaultId = id),

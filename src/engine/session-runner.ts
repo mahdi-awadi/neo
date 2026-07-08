@@ -198,6 +198,9 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         summary = typeof msg.result === "string" ? msg.result : "";
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
         handlers.onCost?.(costUsd);
+        // Turn boundary: the worker is waiting for the next input, not mid-turn — the
+        // watchdog must not treat this as silence or a grinding activity (F1).
+        handlers.onActivity?.("waiting");
       }
     }
   } catch {

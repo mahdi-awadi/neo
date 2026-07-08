@@ -133,6 +133,25 @@ test("background timeout interrupts the sub-run and records an error outcome", a
   expect(replies.some((t) => t.includes("timed out"))).toBe(true);
 });
 
+test("dispatching twice to the same folder reuses one registry entry (no '<name>-2' duplicate)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const fakeStart = () => {
+    const done = Promise.resolve<RunResult>({ ok: true, sessionId: "sub-1", summary: "done", costUsd: 0 });
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done };
+  };
+  await dispatchToProject("eticket-v3", "first task", d, 1, { start: fakeStart as never, now: () => 0, root });
+  await new Promise((r) => setTimeout(r, 0)); // let the continuation settle -> status idle
+
+  await dispatchToProject("eticket-v3", "second task", d, 1, { start: fakeStart as never, now: () => 1, root });
+  await new Promise((r) => setTimeout(r, 0));
+
+  const forFolder = d.registry.list().filter((s) => s.order.folder === join(root, "eticket-v3"));
+  expect(forFolder).toHaveLength(1);
+  expect(forFolder[0].name).toBe("eticket-v3"); // never "eticket-v3-2"
+});
+
 test("dispatchToProject reports a clear error for an unknown project (and never runs)", async () => {
   const { d } = makeDeps();
   const out = await dispatchToProject("ghost", "do x", d, 99, {

@@ -168,6 +168,7 @@ export async function dispatchToProject(
         onActivity: (label) => {
           try {
             deps.registry.noteActivity(session.id, label, now());
+            deps.registry.touch(session.id, now());
           } catch {
             /* observer only */
           }

@@ -33,6 +33,16 @@ test("alerts when one activity label grinds past longTurnAlertMs even with recen
   expect(alerts[0]).toContain("dispatch: gold");
 });
 
+test("never alerts a running session whose activity is 'waiting' (turn boundary), however old", () => {
+  const { r, s } = mk(0);
+  r.setStatus(s.id, "running");
+  r.noteActivity(s.id, "waiting", 0);
+  const alerts: string[] = [];
+  const alert = (_s: SessionInfo, reason: string) => void alerts.push(reason);
+  // Way past both stuckAfterMs (silent) and longTurnAlertMs (grind) — still must not alert.
+  expect(sweepStuck(r, { ...OPTS, now: 10_000_000, alert })).toHaveLength(0);
+});
+
 test("never alerts on idle sessions or after errors in the alert callback", () => {
   const { r, s } = mk(0);
   r.setStatus(s.id, "idle");

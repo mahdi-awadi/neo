@@ -266,6 +266,20 @@ test("worker output touches the session so producing output counts as activity",
   expect(h.registry.get(id)?.lastActivityAt).toBe(5000);
 });
 
+test("onActivity refreshes lastActivityAt (activity IS activity, not just onMessage)", async () => {
+  let handlers: RunHandlers | undefined;
+  const fs = fakeStart({ onStart: (h) => (handlers = h) });
+  const h = harness({ start: fs.start });
+  let clock = 1000;
+  await handleMessage("/open " + scratch() + " do work", 7, { ...h.base, now: () => clock });
+
+  const id = h.registry.list()[0].id;
+  clock = 6000;
+  handlers!.onActivity?.("Bash: bun test"); // activity only, no onMessage
+
+  expect(h.registry.get(id)?.lastActivityAt).toBe(6000);
+});
+
 test("a trusted project auto-approves: onAutoApprove records to the ledger and replies", async () => {
   let handlers: RunHandlers | undefined;
   const fs = fakeStart({ onStart: (h) => (handlers = h) });
@@ -338,6 +352,50 @@ test("fresh start reads HANDOFF.md when it exists", async () => {
   await handleMessage(`/open ${dir} continue the work`, 9, h.base);
 
   expect(seenTask.startsWith("Read HANDOFF.md first")).toBe(true);
+});
+
+test("a second message during a slow pre-resume handoff is queued, not a double-resume", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+
+  // Get a real idle, resumable registry entry first (mirrors "a follow-up to a completed
+  // (idle) session resumes it" above) — this is the branch F3 targets.
+  const opened = await handleMessage(`/open ${dir} start`, 4, h.base);
+  f.finish({ ok: true, sessionId: "sdk-1", summary: "done", costUsd: 0 });
+  await opened!.done;
+  await new Promise((r) => setTimeout(r, 0)); // let the supervisor mark it idle
+  expect(h.registry.list()[0].status).toBe("idle");
+
+  let releaseHandoff!: () => void;
+  const blocked = new Promise<void>((res) => {
+    releaseHandoff = res;
+  });
+  let startCount = 0;
+  const countingStart: typeof f.start = (o, hn, d) => {
+    startCount++;
+    return f.start(o, hn, d);
+  };
+  const base = {
+    ...h.base,
+    start: countingStart,
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0 }), // handoff verdict
+    handoff: async () => {
+      await blocked; // simulate a slow (bounded) handoff turn
+    },
+  };
+
+  const first = handleMessage("continue please", 4, base); // triggers idle-resume + handoff
+  await new Promise((r) => setTimeout(r, 0)); // let it reach the await
+  await handleMessage("second message while resuming", 4, base);
+
+  expect(h.replies.some((r) => r.toLowerCase().includes("reopening"))).toBe(true);
+  expect(startCount).toBe(0); // no start yet — still blocked on handoff
+
+  releaseHandoff();
+  await first;
+  await new Promise((r) => setTimeout(r, 0));
+  expect(startCount).toBe(1); // exactly one start, once the handoff released
 });
 
 test("post-completion handoff fires when the finished session is fat", async () => {

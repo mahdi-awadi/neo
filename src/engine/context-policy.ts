@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import type { Order, SessionInfo } from "../types";
 import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
-import { runOrder } from "./session-runner";
+import { runOrder, startOrder, type RunResult } from "./session-runner";
 
 export const CONTEXT_WINDOW_TOKENS = 200_000;
 
@@ -88,13 +88,20 @@ export const HANDOFF_PROMPT =
 export interface HandoffDeps {
   registry: Registry;
   ledger: Ledger;
+  /** Preferred seam: a live, interruptible run (so a timed-out handoff can be aborted instead
+   *  of abandoned as an unbounded background worker on the folder). */
+  start?: typeof startOrder;
+  /** Legacy single-shot seam (still accepted for old callers/tests) — wrapped so it can still
+   *  be raced against the timeout, but it has no interrupt handle (best-effort no-op). */
   run?: typeof runOrder;
   now?: () => number;
 }
 
-/** Run the handoff turn against the fat session (bounded), then ALWAYS clear its resume state. */
+/** Run the handoff turn against the fat session (bounded), then ALWAYS clear its resume state.
+ *  If the turn doesn't finish within `cfg.handoffTimeoutMs`, it is INTERRUPTED (not abandoned) —
+ *  an abandoned handoff would leave an unbounded worker running on the folder, which could race
+ *  with a subsequent fresh session on the same folder. */
 export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
-  const run = deps.run ?? runOrder;
   const now = deps.now ?? (() => Date.now());
   const sig = sessionContext(session.order.folder, session.sdkSessionId);
   const order: Order = {
@@ -105,11 +112,23 @@ export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, de
     chatId: session.order.chatId,
     createdAt: now(),
   };
+  const start = deps.start ?? (deps.run ? wrapRunAsStart(deps.run) : startOrder);
   try {
-    await Promise.race([
-      run(order, { onMessage: () => {}, onEscalation: async () => "deny" }, { resume: session.sdkSessionId || undefined, effort: "low" }),
-      new Promise((res) => setTimeout(res, cfg.handoffTimeoutMs)),
-    ]);
+    const run = start(
+      order,
+      { onMessage: () => {}, onEscalation: async () => "deny" },
+      { resume: session.sdkSessionId || undefined, effort: "low" },
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((res) => {
+      timer = setTimeout(() => res("timeout"), cfg.handoffTimeoutMs);
+    });
+    const settled = await Promise.race([run.done, timeout]);
+    if (settled === "timeout") {
+      await run.interrupt();
+    } else {
+      clearTimeout(timer);
+    }
   } catch {
     // the clear below is the point; a failed handoff turn must not prevent it
   }
@@ -120,4 +139,20 @@ export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, de
   } catch {
     // observer-grade bookkeeping — never throw into a worker path
   }
+}
+
+/** Adapt a legacy single-shot `runOrder`-shaped function into the `startOrder` SessionRun shape,
+ *  so old `run:` test seams keep working while the main path prefers the interruptible `start`. */
+function wrapRunAsStart(run: typeof runOrder): typeof startOrder {
+  return (order, handlers, runDeps) => {
+    const done: Promise<RunResult> = run(order, handlers, runDeps);
+    return {
+      followUp: () => {},
+      interrupt: async () => {
+        // best-effort — the legacy single-shot seam has no real interrupt handle
+      },
+      queued: () => 0,
+      done,
+    } as unknown as ReturnType<typeof startOrder>;
+  };
 }

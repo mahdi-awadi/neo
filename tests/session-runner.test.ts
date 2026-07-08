@@ -336,3 +336,18 @@ test("onActivity reports every tool_use and text block; queued() counts waiting 
   expect(labels).toContain("Bash: bun test");
   expect(labels).toContain("replying");
 });
+
+test("reports 'waiting' on the SDK result message (turn boundary)", async () => {
+  const labels: string[] = [];
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "text", text: "done for now" }] } };
+      yield { type: "result", subtype: "success", result: "ok", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onActivity: (l) => void labels.push(l) },
+    { query: q as never },
+  );
+  expect(labels[labels.length - 1]).toBe("waiting");
+});

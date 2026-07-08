@@ -68,12 +68,21 @@ test("runHandoff runs the handoff turn against the persisted session, then clear
   expect(ledger.listContextEvents()[0]?.verdict).toBe("handoff");
 });
 
-test("runHandoff clears even when the handoff turn times out", async () => {
+test("runHandoff clears even when the handoff turn times out, AND interrupts the abandoned run", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
   const s = registry.add({ id: "h2", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
   registry.setSdkSessionId(s.id, "fat-2");
-  const never = () => new Promise<never>(() => {});
-  await runHandoff(s, { ...CFG, handoffTimeoutMs: 5 }, { registry, ledger, run: never as never });
+  let interrupted = false;
+  const fakeStart = () => ({
+    followUp: () => {},
+    queued: () => 0,
+    interrupt: async () => {
+      interrupted = true;
+    },
+    done: new Promise<never>(() => {}), // never resolves — must be raced against the timeout
+  });
+  await runHandoff(s, { ...CFG, handoffTimeoutMs: 5 }, { registry, ledger, start: fakeStart as never });
   expect(registry.get(s.id)?.sdkSessionId).toBe("");
+  expect(interrupted).toBe(true); // the timed-out worker is interrupted, not abandoned
 });

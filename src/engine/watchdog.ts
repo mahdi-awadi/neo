@@ -18,6 +18,9 @@ export function sweepStuck(registry: Registry, opts: WatchdogOpts): SessionInfo[
   const alerted: SessionInfo[] = [];
   for (const s of registry.list()) {
     if (s.status !== "running") continue;
+    // "waiting" = the worker just hit a turn boundary and is idle between turns, not stuck
+    // mid-turn — it is healthy no matter how long it sits there (F1).
+    if (s.activity?.label === "waiting") continue;
     if (s.alertedAt !== undefined && now - s.alertedAt < alertRepeatMs) continue; // dedup window
     const silentFor = now - s.lastActivityAt;
     const grindingFor = s.activity ? now - s.activity.since : 0;

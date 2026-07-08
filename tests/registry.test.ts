@@ -85,6 +85,18 @@ test("attachControl stores a control handle retrievable by id and cleared on rem
   expect(reg.getControl(o.id)).toBeUndefined();
 });
 
+test("attachControl after the session was removed does not leak a control (best-effort interrupts, doesn't store)", () => {
+  const reg = createRegistry();
+  const o = order();
+  reg.add(o, 1);
+  reg.remove(o.id); // e.g. /kill during a pending gate
+  let interrupted = false;
+  const ctrl = { followUp: () => {}, interrupt: async () => void (interrupted = true) };
+  reg.attachControl(o.id, ctrl);
+  expect(reg.getControl(o.id)).toBeUndefined();
+  expect(interrupted).toBe(true);
+});
+
 test("touch, setStatus, setSdkSessionId, and remove mutate the entry", () => {
   const reg = createRegistry();
   const o = order();
