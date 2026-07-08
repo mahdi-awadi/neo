@@ -54,3 +54,15 @@ test("dashboardSnapshot returns structured projects/usage/loops/recent", () => {
   expect(s.loops.find((l) => l.name === "gold-gofmt")).toBeTruthy();
   expect(s.recent[0]).toMatchObject({ folder: "/p/gamma", task: "old job", status: "done" });
 });
+
+test("dashboard rows expose activity + queued", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d1", folder: "/p", task: "t" }), 0);
+  registry.setStatus(s.id, "running");
+  registry.noteActivity(s.id, "Edit: web.ts", 5);
+  registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 1 });
+  const ledger = openLedger(":memory:");
+  const rows = dashboardSnapshot({ registry, ledger, chatId: 0, now: 10_000 }).projects;
+  expect(rows[0].activity).toEqual({ label: "Edit: web.ts", since: 5 });
+  expect(rows[0].queued).toBe(1);
+});

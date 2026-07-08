@@ -16,6 +16,8 @@ export interface DashProject {
   task: string;
   active: boolean;
   ageMs: number;
+  activity?: { label: string; since: number };
+  queued?: number;
 }
 
 export interface DashState {
@@ -62,6 +64,8 @@ export function dashboardSnapshot(opts: {
     task: s.order.task,
     active: s.id === activeId,
     ageMs: now - s.startedAt,
+    activity: s.activity,
+    queued: opts.registry.getControl(s.id)?.queued?.() ?? 0,
   }));
   const recent = opts.ledger.listRecent(8).map((o) => ({
     folder: o.folder,

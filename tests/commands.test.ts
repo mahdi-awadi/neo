@@ -267,3 +267,17 @@ test("/trust on then /trust toggles and reports trust when a project is explicit
   expect(handleCommand("/trust off", 5, d)!.text).toContain("🔒");
   expect(trust.isTrusted("/home/neo/myproject")).toBe(false);
 });
+
+test("/status shows current activity, busy duration, and queue depth for running sessions", () => {
+  const registry = createRegistry();
+  const o = order({ folder: "/p/gold", task: "build" });
+  const s = registry.add(o, 0);
+  registry.setStatus(s.id, "running");
+  registry.noteActivity(s.id, "Bash: bun test", 100000 - 4 * 60_000);
+  registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 2 });
+  const d = deps({ registry });
+  const out = handleCommand("/status", 1, d)!;
+  expect(out.text).toContain("Bash: bun test");
+  expect(out.text).toContain("4m");
+  expect(out.text).toContain("2 queued");
+});

@@ -198,7 +198,10 @@ function renderList(registry: Registry, trust: CommandDeps["trust"], now: number
       const star = s.id === activeId ? "★ " : "";
       const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
-      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${s.status} · ${humanAge(now - s.startedAt)} · "${task}"`;
+      const act = s.status === "running" && s.activity ? ` · ${s.activity.label} ${humanAge(now - s.activity.since)}` : "";
+      const q = registry.getControl(s.id)?.queued?.() ?? 0;
+      const queued = q > 0 ? ` · ${q} queued` : "";
+      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${s.status}${act}${queued} · ${humanAge(now - s.startedAt)} · "${task}"`;
     })
     .join("\n");
   return { text, select };
