@@ -19,7 +19,14 @@ export function sweepIdle(
   for (const s of registry.list()) {
     if (s.id === registry.getDefault()?.id) continue; // the company is always-on — never close it
     const open = s.status === "running" || s.status === "idle";
-    if (!open || now - s.lastActivityAt <= idleMs) continue;
+    if (!open) {
+      // Terminal leftovers ("error"/"done") have no live run to close — but left registered they
+      // block name reuse and accumulate as zombies. Reap them silently (not counted as "closed").
+      if (s.sdkSessionId) ledger.recordSession(s.id, s.sdkSessionId);
+      registry.remove(s.id);
+      continue;
+    }
+    if (now - s.lastActivityAt <= idleMs) continue;
 
     void registry.getControl(s.id)?.interrupt(); // ends the run; `done` resolves downstream
     if (s.sdkSessionId) ledger.recordSession(s.id, s.sdkSessionId); // keep the resume target

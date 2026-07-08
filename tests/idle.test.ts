@@ -68,6 +68,22 @@ test("sweepIdle ignores already-closed sessions", () => {
   expect(closed).toEqual([]);
 });
 
+test("sweepIdle reaps terminal (error/done) leftovers so they never accumulate as zombies", () => {
+  const reg = createRegistry();
+  const led = openLedger(":memory:");
+  const bad = order({ id: "z1", folder: "/p/waselni" });
+  reg.add(bad, 0);
+  reg.setStatus(bad.id, "error"); // e.g. a timed-out dispatch from an older engine version
+  const done = order({ id: "z2", folder: "/p/other" });
+  reg.add(done, 0);
+  reg.setStatus(done.id, "done");
+
+  sweepIdle(reg, led, { idleMs: 1000, now: 2000 });
+
+  expect(reg.get("z1")).toBeUndefined();
+  expect(reg.get("z2")).toBeUndefined();
+});
+
 test("sweepIdle never closes the default project, however old", () => {
   const reg = createRegistry();
   const led = openLedger(":memory:");
