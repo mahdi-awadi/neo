@@ -15,6 +15,7 @@ import { openTrustStore } from "./engine/trust";
 import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
+import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
 import { startTelegram } from "./frontends/telegram";
@@ -62,8 +63,27 @@ async function main(): Promise<void> {
     claudeJsonPath: join(homedir(), ".claude.json"),
   });
 
-  // Idle watchdog — shares the registry the pipeline registers sessions in. The company is exempt.
-  setInterval(() => sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now() }), IDLE_POLL_MS);
+  // Idle watchdog + stuck-watchdog — shares the registry the pipeline registers sessions in. The company is exempt.
+  setInterval(() => {
+    sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now() });
+    sweepStuck(registry, {
+      now: Date.now(),
+      stuckAfterMs: cfg.stuckAfterMs,
+      longTurnAlertMs: cfg.longTurnAlertMs,
+      alertRepeatMs: cfg.alertRepeatMs,
+      alert: (_s, text) => {
+        console.log(`[watchdog] ${text}`);
+        const adminId = admin.adminId();
+        if (cfg.telegramToken && adminId) {
+          void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chat_id: adminId, text }),
+          }).catch(() => {});
+        }
+      },
+    });
+  }, IDLE_POLL_MS);
 
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);

@@ -30,6 +30,9 @@ function cfg(): NeoConfig {
     businessName: "",
     loopSchedulerEnabled: true,
     dispatchTimeoutMs: 900_000,
+    stuckAfterMs: 600_000,
+    longTurnAlertMs: 1_200_000,
+    alertRepeatMs: 900_000,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));

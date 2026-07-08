@@ -44,6 +44,12 @@ export interface NeoConfig {
   loopSchedulerEnabled: boolean;
   /** Kill a dispatched background sub-run after this long (ms). Default 15 min. */
   dispatchTimeoutMs: number;
+  /** Alert when a running session has produced nothing for this long (ms). Default 10 min. */
+  stuckAfterMs: number;
+  /** Alert when one activity label has run this long (ms). Default 20 min. */
+  longTurnAlertMs: number;
+  /** Re-alert about the same session only after this long (ms). Default 15 min. */
+  alertRepeatMs: number;
 }
 
 const DEFAULTS = {
@@ -54,6 +60,9 @@ const DEFAULTS = {
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
   dispatchTimeoutMs: 15 * 60 * 1000,
+  stuckAfterMs: 10 * 60 * 1000,
+  longTurnAlertMs: 20 * 60 * 1000,
+  alertRepeatMs: 15 * 60 * 1000,
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -103,5 +112,8 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     loopSchedulerEnabled:
       process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
     dispatchTimeoutMs: fileCfg.dispatchTimeoutMs ?? DEFAULTS.dispatchTimeoutMs,
+    stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
+    longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
+    alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,
   };
 }

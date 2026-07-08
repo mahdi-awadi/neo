@@ -22,6 +22,9 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     businessName: "",
     loopSchedulerEnabled: true,
     dispatchTimeoutMs: 900_000,
+    stuckAfterMs: 600_000,
+    longTurnAlertMs: 1_200_000,
+    alertRepeatMs: 900_000,
   };
 }
 

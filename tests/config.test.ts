@@ -46,3 +46,10 @@ test("loopSchedulerEnabled defaults to true; NEO_LOOP_SCHEDULER=0 disables it", 
 test("dispatchTimeoutMs defaults to 900000 and reads config.json", () => {
   expect(loadConfig("/nonexistent-dir").dispatchTimeoutMs).toBe(900_000);
 });
+
+test("watchdog thresholds default per spec", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.stuckAfterMs).toBe(600_000);
+  expect(c.longTurnAlertMs).toBe(1_200_000);
+  expect(c.alertRepeatMs).toBe(900_000);
+});
