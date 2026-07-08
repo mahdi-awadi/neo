@@ -49,6 +49,8 @@ export interface DispatchDeps {
    *  pipeline uses — a resumed sub-project session must not grow unbounded (see
    *  docs/superpowers/specs/2026-07-08-context-policy-design.md, Boundaries #3). */
   contextPolicy?: ContextPolicyCfg;
+  /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
+  lifecycle?: { draining(): boolean };
 }
 
 type RunFn = typeof runOrder;
@@ -129,6 +131,9 @@ export async function dispatchToProject(
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
+  if (deps.lifecycle?.draining()) {
+    return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
+  }
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 

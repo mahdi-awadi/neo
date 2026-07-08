@@ -59,6 +59,9 @@ export interface NeoConfig {
   longTurnAlertMs: number;
   /** Re-alert about the same session only after this long (ms). Default 15 min. */
   alertRepeatMs: number;
+  /** Graceful reload: bounded wait (ms) for running turns to wrap up before the hard interrupt.
+   *  Default 90 s. */
+  drainWindowMs: number;
   /** Context policy: signals, verdicts, and safe boundaries for session lifecycle management. */
   contextPolicy: ContextPolicyCfg;
 }
@@ -77,6 +80,7 @@ const DEFAULTS = {
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
+  drainWindowMs: 90 * 1000,
   contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 7 * 24 * 3600 * 1000, handoffTimeoutMs: 180_000 },
 };
 
@@ -133,6 +137,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,
+    drainWindowMs: fileCfg.drainWindowMs ?? DEFAULTS.drainWindowMs,
     contextPolicy: { ...DEFAULTS.contextPolicy, ...(fileCfg.contextPolicy ?? {}) },
   };
 }

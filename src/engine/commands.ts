@@ -26,6 +26,8 @@ export interface CommandDeps {
   inbox?: Inbox;
   /** Context signal function for measuring session occupancy. Optional for tests. */
   signals?: (folder: string, sdkSessionId: string) => ContextSignals;
+  /** Graceful reload (/reload): the daemon injects drain-then-exit; channels without it can't reload. */
+  requestReload?: () => void;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -105,6 +107,16 @@ const COMMANDS: Command[] = [
     usage: "/usage",
     summary: "subscription token usage (hourly/daily/weekly)",
     run: ({ deps, now }) => ({ text: renderUsage(deps.usage, now) }),
+  },
+  {
+    name: "reload",
+    usage: "/reload",
+    summary: "gracefully restart the engine (drains running sessions, resumes them after)",
+    run: ({ deps }) => {
+      if (!deps.requestReload) return { text: "Reload is unavailable on this channel." };
+      deps.requestReload(); // drain + exit happens in the background; the supervisor restarts us
+      return { text: "♻️ reloading: asking running sessions to wrap up, saving open sessions, then restarting…" };
+    },
   },
   {
     name: "help",

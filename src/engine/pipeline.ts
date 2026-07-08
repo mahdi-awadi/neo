@@ -51,6 +51,8 @@ export interface PipelineDeps {
   /** Test seams for the context policy (default: real transcript measurement + handoff run). */
   signals?: typeof sessionContext;
   handoff?: typeof runHandoff;
+  /** Graceful-reload gate: while draining, no new orders/follow-ups start (see engine/reload.ts). */
+  lifecycle?: { draining(): boolean };
 }
 
 /** Apply the context policy to a persisted resume id. Returns the id to actually resume with
@@ -103,6 +105,12 @@ export async function handleMessage(
   const { registry, meter, ledger } = deps;
   const now = deps.now ?? (() => Date.now());
   const start = deps.start ?? startOrder;
+
+  // Graceful reload in progress — refuse up front so nothing new starts mid-drain.
+  if (deps.lifecycle?.draining()) {
+    await deps.reply(chatId, "♻️ Neo is reloading — open sessions are being saved; send that again in a moment.");
+    return null;
+  }
 
   // Durable conversation log: capture the inbound line, then wrap reply/askApproval so every
   // outbound line and approval round-trip is recorded too. Done once here, the single choke
