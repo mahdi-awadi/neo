@@ -53,3 +53,8 @@ test("watchdog thresholds default per spec", () => {
   expect(c.longTurnAlertMs).toBe(1_200_000);
   expect(c.alertRepeatMs).toBe(900_000);
 });
+
+test("contextPolicy defaults per spec", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.contextPolicy).toEqual({ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 });
+});

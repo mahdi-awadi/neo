@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Provider } from "./types";
+import type { ContextPolicyCfg } from "./engine/context-policy";
 
 export interface NeoConfig {
   telegramToken: string;
@@ -50,6 +51,8 @@ export interface NeoConfig {
   longTurnAlertMs: number;
   /** Re-alert about the same session only after this long (ms). Default 15 min. */
   alertRepeatMs: number;
+  /** Context policy: signals, verdicts, and safe boundaries for session lifecycle management. */
+  contextPolicy: ContextPolicyCfg;
 }
 
 const DEFAULTS = {
@@ -63,6 +66,7 @@ const DEFAULTS = {
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
+  contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 7 * 24 * 3600 * 1000, handoffTimeoutMs: 180_000 },
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -115,5 +119,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,
+    contextPolicy: { ...DEFAULTS.contextPolicy, ...(fileCfg.contextPolicy ?? {}) },
   };
 }
