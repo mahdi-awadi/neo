@@ -201,6 +201,12 @@ export async function dispatchToProject(
 
     const startedAt = now();
     let lastActivityAt = startedAt;
+    // A dispatch is single-brief: a turn boundary with no queued follow-ups means the sub-run IS
+    // complete (the real SDK stream stays open waiting for input that will never come — awaiting
+    // run.done alone would falsely "stall" out minutes after the worker already finished). Close
+    // the channel gracefully so done resolves with the worker's own final result; the session
+    // stays resumable (idle bookkeeping below is unchanged).
+    let runRef: ReturnType<typeof startOrder> | undefined;
     const run = start(
       order,
       {
@@ -215,6 +221,10 @@ export async function dispatchToProject(
           deps.ledger.recordAutoApproval(order.id, reason);
           void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
         },
+        onTurnComplete: () => {
+          lastActivityAt = now();
+          if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
+        },
         onActivity: (label) => {
           lastActivityAt = now();
           try {
@@ -227,6 +237,7 @@ export async function dispatchToProject(
       },
       { resume: gatedResume },
     );
+    runRef = run;
     deps.registry.attachControl(session.id, run);
 
     // Liveness monitor: the timeout protects against a HUNG worker, not a busy one. A dispatch

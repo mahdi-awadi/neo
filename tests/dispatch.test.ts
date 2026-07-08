@@ -446,6 +446,49 @@ test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged
   expect(replies.some((r) => r.text.includes("finished") && r.text.includes("3 containers up"))).toBe(true);
 });
 
+// --- Turn-boundary completion (2026-07-08 regression: the real SDK stream stays OPEN after the
+// "result" message — the input channel never closes — so run.done never resolved on its own,
+// every dispatch died as a false "stall" timeout, and the worker's real report was lost). A
+// single-brief dispatch must treat a turn boundary with an empty follow-up queue as done. ---
+
+test("dispatch detects sub-run completion at the turn boundary (open stream) instead of stall-timing out", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  let interrupted = false;
+  // Real-SDK shape: the generator consumes the input channel and stays open after emitting the
+  // turn's result, waiting for a next message that never comes.
+  const q = (args: { prompt: AsyncIterable<{ message: { content: string } }>; options: unknown }) => {
+    const gen = (async function* () {
+      for await (const _m of args.prompt) {
+        yield { type: "result", subtype: "success", result: "final report text", total_cost_usd: 0.01, session_id: "sub-1" };
+      }
+    })();
+    return Object.assign(gen, {
+      interrupt: async () => {
+        interrupted = true;
+      },
+    });
+  };
+  const start = (o: Order, h: RunHandlers, dd?: Record<string, unknown>) => startOrder(o, h, { ...dd, query: q as never });
+  await dispatchToProject(
+    "eticket-v3",
+    "single brief",
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 40, dispatchGraceMs: 10 },
+    1,
+    { start: start as never, root },
+  );
+  await new Promise((r) => setTimeout(r, 150)); // well past the stall window
+  expect(replies.some((r) => r.text.includes("finished") && r.text.includes("final report text"))).toBe(true);
+  expect(replies.some((r) => r.text.includes("timed out"))).toBe(false);
+  expect(interrupted).toBe(false); // graceful close, never hard-aborted
+  // success-path bookkeeping: session kept idle + resumable, sdk session id persisted
+  const forFolder = d.registry.list().filter((s) => s.order.folder === join(root, "eticket-v3"));
+  expect(forFolder).toHaveLength(1);
+  expect(forFolder[0].status).toBe("idle");
+  expect(forFolder[0].sdkSessionId).toBe("sub-1");
+});
+
 // --- context-policy gate on dispatch reuse (2026-07-08 finding: repeated dispatch into one
 // folder must not resume a session forever without ever checking its context load). ---
 
