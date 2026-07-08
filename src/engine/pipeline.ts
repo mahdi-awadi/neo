@@ -180,6 +180,13 @@ function startSession(
         ledger.recordAutoApproval(order.id, reason);
         void deps.reply(chatId, `🔓 auto-approved: ${reason}`, project);
       },
+      onActivity: (label) => {
+        try {
+          registry.noteActivity(registryId, label, now());
+        } catch {
+          // observer only — never break the worker path
+        }
+      },
     },
     runDeps,
   );

@@ -278,3 +278,16 @@ test("a trusted project auto-approves: onAutoApprove records to the ledger and r
   expect(h.ledger.autoApprovalsFor(orderId)).toContain("risky shell command: git push");
   expect(h.replies.some((r) => r.includes("auto-approved"))).toBe(true);
 });
+
+test("startSession wires onActivity into registry.noteActivity", async () => {
+  let captured: RunHandlers | undefined;
+  const fakeStartFn = (_o: Order, h: RunHandlers) => {
+    captured = h;
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+  };
+  const h = harness({ start: fakeStartFn as never });
+  await handleMessage("/open " + scratch() + " do a thing", 7, h.base);
+  const session = h.registry.list()[0];
+  captured?.onActivity?.("Bash: bun test");
+  expect(h.registry.get(session.id)?.activity?.label).toBe("Bash: bun test");
+});
