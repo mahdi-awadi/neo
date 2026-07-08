@@ -33,6 +33,22 @@ export interface Ledger {
   listContextEvents(limit?: number): Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
   /** Wipe the resume-target session id for every order in this folder (fresh start after a handoff/clear). */
   clearSessionsFor(folder: string): void;
+  /** Graceful reload: replace the open-session snapshot (what was live at shutdown). */
+  saveOpenSessions(rows: OpenSessionRow[]): void;
+  /** Read AND clear the snapshot — consumed once at boot so a later boot restores nothing stale. */
+  takeOpenSessions(): OpenSessionRow[];
+}
+
+/** One open session as persisted across a graceful daemon reload. */
+export interface OpenSessionRow {
+  id: string;
+  name: string;
+  folder: string;
+  chatId: number;
+  sdkSessionId: string;
+  task: string;
+  source: OrderSource;
+  createdAt: number;
 }
 
 export interface ConversationMessage {
@@ -80,6 +96,13 @@ export function openLedger(path: string): Ledger {
   );
   // Custom (operator-authored) loop definitions — opaque JSON, merged with the built-in library.
   db.run(`CREATE TABLE IF NOT EXISTS loop_defs (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
+  // Sessions that were open at the last graceful shutdown — restored (and cleared) at boot.
+  db.run(
+    `CREATE TABLE IF NOT EXISTS open_sessions (
+       id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL, chat_id INTEGER NOT NULL,
+       sdk_session_id TEXT NOT NULL, task TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL
+     )`,
+  );
   // Audit trail of context-policy verdicts (handoff/clear) fired per folder.
   db.run(
     `CREATE TABLE IF NOT EXISTS context_events (
@@ -216,6 +239,42 @@ export function openLedger(path: string): Ledger {
       return db
         .query(`SELECT folder, verdict, occupancy, at FROM context_events ORDER BY at DESC LIMIT ?`)
         .all(limit) as Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
+    },
+    saveOpenSessions(rows) {
+      db.run(`DELETE FROM open_sessions`);
+      const insert = db.query(
+        `INSERT INTO open_sessions (id, name, folder, chat_id, sdk_session_id, task, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const r of rows) insert.run(r.id, r.name, r.folder, r.chatId, r.sdkSessionId, r.task, r.source, r.createdAt);
+    },
+    takeOpenSessions() {
+      const rows = db
+        .query(
+          `SELECT id, name, folder, chat_id, sdk_session_id, task, source, created_at
+           FROM open_sessions ORDER BY created_at`,
+        )
+        .all() as Array<{
+        id: string;
+        name: string;
+        folder: string;
+        chat_id: number;
+        sdk_session_id: string;
+        task: string;
+        source: string;
+        created_at: number;
+      }>;
+      db.run(`DELETE FROM open_sessions`);
+      return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        folder: r.folder,
+        chatId: r.chat_id,
+        sdkSessionId: r.sdk_session_id,
+        task: r.task,
+        source: r.source as OrderSource,
+        createdAt: r.created_at,
+      }));
     },
     clearSessionsFor(folder) {
       // Sessions are stored as sdk_session_id on the orders row; wipe the resume target for
