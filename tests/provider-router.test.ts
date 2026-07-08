@@ -21,6 +21,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,
+    dispatchTimeoutMs: 900_000,
   };
 }
 

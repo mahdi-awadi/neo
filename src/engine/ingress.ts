@@ -66,7 +66,15 @@ export async function runCompanyBrief(
         // Tainted runs are fully isolated one-shots: no resume (must not see prior company/
         // operator conversation history) and no persisted session id (see below).
         ? { effort: "low", disallowedTools: TAINTED_DISALLOWED_TOOLS }
-        : { resume: company.sdkSessionId || undefined, effort: "low", mcpServers: neoMcpServers({ ...deps, trust: denyAllTrust() }, CUSTOMER_CHAT, { dispatch: true, folder: company.order.folder }) },
+        : {
+            resume: company.sdkSessionId || undefined,
+            effort: "low",
+            mcpServers: neoMcpServers(
+              { ...deps, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs },
+              CUSTOMER_CHAT,
+              { dispatch: true, folder: company.order.folder },
+            ),
+          },
     );
   } catch (e) {
     deps.ledger.recordOutcome(order.id, "error", e instanceof Error ? e.message : String(e));

@@ -42,6 +42,8 @@ export interface NeoConfig {
   businessName: string;
   /** When true (default), the daemon runs the loop scheduler. Disable with NEO_LOOP_SCHEDULER=0. */
   loopSchedulerEnabled: boolean;
+  /** Kill a dispatched background sub-run after this long (ms). Default 15 min. */
+  dispatchTimeoutMs: number;
 }
 
 const DEFAULTS = {
@@ -51,6 +53,7 @@ const DEFAULTS = {
   budgetWindowUsd: 20,
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
+  dispatchTimeoutMs: 15 * 60 * 1000,
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -99,5 +102,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
     loopSchedulerEnabled:
       process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
+    dispatchTimeoutMs: fileCfg.dispatchTimeoutMs ?? DEFAULTS.dispatchTimeoutMs,
   };
 }

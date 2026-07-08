@@ -13,7 +13,7 @@ import type { Registry } from "./registry";
 import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
-import { runOrder, type RunResult } from "./session-runner";
+import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { DEFAULT_PROJECT } from "./default-project";
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
@@ -34,9 +34,14 @@ export interface DispatchDeps {
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
+  /** Kill a dispatched background sub-run after this long (ms). Default DISPATCH_TIMEOUT_MS_DEFAULT. */
+  dispatchTimeoutMs?: number;
 }
 
 type RunFn = typeof runOrder;
+
+/** Default background sub-run timeout (ms) — 15 minutes. */
+export const DISPATCH_TIMEOUT_MS_DEFAULT = 900_000;
 
 /**
  * Resolve a project reference to a folder: an absolute path, else a repo under `root` (/home),
@@ -79,10 +84,9 @@ export async function dispatchToProject(
   task: string,
   deps: DispatchDeps,
   replyChat: number,
-  opts: { run?: RunFn; now?: () => number; root?: string; desks?: string } = {},
+  opts: { start?: typeof startOrder; run?: RunFn; now?: () => number; root?: string; desks?: string } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
-  const run = opts.run ?? runOrder;
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 
@@ -91,45 +95,86 @@ export async function dispatchToProject(
   // Reuse an already-open session for this folder (resume it) instead of duplicating it as
   // "<name>-2"; only register a fresh entry when nothing is open for the folder.
   const existing = deps.registry.findByFolder(folder);
+  const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now());
+  const name = session.name;
+  // Busy guard: never stack a second run onto a folder whose session is mid-turn.
+  if (existing && wasRunning) {
+    return `${name} is still busy with the previous dispatch — its result will arrive when it finishes.`;
+  }
   if (existing) {
     deps.registry.setStatus(existing.id, "running");
     deps.registry.touch(existing.id, now());
   }
-  const name = session.name;
   await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
 
   const resume = existing?.sdkSessionId || deps.ledger.lastSessionFor(folder, SUB_CHAT) || undefined;
-  let result: RunResult;
-  try {
-    result = await run(
-      order,
-      {
-        onMessage: (t) => void deps.reply(replyChat, t, name),
-        onEscalation: (reason) => deps.askApproval(replyChat, reason),
-        onRateLimit: (info) => deps.usage?.noteRateLimit(info),
-        autoApprove: () => deps.trust.isTrusted(folder),
-        onAutoApprove: (reason) => {
-          deps.ledger.recordAutoApproval(order.id, reason);
-          void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
-        },
-      },
-      { resume },
-    );
-  } catch (e) {
-    deps.registry.setStatus(session.id, "error");
-    return `Dispatch to ${name} failed: ${e instanceof Error ? e.message : String(e)}`;
-  }
+  const start = opts.start ?? startOrder;
+  const timeoutMs = deps.dispatchTimeoutMs ?? DISPATCH_TIMEOUT_MS_DEFAULT;
 
-  if (result.sessionId) {
-    deps.registry.setSdkSessionId(session.id, result.sessionId);
-    deps.ledger.recordSession(order.id, result.sessionId);
-  }
-  deps.meter.note({ costUsd: result.costUsd }, now());
-  deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
-  deps.registry.setStatus(session.id, "idle");
-  deps.registry.touch(session.id, now());
-  return result.summary || (result.ok ? "Done." : "Failed.");
+  const run = start(
+    order,
+    {
+      onMessage: (t) => void deps.reply(replyChat, t, name),
+      onEscalation: (reason) => deps.askApproval(replyChat, reason),
+      onRateLimit: (info) => deps.usage?.noteRateLimit(info),
+      autoApprove: () => deps.trust.isTrusted(folder),
+      onAutoApprove: (reason) => {
+        deps.ledger.recordAutoApproval(order.id, reason);
+        void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
+      },
+      onActivity: (label) => {
+        try {
+          deps.registry.noteActivity(session.id, label, now());
+        } catch {
+          /* observer only */
+        }
+      },
+    },
+    { resume },
+  );
+  deps.registry.attachControl(session.id, run);
+
+  // Background continuation: bounded await, then bookkeeping + report-back. NEVER awaited here —
+  // the company's turn ends immediately (operator requirement: the main agent is always free).
+  void (async () => {
+    let result: RunResult;
+    let timedOut = false;
+    const timer = new Promise<"timeout">((res) => setTimeout(() => res("timeout"), timeoutMs));
+    try {
+      const settled = await Promise.race([run.done, timer]);
+      if (settled === "timeout") {
+        timedOut = true;
+        await run.interrupt();
+        result = { ok: false, sessionId: "", summary: `timed out after ${Math.round(timeoutMs / 60000)}m and was aborted`, costUsd: 0 };
+      } else {
+        result = settled;
+      }
+    } catch (e) {
+      result = { ok: false, sessionId: "", summary: e instanceof Error ? e.message : String(e), costUsd: 0 };
+    }
+    try {
+      if (result.sessionId) {
+        deps.registry.setSdkSessionId(session.id, result.sessionId);
+        deps.ledger.recordSession(order.id, result.sessionId);
+      }
+      deps.meter.note({ costUsd: result.costUsd }, now());
+      deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
+      deps.registry.setStatus(session.id, timedOut || !result.ok ? "error" : "idle");
+      deps.registry.touch(session.id, now());
+      deps.registry.detachControl(session.id);
+      const line = result.ok ? `✅ ${name} finished: ${result.summary || "done"}` : `⛔ ${name}: ${result.summary || "failed"}`;
+      await deps.reply(replyChat, line, name);
+      // Feed the result back into the live company session so it can act on it next turn.
+      const company = deps.registry.getDefault();
+      const control = company && company.id !== session.id ? deps.registry.getControl(company.id) : undefined;
+      control?.followUp(`[dispatch result] ${name}: ${result.summary || (result.ok ? "done" : "failed")}`);
+    } catch {
+      // observer/bookkeeping errors must not surface into the worker path
+    }
+  })();
+
+  return `dispatched to ${name} — running in the background; its output streams to the operator and you will receive its result as a follow-up message when it finishes.`;
 }
 
 /** Send a file the worker produced, but only if `path` is inside `folder`. Returns a status string. */

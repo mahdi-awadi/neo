@@ -8,7 +8,7 @@ import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import type { Order } from "../src/types";
-import { runOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
+import { startOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
 
 test("resolveProject finds a folder by name under root or by absolute path", () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
@@ -40,43 +40,88 @@ function makeDeps() {
   return { d, replies };
 }
 
-test("dispatchToProject opens the target, streams tagged output, records it, returns the result", async () => {
-  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
-  mkdirSync(join(root, "eticket-v3"));
-  const { d, replies } = makeDeps();
-  const fakeRun = async (_o: Order, h: RunHandlers): Promise<RunResult> => {
-    h.onMessage("docker: 3 containers up");
-    return { ok: true, sessionId: "sub-1", summary: "3 containers up", costUsd: 0.02 };
-  };
-
-  const out = await dispatchToProject("eticket-v3", "report docker status", d, 99, {
-    run: fakeRun as never,
-    now: () => 1,
-    root,
-  });
-
-  expect(out).toBe("3 containers up");
-  const sub = d.registry.list().find((s) => s.order.folder === join(root, "eticket-v3"))!;
-  expect(sub).toBeTruthy();
-  expect(sub.order.chatId).toBe(-2); // reserved sub-chat — won't hijack the operator's routing
-  expect(sub.status).toBe("idle"); // kept resumable after completion
-  expect(replies.some((r) => r.text.includes("docker: 3 containers up") && r.project === sub.name)).toBe(true);
-  expect(d.ledger.getOutcome(d.ledger.listRecent()[0].id)?.status).toBe("done");
-});
-
-test("dispatching twice to the same project reuses its session (no eticket-v3-2 duplicate)", async () => {
+test("dispatch returns immediately while the sub-run is still going", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
   const { d } = makeDeps();
-  let n = 0;
-  const fakeRun = async (): Promise<RunResult> => ({ ok: true, sessionId: `s${++n}`, summary: "ok", costUsd: 0 });
+  let interrupted = false;
+  const never = new Promise<RunResult>(() => {});
+  const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => { interrupted = true; }, done: never });
+  const out = await dispatchToProject("eticket-v3", "report docker status", d, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+  });
+  expect(out).toContain("dispatched to");
+  expect(interrupted).toBe(false); // still running in the background — not awaited, not killed
+});
 
-  await dispatchToProject("eticket-v3", "task 1", d, 99, { run: fakeRun as never, now: () => 1, root });
-  await dispatchToProject("eticket-v3", "task 2", d, 99, { run: fakeRun as never, now: () => 2, root });
+test("dispatch to a running folder refuses instead of stacking", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  // register a session for the folder and mark it running, then dispatch again
+  const first = d.registry.add(
+    { id: "d1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: -2, createdAt: 0 },
+    0,
+  );
+  d.registry.setStatus(first.id, "running");
+  const out = await dispatchToProject("eticket-v3", "task", d, 1, {
+    start: (() => {
+      throw new Error("must not start");
+    }) as never,
+    root,
+  });
+  expect(out).toContain("still busy");
+});
 
-  const subs = d.registry.list().filter((s) => s.order.folder === join(root, "eticket-v3"));
-  expect(subs.length).toBe(1); // one entry, reused
-  expect(subs[0].name).toBe("eticket-v3"); // not "eticket-v3-2"
+test("background completion books the result and reports back to operator + company", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const replies: string[] = [];
+  const companyFollowUps: string[] = [];
+  // register the company as default with a live control
+  const co = d.registry.add({ id: "co", source: "neo", folder: "/home/neo/agent", task: "hq", chatId: 1, createdAt: 0 }, 0);
+  d.registry.setDefault(co.id);
+  d.registry.attachControl(co.id, { followUp: (t) => void companyFollowUps.push(t), interrupt: async () => {} });
+  let resolveDone!: (r: RunResult) => void;
+  const done = new Promise<RunResult>((res) => {
+    resolveDone = res;
+  });
+  const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, done });
+  await dispatchToProject("eticket-v3", "task", { ...d, reply: (_c, t) => void replies.push(t) }, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+  });
+  resolveDone({ ok: true, sessionId: "sub-1", summary: "built the thing", costUsd: 0.02 });
+  await new Promise((r) => setTimeout(r, 0)); // let the continuation run
+  expect(replies.some((t) => t.includes("finished") && t.includes("built the thing"))).toBe(true);
+  expect(companyFollowUps.some((t) => t.includes("[dispatch result]") && t.includes("built the thing"))).toBe(true);
+});
+
+test("background timeout interrupts the sub-run and records an error outcome", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let interrupted = false;
+  const fakeStart = () => ({
+    followUp: () => {},
+    queued: () => 0,
+    interrupt: async () => {
+      interrupted = true;
+    },
+    done: new Promise<RunResult>(() => {}),
+  });
+  const replies: string[] = [];
+  await dispatchToProject("eticket-v3", "task", { ...d, dispatchTimeoutMs: 5, reply: (_c, t) => void replies.push(t) }, 1, {
+    start: fakeStart as never,
+    root,
+  });
+  await new Promise((r) => setTimeout(r, 25));
+  expect(interrupted).toBe(true);
+  expect(replies.some((t) => t.includes("timed out"))).toBe(true);
 });
 
 test("dispatchToProject reports a clear error for an unknown project (and never runs)", async () => {
@@ -185,12 +230,12 @@ test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolati
   mkdirSync(join(root, "eticket-v3"));
   const { d } = makeDeps();
   let seen: Order | undefined;
-  const captureRun = async (o: Order): Promise<RunResult> => {
+  const fakeStart = (o: Order) => {
     seen = o;
-    return { ok: true, sessionId: "s", summary: "ok", costUsd: 0 };
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
   await dispatchToProject("eticket-v3", "CRAFTED BRIEF for the project", d, 99, {
-    run: captureRun as never,
+    start: fakeStart as never,
     now: () => 1,
     root,
   });
@@ -198,10 +243,10 @@ test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolati
   expect(seen!.chatId).toBe(-2); // SUB_CHAT — isolated from the operator's routing
 });
 
-test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged with the project name", async () => {
-  // End-to-end: the real consumeStream (via runOrder) surfaces a tool milestone, which
+test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged with the project name, and reports the final result on completion", async () => {
+  // End-to-end: the real consumeStream (via startOrder) surfaces a tool milestone, which
   // dispatchToProject forwards to the operator's reply path tagged with the project name —
-  // while the final result still returns to the caller for its summary.
+  // and the final result is reported back to the operator as a follow-up once the sub-run ends.
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
   const { d, replies } = makeDeps();
@@ -210,10 +255,12 @@ test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged
       yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "docker ps" } }] } };
       yield { type: "result", subtype: "success", result: "3 containers up", total_cost_usd: 0, session_id: "sub-1" };
     })();
-  const run = (o: Order, h: RunHandlers, dd?: Record<string, unknown>) => runOrder(o, h, { ...dd, query: q as never });
+  const start = (o: Order, h: RunHandlers, dd?: Record<string, unknown>) => startOrder(o, h, { ...dd, query: q as never });
 
-  const out = await dispatchToProject("eticket-v3", "check docker", d, 99, { run: run as never, now: () => 1, root });
+  const out = await dispatchToProject("eticket-v3", "check docker", d, 99, { start: start as never, now: () => 1, root });
 
-  expect(out).toBe("3 containers up"); // final result returned to the chief-of-staff
+  expect(out).toContain("dispatched to"); // returns immediately
+  await new Promise((r) => setTimeout(r, 0)); // let the background continuation run
   expect(replies.some((r) => r.text.includes("Bash") && r.text.includes("docker ps") && r.project === "eticket-v3")).toBe(true);
+  expect(replies.some((r) => r.text.includes("finished") && r.text.includes("3 containers up"))).toBe(true);
 });

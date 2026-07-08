@@ -45,6 +45,7 @@ function cfg(): NeoConfig {
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,
+    dispatchTimeoutMs: 900_000,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-webapp-"));

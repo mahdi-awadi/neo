@@ -42,3 +42,7 @@ test("loopSchedulerEnabled defaults to true; NEO_LOOP_SCHEDULER=0 disables it", 
     else process.env.NEO_LOOP_SCHEDULER = saved;
   }
 });
+
+test("dispatchTimeoutMs defaults to 900000 and reads config.json", () => {
+  expect(loadConfig("/nonexistent-dir").dispatchTimeoutMs).toBe(900_000);
+});
