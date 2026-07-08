@@ -21,7 +21,14 @@ import { handleCommand, selectProject, killProject, type SelectableProject } fro
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
-import { mdToHtml } from "../engine/format";
+import { mdToHtml, projectHashtag } from "../engine/format";
+
+/** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
+ *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
+ *  text — never wrapped in <code>/<pre> — so Telegram auto-links it under parse_mode HTML too. */
+export function projectTagPrefix(project?: string): string {
+  return project ? `${projectHashtag(project)} ` : "";
+}
 
 async function downloadTelegramFile(token: string, filePath: string): Promise<Uint8Array> {
   const r = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
@@ -39,13 +46,13 @@ async function sendFormatted(
   text: string,
   project?: string,
 ): Promise<number | undefined> {
-  const tag = project ? `<b>[${project.replace(/[&<>]/g, "")}]</b> ` : "";
+  const tag = projectTagPrefix(project);
   try {
     const m = await bot.api.sendMessage(chatId, tag + mdToHtml(text, { tables: "pre" }), { parse_mode: "HTML" });
     return m.message_id;
   } catch {
     try {
-      const m = await bot.api.sendMessage(chatId, (project ? `[${project}] ` : "") + text);
+      const m = await bot.api.sendMessage(chatId, tag + text);
       return m.message_id;
     } catch {
       // give up silently — a dropped progress line shouldn't crash the bot
