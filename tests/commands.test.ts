@@ -290,3 +290,12 @@ test("/status shows ctx% for sessions with a persisted sdk session id", () => {
   const out = handleCommand("/status", 1, { ...d, signals: () => ({ occupancy: 0.42, turns: 3, ageMs: 0 }) })!;
   expect(out.text).toContain("ctx 42%");
 });
+
+test("/status shows ctx% via the default sessionContext (no signals injected)", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "cx2", folder: "/p/gold-no-transcript", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-does-not-exist");
+  const d = deps({ registry });
+  const out = handleCommand("/status", 1, d)!; // no `signals` override — must fall back to sessionContext
+  expect(out.text).toContain("ctx 0%");
+});

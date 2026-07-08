@@ -205,7 +205,7 @@ function renderList(registry: Registry, trust: CommandDeps["trust"], now: number
       const q = registry.getControl(s.id)?.queued?.() ?? 0;
       const queued = q > 0 ? ` · ${q} queued` : "";
       let ctx = "";
-      if (s.sdkSessionId && signals) {
+      if (s.sdkSessionId) {
         try {
           const sig = (signals ?? sessionContext)(s.order.folder, s.sdkSessionId);
           ctx = ` · ctx ${Math.round(sig.occupancy * 100)}%`;

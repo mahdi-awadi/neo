@@ -66,3 +66,14 @@ test("dashboard rows expose activity + queued", () => {
   expect(rows[0].activity).toEqual({ label: "Edit: web.ts", since: 5 });
   expect(rows[0].queued).toBe(1);
 });
+
+test("dashboard rows expose ctxPct via the default sessionContext (no signals injected)", () => {
+  const registry = createRegistry();
+  const withId = registry.add(order({ id: "d2", folder: "/p/no-transcript", task: "t" }), 0);
+  registry.setSdkSessionId(withId.id, "sess-does-not-exist");
+  const noId = registry.add(order({ id: "d3", folder: "/p/other", task: "t" }), 0);
+  const ledger = openLedger(":memory:");
+  const rows = dashboardSnapshot({ registry, ledger, chatId: 0, now: 10_000 }).projects;
+  expect(rows.find((r) => r.id === "d2")!.ctxPct).toBe(0);
+  expect(rows.find((r) => r.id === "d3")!.ctxPct).toBeUndefined();
+});

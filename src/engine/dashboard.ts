@@ -61,7 +61,7 @@ export function dashboardSnapshot(opts: {
   const activeId = opts.registry.findByChat(opts.chatId)?.id;
   const projects: DashProject[] = opts.registry.list().map((s) => {
     let ctxPct: number | undefined;
-    if (s.sdkSessionId && opts.signals) {
+    if (s.sdkSessionId) {
       try {
         const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId);
         ctxPct = Math.round(sig.occupancy * 100);
