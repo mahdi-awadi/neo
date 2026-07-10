@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { handleLoop, startLoop, matchLoop, listLoops, createLoop, updateLoop, deleteLoop, effectiveLoops } from "../src/engine/loops";
+import { handleLoop, startLoop, startScheduledLoop, matchLoop, listLoops, createLoop, updateLoop, deleteLoop, effectiveLoops, type LoopDef } from "../src/engine/loops";
 import { openLedger } from "../src/engine/ledger";
 import type { LoopInput } from "../src/engine/loop-validate";
 import type { RunResult } from "../src/engine/session-runner";
@@ -68,6 +68,50 @@ test("startLoop runs the loop, streams progress, and reports the outcome", async
   expect(ran).toBe(1);
   expect(replies.some((r) => r.toLowerCase().includes("start"))).toBe(true);
   expect(replies.some((r) => r.toLowerCase().includes("goal met"))).toBe(true);
+});
+
+// A fire-once reminder-style scheduled loop (like laywer-hearings-reminder): one iteration,
+// goal never met on its own, folder under /home so its project tag is the basename.
+const remLoop = (folder = "/home/laywer"): LoopDef => ({
+  name: "rem",
+  usage: "/loop rem",
+  summary: "reminder",
+  folder,
+  prompt: "check hearings",
+  goal: { kind: "command", command: ["sh", "-c", "false"] },
+  trigger: { kind: "cron", expr: "0 4 * * *" },
+  bounds: { maxIterations: 1 },
+});
+
+test("startScheduledLoop forwards worker text to the operator channel tagged with the loop's project, no chrome", async () => {
+  const replies: Array<{ chatId: number; text: string; project?: string }> = [];
+  const out = await startScheduledLoop(remLoop(), {
+    chatId: 4242,
+    reply: (chatId, text, project) => void replies.push({ chatId, text, project }),
+    run: async (_o, h) => {
+      h.onMessage("You have a hearing tomorrow at 9am (case #123).");
+      return okRun();
+    },
+    check: async () => ({ met: false, detail: "no hearings check" }),
+  });
+  expect(out.iterations).toBe(1);
+  // Exactly the worker's line reaches the operator, tagged with the folder-derived project.
+  expect(replies).toEqual([
+    { chatId: 4242, text: "You have a hearing tomorrow at 9am (case #123).", project: "laywer" },
+  ]);
+  // No starting / iteration / outcome chrome — only real worker output.
+  expect(replies.some((r) => /start|iteration|goal met|⚠️|🔁/i.test(r.text))).toBe(false);
+});
+
+test("startScheduledLoop stays silent when the worker produces no text (silent success)", async () => {
+  const replies: string[] = [];
+  await startScheduledLoop(remLoop(), {
+    chatId: 1,
+    reply: (_c, t) => void replies.push(t),
+    run: async () => okRun(), // worker emits no assistant text
+    check: async () => ({ met: false, detail: "" }),
+  });
+  expect(replies).toEqual([]); // nothing forwarded → no per-iteration spam
 });
 
 test("/loop <name> on enables a scheduled loop via the store", () => {

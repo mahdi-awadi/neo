@@ -3,6 +3,7 @@
 // (manual/interval/cron), and Bounds (iterations + budget). /loop lists them; /loop <name> starts
 // one now; /loop <name> on|off toggles its schedule. Work runs through runProjectLoop, so it's
 // governed and escalation-auto-denied (never pushes/deploys). See docs/loops.md.
+import { basename } from "node:path";
 import { runProjectLoop, type Bounds } from "./project-loop";
 import type { Goal, GoalCheck } from "./goal";
 import type { Trigger } from "./trigger";
@@ -232,6 +233,49 @@ export async function startLoop(loop: LoopDef, chatId: number, deps: LoopDeps): 
     `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`,
   );
   return out;
+}
+
+/** Deliver a scheduled loop's worker output to the operator channel, tagged with the loop's project. */
+export interface ScheduledLoopDeps {
+  /** Operator-channel sink, same shape as dispatch's reply — `(chatId, text, project)`. */
+  reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
+  /** Where to deliver (the operator's admin chat id). */
+  chatId: number;
+  /** Injectable worker runner (tests); defaults to the real session-runner. */
+  run?: typeof runOrder;
+  /** Injectable goal (tests); defaults to the loop's Goal. */
+  check?: GoalCheck;
+  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottle). */
+  shouldStop?: () => boolean;
+}
+
+/** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/laywer →
+ *  "laywer"), matching how dispatch attributes a project (registry uses basename too). */
+export function loopProjectTag(loop: LoopDef): string {
+  return basename(loop.folder);
+}
+
+/**
+ * Run a SCHEDULED loop quietly, forwarding ONLY real worker text to the operator's channel tagged
+ * with the loop's project — the same #project streaming style as dispatch. Unlike the interactive
+ * startLoop, it emits no "starting" / per-iteration / outcome chrome: a loop that produces no worker
+ * text sends nothing (silent success), so a reminder loop (e.g. laywer-hearings-reminder) is quiet
+ * when there's nothing to report. Escalations stay auto-denied (via runProjectLoop). Used by the
+ * daemon's loop scheduler so scheduled-loop output reaches Telegram/web, not just daemon stdout.
+ */
+export async function startScheduledLoop(loop: LoopDef, deps: ScheduledLoopDeps): Promise<LoopOutcome> {
+  const project = loopProjectTag(loop);
+  return runProjectLoop(
+    {
+      folder: loop.folder,
+      prompt: loop.prompt,
+      goal: loop.goal,
+      bounds: loop.bounds,
+      onMessage: (t) => void deps.reply(deps.chatId, t, project), // worker text only — no engine chrome
+      shouldStop: deps.shouldStop,
+    },
+    { run: deps.run, check: deps.check },
+  );
 }
 
 /** Parse + dispatch a /loop command. Returns true if it was a /loop (handled), else false. */
