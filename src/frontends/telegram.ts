@@ -61,6 +61,26 @@ async function sendFormatted(
   }
 }
 
+/** Post a single line to the operator's chat over the raw Bot API (no grammy Bot instance needed),
+ *  project-tagged + HTML-formatted with a plain-text fallback — the same #project style as streamed
+ *  worker/dispatch output. Used by the daemon's loop scheduler so scheduled-loop worker output
+ *  reaches the operator's Telegram channel, not just daemon stdout. A dropped line never throws. */
+export async function sendOperatorLine(token: string, chatId: number, text: string, project?: string): Promise<void> {
+  const tag = projectTagPrefix(project);
+  const post = (body: string, html: boolean): Promise<Response> =>
+    fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: body, ...(html ? { parse_mode: "HTML" } : {}) }),
+    });
+  try {
+    const r = await post(tag + mdToHtml(text, { tables: "pre" }), true);
+    if (!r.ok) await post(tag + text, false); // Telegram rejected the markup — resend as plain text
+  } catch {
+    // a dropped loop line must never crash the daemon
+  }
+}
+
 export function startTelegram(
   cfg: NeoConfig,
   ledger: Ledger,

@@ -17,9 +17,9 @@ import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions } from "./engine/reload";
 import { sweepStuck } from "./engine/watchdog";
-import { effectiveLoops, startLoop } from "./engine/loops";
+import { effectiveLoops, startScheduledLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
-import { startTelegram } from "./frontends/telegram";
+import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject, DEFAULT_PROJECT } from "./engine/default-project";
 
@@ -113,6 +113,13 @@ async function main(): Promise<void> {
 
   // Loop scheduler — fire due cron/interval loops through the governed runProjectLoop. AI-free:
   // it only evaluates triggers + guards (busy folder / budget throttle) and starts the worker.
+  // Scheduled-loop worker output streams to the operator's channel tagged with the loop's project
+  // (same #project style as dispatch); if there's no admin/token yet, it falls back to daemon stdout.
+  // Loops that emit no worker text send nothing (silent success) — see startScheduledLoop.
+  const loopReply = (chatId: number, text: string, project?: string): void => {
+    if (cfg.telegramToken && chatId > 0) void sendOperatorLine(cfg.telegramToken, chatId, text, project);
+    else console.log(`[loop] ${projectTagPrefix(project)}${text}`);
+  };
   if (cfg.loopSchedulerEnabled) {
     setInterval(
       () =>
@@ -123,10 +130,10 @@ async function main(): Promise<void> {
           throttled: () => meter.shouldThrottle(),
           now: Date.now(),
           start: (def) =>
-            void startLoop(def, -1 /* not chat-bound */, {
-              reply: (_c, t) => console.log(`[loop ${def.name}] ${t}`),
+            void startScheduledLoop(def, {
+              chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
+              reply: loopReply,
               shouldStop: () => meter.shouldThrottle(),
-              store: ledger,
             }),
         }),
       LOOP_TICK_MS,
