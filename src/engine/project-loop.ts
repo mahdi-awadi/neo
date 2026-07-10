@@ -24,7 +24,11 @@ export interface ProjectLoopOpts {
   /** The goal: a verifiable command or an LLM-judge condition. */
   goal: Goal;
   bounds: Bounds;
+  /** Engine-side per-iteration chrome ("iteration N: …"), plus worker text when onMessage is absent. */
   onProgress?: (msg: string) => void;
+  /** Worker assistant text (the SDK stream). When set, worker text goes HERE, not to onProgress —
+   *  so a caller can forward only real worker output (e.g. a scheduled reminder) without the chrome. */
+  onMessage?: (text: string) => void;
   shouldStop?: () => boolean;
 }
 
@@ -53,7 +57,7 @@ export async function runProjectLoop(
       const result = await run(
         order,
         {
-          onMessage: (t) => opts.onProgress?.(t),
+          onMessage: (t) => (opts.onMessage ?? opts.onProgress)?.(t),
           onEscalation: async () => "deny", // autonomous loop never does risky/irreversible ops
         },
         resumeId ? { resume: resumeId } : {},
