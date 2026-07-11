@@ -70,8 +70,13 @@ LLM-judge worker), `Trigger` union (manual/interval/cron, dependency-free matche
 (maxIterations + budgetUsd) wired to the meter, a deterministic `scheduler` fired from the daemon
 every 60s (`NEO_LOOP_SCHEDULER`, default on), and a `/loop` command (list · run · on/off) over a
 code-defined loop library (`src/engine/loops.ts`). Loop enable/last-run persist in the ledger; every
-iteration stays firewalled + escalation-auto-denied (loops never push/deploy). Specs:
-`docs/superpowers/specs/2026-06-26-loop-runtime-design.md`, `docs/loops.md`.
+iteration stays firewalled + escalation-auto-denied (loops never push/deploy). A **scheduled** fire
+streams **only** the worker's text to the operator's Telegram chat (the admin, resolved at fire time),
+tagged with the loop's `#project` — the same style as dispatch — with no start/iteration/outcome
+chrome, so a loop that emits nothing stays silent (a reminder loop is quiet when there's nothing to
+report); it falls back to daemon stdout when there's no admin/token yet. The interactive `/loop` path
+keeps its start/progress/outcome chrome (`startScheduledLoop` + `sendOperatorLine` vs `startLoop`).
+Specs: `docs/superpowers/specs/2026-06-26-loop-runtime-design.md`, `docs/loops.md`.
 
 **Customer inbox — live:** inbound customer mail queues in a bun:sqlite store for operator review (no
 auto-reply); reachable from both Telegram `/inbox` and the web console (view · send-to-agent draft ·

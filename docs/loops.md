@@ -24,6 +24,17 @@ the last section maps it onto Neo.
 > with no restart. Validated input + `/home` folder fence (`src/engine/loop-validate.ts`), admin-gated;
 > built-ins stay run/toggle-only. Spec/plan:
 > `docs/superpowers/specs/2026-06-27-loop-crud-design.md`, `docs/superpowers/plans/2026-06-28-loop-crud.md`.
+>
+> **Scheduled-loop output → operator — live (2026-07-10).** A scheduled fire now streams **only** the
+> worker's real text to the operator's Telegram chat (the admin id, resolved at fire time so a late
+> TOFU admin still works), tagged with the loop's `#project` — the same streaming style as dispatch.
+> There is **no** start/iteration/outcome chrome, so a loop that emits no worker text sends nothing
+> (silent success): a reminder loop (e.g. `laywer-hearings-reminder`) stays quiet when there's nothing
+> to report. Falls back to daemon stdout when there's no admin/token yet. `runProjectLoop` gained an
+> `onMessage` sink (worker text) split from `onProgress` (engine chrome); `startScheduledLoop`
+> (`src/engine/loops.ts`) forwards worker text only, delivered by `sendOperatorLine`
+> (`src/frontends/telegram.ts`). The interactive `/loop` path keeps `startLoop`'s start/progress/outcome
+> chrome.
 
 ## What a loop is
 

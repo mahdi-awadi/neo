@@ -164,7 +164,9 @@ plan (`docs/superpowers/plans/2026-06-26-loop-runtime.md`; design
 - **`loops.ts`** — a code-defined loop library (`gold-gofmt`, `green`, `error-sweep`, `docs-sweep`,
   `inbox-delete`) + the `/loop` command (list · run-now · `on|off` a schedule).
 - **`daemon.ts`** — runs the scheduler tick every 60s (`NEO_LOOP_SCHEDULER`, default on), wiring the
-  ledger as the state store and the meter as the throttle.
+  ledger as the state store and the meter as the throttle, and streaming each scheduled fire's worker
+  text to the operator's Telegram chat (`startScheduledLoop` → `sendOperatorLine`, `#project`-tagged;
+  silent when a fire emits nothing; falls back to daemon stdout with no admin/token).
 
 **Next (spec'd, not built):** data-driven loop CRUD — loop *definitions* become data authored from the
 admin console (built-ins ∪ custom, read fresh each tick, no restart):
