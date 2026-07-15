@@ -1,7 +1,9 @@
 node_modules/
 .env
+config.json
 *.db
 *.sqlite
+*.log
 data/
 dist/
 # Runtime company/tenant data + secrets live here once ported — never committed.
@@ -13,3 +15,6 @@ company/
 
 # Operator attachments (photos, customer files, keys) — never committed
 inbox/
+
+# OS / editor cruft
+.DS_Store

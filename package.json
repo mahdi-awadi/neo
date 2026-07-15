@@ -1,9 +1,32 @@
 {
   "name": "neo",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Neo — a personal work engine. Orders arrive via channels (Telegram/email/WhatsApp); project work is fired to the Claude Agent SDK; customer-facing reading uses Gemini.",
+  "description": "A personal work engine on the Claude Agent SDK: give it an order over a channel (Telegram/web); it opens the project as a governed headless Claude Code worker and streams progress back. The engine contains no AI — it routes, governs, meters, and records.",
+  "license": "MIT",
+  "author": "Mahdi Awadi",
+  "homepage": "https://github.com/mahdi-awadi/neo#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mahdi-awadi/neo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mahdi-awadi/neo/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-agent-sdk",
+    "agent",
+    "automation",
+    "telegram-bot",
+    "bun",
+    "typescript",
+    "orchestration"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "dev": "bun run src/daemon.ts",
     "start": "bun run src/daemon.ts",
