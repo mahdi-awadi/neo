@@ -23,7 +23,7 @@ func TestWorkerSenderPostsToWorker(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := newWorkerSender(srv.URL, "shh", "support@tech-gate.online", "Support", srv.Client())
+	s := newWorkerSender(srv.URL, "shh", "support@example.com", "Support", srv.Client())
 	resp, err := s.Send(context.Background(), &provider.SendRequest{RecipientEmail: "c@e.com", Subject: "Re: hi", Body: "hello", HTMLBody: "<p>hello</p>"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
@@ -34,7 +34,7 @@ func TestWorkerSenderPostsToWorker(t *testing.T) {
 	if gotAuth != "Bearer shh" {
 		t.Fatalf("auth: %s", gotAuth)
 	}
-	if gotBody["to"] != "c@e.com" || gotBody["from"] != "Support <support@tech-gate.online>" || gotBody["subject"] != "Re: hi" {
+	if gotBody["to"] != "c@e.com" || gotBody["from"] != "Support <support@example.com>" || gotBody["subject"] != "Re: hi" {
 		t.Fatalf("body: %v", gotBody)
 	}
 }

@@ -35,7 +35,7 @@ func signTwilio(token, fullURL string, form url.Values) string {
 
 func TestTwilioSignatureValid(t *testing.T) {
 	form := url.Values{"From": {"whatsapp:+15551234567"}, "Body": {"hi there"}, "MessageSid": {"SM1"}}
-	u := "https://neo-api.tech-gate.online/inbound/whatsapp"
+	u := "https://neo-api.example.com/inbound/whatsapp"
 	good := signTwilio("tok", u, form)
 	if !twilioSignatureValid("tok", u, form, good) {
 		t.Fatal("valid signature rejected")

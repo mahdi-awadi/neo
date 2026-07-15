@@ -13,8 +13,8 @@ import (
 
 func TestWssStreamURL(t *testing.T) {
 	cases := map[string]string{
-		"https://neo-api.tech-gate.online":  "wss://neo-api.tech-gate.online/voice/stream",
-		"https://neo-api.tech-gate.online/": "wss://neo-api.tech-gate.online/voice/stream",
+		"https://neo-api.example.com":  "wss://neo-api.example.com/voice/stream",
+		"https://neo-api.example.com/": "wss://neo-api.example.com/voice/stream",
 		"http://172.20.0.1:8080":            "ws://172.20.0.1:8080/voice/stream",
 	}
 	for in, want := range cases {
@@ -25,10 +25,10 @@ func TestWssStreamURL(t *testing.T) {
 }
 
 func TestVoiceTwiMLConnectsStreamOnSameSubdomain(t *testing.T) {
-	xml := voiceTwiML("wss://neo-api.tech-gate.online/voice/stream", "+15551234567")
+	xml := voiceTwiML("wss://neo-api.example.com/voice/stream", "+15551234567")
 	for _, want := range []string{
 		`<Connect>`,
-		`<Stream url="wss://neo-api.tech-gate.online/voice/stream">`,
+		`<Stream url="wss://neo-api.example.com/voice/stream">`,
 		`<Parameter name="from" value="+15551234567"/>`,
 	} {
 		if !strings.Contains(xml, want) {

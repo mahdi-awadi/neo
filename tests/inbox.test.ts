@@ -4,7 +4,7 @@ import { openInbox } from "../src/engine/inbox";
 test("records and lists inbound customer messages, newest first (plain data, no AI)", () => {
   const ib = openInbox(":memory:");
   const a = ib.record(
-    { from: "a@x.com", fromName: "A", to: "info@tech-gate.online", subject: "hi", text: "hello", messageId: "<1>" },
+    { from: "a@x.com", fromName: "A", to: "info@example.com", subject: "hi", text: "hello", messageId: "<1>" },
     1000,
   );
   ib.record({ from: "b@x.com", subject: "yo", text: "hey", messageId: "<2>" }, 2000);

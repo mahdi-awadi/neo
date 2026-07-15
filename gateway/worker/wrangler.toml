@@ -3,7 +3,7 @@ main = "worker.js"
 compatibility_date = "2026-06-01"
 
 [vars]
-GATEWAY_URL = "https://neo-api.tech-gate.online/inbound/email"
+GATEWAY_URL = "https://neo-api.example.com/inbound/email"
 # GATEWAY_WORKER_SECRET set via: wrangler secret put GATEWAY_WORKER_SECRET
 
 [[send_email]]

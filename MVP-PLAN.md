@@ -129,7 +129,7 @@ session and recalled its prior work. Firewall assertion preserved (customer → 
 
 **Status: complete** (`bun test` green — 82 tests, `tsc` clean; live-verified over the real domain).
 Reprioritized from the Gemini customer path to a **second operator frontend**: a web console at
-`neo.tech-gate.online` where Neo talks to the engine exactly like Telegram (`source:"neo"` → Agent
+`neo.example.com` where Neo talks to the engine exactly like Telegram (`source:"neo"` → Agent
 SDK on the subscription). The engine is unchanged — the web frontend is thin glue over the existing
 `handleMessage`, sharing the registry/meter/ledger/admin with Telegram. Built TDD in 7 tasks:
 
@@ -141,8 +141,8 @@ SDK on the subscription). The engine is unchanged — the web frontend is thin g
   escalations as events (SSE), resolving Allow/Deny out-of-band.
 - **T3.5 frontends/web** — `Bun.serve` app (login/console UI); auth + routing unit-tested via `fetch`.
 - **T3.6 daemon** — Telegram gate swapped to the TOFU admin; daemon owns admin + web session stores,
-  resolves the bot @username, serves the console on `172.20.0.1:3003`.
-- **T3.7 Traefik** — `/home/traefik/dynamic/neo.yml` (mirrors `operant.yml`) → `neo.tech-gate.online`.
+  resolves the bot @username, serves the console on the configured `WEB_HOST:WEB_PORT` (default `127.0.0.1:3003`).
+- **T3.7 reverse proxy** — front the console with your own TLS proxy (e.g. Traefik) → `PUBLIC_URL` (e.g. `neo.example.com`).
   Live-verified: HTTPS 200 + valid cert + login page over the real domain.
 
 ## Loop runtime — trigger → action → goal  *(DONE ✅ — the autonomy backbone)*

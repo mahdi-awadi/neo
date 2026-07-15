@@ -2,18 +2,18 @@
 
 Everything that can be pre-staged is done: secrets generated, `gateway/.env` written, Neo's
 `/agent/ingress` is live (bridge verified: `{"ok":true,"result":"BRIDGE OK"}`), the Dockerfile +
-compose + Traefik labels are ready. Address is **info@tech-gate.online**. The gateway container
+compose + Traefik labels are ready. Address is **info@example.com**. The gateway container
 holds **no Cloudflare/Claude credentials** — all Cloudflare access is via the Worker.
 
 Remaining steps (need your Cloudflare account):
 
 ## 1. Cloudflare — verify the sending domain (DKIM)
-Dashboard → **Email → Email Service / Sending** → add **tech-gate.online** as a sending domain →
+Dashboard → **Email → Email Service / Sending** → add **example.com** as a sending domain →
 accept the DKIM/SPF records it offers (they drop straight into your existing Cloudflare DNS). Wait
 until it shows **Verified**.
 
 ## 2. Cloudflare — enable Email Routing (inbound)
-Dashboard → **Email → Email Routing** → enable it for **tech-gate.online** (adds the Cloudflare MX
+Dashboard → **Email → Email Routing** → enable it for **example.com** (adds the Cloudflare MX
 records). We wire the route to the Worker in step 4.
 
 ## 3. Deploy the Worker
@@ -29,7 +29,7 @@ npx wrangler deploy
 
 ## 4. Point inbound mail at the Worker + set the send URL
 - **Email Routing route:** dashboard → Email Routing → **Routes** → add custom address
-  `info@tech-gate.online` → **Action: Send to a Worker → neo-email-worker**.
+  `info@example.com` → **Action: Send to a Worker → neo-email-worker**.
 - **Outbound URL:** put the Worker URL from step 3 into `gateway/.env`:
   ```sh
   sed -i 's#^WORKER_SEND_URL=.*#WORKER_SEND_URL=https://neo-email-worker.<your-subdomain>.workers.dev#' /home/neo/gateway/.env
@@ -39,15 +39,15 @@ npx wrangler deploy
 ```sh
 cd /home/neo/gateway
 ./build.sh                       # static binary, uses local gopkg workspace
-docker compose up -d --build     # joins the `proxy` network; Traefik serves neo-api.tech-gate.online
+docker compose up -d --build     # joins the `proxy` network; Traefik serves neo-api.example.com
 ```
 
 ## 6. Verify
 ```sh
-curl -s https://neo-api.tech-gate.online/healthz          # -> ok
+curl -s https://neo-api.example.com/healthz          # -> ok
 ```
-Then email **info@tech-gate.online** from any inbox. Expected: the company runs the brief (watch it
-in the Neo dashboard, tagged), and you receive a reply from info@tech-gate.online.
+Then email **info@example.com** from any inbox. Expected: the company runs the brief (watch it
+in the Neo dashboard, tagged), and you receive a reply from info@example.com.
 
 ## Reference — what's where
 - `gateway/.env` — runtime secrets (gitignored, chmod 600). `WORKER_SEND_URL` is the only TODO.

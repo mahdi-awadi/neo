@@ -31,7 +31,7 @@ func loadConfig() (Config, error) {
 		ListenAddr:          envOr("LISTEN_ADDR", ":8080"),
 		GeminiAPIKey:        os.Getenv("GEMINI_API_KEY"),
 		GeminiModel:         envOr("GEMINI_MODEL", "gemini-2.5-flash"),
-		EmailFrom:           envOr("EMAIL_FROM", "support@tech-gate.online"),
+		EmailFrom:           envOr("EMAIL_FROM", "support@example.com"),
 		EmailFromName:       envOr("EMAIL_FROM_NAME", "Support"),
 		GatewayWorkerSecret: os.Getenv("GATEWAY_WORKER_SECRET"),
 		WorkerSendURL:       os.Getenv("WORKER_SEND_URL"),
@@ -41,7 +41,7 @@ func loadConfig() (Config, error) {
 		TwilioAccountSID:    os.Getenv("TWILIO_ACCOUNT_SID"),
 		TwilioAuthToken:     os.Getenv("TWILIO_AUTH_TOKEN"),
 		TwilioWhatsAppFrom:  os.Getenv("TWILIO_WHATSAPP_FROM"),
-		PublicURL:           envOr("PUBLIC_URL", "https://neo-api.tech-gate.online"),
+		PublicURL:           envOr("PUBLIC_URL", "https://neo-api.example.com"),
 		GeminiLiveURL:       os.Getenv("GEMINI_LIVE_URL"), // empty → gemini.LiveEndpoint
 	}
 	for k, v := range map[string]string{"GEMINI_API_KEY": c.GeminiAPIKey, "GATEWAY_WORKER_SECRET": c.GatewayWorkerSecret, "WORKER_SEND_URL": c.WorkerSendURL, "NEO_INGRESS_URL": c.NeoIngressURL, "NEO_INBOX_URL": c.NeoInboxURL, "NEO_INGRESS_SECRET": c.NeoIngressSecret} {

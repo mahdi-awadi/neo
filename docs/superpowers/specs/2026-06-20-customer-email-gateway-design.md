@@ -9,7 +9,7 @@ own specs; they reuse the spine this slice builds.
 ## Goal
 
 Let customers reach the business by email and get useful answers — without Claude ever touching a
-customer. A customer emails `support@tech-gate.online`; **Gemini** (in a separate container) holds
+customer. A customer emails `support@example.com`; **Gemini** (in a separate container) holds
 the conversation; when real work is needed it hands a **brief** to the **Neo engine**, which runs it
 on the **company / default project** (the operator's Claude subscription) and returns a result;
 Gemini composes the reply and sends it back over Cloudflare.
@@ -187,12 +187,12 @@ dispatch/company machinery; no new SDK plumbing. Generous timeout; on timeout, r
 ## Configuration & secrets
 
 Gateway container `.env` (no Claude creds): `GEMINI_API_KEY`, `CF_ACCOUNT_ID`, `CF_EMAIL_API_TOKEN`,
-`EMAIL_FROM` (`support@tech-gate.online`), `EMAIL_FROM_NAME`, `INBOUND_WEBHOOK_SECRET`,
+`EMAIL_FROM` (`support@example.com`), `EMAIL_FROM_NAME`, `INBOUND_WEBHOOK_SECRET`,
 `NEO_INGRESS_URL` (`http://172.20.0.1:3003/agent/ingress`), `NEO_INGRESS_SECRET`, `LISTEN_ADDR`.
 
 Neo `.env`: `AGENT_INGRESS_SECRET` (= the gateway's `NEO_INGRESS_SECRET`).
 
-Email Worker vars: `GATEWAY_URL` (e.g. `https://neo-api.tech-gate.online/inbound/email`),
+Email Worker vars: `GATEWAY_URL` (e.g. `https://neo-api.example.com/inbound/email`),
 `INBOUND_WEBHOOK_SECRET`.
 
 All secrets `chmod 600`, gitignored, never logged.
@@ -200,7 +200,7 @@ All secrets `chmod 600`, gitignored, never logged.
 ## Deployment
 
 - **Gateway**: a Docker image (multi-stage Go build) run via compose; routed by Traefik on a new
-  subdomain (e.g. `neo-api.tech-gate.online`) so the Cloudflare Email Worker can POST inbound. Reaches Neo
+  subdomain (e.g. `neo-api.example.com`) so the Cloudflare Email Worker can POST inbound. Reaches Neo
   at `172.20.0.1:3003` over the docker bridge.
 - **Neo ingress**: added to the existing Bun server. Protected by `AGENT_INGRESS_SECRET`; a Traefik
   rule may additionally block `/agent/ingress` from the public router (defense in depth) — the secret
@@ -255,6 +255,6 @@ gateway, the Neo ingress, and the orchestrator built in this slice.
 
 ## What the operator provides
 
-- Cloudflare account + domain with Email Routing enabled; confirm `support@tech-gate.online`.
+- Cloudflare account + domain with Email Routing enabled; confirm `support@example.com`.
 - A verified sender domain with DKIM for Email Service; an API token scoped to email send.
-- The gateway subdomain (default `neo-api.tech-gate.online`).
+- The gateway subdomain (default `neo-api.example.com`).

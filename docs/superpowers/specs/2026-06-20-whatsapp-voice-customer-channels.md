@@ -115,10 +115,10 @@ bidirectional), bridged to **Gemini Live** (`gemini.LiveEndpoint`, model
 dialed WS), `voice/toolexec`, `voice/holdfiller/twilio` — wiring validated against the proven
 `/home/saffar/apps/comms` implementation (same TwiML, handshake parse, and dial).
 
-**Same subdomain.** Both endpoints live on the existing gateway (`neo-api.tech-gate.online`), so no
+**Same subdomain.** Both endpoints live on the existing gateway (`neo-api.example.com`), so no
 new Traefik route is needed — Traefik proxies the WebSocket `Upgrade` on the same router:
 - `POST /voice/incoming` — Twilio Voice webhook. Validates `X-Twilio-Signature`, returns TwiML
-  `<Connect><Stream url="wss://neo-api.tech-gate.online/voice/stream"><Parameter name="from" .../></Stream>`.
+  `<Connect><Stream url="wss://neo-api.example.com/voice/stream"><Parameter name="from" .../></Stream>`.
 - `GET /voice/stream` — upgrades to a WebSocket, reads Twilio's `connected`/`start` handshake
   (→ `streamSid` + caller `from`), dials Gemini Live, and runs `pipeline.Run(transport, llm,
   executor, setup)` until the caller hangs up. Hold-filler keeps the line alive during company work;
@@ -161,4 +161,4 @@ Website "contact us" (3b.1). Async ingress (build order 4) is its own task group
 
 - Twilio account: a number with WhatsApp enabled (sandbox or approved sender) and, for voice, Voice
   + Media Streams; the `AccountSID` / `AuthToken`; the WhatsApp `From`.
-- Webhook URLs pointed at the gateway subdomain (`neo-api.tech-gate.online`).
+- Webhook URLs pointed at the gateway subdomain (`neo-api.example.com`).

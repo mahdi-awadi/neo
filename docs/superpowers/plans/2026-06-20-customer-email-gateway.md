@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let customers email `support@tech-gate.online` and get answered by Gemini (in a container), which hands real work to the Neo company over an HTTP bridge — Claude never touches the customer.
+**Goal:** Let customers email `support@example.com` and get answered by Gemini (in a container), which hands real work to the Neo company over an HTTP bridge — Claude never touches the customer.
 
 **Architecture:** A containerized **Go gateway** (built on `gopkg`) owns the customer conversation on Gemini; inbound mail arrives via a **Cloudflare Email Worker**, outbound replies go via the **Cloudflare Email Service REST API**. When work is needed, the gateway calls an authenticated **Neo HTTP ingress** that runs a brief on the **company/default project** (the operator's subscription) and returns the result.
 
@@ -13,7 +13,7 @@
 - **Compliance firewall (hard):** the gateway container holds Gemini/Cloudflare secrets and **no Claude credentials**; Neo runs the company on the subscription and does **no** customer I/O. `provider-router.ts` still refuses `source:"customer"` — unchanged.
 - **TDD:** failing test → watch it fail → minimal code → green → commit. One task = one commit (Go: `go test ./...`; Neo: `bun test` + `bunx tsc --noEmit` green before committing).
 - **gopkg pattern:** new providers implement `communication/provider.EmailProvider` and mirror `communication/email/sendgrid` exactly (Config/New/Code/Send/SendWithAttachments/GetStatus/ValidateConfig/Enabled + `var _ provider.EmailProvider = (*Provider)(nil)`).
-- **Subdomain:** the gateway is served at `neo-api.tech-gate.online` behind Traefik. Everything customer-facing runs **in a container**.
+- **Subdomain:** the gateway is served at `neo-api.example.com` behind Traefik. Everything customer-facing runs **in a container**.
 - **Secrets:** `.env` files `chmod 600`, gitignored, never logged. Neo's customer firewall and budget guard are untouched.
 - **Module paths:** `github.com/mahdi-awadi/gopkg/<path>`. Add new modules to `/home/gopkg/go.work` with `go work use <dir>`.
 
@@ -86,7 +86,7 @@ func TestSendPostsToEmailServiceREST(t *testing.T) {
 		_ = json.Unmarshal(raw, &gotBody)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true}`)), Header: make(http.Header)}, nil
 	})
-	p := New(Config{AccountID: "acct123", APIToken: "tok", FromEmail: "support@tech-gate.online", FromName: "Support"},
+	p := New(Config{AccountID: "acct123", APIToken: "tok", FromEmail: "support@example.com", FromName: "Support"},
 		nil, WithHTTPClient(&http.Client{Transport: rt}))
 
 	resp, err := p.Send(context.Background(), &provider.SendRequest{
@@ -352,7 +352,7 @@ package cloudflare
 import "testing"
 
 func TestParseInbound(t *testing.T) {
-	body := []byte(`{"from":"cust@example.com","fromName":"Jane","to":"support@tech-gate.online",
+	body := []byte(`{"from":"cust@example.com","fromName":"Jane","to":"support@example.com",
 		"subject":"Order status?","messageId":"<abc@mail>","inReplyTo":"","text":"where is my order","html":"<p>where is my order</p>"}`)
 	in, err := ParseInbound(body)
 	if err != nil {
@@ -860,7 +860,7 @@ func TestHandleInboundDispatchesAndReplies(t *testing.T) {
 	reply := func(_ context.Context, _ []conversationMessage, userText string) (string, error) {
 		return "Thanks for reaching out — " + userText, nil
 	}
-	gw := &gateway{sender: sender, store: newMemCache(), inboundSecret: "s", replyFn: reply, fromEmail: "support@tech-gate.online"}
+	gw := &gateway{sender: sender, store: newMemCache(), inboundSecret: "s", replyFn: reply, fromEmail: "support@example.com"}
 
 	body := []byte(`{"from":"cust@example.com","subject":"hi","text":"where is my order","messageId":"<m1>"}`)
 	req := httptest.NewRequest(http.MethodPost, "/inbound/email", bytes.NewReader(body))
@@ -1020,7 +1020,7 @@ func loadConfig() (Config, error) {
 		GeminiModel:      envOr("GEMINI_MODEL", "gemini-2.5-flash"),
 		CFAccountID:      os.Getenv("CF_ACCOUNT_ID"),
 		CFEmailAPIToken:  os.Getenv("CF_EMAIL_API_TOKEN"),
-		EmailFrom:        envOr("EMAIL_FROM", "support@tech-gate.online"),
+		EmailFrom:        envOr("EMAIL_FROM", "support@example.com"),
 		EmailFromName:    envOr("EMAIL_FROM_NAME", "Support"),
 		InboundSecret:    os.Getenv("INBOUND_WEBHOOK_SECRET"),
 		NeoIngressURL:    os.Getenv("NEO_INGRESS_URL"),
@@ -1140,7 +1140,7 @@ main = "worker.js"
 compatibility_date = "2026-06-01"
 
 [vars]
-GATEWAY_URL = "https://neo-api.tech-gate.online/inbound/email"
+GATEWAY_URL = "https://neo-api.example.com/inbound/email"
 # INBOUND_WEBHOOK_SECRET set via: wrangler secret put INBOUND_WEBHOOK_SECRET
 ```
 
@@ -1150,7 +1150,7 @@ GATEWAY_URL = "https://neo-api.tech-gate.online/inbound/email"
 cd /home/neo/gateway/worker && npm install
 npx wrangler secret put INBOUND_WEBHOOK_SECRET     # paste the same secret the gateway uses
 npx wrangler deploy
-# In the Cloudflare dashboard → Email → Email Routing: route support@tech-gate.online to this Worker.
+# In the Cloudflare dashboard → Email → Email Routing: route support@example.com to this Worker.
 ```
 
 - [ ] **Step 5: Commit**
@@ -1192,7 +1192,7 @@ GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
 CF_ACCOUNT_ID=
 CF_EMAIL_API_TOKEN=
-EMAIL_FROM=support@tech-gate.online
+EMAIL_FROM=support@example.com
 EMAIL_FROM_NAME=Support
 INBOUND_WEBHOOK_SECRET=
 NEO_INGRESS_URL=http://172.20.0.1:3003/agent/ingress
@@ -1208,13 +1208,13 @@ docker run -d --name neo-gateway --restart unless-stopped \
   --env-file /home/neo/gateway/.env \
   --network <the-traefik-docker-network> \
   --label "traefik.enable=true" \
-  --label "traefik.http.routers.neoapi.rule=Host(\`neo-api.tech-gate.online\`)" \
+  --label "traefik.http.routers.neoapi.rule=Host(\`neo-api.example.com\`)" \
   --label "traefik.http.routers.neoapi.entrypoints=websecure" \
   --label "traefik.http.routers.neoapi.tls.certresolver=cloudflare" \
   --label "traefik.http.services.neoapi.loadbalancer.server.port=8080" \
   neo-gateway
 # (If Traefik uses file-provider instead of docker labels, add /home/traefik/dynamic/neo-api.yml
-#  mirroring /home/traefik/dynamic/neo.yml, routing neo-api.tech-gate.online -> the container.)
+#  mirroring /home/traefik/dynamic/neo.yml, routing neo-api.example.com -> the container.)
 ```
 
 Set `NEO_INGRESS_URL=http://172.20.0.1:3003/agent/ingress` (Neo binds the docker-bridge IP) and ensure `AGENT_INGRESS_SECRET` in Neo's `.env` equals `NEO_INGRESS_SECRET`; restart Neo (`systemctl restart neo`).
@@ -1223,12 +1223,12 @@ Set `NEO_INGRESS_URL=http://172.20.0.1:3003/agent/ingress` (Neo binds the docker
 
 ```bash
 # 1. health
-curl -s https://neo-api.tech-gate.online/healthz   # -> ok
+curl -s https://neo-api.example.com/healthz   # -> ok
 # 2. bridge (from the host, on the docker bridge):
 curl -s -X POST http://172.20.0.1:3003/agent/ingress \
   -H "authorization: Bearer $AGENT_INGRESS_SECRET" -H 'content-type: application/json' \
   -d '{"brief":"In one sentence, confirm the company is reachable."}'   # -> {"ok":true,"result":"..."}
-# 3. real email: send a message to support@tech-gate.online from a personal inbox.
+# 3. real email: send a message to support@example.com from a personal inbox.
 #    Expect: a reply email; the company run visible in the Neo dashboard feed (tagged).
 ```
 
@@ -1236,7 +1236,7 @@ curl -s -X POST http://172.20.0.1:3003/agent/ingress \
 
 ```bash
 cd /home/neo/gateway && git add Dockerfile .dockerignore .env.example && \
-git commit -q -m "feat(neo-gateway): containerize + Traefik route (neo-api.tech-gate.online) + live e2e"
+git commit -q -m "feat(neo-gateway): containerize + Traefik route (neo-api.example.com) + live e2e"
 # Update /home/neo/docs and MVP-PLAN.md Phase 3b: email slice complete.
 ```
 
@@ -1246,7 +1246,7 @@ git commit -q -m "feat(neo-gateway): containerize + Traefik route (neo-api.tech-
 
 **1. Spec coverage:**
 - gopkg `email` package (both directions) → Tasks 1 (send) + 2 (inbound parse), built as `communication/email/cloudflare` to match the existing `sendgrid`/`ses` pattern (a refinement of the spec's "new `email` package" — the spec's intent, reusable email in gopkg, is met).
-- Cloudflare Email Worker → Task 5. Gateway service → Task 4. Neo ingress → Task 3. Container + Traefik + subdomain `neo-api.tech-gate.online` → Task 6. Compliance (no Claude creds in the container; `source:"customer"` firewall intact) → enforced by Task 6 env split + unchanged router. Conversation memory → Task 4 `memCache`. Testing strategy → each task is TDD; live e2e in Task 6.
+- Cloudflare Email Worker → Task 5. Gateway service → Task 4. Neo ingress → Task 3. Container + Traefik + subdomain `neo-api.example.com` → Task 6. Compliance (no Claude creds in the container; `source:"customer"` firewall intact) → enforced by Task 6 env split + unchanged router. Conversation memory → Task 4 `memCache`. Testing strategy → each task is TDD; live e2e in Task 6.
 
 **2. Placeholder scan:** No "TBD/TODO". Two explicit **build-then-verify** notes (CF send JSON field casing in Task 1; Traefik provider style in Task 6) are flagged with the exact thing to confirm, not left vague.
 

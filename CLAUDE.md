@@ -58,11 +58,11 @@ two shaping bugs (see `docs/sdk-notes.md` → Phase 2). The Telegram frontend ne
 to run live.
 
 **Phase 3 complete — the operator web console** (reprioritized from the Gemini customer path): a
-second operator frontend at `neo.tech-gate.online` (Telegram-Login auth → trust-on-first-use admin →
-signed session cookie) where Neo talks to the engine over the web exactly like Telegram — same
-`source:"neo"` SDK pipeline, sharing the registry/meter/ledger/admin. Behind Traefik
-(`/home/traefik/dynamic/neo.yml` → `172.20.0.1:3003`); live-verified HTTPS + valid cert. `bun test`
-green (82 tests), `tsc` clean.
+second operator frontend at your `PUBLIC_URL` (e.g. `neo.example.com`) with Telegram-Login auth →
+trust-on-first-use admin → signed session cookie, where Neo talks to the engine over the web exactly
+like Telegram — same `source:"neo"` SDK pipeline, sharing the registry/meter/ledger/admin. The
+console binds `WEB_HOST:WEB_PORT` (default `127.0.0.1:3003`) and is meant to sit behind your own TLS
+reverse proxy (e.g. Traefik); live-verified HTTPS + valid cert. `bun test` green (82 tests), `tsc` clean.
 
 **Loop runtime — live** (the autonomy model is now engine-native): a `trigger → action → goal` loop
 runtime drives autonomous work through the same governed worker. `Goal` union (verifiable command +
