@@ -30,7 +30,36 @@ Worker    (Claude Agent SDK = Claude Code in a      ← does the actual project 
   path-fences file writes and escalates risky tools, a ledger (bun:sqlite), and a `trigger → action
   → goal` **loop runtime** for autonomous work.
 - **Worker** — a Claude Code session (`@anthropic-ai/claude-agent-sdk`) opened in a project folder,
-  loading that folder's `CLAUDE.md` / `.mcp.json` / settings.
+  loading `~/.claude` plugins/skills and that folder's `CLAUDE.md` / `.mcp.json` / settings.
+
+## Features
+
+- **Two operator frontends, one engine.** A Telegram bot and a web console both drive the same
+  `source:"neo"` SDK pipeline — sharing the registry, budget meter, ledger, and admin. Plain
+  messages stream as **follow-ups into the running worker**.
+- **Compliance firewall, in code.** Your own work runs on your Claude subscription; customer-direct
+  work is refused onto it and routed to Gemini. Enforced by `provider-router.ts`, never a prompt.
+- **Governed workers.** A default-escalate governor path-fences file writes to the session's project
+  folder and escalates unknown/foreign MCP tools, `WebFetch`, and out-of-folder writes to the
+  operator (autonomous paths auto-deny). Customer-tainted briefs run with **zero tools**.
+- **Budget & usage metering.** A rolling meter reserves interactive headroom and throttles
+  background work; `/usage` reports measured subscription token usage and rate-limit status read
+  from Claude Code's own transcripts.
+- **Live, concurrent, resumable sessions.** Multiple projects run concurrently in a registry; quiet
+  sessions **idle-close** and persist their SDK id so a later `/open` **resumes** them. A context
+  policy measures each session and hands off at safe boundaries before it fills the window.
+- **The "company" — an always-on default project** that answers free-text orders when nothing else
+  is active, and can **dispatch** project work to governed sub-workers, bounded by a stall/liveness
+  monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window).
+- **Loop runtime (autonomy).** `trigger → action → goal` loops run autonomous work through the same
+  governed worker; loop **definitions are data** — author, edit, and toggle them from the web
+  console with no restart.
+- **Customer inbox.** Inbound customer mail queues as plain data (no auto-reply) for operator
+  review — view, draft-with-agent, edit, approval-gated send, delete — from Telegram `/inbox` or the
+  web console. The optional Go **gateway** (`gateway/`) bridges email/WhatsApp/voice into it.
+- **Graceful reload.** `/reload` (or `SIGTERM`, e.g. `systemctl restart neo`) drains running
+  sessions (commit green work + WIP note), snapshots them, and exits for the supervisor to restart —
+  open projects reappear as idle + resumable.
 
 ## Quick start
 
@@ -81,6 +110,25 @@ else. To reset admin, delete `data/admin.db`. You can pre-restrict who may claim
   register your `PUBLIC_URL` domain in @BotFather (`/setdomain`), open it, and "Log in with
   Telegram". The console binds localhost by default and is meant to sit behind your proxy — don't
   expose the raw port publicly.
+
+### Operator commands
+
+The same commands work over Telegram and the web console. A plain (non-`/`) message is a follow-up
+to the active project.
+
+| Command | Does |
+| --- | --- |
+| `/open <folder> <task>` | Start a new project session (or resume an existing one) and give it a task. |
+| `/list` (`/ls`, `/status`) | List open projects (★ = active); tap a name to switch. |
+| `/use <name>` | Make a project active — your messages follow up on it. |
+| `/kill <name>` | Stop a project session. |
+| `/trust [on\|off]` | Auto-approve actions for the active project (skip Allow/Deny prompts). |
+| `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
+| `/inbox` | Review queued customer messages (tap one to view & reply). |
+| `/recent` (`/history`) | Recent orders and their outcomes. |
+| `/usage` | Subscription token usage + rate-limit status. |
+| `/reload` | Gracefully restart the engine (drains running sessions, resumes them after). |
+| `/help` | Show the command list. |
 
 ## Configuration
 
