@@ -18,7 +18,7 @@ test("denyAllTrust never trusts any folder (customer-path dispatch cannot auto-a
 test("runCompanyBrief runs the brief on the company and returns its result", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
-  registerDefaultProject(registry, ledger, () => 1); // pins an idle company at /home/neo/agent
+  registerDefaultProject(registry, ledger, undefined, () => 1); // pins an idle company at /home/neo/agent
   const replies: string[] = [];
   let seenResume: string | undefined;
   const fakeRun = async (_o: Order, h: RunHandlers, d?: { resume?: string }): Promise<RunResult> => {
@@ -44,7 +44,7 @@ test("runCompanyBrief runs the brief on the company and returns its result", asy
 test("tainted brief runs with zero mutating tools and no MCP servers", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
-  registerDefaultProject(registry, ledger, () => 1);
+  registerDefaultProject(registry, ledger, undefined, () => 1);
   let seenDeps: { disallowedTools?: string[]; mcpServers?: unknown } | undefined;
   const fakeRun = async (_o: Order, _h: RunHandlers, d?: { disallowedTools?: string[]; mcpServers?: unknown }): Promise<RunResult> => {
     seenDeps = d;
@@ -70,7 +70,7 @@ test("tainted brief runs with zero mutating tools and no MCP servers", async () 
 test("tainted brief is a fully isolated one-shot: no resume, and it never persists a session id", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
-  registerDefaultProject(registry, ledger, () => 1);
+  registerDefaultProject(registry, ledger, undefined, () => 1);
   registry.setSdkSessionId(registry.getDefault()!.id, "prior-company-session");
   let seenDeps: { resume?: string } | undefined;
   const fakeRun = async (_o: Order, _h: RunHandlers, d?: { resume?: string }): Promise<RunResult> => {
@@ -94,7 +94,7 @@ test("tainted brief is a fully isolated one-shot: no resume, and it never persis
 test("untainted brief keeps MCP servers and no disallowedTools (unchanged path)", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
-  registerDefaultProject(registry, ledger, () => 1);
+  registerDefaultProject(registry, ledger, undefined, () => 1);
   let seenDeps: { disallowedTools?: string[]; mcpServers?: unknown } | undefined;
   const fakeRun = async (_o: Order, _h: RunHandlers, d?: { disallowedTools?: string[]; mcpServers?: unknown }): Promise<RunResult> => {
     seenDeps = d;

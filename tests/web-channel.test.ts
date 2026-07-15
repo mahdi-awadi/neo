@@ -16,6 +16,12 @@ function cfg(): NeoConfig {
     telegramToken: "",
     telegramAllowFrom: [],
     geminiApiKey: "",
+    botUsername: "",
+    webHost: "127.0.0.1",
+    webPort: 3003,
+    publicUrl: "",
+    companyFolder: "/tmp/agent",
+    gatewaySendUrl: "",
     providers: { ownWork: "subscription", customerWork: "gemini" },
     subscriptionInteractiveReservePct: 0.2,
     workRoot: "/home",
@@ -184,7 +190,7 @@ test("/loop alone emits a loops event with runnable items", async () => {
 
   const loops = events.find((e) => e.type === "loops") as { items: Array<{ name: string }> } | undefined;
   expect(loops).toBeTruthy();
-  expect(loops?.items.find((l) => l.name === "gold-gofmt")).toBeTruthy();
+  expect(loops?.items.find((l) => l.name === "green")).toBeTruthy();
 });
 
 test("openProject starts a project (form-driven) and it shows in state()", async () => {
@@ -199,7 +205,7 @@ test("openProject starts a project (form-driven) and it shows in state()", async
   const st = ch.state();
   expect(st.projects[0].folder).toBe(dir);
   expect(st.projects[0].task).toBe("build it");
-  expect(st.loops.find((l) => l.name === "gold-gofmt")).toBeTruthy();
+  expect(st.loops.find((l) => l.name === "green")).toBeTruthy();
 });
 
 test("resolveApproval returns false for an unknown id", () => {

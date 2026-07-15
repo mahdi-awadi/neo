@@ -34,6 +34,7 @@ function cookieFrom(res: Response): string {
 function cfg(): NeoConfig {
   return {
     telegramToken: TOKEN, telegramAllowFrom: [], geminiApiKey: "",
+    botUsername: "", webHost: "127.0.0.1", webPort: 3003, publicUrl: "", companyFolder: "/tmp/agent", gatewaySendUrl: "",
     providers: { ownWork: "subscription", customerWork: "gemini" },
     subscriptionInteractiveReservePct: 0.2, workRoot: "/home",
     budgetWindowUsd: 100, budgetWindowMs: 3_600_000,

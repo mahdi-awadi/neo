@@ -51,7 +51,7 @@ test("dashboardSnapshot returns structured projects/usage/loops/recent", () => {
   expect(alpha.status).toBe("running");
   expect(alpha.ageMs).toBe(4000);
   expect(s.usage?.turnCount).toBe(3);
-  expect(s.loops.find((l) => l.name === "gold-gofmt")).toBeTruthy();
+  expect(s.loops.find((l) => l.name === "green")).toBeTruthy();
   expect(s.recent[0]).toMatchObject({ folder: "/p/gamma", task: "old job", status: "done" });
 });
 

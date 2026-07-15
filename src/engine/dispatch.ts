@@ -51,6 +51,8 @@ export interface DispatchDeps {
   contextPolicy?: ContextPolicyCfg;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
   lifecycle?: { draining(): boolean };
+  /** Root under which the company `dispatch` tool resolves project names (config workRoot). Default "/home". */
+  workRoot?: string;
 }
 
 type RunFn = typeof runOrder;
@@ -384,9 +386,9 @@ export function neoMcpServers(
     tools.push(
       tool(
         "dispatch",
-        "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. eticket-v3, gold). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt.",
+        "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt.",
         {
-          project: z.string().describe('project folder name under /home, e.g. "eticket-v3"'),
+          project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
           timeoutMinutes: z
             .number()
@@ -398,6 +400,7 @@ export function neoMcpServers(
         },
         async (args: { project: string; task: string; timeoutMinutes?: number }) => {
           const out = await dispatchToProject(args.project, args.task, deps, replyChat, {
+            root: deps.workRoot,
             timeoutMs: args.timeoutMinutes ? Math.round(args.timeoutMinutes * 60_000) : undefined,
           });
           return { content: [{ type: "text" as const, text: out }] };

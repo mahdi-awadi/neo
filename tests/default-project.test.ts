@@ -13,7 +13,7 @@ test("defaultOrder targets the agent workspace on the reserved chat id", () => {
 test("registerDefaultProject pins an idle, control-less default session", () => {
   const reg = createRegistry();
   const led = openLedger(":memory:");
-  const s = registerDefaultProject(reg, led, () => 5);
+  const s = registerDefaultProject(reg, led, undefined, () => 5);
 
   expect(reg.getDefault()?.id).toBe(s.id);
   expect(s.status).toBe("idle"); // ready + resumable, not a live worker

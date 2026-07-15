@@ -9,6 +9,17 @@ export interface NeoConfig {
   telegramToken: string;
   telegramAllowFrom: number[];
   geminiApiKey: string;
+  /** The bot's @username (no leading @) — required by the web console's Telegram Login Widget.
+   *  From BOT_USERNAME env; when empty the daemon resolves it via getMe at startup. */
+  botUsername: string;
+  /** Interface the web operator console binds. Default 127.0.0.1 (localhost only — put a reverse
+   *  proxy / TLS front door like Traefik in front). Set WEB_HOST to a bridge IP to expose it. */
+  webHost: string;
+  /** Port the web operator console listens on (WEB_PORT env). Default 3003. */
+  webPort: number;
+  /** Public HTTPS base URL the console is reached at (e.g. https://neo.example.com), used for the
+   *  startup hint only. From PUBLIC_URL env; empty → no public URL is advertised. */
+  publicUrl: string;
   /**
    * Provider routing, kept in config so a future Anthropic plan change is a flip,
    * not a code rewrite. Defaults encode the compliance firewall.
@@ -16,14 +27,22 @@ export interface NeoConfig {
   providers: { ownWork: Provider; customerWork: Provider };
   /** Fraction of the Claude subscription pool reserved for Neo's interactive use. */
   subscriptionInteractiveReservePct: number;
-  /** Default root under which worker project folders live. */
+  /** Root directory that holds the operator's project repos — the New-project picker scans it, the
+   *  company `dispatch` tool resolves project names under it, and custom loops are fenced to it.
+   *  From WORK_ROOT env. Default "/home". */
   workRoot: string;
+  /** The always-on "company" / chief-of-staff workspace (its own gitignored folder with a CLAUDE.md).
+   *  From COMPANY_FOLDER env. Default "<repo>/agent" (i.e. an `agent/` dir next to the daemon). */
+  companyFolder: string;
   /** Per-window USD budget for background SDK work (the budget guard). */
   budgetWindowUsd: number;
   /** Rolling budget window in ms (default 5h, matching the subscription's usage window). */
   budgetWindowMs: number;
   /** Shared secret for machine-to-machine POST /agent/ingress (from AGENT_INGRESS_SECRET env). */
   agentIngressSecret: string;
+  /** Customer-reply gateway /send endpoint — Neo POSTs an approved inbox reply here to email it
+   *  (Neo itself holds no email/Cloudflare creds). From GATEWAY_SEND_URL env; empty → sending off. */
+  gatewaySendUrl: string;
   /** Idle-close threshold for NORMAL projects in ms (the company is exempt). Default 24h. */
   idleCloseMs: number;
   /** Google Stitch MCP API key (from STITCH_API_KEY env). When set, OPERATOR workers get the
@@ -69,7 +88,10 @@ export interface NeoConfig {
 const DEFAULTS = {
   providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider },
   subscriptionInteractiveReservePct: 0.2,
-  workRoot: process.env.HOME ?? "/home",
+  workRoot: "/home",
+  companyFolder: join(process.cwd(), "agent"),
+  webHost: "127.0.0.1",
+  webPort: 3003,
   budgetWindowUsd: 20,
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
@@ -114,18 +136,23 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     telegramToken: process.env.TELEGRAM_TOKEN ?? "",
     telegramAllowFrom: fileCfg.telegramAllowFrom ?? [],
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
+    botUsername: process.env.BOT_USERNAME ?? fileCfg.botUsername ?? "",
+    webHost: process.env.WEB_HOST ?? fileCfg.webHost ?? DEFAULTS.webHost,
+    webPort: process.env.WEB_PORT ? Number(process.env.WEB_PORT) : (fileCfg.webPort ?? DEFAULTS.webPort),
+    publicUrl: process.env.PUBLIC_URL ?? fileCfg.publicUrl ?? "",
     providers: fileCfg.providers ?? DEFAULTS.providers,
     subscriptionInteractiveReservePct:
       fileCfg.subscriptionInteractiveReservePct ?? DEFAULTS.subscriptionInteractiveReservePct,
-    workRoot: fileCfg.workRoot ?? DEFAULTS.workRoot,
+    workRoot: process.env.WORK_ROOT ?? fileCfg.workRoot ?? DEFAULTS.workRoot,
+    companyFolder: process.env.COMPANY_FOLDER ?? fileCfg.companyFolder ?? DEFAULTS.companyFolder,
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
+    gatewaySendUrl: process.env.GATEWAY_SEND_URL ?? fileCfg.gatewaySendUrl ?? "",
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
-    gitnexusBin: process.env.GITNEXUS_BIN ?? fileCfg.gitnexusBin ?? "/usr/bin/gitnexus",
-    codebaseMemoryBin:
-      process.env.CODEBASE_MEMORY_BIN ?? fileCfg.codebaseMemoryBin ?? "/root/.local/bin/codebase-memory-mcp",
+    gitnexusBin: process.env.GITNEXUS_BIN ?? fileCfg.gitnexusBin ?? "",
+    codebaseMemoryBin: process.env.CODEBASE_MEMORY_BIN ?? fileCfg.codebaseMemoryBin ?? "",
     meetingLink: process.env.MEETING_LINK ?? fileCfg.meetingLink ?? "",
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
     loopSchedulerEnabled:

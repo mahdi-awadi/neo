@@ -28,9 +28,13 @@ const slug = (s: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-function defaultFolderOk(folder: string): boolean {
+/** Fence a candidate loop folder to `root` (the operator's project root) — an existing directory
+ *  whose real path is inside root. Root is normalized to end with a separator so a prefix match
+ *  can't leak into a sibling (e.g. root "/home" must not admit "/homexyz"). */
+function defaultFolderOk(folder: string, root: string): boolean {
+  const fence = root.endsWith("/") ? root : root + "/";
   try {
-    return statSync(folder).isDirectory() && realpathSync(folder).startsWith("/home/");
+    return statSync(folder).isDirectory() && realpathSync(folder).startsWith(fence);
   } catch {
     return false;
   }
@@ -38,15 +42,16 @@ function defaultFolderOk(folder: string): boolean {
 
 export function validateLoopInput(
   input: LoopInput,
-  opts: { existingNames: string[]; folderOk?: (folder: string) => boolean },
+  opts: { existingNames: string[]; folderOk?: (folder: string) => boolean; root?: string },
 ): { def: LoopDef } | { error: string } {
-  const folderOk = opts.folderOk ?? defaultFolderOk;
+  const root = opts.root ?? "/home";
+  const folderOk = opts.folderOk ?? ((f: string) => defaultFolderOk(f, root));
   const name = slug(input.name);
   if (!name) return { error: "name is required" };
   if (opts.existingNames.includes(name)) return { error: `a loop named "${name}" already exists` };
   if (!input.summary?.trim()) return { error: "summary is required" };
   if (!input.prompt?.trim()) return { error: "prompt is required" };
-  if (!input.folder?.trim() || !folderOk(input.folder)) return { error: "folder must be an existing directory under /home" };
+  if (!input.folder?.trim() || !folderOk(input.folder)) return { error: `folder must be an existing directory under ${root}` };
 
   const timeoutMs = input.goalTimeoutMs ?? 120000;
   let goal: LoopDef["goal"];

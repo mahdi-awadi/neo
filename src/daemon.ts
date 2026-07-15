@@ -21,19 +21,17 @@ import { effectiveLoops, startScheduledLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
 import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
-import { registerDefaultProject, DEFAULT_PROJECT } from "./engine/default-project";
+import { registerDefaultProject } from "./engine/default-project";
 
 // Idle-close poll interval.
 const IDLE_POLL_MS = 60 * 1000;
 // Loop scheduler tick — evaluate loop triggers once a minute.
 const LOOP_TICK_MS = 60 * 1000;
-const WEB_HOST = "172.20.0.1"; // docker-bridge IP — reachable by Traefik, not public
-const WEB_PORT = 3003; // Traefik routes neo.tech-gate.online -> 172.20.0.1:3003 (3001=operant, 3002=taken)
 
-// Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME in
-// .env wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
-async function resolveBotUsername(token: string): Promise<string> {
-  if (process.env.BOT_USERNAME) return process.env.BOT_USERNAME;
+// Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
+// wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
+async function resolveBotUsername(token: string, configured: string): Promise<string> {
+  if (configured) return configured;
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
     const j = (await r.json()) as { result?: { username?: string } };
@@ -143,7 +141,7 @@ async function main(): Promise<void> {
     console.log("  loops     -> scheduler OFF (NEO_LOOP_SCHEDULER=0)");
   }
 
-  const gatewaySendUrl = process.env.GATEWAY_SEND_URL ?? "https://neo-api.tech-gate.online/send";
+  const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
     startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload });
     console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
@@ -152,13 +150,14 @@ async function main(): Promise<void> {
     const sessions = createSessionStore({
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
-    const botUsername = await resolveBotUsername(cfg.telegramToken);
+    const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
       { engine: { cfg, ledger, registry, meter, trust, lifecycle }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl },
-      WEB_PORT,
-      WEB_HOST,
+      cfg.webPort,
+      cfg.webHost,
     );
-    console.log(`  web       -> http://${WEB_HOST}:${WEB_PORT} (sign in as @${botUsername}) · https://neo.tech-gate.online`);
+    const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
+    console.log(`  web       -> http://${cfg.webHost}:${cfg.webPort} (sign in as @${botUsername})${publicHint}`);
   } else {
     console.log("  telegram  -> NOT configured (set TELEGRAM_TOKEN in .env). Web console disabled (needs the bot for login).");
   }
@@ -166,8 +165,8 @@ async function main(): Promise<void> {
   // The always-on default project ("the company"): a pinned, idle fallback for free-text orders
   // with no active project. No SDK turn at startup — the first order starts/resumes its session
   // with the calling channel's reply, so the worker's output goes back to whoever asked.
-  registerDefaultProject(registry, ledger);
-  console.log(`  company   -> default project registered at ${DEFAULT_PROJECT.folder} (always-on, idle)`);
+  registerDefaultProject(registry, ledger, cfg.companyFolder);
+  console.log(`  company   -> default project registered at ${cfg.companyFolder} (always-on, idle)`);
 
   // Re-register the sessions that were open at the last graceful shutdown as idle+resumable
   // entries — a follow-up or dispatch to their folder resumes them (fresh CLAUDE.md injection).

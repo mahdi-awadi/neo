@@ -20,18 +20,18 @@ const cinput = (over: Partial<LoopInput> = {}): LoopInput => ({
 });
 
 test("matchLoop normalizes '<project> <goal>' and finds the loop", () => {
-  expect(matchLoop("gold gofmt")?.name).toBe("gold-gofmt");
-  expect(matchLoop("gold-gofmt")?.name).toBe("gold-gofmt");
-  expect(matchLoop("GOLD   GOFMT")?.name).toBe("gold-gofmt"); // case + extra spaces
+  expect(matchLoop("docs sweep")?.name).toBe("docs-sweep");
+  expect(matchLoop("docs-sweep")?.name).toBe("docs-sweep");
+  expect(matchLoop("DOCS   SWEEP")?.name).toBe("docs-sweep"); // case + extra spaces
   expect(matchLoop("nope")).toBeUndefined();
 });
 
 test("listLoops returns the available loops with name/usage/summary", () => {
   const ls = listLoops();
-  const gofmt = ls.find((l) => l.name === "gold-gofmt");
-  expect(gofmt).toBeTruthy();
-  expect(gofmt?.usage).toContain("/loop");
-  expect(typeof gofmt?.summary).toBe("string");
+  const sweep = ls.find((l) => l.name === "docs-sweep");
+  expect(sweep).toBeTruthy();
+  expect(sweep?.usage).toContain("/loop");
+  expect(typeof sweep?.summary).toBe("string");
 });
 
 test("handleLoop ignores non-loop text", () => {
@@ -42,20 +42,20 @@ test("handleLoop ignores non-loop text", () => {
 test("/loop with no args lists the available loops", () => {
   const replies: string[] = [];
   expect(handleLoop("/loop", 1, { reply: (_c, t) => void replies.push(t) })).toBe(true);
-  expect(replies.join("\n").toLowerCase()).toContain("gold");
+  expect(replies.join("\n").toLowerCase()).toContain("green");
 });
 
 test("/loop with an unknown loop replies with the list", () => {
   const replies: string[] = [];
   handleLoop("/loop wat huh", 1, { reply: (_c, t) => void replies.push(t) });
-  expect(replies.join("\n").toLowerCase()).toContain("gold");
+  expect(replies.join("\n").toLowerCase()).toContain("green");
 });
 
 test("startLoop runs the loop, streams progress, and reports the outcome", async () => {
   const replies: string[] = [];
   let ran = 0;
   let n = 0;
-  const out = await startLoop(matchLoop("gold gofmt")!, 1, {
+  const out = await startLoop(matchLoop("green")!, 1, {
     reply: (_c, t) => void replies.push(t),
     run: async (_o, h) => {
       ran++;
@@ -70,9 +70,9 @@ test("startLoop runs the loop, streams progress, and reports the outcome", async
   expect(replies.some((r) => r.toLowerCase().includes("goal met"))).toBe(true);
 });
 
-// A fire-once reminder-style scheduled loop (like laywer-hearings-reminder): one iteration,
+// A fire-once reminder-style scheduled loop (like a nightly hearings reminder): one iteration,
 // goal never met on its own, folder under /home so its project tag is the basename.
-const remLoop = (folder = "/home/laywer"): LoopDef => ({
+const remLoop = (folder = "/home/acme"): LoopDef => ({
   name: "rem",
   usage: "/loop rem",
   summary: "reminder",
@@ -97,7 +97,7 @@ test("startScheduledLoop forwards worker text to the operator channel tagged wit
   expect(out.iterations).toBe(1);
   // Exactly the worker's line reaches the operator, tagged with the folder-derived project.
   expect(replies).toEqual([
-    { chatId: 4242, text: "You have a hearing tomorrow at 9am (case #123).", project: "laywer" },
+    { chatId: 4242, text: "You have a hearing tomorrow at 9am (case #123).", project: "acme" },
   ]);
   // No starting / iteration / outcome chrome — only real worker output.
   expect(replies.some((r) => /start|iteration|goal met|⚠️|🔁/i.test(r.text))).toBe(false);
@@ -161,7 +161,7 @@ test("built-ins win over a custom row with the same name", () => {
   const led = openLedger(":memory:");
   led.saveLoopDef("green", JSON.stringify({ name: "green", folder: "/x", goal: {}, trigger: {}, bounds: {} }));
   expect(effectiveLoops(led).filter((l) => l.name === "green")).toHaveLength(1);
-  expect(matchLoop("green", led)?.folder).toBe("/home/neo"); // the built-in, not the custom row
+  expect(matchLoop("green", led)?.folder).toBe(process.cwd()); // the built-in (self-repo), not the custom row
 });
 
 test("updateLoop and deleteLoop reject built-ins, accept custom", () => {

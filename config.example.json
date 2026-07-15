@@ -1,6 +1,32 @@
 {
+  "//": "Structured, non-secret settings. Copy to config.json (gitignored). Secrets go in .env, and any env var overrides the matching key here. Every field is optional — omit to take the default.",
+
   "telegramAllowFrom": [],
   "providers": { "ownWork": "subscription", "customerWork": "gemini" },
   "subscriptionInteractiveReservePct": 0.2,
-  "workRoot": "/home"
+
+  "workRoot": "/home",
+  "companyFolder": "/home/neo/agent",
+
+  "webHost": "127.0.0.1",
+  "webPort": 3003,
+  "publicUrl": "",
+
+  "budgetWindowUsd": 20,
+  "budgetWindowMs": 18000000,
+  "idleCloseMs": 86400000,
+
+  "loopSchedulerEnabled": true,
+
+  "dispatchTimeoutMs": 900000,
+  "dispatchTimeoutMaxMs": 7200000,
+  "dispatchStallMs": 300000,
+  "dispatchGraceMs": 75000,
+  "drainWindowMs": 90000,
+
+  "stuckAfterMs": 600000,
+  "longTurnAlertMs": 1200000,
+  "alertRepeatMs": 900000,
+
+  "contextPolicy": { "handoffPct": 0.65, "emergencyPct": 0.85, "maxTurns": 200, "maxAgeMs": 604800000, "handoffTimeoutMs": 180000 }
 }

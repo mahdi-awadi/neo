@@ -173,12 +173,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger });
     },
     createLoop(input) {
-      const r = defCreateLoop(input, opts.engine.ledger);
+      const r = defCreateLoop(input, opts.engine.ledger, opts.engine.cfg.workRoot);
       if (r.ok) emit({ type: "loops", items: listLoops(opts.engine.ledger) });
       return r.ok ? { ok: true } : { ok: false, error: r.error };
     },
     updateLoop(name, input) {
-      const r = defUpdateLoop(name, input, opts.engine.ledger);
+      const r = defUpdateLoop(name, input, opts.engine.ledger, opts.engine.cfg.workRoot);
       if (r.ok) emit({ type: "loops", items: listLoops(opts.engine.ledger) });
       return r.ok ? { ok: true } : { ok: false, error: r.error };
     },
@@ -197,6 +197,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         ledger: opts.engine.ledger,
         usage: opts.usage,
         chatId: opts.chatId,
+        reposRoot: opts.engine.cfg.workRoot, // scan the operator's configured project root
       });
     },
     notify(text: string, project?: string) {

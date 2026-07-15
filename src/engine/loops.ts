@@ -22,8 +22,8 @@ export interface LoopDefStore {
 export type LoopStore = LoopDefStore & LoopStateStore;
 
 export interface LoopDef extends SchedulableLoop {
-  name: string; // canonical key, e.g. "gold-gofmt"
-  usage: string; // "/loop gold gofmt"
+  name: string; // canonical key, e.g. "docs-sweep"
+  usage: string; // "/loop docs-sweep"
   summary: string;
   folder: string; // where the worker opens
   prompt: string; // what the worker attempts each iteration
@@ -46,23 +46,17 @@ export interface LoopDeps {
   now?: () => number;
 }
 
-const GOLD_GOFMT: LoopDef = {
-  name: "gold-gofmt",
-  usage: "/loop gold gofmt",
-  summary: "format gold/server with gofmt and commit (never pushes)",
-  folder: "/home/gold",
-  prompt:
-    "Run `gofmt -w server/` to fix Go formatting across the server module, then confirm `gofmt -l server/` prints nothing. Commit the formatting changes with a message like 'style: gofmt'. Do NOT push.",
-  goal: { kind: "command", command: ["sh", "-c", 'test -z "$(gofmt -l server/)"'], timeoutMs: 60_000 },
-  trigger: { kind: "manual" },
-  bounds: { maxIterations: 3 },
-};
+// The built-in loops are generic, deployment-neutral examples of the trigger → action → goal model.
+// They maintain the engine's OWN repo (the folder the daemon runs in), so they work out of the box
+// on a fresh clone; operators author their own project loops from the web console (persisted as data,
+// merged by effectiveLoops). All are escalation-auto-denied and never push/deploy.
+const SELF_REPO = process.cwd();
 
 const GREEN: LoopDef = {
   name: "green",
   usage: "/loop green",
-  summary: "run bun test + tsc until green (never pushes)",
-  folder: "/home/neo",
+  summary: "run the test suite + typecheck until green (never pushes)",
+  folder: SELF_REPO,
   prompt:
     "Run `bun test` and `bunx tsc --noEmit`. Diagnose and fix any failures you find, then re-run. Do NOT push or deploy.",
   goal: { kind: "command", command: ["sh", "-c", "bun test && bunx tsc --noEmit"], timeoutMs: 300_000 },
@@ -74,7 +68,7 @@ const ERROR_SWEEP: LoopDef = {
   name: "error-sweep",
   usage: "/loop error-sweep",
   summary: "nightly: scan logs, root-cause + fix unaddressed errors (never pushes)",
-  folder: "/home/neo",
+  folder: SELF_REPO,
   prompt:
     "Scan `data/unaddressed-errors.log` and the app logs for errors. Root-cause and fix each one, committing per fix. Do NOT push or deploy.",
   goal: { kind: "command", command: ["sh", "-c", "test ! -s data/unaddressed-errors.log"], timeoutMs: 120_000 },
@@ -87,7 +81,7 @@ const DOCS_SWEEP: LoopDef = {
   name: "docs-sweep",
   usage: "/loop docs-sweep",
   summary: "nightly: sync docs to the day's diff — LLM-judge (never pushes)",
-  folder: "/home/neo",
+  folder: SELF_REPO,
   prompt: "Review today's `git diff` and update the docs to match it. Commit the doc updates. Do NOT push.",
   goal: {
     kind: "judge",
@@ -100,23 +94,7 @@ const DOCS_SWEEP: LoopDef = {
   enabledByDefault: false,
 };
 
-const INBOX_DELETE: LoopDef = {
-  name: "inbox-delete",
-  usage: "/loop inbox-delete",
-  summary: "add a delete button to the web frontend's inbox until tested green (never pushes)",
-  folder: "/home/neo",
-  prompt:
-    "Add the ability to delete a customer-inbox item from the operator web frontend. Work TDD: first write `tests/inbox-delete.test.ts` covering (1) `Inbox.delete(id)` removes the item so `get(id)` returns undefined and it drops out of `list()`, and (2) the web frontend exposes a delete affordance and a `DELETE /api/inbox/:id` route that calls it. Then implement the minimal code to pass: add `delete(id)` to the `Inbox` interface + its bun:sqlite impl in `src/engine/inbox.ts`, a `DELETE /api/inbox/:id` handler in `src/frontends/web.ts`, and a delete button on each inbox row in the rendered console page that hits it. Keep `bunx tsc --noEmit` clean. Commit per logical piece. Do NOT push or deploy.",
-  goal: {
-    kind: "command",
-    command: ["sh", "-c", "bun test tests/inbox-delete.test.ts && bunx tsc --noEmit"],
-    timeoutMs: 300_000,
-  },
-  trigger: { kind: "manual" },
-  bounds: { maxIterations: 6, budgetUsd: 8 },
-};
-
-export const LOOPS: LoopDef[] = [GOLD_GOFMT, GREEN, ERROR_SWEEP, DOCS_SWEEP, INBOX_DELETE];
+export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP];
 
 export function isBuiltin(name: string): boolean {
   return LOOPS.some((l) => l.name === name);
@@ -178,20 +156,20 @@ export function listLoops(store?: LoopStore): LoopInfo[] {
 
 type CrudResult = { ok: true; def: LoopDef } | { ok: false; error: string };
 
-export function createLoop(input: LoopInput, store: LoopDefStore): CrudResult {
-  const res = validateLoopInput(input, { existingNames: effectiveLoops(store).map((l) => l.name) });
+export function createLoop(input: LoopInput, store: LoopDefStore, root?: string): CrudResult {
+  const res = validateLoopInput(input, { existingNames: effectiveLoops(store).map((l) => l.name), root });
   if ("error" in res) return { ok: false, error: res.error };
   store.saveLoopDef(res.def.name, JSON.stringify(res.def));
   return { ok: true, def: res.def };
 }
 
-export function updateLoop(name: string, input: LoopInput, store: LoopDefStore): CrudResult {
+export function updateLoop(name: string, input: LoopInput, store: LoopDefStore, root?: string): CrudResult {
   if (isBuiltin(name)) return { ok: false, error: "built-in loops can't be edited" };
   if (!effectiveLoops(store).some((l) => l.name === name)) return { ok: false, error: `no custom loop "${name}"` };
   const existingNames = effectiveLoops(store)
     .map((l) => l.name)
     .filter((n) => n !== name);
-  const res = validateLoopInput({ ...input, name }, { existingNames });
+  const res = validateLoopInput({ ...input, name }, { existingNames, root });
   if ("error" in res) return { ok: false, error: res.error };
   store.saveLoopDef(res.def.name, JSON.stringify(res.def));
   return { ok: true, def: res.def };
@@ -249,8 +227,8 @@ export interface ScheduledLoopDeps {
   shouldStop?: () => boolean;
 }
 
-/** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/laywer →
- *  "laywer"), matching how dispatch attributes a project (registry uses basename too). */
+/** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/acme →
+ *  "acme"), matching how dispatch attributes a project (registry uses basename too). */
 export function loopProjectTag(loop: LoopDef): string {
   return basename(loop.folder);
 }
@@ -259,7 +237,7 @@ export function loopProjectTag(loop: LoopDef): string {
  * Run a SCHEDULED loop quietly, forwarding ONLY real worker text to the operator's channel tagged
  * with the loop's project — the same #project streaming style as dispatch. Unlike the interactive
  * startLoop, it emits no "starting" / per-iteration / outcome chrome: a loop that produces no worker
- * text sends nothing (silent success), so a reminder loop (e.g. laywer-hearings-reminder) is quiet
+ * text sends nothing (silent success), so a reminder loop (e.g. a nightly hearings reminder) is quiet
  * when there's nothing to report. Escalations stay auto-denied (via runProjectLoop). Used by the
  * daemon's loop scheduler so scheduled-loop output reaches Telegram/web, not just daemon stdout.
  */

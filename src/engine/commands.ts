@@ -323,7 +323,7 @@ function renderHelp(): string {
     "/open <folder> <task> — start or resume a project",
     "(just chat to follow up the active project)",
     ...COMMANDS.map((c) => `${c.usage} — ${c.summary}`),
-    "/loop [<project> <goal>] — run a verifiable loop (e.g. /loop gold gofmt)",
+    "/loop [<project> <goal>] — run a verifiable loop (e.g. /loop green)",
   ];
   return lines.join("\n");
 }

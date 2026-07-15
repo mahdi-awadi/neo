@@ -65,3 +65,83 @@ test("contextPolicy defaults per spec", () => {
   const c = loadConfig("/nonexistent-dir");
   expect(c.contextPolicy).toEqual({ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 });
 });
+
+/** Run `fn` with `key` forced to `value` (or unset when undefined), restoring the prior value after. */
+function withEnv(key: string, value: string | undefined, fn: () => void): void {
+  const saved = process.env[key];
+  try {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+    fn();
+  } finally {
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  }
+}
+
+test("web console host/port default to localhost:3003 and read env", () => {
+  withEnv("WEB_HOST", undefined, () =>
+    withEnv("WEB_PORT", undefined, () => {
+      const c = loadConfig("/nonexistent-dir");
+      expect(c.webHost).toBe("127.0.0.1");
+      expect(c.webPort).toBe(3003);
+    }),
+  );
+  withEnv("WEB_HOST", "172.20.0.1", () =>
+    withEnv("WEB_PORT", "4000", () => {
+      const c = loadConfig("/nonexistent-dir");
+      expect(c.webHost).toBe("172.20.0.1");
+      expect(c.webPort).toBe(4000);
+    }),
+  );
+});
+
+test("publicUrl / gatewaySendUrl / botUsername are empty by default and read env", () => {
+  withEnv("PUBLIC_URL", undefined, () =>
+    withEnv("GATEWAY_SEND_URL", undefined, () =>
+      withEnv("BOT_USERNAME", undefined, () => {
+        const c = loadConfig("/nonexistent-dir");
+        expect(c.publicUrl).toBe("");
+        expect(c.gatewaySendUrl).toBe("");
+        expect(c.botUsername).toBe("");
+      }),
+    ),
+  );
+  withEnv("PUBLIC_URL", "https://neo.example.com", () =>
+    withEnv("BOT_USERNAME", "my_bot", () => {
+      const c = loadConfig("/nonexistent-dir");
+      expect(c.publicUrl).toBe("https://neo.example.com");
+      expect(c.botUsername).toBe("my_bot");
+    }),
+  );
+});
+
+test("workRoot defaults to /home and reads WORK_ROOT; companyFolder defaults under cwd", () => {
+  withEnv("WORK_ROOT", undefined, () =>
+    withEnv("COMPANY_FOLDER", undefined, () => {
+      const c = loadConfig("/nonexistent-dir");
+      expect(c.workRoot).toBe("/home");
+      expect(c.companyFolder).toBe(join(process.cwd(), "agent"));
+    }),
+  );
+  withEnv("WORK_ROOT", "/srv/projects", () =>
+    withEnv("COMPANY_FOLDER", "/srv/company", () => {
+      const c = loadConfig("/nonexistent-dir");
+      expect(c.workRoot).toBe("/srv/projects");
+      expect(c.companyFolder).toBe("/srv/company");
+    }),
+  );
+});
+
+test("optional MCP add-on bins are OFF by default (no hardcoded personal paths)", () => {
+  withEnv("GITNEXUS_BIN", undefined, () =>
+    withEnv("CODEBASE_MEMORY_BIN", undefined, () => {
+      const c = loadConfig("/nonexistent-dir");
+      expect(c.gitnexusBin).toBe("");
+      expect(c.codebaseMemoryBin).toBe("");
+    }),
+  );
+  withEnv("GITNEXUS_BIN", "/usr/bin/gitnexus", () => {
+    expect(loadConfig("/nonexistent-dir").gitnexusBin).toBe("/usr/bin/gitnexus");
+  });
+});
