@@ -10,3 +10,6 @@ company/
 # The default project ("the company") — runtime config, memory, secrets
 /agent/
 /.superpowers/
+
+# Operator attachments (photos, customer files, keys) — never committed
+inbox/
