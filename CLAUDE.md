@@ -135,10 +135,12 @@ Wire the context policy into the loop-runner path.
   deleted by design.
 - **Verified Agent SDK surface** (https://code.claude.com/docs/en/agent-sdk/typescript): package
   `@anthropic-ai/claude-agent-sdk`; entry `query({ prompt, options })`; key options `cwd`,
-  `settingSources: ["project","local"]` (loads the folder's CLAUDE.md/.mcp.json/settings),
+  `settingSources: ["user","project"]` (`user` loads `~/.claude` plugins/skills, `project` loads the
+  folder's CLAUDE.md/.mcp.json/settings), `skills: "all"` (the one switch that turns skills on),
   `systemPrompt: { type:"preset", preset:"claude_code" }`, `permissionMode`, `canUseTool`,
   `mcpServers`, `resume`. The async generator yields `{ type: "assistant" | "result" | "system" |
-  ... }`. The full shape is documented in `src/engine/session-runner.ts`.
+  ... }`. The full shape is documented in `src/engine/session-runner.ts` (SDK findings:
+  `docs/sdk-notes.md`).
 
 ## Conventions
 
