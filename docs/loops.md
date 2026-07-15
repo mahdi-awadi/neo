@@ -14,9 +14,13 @@ the last section maps it onto Neo.
 > `docs/superpowers/plans/2026-06-26-loop-runtime.md`. Deferred: event triggers, the in-iteration
 > Stop-hook guard, dynamic self-paced intervals.
 >
-> **Shipped built-in loops** (code-defined in `src/engine/loops.ts`): `gold-gofmt`, `green` (test +
-> tsc until green), `error-sweep` (nightly), `docs-sweep` (nightly LLM-judge), `inbox-delete`. Each
-> runs through `runProjectLoop`, so it's governed + escalation-auto-denied (never pushes/deploys).
+> **Shipped built-in loops** (code-defined in `src/engine/loops.ts`) are generic, deployment-neutral
+> examples that maintain the engine's *own* repo, so they work on a fresh clone: `green` (run `bun
+> test` + `bunx tsc --noEmit` until green — verifiable, manual), `error-sweep` (nightly cron;
+> root-cause + fix unaddressed errors — verifiable), and `docs-sweep` (nightly cron; sync docs to the
+> day's diff — LLM-judge). Each runs through `runProjectLoop`, so it's governed +
+> escalation-auto-denied (never pushes/deploys). Operators author their own project loops from the
+> web console (see the CRUD note below); built-ins stay run/toggle-only.
 >
 > **Data-driven loop CRUD — live (2026-06-28).** Loop *definitions* are data (ledger `loop_defs`),
 > merged with the built-in library by `effectiveLoops()` and re-read each tick, so an operator
@@ -29,8 +33,8 @@ the last section maps it onto Neo.
 > worker's real text to the operator's Telegram chat (the admin id, resolved at fire time so a late
 > TOFU admin still works), tagged with the loop's `#project` — the same streaming style as dispatch.
 > There is **no** start/iteration/outcome chrome, so a loop that emits no worker text sends nothing
-> (silent success): a reminder loop (e.g. `laywer-hearings-reminder`) stays quiet when there's nothing
-> to report. Falls back to daemon stdout when there's no admin/token yet. `runProjectLoop` gained an
+> (silent success): a nightly reminder loop stays quiet when there's nothing to report. Falls back to
+> daemon stdout when there's no admin/token yet. `runProjectLoop` gained an
 > `onMessage` sink (worker text) split from `onProgress` (engine chrome); `startScheduledLoop`
 > (`src/engine/loops.ts`) forwards worker text only, delivered by `sendOperatorLine`
 > (`src/frontends/telegram.ts`). The interactive `/loop` path keeps `startLoop`'s start/progress/outcome

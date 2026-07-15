@@ -6,14 +6,15 @@ Open Claude Code inside `/home/neo` and paste the prompt below.
 
 You're picking up the **Neo** project. First read `CLAUDE.md` and `MVP-PLAN.md` — they are the source of truth.
 
-**Status:** Phases 0–3 complete, plus a live **loop runtime** and a **customer inbox**. `bun test`
-green (239 tests in `tests/`), `tsc` clean.
+**Status:** Phases 0–3 complete, plus a live **loop runtime** (with data-driven CRUD) and a
+**customer inbox**. `bun test` green (346 tests in `tests/`), `tsc` clean.
 - Phase 1: walking skeleton (`/open` → governed headless Claude worker → streamed → ledger).
 - Phase 2: live follow-ups, idle-close + resume, budget meter, concurrency, `/status` + `/kill` — verified against the real SDK.
 - Phase 3 (reprioritized): the **operator web console** at `neo.example.com` — Telegram-Login → trust-on-first-use admin → signed session cookie → the same `source:"neo"` SDK pipeline as Telegram, behind Traefik. Live-verified (HTTPS + valid cert).
-- Loop runtime: `trigger → action → goal` loops through the governed worker — `Goal`/`Trigger`/`Bounds`, a 60s scheduler, `/loop` command + a built-in library (`gold-gofmt`, `green`, `error-sweep`, `docs-sweep`, `inbox-delete`). See `docs/loops.md`.
+- Loop runtime: `trigger → action → goal` loops through the governed worker — `Goal`/`Trigger`/`Bounds`, a 60s scheduler, `/loop` command + generic built-ins (`green`, `error-sweep`, `docs-sweep`). See `docs/loops.md`.
+- Data-driven loop CRUD (`docs/superpowers/specs/2026-06-27-loop-crud-design.md`): loop *definitions* are data (ledger `loop_defs`), so an operator authors/edits/deletes loops from the admin web console with no restart; built-ins stay run/toggle-only.
 - Customer inbox: inbound mail queues for operator review (Telegram `/inbox` + web console, view/draft/edit/send/**delete**) — no auto-reply.
-- **Next spec'd:** data-driven loop CRUD (`docs/superpowers/specs/2026-06-27-loop-crud-design.md`) — author loops from the admin console, no restart. Phase 3b (below) remains the other deferred track.
+- **Deferred track:** Phase 3b (below) — the Gemini customer path.
 
 **Your job: build Phase 3b — the customer path (Gemini)**, the originally-planned Phase 3 that was deferred. One customer channel (email webhook or a public web form, distinct from the operator console) → Gemini **reads** the customer message → `Order(source:"customer")` → the engine executes via **Gemini, never the Agent SDK / subscription**. Prove the firewall end-to-end: customer work never touches the Claude subscription.
 
