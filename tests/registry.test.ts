@@ -24,8 +24,11 @@ test("add registers a session addressable by id, name, and chat", () => {
   expect(s.startedAt).toBe(1000);
   expect(s.lastActivityAt).toBe(1000);
   expect(reg.get(o.id)).toEqual(s);
-  expect(reg.findByChat(100)).toEqual(s);
   expect(reg.findByName("alpha")).toEqual(s);
+  // A freshly-added project is NOT addressable by chat until it's explicitly focused (default = company).
+  expect(reg.findByChat(100)).toBeUndefined();
+  reg.setFocus(100, o.id, "once");
+  expect(reg.findByChat(100)).toEqual(s);
 });
 
 test("tracks a default (fallback) session, gone once removed", () => {
@@ -40,11 +43,9 @@ test("tracks a default (fallback) session, gone once removed", () => {
 
 test("tracks two concurrent sessions independently", () => {
   const reg = createRegistry();
-  const a = reg.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
-  const b = reg.add(order({ folder: "/p/beta", chatId: 2 }), 2);
+  reg.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  reg.add(order({ folder: "/p/beta", chatId: 2 }), 2);
   expect(reg.list().length).toBe(2);
-  expect(reg.findByChat(1)?.id).toBe(a.id);
-  expect(reg.findByChat(2)?.id).toBe(b.id);
 });
 
 test("uniquifies names when two sessions share a folder basename", () => {
@@ -54,24 +55,42 @@ test("uniquifies names when two sessions share a folder basename", () => {
   expect(second.name).toBe("proj-2");
 });
 
-test("findByChat returns the most recent OPEN session and excludes closed ones", () => {
-  const reg = createRegistry();
-  const first = reg.add(order({ folder: "/p/a", chatId: 5 }), 1);
-  const second = reg.add(order({ folder: "/p/b", chatId: 5 }), 2);
-  expect(reg.findByChat(5)?.id).toBe(second.id); // most recently active
-  reg.setStatus(second.id, "done");
-  expect(reg.findByChat(5)?.id).toBe(first.id); // closed session excluded
-});
-
-test("setActive makes findByChat prefer the active session, falling back when it closes", () => {
+test("findByChat returns ONLY the focused session — no most-recent fallback (default = company)", () => {
   const reg = createRegistry();
   const a = reg.add(order({ folder: "/p/a", chatId: 5 }), 1);
-  const b = reg.add(order({ folder: "/p/b", chatId: 5 }), 2);
-  expect(reg.findByChat(5)?.id).toBe(b.id); // most recent by default
-  reg.setActive(5, a.id);
-  expect(reg.findByChat(5)?.id).toBe(a.id); // active wins
-  reg.setStatus(a.id, "done");
-  expect(reg.findByChat(5)?.id).toBe(b.id); // active closed -> fall back to most recent
+  reg.add(order({ folder: "/p/b", chatId: 5 }), 2);
+  // Nothing focused: findByChat is undefined so the pipeline falls back to the company/default.
+  expect(reg.findByChat(5)).toBeUndefined();
+  reg.setFocus(5, a.id, "pinned");
+  expect(reg.findByChat(5)?.id).toBe(a.id);
+});
+
+test("getFocus carries the mode and drops when the focused session closes", () => {
+  const reg = createRegistry();
+  const a = reg.add(order({ folder: "/p/a", chatId: 5 }), 1);
+  reg.setFocus(5, a.id, "once");
+  expect(reg.getFocus(5)).toEqual({ session: reg.get(a.id)!, mode: "once" });
+  reg.setStatus(a.id, "done"); // closed → focus no longer resolves
+  expect(reg.getFocus(5)).toBeUndefined();
+  expect(reg.findByChat(5)).toBeUndefined();
+});
+
+test("clearFocus reverts a chat to the default target", () => {
+  const reg = createRegistry();
+  const a = reg.add(order({ folder: "/p/a", chatId: 5 }), 1);
+  reg.setFocus(5, a.id, "pinned");
+  expect(reg.findByChat(5)?.id).toBe(a.id);
+  reg.clearFocus(5);
+  expect(reg.getFocus(5)).toBeUndefined();
+  expect(reg.findByChat(5)).toBeUndefined();
+});
+
+test("focus is per-chat: focusing in one chat never leaks into another", () => {
+  const reg = createRegistry();
+  const a = reg.add(order({ folder: "/p/a", chatId: 5 }), 1);
+  reg.setFocus(5, a.id, "once");
+  expect(reg.getFocus(5)?.session.id).toBe(a.id);
+  expect(reg.getFocus(7)).toBeUndefined();
 });
 
 test("attachControl stores a control handle retrievable by id and cleared on remove", () => {
