@@ -33,7 +33,7 @@ test("dashboardSnapshot returns structured projects/usage/loops/recent", () => {
   const registry = createRegistry();
   const a = registry.add(order({ folder: "/p/alpha", task: "build x" }), 1000);
   registry.add(order({ folder: "/p/beta", task: "fix y" }), 2000);
-  registry.setActive(0, a.id);
+  registry.setFocus(0, a.id, "once");
 
   const ledger = openLedger(":memory:");
   ledger.recordOrder(order({ id: "o1", folder: "/p/gamma", task: "old job" }));

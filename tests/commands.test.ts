@@ -120,21 +120,46 @@ test("/kill an unknown name returns a friendly error; no name returns usage", ()
   expect(handleCommand("/kill", 1, deps())!.text.toLowerCase()).toContain("usage");
 });
 
-test("/use makes a project active and /list marks it with a star", () => {
+test("/use addresses a project for ONE message and /list marks it", () => {
   const registry = createRegistry();
   registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
   registry.add(order({ folder: "/p/beta", chatId: 1 }), 2);
   const d = deps({ registry });
-  expect(handleCommand("/use alpha", 1, d)!.text.toLowerCase()).toContain("now on alpha");
+  const msg = handleCommand("/use alpha", 1, d)!.text.toLowerCase();
+  expect(msg).toContain("alpha");
+  expect(msg).toContain("next message"); // one-shot phrasing
+  expect(registry.getFocus(1)).toMatchObject({ mode: "once" });
   const list = handleCommand("/list", 1, d)!.text;
   const alphaLine = list.split("\n").find((l) => l.includes("alpha"))!;
   const betaLine = list.split("\n").find((l) => l.includes("beta"))!;
-  expect(alphaLine).toContain("★");
-  expect(betaLine).not.toContain("★");
+  expect(alphaLine).toContain("▶"); // one-shot focus marker
+  expect(betaLine).not.toContain("▶");
 });
 
-test("/use an unknown project is a friendly error", () => {
+test("/pin holds a project across messages; /unpin returns to the company", () => {
+  const registry = createRegistry();
+  registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  const d = deps({ registry });
+  expect(handleCommand("/pin alpha", 1, d)!.text.toLowerCase()).toContain("pinned");
+  expect(registry.getFocus(1)).toMatchObject({ mode: "pinned" });
+  const list = handleCommand("/list", 1, d)!.text;
+  expect(list.split("\n").find((l) => l.includes("alpha"))!).toContain("📌");
+  expect(handleCommand("/unpin", 1, d)!.text.toLowerCase()).toContain("company");
+  expect(registry.getFocus(1)).toBeUndefined();
+});
+
+test("/company is an alias for /unpin", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  registry.setFocus(1, a.id, "pinned");
+  const d = deps({ registry });
+  handleCommand("/company", 1, d);
+  expect(registry.getFocus(1)).toBeUndefined();
+});
+
+test("/use and /pin on an unknown project are friendly errors", () => {
   expect(handleCommand("/use ghost", 1, deps())!.text).toContain("not found");
+  expect(handleCommand("/pin ghost", 1, deps())!.text).toContain("not found");
 });
 
 test("/recent shows recent orders with their outcomes", () => {
@@ -186,7 +211,7 @@ test("/list returns selectable projects with the active one flagged", () => {
   const registry = createRegistry();
   registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
   const b = registry.add(order({ folder: "/p/beta", chatId: 1 }), 2);
-  registry.setActive(1, b.id);
+  registry.setFocus(1, b.id, "once");
   const res = handleCommand("/list", 1, deps({ registry }))!;
   expect(res.select?.map((s) => s.label)).toEqual(["alpha", "beta"]);
   const beta = res.select?.find((s) => s.label === "beta");
@@ -257,7 +282,7 @@ test("/trust on then /trust toggles and reports trust when a project is explicit
   registry.setDefault(company.id);
   const proj = order({ id: "proj1", folder: "/home/neo/myproject", chatId: 5 });
   registry.add(proj, 0);
-  registry.setActive(5, proj.id); // chatId 5 has explicitly selected proj1
+  registry.setFocus(5, proj.id, "once"); // chatId 5 has explicitly selected proj1
   const trust = openTrustStore(":memory:");
   const d = { registry, ledger: openLedger(":memory:"), trust, now: () => 1 };
 

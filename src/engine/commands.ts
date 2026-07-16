@@ -12,6 +12,7 @@ import type { Inbox } from "./inbox";
 import { renderInboxList, type InboxListEntry } from "./inbox-actions";
 import type { SessionInfo } from "../types";
 import { sessionContext, type ContextSignals } from "./context-policy";
+import { humanAge } from "./session-status";
 
 export interface CommandDeps {
   registry: Registry;
@@ -74,8 +75,24 @@ const COMMANDS: Command[] = [
     name: "use",
     aliases: ["switch"],
     usage: "/use <name>",
-    summary: "make a project active (your messages follow up on it)",
-    run: ({ deps, args, chatId }) => ({ text: useSession(args.trim(), chatId, deps.registry) }),
+    summary: "address a project for your NEXT message, then revert to the company",
+    run: ({ deps, args, chatId }) => ({ text: focusSession(args.trim(), chatId, deps.registry, "once") }),
+  },
+  {
+    name: "pin",
+    usage: "/pin <name>",
+    summary: "keep talking to a project across messages (until /unpin)",
+    run: ({ deps, args, chatId }) => ({ text: focusSession(args.trim(), chatId, deps.registry, "pinned") }),
+  },
+  {
+    name: "unpin",
+    aliases: ["company", "main"],
+    usage: "/unpin",
+    summary: "return focus to the company / main agent",
+    run: ({ deps, chatId }) => {
+      deps.registry.clearFocus(chatId);
+      return { text: "↩︎ back to the company — your messages go to the main agent." };
+    },
   },
   {
     name: "kill",
@@ -136,10 +153,11 @@ export function handleCommand(text: string, chatId: number, deps: CommandDeps): 
   return cmd.run({ chatId, args: rest.join(" "), now: (deps.now ?? (() => Date.now()))(), deps });
 }
 
-/** Make a project active (from a tapped /list button) and return the refreshed list. The one
- * place the switch happens — both Telegram and the web console call this on a tap. */
+/** Focus a project one-shot (from a tapped /list button) and return the refreshed list. The one
+ * place the tap-switch happens — both Telegram and the web console call this on a tap. One-shot so a
+ * tapped project receives the next message, then focus reverts to the company (use /pin to hold). */
 export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
-  deps.registry.setActive(chatId, id);
+  deps.registry.setFocus(chatId, id, "once");
   return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals);
 }
 
@@ -183,16 +201,6 @@ function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandRe
   return { text: `${target.name} (${folder}): ${here}\nUsage: /trust on · /trust off${list}` };
 }
 
-function humanAge(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d`;
-}
-
 function statusIcon(status: SessionInfo["status"]): string {
   return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
 }
@@ -200,7 +208,10 @@ function statusIcon(status: SessionInfo["status"]): string {
 function renderList(registry: Registry, trust: CommandDeps["trust"], now: number, chatId: number, signals?: CommandDeps["signals"]): CommandResult {
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
-  const activeId = registry.findByChat(chatId)?.id;
+  // The chat's focused project (if any) is the one messages currently address; mark it ▶ (one-shot,
+  // reverts after the next message) or 📌 (pinned). With none focused, the company is the target.
+  const focus = registry.getFocus(chatId);
+  const activeId = focus?.session.id;
   const select: SelectableProject[] = sessions.map((s) => ({
     label: s.name,
     id: s.id,
@@ -210,7 +221,7 @@ function renderList(registry: Registry, trust: CommandDeps["trust"], now: number
   }));
   const text = sessions
     .map((s) => {
-      const star = s.id === activeId ? "★ " : "";
+      const star = s.id === activeId ? (focus!.mode === "pinned" ? "📌 " : "▶ ") : "";
       const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
       const act = s.status === "running" && s.activity ? ` · ${s.activity.label} ${humanAge(now - s.activity.since)}` : "";
@@ -231,13 +242,15 @@ function renderList(registry: Registry, trust: CommandDeps["trust"], now: number
   return { text, select };
 }
 
-function useSession(name: string, chatId: number, registry: Registry): string {
-  if (!name) return "Usage: /use <name>";
+function focusSession(name: string, chatId: number, registry: Registry, mode: "once" | "pinned"): string {
+  if (!name) return `Usage: /${mode === "pinned" ? "pin" : "use"} <name>`;
   const s = registry.findByName(name);
   if (!s) return `Project not found: ${name}`;
   if (s.status !== "running" && s.status !== "idle") return `${name} is closed.`;
-  registry.setActive(chatId, s.id);
-  return `Now on ${name} — your messages follow up on it.`;
+  registry.setFocus(chatId, s.id, mode);
+  return mode === "pinned"
+    ? `📌 pinned ${name} — your messages go to it until /unpin (or /company).`
+    : `▶ addressing ${name} for your next message, then back to the company. (/pin ${name} to keep talking to it.)`;
 }
 
 function killSession(name: string, registry: Registry): string {
@@ -321,7 +334,7 @@ function renderHelp(): string {
   const lines = [
     "Commands:",
     "/open <folder> <task> — start or resume a project",
-    "(just chat to follow up the active project)",
+    "(plain chat goes to the company; address a project with /use, then it reverts to the company)",
     ...COMMANDS.map((c) => `${c.usage} — ${c.summary}`),
     "/loop [<project> <goal>] — run a verifiable loop (e.g. /loop green)",
   ];
