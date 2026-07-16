@@ -48,9 +48,13 @@ Worker    (Claude Agent SDK = Claude Code in a      ← does the actual project 
 - **Live, concurrent, resumable sessions.** Multiple projects run concurrently in a registry; quiet
   sessions **idle-close** and persist their SDK id so a later `/open` **resumes** them. A context
   policy measures each session and hands off at safe boundaries before it fills the window.
+- **One-shot project focus.** The default target is always the company; addressing a project is
+  explicit and reverts after a single message (`/pin` to hold it), so stray messages never stick to a
+  project. When a project is busy, the reply reports its **real status** — not an opaque "busy".
 - **The "company" — an always-on default project** that answers free-text orders when nothing else
   is active, and can **dispatch** project work to governed sub-workers, bounded by a stall/liveness
-  monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window).
+  monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window). A `sessions`
+  tool gives it live awareness of every project's state.
 - **Loop runtime (autonomy).** `trigger → action → goal` loops run autonomous work through the same
   governed worker; loop **definitions are data** — author, edit, and toggle them from the web
   console with no restart.
@@ -111,18 +115,37 @@ else. To reset admin, delete `data/admin.db`. You can pre-restrict who may claim
   Telegram". The console binds localhost by default and is meant to sit behind your proxy — don't
   expose the raw port publicly.
 
+### Talking to projects — one-shot focus
+
+The default target for a plain message is always **the company** (the main/chief-of-staff agent).
+Addressing a specific project is **explicit and one-shot**: you direct *one* message to a project,
+then focus reverts to the company — so a stray next message never sticks to a project.
+
+- **Address a project for one message:** `/use <name>` (then send your message), tap a project in
+  `/list`, or reply to one of its streamed messages. After that one message, you're back on the company.
+- **Have a back-and-forth with a project:** `/pin <name>` holds focus on it across messages; `/unpin`
+  (alias `/company`, `/main`) returns to the company. `/list` marks the focused project `▶` (one-shot)
+  or `📌` (pinned).
+- **`/open <folder> <task>`** delivers its task to the project (that's the one message) and reverts to
+  the company; `/pin` it if you want to keep working there.
+
+When a message or a company **dispatch** can't run because a project is occupied, the reply reports the
+**real status** — which project, what it's doing, how long, and how many follow-ups are queued — not a
+bare "busy". The company also has a `sessions` tool to see every project's live state at once.
+
 ### Operator commands
 
-The same commands work over Telegram and the web console. A plain (non-`/`) message is a follow-up
-to the active project.
+The same commands work over Telegram and the web console.
 
 | Command | Does |
 | --- | --- |
-| `/open <folder> <task>` | Start a new project session (or resume an existing one) and give it a task. |
-| `/list` (`/ls`, `/status`) | List open projects (★ = active); tap a name to switch. |
-| `/use <name>` | Make a project active — your messages follow up on it. |
+| `/open <folder> <task>` | Start a project session (or resume one) and give it a task; reverts to the company after. |
+| `/list` (`/ls`, `/status`) | List open projects with live status (`▶`/`📌` = focused); tap a name to address it once. |
+| `/use <name>` | Address a project for your **next message only**, then revert to the company. |
+| `/pin <name>` | Keep talking to a project across messages (until `/unpin`). |
+| `/unpin` (`/company`, `/main`) | Return focus to the company / main agent. |
 | `/kill <name>` | Stop a project session. |
-| `/trust [on\|off]` | Auto-approve actions for the active project (skip Allow/Deny prompts). |
+| `/trust [on\|off]` | Auto-approve actions for the focused project (skip Allow/Deny prompts). |
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |

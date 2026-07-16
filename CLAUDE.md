@@ -117,6 +117,17 @@ the Loops tab) with **no restart**. Validated input (`loop-validate.ts`, `/home`
 admin-gated, built-ins are run/toggle-only. Spec/plan:
 `docs/superpowers/specs/2026-06-27-loop-crud-design.md`, `docs/superpowers/plans/2026-06-28-loop-crud.md`.
 
+**One-shot session focus + real status + company awareness — live:** the default follow-up target is
+always the company; a project is addressed **explicitly and one-shot** (per-chat focus with a mode in
+`registry.ts`: `setFocus`/`clearFocus`/`getFocus`; `findByChat` returns only the focused session — no
+more sticky most-recent fallback), so a stray next message reverts to the company instead of hitting a
+project. `/use <name>` (and tapping a project, or replying to its streamed message) focuses **once**;
+`/pin <name>` holds it; `/unpin` (`/company`, `/main`) returns. Blocked messages/dispatches report the
+**real status** (which project, what it's doing, how long, queue depth) via `session-status.ts`
+(`describeSessionStatus`/`sessionStatuses`/`sessionsReport`) instead of an opaque "busy", and the
+company gets a `sessions` MCP tool (same gate as `dispatch`) for live awareness of every project's
+state. Spec: `docs/superpowers/specs/2026-07-16-session-focus-status-design.md`.
+
 Next: **Phase 3b** (the deferred Gemini customer path), then Phase 4 (finance/board). Keep building
 **phase by phase, TDD**, per `MVP-PLAN.md`. Deferred loop follow-ons (reuse the same data layer):
 Telegram `/loop new` guided flow, an agent/MCP `create_loop` tool, and edit-prefill in the web form.
