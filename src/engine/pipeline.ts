@@ -17,6 +17,7 @@ import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers } from "./dispatch";
 import { sessionContext, decideContext, runHandoff } from "./context-policy";
+import { describeSessionStatus } from "./session-status";
 
 /** Start a live session. Injectable for tests; defaults to the real SDK-backed runner. */
 type StartFn = (order: Order, handlers: RunHandlers, deps?: RunDeps) => SessionRun;
@@ -132,20 +133,28 @@ export async function handleMessage(
     },
   };
 
-  // 1. Plain-text follow-up into the session for this chat, or — when nothing is active — into the
-  //    always-on default project ("the company"), which decides what to do with the order.
-  const live = registry.findByChat(chatId) ?? registry.getDefault();
+  // 1. Plain-text follow-up. The DEFAULT target is the always-on company (source:"neo"), which
+  //    decides what to do with the order. A project is addressed EXPLICITLY and ONE-SHOT: a chat's
+  //    focus (mode "once") reverts to the company after this one message, so a stray next message
+  //    never sticks to a project. An explicit `/pin` (mode "pinned") holds focus across messages.
+  const focus = registry.getFocus(chatId);
+  const live = focus?.session ?? registry.getDefault();
   if (live && !text.trim().startsWith("/")) {
+    const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
     const control = registry.getControl(live.id);
     if (control && live.status === "running") {
-      // Live worker — push the follow-up into the running turn.
+      // Live worker — the follow-up queues behind the in-flight turn. Report the REAL status, not a
+      // bare "busy": what it's doing, for how long, and how deep the queue is.
       control.followUp(text.trim());
       registry.touch(live.id, now());
-      await deps.reply(chatId, `↩︎ added to ${live.name}`);
+      if (oneShot) registry.clearFocus(chatId);
+      const queued = control.queued?.() ?? 0;
+      await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSessionStatus(live, now(), { queued })}`);
       return null;
     }
     // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
     if (resuming.has(live.id)) {
+      // Focus intentionally NOT consumed here — the re-send should still reach this project.
       await deps.reply(chatId, `⏳ ${live.name} is reopening — send that again in a moment`);
       return null;
     }
@@ -153,6 +162,7 @@ export async function handleMessage(
     ledger.recordOrder(resumed);
     registry.setStatus(live.id, "running");
     registry.touch(live.id, now());
+    if (oneShot) registry.clearFocus(chatId);
     await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
     resuming.add(live.id);
     try {

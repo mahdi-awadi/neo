@@ -151,6 +151,7 @@ test("a follow-up to a completed (idle) session resumes it carrying its sdk id",
   await new Promise((r) => setTimeout(r, 0)); // let the supervisor mark it idle
   expect(h.registry.list()[0].status).toBe("idle");
 
+  h.registry.setFocus(4, h.registry.list()[0].id, "once"); // explicitly re-address the idle project
   await handleMessage("now do part two", 4, h.base);
 
   expect(f.resumeSeen()).toBe("sdk-42"); // resumed with the persisted sdk session id
@@ -164,10 +165,11 @@ test("routes a plain-text message to the live session as a follow-up", async () 
   const h = harness({ start: f.start });
 
   await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned"); // explicitly address the running project
   await handleMessage("also write a README", 5, h.base);
 
   expect(f.followUps()).toContain("also write a README");
-  expect(h.replies.some((r) => r.includes("added"))).toBe(true);
+  expect(h.replies.some((r) => r.includes("queued for"))).toBe(true);
 });
 
 test("a free-text order with no active project routes to the default project", async () => {
@@ -228,26 +230,99 @@ test("wires worker escalations through askApproval", async () => {
   expect(decision).toBe("allow");
 });
 
-test("a follow-up routes to the actively-selected project", async () => {
-  const dirA = scratch();
-  const dirB = scratch();
-  const followed: string[] = [];
-  const start = (o: Order, _h: RunHandlers): SessionRun => ({
+// A never-completing fake whose follow-ups are captured per folder (for focus/routing tests).
+function routingStart(followed: string[]) {
+  return (o: Order, _h: RunHandlers): SessionRun => ({
     followUp: (t) => void followed.push(`${o.folder}:${t}`),
     interrupt: async () => {},
     queued: () => 0,
     close: () => {},
     done: new Promise<RunResult>(() => {}),
   });
-  const h = harness({ start });
+}
+
+// Register an always-on company (default) so a reverted/unfocused chat has somewhere to land.
+function withCompany(h: ReturnType<typeof harness>, followed: string[]): string {
+  const companyDir = scratch();
+  const company = h.registry.add(
+    { id: "company", source: "neo", folder: companyDir, task: "standby", chatId: -1, createdAt: 0 },
+    0,
+  );
+  h.registry.setDefault(company.id);
+  h.registry.setStatus(company.id, "running"); // running so a plain message follows-up (captured)
+  h.registry.attachControl(company.id, {
+    followUp: (t) => void followed.push(`${companyDir}:${t}`),
+    interrupt: async () => {},
+    queued: () => 0,
+  });
+  return companyDir;
+}
+
+test("a follow-up routes to a one-shot-focused project", async () => {
+  const dirA = scratch();
+  const dirB = scratch();
+  const followed: string[] = [];
+  const h = harness({ start: routingStart(followed) });
   await handleMessage(`/open ${dirA} a`, 5, h.base);
   await handleMessage(`/open ${dirB} b`, 5, h.base);
 
   const aId = h.registry.list().find((s) => s.order.folder === dirA)!.id;
-  h.registry.setActive(5, aId);
+  h.registry.setFocus(5, aId, "once");
   await handleMessage("keep going", 5, h.base);
 
   expect(followed).toContain(`${dirA}:keep going`);
+});
+
+test("one-shot focus reverts to the company after ONE message", async () => {
+  const dirA = scratch();
+  const followed: string[] = [];
+  const h = harness({ start: routingStart(followed) });
+  const companyDir = withCompany(h, followed);
+  await handleMessage(`/open ${dirA} a`, 5, h.base);
+  const aId = h.registry.list().find((s) => s.order.folder === dirA)!.id;
+
+  h.registry.setFocus(5, aId, "once");
+  await handleMessage("first — goes to the project", 5, h.base);
+  await handleMessage("second — should go to the company", 5, h.base);
+
+  expect(followed).toContain(`${dirA}:first — goes to the project`);
+  expect(followed).toContain(`${companyDir}:second — should go to the company`);
+  expect(h.registry.getFocus(5)).toBeUndefined(); // focus consumed
+});
+
+test("a pinned project keeps receiving follow-ups until unpinned", async () => {
+  const dirA = scratch();
+  const followed: string[] = [];
+  const h = harness({ start: routingStart(followed) });
+  const companyDir = withCompany(h, followed);
+  await handleMessage(`/open ${dirA} a`, 5, h.base);
+  const aId = h.registry.list().find((s) => s.order.folder === dirA)!.id;
+
+  h.registry.setFocus(5, aId, "pinned");
+  await handleMessage("one", 5, h.base);
+  await handleMessage("two", 5, h.base);
+  h.registry.clearFocus(5);
+  await handleMessage("three — back to company", 5, h.base);
+
+  expect(followed).toContain(`${dirA}:one`);
+  expect(followed).toContain(`${dirA}:two`);
+  expect(followed).toContain(`${companyDir}:three — back to company`);
+});
+
+test("a busy project's follow-up reply reports the real status, not an opaque 'busy'", async () => {
+  const dirA = scratch();
+  const followed: string[] = [];
+  const h = harness({ start: routingStart(followed) });
+  await handleMessage(`/open ${dirA} a`, 5, h.base);
+  const a = h.registry.list().find((s) => s.order.folder === dirA)!;
+  h.registry.noteActivity(a.id, "running tests", 0);
+  h.registry.setFocus(5, a.id, "pinned");
+
+  await handleMessage("status?", 5, { ...h.base, now: () => 120_000 });
+
+  const line = h.replies.find((r) => r.includes("queued for"))!;
+  expect(line).toContain("running tests");
+  expect(line).toContain("2m"); // activity age surfaced
 });
 
 test("resumes when a prior session id exists for the folder/chat", async () => {
@@ -377,6 +452,8 @@ test("a second message during a slow pre-resume handoff is queued, not a double-
   await opened!.done;
   await new Promise((r) => setTimeout(r, 0)); // let the supervisor mark it idle
   expect(h.registry.list()[0].status).toBe("idle");
+  // Pin the project so BOTH plain messages address it (the F3 double-resume window under one focus).
+  h.registry.setFocus(4, h.registry.list()[0].id, "pinned");
 
   let releaseHandoff!: () => void;
   const blocked = new Promise<void>((res) => {
