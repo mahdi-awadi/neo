@@ -117,12 +117,13 @@ export function startTelegram(
     }
   }
 
-  // If this message is a reply to a tracked worker message, make that project active so the
-  // pipeline routes the follow-up into it (overriding whichever project was active in the feed).
+  // If this message is a reply to a tracked worker message, focus that project ONE-SHOT so the
+  // pipeline routes this follow-up into it — then focus reverts to the company (a stray next
+  // message never sticks to the project). Replying again re-addresses it.
   function routeByReply(chatId: number, repliedToMessageId: number | undefined): void {
     if (repliedToMessageId === undefined) return;
     const sessionId = routes.sessionFor(repliedToMessageId);
-    if (sessionId && registry.get(sessionId)) registry.setActive(chatId, sessionId);
+    if (sessionId && registry.get(sessionId)) registry.setFocus(chatId, sessionId, "once");
   }
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
