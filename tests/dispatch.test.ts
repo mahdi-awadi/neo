@@ -75,13 +75,18 @@ test("dispatch to a running folder refuses instead of stacking", async () => {
     0,
   );
   d.registry.setStatus(first.id, "running");
+  d.registry.noteActivity(first.id, "running tests", 0); // what it's currently doing
   const out = await dispatchToProject("eticket-v3", "task", d, 1, {
     start: (() => {
       throw new Error("must not start");
     }) as never,
     root,
+    now: () => 120_000,
   });
-  expect(out).toContain("still busy");
+  // Not an opaque "busy": the company gets the real status so it can tell the operator + decide.
+  expect(out).toContain("busy");
+  expect(out).toContain("running tests");
+  expect(out).toContain("2m"); // how long that activity has run
 });
 
 test("background completion books the result and reports back to operator + company", async () => {

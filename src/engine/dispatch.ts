@@ -16,6 +16,7 @@ import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, type ContextPolicyCfg } from "./context-policy";
+import { describeSessionStatus, sessionsReport } from "./session-status";
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
@@ -154,9 +155,16 @@ export async function dispatchToProject(
   const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now());
   const name = session.name;
-  // Busy guard: never stack a second run onto a folder whose session is mid-turn.
+  // Busy guard: never stack a second run onto a folder whose session is mid-turn. Report the REAL
+  // status (what it's doing, for how long, queue depth) — not an opaque "busy" — so the company can
+  // tell the operator what's happening and decide to wait or report back, instead of a blind refusal.
   if (existing && wasRunning) {
-    return `${name} is still busy with the previous dispatch — its result will arrive when it finishes.`;
+    const queued = deps.registry.getControl(existing.id)?.queued?.() ?? 0;
+    const status = describeSessionStatus(existing, now(), { queued });
+    return (
+      `${name} is busy — ${status}. I did NOT start this dispatch; its current work must finish first. ` +
+      `Its result will arrive as a follow-up when it's done — tell the operator what ${name} is doing, or retry shortly.`
+    );
   }
   if (existing) {
     deps.registry.setStatus(existing.id, "running");
@@ -384,6 +392,12 @@ export function neoMcpServers(
   ];
   if (opts.dispatch) {
     tools.push(
+      tool(
+        "sessions",
+        "List the operator's live project sessions and what each is doing RIGHT NOW (idle / running-what / how long / how many follow-ups queued). Use this to answer the operator about a project's status, or — when a dispatch reports a project busy — to decide whether to wait for it or report back. Returns text.",
+        {},
+        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now()) }] }),
+      ),
       tool(
         "dispatch",
         "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt.",
