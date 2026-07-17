@@ -361,6 +361,44 @@ test("startOrder fires onTurnComplete with the turn's result, and close() ends t
   expect(f.interruptCalls()).toBe(0); // never hard-interrupted
 });
 
+// --- Liveness heartbeat (BUG 1, 2026-07-17: a worker producing one long generation — e.g. writing
+// a huge file — emitted no COMPLETED assistant/result message for minutes, so the dispatch stall
+// clock (only bumped on completed turns) counted the busy worker as silent and aborted it mid-write
+// with "Stream closed". consumeStream must signal a heartbeat on EVERY streamed SDK event, and the
+// SDK must stream partial deltas so a long single turn keeps producing events. ---
+
+test("onHeartbeat fires on EVERY streamed SDK event — including system + stream_event partials — so a long generation resets the stall clock", async () => {
+  let beats = 0;
+  const q = () =>
+    (async function* () {
+      yield { type: "system", subtype: "init", session_id: "s" };
+      yield { type: "stream_event", event: { type: "content_block_delta" }, session_id: "s" };
+      yield { type: "stream_event", event: { type: "content_block_delta" }, session_id: "s" };
+      yield { type: "assistant", message: { content: [{ type: "text", text: "hi" }] }, session_id: "s" };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onHeartbeat: () => void beats++ },
+    { query: q as never },
+  );
+  // One heartbeat per streamed message regardless of type — the two stream_event partials count,
+  // even though they produce no operator message and no completed turn.
+  expect(beats).toBe(5);
+});
+
+test("workers stream partial messages (includePartialMessages) so a long single generation isn't counted as silence", async () => {
+  let seen: { includePartialMessages?: unknown } = {};
+  const q = (args: { prompt: unknown; options: { includePartialMessages?: unknown } }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(seen.includePartialMessages).toBe(true);
+});
+
 test("reports 'waiting' on the SDK result message (turn boundary)", async () => {
   const labels: string[] = [];
   const q = () =>

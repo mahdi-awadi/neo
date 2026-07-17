@@ -224,6 +224,12 @@ export async function dispatchToProject(
           lastActivityAt = now();
           void deps.reply(replyChat, t, name);
         },
+        // Liveness pulse on ANY streamed SDK event (partial deltas, tool_use/tool_result, system):
+        // a worker mid-generation (e.g. writing a huge file — one long turn, no completed message)
+        // keeps this clock fresh, so the stall abort fires only on TRUE silence (BUG 1).
+        onHeartbeat: () => {
+          lastActivityAt = now();
+        },
         onEscalation: (reason) => deps.askApproval(replyChat, reason),
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
         autoApprove: () => deps.trust.isTrusted(folder),

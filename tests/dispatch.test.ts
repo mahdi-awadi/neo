@@ -202,6 +202,79 @@ test("a BUSY sub-run (streaming activity) is NOT stall-aborted even long past th
   expect(interrupted).toBe(false);
 });
 
+// --- BUG 1 (2026-07-17): a worker actively producing a large file / long model turn was
+// stall-aborted with "no activity for 5m" and the write died with "Stream closed". The stall clock
+// was only bumped on COMPLETED assistant/result turns; one long generation streams partial deltas
+// (stream_event) but no completed turn, so it looked like silence. Genuine streamed progress must
+// reset the clock; only TRUE silence (no SDK events at all) may abort. ---
+
+test("a sub-run emitting a steady drip of partial stream_events (one long generation) is NOT stall-aborted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let interrupted = false;
+  let stopped = false;
+  // Real SDK-shaped stream: after init, emit ONLY partial stream_event deltas (a single long
+  // generation, e.g. writing a huge plan file) — never a completed assistant/result turn — spaced
+  // well inside the stall window, for several stall windows' worth of time.
+  const q = (_args: { prompt: AsyncIterable<unknown>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sub-1" };
+      while (!stopped) {
+        yield { type: "stream_event", event: { type: "content_block_delta" }, session_id: "sub-1" };
+        await new Promise((r) => setTimeout(r, 5)); // 5ms gap << 20ms stall window
+      }
+    })();
+    return Object.assign(gen, {
+      interrupt: async () => {
+        interrupted = true;
+      },
+    });
+  };
+  const start = (o: Order, h: RunHandlers, dd?: Record<string, unknown>) => startOrder(o, h, { ...dd, query: q as never });
+  await dispatchToProject(
+    "eticket-v3",
+    "write a huge plan file",
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 20, dispatchGraceMs: 5 },
+    1,
+    { start: start as never, root },
+  );
+  await new Promise((r) => setTimeout(r, 120)); // 6× the stall window, while deltas keep dripping
+  expect(interrupted).toBe(false); // busy generating → never falsely stall-aborted
+  stopped = true; // let the fake stream end so no timer outlives the test
+});
+
+test("a sub-run that goes truly silent after init IS stall-aborted after the grace window", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let interrupted = false;
+  // init, then GENUINE silence — no further SDK events at all (a hung worker).
+  const q = (_args: { prompt: AsyncIterable<unknown>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sub-1" };
+      await new Promise(() => {}); // hang forever — true silence
+    })();
+    return Object.assign(gen, {
+      interrupt: async () => {
+        interrupted = true;
+      },
+    });
+  };
+  const start = (o: Order, h: RunHandlers, dd?: Record<string, unknown>) => startOrder(o, h, { ...dd, query: q as never });
+  const replies: string[] = [];
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 20, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
+    1,
+    { start: start as never, root },
+  );
+  await new Promise((r) => setTimeout(r, 120));
+  expect(interrupted).toBe(true);
+  expect(replies.some((t) => t.includes("timed out") && t.includes("stall"))).toBe(true);
+});
+
 test("on timeout the worker first gets a wrap-up follow-up, and finishing within the grace window keeps its result", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));

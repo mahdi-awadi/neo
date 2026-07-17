@@ -67,6 +67,11 @@ export interface RunHandlers {
   onAutoApprove?: (reason: string) => void;
   /** Reports what the worker is doing (each tool_use as "Tool: detail", each text as "replying"). */
   onActivity?: (label: string) => void;
+  /** Liveness pulse: fires on EVERY streamed SDK event (partial deltas, tool_use, tool_result,
+   *  system, result), regardless of whether it produces an operator message. The dispatch stall
+   *  monitor bumps its last-activity clock here so a worker mid-generation (e.g. writing a huge
+   *  file — one long turn with no completed message) is never counted as silent (BUG 1). */
+  onHeartbeat?: () => void;
   /** Fires at each SDK "result" message (turn boundary) with that turn's result. A single-brief
    *  caller (dispatch) uses this to detect completion — the stream itself stays open. */
   onTurnComplete?: (result: RunResult) => void;
@@ -164,6 +169,10 @@ function sdkOptions(
     skills: "all",
     systemPrompt: { type: "preset", preset: "claude_code" },
     permissionMode: "default",
+    // Stream partial/streaming message events (SDKPartialAssistantMessage, type "stream_event")
+    // during generation, so a single long turn keeps producing SDK events instead of going quiet
+    // for minutes — that steady drip is what keeps the dispatch stall monitor alive (BUG 1).
+    includePartialMessages: true,
     canUseTool: buildCanUseTool(handlers, order.folder),
     ...extra,
   };
@@ -178,6 +187,10 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
 
   try {
     for await (const msg of queryObj) {
+      // Liveness first: ANY streamed event proves the worker is alive and producing — reset the
+      // stall clock before dispatching on type, so a long single generation (partial deltas only,
+      // no completed turn) or a long tool execution never reads as silence (BUG 1).
+      handlers.onHeartbeat?.();
       if (typeof msg.session_id === "string") sessionId = msg.session_id;
 
       if (msg.type === "assistant") {
