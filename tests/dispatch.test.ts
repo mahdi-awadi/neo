@@ -668,3 +668,31 @@ test("dispatch prepends a read-the-project-docs preamble to the brief", async ()
   expect(seenTask).toContain(".md"); // and is preceded by the docs-reading rule
   expect(seenTask.toLowerCase()).toContain("agents.md");
 });
+
+// --- BUG 2 (2026-07-17): the automatic dispatch preamble must ALSO tell the worker to query the
+// codebase-memory MCP for a structural map before cold-reading files, and to use the superpowers
+// skills — so the operator never has to add it by hand and it can't be omitted. ---
+
+test("briefWithProjectDocs preamble covers docs + codebase-memory + superpowers, then the task verbatim", () => {
+  const out = briefWithProjectDocs("DO THE WORK");
+  expect(out.toLowerCase()).toContain("agents.md"); // read project docs (existing)
+  expect(out.toLowerCase()).toContain("codebase-memory"); // structural map before cold-reading
+  expect(out.toLowerCase()).toContain("superpowers"); // use the skills
+  expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last
+});
+
+test("dispatch injects the codebase-memory + superpowers instruction into every brief automatically", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let seenTask = "";
+  const fakeStart = (o: Order) => {
+    seenTask = o.task;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "fix the partner leak", d, 1, { start: fakeStart as never, root });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(seenTask).toContain("fix the partner leak"); // the original brief survives verbatim
+  expect(seenTask.toLowerCase()).toContain("codebase-memory"); // map before cold-reading files
+  expect(seenTask.toLowerCase()).toContain("superpowers"); // use the skills
+});

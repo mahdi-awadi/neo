@@ -99,12 +99,20 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
 
 /** Only CLAUDE.md auto-loads into a worker (verified 2026-07-08) — AGENTS.md, DESIGN.md and the
  *  rest of a project's rule/docs .md files never reach it unless the brief says so. Every
- *  dispatched brief gets this preamble so the worker reads its own rules before acting. */
+ *  dispatched brief gets this preamble so the worker (1) reads its own rules, (2) queries the
+ *  codebase-memory MCP for a structural map before cold-reading files (~10× fewer tokens than
+ *  re-reading the tree), and (3) uses the superpowers skills for the shape of work at hand. The
+ *  engine appends this automatically so the operator never has to and it can't be omitted. */
 export function briefWithProjectDocs(task: string): string {
   return (
     "Before starting, read this project's rule and doc .md files so you work by its rules: " +
     "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
     "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
+    "Before cold-reading files, query the `codebase-memory` MCP (get_architecture / search_code) to " +
+    "get a structural map of the relevant modules — it's far cheaper than re-reading the whole tree. " +
+    "Use the superpowers skills for this work: brainstorming → writing-plans for design, " +
+    "systematic-debugging to root-cause any bug, and test-driven-development for implementation " +
+    "(write the failing test first).\n\n" +
     task
   );
 }
