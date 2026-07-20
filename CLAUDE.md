@@ -88,11 +88,17 @@ zero-tool tainted drafting (spec: `docs/superpowers/specs/2026-07-07-governor-ha
 **Context policy + session liveness — live:** sessions are measured (transcript-derived ctx%) and
 handoff-cleared at safe boundaries before they rot or hit the wall (`context-policy.ts`, HANDOFF.md
 notes); dispatch is non-blocking (the company is always free; sub-runs report back) and bounded by
-a **liveness monitor**, not a fixed wall clock: abort on stall (`dispatchStallMs`, 5m of no
-activity) or on a per-dispatch ceiling (the dispatch tool's `timeoutMinutes`, default
-`dispatchTimeoutMs` 15m, clamped to `dispatchTimeoutMaxMs` 2h), with a graceful wrap-up window
-(`dispatchGraceMs`, 75s: commit green work + WIP note) before the hard abort; a stuck-watchdog
-alerts the admin when a running session goes silent. `bun test` is scoped to `tests/` via
+a **liveness monitor**, not a fixed wall clock: abort on stall (`dispatchStallMs`, 5m of **true
+silence** — the stall clock resets on *any* streamed SDK event via an `onHeartbeat` pulse +
+`includePartialMessages`, so a worker mid-generation, even one long turn writing a huge file, is
+never mistaken for silence) or on a per-dispatch ceiling (the dispatch tool's `timeoutMinutes`,
+default `dispatchTimeoutMs` 15m, clamped to `dispatchTimeoutMaxMs` 2h), with a graceful wrap-up
+window (`dispatchGraceMs`, 75s: commit green work + WIP note) before the hard abort; a
+stuck-watchdog alerts the admin when a running session goes silent. Every dispatched brief is
+auto-prefixed (`briefWithProjectDocs`) with a preamble telling the worker to read its own rule/doc
+`.md` files, query the `codebase-memory` MCP for a structural map before cold-reading files, and
+use the superpowers skills — the engine appends it so the operator never has to and it can't be
+omitted. `bun test` is scoped to `tests/` via
 `bunfig.toml` (no more `agent/desks/**` sweep). Specs:
 `docs/superpowers/specs/2026-07-08-context-policy-design.md`,
 `docs/superpowers/specs/2026-07-08-session-liveness-design.md`.

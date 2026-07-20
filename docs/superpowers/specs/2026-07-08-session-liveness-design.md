@@ -30,9 +30,14 @@ delegates; it never blocks on delegated work.
    continuation), and is bounded by a **liveness monitor** (revised 2026-07-08 — the original
    fixed 15 min wall clock killed 18 long builds in a row; the timeout must protect against a
    HUNG worker, not a busy one):
-   - **Stall limit:** the sub-run is aborted when it has produced **no activity** (no tool
-     milestone, no assistant text) for `dispatchStallMs` (default **300_000** = 5 min). A worker
-     streaming output for 90 minutes stays alive.
+   - **Stall limit:** the sub-run is aborted when it has produced **no activity** for
+     `dispatchStallMs` (default **300_000** = 5 min). *Activity* means **any streamed SDK event** —
+     partial generation deltas, `tool_use`/`tool_result`, `system` — not merely a completed tool
+     milestone or assistant text (refined 2026-07-17: the run sets `includePartialMessages: true`
+     and the session-runner fires an `onHeartbeat` pulse at the top of the stream loop on every
+     event, which dispatch wires to the last-activity clock). So a worker mid-generation — even one
+     long turn writing a huge file, which emits no *completed* message for minutes — stays alive;
+     only TRUE silence aborts. A worker streaming output for 90 minutes stays alive.
    - **Per-dispatch ceiling:** the `dispatch` tool accepts an optional `timeoutMinutes` — the
      company sizes it to the task (2 for a lookup, 60–120 for a build). Unset →
      `dispatchTimeoutMs` (default 15 min). Always clamped to `dispatchTimeoutMaxMs`

@@ -30,6 +30,11 @@ terminal, no TTY, no tmux**. Confirmed headless.
   operator's channel and there's no answer-bridge, so left enabled the worker reads the empty result as "you
   didn't pick" and guesses. Plain-text questions surface via `onMessage`; the reply returns as a follow-up.
 - `maxTurns: number` — bounds the agentic loop.
+- `includePartialMessages: true` — stream partial/streaming events (`SDKPartialAssistantMessage`,
+  `msg.type === "stream_event"`) as the worker generates. Without it a single long turn emits **no**
+  SDK message until it completes, so a worker writing a huge file goes quiet for minutes; with it the
+  steady drip of stream events keeps Neo's dispatch stall monitor alive (it isn't mistaken for
+  silence). Neo consumes these purely as a liveness heartbeat, not for content. Added 2026-07-17.
 - `canUseTool` — the governance hook (see below).
 - (for Phase 1) `mcpServers`, `resume`, `model`.
 
@@ -55,6 +60,9 @@ canUseTool: async (tool, input) => {
 ## Message stream (observed `msg.type` values)
 
 - `"system"` — lifecycle; `subtype: "init"` first, also `"thinking_tokens"`.
+- `"stream_event"` — a partial/streaming delta (`SDKPartialAssistantMessage`), emitted only when
+  `includePartialMessages: true`. Carries no completed block; Neo uses it as a liveness pulse
+  (`onHeartbeat`) to keep the dispatch stall clock fresh, never for content.
 - `"assistant"` — `msg.message.content` is an array of blocks; text is `block.type === "text"` →
   `block.text`.
 - `"result"` — terminal; `subtype: "success"`, plus `total_cost_usd`, `num_turns`. Read the final
