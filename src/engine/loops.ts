@@ -94,7 +94,42 @@ const DOCS_SWEEP: LoopDef = {
   enabledByDefault: false,
 };
 
-export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP];
+// An operator-specific built-in (unlike the deployment-neutral self-repo loops above): a daily
+// morning wellbeing check-in for the operator's personal `/home/mywell-being` project (Type-2
+// diabetes / sleep). It's DISABLED by default, so it's inert on any host that lacks that folder —
+// the operator turns it on with `/loop mywellbeing-checkin on` where the project exists.
+//
+// Fire-once: the action isn't a "converge to a measurable state" loop — it's a single daily
+// touch-point. runLoop checks the goal BEFORE iterating, so a met goal would skip the run; we use a
+// goal that NEVER holds (`sh -c false`, exit 1) with maxIterations 1, which fires exactly one
+// iteration (docs/loops.md gotcha; same shape as the reminder loop in tests).
+//
+// Schedule: `0 6 * * *` is 06:00 in the SERVER's LOCAL time (the cron matcher uses local hours —
+// see trigger.ts), which lands ~09:00 Asia/Baghdad (UTC+3) when the server clock is UTC. If this
+// daemon runs on Baghdad local time instead, change the expr to `0 9 * * *`.
+//
+// Only the worker's TEXT reaches the operator on a scheduled fire (no chrome), so the prompt makes
+// the worker write its questions + proposals out as its text reply, or the check-in would be silent.
+const MYWELLBEING_CHECKIN: LoopDef = {
+  name: "mywellbeing-checkin",
+  usage: "/loop mywellbeing-checkin",
+  summary: "daily morning wellbeing check-in — diabetes/sleep questions + concrete next steps (never pushes)",
+  folder: "/home/mywell-being",
+  prompt:
+    "Run today's wellbeing check-in for the operator (Neo), following this project's check-in protocol in CLAUDE.md. " +
+    "Read `profile/about-me.md`, the latest entries in `data/glucose-log.md`, and `plan/wellbeing-plan.md` first. " +
+    "Then write — as your TEXT reply, since only your text reaches the operator — a short, warm check-in with: " +
+    "(a) the right small set of questions for today, prioritizing the missing high-value data (this morning's " +
+    "fasting glucose, what time he slept, a recent HbA1c if he has one, meds taken, and weight on the weekly " +
+    "weigh-in day); and (b) one or two concrete, Iraqi-food-realistic, no-hunger, prayer-anchored next steps. " +
+    "Keep it to a few lines — a focused touch-point, not a survey. Do NOT push, deploy, or invent any readings.",
+  goal: { kind: "command", command: ["sh", "-c", "false"] }, // never met → fire-once with maxIterations 1
+  trigger: { kind: "cron", expr: "0 6 * * *" }, // 06:00 server-local ≈ 09:00 Asia/Baghdad under a UTC clock
+  bounds: { maxIterations: 1, budgetUsd: 2 },
+  enabledByDefault: false,
+};
+
+export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN];
 
 export function isBuiltin(name: string): boolean {
   return LOOPS.some((l) => l.name === name);

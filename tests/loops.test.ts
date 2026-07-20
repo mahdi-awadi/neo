@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { handleLoop, startLoop, startScheduledLoop, matchLoop, listLoops, createLoop, updateLoop, deleteLoop, effectiveLoops, type LoopDef } from "../src/engine/loops";
+import { handleLoop, startLoop, startScheduledLoop, matchLoop, listLoops, loopProjectTag, createLoop, updateLoop, deleteLoop, effectiveLoops, type LoopDef } from "../src/engine/loops";
 import { openLedger } from "../src/engine/ledger";
 import type { LoopInput } from "../src/engine/loop-validate";
 import type { RunResult } from "../src/engine/session-runner";
@@ -179,4 +179,30 @@ test("effectiveLoops skips unparseable custom rows", () => {
   const led = openLedger(":memory:");
   led.saveLoopDef("broken", "{not json");
   expect(effectiveLoops(led).some((l) => l.name === "broken")).toBe(false);
+});
+
+test("mywellbeing-checkin is a fire-once daily-morning wellbeing loop", () => {
+  const loop = matchLoop("mywellbeing-checkin");
+  expect(loop).toBeTruthy();
+  // Fire-once: a NEVER-met command goal + a single iteration. runLoop checks the goal BEFORE each
+  // iteration, so a truthy/met goal would skip the run entirely — the check-in must use a goal that
+  // never holds so exactly one iteration fires (docs/loops.md gotcha; mirrors the remLoop fixture).
+  expect(loop!.goal).toEqual({ kind: "command", command: ["sh", "-c", "false"] });
+  expect(loop!.bounds.maxIterations).toBe(1);
+  // Small budget cap, in line with the other built-ins (green 5, sweeps 10).
+  expect(loop!.bounds.budgetUsd).toBeGreaterThan(0);
+  expect(loop!.bounds.budgetUsd).toBeLessThanOrEqual(5);
+  // Scheduled: cron, once each morning (06:00 server-local ≈ 09:00 Asia/Baghdad under a UTC clock).
+  expect(loop!.trigger).toEqual({ kind: "cron", expr: "0 6 * * *" });
+  // Project tag = folder basename, so a scheduled fire streams its text tagged #mywell-being.
+  expect(loop!.folder).toBe("/home/mywell-being");
+  expect(loopProjectTag(loop!)).toBe("mywell-being");
+  // Disabled until the operator turns it on with `/loop mywellbeing-checkin on`.
+  expect(loop!.enabledByDefault).toBe(false);
+  // The action drives the project's daily check-in (diabetes/sleep) and emits it AS TEXT — only the
+  // worker's text reaches the operator, so the prompt must make it write the questions/proposals out.
+  const p = loop!.prompt.toLowerCase();
+  expect(p).toContain("check-in");
+  expect(p).toContain("glucose");
+  expect(p).toContain("text"); // instructs the worker to emit its check-in as its text reply
 });
