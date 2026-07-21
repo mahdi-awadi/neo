@@ -2,7 +2,7 @@
 // transcript JSONL (same source of truth as usage.ts) and decides, at safe boundaries only,
 // whether to keep it, hand off + clear it, or clear it immediately. Fail OPEN on read errors:
 // a measurement problem must never destroy a session.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Order, SessionInfo } from "../types";
@@ -84,6 +84,49 @@ export function sessionContext(
 export const HANDOFF_PROMPT =
   "Write a concise state-of-work handoff to HANDOFF.md in the project root: what is in flight, " +
   "decisions made, blockers, and next steps. Overwrite any existing HANDOFF.md. Then stop — do not continue other work.";
+
+/** A short, DETERMINISTIC state-of-work note (no worker/AI) for HANDOFF.md, written when a quiet
+ *  session is idle-closed — so the next run knows where it left off even when no context-boundary
+ *  handoff (the richer, worker-written HANDOFF_PROMPT above) fired. Reuses the SAME single HANDOFF.md
+ *  file that the fresh-start path already tells a worker to "Read first" (pipeline.startSession) and
+ *  that the dispatch preamble surfaces as a root-level .md — so it's discoverable with no extra wiring. */
+export function idleStateNote(session: SessionInfo, now: number): string {
+  const activity = session.activity?.label;
+  return [
+    `# HANDOFF — ${session.name}`,
+    "",
+    "_Auto-written by Neo when this session was idle-closed (a deterministic engine note, not a",
+    "worker turn). It records where the session left off so the next run can pick up; it is",
+    "overwritten each time the session is closed._",
+    "",
+    `- Folder: ${session.order.folder}`,
+    `- Opening brief: ${session.order.task || "(none)"}`,
+    `- Last activity: ${activity || "(unknown)"}`,
+    `- Idle-closed at: ${new Date(now).toISOString()}`,
+    "",
+    "## Outstanding",
+    "The session went quiet and was closed to free the subscription pool. If work was mid-flight,",
+    "re-read this and continue from the last activity above; otherwise treat the opening brief as done.",
+  ].join("\n");
+}
+
+export interface WriteNoteOpts {
+  now?: () => number;
+  /** Injectable writer (tests); defaults to writeFileSync. */
+  write?: (path: string, content: string) => void;
+}
+
+/** Best-effort: write idleStateNote to HANDOFF.md in the project folder. NEVER throws — a failed
+ *  note must not break the idle-close sweep. */
+export function writeIdleStateNote(session: SessionInfo, opts: WriteNoteOpts = {}): void {
+  const now = opts.now ?? (() => Date.now());
+  const write = opts.write ?? ((path: string, content: string) => writeFileSync(path, content));
+  try {
+    write(join(session.order.folder, "HANDOFF.md"), idleStateNote(session, now()));
+  } catch {
+    // best-effort — idle-close must proceed regardless
+  }
+}
 
 export interface HandoffDeps {
   registry: Registry;

@@ -6,14 +6,18 @@
 import type { SessionInfo } from "../types";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
+import { writeIdleStateNote } from "./context-policy";
 
-/** Close every OPEN session whose last activity is older than `idleMs`. Returns those closed. */
+/** Close every OPEN session whose last activity is older than `idleMs`. Returns those closed.
+ *  `writeStateNote` (injectable; defaults to the HANDOFF.md writer) drops a short where-it-left-off
+ *  note into each closed session's folder so the next run can resume knowing what was outstanding. */
 export function sweepIdle(
   registry: Registry,
   ledger: Ledger,
-  opts: { idleMs: number; now: number },
+  opts: { idleMs: number; now: number; writeStateNote?: (s: SessionInfo) => void },
 ): SessionInfo[] {
   const { idleMs, now } = opts;
+  const writeStateNote = opts.writeStateNote ?? writeIdleStateNote;
   const closed: SessionInfo[] = [];
 
   for (const s of registry.list()) {
@@ -28,6 +32,9 @@ export function sweepIdle(
     }
     if (now - s.lastActivityAt <= idleMs) continue;
 
+    // Before ending an unused session, record where it left off so the next run can resume knowing
+    // what was outstanding (deterministic engine note; never throws — see writeIdleStateNote).
+    writeStateNote(s);
     void registry.getControl(s.id)?.interrupt(); // ends the run; `done` resolves downstream
     if (s.sdkSessionId) ledger.recordSession(s.id, s.sdkSessionId); // keep the resume target
     registry.setStatus(s.id, "done");

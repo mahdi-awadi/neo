@@ -2,13 +2,53 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { decideContext, sessionContext, encodeCwd, CONTEXT_WINDOW_TOKENS, runHandoff } from "../src/engine/context-policy";
+import { decideContext, sessionContext, encodeCwd, CONTEXT_WINDOW_TOKENS, runHandoff, idleStateNote, writeIdleStateNote } from "../src/engine/context-policy";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
-import type { Order } from "../src/types";
+import type { Order, SessionInfo } from "../src/types";
 import type { RunHandlers } from "../src/engine/session-runner";
 
 const CFG = { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 };
+
+function sessionOn(folder: string, over: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    id: "x",
+    name: "acme",
+    sdkSessionId: "sdk1",
+    order: { id: "o", source: "neo", folder, task: "build the thing", chatId: 1, createdAt: 0 },
+    status: "idle",
+    startedAt: 0,
+    lastActivityAt: 0,
+    activity: { label: "Edit: server.ts", since: 0 },
+    ...over,
+  };
+}
+
+test("idleStateNote captures the folder, opening brief, last activity, and an idle-closed marker", () => {
+  const note = idleStateNote(sessionOn("/home/acme"), Date.parse("2026-07-21T09:00:00Z"));
+  expect(note).toContain("/home/acme");
+  expect(note).toContain("build the thing");
+  expect(note).toContain("Edit: server.ts");
+  expect(note.toLowerCase()).toContain("idle-closed");
+});
+
+test("writeIdleStateNote writes the note to HANDOFF.md in the project folder", () => {
+  const writes: Array<{ path: string; content: string }> = [];
+  writeIdleStateNote(sessionOn("/home/acme"), { now: () => 0, write: (path, content) => void writes.push({ path, content }) });
+  expect(writes).toHaveLength(1);
+  expect(writes[0].path).toBe("/home/acme/HANDOFF.md");
+  expect(writes[0].content.toLowerCase()).toContain("idle-closed");
+});
+
+test("writeIdleStateNote swallows write errors so idle-close never breaks", () => {
+  expect(() =>
+    writeIdleStateNote(sessionOn("/home/acme"), {
+      write: () => {
+        throw new Error("EACCES");
+      },
+    }),
+  ).not.toThrow();
+});
 
 test("decideContext verdict matrix", () => {
   expect(decideContext({ occupancy: 0.1, turns: 5, ageMs: 0 }, CFG)).toBe("keep");

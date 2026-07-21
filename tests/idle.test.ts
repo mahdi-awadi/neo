@@ -42,6 +42,34 @@ test("sweepIdle closes a session idle past the threshold and persists its sdk id
   expect(led.lastSessionFor("/proj", 9)).toBe("sdk-a"); // persisted for resume
 });
 
+test("sweepIdle writes a state note for each session it idle-closes", () => {
+  const reg = createRegistry();
+  const led = openLedger(":memory:");
+  const o = order({ id: "a", folder: "/proj", chatId: 9 });
+  reg.add(o, 0);
+  reg.setSdkSessionId(o.id, "sdk-a");
+  reg.attachControl(o.id, fakeControl());
+  const noted: string[] = [];
+
+  sweepIdle(reg, led, { idleMs: 1000, now: 2000, writeStateNote: (s) => noted.push(s.id) });
+
+  expect(noted).toEqual(["a"]); // captured where it left off before the close
+});
+
+test("sweepIdle does NOT write a state note for still-running or terminal-reaped sessions", () => {
+  const reg = createRegistry();
+  const led = openLedger(":memory:");
+  reg.add(order({ id: "fresh" }), 1500); // not idle yet
+  const dead = order({ id: "dead", folder: "/p/dead" });
+  reg.add(dead, 0);
+  reg.setStatus(dead.id, "error"); // terminal leftover — reaped, not "closed"
+  const noted: string[] = [];
+
+  sweepIdle(reg, led, { idleMs: 1000, now: 2000, writeStateNote: (s) => noted.push(s.id) });
+
+  expect(noted).toEqual([]);
+});
+
 test("sweepIdle leaves a fresh session running", () => {
   const reg = createRegistry();
   const led = openLedger(":memory:");
