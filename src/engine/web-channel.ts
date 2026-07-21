@@ -5,6 +5,7 @@
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
 import { basename } from "node:path";
 import { handleMessage, type PipelineDeps } from "./pipeline";
+import { sharedCodebaseMemoryIndexer } from "./codebase-memory";
 import {
   handleCommand,
   selectProject as engineSelectProject,
@@ -95,6 +96,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   const deps: PipelineDeps = {
     ...opts.engine,
     usage: opts.usage,
+    codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg),
     reply: (_chatId, text, project) => message(text, project),
     askApproval: (_chatId, reason) =>
       new Promise<"allow" | "deny">((resolve) => {

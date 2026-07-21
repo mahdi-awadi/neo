@@ -16,6 +16,7 @@ import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers } from "./dispatch";
+import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { sessionContext, decideContext, runHandoff } from "./context-policy";
 import { describeSessionStatus } from "./session-status";
 
@@ -54,6 +55,9 @@ export interface PipelineDeps {
   handoff?: typeof runHandoff;
   /** Graceful-reload gate: while draining, no new orders/follow-ups start (see engine/reload.ts). */
   lifecycle?: { draining(): boolean };
+  /** Engine-side codebase-memory index guarantee, spread into the company `dispatch` tool's deps so
+   *  a dispatched folder is indexed before its worker starts. */
+  codebaseMemory?: CodebaseMemoryIndexer;
 }
 
 /** Apply the context policy to a persisted resume id. Returns the id to actually resume with

@@ -16,6 +16,7 @@ import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
+import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
@@ -136,6 +137,7 @@ export function startTelegram(
     usage,
     trust,
     lifecycle: reload?.lifecycle,
+    codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
     reply: (cid, text, project) => void send(cid, text, project),
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
