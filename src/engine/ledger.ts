@@ -1,7 +1,11 @@
 // Durable record of orders and their outcomes. The deterministic bookkeeping layer —
 // the part of operant that already was an "engine" (ported to bun:sqlite, trimmed).
 import { Database } from "bun:sqlite";
-import type { Order, OrderSource } from "../types";
+import type { Order, OrderSource, RouteTarget } from "../types";
+
+/** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
+ *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
+export const ROUTE_KEEP = 20_000;
 
 export interface Ledger {
   recordOrder(order: Order): void;
@@ -33,6 +37,11 @@ export interface Ledger {
   listContextEvents(limit?: number): Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
   /** Wipe the resume-target session id for every order in this folder (fresh start after a handoff/clear). */
   clearSessionsFor(folder: string): void;
+  /** Persist the map from a sent channel message → the project it belongs to, so a reply to that
+   *  message routes back to the right project even after a /reload (source of truth for MessageRoutes). */
+  rememberRoute(chatId: number, messageId: number, target: RouteTarget): void;
+  /** The project a replied-to message belongs to, or undefined if it isn't tracked (any more). */
+  routeFor(chatId: number, messageId: number): RouteTarget | undefined;
   /** Graceful reload: replace the open-session snapshot (what was live at shutdown). */
   saveOpenSessions(rows: OpenSessionRow[]): void;
   /** Read AND clear the snapshot — consumed once at boot so a later boot restores nothing stale. */
@@ -107,6 +116,15 @@ export function openLedger(path: string): Ledger {
   db.run(
     `CREATE TABLE IF NOT EXISTS context_events (
        folder TEXT NOT NULL, verdict TEXT NOT NULL, occupancy REAL NOT NULL, at INTEGER NOT NULL
+     )`,
+  );
+  // Reply-routing map: which project each sent channel message belongs to, so a REPLY to a specific
+  // worker message routes into that project even after a /reload (in-memory cache was lost before).
+  db.run(
+    `CREATE TABLE IF NOT EXISTS message_routes (
+       chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
+       session_id TEXT NOT NULL, folder TEXT NOT NULL, project TEXT NOT NULL, at INTEGER NOT NULL,
+       PRIMARY KEY (chat_id, message_id)
      )`,
   );
 
@@ -280,6 +298,27 @@ export function openLedger(path: string): Ledger {
       // Sessions are stored as sdk_session_id on the orders row; wipe the resume target for
       // every order in this folder, so lastSessionFor(folder, *) returns undefined afterward.
       db.query(`UPDATE orders SET sdk_session_id = NULL WHERE folder = ?`).run(folder);
+    },
+    rememberRoute(chatId, messageId, target) {
+      db.query(
+        `INSERT INTO message_routes (chat_id, message_id, session_id, folder, project, at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(chat_id, message_id) DO UPDATE SET
+           session_id = excluded.session_id, folder = excluded.folder,
+           project = excluded.project, at = excluded.at`,
+      ).run(chatId, messageId, target.sessionId, target.folder, target.project, Date.now());
+      // Bound the table: drop the oldest rows past a generous keep-window (source of truth stays intact).
+      db.query(
+        `DELETE FROM message_routes WHERE rowid NOT IN (
+           SELECT rowid FROM message_routes ORDER BY at DESC, rowid DESC LIMIT ?
+         )`,
+      ).run(ROUTE_KEEP);
+    },
+    routeFor(chatId, messageId) {
+      const row = db
+        .query(`SELECT session_id, folder, project FROM message_routes WHERE chat_id = ? AND message_id = ?`)
+        .get(chatId, messageId) as { session_id: string; folder: string; project: string } | null;
+      return row ? { sessionId: row.session_id, folder: row.folder, project: row.project } : undefined;
     },
   };
 }

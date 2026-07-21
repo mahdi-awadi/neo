@@ -23,6 +23,21 @@ test("listRecent returns most-recent first and respects the limit", () => {
   expect(led.listRecent(2).map((o) => o.id)).toEqual(["c", "b"]);
 });
 
+test("message routes persist (chat,message) -> session/folder/project and read back", () => {
+  const led = openLedger(":memory:");
+  led.rememberRoute(5, 100, { sessionId: "sess-a", folder: "/home/acme", project: "acme" });
+  expect(led.routeFor(5, 100)).toEqual({ sessionId: "sess-a", folder: "/home/acme", project: "acme" });
+  expect(led.routeFor(5, 999)).toBeUndefined(); // unknown message id
+  expect(led.routeFor(6, 100)).toBeUndefined(); // right message id, wrong chat
+});
+
+test("rememberRoute upserts on the same (chat,message) key", () => {
+  const led = openLedger(":memory:");
+  led.rememberRoute(1, 7, { sessionId: "old", folder: "/home/x", project: "x" });
+  led.rememberRoute(1, 7, { sessionId: "new", folder: "/home/y", project: "y" });
+  expect(led.routeFor(1, 7)?.sessionId).toBe("new");
+});
+
 test("recordOutcome is retrievable via getOutcome", () => {
   const led = openLedger(":memory:");
   led.recordOrder(order({ id: "a" }));

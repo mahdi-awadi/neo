@@ -17,6 +17,7 @@ import { createMeter } from "../engine/budget";
 import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
 import { createMessageRoutes } from "../engine/message-routes";
+import { routeReply } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
@@ -102,28 +103,20 @@ export function startTelegram(
   const allow = new Set(cfg.telegramAllowFrom);
   // Pending approvals keyed by a per-request token: callback press -> resolver.
   const pending = new Map<string, (decision: "allow" | "deny") => void>();
-  // Remembers which session each sent worker message came from, so replying to a specific
+  // Remembers which project each sent worker message came from, so replying to a specific
   // message routes the follow-up back to that project (see send() + the reply handling below).
-  const routes = createMessageRoutes();
+  // Ledger-backed so a mapping survives /reload — a lost route used to misroute the reply to the company.
+  const routes = createMessageRoutes({ ledger });
 
-  // Send a worker line and record which session it belongs to, so the operator can REPLY to that
-  // specific message to route a follow-up into its project (see routeByReply). The line itself is
+  // Send a worker line and record which project it belongs to, so the operator can REPLY to that
+  // specific message to route a follow-up into its project (see routeReply). The line itself is
   // a normal message, not a quote-reply.
   async function send(chatId: number, text: string, project?: string): Promise<void> {
     const messageId = await sendFormatted(bot, chatId, text, project);
     if (messageId !== undefined && project) {
       const session = registry.findByName(project);
-      if (session) routes.remember(messageId, session.id);
+      if (session) routes.remember(chatId, messageId, { sessionId: session.id, folder: session.order.folder, project });
     }
-  }
-
-  // If this message is a reply to a tracked worker message, focus that project ONE-SHOT so the
-  // pipeline routes this follow-up into it — then focus reverts to the company (a stray next
-  // message never sticks to the project). Replying again re-addresses it.
-  function routeByReply(chatId: number, repliedToMessageId: number | undefined): void {
-    if (repliedToMessageId === undefined) return;
-    const sessionId = routes.sessionFor(repliedToMessageId);
-    if (sessionId && registry.get(sessionId)) registry.setFocus(chatId, sessionId, "once");
   }
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
@@ -176,8 +169,20 @@ export function startTelegram(
     const userId = ctx.from?.id;
     if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
-    // A reply on the attachment targets that project; pick it before resolving where to save.
-    routeByReply(chatId, ctx.message?.reply_to_message?.message_id);
+    // A reply on the attachment targets that project; resolve it (focus, or clarify) before saving.
+    const routing = routeReply(
+      { registry, ledger, routes },
+      {
+        chatId,
+        replyToMessageId: ctx.message?.reply_to_message?.message_id,
+        replyToText: ctx.message?.reply_to_message?.text,
+        text: captionText,
+      },
+    );
+    if ("clarify" in routing) {
+      void bot.api.sendMessage(chatId, routing.clarify);
+      return;
+    }
     const target = registry.findByChat(chatId) ?? registry.getDefault();
     if (!target) {
       void bot.api.sendMessage(chatId, "No active project to receive the file.");
@@ -187,7 +192,7 @@ export function startTelegram(
     const bytes = await downloadTelegramFile(cfg.telegramToken, file.file_path!);
     const path = saveInbound(target.order.folder, name, bytes);
     await handleMessage(
-      `📎 operator attached \`${name}\` at \`${path}\`\n${captionText}`,
+      `📎 operator attached \`${name}\` at \`${path}\`\n${routing.deliver}`,
       chatId,
       pipelineDeps(),
     );
@@ -244,8 +249,21 @@ export function startTelegram(
     }
 
     // If the operator replied to a specific worker message, route this follow-up to that project.
-    routeByReply(chatId, ctx.message.reply_to_message?.message_id);
-    await handleMessage(ctx.message.text, chatId, pipelineDeps());
+    // An unattributable reply is NOT silently sent to the company — we ask them to name the project.
+    const routing = routeReply(
+      { registry, ledger, routes },
+      {
+        chatId,
+        replyToMessageId: ctx.message.reply_to_message?.message_id,
+        replyToText: ctx.message.reply_to_message?.text,
+        text: ctx.message.text,
+      },
+    );
+    if ("clarify" in routing) {
+      void bot.api.sendMessage(chatId, routing.clarify);
+      return;
+    }
+    await handleMessage(routing.deliver, chatId, pipelineDeps());
   });
 
   bot.on("message:document", (ctx) =>

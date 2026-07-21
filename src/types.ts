@@ -25,6 +25,18 @@ export interface Order {
 /** Provider-router decision: either a chosen provider or a refusal with a reason. */
 export type RouteResult = { provider: Provider } | { refuse: string };
 
+/** What a sent channel message maps back to, so a REPLY to it routes into the right project.
+ *  Persisted in the ledger (survives reload) and cached in memory; `folder` is the stable key
+ *  (a session id changes across idle-close, the folder does not). */
+export interface RouteTarget {
+  /** The registry/session id that produced the message (best-effort — may be gone after a close). */
+  sessionId: string;
+  /** Absolute project folder — the durable anchor used to re-find or resume the session. */
+  folder: string;
+  /** Short project name (folder basename) used for focus + display. */
+  project: string;
+}
+
 /**
  * Governor decision for a single tool request from the worker.
  * `allow` may rewrite the tool input; `escalate` hands the decision to a human.
