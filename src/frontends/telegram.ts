@@ -24,12 +24,35 @@ import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
 import { mdToHtml, projectHashtag } from "../engine/format";
+import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
  *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
  *  text — never wrapped in <code>/<pre> — so Telegram auto-links it under parse_mode HTML too. */
 export function projectTagPrefix(project?: string): string {
   return project ? `${projectHashtag(project)} ` : "";
+}
+
+/** Build the Telegram operator sink (pure — no Bot instance, so it's unit-testable). Lines mirrored
+ *  from the OTHER surface (the web console) render in the admin's DM: a `reply` as project-tagged
+ *  worker output, an `echo` as the operator's own web-typed message, a `notice` as display-only
+ *  chrome (e.g. an approval pending on the web). Output-only — it never re-enters the pipeline, so a
+ *  mirrored line can't become an order (see operator-bus.ts). No admin claimed yet → no-op. */
+export function makeTelegramSink(deps: {
+  adminId: () => number | undefined;
+  reply: (chatId: number, text: string, project?: string) => void;
+  plain: (chatId: number, text: string) => void;
+}): OperatorSink {
+  return {
+    id: "telegram",
+    deliver: (line) => {
+      const chatId = deps.adminId();
+      if (chatId === undefined) return; // nowhere to deliver — no operator has claimed admin yet
+      if (line.kind === "reply") deps.reply(chatId, line.text, line.project);
+      else if (line.kind === "echo") deps.plain(chatId, `🌐 you (web): ${line.text}`);
+      else deps.plain(chatId, line.text);
+    },
+  };
 }
 
 async function downloadTelegramFile(token: string, filePath: string): Promise<Uint8Array> {
@@ -99,6 +122,8 @@ export function startTelegram(
   gatewaySendUrl?: string,
   /** Graceful reload (daemon-injected): the drain gate + the /reload trigger. */
   reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void },
+  /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
+  bus?: OperatorBus,
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);
@@ -119,6 +144,16 @@ export function startTelegram(
       if (session) routes.remember(chatId, messageId, { sessionId: session.id, folder: session.order.folder, project });
     }
   }
+
+  // Register this surface as an operator sink: lines mirrored from the OTHER surface (the web
+  // console) render in the admin's DM (admin.adminId()). Output-only — never re-enters the pipeline.
+  bus?.register(
+    makeTelegramSink({
+      adminId: () => admin.adminId(),
+      reply: (cid, text, project) => void send(cid, text, project),
+      plain: (cid, text) => void sendFormatted(bot, cid, text),
+    }),
+  );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
 
@@ -138,13 +173,18 @@ export function startTelegram(
     trust,
     lifecycle: reload?.lifecycle,
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
-    reply: (cid, text, project) => void send(cid, text, project),
+    reply: (cid, text, project) => {
+      void send(cid, text, project); // local delivery (unchanged)
+      bus?.mirror("telegram", { kind: "reply", text, project }); // + mirror to the web console
+    },
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
         pending.set(token, resolve);
         const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
         void bot.api.sendMessage(cid, `⚠️ Approve this action?\n${reason}`, { reply_markup: kb });
+        // The actionable buttons stay here; the web console just SEES the gate is pending.
+        bus?.mirror("telegram", { kind: "notice", text: `⏳ approval pending on Telegram: ${reason}` });
       }),
     sendFile: (cid, path, caption) =>
       void bot.api.sendDocument(cid, new InputFile(path), caption ? { caption } : {}),
@@ -265,6 +305,10 @@ export function startTelegram(
       void bot.api.sendMessage(chatId, routing.clarify);
       return;
     }
+    // Echo the operator's own message to the web console so both surfaces show the thread. Only
+    // real conversation/orders reach here — commands returned above. Telegram already shows the
+    // sent message, so origin "telegram" is excluded from the fan-out.
+    bus?.mirror("telegram", { kind: "echo", text: ctx.message.text });
     await handleMessage(routing.deliver, chatId, pipelineDeps());
   });
 
@@ -399,6 +443,7 @@ export function startTelegram(
     if (resolve) {
       pending.delete(token);
       resolve(kind === "a" ? "allow" : "deny");
+      bus?.mirror("telegram", { kind: "notice", text: `approval ${kind === "a" ? "allow" : "deny"} on Telegram` });
       await ctx.answerCallbackQuery(kind === "a" ? "Allowed" : "Denied");
       await ctx.editMessageReplyMarkup(); // drop the buttons
     } else {
