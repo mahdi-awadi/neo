@@ -13,6 +13,7 @@ import { runCompanyBrief } from "../engine/ingress";
 import { draftInboxReply, sendInboxReply } from "../engine/inbox-actions";
 import { saveInbound } from "../engine/files";
 import type { Inbox } from "../engine/inbox";
+import type { OperatorBus } from "../engine/operator-bus";
 import { basename } from "node:path";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
@@ -35,6 +36,8 @@ export interface WebAppDeps {
   gatewaySendUrl?: string;
   /** Graceful reload trigger (daemon-injected drain-then-exit) — enables /reload on the web too. */
   requestReload?: () => void;
+  /** Operator-channel broadcast bus — mirror this surface to/from Telegram (see operator-bus.ts). */
+  bus?: OperatorBus;
 }
 
 export interface WebApp {
@@ -43,7 +46,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus });
 
   function sessionUser(req: Request): number | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
@@ -623,6 +626,8 @@ function uploadFile(){var i=document.getElementById('file');if(!i.files.length)r
 var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);
  if(e.type==='message'){feedMsg((e.project?'<span class="ptag">'+esc(e.project)+'</span>':'')+e.text,'out',e.project);}
+ else if(e.type==='echo'){feedMsg('› '+esc(e.text),'me',filterProject);}
+ else if(e.type==='notice'){feedMsg('⋯ '+esc(e.text),'me',filterProject);}
  else if(e.type==='projects'){loadState();}
  else if(e.type==='escalation'){
   var c=document.createElement('div');c.className='escc';c.innerHTML='⚠ '+esc(e.reason);

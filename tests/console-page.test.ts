@@ -16,3 +16,12 @@ test("consolePage inline <script> parses as valid JavaScript", () => {
   // new Function compiles (parses) the body without executing it — throws SyntaxError if invalid.
   expect(() => new Function(body)).not.toThrow();
 });
+
+test("consolePage's stream handler renders mirrored echo + notice events", () => {
+  const html = consolePage();
+  const body = html.match(/<script>([\s\S]*?)<\/script>/)![1];
+  // The operator's own message mirrored from Telegram → a `me` row (same style as locally-typed).
+  expect(body).toContain("e.type==='echo'");
+  // Cross-surface chrome (e.g. approval pending on Telegram) → a display-only notice row.
+  expect(body).toContain("e.type==='notice'");
+});
