@@ -19,7 +19,7 @@ import { handleMessage } from "../engine/pipeline";
 import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply } from "../engine/reply-routing";
-import { handleCommand, selectProject, killProject, type SelectableProject } from "../engine/commands";
+import { handleCommand, selectProject, killProject, telegramCommands, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
@@ -451,8 +451,32 @@ export function startTelegram(
     }
   });
 
+  // Publish the "/" command menu so Telegram autocompletes the operator's commands (Telegram only
+  // shows the list for commands the bot has registered). Best-effort + fire-and-forget so a Bot API
+  // hiccup can't stop the bot from starting.
+  void registerTelegramCommands(bot);
   void bot.start();
   return bot;
+}
+
+/** Publish the engine's command list to Telegram so typing "/" shows the autocomplete menu. The
+ *  list is derived from the COMMANDS registry (telegramCommands()), so new commands appear
+ *  automatically. Only re-sends when the list actually changed (a cheap getMyCommands diff, so a
+ *  restart is a no-op when nothing changed). Best-effort: any Bot API failure is logged and
+ *  swallowed — registering the menu must never break bot startup. */
+export async function registerTelegramCommands(bot: Bot): Promise<void> {
+  const desired = telegramCommands();
+  try {
+    const current = await bot.api.getMyCommands();
+    if (commandsEqual(current, desired)) return; // already up to date — skip the write
+    await bot.api.setMyCommands(desired);
+  } catch (err) {
+    console.error("[telegram] failed to register the / command menu:", err);
+  }
+}
+
+function commandsEqual(a: { command: string; description: string }[], b: TelegramCommand[]): boolean {
+  return a.length === b.length && a.every((c, i) => c.command === b[i]!.command && c.description === b[i]!.description);
 }
 
 /** One button per open project; the active one is starred. Tapping fires a `use:<id>` callback. */

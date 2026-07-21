@@ -144,6 +144,37 @@ const COMMANDS: Command[] = [
   },
 ];
 
+/** A Telegram bot command in the Bot API's setMyCommands shape. */
+export interface TelegramCommand {
+  command: string;
+  description: string;
+}
+
+// Telegram's constraints (Bot API): command names are 1–32 chars of [a-z0-9_]; descriptions ≤ 256.
+const TELEGRAM_COMMAND_RE = /^[a-z0-9_]{1,32}$/;
+const TELEGRAM_DESC_MAX = 256;
+
+/** Pure: derive Telegram's setMyCommands list from command metadata. Strips a leading slash,
+ *  lowercases the name, DROPS any name that violates Telegram's ^[a-z0-9_]{1,32}$ rule, and
+ *  truncates each description (the command summary) to Telegram's 256-char limit. Kept pure and
+ *  exported so the frontend just registers the result and the shaping stays unit-tested. */
+export function toTelegramCommands(cmds: { name: string; summary: string }[]): TelegramCommand[] {
+  const out: TelegramCommand[] = [];
+  for (const c of cmds) {
+    const command = c.name.replace(/^\/+/, "").toLowerCase();
+    if (!TELEGRAM_COMMAND_RE.test(command)) continue; // skip names Telegram would reject
+    out.push({ command, description: c.summary.slice(0, TELEGRAM_DESC_MAX) });
+  }
+  return out;
+}
+
+/** The engine's operator commands in Telegram's setMyCommands shape, derived from the COMMANDS
+ *  registry so a newly-added command shows up in the "/" menu automatically (no second list to
+ *  hand-maintain). Aliases are not emitted — only the canonical name of each command. */
+export function telegramCommands(): TelegramCommand[] {
+  return toTelegramCommands(COMMANDS);
+}
+
 export function handleCommand(text: string, chatId: number, deps: CommandDeps): CommandResult | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
