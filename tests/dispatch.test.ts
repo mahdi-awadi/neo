@@ -698,3 +698,54 @@ test("dispatch injects the codebase-memory + superpowers instruction into every 
   expect(seenTask.toLowerCase()).toContain("codebase-memory"); // map before cold-reading files
   expect(seenTask.toLowerCase()).toContain("superpowers"); // use the skills
 });
+
+test("dispatch indexes the folder (and emits the operator line) BEFORE starting the worker", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const events: string[] = [];
+  const codebaseMemory = {
+    ensureIndexed: async (folder: string, onFirstIndex?: () => void | Promise<void>) => {
+      events.push("index:" + folder);
+      if (onFirstIndex) await onFirstIndex();
+    },
+  };
+  const fakeStart = () => {
+    events.push("start");
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  const replies: string[] = [];
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, codebaseMemory, reply: (_c, t) => void replies.push(t) },
+    1,
+    { start: fakeStart as never, now: () => 0, root },
+  );
+  await new Promise((r) => setTimeout(r, 0)); // let the background continuation run
+  expect(events).toEqual(["index:" + join(root, "eticket-v3"), "start"]);
+  expect(replies.some((t) => t.includes("indexing") && t.includes("codebase-memory"))).toBe(true);
+});
+
+test("dispatch still starts the worker when ensureIndexed throws (best-effort)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let started = false;
+  const codebaseMemory = {
+    ensureIndexed: async () => {
+      throw new Error("cm down");
+    },
+  };
+  const fakeStart = () => {
+    started = true;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "task", { ...d, codebaseMemory }, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(started).toBe(true);
+});

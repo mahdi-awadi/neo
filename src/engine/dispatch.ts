@@ -17,6 +17,7 @@ import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, type ContextPolicyCfg } from "./context-policy";
 import { describeSessionStatus, sessionsReport } from "./session-status";
+import type { CodebaseMemoryIndexer } from "./codebase-memory";
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
@@ -54,6 +55,10 @@ export interface DispatchDeps {
   lifecycle?: { draining(): boolean };
   /** Root under which the company `dispatch` tool resolves project names (config workRoot). Default "/home". */
   workRoot?: string;
+  /** Ensure the target folder is indexed in codebase-memory BEFORE the worker starts (engine side;
+   *  the governor denies subagents the index tools, so the worker can't self-index). Best-effort —
+   *  a failure here never blocks the dispatch. Absent → the step is skipped. */
+  codebaseMemory?: CodebaseMemoryIndexer;
 }
 
 type RunFn = typeof runOrder;
@@ -219,6 +224,20 @@ export async function dispatchToProject(
         // "keep" leaves gatedResume unchanged.
       } catch {
         // context-policy is best-effort observer work — fail OPEN, keep the original resume id.
+      }
+    }
+
+    // Guarantee the structural map the brief now REQUIRES: the worker can't self-index (the governor
+    // denies subagents the codebase-memory index tools), so the engine does it here before the worker
+    // starts. Best-effort — a failure never blocks the dispatch; the worker falls back to file reads.
+    // Placed before startedAt so a first-time index doesn't eat the dispatch stall/ceiling budget.
+    if (deps.codebaseMemory) {
+      try {
+        await deps.codebaseMemory.ensureIndexed(folder, () =>
+          deps.reply(replyChat, `indexing ${name} into codebase-memory…`, name),
+        );
+      } catch {
+        // ensureIndexed is itself best-effort; this guard belts-and-braces the dispatch path.
       }
     }
 
