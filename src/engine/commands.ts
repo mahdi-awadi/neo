@@ -155,24 +155,39 @@ const TELEGRAM_COMMAND_RE = /^[a-z0-9_]{1,32}$/;
 const TELEGRAM_DESC_MAX = 256;
 
 /** Pure: derive Telegram's setMyCommands list from command metadata. Strips a leading slash,
- *  lowercases the name, DROPS any name that violates Telegram's ^[a-z0-9_]{1,32}$ rule, and
- *  truncates each description (the command summary) to Telegram's 256-char limit. Kept pure and
- *  exported so the frontend just registers the result and the shaping stays unit-tested. */
+ *  lowercases the name, DROPS any name that violates Telegram's ^[a-z0-9_]{1,32}$ rule, DEDUPES by
+ *  command name (first occurrence wins), and truncates each description (the command summary) to
+ *  Telegram's 256-char limit. Kept pure and exported so the frontend just registers the result and
+ *  the shaping stays unit-tested. */
 export function toTelegramCommands(cmds: { name: string; summary: string }[]): TelegramCommand[] {
   const out: TelegramCommand[] = [];
+  const seen = new Set<string>();
   for (const c of cmds) {
     const command = c.name.replace(/^\/+/, "").toLowerCase();
     if (!TELEGRAM_COMMAND_RE.test(command)) continue; // skip names Telegram would reject
+    if (seen.has(command)) continue; // first occurrence wins (COMMANDS take priority over pipeline)
+    seen.add(command);
     out.push({ command, description: c.summary.slice(0, TELEGRAM_DESC_MAX) });
   }
   return out;
 }
 
-/** The engine's operator commands in Telegram's setMyCommands shape, derived from the COMMANDS
- *  registry so a newly-added command shows up in the "/" menu automatically (no second list to
- *  hand-maintain). Aliases are not emitted — only the canonical name of each command. */
+// Commands handled OUTSIDE the COMMANDS registry, so they have no entry above: /open falls through
+// handleCommand (returns null) into the order pipeline, and /loop is intercepted by handleLoop before
+// command dispatch. The operator still types them, so they belong in the "/" menu — kept here as
+// {name, summary} (summaries mirror the /help usage lines) for telegramCommands() to fold in. Keep in
+// sync with the pipeline dispatch in the frontends and the extra /help lines in renderHelp().
+const PIPELINE_COMMANDS: { name: string; summary: string }[] = [
+  { name: "open", summary: "start or resume a project" },
+  { name: "loop", summary: "list, run, or enable/disable automation loops" },
+];
+
+/** The engine's operator commands in Telegram's setMyCommands shape: the COMMANDS registry plus the
+ *  pipeline commands (/open, /loop), so the "/" menu is the complete set the operator can type. New
+ *  COMMANDS entries appear automatically; aliases are not emitted (only each command's canonical
+ *  name), and toTelegramCommands dedupes so there's no double entry. */
 export function telegramCommands(): TelegramCommand[] {
-  return toTelegramCommands(COMMANDS);
+  return toTelegramCommands([...COMMANDS, ...PIPELINE_COMMANDS]);
 }
 
 export function handleCommand(text: string, chatId: number, deps: CommandDeps): CommandResult | null {

@@ -36,6 +36,14 @@ test("truncates descriptions to Telegram's 256-char limit", () => {
   expect(out[0]!.description).toBe("x".repeat(256));
 });
 
+test("dedupes by command name (first occurrence wins)", () => {
+  const out = toTelegramCommands([
+    { name: "list", summary: "first" },
+    { name: "list", summary: "second" },
+  ]);
+  expect(out).toEqual([{ command: "list", description: "first" }]);
+});
+
 test("telegramCommands() derives the live COMMANDS registry into valid Telegram commands", () => {
   const out = telegramCommands();
   expect(out.length).toBeGreaterThan(0);
@@ -49,6 +57,9 @@ test("telegramCommands() derives the live COMMANDS registry into valid Telegram 
   expect(names).toContain("list");
   expect(names).toContain("help");
   expect(names).toContain("use");
+  // …including the pipeline commands handled outside the COMMANDS registry (/open, /loop)…
+  expect(names).toContain("open");
+  expect(names).toContain("loop");
   // …but aliases (e.g. `ls` for list) are NOT emitted as separate entries — we derive from name only.
   expect(names).not.toContain("ls");
   // no duplicates
