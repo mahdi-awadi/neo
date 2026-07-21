@@ -26,12 +26,18 @@ import type { LoopInput } from "./loop-validate";
 import { dashboardSnapshot, type DashState } from "./dashboard";
 import { mdToHtml } from "./format";
 import type { UsageMeter } from "./usage";
+import type { OperatorBus } from "./operator-bus";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
 
 export type WebEvent =
   | { type: "message"; text: string; project?: string }
+  // The operator's own message typed on the OTHER surface (Telegram), mirrored here so both
+  // surfaces show the full thread. Rendered as a `me` row (raw text, escaped client-side).
+  | { type: "echo"; text: string }
+  // Display-only chrome mirrored from the other surface (e.g. "approval pending on Telegram").
+  | { type: "notice"; text: string }
   | { type: "escalation"; id: string; reason: string }
   | { type: "projects"; text: string; items: SelectableProject[] }
   | { type: "loops"; items: LoopInfo[] }
@@ -70,7 +76,7 @@ export interface WebChannel {
   _testSendFile(path: string, caption?: string): string;
 }
 
-export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void }): WebChannel {
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus }): WebChannel {
   const events: WebEvent[] = [];
   const listeners = new Set<(e: WebEvent) => void>();
   const pending = new Map<string, (d: "allow" | "deny") => void>();
@@ -82,6 +88,18 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   // Worker/engine lines are Markdown — render to safe HTML once, here, so the feed shows
   // formatting (bold, code, bullets) instead of raw ** and #.
   const message = (text: string, project?: string) => emit({ type: "message", text: mdToHtml(text), project });
+
+  // Register this surface as an operator sink: lines mirrored from the OTHER surface (Telegram)
+  // render here. Output-only — deliver never re-enters the pipeline, so no mirrored line can become
+  // an order or re-broadcast (see operator-bus.ts). An echo carries raw text (escaped client-side).
+  opts.bus?.register({
+    id: "web",
+    deliver: (line) => {
+      if (line.kind === "reply") message(line.text, line.project);
+      else if (line.kind === "echo") emit({ type: "echo", text: line.text });
+      else emit({ type: "notice", text: line.text });
+    },
+  });
 
   const files = new Map<string, string>(); // token -> absolute path
 
@@ -97,12 +115,17 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     ...opts.engine,
     usage: opts.usage,
     codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg),
-    reply: (_chatId, text, project) => message(text, project),
+    reply: (_chatId, text, project) => {
+      message(text, project); // local delivery (unchanged)
+      opts.bus?.mirror("web", { kind: "reply", text, project }); // + mirror to Telegram
+    },
     askApproval: (_chatId, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
         const id = crypto.randomUUID();
         pending.set(id, resolve);
         emit({ type: "escalation", id, reason });
+        // The actionable prompt stays here (POST /approve); the other surface just SEES it pending.
+        opts.bus?.mirror("web", { kind: "notice", text: `⏳ approval pending on the web console: ${reason}` });
       }),
     sendFile: (_chatId, path, caption) => void deliverFile(path, caption),
   };
@@ -134,6 +157,10 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         }
         return;
       }
+      // Echo the operator's own inbound to the OTHER surface (Telegram) so both show the thread.
+      // Only real conversation/orders echo — synchronous commands returned above already emitted
+      // their own reply. The web UI shows this message optimistically, so origin "web" is excluded.
+      opts.bus?.mirror("web", { kind: "echo", text });
       await handleMessage(text, opts.chatId, deps);
     },
     subscribe(listener) {
@@ -146,6 +173,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       if (!resolve) return false;
       pending.delete(id);
       resolve(decision);
+      opts.bus?.mirror("web", { kind: "notice", text: `approval ${decision} on the web console` });
       return true;
     },
     selectProject(id) {

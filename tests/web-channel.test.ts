@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createWebChannel, type WebEvent } from "../src/engine/web-channel";
+import { createOperatorBus, type BusLine, type OperatorSink } from "../src/engine/operator-bus";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
@@ -240,6 +241,102 @@ test("deleteLoop removes a custom loop", () => {
   ch.createLoop({ name: "tidy", summary: "t", folder: "/home/neo", prompt: "p", goalKind: "command", goalCommand: "true", triggerKind: "manual", maxIterations: 1 });
   expect(ch.deleteLoop("tidy").ok).toBe(true);
   expect(eng.ledger.listLoopDefs()).toEqual([]);
+});
+
+// --- operator-channel mirroring (Telegram <-> web) ---
+
+/** A recording sink for the other surface (stands in for Telegram in these web tests). */
+function recorder(id: string): OperatorSink & { lines: BusLine[] } {
+  const lines: BusLine[] = [];
+  return { id, lines, deliver: (l) => lines.push(l) };
+}
+
+test("a bus reply line (from the other surface) is emitted as a web message event", () => {
+  const bus = createOperatorBus();
+  const ch = createWebChannel({ engine: engine(fakeStart().start), chatId: 0, bus });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  bus.mirror("telegram", { kind: "reply", text: "from telegram worker", project: "eticket" });
+
+  const msg = events.find((e) => e.type === "message") as { text: string; project?: string } | undefined;
+  expect(msg?.text).toContain("from telegram worker");
+  expect(msg?.project).toBe("eticket");
+});
+
+test("a bus echo line is emitted as a web echo event (operator's own message from elsewhere)", () => {
+  const bus = createOperatorBus();
+  const ch = createWebChannel({ engine: engine(fakeStart().start), chatId: 0, bus });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  bus.mirror("telegram", { kind: "echo", text: "typed on telegram" });
+
+  const echo = events.find((e) => e.type === "echo") as { text: string } | undefined;
+  expect(echo?.text).toBe("typed on telegram");
+});
+
+test("a bus notice line is emitted as a web notice event (approval-pending indicator)", () => {
+  const bus = createOperatorBus();
+  const ch = createWebChannel({ engine: engine(fakeStart().start), chatId: 0, bus });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  bus.mirror("telegram", { kind: "notice", text: "⏳ approval pending on Telegram: rm -rf" });
+
+  const notice = events.find((e) => e.type === "notice") as { text: string } | undefined;
+  expect(notice?.text).toContain("approval pending");
+});
+
+test("worker replies mirror to the bus (origin web) so Telegram sees them", async () => {
+  const dir = scratch();
+  const bus = createOperatorBus();
+  const tg = recorder("telegram");
+  bus.register(tg);
+  const f = fakeStart((h) => h.onMessage("hi from web-started worker"));
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 0, bus });
+
+  await ch.send(`/open ${dir} do it`);
+
+  expect(tg.lines.some((l) => l.kind === "reply" && l.text === "hi from web-started worker")).toBe(true);
+});
+
+test("an inbound conversational message mirrors an echo to the bus, but a slash-command does not", async () => {
+  const bus = createOperatorBus();
+  const tg = recorder("telegram");
+  bus.register(tg);
+  const ch = createWebChannel({ engine: engine(fakeStart().start), chatId: 0, bus });
+
+  await ch.send("hello from the web console");
+  expect(tg.lines.filter((l) => l.kind === "echo").map((l) => (l as { text: string }).text)).toEqual([
+    "hello from the web console",
+  ]);
+
+  await ch.send("/help"); // a synchronous command — its own reply, not an echo
+  expect(tg.lines.filter((l) => l.kind === "echo").length).toBe(1); // unchanged
+});
+
+test("a web-raised escalation mirrors a pending notice to the bus, and its resolution mirrors too", async () => {
+  const dir = scratch();
+  const bus = createOperatorBus();
+  const tg = recorder("telegram");
+  bus.register(tg);
+  let captured!: RunHandlers;
+  const f = fakeStart((h) => void (captured = h));
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 0, bus });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  await ch.send(`/open ${dir} go`);
+  void captured.onEscalation("risky shell: rm -rf build");
+
+  const pending = tg.lines.find((l) => l.kind === "notice") as { text: string } | undefined;
+  expect(pending?.text).toContain("pending");
+  expect(pending?.text).toContain("rm -rf");
+
+  const esc = events.find((e) => e.type === "escalation") as { id: string } | undefined;
+  ch.resolveApproval(esc!.id, "allow");
+  expect(tg.lines.some((l) => l.kind === "notice" && (l as { text: string }).text.includes("allow"))).toBe(true);
 });
 
 test("sendFile emits a file event and registers a token getFile can resolve", () => {
