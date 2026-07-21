@@ -43,6 +43,7 @@ function cfg(): NeoConfig {
     stitchApiKey: "",
     gitnexusBin: "",
     codebaseMemoryBin: "",
+    codebaseMemoryIndexTimeoutMs: 300_000,
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,

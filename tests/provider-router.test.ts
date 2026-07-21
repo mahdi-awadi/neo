@@ -24,6 +24,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     stitchApiKey: "",
     gitnexusBin: "",
     codebaseMemoryBin: "",
+    codebaseMemoryIndexTimeoutMs: 300_000,
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,

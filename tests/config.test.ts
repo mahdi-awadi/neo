@@ -16,6 +16,16 @@ test("config.json overrides idleCloseMs", () => {
   expect(loadConfig(d).idleCloseMs).toBe(1000);
 });
 
+test("codebaseMemoryIndexTimeoutMs defaults to 5m", () => {
+  expect(loadConfig(dir()).codebaseMemoryIndexTimeoutMs).toBe(5 * 60 * 1000);
+});
+
+test("config.json overrides codebaseMemoryIndexTimeoutMs", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ codebaseMemoryIndexTimeoutMs: 1000 }));
+  expect(loadConfig(d).codebaseMemoryIndexTimeoutMs).toBe(1000);
+});
+
 test("stitchApiKey reads STITCH_API_KEY from env (empty when unset)", () => {
   // Hermetic: control the var directly (Bun auto-loads the repo .env into process.env).
   const saved = process.env.STITCH_API_KEY;

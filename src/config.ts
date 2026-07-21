@@ -54,6 +54,9 @@ export interface NeoConfig {
   /** Path to the codebase-memory MCP binary; when set, OPERATOR workers get the codebase-memory
    *  server (from CODEBASE_MEMORY_BIN env). Empty → off. Customer/ingress path never gets it. */
   codebaseMemoryBin: string;
+  /** Bounded wait (ms) for an engine-side codebase-memory index_repository before a dispatch
+   *  proceeds anyway (best-effort). Default 5 min. */
+  codebaseMemoryIndexTimeoutMs: number;
   /** Booking link the customer-reply CTA points at, so customers pick a meeting time themselves
    *  (from MEETING_LINK env). Empty → the reply invites them to propose times instead. */
   meetingLink: string;
@@ -95,6 +98,7 @@ const DEFAULTS = {
   budgetWindowUsd: 20,
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
+  codebaseMemoryIndexTimeoutMs: 5 * 60 * 1000,
   dispatchTimeoutMs: 15 * 60 * 1000,
   dispatchTimeoutMaxMs: 2 * 60 * 60 * 1000,
   dispatchStallMs: 5 * 60 * 1000,
@@ -153,6 +157,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
     gitnexusBin: process.env.GITNEXUS_BIN ?? fileCfg.gitnexusBin ?? "",
     codebaseMemoryBin: process.env.CODEBASE_MEMORY_BIN ?? fileCfg.codebaseMemoryBin ?? "",
+    codebaseMemoryIndexTimeoutMs: fileCfg.codebaseMemoryIndexTimeoutMs ?? DEFAULTS.codebaseMemoryIndexTimeoutMs,
     meetingLink: process.env.MEETING_LINK ?? fileCfg.meetingLink ?? "",
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
     loopSchedulerEnabled:
