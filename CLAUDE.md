@@ -96,12 +96,20 @@ default `dispatchTimeoutMs` 15m, clamped to `dispatchTimeoutMaxMs` 2h), with a g
 window (`dispatchGraceMs`, 75s: commit green work + WIP note) before the hard abort; a
 stuck-watchdog alerts the admin when a running session goes silent. Every dispatched brief is
 auto-prefixed (`briefWithProjectDocs`) with a preamble telling the worker to read its own rule/doc
-`.md` files, query the `codebase-memory` MCP for a structural map before cold-reading files, and
-use the superpowers skills — the engine appends it so the operator never has to and it can't be
-omitted. `bun test` is scoped to `tests/` via
+`.md` files, use the `codebase-memory` MCP FIRST for a structural map (**REQUIRED**, not "if
+indexed" — read source files only for what the map misses), and use the superpowers skills — the
+engine appends it so the operator never has to and it can't be omitted. The "must use
+codebase-memory" instruction is made satisfiable in code: before a worker starts, the engine
+(`ensureIndexed` in `src/engine/codebase-memory.ts`) checks the target folder against
+codebase-memory and **indexes it if missing** — the worker can't self-index because the governor
+denies subagents the index tools. Best-effort (a failed/absent index never blocks a dispatch; the
+worker falls back to file reads); already-indexed folders cost one cached/`list_projects` call
+(process-lifetime cache), and a first-time index emits an operator "indexing…" line
+(`codebaseMemoryIndexTimeoutMs`, default 5m). `bun test` is scoped to `tests/` via
 `bunfig.toml` (no more `agent/desks/**` sweep). Specs:
 `docs/superpowers/specs/2026-07-08-context-policy-design.md`,
-`docs/superpowers/specs/2026-07-08-session-liveness-design.md`.
+`docs/superpowers/specs/2026-07-08-session-liveness-design.md`,
+`docs/superpowers/specs/2026-07-21-dispatch-mandatory-codebase-memory-design.md`.
 
 **Graceful daemon reload — live:** engine code deploys without losing open project sessions.
 `SIGTERM` (e.g. `systemctl restart neo`) or the operator `/reload` command (Telegram + web) drains:

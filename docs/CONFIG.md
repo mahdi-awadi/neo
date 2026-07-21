@@ -45,6 +45,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `dispatchTimeoutMaxMs` | `7200000` (2h) | Hard cap on any per-dispatch ceiling a caller may request. |
 | `dispatchStallMs` | `300000` (5m) | Abort a dispatched sub-run that produces no activity for this long. |
 | `dispatchGraceMs` | `75000` (75s) | Grace window to commit green work + write a WIP note before a hard abort. |
+| `codebaseMemoryIndexTimeoutMs` | `300000` (5m) | Bounded wait for an engine-side codebase-memory `index_repository` before a dispatch proceeds anyway (best-effort). |
 | `drainWindowMs` | `90000` (90s) | Graceful-reload wait for running turns to wrap up before interrupt. |
 | `stuckAfterMs` | `600000` (10m) | Alert when a running session has produced nothing for this long. |
 | `longTurnAlertMs` | `1200000` (20m) | Alert when one activity label has run this long. |
