@@ -99,20 +99,25 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
 
 /** Only CLAUDE.md auto-loads into a worker (verified 2026-07-08) — AGENTS.md, DESIGN.md and the
  *  rest of a project's rule/docs .md files never reach it unless the brief says so. Every
- *  dispatched brief gets this preamble so the worker (1) reads its own rules, (2) queries the
- *  codebase-memory MCP for a structural map before cold-reading files (~10× fewer tokens than
- *  re-reading the tree), and (3) uses the superpowers skills for the shape of work at hand. The
- *  engine appends this automatically so the operator never has to and it can't be omitted. */
+ *  dispatched brief gets this preamble so the worker (1) reads its own rules, (2) uses the
+ *  codebase-memory MCP FIRST for a structural map — REQUIRED, not optional — reading source files
+ *  directly only for what the map doesn't cover, and (3) uses the superpowers skills for the shape
+ *  of work at hand. (2) is made satisfiable by the engine: `ensureIndexed` (see codebase-memory.ts)
+ *  indexes the folder before the worker starts, because the governor denies subagents the index
+ *  tools so a worker can never self-index. The engine appends this automatically so the operator
+ *  never has to and it can't be omitted. */
 export function briefWithProjectDocs(task: string): string {
   return (
     "Before starting, read this project's rule and doc .md files so you work by its rules: " +
     "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
     "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
-    "Before cold-reading files, query the `codebase-memory` MCP (get_architecture / search_code) to " +
-    "get a structural map of the relevant modules — it's far cheaper than re-reading the whole tree. " +
-    "Use the superpowers skills for this work: brainstorming → writing-plans for design, " +
-    "systematic-debugging to root-cause any bug, and test-driven-development for implementation " +
-    "(write the failing test first).\n\n" +
+    "REQUIRED — use the `codebase-memory` MCP FIRST. The engine has already indexed this project for " +
+    "you, so the structural map is ready to query. Start every investigation there: get_architecture " +
+    "for the module layout, then search_code / query_graph to find the code that matters. Read source " +
+    "files directly ONLY for what the map doesn't cover — never as your default way in.\n\n" +
+    "REQUIRED — use the superpowers skills for the shape of work at hand: brainstorming → " +
+    "writing-plans for design, systematic-debugging to root-cause any bug, and test-driven-development " +
+    "for implementation (write the failing test first).\n\n" +
     task
   );
 }

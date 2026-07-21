@@ -673,10 +673,12 @@ test("dispatch prepends a read-the-project-docs preamble to the brief", async ()
 // codebase-memory MCP for a structural map before cold-reading files, and to use the superpowers
 // skills — so the operator never has to add it by hand and it can't be omitted. ---
 
-test("briefWithProjectDocs preamble covers docs + codebase-memory + superpowers, then the task verbatim", () => {
+test("briefWithProjectDocs preamble requires codebase-memory + superpowers, states the engine indexed it, then the task verbatim", () => {
   const out = briefWithProjectDocs("DO THE WORK");
   expect(out.toLowerCase()).toContain("agents.md"); // read project docs (existing)
-  expect(out.toLowerCase()).toContain("codebase-memory"); // structural map before cold-reading
+  expect(out).toContain("REQUIRED"); // MANDATORY, not optional
+  expect(out.toLowerCase()).toContain("codebase-memory"); // structural map FIRST
+  expect(out.toLowerCase()).toContain("already indexed"); // engine guarantees the map is ready
   expect(out.toLowerCase()).toContain("superpowers"); // use the skills
   expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last
 });
