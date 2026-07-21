@@ -22,6 +22,8 @@ import { tickScheduler } from "./engine/scheduler";
 import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
+import { createOperatorBus } from "./engine/operator-bus";
+import { makeLoopReply } from "./engine/loop-mirror";
 
 // Idle-close poll interval.
 const IDLE_POLL_MS = 60 * 1000;
@@ -49,6 +51,9 @@ async function main(): Promise<void> {
   const ledger = openLedger("data/ledger.db");
   const admin = openAdminStore("data/admin.db");
   const registry = createRegistry();
+  // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
+  // operator conversation mirrors across both surfaces (engine/operator-bus.ts).
+  const bus = createOperatorBus();
   const trust = openTrustStore("data/trust.db");
   const inbox = openInbox("data/inbox.db"); // customer messages — plain data, shown in the web
   const meter = createMeter({
@@ -114,10 +119,15 @@ async function main(): Promise<void> {
   // Scheduled-loop worker output streams to the operator's channel tagged with the loop's project
   // (same #project style as dispatch); if there's no admin/token yet, it falls back to daemon stdout.
   // Loops that emit no worker text send nothing (silent success) — see startScheduledLoop.
-  const loopReply = (chatId: number, text: string, project?: string): void => {
-    if (cfg.telegramToken && chatId > 0) void sendOperatorLine(cfg.telegramToken, chatId, text, project);
-    else console.log(`[loop] ${projectTagPrefix(project)}${text}`);
-  };
+  // Scheduled-loop output → Telegram (or stdout before an admin claims), AND mirrored to the web
+  // console via the bus so a web-only operator also sees loop activity (loop-mirror.ts).
+  const loopReply = makeLoopReply({
+    toTelegram: cfg.telegramToken
+      ? (chatId, text, project) => void sendOperatorLine(cfg.telegramToken, chatId, text, project)
+      : undefined,
+    toStdout: (text, project) => console.log(`[loop] ${projectTagPrefix(project)}${text}`),
+    bus,
+  });
   if (cfg.loopSchedulerEnabled) {
     setInterval(
       () =>
@@ -143,7 +153,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload });
+    startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload }, bus);
     console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
 
     // Web console shares the same engine + admin; auth is Telegram-login (TOFU admin).
@@ -152,7 +162,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
       cfg.webPort,
       cfg.webHost,
     );
