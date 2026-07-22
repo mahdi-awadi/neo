@@ -25,6 +25,7 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry }
 import type { IngressDeps } from "../engine/ingress";
 import { mdToHtml, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
+import type { ApiCooldown } from "../engine/api-retry";
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
  *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
@@ -120,8 +121,9 @@ export function startTelegram(
   usage?: UsageMeter,
   inbox?: Inbox,
   gatewaySendUrl?: string,
-  /** Graceful reload (daemon-injected): the drain gate + the /reload trigger. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void },
+  /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
+   *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
 ): Bot {
@@ -172,6 +174,7 @@ export function startTelegram(
     usage,
     trust,
     lifecycle: reload?.lifecycle,
+    cooldown: reload?.cooldown,
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
     reply: (cid, text, project) => {
       void send(cid, text, project); // local delivery (unchanged)

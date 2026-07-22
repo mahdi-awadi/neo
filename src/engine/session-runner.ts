@@ -93,12 +93,39 @@ export interface RunDeps {
   disallowedTools?: string[];
 }
 
+/** Why an API call failed, as the SDK reports it (SDKAssistantMessageError). "rate_limit" and
+ *  "overloaded" are the server-side throttles that produce the operator-visible
+ *  "API Error: Server is temporarily limiting requests" line. */
+export type ApiErrorKind =
+  | "rate_limit"
+  | "overloaded"
+  | "server_error"
+  | "authentication_failed"
+  | "billing_error"
+  | "invalid_request"
+  | "model_not_found"
+  | "max_output_tokens"
+  | "unknown";
+
+/** Map the result's HTTP status to an error kind, for when no assistant error field arrived. */
+function apiErrorFromStatus(status: number | null | undefined): ApiErrorKind {
+  if (status === 429) return "rate_limit";
+  if (status === 529) return "overloaded";
+  if (status === 401 || status === 403) return "authentication_failed";
+  if (typeof status === "number" && status >= 500) return "server_error";
+  return "unknown";
+}
+
 export interface RunResult {
   ok: boolean;
   /** SDK session id, for resume/fork. */
   sessionId: string;
   summary: string;
   costUsd: number;
+  /** Set when the turn ended on an API failure rather than the worker finishing. The SDK reports
+   *  this as subtype:"success" WITH is_error:true, so reading the subtype alone recorded a
+   *  throttled turn as done and silently dropped the brief. */
+  apiError?: ApiErrorKind;
 }
 
 /** A live, long-running session: push follow-ups, interrupt, await the final result. */
@@ -184,6 +211,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
   let sessionId = "";
   let summary = "";
   let costUsd = 0;
+  let apiError: ApiErrorKind | undefined; // set by the assistant fallback message / the result's status
 
   try {
     for await (const msg of queryObj) {
@@ -194,6 +222,9 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
       if (typeof msg.session_id === "string") sessionId = msg.session_id;
 
       if (msg.type === "assistant") {
+        // The API-error fallback: the CLI gives up after its own retries and emits an assistant
+        // message carrying the error kind. Remember it — the result that follows only has a status.
+        if (typeof msg.error === "string") apiError = msg.error as ApiErrorKind;
         const content = (msg.message as { content?: unknown } | undefined)?.content;
         if (Array.isArray(content)) {
           for (const b of content as Array<{ type?: string; text?: string; name?: string; input?: unknown }>) {
@@ -209,18 +240,26 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
             }
           }
         }
+      } else if (msg.type === "system" && msg.subtype === "api_retry") {
+        // The SDK is retrying a retryable API failure itself (its own backoff). Not a failure yet —
+        // surface it as activity so the watchdog counts it as liveness and /status shows the wait.
+        handlers.onActivity?.(`api retry ${msg.attempt ?? "?"}/${msg.max_retries ?? "?"}`);
       } else if (msg.type === "rate_limit_event") {
         const info = msg.rate_limit_info as RateLimitInfo | undefined;
         if (info) handlers.onRateLimit?.(info);
       } else if (msg.type === "result") {
-        ok = msg.subtype === "success";
+        // is_error marks an API failure that the SDK could not recover from — the subtype is still
+        // "success", so it MUST be read too or a throttled turn passes as a completed one.
+        const failed = msg.is_error === true;
+        ok = msg.subtype === "success" && !failed;
+        if (failed) apiError = apiError ?? apiErrorFromStatus(msg.api_error_status as number | null);
         summary = typeof msg.result === "string" ? msg.result : "";
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
         handlers.onCost?.(costUsd);
         // Turn boundary: the worker is waiting for the next input, not mid-turn — the
         // watchdog must not treat this as silence or a grinding activity (F1).
         handlers.onActivity?.("waiting");
-        handlers.onTurnComplete?.({ ok, sessionId, summary, costUsd });
+        handlers.onTurnComplete?.({ ok, sessionId, summary, costUsd, apiError });
       }
     }
   } catch {
@@ -230,7 +269,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
     if (!summary) summary = "interrupted";
   }
 
-  return { ok, sessionId, summary, costUsd };
+  return { ok, sessionId, summary, costUsd, apiError };
 }
 
 // A pushable async-iterable input channel: yields queued user messages, parks until the

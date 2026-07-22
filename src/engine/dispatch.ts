@@ -18,6 +18,18 @@ import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, type ContextPolicyCfg } from "./context-policy";
 import { describeSessionStatus, sessionsReport } from "./session-status";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
+import {
+  apiFailureNotice,
+  apiHoldMessage,
+  apiRetryDelayMs,
+  apiRetryFollowUp,
+  apiRetryNotice,
+  shouldRetryApi,
+  type ApiCooldown,
+} from "./api-retry";
+
+/** Real backoff wait (tests inject opts.sleep instead). */
+const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
@@ -53,6 +65,9 @@ export interface DispatchDeps {
   contextPolicy?: ContextPolicyCfg;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
   lifecycle?: { draining(): boolean };
+  /** Shared API-throttle gate (engine/api-retry.ts): while a throttle is fresh, a NEW sub-run is
+   *  held rather than started, so retries + the loop scheduler can't amplify the storm. */
+  cooldown?: ApiCooldown;
   /** Root under which the company `dispatch` tool resolves project names (config workRoot). Default "/home". */
   workRoot?: string;
   /** Ensure the target folder is indexed in codebase-memory BEFORE the worker starts (engine side;
@@ -149,12 +164,18 @@ export async function dispatchToProject(
     handoff?: typeof runHandoff;
     /** Caller-requested per-dispatch ceiling (ms) — clamped to dispatchTimeoutMaxMs. */
     timeoutMs?: number;
+    /** Injectable wait for the API-retry backoff (tests pass a no-op). Defaults to a real timer. */
+    sleep?: (ms: number) => Promise<void>;
+    /** Injectable jitter source for the API-retry backoff. Defaults to Math.random. */
+    rand?: () => number;
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
   if (deps.lifecycle?.draining()) {
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
   }
+  // The API is throttling us — starting another worker now just earns another 429.
+  if (deps.cooldown?.activeAt(now())) return apiHoldMessage(deps.cooldown.remainingMs(now()));
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 
@@ -243,6 +264,9 @@ export async function dispatchToProject(
 
     const startedAt = now();
     let lastActivityAt = startedAt;
+    let apiRetries = 0;
+    let retryingUntil = 0; // while set in the future, the sub-run is waiting out an API throttle
+    let pausedMs = 0; // total backoff time — not the worker's time, so it doesn't eat the ceiling
     // A dispatch is single-brief: a turn boundary with no queued follow-ups means the sub-run IS
     // complete (the real SDK stream stays open waiting for input that will never come — awaiting
     // run.done alone would falsely "stall" out minutes after the worker already finished). Close
@@ -269,8 +293,28 @@ export async function dispatchToProject(
           deps.ledger.recordAutoApproval(order.id, reason);
           void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
         },
-        onTurnComplete: () => {
+        onTurnComplete: (result) => {
           lastActivityAt = now();
+          const kind = result.apiError;
+          if (kind) {
+            deps.cooldown?.note(kind, now()); // sibling dispatches/loops back off too
+            const attempt = apiRetries + 1;
+            if (shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottle() })) {
+              apiRetries = attempt;
+              const delayMs = apiRetryDelayMs(attempt, opts.rand);
+              // The wait is engine-driven, not the worker hanging: hold off the stall/ceiling
+              // clocks for exactly that long, then re-send the brief into the still-open run.
+              retryingUntil = now() + delayMs;
+              pausedMs += delayMs;
+              void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs), name);
+              void (opts.sleep ?? realSleep)(delayMs).then(() => {
+                lastActivityAt = now();
+                runRef?.followUp(apiRetryFollowUp(task));
+              });
+              return; // keep the sub-run open — it hasn't done the work yet
+            }
+            void deps.reply(replyChat, apiFailureNotice(name, kind), name);
+          }
           if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
         },
         onActivity: (label) => {
@@ -305,7 +349,13 @@ export async function dispatchToProject(
           break;
         }
         const t = now();
-        if (t - startedAt >= ceilingMs) limit = "ceiling";
+        // Waiting out an API throttle is a deliberate engine pause, not a hung worker — keep the
+        // stall clock fresh through it, and don't charge the wait against the dispatch ceiling.
+        if (t < retryingUntil) {
+          lastActivityAt = t;
+          continue;
+        }
+        if (t - startedAt - pausedMs >= ceilingMs) limit = "ceiling";
         else if (t - lastActivityAt >= stallMs) limit = "stall";
         if (!limit) continue;
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave

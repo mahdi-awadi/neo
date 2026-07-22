@@ -19,6 +19,17 @@ import { neoMcpServers } from "./dispatch";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { sessionContext, decideContext, runHandoff } from "./context-policy";
 import { describeSessionStatus } from "./session-status";
+import {
+  apiFailureNotice,
+  apiRetryDelayMs,
+  apiRetryFollowUp,
+  apiRetryNotice,
+  shouldRetryApi,
+  type ApiCooldown,
+} from "./api-retry";
+
+/** Real backoff wait (tests inject deps.sleep instead). */
+const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Start a live session. Injectable for tests; defaults to the real SDK-backed runner. */
 type StartFn = (order: Order, handlers: RunHandlers, deps?: RunDeps) => SessionRun;
@@ -55,6 +66,13 @@ export interface PipelineDeps {
   handoff?: typeof runHandoff;
   /** Graceful-reload gate: while draining, no new orders/follow-ups start (see engine/reload.ts). */
   lifecycle?: { draining(): boolean };
+  /** Shared API-throttle gate: a session throttled here arms it, and background work reads it
+   *  (see engine/api-retry.ts). Absent → retries still happen, they just don't hold sibling work. */
+  cooldown?: ApiCooldown;
+  /** Injectable wait for the retry backoff (tests pass a no-op). Defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable jitter source for the retry backoff. Defaults to Math.random. */
+  rand?: () => number;
   /** Engine-side codebase-memory index guarantee, spread into the company `dispatch` tool's deps so
    *  a dispatched folder is indexed before its worker starts. */
   codebaseMemory?: CodebaseMemoryIndexer;
@@ -249,6 +267,8 @@ function startSession(
 ): SessionRun {
   const { registry, meter, ledger } = deps;
   const project = registry.get(registryId)?.name; // tag worker output with the project name
+  let runRef: SessionRun | undefined; // set below — the retry pushes the brief back into this run
+  let apiRetries = 0;
   let order = initialOrder;
   if (!runDeps.resume && existsSync(join(order.folder, "HANDOFF.md"))) {
     order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
@@ -275,9 +295,29 @@ function startSession(
           // observer only — never break the worker path
         }
       },
+      // A turn the API refused is NOT a completed turn: the brief never ran. Wait out the throttle
+      // and push the same brief back into the (still live) session instead of dropping the work.
+      onTurnComplete: (result) => {
+        const kind = result.apiError;
+        if (!kind) return;
+        deps.cooldown?.note(kind, now()); // hold sibling background work while the storm lasts
+        const attempt = apiRetries + 1;
+        if (!shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {
+          void deps.reply(chatId, apiFailureNotice(project, kind), project);
+          return;
+        }
+        apiRetries = attempt;
+        const delayMs = apiRetryDelayMs(attempt, deps.rand);
+        void deps.reply(chatId, apiRetryNotice(project, attempt, delayMs), project);
+        void (deps.sleep ?? realSleep)(delayMs).then(() => {
+          registry.touch(registryId, now());
+          runRef?.followUp(apiRetryFollowUp(order.task));
+        });
+      },
     },
     runDeps,
   );
+  runRef = run;
   registry.attachControl(registryId, run);
 
   void run.done.then((result) => {

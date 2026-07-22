@@ -413,3 +413,50 @@ test("reports 'waiting' on the SDK result message (turn boundary)", async () => 
   );
   expect(labels[labels.length - 1]).toBe("waiting");
 });
+
+// --- API errors: a throttled turn is a FAILED turn, not a silent success -----------------------
+// The SDK reports an exhausted-retry API failure as subtype:"success" WITH is_error:true (plus
+// api_error_status), and the assistant fallback message carries `error: "rate_limit"`. Reading
+// only the subtype recorded a rate-limited turn as done — the brief was silently dropped.
+
+test("a result with is_error is NOT a successful turn and reports the api error kind", async () => {
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "text", text: "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited" }] }, error: "rate_limit" };
+      yield { type: "result", subtype: "success", is_error: true, api_error_status: 429, result: "API Error", total_cost_usd: 0, session_id: "s" };
+    })();
+  const res = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(res.ok).toBe(false);
+  expect(res.apiError).toBe("rate_limit");
+});
+
+test("api error kind falls back to the HTTP status when no assistant error field arrives", async () => {
+  const q = () =>
+    (async function* () {
+      yield { type: "result", subtype: "success", is_error: true, api_error_status: 529, result: "API Error", total_cost_usd: 0, session_id: "s" };
+    })();
+  const res = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(res.ok).toBe(false);
+  expect(res.apiError).toBe("overloaded");
+});
+
+test("a clean turn reports no api error", async () => {
+  const q = () =>
+    (async function* () {
+      yield { type: "result", subtype: "success", is_error: false, result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  const res = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(res.ok).toBe(true);
+  expect(res.apiError).toBeUndefined();
+});
+
+test("the SDK's own api_retry events surface as activity so the watchdog sees liveness", async () => {
+  const seen: string[] = [];
+  const q = () =>
+    (async function* () {
+      yield { type: "system", subtype: "api_retry", attempt: 2, max_retries: 5, retry_delay_ms: 4000, error_status: 429, error: "rate_limit" };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", onActivity: (l) => void seen.push(l) }, { query: q as never });
+  expect(seen.some((l) => l.includes("api retry 2/5"))).toBe(true);
+});

@@ -16,6 +16,7 @@ import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, stopFrontends } from "./engine/reload";
+import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
@@ -71,6 +72,10 @@ async function main(): Promise<void> {
   // ask running workers to wrap up (commit green work + WIP note), wait a bounded drain window,
   // persist every open session's resume id, then exit 0 so the supervisor restarts us.
   const lifecycle = createLifecycle();
+  // One shared API-throttle gate for the whole engine: any worker that gets rate-limited/overloaded
+  // arms it, and NEW background work (dispatches, loop fires) waits it out instead of earning
+  // another 429. The operator's own interactive messages are never held — that's the headroom.
+  const cooldown = createApiCooldown();
   // Frontend stop hooks, run FIRST on shutdown. Telegram long polling only confirms an update on
   // the *next* getUpdates (grammy does it in bot.stop()), so exiting straight after the /reload
   // handler left that update unconfirmed — Telegram redelivered it on boot and the daemon reloaded
@@ -143,7 +148,8 @@ async function main(): Promise<void> {
           loops: effectiveLoops(ledger), // built-in ∪ custom, re-read each tick (no restart for new loops)
           store: ledger, // Ledger implements LoopStateStore
           isFolderBusy: (folder) => registry.findByFolder(folder) !== undefined,
-          throttled: () => meter.shouldThrottle(),
+          // Skip this tick when the budget meter OR a fresh API throttle says stop.
+          throttled: () => meter.shouldThrottle() || cooldown.activeAt(Date.now()),
           now: Date.now(),
           start: (def) =>
             void startScheduledLoop(def, {
@@ -161,7 +167,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -173,7 +179,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
       cfg.webPort,
       cfg.webHost,
     );
