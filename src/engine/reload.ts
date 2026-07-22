@@ -105,6 +105,40 @@ export async function drainAndPersist(opts: {
   };
 }
 
+/** Default bound on a frontend's stop hook — a hung Bot API call must never block the exit. */
+export const STOP_FRONTENDS_TIMEOUT_MS = 5_000;
+
+/**
+ * Stop the operator frontends before the process exits — the step that keeps a reload from
+ * repeating forever. Telegram long polling only *confirms* an update by sending the next
+ * getUpdates with `offset = update_id + 1`; grammy does that inside `bot.stop()`. Exiting straight
+ * after the `/reload` handler left that update unconfirmed, so Telegram redelivered it to the
+ * fresh process, which reloaded again — a restart loop that spammed the operator (fixed here).
+ * Best-effort and bounded: hooks run in order, a throwing hook is swallowed, and a hook that never
+ * settles is abandoned after `timeoutMs` so shutdown always proceeds.
+ */
+export async function stopFrontends(
+  hooks: Array<() => Promise<unknown>>,
+  opts: { timeoutMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? STOP_FRONTENDS_TIMEOUT_MS;
+  for (const hook of hooks) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        hook(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } catch {
+      // best-effort: a frontend that fails to stop must not keep the daemon alive
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+}
+
 /**
  * Boot-time re-registration: consume the shutdown snapshot and register each session as an
  * idle, resumable registry entry. A folder already registered (the always-on company) keeps

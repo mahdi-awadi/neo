@@ -15,7 +15,7 @@ import { openTrustStore } from "./engine/trust";
 import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
-import { createLifecycle, drainAndPersist, restoreSessions } from "./engine/reload";
+import { createLifecycle, drainAndPersist, restoreSessions, stopFrontends } from "./engine/reload";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
@@ -71,12 +71,20 @@ async function main(): Promise<void> {
   // ask running workers to wrap up (commit green work + WIP note), wait a bounded drain window,
   // persist every open session's resume id, then exit 0 so the supervisor restarts us.
   const lifecycle = createLifecycle();
+  // Frontend stop hooks, run FIRST on shutdown. Telegram long polling only confirms an update on
+  // the *next* getUpdates (grammy does it in bot.stop()), so exiting straight after the /reload
+  // handler left that update unconfirmed — Telegram redelivered it on boot and the daemon reloaded
+  // again, forever. Stopping the poller up front also means the offset is already committed if
+  // systemd SIGKILLs us mid-drain, and messages sent during the drain simply wait for the restart.
+  const stopHooks: Array<() => Promise<unknown>> = [];
   let drainStarted = false;
   const shutdown = (why: string): void => {
     if (drainStarted) return;
     drainStarted = true;
+    lifecycle.beginDrain(); // refuse new orders/dispatches immediately, before we stop polling
     console.log(`[reload] ${why}: draining running sessions (≤${cfg.drainWindowMs / 1000}s), saving open sessions…`);
-    void drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs })
+    void stopFrontends(stopHooks)
+      .then(() => drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs }))
       .then((r) => console.log(`[reload] drained ${r.drained.length} · interrupted ${r.interrupted.length} · persisted ${r.persisted} — exiting for restart`))
       .catch((e) => console.log(`[reload] drain error: ${e instanceof Error ? e.message : e}`))
       .finally(() => process.exit(0));
@@ -153,7 +161,10 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload }, bus);
+    // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
+    // update is redelivered after the restart and reloads again (an endless restart loop).
+    stopHooks.push(() => bot.stop());
     console.log("  telegram  -> started. /open · /list · /use · /recent · /usage · /kill · /help");
 
     // Web console shares the same engine + admin; auth is Telegram-login (TOFU admin).

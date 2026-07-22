@@ -5,7 +5,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createLifecycle, drainAndPersist, restoreSessions, wrapUpFollowUp } from "../src/engine/reload";
+import { createLifecycle, drainAndPersist, restoreSessions, stopFrontends, wrapUpFollowUp } from "../src/engine/reload";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger, type OpenSessionRow } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -233,6 +233,36 @@ test("/reload without a wired reloader says it is unavailable", () => {
     trust: openTrustStore(":memory:"),
   });
   expect(res!.text).toContain("unavailable");
+});
+
+// --- frontend stop: confirm the Telegram update offset before exiting ---------------------------
+
+test("stopFrontends awaits every hook (grammy bot.stop() confirms the update offset)", async () => {
+  const stopped: string[] = [];
+  await stopFrontends([
+    async () => void stopped.push("telegram"),
+    async () => void stopped.push("web"),
+  ]);
+  expect(stopped).toEqual(["telegram", "web"]);
+});
+
+test("stopFrontends gives up on a hung hook instead of blocking the exit", async () => {
+  let resolved = false;
+  const hung = () => new Promise<void>(() => {}); // a Bot API call that never returns
+  await stopFrontends([hung], { timeoutMs: 5 });
+  resolved = true;
+  expect(resolved).toBe(true); // reached only if stopFrontends resolved despite the hung hook
+});
+
+test("stopFrontends is best-effort: a throwing hook does not stop the others", async () => {
+  const stopped: string[] = [];
+  await stopFrontends([
+    async () => {
+      throw new Error("409 Conflict");
+    },
+    async () => void stopped.push("web"),
+  ]);
+  expect(stopped).toEqual(["web"]);
 });
 
 // --- config -------------------------------------------------------------------------------------
