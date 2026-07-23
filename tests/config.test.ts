@@ -181,3 +181,24 @@ test("worker profiles: QUALITY INVARIANT — absent config changes no worker's m
   });
   expect(cfg.workerEnv).toEqual({});
 });
+
+test("memory: QUALITY INVARIANT — scopes defaults to [] (total no-op) plus Hermes-measured fallbacks", () => {
+  expect(loadConfig(dir()).memory).toEqual({
+    scopes: [],
+    snapshotMaxPct: 0.004,
+    userMaxPct: 0.0025,
+    dreamMaxMutations: 3,
+    dreamMaxAdds: 1,
+    dreamMaxNetChars: 250,
+    dreamLookbackDays: 14,
+  });
+});
+
+test("memory: config.json can opt a scope in and override the ratio caps", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ memory: { scopes: ["company"], snapshotMaxPct: 0.01 } }));
+  const cfg = loadConfig(d);
+  expect(cfg.memory.scopes).toEqual(["company"]);
+  expect(cfg.memory.snapshotMaxPct).toBe(0.01);
+  expect(cfg.memory.userMaxPct).toBe(0.0025); // unset field keeps the default
+});

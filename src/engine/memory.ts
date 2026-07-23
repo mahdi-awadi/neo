@@ -2,19 +2,17 @@
 // Entries are delimited as lines starting with `§ ` (section-sign + space).
 // Ops are atomic: write to .tmp, then renameSync. Failed ops leave the file unchanged.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, copyFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, copyFileSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import type { MemoryCfg } from "../config";
+
+// Re-export so existing importers of memory.ts's local type keep working.
+export type { MemoryCfg };
 
 /** Approximation fact: chars per token used to convert window size to byte cap.
  * Exported for callers to understand the conversion formula. */
 export const CHARS_PER_TOKEN = 4;
-
-/** Memory config type. */
-interface MemoryCfg {
-  snapshotMaxPct: number;
-  userMaxPct: number;
-}
 
 /** Returns the memory directory path for a given folder. */
 export function memoryDir(folder: string): string {
@@ -59,6 +57,42 @@ export function readMemoryFiles(folder: string): { memory: string; user: string 
   }
 
   return { memory, user };
+}
+
+/** Canonicalise a folder path for comparison (symlink- and trailing-slash-insensitive).
+ * Mirrors codebase-memory.ts's `canonical()`. */
+function canonical(folder: string): string {
+  try {
+    return realpathSync(resolve(folder));
+  } catch {
+    return resolve(folder);
+  }
+}
+
+/** True when `folder` is in scope for the memory system: `cfg.scopes` contains the literal
+ * keyword `"company"` and `folder` resolves to `companyFolder`, OR `cfg.scopes` contains
+ * `folder`'s own absolute path. Default `scopes: []` → always false (feature off). */
+export function memoryScopeEnabled(cfg: MemoryCfg, folder: string, companyFolder: string): boolean {
+  const target = canonical(folder);
+  if (cfg.scopes.includes("company") && target === canonical(companyFolder)) return true;
+  return cfg.scopes.some((s) => s !== "company" && canonical(s) === target);
+}
+
+/** Ground-truth wrapper injected once at worker start (frozen for the run's lifetime). Empty
+ * string when both MEMORY.md and USER.md are empty — a total no-op for an unpopulated folder. */
+export function memorySnapshot(folder: string, cfg: MemoryCfg): string {
+  void cfg; // reserved for future truncation-at-inject; files are already capped at write time
+  const { memory, user } = readMemoryFiles(folder);
+  if (!memory && !user) return "";
+  let out =
+    "[MEMORY — authoritative ground truth. Facts here override guesses. Written by you in past\n" +
+    "sessions; update via the memory tool (writes apply next session, never this one).]\n" +
+    memory;
+  if (user) {
+    out += "\n[USER]\n" + user;
+  }
+  out += "\n[END MEMORY]";
+  return out;
 }
 
 /** Deterministic write-time scan for memory entries — a blast-radius reducer, not a guarantee.

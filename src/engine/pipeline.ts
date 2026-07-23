@@ -17,6 +17,7 @@ import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers } from "./dispatch";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
+import { memorySnapshot, memoryScopeEnabled } from "./memory";
 import {
   sessionContext,
   decideContext,
@@ -270,7 +271,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -292,7 +293,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }
@@ -327,6 +328,13 @@ function startSession(
   let order = initialOrder;
   if (!runDeps.resume && existsSync(join(order.folder, "HANDOFF.md"))) {
     order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
+  }
+  // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
+  // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
+  // follow-up into a live worker). Default `scopes: []` → memoryScopeEnabled is always false.
+  if (!runDeps.resume && memoryScopeEnabled(deps.cfg.memory, order.folder, deps.cfg.companyFolder)) {
+    const snap = memorySnapshot(order.folder, deps.cfg.memory);
+    if (snap) order = { ...order, task: `${snap}\n\n${order.task}` };
   }
   const run = start(
     order,

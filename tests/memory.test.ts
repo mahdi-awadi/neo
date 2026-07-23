@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMemoryOp, memoryCaps, readMemoryFiles, CHARS_PER_TOKEN } from "../src/engine/memory";
+import { applyMemoryOp, memoryCaps, readMemoryFiles, CHARS_PER_TOKEN, memorySnapshot, memoryScopeEnabled } from "../src/engine/memory";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-mem-"));
 const CFG = { scopes: ["company"], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 };
@@ -113,4 +113,53 @@ test("externally edited file is backed up before the next engine write", () => {
   const backups = readdirSync(join(dir, "memory", ".backups"));
   expect(backups.some((f) => f.startsWith("MEMORY.md."))).toBe(true);
   expect(readMemoryFiles(dir).memory).toContain("hand-edited by operator"); // drifted content kept, not reverted
+});
+
+test("memorySnapshot returns \"\" when both files are empty", () => {
+  const dir = scratch();
+  expect(memorySnapshot(dir, CFG)).toBe("");
+});
+
+test("memorySnapshot wraps MEMORY.md content in the ground-truth block", () => {
+  const dir = scratch();
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "Runs Bun on Linux" }, 5_000);
+  const snap = memorySnapshot(dir, CFG);
+  expect(snap.startsWith("[MEMORY — authoritative")).toBe(true);
+  expect(snap).toContain("Runs Bun on Linux");
+  expect(snap).not.toContain("[USER]"); // USER.md empty → section omitted entirely
+  expect(snap.endsWith("[END MEMORY]")).toBe(true);
+});
+
+test("memorySnapshot includes the [USER] section only when USER.md is non-empty", () => {
+  const dir = scratch();
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "project fact" }, 5_000);
+  applyMemoryOp(dir, "USER.md", { kind: "add", text: "operator prefers concise replies" }, 5_000);
+  const snap = memorySnapshot(dir, CFG);
+  expect(snap).toContain("[USER]");
+  expect(snap).toContain("operator prefers concise replies");
+  // [USER] must come after the MEMORY.md content and before [END MEMORY]
+  expect(snap.indexOf("[USER]")).toBeGreaterThan(snap.indexOf("project fact"));
+  expect(snap.indexOf("[END MEMORY]")).toBeGreaterThan(snap.indexOf("[USER]"));
+});
+
+test("memoryScopeEnabled: \"company\" keyword matches only the company folder", () => {
+  const company = scratch();
+  const other = scratch();
+  const cfg = { ...CFG, scopes: ["company"] };
+  expect(memoryScopeEnabled(cfg, company, company)).toBe(true);
+  expect(memoryScopeEnabled(cfg, other, company)).toBe(false);
+});
+
+test("memoryScopeEnabled: a listed absolute folder path matches that folder only", () => {
+  const project = scratch();
+  const other = scratch();
+  const company = scratch();
+  const cfg = { ...CFG, scopes: [project] };
+  expect(memoryScopeEnabled(cfg, project, company)).toBe(true);
+  expect(memoryScopeEnabled(cfg, other, company)).toBe(false);
+});
+
+test("memoryScopeEnabled: empty scopes (default) is always false", () => {
+  const dir = scratch();
+  expect(memoryScopeEnabled({ ...CFG, scopes: [] }, dir, dir)).toBe(false);
 });

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "n
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { handleMessage } from "../src/engine/pipeline";
+import { applyMemoryOp } from "../src/engine/memory";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
@@ -56,6 +57,7 @@ function cfg(): NeoConfig {
     },
     workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {} },
     workerEnv: {},
+    memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));
@@ -497,6 +499,39 @@ test("fresh start reads HANDOFF.md when it exists", async () => {
   await handleMessage(`/open ${dir} continue the work`, 9, h.base);
 
   expect(seenTask.startsWith("Read HANDOFF.md first")).toBe(true);
+});
+
+test("memory: fresh start prepends the frozen ground-truth snapshot when the folder is in scope", async () => {
+  const dir = scratch();
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "Working on the payments migration" }, 5_000);
+  let seenTask = "";
+  const start = (o: Order): SessionRun => {
+    seenTask = o.task;
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+  };
+  const h = harness({ start });
+  const scopedCfg = { ...h.base.cfg, memory: { ...h.base.cfg.memory, scopes: [dir] } };
+
+  await handleMessage(`/open ${dir} continue the work`, 9, { ...h.base, cfg: scopedCfg });
+
+  expect(seenTask.startsWith("[MEMORY — authoritative")).toBe(true);
+  expect(seenTask).toContain("Working on the payments migration");
+  expect(seenTask).toContain("continue the work"); // the order's own task still follows
+});
+
+test("memory: default config (scopes: []) leaves the first prompt byte-identical to today", async () => {
+  const dir = scratch();
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "should never be injected" }, 5_000);
+  let seenTask = "";
+  const start = (o: Order): SessionRun => {
+    seenTask = o.task;
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+  };
+  const h = harness({ start });
+
+  await handleMessage(`/open ${dir} continue the work`, 9, h.base);
+
+  expect(seenTask).toBe("continue the work");
 });
 
 test("a second message during a slow pre-resume handoff is queued, not a double-resume", async () => {

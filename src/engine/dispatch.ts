@@ -8,7 +8,8 @@ import { join, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
-import type { NeoConfig, WorkerPathName, WorkerProfile } from "../config";
+import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
+import { memorySnapshot } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -82,6 +83,10 @@ export interface DispatchDeps {
    *  the governor denies subagents the index tools, so the worker can't self-index). Best-effort —
    *  a failure here never blocks the dispatch. Absent → the step is skipped. */
   codebaseMemory?: CodebaseMemoryIndexer;
+  /** Memory system config (Phase 2) — when set, the dispatched folder's frozen ground-truth
+   *  snapshot is prepended before `briefWithProjectDocs`. Absent → no injection (e.g. the
+   *  customer/ingress path, which never passes this field — firewall). */
+  memory?: MemoryCfg;
 }
 
 type RunFn = typeof runOrder;
@@ -193,11 +198,15 @@ export async function dispatchToProject(
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 
+  // Frozen memory snapshot, computed ONCE here at dispatch start (never on a busy-guard reuse
+  // above, which returns early without building a new order). Absent deps.memory (e.g. the
+  // customer/ingress path) → "" → briefWithProjectDocs(task) is untouched, byte-identical.
+  const memSnap = deps.memory ? memorySnapshot(folder, deps.memory) : "";
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",
     folder,
-    task: briefWithProjectDocs(task),
+    task: memSnap + briefWithProjectDocs(task),
     chatId: SUB_CHAT,
     createdAt: now(),
   };

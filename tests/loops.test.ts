@@ -167,6 +167,7 @@ function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
     },
     workers: { company: {}, project: {}, dispatch: {}, loop: { model: "loop-test-model" }, judge: {}, ingress: {}, handoff: {} },
     workerEnv: {},
+    memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
     ...over,
   };
 }

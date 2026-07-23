@@ -16,6 +16,32 @@ export interface WorkerProfile {
   maxTurns?: number;
 }
 
+/** Memory system config (Phase 2: store/inject/recall). See `src/engine/memory.ts`. */
+export interface MemoryCfg {
+  /** OPERATOR CHOICE — which folders get the memory snapshot injected / the memory tools
+   *  attached: the literal keyword `"company"` (matches `companyFolder`) and/or a project's
+   *  absolute folder path. Empty = the feature is entirely off (default; opt-in only). */
+  scopes: string[];
+  /** RATIO of the session model's window (via `windowTokensFor`) — the memory-snapshot char cap.
+   *  Fallback 0.004 (≈800 tokens on a 200k window) — Hermes measured default. */
+  snapshotMaxPct: number;
+  /** RATIO of the session model's window — the USER.md char cap. Fallback 0.0025 (≈500 tokens on
+   *  a 200k window) — Hermes measured default. */
+  userMaxPct: number;
+  /** OPERATOR CHOICE (dream-loop budget) — max memory-file mutations (add/replace/remove) per
+   *  nightly consolidation run. Fallback 3 — Hermes measured default. */
+  dreamMaxMutations: number;
+  /** OPERATOR CHOICE (dream-loop budget) — max NEW entries (`add`) per nightly consolidation run.
+   *  Fallback 1 — Hermes measured default. */
+  dreamMaxAdds: number;
+  /** OPERATOR CHOICE (dream-loop budget) — max net character growth across memory files per
+   *  nightly consolidation run. Fallback 250 — Hermes measured default. */
+  dreamMaxNetChars: number;
+  /** OPERATOR CHOICE — how many days of daily logs the dream loop reviews per run. Fallback 14 —
+   *  Hermes measured default. */
+  dreamLookbackDays: number;
+}
+
 export type WorkerPathName =
   | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff";
 
@@ -103,6 +129,9 @@ export interface NeoConfig {
   /** Extra env vars for every spawned worker (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,
    *  MAX_MCP_OUTPUT_TOKENS, CLAUDE_CODE_SUBAGENT_MODEL), merged over process.env. */
   workerEnv: Record<string, string>;
+  /** Memory system (Phase 2): scopes + ratio caps + dream-loop budgets. Default `scopes: []` — a
+   *  total no-op until the operator opts a folder in. */
+  memory: MemoryCfg;
 }
 
 const DEFAULTS = {
@@ -153,6 +182,18 @@ const DEFAULTS = {
     handoff: {},
   } satisfies Record<WorkerPathName, WorkerProfile>,
   workerEnv: {} as Record<string, string>,
+  // QUALITY INVARIANT: scopes:[] is the pin — the memory system is a total no-op until an
+  // operator opts a folder in via config.json. The other fields are cold-start fallbacks
+  // (Hermes measured defaults), documented on MemoryCfg above.
+  memory: {
+    scopes: [] as string[],
+    snapshotMaxPct: 0.004,
+    userMaxPct: 0.0025,
+    dreamMaxMutations: 3,
+    dreamMaxAdds: 1,
+    dreamMaxNetChars: 250,
+    dreamLookbackDays: 14,
+  } satisfies MemoryCfg,
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -217,5 +258,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     contextPolicy: { ...DEFAULTS.contextPolicy, ...(fileCfg.contextPolicy ?? {}) },
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
+    memory: { ...DEFAULTS.memory, ...(fileCfg.memory ?? {}) },
   };
 }
