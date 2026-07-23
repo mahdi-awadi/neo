@@ -50,7 +50,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `stuckAfterMs` | `600000` (10m) | Alert when a running session has produced nothing for this long. |
 | `longTurnAlertMs` | `1200000` (20m) | Alert when one activity label has run this long. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
-| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000 }` | Session context-window lifecycle thresholds. |
+| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5 }` | Session context-window lifecycle thresholds. `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations` gate the LEARNED cache-TTL resume rule: a resume idle past the *effective* cache TTL (derived from real per-resume cache-hit observations in the ledger, falling back to `cacheTtlFallbackMs` until `cacheTtlMinObservations` exist) on a transcript at/above `staleResumePct` occupancy triggers a handoff instead of a cold, unwarmed-cache resume. |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
 > (systemd's default stop timeout is 90s and would kill the process mid-drain).

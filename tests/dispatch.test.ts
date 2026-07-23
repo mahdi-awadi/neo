@@ -17,6 +17,9 @@ const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
   maxTurns: 200,
   maxAgeMs: 7 * 24 * 3600 * 1000,
   handoffTimeoutMs: 180_000,
+  staleResumePct: 0.35,
+  cacheTtlFallbackMs: 3_600_000,
+  cacheTtlMinObservations: 5,
 };
 
 test("resolveProject finds a folder by name under root or by absolute path", () => {
@@ -583,7 +586,7 @@ test("dispatch with a 'clear' verdict drops resume, clears the ledger session, a
     seenResume = dd?.resume;
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
-  const fakeSignals = (): ContextSignals => ({ occupancy: 0.9, turns: 5, ageMs: 0 }); // >= emergencyPct → clear
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.9, turns: 5, ageMs: 0, idleMs: 0 }); // >= emergencyPct → clear
   await dispatchToProject("eticket-v3", "task", deps, 1, {
     start: fakeStart as never,
     now: () => 0,
@@ -610,7 +613,7 @@ test("dispatch with a 'handoff' verdict runs the handoff BEFORE start, and drops
     order.push("start");
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
-  const fakeSignals = (): ContextSignals => ({ occupancy: 0.7, turns: 5, ageMs: 0 }); // >= handoffPct, < emergencyPct → handoff
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.7, turns: 5, ageMs: 0, idleMs: 0 }); // >= handoffPct, < emergencyPct → handoff
   const fakeHandoff = async () => {
     order.push("handoff");
   };
@@ -639,7 +642,7 @@ test("dispatch with a 'keep' verdict passes the prior resume id through unchange
     seenResume = dd?.resume;
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
-  const fakeSignals = (): ContextSignals => ({ occupancy: 0.1, turns: 5, ageMs: 0 }); // well under handoffPct → keep
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.1, turns: 5, ageMs: 0, idleMs: 0 }); // well under handoffPct → keep
   await dispatchToProject("eticket-v3", "task", deps, 1, {
     start: fakeStart as never,
     now: () => 0,

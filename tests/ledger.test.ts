@@ -111,3 +111,15 @@ test("context events record + list, and clearSessionsFor wipes resume targets", 
   l.clearSessionsFor("/p/gold");
   expect(l.lastSessionFor("/p/gold", 5)).toBeUndefined();
 });
+
+test("cache observations record + list, newest-first, capped by limit", () => {
+  const l = openLedger(":memory:");
+  l.recordCacheObservation(10 * 60_000, true);
+  l.recordCacheObservation(70 * 60_000, false);
+  const rows = l.listCacheObservations(50);
+  expect(rows).toHaveLength(2);
+  expect(rows[0]).toMatchObject({ gapMs: 70 * 60_000, hit: false }); // newest first
+  expect(rows[1]).toMatchObject({ gapMs: 10 * 60_000, hit: true });
+  for (let i = 0; i < 5; i++) l.recordCacheObservation(i, true);
+  expect(l.listCacheObservations(3)).toHaveLength(3);
+});

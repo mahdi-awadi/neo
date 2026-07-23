@@ -17,7 +17,7 @@ import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers } from "./dispatch";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
-import { sessionContext, decideContext, runHandoff } from "./context-policy";
+import { sessionContext, decideContext, runHandoff, effectiveCacheTtlMs, lastTurnCacheRead } from "./context-policy";
 import { profileDeps } from "./worker-profile";
 import { describeSessionStatus } from "./session-status";
 import {
@@ -80,23 +80,26 @@ export interface PipelineDeps {
 }
 
 /** Apply the context policy to a persisted resume id. Returns the id to actually resume with
- *  ("" = start fresh). Never throws (fail open = keep the id). */
+ *  ("" = start fresh) plus the idle gap measured at gate time (before the resume), so the caller
+ *  can later record a LEARNED-cache-TTL observation against a real gapMs. Never throws (fail open
+ *  = keep the id). */
 async function applyContextPolicy(
   folder: string,
   sessionInfo: SessionInfo | undefined,
   resumeId: string,
   deps: PipelineDeps,
-): Promise<string> {
-  if (!resumeId) return "";
+): Promise<{ resumeId: string; idleMs: number }> {
+  if (!resumeId) return { resumeId: "", idleMs: 0 };
   try {
     const signals = deps.signals ?? sessionContext;
     const sig = signals(folder, resumeId);
-    const verdict = decideContext(sig, deps.cfg.contextPolicy);
-    if (verdict === "keep") return resumeId;
+    const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(50), deps.cfg.contextPolicy);
+    const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs);
+    if (verdict === "keep") return { resumeId, idleMs: sig.idleMs };
     if (verdict === "clear") {
       deps.ledger.clearSessionsFor(folder);
       deps.ledger.recordContextEvent(folder, "clear", sig.occupancy);
-      return "";
+      return { resumeId: "", idleMs: 0 };
     }
     // handoff: run it against the fat session (bounded), which clears; then fresh.
     const handoff = deps.handoff ?? runHandoff;
@@ -114,9 +117,9 @@ async function applyContextPolicy(
       ledger: deps.ledger,
       runDeps: profileDeps(deps.cfg, "handoff"),
     });
-    return "";
+    return { resumeId: "", idleMs: 0 };
   } catch {
-    return resumeId; // fail open
+    return { resumeId, idleMs: 0 }; // fail open
   }
 }
 
@@ -193,8 +196,19 @@ export async function handleMessage(
     await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
     resuming.add(live.id);
     try {
-      const resumeId = live.sdkSessionId ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps) : "";
-      return startSession(resumed, live.id, chatId, deps, now, start, runConfigFor(live.id, registry, deps, chatId, resumeId));
+      const gate = live.sdkSessionId
+        ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps)
+        : { resumeId: "", idleMs: 0 };
+      return startSession(
+        resumed,
+        live.id,
+        chatId,
+        deps,
+        now,
+        start,
+        runConfigFor(live.id, registry, deps, chatId, gate.resumeId),
+        gate.idleMs,
+      );
     } finally {
       resuming.delete(live.id);
     }
@@ -222,17 +236,27 @@ export async function handleMessage(
 
   // 5. Resume a prior session for this folder/chat, if one was recorded.
   const priorResume = ledger.lastSessionFor(parsed.folder, parsed.chatId);
-  const resume = priorResume ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps) : "";
+  const gate = priorResume ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps) : { resumeId: "", idleMs: 0 };
+  const resume = gate.resumeId;
 
   ledger.recordOrder(parsed);
   await deps.reply(chatId, `opening ${parsed.folder} (${decision.provider})${resume ? " — resuming" : ""}…`);
 
   // 6. Register the project and start its live session (control handle for follow-up/kill/idle).
   const session = registry.add(parsed, now());
-  return startSession(parsed, session.id, chatId, deps, now, start, profileDeps(deps.cfg, "project", {
-    resume: resume || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
-  }));
+  return startSession(
+    parsed,
+    session.id,
+    chatId,
+    deps,
+    now,
+    start,
+    profileDeps(deps.cfg, "project", {
+      resume: resume || undefined,
+      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+    }),
+    gate.idleMs,
+  );
 }
 
 /**
@@ -269,6 +293,10 @@ function startSession(
   now: () => number,
   start: StartFn,
   runDeps: RunDeps = {},
+  /** The idle gap measured at the context-policy gate, BEFORE this resume (0 for a fresh start).
+   *  Threaded through so the run.done handler below can record a LEARNED-cache-TTL observation
+   *  against a real gapMs once the resumed turn actually completes. */
+  resumeIdleMs = 0,
 ): SessionRun {
   const { registry, meter, ledger } = deps;
   const project = registry.get(registryId)?.name; // tag worker output with the project name
@@ -336,11 +364,23 @@ function startSession(
     registry.setStatus(registryId, "idle");
     registry.touch(registryId, now());
     registry.detachControl(registryId);
+    // LEARNED cache-TTL observation: this was a resume (runDeps.resume set) — was the prompt
+    // cache still warm after resumeIdleMs of idle time? Best-effort: a broken/unreadable
+    // transcript must never misrecord a false miss, so it's skipped rather than recorded as 0.
+    if (runDeps.resume && result.sessionId) {
+      try {
+        const cacheRead = lastTurnCacheRead(order.folder, result.sessionId);
+        if (cacheRead !== undefined) ledger.recordCacheObservation(resumeIdleMs, cacheRead > 0);
+      } catch {
+        // best-effort — never affects the resume itself
+      }
+    }
     try {
       if (result.sessionId) {
         const signals = deps.signals ?? sessionContext;
         const sig = signals(order.folder, result.sessionId);
-        if (decideContext(sig, deps.cfg.contextPolicy) !== "keep") {
+        const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(50), deps.cfg.contextPolicy);
+        if (decideContext(sig, deps.cfg.contextPolicy, ttlMs) !== "keep") {
           const handoff = deps.handoff ?? runHandoff;
           const info = registry.get(registryId);
           if (info) {

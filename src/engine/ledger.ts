@@ -35,6 +35,12 @@ export interface Ledger {
   /** Audit: a context-policy verdict (e.g. a handoff) fired for a folder. */
   recordContextEvent(folder: string, verdict: string, occupancy: number, at?: number): void;
   listContextEvents(limit?: number): Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
+  /** LEARNED cache-TTL input: one (idle gap before a resume, was the prompt cache still warm?)
+   *  observation, so the effective staleness TTL can be derived from real behavior instead of a
+   *  fixed provider-documented number (see context-policy.ts effectiveCacheTtlMs). */
+  recordCacheObservation(gapMs: number, hit: boolean): void;
+  /** Most recent observations, newest-first, capped by `limit`. */
+  listCacheObservations(limit?: number): Array<{ gapMs: number; hit: boolean; at: number }>;
   /** Wipe the resume-target session id for every order in this folder (fresh start after a handoff/clear). */
   clearSessionsFor(folder: string): void;
   /** Persist the map from a sent channel message → the project it belongs to, so a reply to that
@@ -116,6 +122,13 @@ export function openLedger(path: string): Ledger {
   db.run(
     `CREATE TABLE IF NOT EXISTS context_events (
        folder TEXT NOT NULL, verdict TEXT NOT NULL, occupancy REAL NOT NULL, at INTEGER NOT NULL
+     )`,
+  );
+  // LEARNED cache-TTL inputs: one row per resume, recording the idle gap beforehand and whether
+  // the prompt cache was still warm (see context-policy.ts effectiveCacheTtlMs).
+  db.run(
+    `CREATE TABLE IF NOT EXISTS cache_observations (
+       gap_ms INTEGER NOT NULL, hit INTEGER NOT NULL, at INTEGER NOT NULL
      )`,
   );
   // Reply-routing map: which project each sent channel message belongs to, so a REPLY to a specific
@@ -257,6 +270,17 @@ export function openLedger(path: string): Ledger {
       return db
         .query(`SELECT folder, verdict, occupancy, at FROM context_events ORDER BY at DESC LIMIT ?`)
         .all(limit) as Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
+    },
+    recordCacheObservation(gapMs, hit) {
+      db.query(`INSERT INTO cache_observations (gap_ms, hit, at) VALUES (?, ?, ?)`).run(gapMs, hit ? 1 : 0, Date.now());
+    },
+    listCacheObservations(limit = 50) {
+      // rowid DESC breaks ties for observations recorded within the same millisecond.
+      return (
+        db
+          .query(`SELECT gap_ms, hit, at FROM cache_observations ORDER BY at DESC, rowid DESC LIMIT ?`)
+          .all(limit) as Array<{ gap_ms: number; hit: number; at: number }>
+      ).map((r) => ({ gapMs: r.gap_ms, hit: r.hit === 1, at: r.at }));
     },
     saveOpenSessions(rows) {
       db.run(`DELETE FROM open_sessions`);

@@ -1,14 +1,52 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { decideContext, sessionContext, encodeCwd, CONTEXT_WINDOW_TOKENS, runHandoff, idleStateNote, writeIdleStateNote } from "../src/engine/context-policy";
+import { tmpdir, homedir } from "node:os";
+import {
+  decideContext,
+  sessionContext,
+  encodeCwd,
+  CONTEXT_WINDOW_TOKENS,
+  runHandoff,
+  idleStateNote,
+  writeIdleStateNote,
+  effectiveCacheTtlMs,
+} from "../src/engine/context-policy";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import type { Order, SessionInfo } from "../src/types";
 import type { RunHandlers } from "../src/engine/session-runner";
 
-const CFG = { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 };
+const CFG = {
+  handoffPct: 0.65,
+  emergencyPct: 0.85,
+  maxTurns: 200,
+  maxAgeMs: 604_800_000,
+  handoffTimeoutMs: 180_000,
+  staleResumePct: 0.35,
+  cacheTtlFallbackMs: 3_600_000,
+  cacheTtlMinObservations: 5,
+};
+const POLICY = CFG;
+
+/** Writes a real transcript under the REAL ~/.claude/projects tree (sessionContext's default
+ *  path — the idleMs test below calls sessionContext with no projectsDir override, so it has to
+ *  exist there). Reuses one fixed folder so repeat runs just overwrite it. */
+function writeFakeTranscript(): { folder: string; id: string } {
+  const folder = "/p/cache-ttl-fixture";
+  const id = "sess-idle";
+  const dir = join(homedir(), ".claude", "projects", encodeCwd(folder));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `${id}.jsonl`),
+    JSON.stringify({
+      type: "assistant",
+      timestamp: new Date().toISOString(),
+      message: { usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    }),
+  );
+  return { folder, id };
+}
 
 function sessionOn(folder: string, over: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -51,12 +89,42 @@ test("writeIdleStateNote swallows write errors so idle-close never breaks", () =
 });
 
 test("decideContext verdict matrix", () => {
-  expect(decideContext({ occupancy: 0.1, turns: 5, ageMs: 0 }, CFG)).toBe("keep");
-  expect(decideContext({ occupancy: 0.65, turns: 5, ageMs: 0 }, CFG)).toBe("handoff"); // at threshold
-  expect(decideContext({ occupancy: 0.2, turns: 200, ageMs: 0 }, CFG)).toBe("handoff"); // turns
-  expect(decideContext({ occupancy: 0.2, turns: 5, ageMs: 604_800_000 }, CFG)).toBe("handoff"); // age
-  expect(decideContext({ occupancy: 0.85, turns: 5, ageMs: 0 }, CFG)).toBe("clear"); // emergency wins over handoff
-  expect(decideContext({ occupancy: 0.99, turns: 300, ageMs: 999_999_999 }, CFG)).toBe("clear");
+  const ttl = CFG.cacheTtlFallbackMs;
+  expect(decideContext({ occupancy: 0.1, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("keep");
+  expect(decideContext({ occupancy: 0.65, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // at threshold
+  expect(decideContext({ occupancy: 0.2, turns: 200, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // turns
+  expect(decideContext({ occupancy: 0.2, turns: 5, ageMs: 604_800_000, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // age
+  expect(decideContext({ occupancy: 0.85, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("clear"); // emergency wins over handoff
+  expect(decideContext({ occupancy: 0.99, turns: 300, ageMs: 999_999_999, idleMs: 0 }, CFG, ttl)).toBe("clear");
+});
+
+test("effectiveCacheTtlMs: with too few observations, returns the fallback", () => {
+  expect(effectiveCacheTtlMs([], POLICY)).toBe(POLICY.cacheTtlFallbackMs);
+  expect(effectiveCacheTtlMs([{ gapMs: 60_000, hit: true }], POLICY)).toBe(POLICY.cacheTtlFallbackMs);
+});
+
+test("effectiveCacheTtlMs: learns the boundary between observed hits and misses", () => {
+  const obs = [
+    { gapMs: 10 * 60_000, hit: true }, { gapMs: 30 * 60_000, hit: true },
+    { gapMs: 50 * 60_000, hit: true }, { gapMs: 70 * 60_000, hit: false },
+    { gapMs: 90 * 60_000, hit: false },
+  ];
+  // deterministic midpoint between the longest observed hit and the shortest observed miss
+  expect(effectiveCacheTtlMs(obs, POLICY)).toBe((50 * 60_000 + 70 * 60_000) / 2);
+});
+
+test("decideContext: idle past the effective TTL + fat transcript → handoff; either alone → keep", () => {
+  const ttl = 3_600_000;
+  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("handoff");
+  expect(decideContext({ occupancy: 0.2, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("keep");
+  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 60_000 }, POLICY, ttl)).toBe("keep");
+});
+
+test("sessionContext reports idleMs from the transcript mtime; 0 on any error (fail-open)", async () => {
+  const { folder, id } = writeFakeTranscript();
+  expect((await sessionContext(folder, id)).idleMs).toBeGreaterThanOrEqual(0);
+  expect((await sessionContext("/nope", "missing")).idleMs).toBe(0);
+  rmSync(join(homedir(), ".claude", "projects", encodeCwd(folder)), { recursive: true, force: true });
 });
 
 test("encodeCwd matches Claude Code's project-dir encoding", () => {
@@ -82,7 +150,7 @@ test("sessionContext reads occupancy/turns/age from the transcript JSONL", () =>
 });
 
 test("sessionContext fails OPEN on a missing transcript", () => {
-  expect(sessionContext("/nowhere", "nope", { projectsDir: "/nonexistent" })).toEqual({ occupancy: 0, turns: 0, ageMs: 0 });
+  expect(sessionContext("/nowhere", "nope", { projectsDir: "/nonexistent" })).toEqual({ occupancy: 0, turns: 0, ageMs: 0, idleMs: 0 });
 });
 
 test("runHandoff runs the handoff turn against the persisted session, then clears it", async () => {

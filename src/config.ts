@@ -127,7 +127,21 @@ const DEFAULTS = {
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
   drainWindowMs: 90 * 1000,
-  contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 7 * 24 * 3600 * 1000, handoffTimeoutMs: 180_000 },
+  contextPolicy: {
+    handoffPct: 0.65,
+    emergencyPct: 0.85,
+    maxTurns: 200,
+    maxAgeMs: 7 * 24 * 3600 * 1000,
+    handoffTimeoutMs: 180_000,
+    // ratio: occupancy above which a resume idle past the effective cache TTL is stale enough to
+    // hand off (see context-policy.ts ContextPolicyCfg.staleResumePct).
+    staleResumePct: 0.35,
+    // provider-fact fallback: the provider-documented prompt-cache TTL (1h), used only until
+    // enough real observations exist to derive a learned TTL (effectiveCacheTtlMs).
+    cacheTtlFallbackMs: 3_600_000,
+    // operator choice: minimum observations before the learned TTL is trusted over the fallback.
+    cacheTtlMinObservations: 5,
+  },
   // QUALITY INVARIANT: defaults reproduce today's behavior EXACTLY. The only non-empty entries
   // are the two effort:"low" cases that already live in code (pipeline.ts:250, ingress.ts:68/71),
   // relocated here. Economy overrides (cheaper models on handoff/judge/ingress ONLY) are opt-in

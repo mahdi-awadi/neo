@@ -157,6 +157,7 @@ async function main(): Promise<void> {
               reply: loopReply,
               shouldStop: () => meter.shouldThrottle(),
               cfg,
+              store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
             }),
         }),
       LOOP_TICK_MS,

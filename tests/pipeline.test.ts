@@ -44,7 +44,16 @@ function cfg(): NeoConfig {
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
-    contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 },
+    contextPolicy: {
+      handoffPct: 0.65,
+      emergencyPct: 0.85,
+      maxTurns: 200,
+      maxAgeMs: 604_800_000,
+      handoffTimeoutMs: 180_000,
+      staleResumePct: 0.35,
+      cacheTtlFallbackMs: 3_600_000,
+      cacheTtlMinObservations: 5,
+    },
     workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {} },
     workerEnv: {},
   };
@@ -396,7 +405,7 @@ test("pre-resume: clear verdict starts fresh instead of resuming a near-full ses
 
   await handleMessage(`/open ${dir} continue`, 9, {
     ...h.base,
-    signals: () => ({ occupancy: 0.9, turns: 10, ageMs: 0 }), // emergency
+    signals: () => ({ occupancy: 0.9, turns: 10, ageMs: 0, idleMs: 0 }), // emergency
   });
 
   expect(f.resumeSeen()).toBeUndefined(); // fresh, not resumed
@@ -417,7 +426,7 @@ test("pre-resume: handoff verdict runs the handoff first, then starts fresh", as
 
   await handleMessage(`/open ${dir} continue`, 9, {
     ...h.base,
-    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0 }),
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }),
     handoff: async (s) => {
       calls.push("handoff");
       h.ledger.clearSessionsFor(s.order.folder);
@@ -470,7 +479,7 @@ test("a second message during a slow pre-resume handoff is queued, not a double-
   const base = {
     ...h.base,
     start: countingStart,
-    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0 }), // handoff verdict
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }), // handoff verdict
     handoff: async () => {
       await blocked; // simulate a slow (bounded) handoff turn
     },
@@ -502,7 +511,7 @@ test("post-completion handoff fires when the finished session is fat", async () 
 
   await handleMessage(`/open ${dir} work`, 9, {
     ...h.base,
-    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0 }),
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }),
     handoff: async () => {
       handoffCalled = true;
     },

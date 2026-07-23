@@ -12,8 +12,9 @@ import type { LoopOutcome } from "./loop-runner";
 import type { runOrder, RunDeps } from "./session-runner";
 import { validateLoopInput, type LoopInput } from "./loop-validate";
 import { profileDeps } from "./worker-profile";
-import { sessionContext, decideContext } from "./context-policy";
+import { sessionContext, decideContext, effectiveCacheTtlMs } from "./context-policy";
 import type { NeoConfig } from "../config";
+import type { Ledger } from "./ledger";
 
 /** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
 export interface LoopDefStore {
@@ -21,8 +22,9 @@ export interface LoopDefStore {
   saveLoopDef(name: string, json: string): void;
   deleteLoopDef(name: string): void;
 }
-/** The ledger satisfies both halves; commands/UX take the combined store. */
-export type LoopStore = LoopDefStore & LoopStateStore;
+/** The ledger satisfies all three halves; commands/UX take the combined store. `listCacheObservations`
+ *  feeds the LEARNED-cache-TTL resume gate in loopRunExtras (see context-policy.ts). */
+export type LoopStore = LoopDefStore & LoopStateStore & Pick<Ledger, "listCacheObservations">;
 
 export interface LoopDef extends SchedulableLoop {
   name: string; // canonical key, e.g. "docs-sweep"
@@ -240,7 +242,7 @@ function formatLoops(store?: LoopStore): string {
  *  cfg omitted ⇒ today's behavior (no profile, no gate). */
 function loopRunExtras(
   loop: LoopDef,
-  deps: { run?: typeof runOrder; check?: GoalCheck; cfg?: NeoConfig },
+  deps: { run?: typeof runOrder; check?: GoalCheck; cfg?: NeoConfig; store?: LoopStore },
 ): {
   runDeps?: RunDeps;
   freshSession?: boolean;
@@ -254,7 +256,9 @@ function loopRunExtras(
     gateResume: cfg
       ? async (id: string) => {
           const ctx = await sessionContext(loop.folder, id);
-          return decideContext(ctx, cfg.contextPolicy) === "keep" ? id : undefined;
+          const obs = deps.store?.listCacheObservations(50) ?? [];
+          const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
+          return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;
         }
       : undefined,
     check:
@@ -305,6 +309,9 @@ export interface ScheduledLoopDeps {
   /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
    *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */
   cfg?: NeoConfig;
+  /** Loop store — only `listCacheObservations` is used here, to derive the LEARNED cache TTL for
+   *  the resume gate. Omitted ⇒ the gate falls back to cacheTtlFallbackMs (no observations). */
+  store?: LoopStore;
 }
 
 /** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/acme →

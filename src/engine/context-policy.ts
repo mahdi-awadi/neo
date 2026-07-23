@@ -2,7 +2,7 @@
 // transcript JSONL (same source of truth as usage.ts) and decides, at safe boundaries only,
 // whether to keep it, hand off + clear it, or clear it immediately. Fail OPEN on read errors:
 // a measurement problem must never destroy a session.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Order, SessionInfo } from "../types";
@@ -16,6 +16,9 @@ export interface ContextSignals {
   occupancy: number; // last turn's input-side tokens / CONTEXT_WINDOW_TOKENS
   turns: number;
   ageMs: number;
+  /** How long the session has sat idle since its transcript was last written (ms). 0 = fail-open
+   *  (unmeasurable — e.g. no transcript yet). Used to gate the stale-resume rule below. */
+  idleMs: number;
 }
 
 export type ContextVerdict = "keep" | "handoff" | "clear";
@@ -26,6 +29,15 @@ export interface ContextPolicyCfg {
   maxTurns: number;
   maxAgeMs: number;
   handoffTimeoutMs: number;
+  /** RATIO (0-1): occupancy above which a resume idle past the effective cache TTL is treated as
+   *  stale enough to hand off (avoids paying a cold, unwarmed-cache resume on a fat transcript). */
+  staleResumePct: number;
+  /** PROVIDER-FACT FALLBACK (ms): the provider-documented prompt-cache TTL, used only until enough
+   *  real observations exist to derive a learned TTL (see effectiveCacheTtlMs). */
+  cacheTtlFallbackMs: number;
+  /** OPERATOR CHOICE: minimum number of (gapMs, hit) observations required before the learned TTL
+   *  is trusted over cacheTtlFallbackMs. */
+  cacheTtlMinObservations: number;
 }
 
 /** Claude Code's project-dir encoding for a cwd: every "/" and "." becomes "-". */
@@ -33,8 +45,25 @@ export function encodeCwd(folder: string): string {
   return folder.replace(/[/.]/g, "-");
 }
 
-export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg): ContextVerdict {
+/** Deterministic learned TTL: midpoint between the longest idle gap that still hit the prompt
+ *  cache and the shortest gap that missed. Falls back to the provider-documented TTL until
+ *  cacheTtlMinObservations exist or the observations don't yet bracket the boundary. */
+export function effectiveCacheTtlMs(
+  obs: { gapMs: number; hit: boolean }[],
+  cfg: ContextPolicyCfg,
+): number {
+  if (obs.length < cfg.cacheTtlMinObservations) return cfg.cacheTtlFallbackMs;
+  const hits = obs.filter((o) => o.hit).map((o) => o.gapMs);
+  const misses = obs.filter((o) => !o.hit).map((o) => o.gapMs);
+  if (!hits.length || !misses.length) return cfg.cacheTtlFallbackMs;
+  const hi = Math.max(...hits);
+  const lo = Math.min(...misses);
+  return lo > hi ? (hi + lo) / 2 : cfg.cacheTtlFallbackMs; // overlapping data → not learnable yet
+}
+
+export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg, ttlMs: number): ContextVerdict {
   if (sig.occupancy >= cfg.emergencyPct) return "clear";
+  if (sig.idleMs >= ttlMs && sig.occupancy >= cfg.staleResumePct) return "handoff";
   if (sig.occupancy >= cfg.handoffPct || sig.turns >= cfg.maxTurns || sig.ageMs >= cfg.maxAgeMs) return "handoff";
   return "keep";
 }
@@ -45,7 +74,7 @@ export function sessionContext(
   sdkSessionId: string,
   opts: { projectsDir?: string; now?: () => number } = {},
 ): ContextSignals {
-  const none: ContextSignals = { occupancy: 0, turns: 0, ageMs: 0 };
+  const none: ContextSignals = { occupancy: 0, turns: 0, ageMs: 0, idleMs: 0 };
   if (!folder || !sdkSessionId) return none;
   const projectsDir = opts.projectsDir ?? join(homedir(), ".claude", "projects");
   const now = opts.now ?? (() => Date.now());
@@ -75,9 +104,45 @@ export function sessionContext(
       occupancy: lastInputSide / CONTEXT_WINDOW_TOKENS,
       turns,
       ageMs: firstTs ? Math.max(0, now() - firstTs) : 0,
+      idleMs: Math.max(0, now() - statSync(path).mtimeMs),
     };
   } catch {
     return none; // fail OPEN
+  }
+}
+
+/** The most recent assistant turn's `cache_read_input_tokens` from the transcript (same read path
+ *  as sessionContext) — used right after a resume's first turn completes to observe whether the
+ *  prompt cache was still warm for the idle gap that preceded it. Returns `undefined` when the
+ *  transcript can't be read or has no assistant turn at all, so a caller can skip recording rather
+ *  than misrecord a false miss; fail-open, never throws. */
+export function lastTurnCacheRead(
+  folder: string,
+  sdkSessionId: string,
+  opts: { projectsDir?: string } = {},
+): number | undefined {
+  if (!folder || !sdkSessionId) return undefined;
+  const projectsDir = opts.projectsDir ?? join(homedir(), ".claude", "projects");
+  const path = join(projectsDir, encodeCwd(folder), `${sdkSessionId}.jsonl`);
+  try {
+    if (!existsSync(path)) return undefined;
+    let last: number | undefined;
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let obj: { type?: string; message?: { usage?: Record<string, number> } };
+      try {
+        obj = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      const u = obj.type === "assistant" ? obj.message?.usage : undefined;
+      if (!u) continue;
+      last = u.cache_read_input_tokens ?? 0;
+    }
+    return last;
+  } catch {
+    return undefined; // fail OPEN
   }
 }
 

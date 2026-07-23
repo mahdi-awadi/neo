@@ -5,7 +5,7 @@ import type { LoopInput } from "../src/engine/loop-validate";
 import type { RunResult } from "../src/engine/session-runner";
 
 const okRun = (sid = "s"): RunResult => ({ ok: true, sessionId: sid, summary: "", costUsd: 0 });
-const defMethods = { listLoopDefs: () => [], saveLoopDef: () => {}, deleteLoopDef: () => {} };
+const defMethods = { listLoopDefs: () => [], saveLoopDef: () => {}, deleteLoopDef: () => {}, listCacheObservations: () => [] };
 const cinput = (over: Partial<LoopInput> = {}): LoopInput => ({
   name: "nightly-fmt",
   summary: "fmt",

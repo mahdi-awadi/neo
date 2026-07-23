@@ -16,7 +16,7 @@ import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { DEFAULT_PROJECT } from "./default-project";
-import { decideContext, sessionContext, runHandoff, type ContextPolicyCfg } from "./context-policy";
+import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, type ContextPolicyCfg } from "./context-policy";
 import { describeSessionStatus, sessionsReport } from "./session-status";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { profileDeps } from "./worker-profile";
@@ -245,7 +245,8 @@ export async function dispatchToProject(
       try {
         const signals = opts.signals ?? sessionContext;
         const sig = signals(folder, gatedResume);
-        const verdict = decideContext(sig, deps.contextPolicy);
+        const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(50), deps.contextPolicy);
+        const verdict = decideContext(sig, deps.contextPolicy, ttlMs);
         if (verdict === "clear") {
           gatedResume = undefined;
           deps.ledger.clearSessionsFor(folder);

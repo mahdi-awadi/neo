@@ -73,7 +73,16 @@ test("watchdog thresholds default per spec", () => {
 
 test("contextPolicy defaults per spec", () => {
   const c = loadConfig("/nonexistent-dir");
-  expect(c.contextPolicy).toEqual({ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 });
+  expect(c.contextPolicy).toEqual({
+    handoffPct: 0.65,
+    emergencyPct: 0.85,
+    maxTurns: 200,
+    maxAgeMs: 604_800_000,
+    handoffTimeoutMs: 180_000,
+    staleResumePct: 0.35,
+    cacheTtlFallbackMs: 3_600_000,
+    cacheTtlMinObservations: 5,
+  });
 });
 
 /** Run `fn` with `key` forced to `value` (or unset when undefined), restoring the prior value after. */
