@@ -2,10 +2,11 @@
 // Entries are delimited as lines starting with `§ ` (section-sign + space).
 // Ops are atomic: write to .tmp, then renameSync. Failed ops leave the file unchanged.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, copyFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, copyFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type { MemoryCfg } from "../config";
+import { openMemoryIndex } from "./memory-recall";
 
 // Re-export so existing importers of memory.ts's local type keep working.
 export type { MemoryCfg };
@@ -17,6 +18,55 @@ export const CHARS_PER_TOKEN = 4;
 /** Returns the memory directory path for a given folder. */
 export function memoryDir(folder: string): string {
   return join(folder, "memory");
+}
+
+/** Returns the daily-log directory path for a given folder. */
+function logDir(folder: string): string {
+  return join(memoryDir(folder), "log");
+}
+
+/** Today's local date as YYYY-MM-DD, from `new Date()` (engine code — allowed; workers never
+ * compute "today" themselves). */
+function todayLocalDate(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** Appends one line to the day's log file (`<folder>/memory/log/<day>.md`, dir auto-created) and
+ * indexes it into the folder's FTS5 recall index (memory-recall.ts) so it becomes searchable with
+ * a file+day citation. `day` defaults to today's local date (YYYY-MM-DD).
+ *
+ * Fail-closed against log poisoning: the line is run through the same `scanMemoryText` write-time
+ * scan used by `applyMemoryOp` first; a line that fails the scan is silently NOT appended and NOT
+ * indexed (no error is thrown or returned — this mirrors the log's append-only, best-effort
+ * nature, and keeps a scanned-out line from ever reaching disk or the recall index). */
+export function appendDailyLog(folder: string, line: string, day?: string): void {
+  if (scanMemoryText(line)) return; // fail closed — never append/index a line that fails the scan
+
+  const d = day ?? todayLocalDate();
+  const dir = logDir(folder);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    return; // best-effort — can't create the dir, nothing to append
+  }
+
+  const path = join(dir, `${d}.md`);
+  try {
+    appendFileSync(path, `- ${line}\n`, "utf-8");
+  } catch {
+    return; // best-effort — failed append, skip indexing too (nothing was written)
+  }
+
+  try {
+    openMemoryIndex(folder).indexLine(path, d, line);
+  } catch {
+    // Best-effort — the log file is the source of truth; a failed index write just means this
+    // line isn't searchable yet (it can be recovered by a future indexFile re-index).
+  }
 }
 
 /** Computes character caps from window size and config percentages.
