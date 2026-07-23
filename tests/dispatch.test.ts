@@ -499,6 +499,86 @@ test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolati
   expect(seen!.chatId).toBe(-2); // SUB_CHAT — isolated from the operator's routing
 });
 
+const MEMORY_CFG = {
+  scopes: [] as string[],
+  snapshotMaxPct: 0.004,
+  userMaxPct: 0.0025,
+  dreamMaxMutations: 3,
+  dreamMaxAdds: 1,
+  dreamMaxNetChars: 250,
+  dreamLookbackDays: 14,
+};
+
+test("memory: default config (scopes: []) never injects the snapshot, even with a leftover memory/MEMORY.md", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  const projectDir = join(root, "eticket-v3");
+  mkdirSync(projectDir);
+  mkdirSync(join(projectDir, "memory"));
+  writeFileSync(join(projectDir, "memory", "MEMORY.md"), "§ leftover fact from a previous scope");
+  const { d } = makeDeps();
+  let seen: Order | undefined;
+  const fakeStart = (o: Order) => {
+    seen = o;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject(
+    "eticket-v3",
+    "CRAFTED BRIEF for the project",
+    { ...d, memory: MEMORY_CFG, companyFolder: "/tmp/agent" },
+    99,
+    { start: fakeStart as never, now: () => 1, root },
+  );
+  expect(seen!.task).not.toContain("[MEMORY — authoritative");
+  expect(seen!.task).toBe(briefWithProjectDocs("CRAFTED BRIEF for the project")); // byte-identical to today
+});
+
+test("memory: folder in scope (absolute path) gets the snapshot prepended before the preamble", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  const projectDir = join(root, "eticket-v3");
+  mkdirSync(projectDir);
+  mkdirSync(join(projectDir, "memory"));
+  writeFileSync(join(projectDir, "memory", "MEMORY.md"), "§ Working on the payments migration");
+  const { d } = makeDeps();
+  let seen: Order | undefined;
+  const fakeStart = (o: Order) => {
+    seen = o;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject(
+    "eticket-v3",
+    "CRAFTED BRIEF for the project",
+    { ...d, memory: { ...MEMORY_CFG, scopes: [projectDir] }, companyFolder: "/tmp/agent" },
+    99,
+    { start: fakeStart as never, now: () => 1, root },
+  );
+  expect(seen!.task.startsWith("[MEMORY — authoritative")).toBe(true);
+  expect(seen!.task).toContain("Working on the payments migration");
+  expect(seen!.task.endsWith(briefWithProjectDocs("CRAFTED BRIEF for the project"))).toBe(true);
+});
+
+test("memory: \"company\" scope does NOT leak into a dispatch to a different folder with a leftover memory dir", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  const projectDir = join(root, "eticket-v3");
+  mkdirSync(projectDir);
+  mkdirSync(join(projectDir, "memory"));
+  writeFileSync(join(projectDir, "memory", "MEMORY.md"), "§ leftover fact");
+  const { d } = makeDeps();
+  let seen: Order | undefined;
+  const fakeStart = (o: Order) => {
+    seen = o;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject(
+    "eticket-v3",
+    "CRAFTED BRIEF for the project",
+    { ...d, memory: { ...MEMORY_CFG, scopes: ["company"] }, companyFolder: "/tmp/agent" }, // company != projectDir
+    99,
+    { start: fakeStart as never, now: () => 1, root },
+  );
+  expect(seen!.task).not.toContain("[MEMORY — authoritative");
+  expect(seen!.task).toBe(briefWithProjectDocs("CRAFTED BRIEF for the project"));
+});
+
 test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged with the project name, and reports the final result on completion", async () => {
   // End-to-end: the real consumeStream (via startOrder) surfaces a tool milestone, which
   // dispatchToProject forwards to the operator's reply path tagged with the project name —

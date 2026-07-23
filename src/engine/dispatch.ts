@@ -9,7 +9,7 @@ import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
-import { memorySnapshot } from "./memory";
+import { memorySnapshot, memoryScopeEnabled } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -83,10 +83,16 @@ export interface DispatchDeps {
    *  the governor denies subagents the index tools, so the worker can't self-index). Best-effort —
    *  a failure here never blocks the dispatch. Absent → the step is skipped. */
   codebaseMemory?: CodebaseMemoryIndexer;
-  /** Memory system config (Phase 2) — when set, the dispatched folder's frozen ground-truth
-   *  snapshot is prepended before `briefWithProjectDocs`. Absent → no injection (e.g. the
-   *  customer/ingress path, which never passes this field — firewall). */
+  /** Memory system config (Phase 2). Presence alone does NOT mean injection — the target
+   *  folder's frozen ground-truth snapshot is only prepended before `briefWithProjectDocs` when
+   *  BOTH this and `companyFolder` are set AND `memoryScopeEnabled` says the folder is in scope
+   *  (same gate `pipeline.ts` uses). Absent → no injection (e.g. the customer/ingress path, which
+   *  never passes this field — firewall). */
   memory?: MemoryCfg;
+  /** The always-on company folder (config `companyFolder`) — needed alongside `memory` to
+   *  evaluate the `"company"` scope keyword. Absent ⇒ fail-closed: no injection even if `memory`
+   *  is set (mirrors `memoryScopeEnabled`'s folder-vs-companyFolder comparison). */
+  companyFolder?: string;
 }
 
 type RunFn = typeof runOrder;
@@ -199,9 +205,14 @@ export async function dispatchToProject(
   if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 
   // Frozen memory snapshot, computed ONCE here at dispatch start (never on a busy-guard reuse
-  // above, which returns early without building a new order). Absent deps.memory (e.g. the
-  // customer/ingress path) → "" → briefWithProjectDocs(task) is untouched, byte-identical.
-  const memSnap = deps.memory ? memorySnapshot(folder, deps.memory) : "";
+  // above, which returns early without building a new order). Gated exactly like pipeline.ts's
+  // injection: absent deps.memory/deps.companyFolder (e.g. the customer/ingress path), or the
+  // folder simply not in scope (default `scopes: []`) → "" → briefWithProjectDocs(task) is
+  // untouched, byte-identical. Fail-closed: no companyFolder ⇒ no injection, even with memory set.
+  const memSnap =
+    deps.memory && deps.companyFolder !== undefined && memoryScopeEnabled(deps.memory, folder, deps.companyFolder)
+      ? memorySnapshot(folder, deps.memory)
+      : "";
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",
