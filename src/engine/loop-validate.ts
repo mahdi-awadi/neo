@@ -19,6 +19,8 @@ export interface LoopInput {
   maxIterations: number;
   budgetUsd?: number;
   enabledByDefault?: boolean;
+  /** Never resume across iterations — each one starts fresh (default false). */
+  freshSession?: boolean;
 }
 
 const slug = (s: string) =>
@@ -96,6 +98,7 @@ export function validateLoopInput(
       ...(input.budgetUsd !== undefined ? { budgetUsd: input.budgetUsd } : {}),
     },
     ...(input.enabledByDefault !== undefined ? { enabledByDefault: input.enabledByDefault } : {}),
+    ...(input.freshSession !== undefined ? { freshSession: input.freshSession } : {}),
   };
   return { def };
 }

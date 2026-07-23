@@ -20,6 +20,9 @@ export interface LoopSpec {
   shouldStop?: () => boolean;
   /** Optional progress reporter (one line per iteration). */
   onProgress?: (msg: string) => void;
+  /** Engine-side gate on the carried session id before each resume: return the id to keep it,
+   *  undefined to start the iteration fresh (context policy verdict, cache-staleness, …). */
+  gateResume?: (resumeId: string) => Promise<string | undefined>;
 }
 
 export interface LoopOutcome {
@@ -45,7 +48,8 @@ export async function runLoop(spec: LoopSpec): Promise<LoopOutcome> {
     if (spec.shouldStop?.()) return { met: false, iterations: n, reason: "stopped", lastDetail, spentUsd };
 
     spec.onProgress?.(`iteration ${n + 1}: ${goal.detail}`);
-    const r = await spec.iterate(resumeId, n + 1);
+    const gated = resumeId && spec.gateResume ? await spec.gateResume(resumeId) : resumeId;
+    const r = await spec.iterate(gated, n + 1);
     resumeId = r.sessionId;
     spentUsd += r.costUsd ?? 0;
   }

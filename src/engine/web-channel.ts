@@ -138,7 +138,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger })) return;
+      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
@@ -200,7 +200,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     runLoop(name) {
       const loop = matchLoop(name, opts.engine.ledger);
-      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger });
+      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg });
     },
     createLoop(input) {
       const r = defCreateLoop(input, opts.engine.ledger, opts.engine.cfg.workRoot);

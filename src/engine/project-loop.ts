@@ -6,7 +6,7 @@
 // "Neo works while you sleep" (docs/loops.md).
 import { runLoop, type LoopOutcome } from "./loop-runner";
 import { makeGoalCheck, type Goal, type GoalCheck } from "./goal";
-import { runOrder } from "./session-runner";
+import { runOrder, type RunDeps } from "./session-runner";
 import type { Order } from "../types";
 
 const LOOP_CHAT_ID = -1; // loops aren't bound to a chat
@@ -30,6 +30,12 @@ export interface ProjectLoopOpts {
    *  so a caller can forward only real worker output (e.g. a scheduled reminder) without the chrome. */
   onMessage?: (text: string) => void;
   shouldStop?: () => boolean;
+  /** RunDeps overlay for every iteration (model/effort/skills via profileDeps(cfg, "loop")). */
+  runDeps?: RunDeps;
+  /** Never resume across iterations — each one starts a fresh session (judge/report loops). */
+  freshSession?: boolean;
+  /** Resume gate (context policy); wired by the caller so this module stays config-free. */
+  gateResume?: (resumeId: string) => Promise<string | undefined>;
 }
 
 export async function runProjectLoop(
@@ -45,6 +51,7 @@ export async function runProjectLoop(
     shouldStop: opts.shouldStop,
     onProgress: opts.onProgress,
     check,
+    gateResume: opts.freshSession ? async () => undefined : opts.gateResume,
     iterate: async (resumeId) => {
       const order: Order = {
         id: crypto.randomUUID(),
@@ -60,7 +67,7 @@ export async function runProjectLoop(
           onMessage: (t) => (opts.onMessage ?? opts.onProgress)?.(t),
           onEscalation: async () => "deny", // autonomous loop never does risky/irreversible ops
         },
-        resumeId ? { resume: resumeId } : {},
+        { ...opts.runDeps, ...(resumeId ? { resume: resumeId } : {}) },
       );
       return { sessionId: result.sessionId, summary: result.summary, costUsd: result.costUsd };
     },

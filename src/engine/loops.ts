@@ -5,12 +5,15 @@
 // governed and escalation-auto-denied (never pushes/deploys). See docs/loops.md.
 import { basename } from "node:path";
 import { runProjectLoop, type Bounds } from "./project-loop";
-import type { Goal, GoalCheck } from "./goal";
+import { makeGoalCheck, READONLY_DENY, type Goal, type GoalCheck } from "./goal";
 import type { Trigger } from "./trigger";
 import type { SchedulableLoop, LoopStateStore } from "./scheduler";
 import type { LoopOutcome } from "./loop-runner";
 import type { runOrder } from "./session-runner";
 import { validateLoopInput, type LoopInput } from "./loop-validate";
+import { profileDeps } from "./worker-profile";
+import { sessionContext, decideContext } from "./context-policy";
+import type { NeoConfig } from "../config";
 
 /** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
 export interface LoopDefStore {
@@ -31,6 +34,7 @@ export interface LoopDef extends SchedulableLoop {
   trigger: Trigger; // manual / interval / cron
   bounds: Bounds; // maxIterations + optional budgetUsd
   enabledByDefault?: boolean; // for scheduled loops
+  freshSession?: boolean; // never resume across iterations (judge/report loops)
 }
 
 export interface LoopDeps {
@@ -44,6 +48,9 @@ export interface LoopDeps {
   /** Loop store (def CRUD + state) for /loop <name> on|off, custom-loop run, and schedule status. */
   store?: LoopStore;
   now?: () => number;
+  /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
+   *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */
+  cfg?: NeoConfig;
 }
 
 // The built-in loops are generic, deployment-neutral examples of the trigger → action → goal model.
@@ -227,9 +234,43 @@ function formatLoops(store?: LoopStore): string {
   return ["Available loops:", ...effectiveLoops(store).map((l) => `${l.usage} — ${l.summary}${schedLabel(l, store)}`)].join("\n");
 }
 
+/** cfg-derived extras for a loop run: per-path RunDeps profiles (loop worker + judge), the
+ *  freshSession flag, and a context-policy gate on the carried resume id — plus the (possibly
+ *  test-injected) GoalCheck, so every run site spreads exactly ONE object into runProjectLoop.
+ *  cfg omitted ⇒ today's behavior (no profile, no gate). */
+function loopRunExtras(
+  loop: LoopDef,
+  deps: { run?: typeof runOrder; check?: GoalCheck; cfg?: NeoConfig },
+): {
+  runDeps?: ReturnType<typeof profileDeps>;
+  freshSession?: boolean;
+  gateResume?: (id: string) => Promise<string | undefined>;
+  check: GoalCheck;
+} {
+  const cfg = deps.cfg;
+  return {
+    runDeps: cfg ? profileDeps(cfg, "loop") : undefined,
+    freshSession: loop.freshSession,
+    gateResume: cfg
+      ? async (id: string) => {
+          const ctx = await sessionContext(loop.folder, id);
+          return decideContext(ctx, cfg.contextPolicy) === "keep" ? id : undefined;
+        }
+      : undefined,
+    check:
+      deps.check ??
+      makeGoalCheck(loop.goal, {
+        cwd: loop.folder,
+        run: deps.run,
+        runDeps: cfg ? profileDeps(cfg, "judge", { disallowedTools: READONLY_DENY }) : undefined,
+      }),
+  };
+}
+
 /** Run a loop end to end, streaming progress and a final outcome line to the channel. */
 export async function startLoop(loop: LoopDef, chatId: number, deps: LoopDeps): Promise<LoopOutcome> {
   await deps.reply(chatId, `🔁 ${loop.name}: starting on ${loop.folder}…`);
+  const { check, ...extras } = loopRunExtras(loop, deps);
   const out = await runProjectLoop(
     {
       folder: loop.folder,
@@ -238,8 +279,9 @@ export async function startLoop(loop: LoopDef, chatId: number, deps: LoopDeps): 
       bounds: loop.bounds,
       onProgress: (m) => void deps.reply(chatId, m.length > 220 ? `${m.slice(0, 220)}…` : m),
       shouldStop: deps.shouldStop,
+      ...extras,
     },
-    { run: deps.run, check: deps.check },
+    { run: deps.run, check },
   );
   await deps.reply(
     chatId,
@@ -260,6 +302,9 @@ export interface ScheduledLoopDeps {
   check?: GoalCheck;
   /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottle). */
   shouldStop?: () => boolean;
+  /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
+   *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */
+  cfg?: NeoConfig;
 }
 
 /** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/acme →
@@ -278,6 +323,7 @@ export function loopProjectTag(loop: LoopDef): string {
  */
 export async function startScheduledLoop(loop: LoopDef, deps: ScheduledLoopDeps): Promise<LoopOutcome> {
   const project = loopProjectTag(loop);
+  const { check, ...extras } = loopRunExtras(loop, deps);
   return runProjectLoop(
     {
       folder: loop.folder,
@@ -286,8 +332,9 @@ export async function startScheduledLoop(loop: LoopDef, deps: ScheduledLoopDeps)
       bounds: loop.bounds,
       onMessage: (t) => void deps.reply(deps.chatId, t, project), // worker text only — no engine chrome
       shouldStop: deps.shouldStop,
+      ...extras,
     },
-    { run: deps.run, check: deps.check },
+    { run: deps.run, check },
   );
 }
 

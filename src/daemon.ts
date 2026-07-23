@@ -156,6 +156,7 @@ async function main(): Promise<void> {
               chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
               reply: loopReply,
               shouldStop: () => meter.shouldThrottle(),
+              cfg,
             }),
         }),
       LOOP_TICK_MS,

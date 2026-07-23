@@ -275,6 +275,7 @@ export function startTelegram(
         reply: (cid, t) => void bot.api.sendMessage(cid, t),
         store: ledger,
         shouldStop: () => meter.shouldThrottle(),
+        cfg,
       })
     )
       return;
@@ -437,6 +438,7 @@ export function startTelegram(
           reply: (cid, t) => void bot.api.sendMessage(cid, t),
           store: ledger,
           shouldStop: () => meter.shouldThrottle(),
+          cfg,
         });
       return;
     }

@@ -2,7 +2,7 @@
 // — the engine judging the work, not trusting a claim — or when an LLM-judge worker votes DONE.
 // The engine stays AI-free: the judge's verdict comes from a worker (Claude, your subscription),
 // and the engine only parses its strict last line (docs/loops.md).
-import { runOrder } from "./session-runner";
+import { runOrder, type RunDeps } from "./session-runner";
 import type { Order } from "../types";
 
 export type GoalCheck = () => Promise<{ met: boolean; detail: string }>;
@@ -42,7 +42,9 @@ export function commandGoal(opts: { command: string[]; cwd: string; timeoutMs?: 
 }
 
 const JUDGE_CHAT_ID = -1; // judge runs aren't bound to a chat
-const READONLY_DENY = ["Write", "Edit", "NotebookEdit", "Bash"];
+/** Exported so callers building a judge RunDeps overlay (e.g. profileDeps(cfg, "judge", …)) can
+ *  reuse the same read-only denial list as the base, rather than duplicating it. */
+export const READONLY_DENY = ["Write", "Edit", "NotebookEdit", "Bash"];
 
 function judgePrompt(criteria: string): string {
   return [
@@ -64,6 +66,9 @@ export function judgeGoal(opts: {
   cwd: string;
   run?: typeof runOrder;
   timeoutMs?: number;
+  /** RunDeps overlay for the judge worker (model/effort/skills via profileDeps(cfg, "judge", …)).
+   *  Unset ⇒ the fixed read-only denial list only (today's behavior). */
+  runDeps?: RunDeps;
 }): GoalCheck {
   const run = opts.run ?? runOrder;
   return async () => {
@@ -79,7 +84,7 @@ export function judgeGoal(opts: {
     const result = await run(
       order,
       { onMessage: (t) => void (text += `${t}\n`), onEscalation: async () => "deny" },
-      { disallowedTools: READONLY_DENY },
+      opts.runDeps ?? { disallowedTools: READONLY_DENY },
     );
     const blob = `${text}\n${result.summary}`;
     const met = /^\s*VERDICT:\s*DONE\b/im.test(blob);
@@ -90,9 +95,9 @@ export function judgeGoal(opts: {
 
 /** Build the GoalCheck for a declarative Goal. Verifiable command is preferred; judge is for
  * docs/refactor-style sweeps (docs/loops.md). */
-export function makeGoalCheck(goal: Goal, deps: { cwd: string; run?: typeof runOrder }): GoalCheck {
+export function makeGoalCheck(goal: Goal, deps: { cwd: string; run?: typeof runOrder; runDeps?: RunDeps }): GoalCheck {
   if (goal.kind === "command") {
     return commandGoal({ command: goal.command, cwd: deps.cwd, timeoutMs: goal.timeoutMs });
   }
-  return judgeGoal({ criteria: goal.criteria, cwd: deps.cwd, run: deps.run, timeoutMs: goal.timeoutMs });
+  return judgeGoal({ criteria: goal.criteria, cwd: deps.cwd, run: deps.run, timeoutMs: goal.timeoutMs, runDeps: deps.runDeps });
 }
