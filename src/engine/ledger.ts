@@ -2,6 +2,7 @@
 // the part of operant that already was an "engine" (ported to bun:sqlite, trimmed).
 import { Database } from "bun:sqlite";
 import type { Order, OrderSource, RouteTarget } from "../types";
+import { CACHE_OBS_WINDOW } from "./context-policy";
 
 /** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
  *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
@@ -274,7 +275,7 @@ export function openLedger(path: string): Ledger {
     recordCacheObservation(gapMs, hit, at = Date.now()) {
       db.query(`INSERT INTO cache_observations (gap_ms, hit, at) VALUES (?, ?, ?)`).run(gapMs, hit ? 1 : 0, at);
     },
-    listCacheObservations(limit = 50) {
+    listCacheObservations(limit = CACHE_OBS_WINDOW) {
       // rowid DESC breaks ties for observations recorded within the same millisecond.
       return (
         db

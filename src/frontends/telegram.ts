@@ -282,7 +282,15 @@ export function startTelegram(
 
     // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
     // order or a follow-up handled by the pipeline.
-    const command = handleCommand(ctx.message.text, chatId, { registry, ledger, usage, trust, inbox, requestReload: reload?.requestReload });
+    const command = handleCommand(ctx.message.text, chatId, {
+      registry,
+      ledger,
+      usage,
+      trust,
+      inbox,
+      requestReload: reload?.requestReload,
+      windowTokensByModel: cfg.contextPolicy.windowTokensByModel,
+    });
     if (command !== null) {
       if (command.select?.length) {
         void bot.api.sendMessage(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
@@ -340,8 +348,8 @@ export function startTelegram(
       const id = cb.slice(cb.indexOf(":") + 1);
       const chatId = ctx.chat?.id ?? 0;
       const result = cb.startsWith("use:")
-        ? selectProject(id, chatId, { registry, ledger, usage, trust })
-        : killProject(id, chatId, { registry, ledger, usage, trust });
+        ? selectProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel })
+        : killProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel });
       await ctx.answerCallbackQuery(cb.startsWith("use:") ? "switched" : "killed");
       try {
         await ctx.editMessageText(

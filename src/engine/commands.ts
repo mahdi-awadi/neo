@@ -25,8 +25,16 @@ export interface CommandDeps {
   trust: TrustStore;
   /** Customer inbox (for /inbox). Optional so tests/glue can omit it. */
   inbox?: Inbox;
-  /** Context signal function for measuring session occupancy. Optional for tests. */
-  signals?: (folder: string, sdkSessionId: string) => ContextSignals;
+  /** Context signal function for measuring session occupancy. Optional for tests. Kept as the
+   *  same 3-arg shape as sessionContext (opts is optional) so windowTokensByModel below can flow
+   *  through a test-injected signals fn too, not just the real one. */
+  signals?: (folder: string, sdkSessionId: string, opts?: { windowTokensByModel?: Record<string, number> }) => ContextSignals;
+  /** Per-model context-window overrides (cfg.contextPolicy.windowTokensByModel), threaded into the
+   *  SAME sessionContext call the gates use — so /status's ctx% agrees with the keep/handoff/clear
+   *  verdict instead of drifting when an operator has configured an override (see context-policy.ts
+   *  ContextPolicyCfg.windowTokensByModel doc). Optional: undefined ⇒ today's behavior (facts-map
+   *  default only). */
+  windowTokensByModel?: Record<string, number>;
   /** Graceful reload (/reload): the daemon injects drain-then-exit; channels without it can't reload. */
   requestReload?: () => void;
 }
@@ -69,7 +77,7 @@ const COMMANDS: Command[] = [
     aliases: ["ls", "status"],
     usage: "/list",
     summary: "open projects (★ = active · tap a name to switch)",
-    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId, deps.signals),
+    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel),
   },
   {
     name: "use",
@@ -204,7 +212,7 @@ export function handleCommand(text: string, chatId: number, deps: CommandDeps): 
  * tapped project receives the next message, then focus reverts to the company (use /pin to hold). */
 export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   deps.registry.setFocus(chatId, id, "once");
-  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals);
+  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals, deps.windowTokensByModel);
 }
 
 /** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
@@ -212,14 +220,14 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
 export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   const now = (deps.now ?? (() => Date.now()))();
   if (deps.registry.getDefault()?.id === id) {
-    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId, deps.signals).select };
+    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel).select };
   }
   if (deps.registry.get(id)) {
     void deps.registry.getControl(id)?.interrupt();
     deps.registry.setStatus(id, "done");
     deps.registry.remove(id);
   }
-  return renderList(deps.registry, deps.trust, now, chatId, deps.signals);
+  return renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel);
 }
 
 function inboxCommand(deps: CommandDeps): CommandResult {
@@ -251,7 +259,14 @@ function statusIcon(status: SessionInfo["status"]): string {
   return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
 }
 
-function renderList(registry: Registry, trust: CommandDeps["trust"], now: number, chatId: number, signals?: CommandDeps["signals"]): CommandResult {
+function renderList(
+  registry: Registry,
+  trust: CommandDeps["trust"],
+  now: number,
+  chatId: number,
+  signals?: CommandDeps["signals"],
+  windowTokensByModel?: Record<string, number>,
+): CommandResult {
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
   // The chat's focused project (if any) is the one messages currently address; mark it ▶ (one-shot,
@@ -276,7 +291,7 @@ function renderList(registry: Registry, trust: CommandDeps["trust"], now: number
       let ctx = "";
       if (s.sdkSessionId) {
         try {
-          const sig = (signals ?? sessionContext)(s.order.folder, s.sdkSessionId);
+          const sig = (signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel });
           ctx = ` · ctx ${Math.round(sig.occupancy * 100)}%`;
         } catch {
           // skip on error

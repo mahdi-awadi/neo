@@ -55,7 +55,12 @@ export function dashboardSnapshot(opts: {
   chatId: number;
   now?: number;
   reposRoot?: string;
-  signals?: (folder: string, sdkSessionId: string) => ContextSignals;
+  signals?: (folder: string, sdkSessionId: string, opts?: { windowTokensByModel?: Record<string, number> }) => ContextSignals;
+  /** Per-model context-window overrides (cfg.contextPolicy.windowTokensByModel), threaded into the
+   *  SAME sessionContext call the gates use — so the dashboard's ctxPct agrees with the
+   *  keep/handoff/clear verdict instead of drifting when an operator has configured an override
+   *  (see context-policy.ts ContextPolicyCfg.windowTokensByModel doc). */
+  windowTokensByModel?: Record<string, number>;
 }): DashState {
   const now = opts.now ?? Date.now();
   const activeId = opts.registry.findByChat(opts.chatId)?.id;
@@ -63,7 +68,7 @@ export function dashboardSnapshot(opts: {
     let ctxPct: number | undefined;
     if (s.sdkSessionId) {
       try {
-        const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId);
+        const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel: opts.windowTokensByModel });
         ctxPct = Math.round(sig.occupancy * 100);
       } catch {
         // skip on error

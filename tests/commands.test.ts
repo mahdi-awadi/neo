@@ -316,6 +316,27 @@ test("/status shows ctx% for sessions with a persisted sdk session id", () => {
   expect(out.text).toContain("ctx 42%");
 });
 
+// 2026-07-23 review finding #4: /status's ctx% must be computed with the SAME windowTokensByModel
+// override the keep/handoff/clear gates use — otherwise the displayed percentage can silently
+// disagree with the gate's actual verdict.
+test("/status threads cfg's windowTokensByModel into the signals call, same as the gates", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "cx3", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-x");
+  const d = deps({ registry });
+  let seenOpts: { windowTokensByModel?: Record<string, number> } | undefined;
+  const out = handleCommand("/status", 1, {
+    ...d,
+    windowTokensByModel: { "big-model": 1_000_000 },
+    signals: (_folder, _id, opts) => {
+      seenOpts = opts;
+      return { occupancy: 0.42, turns: 3, ageMs: 0, idleMs: 0 };
+    },
+  })!;
+  expect(out.text).toContain("ctx 42%");
+  expect(seenOpts?.windowTokensByModel).toEqual({ "big-model": 1_000_000 });
+});
+
 test("/status shows ctx% via the default sessionContext (no signals injected)", () => {
   const registry = createRegistry();
   const s = registry.add(order({ id: "cx2", folder: "/p/gold-no-transcript", task: "t" }), 0);

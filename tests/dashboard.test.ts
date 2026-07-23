@@ -67,6 +67,30 @@ test("dashboard rows expose activity + queued", () => {
   expect(rows[0].queued).toBe(1);
 });
 
+// 2026-07-23 review finding #4: the dashboard's ctxPct must be computed with the SAME
+// windowTokensByModel override the keep/handoff/clear gates use — otherwise it can silently
+// disagree with the gate's actual verdict.
+test("dashboardSnapshot threads windowTokensByModel into the signals call, same as the gates", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d4", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-x");
+  const ledger = openLedger(":memory:");
+  let seenOpts: { windowTokensByModel?: Record<string, number> } | undefined;
+  const rows = dashboardSnapshot({
+    registry,
+    ledger,
+    chatId: 0,
+    now: 10_000,
+    windowTokensByModel: { "big-model": 1_000_000 },
+    signals: (_folder, _id, opts) => {
+      seenOpts = opts;
+      return { occupancy: 0.42, turns: 3, ageMs: 0, idleMs: 0 };
+    },
+  }).projects;
+  expect(rows.find((r) => r.id === "d4")!.ctxPct).toBe(42);
+  expect(seenOpts?.windowTokensByModel).toEqual({ "big-model": 1_000_000 });
+});
+
 test("dashboard rows expose ctxPct via the default sessionContext (no signals injected)", () => {
   const registry = createRegistry();
   const withId = registry.add(order({ id: "d2", folder: "/p/no-transcript", task: "t" }), 0);

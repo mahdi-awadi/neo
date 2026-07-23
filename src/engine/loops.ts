@@ -12,7 +12,7 @@ import type { LoopOutcome } from "./loop-runner";
 import type { runOrder, RunDeps } from "./session-runner";
 import { validateLoopInput, type LoopInput } from "./loop-validate";
 import { profileDeps } from "./worker-profile";
-import { sessionContext, decideContext, effectiveCacheTtlMs } from "./context-policy";
+import { sessionContext, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW } from "./context-policy";
 import type { NeoConfig } from "../config";
 import type { Ledger } from "./ledger";
 
@@ -256,7 +256,7 @@ function loopRunExtras(
     gateResume: cfg
       ? async (id: string) => {
           const ctx = await sessionContext(loop.folder, id, { windowTokensByModel: cfg.contextPolicy.windowTokensByModel });
-          const obs = deps.store?.listCacheObservations(50) ?? [];
+          const obs = deps.store?.listCacheObservations(CACHE_OBS_WINDOW) ?? [];
           const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
           return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;
         }

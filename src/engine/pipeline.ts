@@ -24,6 +24,7 @@ import {
   effectiveCacheTtlMs,
   transcriptLineCount,
   firstAssistantCacheReadAfter,
+  CACHE_OBS_WINDOW,
 } from "./context-policy";
 import { profileDeps } from "./worker-profile";
 import { describeSessionStatus } from "./session-status";
@@ -104,7 +105,7 @@ async function applyContextPolicy(
   try {
     const signals = deps.signals ?? sessionContext;
     const sig = signals(folder, resumeId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
-    const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(50), deps.cfg.contextPolicy);
+    const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
     const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs);
     if (verdict === "keep") {
       const lineCount = deps.lineCount ?? transcriptLineCount;
@@ -388,20 +389,19 @@ function startSession(
     // LEARNED cache-TTL observation: this was a resume (runDeps.resume set) — was the prompt
     // cache still warm on the FIRST post-resume turn (not just some later turn in this run, which
     // would already hit the cache that first turn rewarmed)? If the SDK forked a new transcript
-    // file for the resume (result.sessionId !== runDeps.resume), that new file's first assistant
-    // turn IS the first post-resume turn, so read it from the start; otherwise scan only the lines
-    // appended after the pre-resume line count captured at gate time — undefined (unmeasured)
-    // means skip, never guess. Best-effort: a broken/unreadable transcript must never misrecord a
-    // false miss, so it's skipped rather than recorded as 0.
-    if (runDeps.resume && result.sessionId) {
+    // file for the resume (result.sessionId !== runDeps.resume — resume normally KEEPS the id,
+    // per docs/sdk-notes.md), that new transcript's first turn is cold BY CONSTRUCTION (a fresh
+    // file, not a real idle-gap miss) — recording it (even as a "skip if unreadable" best effort)
+    // would poison the learner with data that doesn't reflect the idle gap being measured. Same
+    // "skip, don't guess" rule as everywhere else here: a fork records NOTHING. Only the
+    // non-forked path scans the lines appended after the pre-resume line count captured at gate
+    // time — undefined (unmeasured) also means skip. Best-effort: a broken/unreadable transcript
+    // must never misrecord a false miss, so it's skipped rather than recorded as 0.
+    if (runDeps.resume && result.sessionId && result.sessionId === runDeps.resume && resumePreLines !== undefined) {
       try {
         const cacheReadFn = deps.cacheRead ?? firstAssistantCacheReadAfter;
-        const forked = result.sessionId !== runDeps.resume;
-        const afterLine = forked ? 0 : resumePreLines;
-        if (afterLine !== undefined) {
-          const cacheRead = cacheReadFn(order.folder, result.sessionId, afterLine);
-          if (cacheRead !== undefined) ledger.recordCacheObservation(resumeIdleMs, cacheRead > 0);
-        }
+        const cacheRead = cacheReadFn(order.folder, result.sessionId, resumePreLines);
+        if (cacheRead !== undefined) ledger.recordCacheObservation(resumeIdleMs, cacheRead > 0);
       } catch {
         // best-effort — never affects the resume itself
       }
@@ -410,7 +410,7 @@ function startSession(
       if (result.sessionId) {
         const signals = deps.signals ?? sessionContext;
         const sig = signals(order.folder, result.sessionId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
-        const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(50), deps.cfg.contextPolicy);
+        const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
         if (decideContext(sig, deps.cfg.contextPolicy, ttlMs) !== "keep") {
           const handoff = deps.handoff ?? runHandoff;
           const info = registry.get(registryId);

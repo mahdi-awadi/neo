@@ -683,6 +683,58 @@ test("resume finds a SINGLE appended post-resume turn (no off-by-one when there'
   expect(obs[0]).toMatchObject({ gapMs: 42, hit: true }); // the single new turn's cache_read was 777 (> 0)
 });
 
+test("a forked resume (SDK returned a NEW session id, not the one resumed) records NOTHING — a fresh transcript's first turn is cold by construction, not a real idle-gap miss", async () => {
+  const dir = scratch();
+  const projectsDir = scratch();
+  const sdkId = "sdk-cache-fork-1";
+  const forkedId = "sdk-cache-fork-2";
+  const transcriptDir = join(projectsDir, encodeCwd(dir));
+  mkdirSync(transcriptDir, { recursive: true });
+  writeFileSync(join(transcriptDir, `${sdkId}.jsonl`), assistantLine(999)); // pre-resume, newline-terminated
+
+  let cacheReadCalls = 0;
+  const seams = {
+    lineCount: (folder: string, id: string) => transcriptLineCount(folder, id, { projectsDir }),
+    cacheRead: (folder: string, id: string, afterLine: number) => {
+      cacheReadCalls++;
+      return firstAssistantCacheReadAfter(folder, id, afterLine, { projectsDir });
+    },
+  };
+
+  let resolve1!: (r: RunResult) => void;
+  const done1 = new Promise<RunResult>((res) => (resolve1 = res));
+  const start1 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done1 }) as unknown as SessionRun;
+  const h = harness({ start: start1 });
+  const opened = await handleMessage(`/open ${dir} start`, 7, { ...h.base, ...seams });
+  resolve1({ ok: true, sessionId: sdkId, summary: "done", costUsd: 0 });
+  await opened!.done;
+  await new Promise((r) => setTimeout(r, 0));
+  h.registry.setFocus(7, h.registry.list()[0].id, "once");
+
+  let resolve2!: (r: RunResult) => void;
+  const done2 = new Promise<RunResult>((res) => (resolve2 = res));
+  const start2 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done2 }) as unknown as SessionRun;
+  const resumed = await handleMessage("continue", 7, {
+    ...h.base,
+    start: start2,
+    ...seams,
+    signals: () => ({ occupancy: 0.1, turns: 1, ageMs: 0, idleMs: 42 }), // well under every threshold → "keep"
+  });
+  // The SDK forked: we asked to resume sdkId, but the run reports a DIFFERENT session id — a brand
+  // new transcript file whose first turn is cold BY CONSTRUCTION (fresh cache, not a real idle-gap
+  // miss). Give it a real cache-miss-shaped first turn so this proves the fix skips a REAL-looking
+  // read too, not just one that happens to fail open because the file is missing.
+  writeFileSync(join(transcriptDir, `${forkedId}.jsonl`), assistantLine(0));
+  resolve2({ ok: true, sessionId: forkedId, summary: "done again", costUsd: 0 });
+  await resumed!.done;
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(cacheReadCalls).toBe(0); // skip, don't guess — the forked case is never even inspected
+  expect(h.ledger.listCacheObservations(10)).toHaveLength(0); // and never poisoned with a false miss
+});
+
 test("resume records nothing when the pre-resume line count can't be measured (fail-open, no false miss)", async () => {
   const dir = scratch();
   const sdkId = "sdk-cache-2";

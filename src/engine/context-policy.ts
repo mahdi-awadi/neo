@@ -62,6 +62,14 @@ export interface ContextPolicyCfg {
   windowTokensByModel?: Record<string, number>;
 }
 
+/** OPERATOR-CHOICE-style rolling sample size bounding the LEARNED-cache-TTL observation window
+ *  (effectiveCacheTtlMs's `obs`): how many of the most recent (gapMs, hit) observations the
+ *  learner keeps in its rolling memory. Not a provider fact — a deliberately small, easy-to-reason-
+ *  about bound, supersedable by real telemetry later. One constant, used everywhere an observation
+ *  window is read (the ledger's own default + every call site that passes an explicit limit), so
+ *  they can never drift apart. */
+export const CACHE_OBS_WINDOW = 50;
+
 /** Claude Code's project-dir encoding for a cwd: every "/" and "." becomes "-". */
 export function encodeCwd(folder: string): string {
   return folder.replace(/[/.]/g, "-");

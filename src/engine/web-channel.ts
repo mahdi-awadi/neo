@@ -148,6 +148,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         trust: opts.engine.trust,
         requestReload: opts.requestReload,
+        windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
       if (command !== null) {
         if (command.select?.length) {
@@ -182,6 +183,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         ledger: opts.engine.ledger,
         usage: opts.usage,
         trust: opts.engine.trust,
+        windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
       emit({ type: "projects", text: result.text, items: result.select ?? [] });
     },
@@ -191,6 +193,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         ledger: opts.engine.ledger,
         usage: opts.usage,
         trust: opts.engine.trust,
+        windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
       emit({ type: "projects", text: result.text, items: result.select ?? [] });
     },
@@ -228,6 +231,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         chatId: opts.chatId,
         reposRoot: opts.engine.cfg.workRoot, // scan the operator's configured project root
+        windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
     },
     notify(text: string, project?: string) {

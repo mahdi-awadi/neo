@@ -1,8 +1,13 @@
 import { test, expect } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { handleLoop, startLoop, startScheduledLoop, matchLoop, listLoops, loopProjectTag, createLoop, updateLoop, deleteLoop, effectiveLoops, type LoopDef } from "../src/engine/loops";
 import { openLedger } from "../src/engine/ledger";
+import { encodeCwd } from "../src/engine/context-policy";
 import type { LoopInput } from "../src/engine/loop-validate";
 import type { RunResult } from "../src/engine/session-runner";
+import type { NeoConfig } from "../src/config";
 
 const okRun = (sid = "s"): RunResult => ({ ok: true, sessionId: sid, summary: "", costUsd: 0 });
 const defMethods = { listLoopDefs: () => [], saveLoopDef: () => {}, deleteLoopDef: () => {}, listCacheObservations: () => [] };
@@ -112,6 +117,120 @@ test("startScheduledLoop stays silent when the worker produces no text (silent s
     check: async () => ({ met: false, detail: "" }),
   });
   expect(replies).toEqual([]); // nothing forwarded → no per-iteration spam
+});
+
+// Full NeoConfig fixture (2026-07-23 review finding #7): loopRunExtras derives BOTH the per-path
+// worker profile (profileDeps(cfg, "loop")) and the context-policy resume gate from `cfg` — this
+// proves a real `cfg` actually reaches runProjectLoop's iterate() call, not just that the plumbing
+// compiles.
+function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
+  return {
+    telegramToken: "",
+    telegramAllowFrom: [],
+    geminiApiKey: "",
+    botUsername: "",
+    webHost: "127.0.0.1",
+    webPort: 3003,
+    publicUrl: "",
+    providers: { ownWork: "subscription", customerWork: "gemini" },
+    subscriptionInteractiveReservePct: 0.2,
+    workRoot: "/home",
+    companyFolder: "/tmp/agent",
+    budgetWindowUsd: 100,
+    budgetWindowMs: 3_600_000,
+    agentIngressSecret: "",
+    gatewaySendUrl: "",
+    idleCloseMs: 24 * 60 * 60 * 1000,
+    stitchApiKey: "",
+    gitnexusBin: "",
+    codebaseMemoryBin: "",
+    codebaseMemoryIndexTimeoutMs: 300_000,
+    meetingLink: "",
+    businessName: "",
+    loopSchedulerEnabled: true,
+    dispatchTimeoutMs: 900_000,
+    dispatchTimeoutMaxMs: 7_200_000,
+    dispatchStallMs: 300_000,
+    dispatchGraceMs: 75_000,
+    stuckAfterMs: 600_000,
+    longTurnAlertMs: 1_200_000,
+    alertRepeatMs: 900_000,
+    drainWindowMs: 90_000,
+    contextPolicy: {
+      handoffPct: 0.65,
+      emergencyPct: 0.85,
+      maxTurns: 200,
+      maxAgeMs: 604_800_000,
+      handoffTimeoutMs: 180_000,
+      staleResumePct: 0.35,
+      cacheTtlFallbackMs: 3_600_000,
+      cacheTtlMinObservations: 5,
+    },
+    workers: { company: {}, project: {}, dispatch: {}, loop: { model: "loop-test-model" }, judge: {}, ingress: {}, handoff: {} },
+    workerEnv: {},
+    ...over,
+  };
+}
+
+test("startScheduledLoop wires loopRunExtras' runDeps + context-policy resume gate into runProjectLoop's iterate() calls", async () => {
+  const folder = "/home/neo-loop-gate-fixture";
+  const sdkId = "sdk-loop-gate-fat";
+  const transcriptDir = join(homedir(), ".claude", "projects", encodeCwd(folder));
+  mkdirSync(transcriptDir, { recursive: true });
+  // A fat pre-resume transcript: 150k input-side tokens against the default 200k window = 0.75
+  // occupancy, ≥ contextPolicy.handoffPct (0.65) → the gate should drop this resume.
+  writeFileSync(
+    join(transcriptDir, `${sdkId}.jsonl`),
+    JSON.stringify({
+      type: "assistant",
+      timestamp: new Date().toISOString(),
+      message: { usage: { input_tokens: 150_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    }) + "\n",
+  );
+  const loop: LoopDef = { ...remLoop(folder), bounds: { maxIterations: 5 } };
+  try {
+    // Case 1 (default facts-map window): the gate sees the fat transcript and drops the resume —
+    // iteration 2 must run WITHOUT the sdk id it would otherwise have carried.
+    const dropped: Array<{ resume?: string; model?: string }> = [];
+    let n1 = 0;
+    const out1 = await startScheduledLoop(loop, {
+      chatId: 1,
+      reply: () => {},
+      cfg: loopCfg(),
+      run: async (_o, _h, runDeps) => {
+        dropped.push({ resume: runDeps?.resume, model: runDeps?.model });
+        return okRun(sdkId);
+      },
+      check: async () => ({ met: n1++ >= 2, detail: "" }),
+    });
+    expect(out1.iterations).toBe(2);
+    expect(dropped).toHaveLength(2);
+    expect(dropped[0].resume).toBeUndefined(); // first iteration: nothing to resume yet
+    expect(dropped[1].resume).toBeUndefined(); // second: the gate saw sdkId and dropped it (fat transcript)
+    // profileDeps(cfg, "loop") reached the run call on BOTH iterations.
+    expect(dropped[0].model).toBe("loop-test-model");
+    expect(dropped[1].model).toBe("loop-test-model");
+
+    // Case 2 — same transcript, but a windowTokensByModel override widens the window so occupancy
+    // drops well under handoffPct: the SAME gate now KEEPS the resume, proving case 1 wasn't a
+    // no-op (the gate is actually wired to cfg, not bypassed).
+    const kept: Array<{ resume?: string; model?: string }> = [];
+    let n2 = 0;
+    const wideCfg = loopCfg({ contextPolicy: { ...loopCfg().contextPolicy, windowTokensByModel: { default: 1_000_000 } } });
+    await startScheduledLoop(loop, {
+      chatId: 1,
+      reply: () => {},
+      cfg: wideCfg,
+      run: async (_o, _h, runDeps) => {
+        kept.push({ resume: runDeps?.resume, model: runDeps?.model });
+        return okRun(sdkId);
+      },
+      check: async () => ({ met: n2++ >= 2, detail: "" }),
+    });
+    expect(kept[1].resume).toBe(sdkId); // gate kept it — the resume id actually reached iterate()
+  } finally {
+    rmSync(transcriptDir, { recursive: true, force: true });
+  }
 });
 
 test("/loop <name> on enables a scheduled loop via the store", () => {
