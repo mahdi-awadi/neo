@@ -27,3 +27,66 @@ test("add/replace/remove with dup, ambiguity, no-match, and over-cap errors", ()
   expect((r as { error: string }).error).toContain("over capacity");
   expect(readMemoryFiles(dir).memory).toContain("Runs Bun 1.3 on Linux"); // failed ops never partially write
 });
+
+test("delimiter injection rejected — text with \\n§ or starting with § is forbidden", () => {
+  const dir = scratch();
+  // Add a base entry first
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "Base entry" }, 500).ok).toBe(true);
+  const before = readMemoryFiles(dir).memory;
+
+  // Try to add text containing the delimiter
+  const r = applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "Foo\n§ Bar" }, 500);
+  expect(r).toEqual({ ok: false, error: "text contains the entry delimiter" });
+  expect(readMemoryFiles(dir).memory).toEqual(before); // File unchanged
+
+  // Try to add text starting with §
+  const r2 = applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "§ Bad" }, 500);
+  expect(r2).toEqual({ ok: false, error: "text contains the entry delimiter" });
+  expect(readMemoryFiles(dir).memory).toEqual(before); // File unchanged
+});
+
+test("empty text rejected — add/replace with empty or whitespace-only text errors", () => {
+  const dir = scratch();
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "" }, 500))
+    .toEqual({ ok: false, error: "empty text" });
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "   " }, 500))
+    .toEqual({ ok: false, error: "empty text" });
+
+  // Add a base entry for replace test
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "Base entry" }, 500);
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "replace", oldText: "Base", text: "" }, 500))
+    .toEqual({ ok: false, error: "empty text" });
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "replace", oldText: "Base", text: "\t" }, 500))
+    .toEqual({ ok: false, error: "empty text" });
+});
+
+test("empty match text rejected — replace/remove with empty oldText errors", () => {
+  const dir = scratch();
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "Single entry" }, 500);
+
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "replace", oldText: "", text: "new" }, 500))
+    .toEqual({ ok: false, error: "empty match text" });
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "replace", oldText: "  ", text: "new" }, 500))
+    .toEqual({ ok: false, error: "empty match text" });
+
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "remove", oldText: "" }, 500))
+    .toEqual({ ok: false, error: "empty match text" });
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "remove", oldText: "\n" }, 500))
+    .toEqual({ ok: false, error: "empty match text" });
+
+  // Verify the entry still exists and file is unchanged
+  expect(readMemoryFiles(dir).memory).toContain("Single entry");
+});
+
+test("replace replaces the whole entry, not partial occurrences", () => {
+  const dir = scratch();
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "uses Bun and Bun tooling" }, 500);
+
+  // Replace with oldText: "Bun" should replace the entire entry with "uses Node"
+  expect(applyMemoryOp(dir, "MEMORY.md", { kind: "replace", oldText: "Bun", text: "uses Node" }, 500).ok).toBe(true);
+
+  const result = readMemoryFiles(dir).memory;
+  expect(result).toContain("uses Node");
+  expect(result).not.toContain("uses Bun and Bun tooling");
+  expect(result).not.toContain("tooling"); // No residual text
+});

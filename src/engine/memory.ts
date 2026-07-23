@@ -9,11 +9,10 @@ import { join } from "node:path";
  * Exported for callers to understand the conversion formula. */
 export const CHARS_PER_TOKEN = 4;
 
-/** Memory config type — accepts wider structural type so tests with extra fields pass. */
+/** Memory config type. */
 interface MemoryCfg {
   snapshotMaxPct: number;
   userMaxPct: number;
-  [key: string]: unknown;
 }
 
 /** Returns the memory directory path for a given folder. */
@@ -68,8 +67,10 @@ export type MemoryOp =
   | { kind: "remove"; oldText: string };
 
 /** Applies a memory operation (add/replace/remove) to a file, atomically.
+ * Replace swaps the whole matched entry with text (not a substring replacement).
  * Returns { ok: true } on success or { ok: false; error: string } on error.
  * Errors: "duplicate entry", "no match", "ambiguous match",
+ * "empty text", "empty match text", "text contains the entry delimiter",
  * "over capacity (N/M chars) — consolidate or remove first" */
 export function applyMemoryOp(
   folder: string,
@@ -103,6 +104,13 @@ export function applyMemoryOp(
   let newContent = "";
   try {
     if (op.kind === "add") {
+      // Validate text: reject empty, whitespace-only, or containing delimiter
+      if (!op.text || op.text.trim() === "") {
+        return { ok: false, error: "empty text" };
+      }
+      if (op.text.includes("\n§ ") || op.text.startsWith("§ ")) {
+        return { ok: false, error: "text contains the entry delimiter" };
+      }
       // Check for duplicate
       if (entries.some((e) => e === op.text)) {
         return { ok: false, error: "duplicate entry" };
@@ -110,6 +118,17 @@ export function applyMemoryOp(
       // Add new entry
       newContent = content ? content + "\n§ " + op.text : "§ " + op.text;
     } else if (op.kind === "replace") {
+      // Validate text: reject empty, whitespace-only, or containing delimiter
+      if (!op.text || op.text.trim() === "") {
+        return { ok: false, error: "empty text" };
+      }
+      if (op.text.includes("\n§ ") || op.text.startsWith("§ ")) {
+        return { ok: false, error: "text contains the entry delimiter" };
+      }
+      // Validate oldText: reject empty or whitespace-only
+      if (!op.oldText || op.oldText.trim() === "") {
+        return { ok: false, error: "empty match text" };
+      }
       // Find all entries containing oldText
       const matchingIndices = entries
         .map((e, i) => (e.includes(op.oldText) ? i : -1))
@@ -122,11 +141,15 @@ export function applyMemoryOp(
         return { ok: false, error: "ambiguous match" };
       }
 
-      // Replace the matching entry
+      // Replace the whole matched entry with text
       const idx = matchingIndices[0];
-      entries[idx] = entries[idx].replace(op.oldText, op.text);
+      entries[idx] = op.text;
       newContent = entries.map((e) => "§ " + e).join("\n");
     } else if (op.kind === "remove") {
+      // Validate oldText: reject empty or whitespace-only
+      if (!op.oldText || op.oldText.trim() === "") {
+        return { ok: false, error: "empty match text" };
+      }
       // Find all entries containing oldText
       const matchingIndices = entries
         .map((e, i) => (e.includes(op.oldText) ? i : -1))
