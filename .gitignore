@@ -6,6 +6,7 @@ config.json
 *.log
 data/
 dist/
+src/engine/default-project.ts
 # Runtime company/tenant data + secrets live here once ported — never committed.
 company/
 
