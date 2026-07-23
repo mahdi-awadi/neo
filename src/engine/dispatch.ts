@@ -17,9 +17,10 @@ import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { DEFAULT_PROJECT } from "./default-project";
-import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, type ContextPolicyCfg } from "./context-policy";
+import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
 import { describeSessionStatus, sessionsReport } from "./session-status";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
+import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
 import {
   apiFailureNotice,
@@ -122,6 +123,16 @@ function containedInAny(folder: string, roots: string[]): boolean {
   });
 }
 
+/** Shared memory gate: returns `deps.memory` when BOTH it and `deps.companyFolder` are set AND
+ *  `memoryScopeEnabled` says `folder` is in scope — undefined otherwise (feature off, folder out
+ *  of scope, or the customer/ingress path which never passes these deps). `dispatchToProject`'s
+ *  snapshot injection and `neoMcpServers`' memory-tool attachment both call this ONE function so
+ *  the two checks can never drift apart. */
+function memoryGate(deps: DispatchDeps, folder: string): MemoryCfg | undefined {
+  if (deps.memory === undefined || deps.companyFolder === undefined) return undefined;
+  return memoryScopeEnabled(deps.memory, folder, deps.companyFolder) ? deps.memory : undefined;
+}
+
 export function resolveProject(project: string, root = "/home", desks = DESKS_DIR): string | undefined {
   const candidates = project.startsWith("/") ? [project] : [join(root, project), join(desks, project)];
   for (const c of candidates) {
@@ -209,10 +220,8 @@ export async function dispatchToProject(
   // injection: absent deps.memory/deps.companyFolder (e.g. the customer/ingress path), or the
   // folder simply not in scope (default `scopes: []`) → "" → briefWithProjectDocs(task) is
   // untouched, byte-identical. Fail-closed: no companyFolder ⇒ no injection, even with memory set.
-  const memSnap =
-    deps.memory && deps.companyFolder !== undefined && memoryScopeEnabled(deps.memory, folder, deps.companyFolder)
-      ? memorySnapshot(folder, deps.memory)
-      : "";
+  const memCfgForSnapshot = memoryGate(deps, folder);
+  const memSnap = memCfgForSnapshot ? memorySnapshot(folder, memCfgForSnapshot) : "";
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",
@@ -547,6 +556,16 @@ export function neoMcpServers(
         },
       ),
     );
+  }
+  // Memory tools (`memory`, `memory_search`): attached ONLY through the same gate that guards the
+  // frozen snapshot injection in dispatchToProject (memoryGate) — operator paths whose target
+  // folder is in scope. The ingress/customer path passes neither deps.memory nor
+  // deps.companyFolder, so memoryGate always returns undefined there — firewall by construction,
+  // not by an extra flag that could drift out of sync.
+  const memCfg = memoryGate(deps, opts.folder);
+  if (memCfg) {
+    const windowTokens = windowTokensFor(undefined, deps.contextPolicy?.windowTokensByModel);
+    tools.push(...memoryTools(opts.folder, memCfg, windowTokens));
   }
   const server = createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
   const servers: Record<string, unknown> = { neo: server };

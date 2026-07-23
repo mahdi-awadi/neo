@@ -579,6 +579,53 @@ test("memory: \"company\" scope does NOT leak into a dispatch to a different fol
   expect(seen!.task).toBe(briefWithProjectDocs("CRAFTED BRIEF for the project"));
 });
 
+// The in-process "neo" server is an SDK McpServer instance (createSdkMcpServer), not a plain
+// tools array — its registered tool names live on the private-in-TS-but-public-at-runtime
+// `_registeredTools` map, the only way to assert presence/absence without going through the full
+// MCP wire protocol.
+function neoToolNames(servers: Record<string, unknown>): string[] {
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, unknown> } };
+  return Object.keys(neo.instance._registeredTools);
+}
+
+test("neoMcpServers attaches memory + memory_search when the memory gate is open (scope enabled + folder matches)", () => {
+  const { d } = makeDeps();
+  const servers = neoMcpServers(
+    { ...d, memory: { ...MEMORY_CFG, scopes: ["/home/neo/agent"] }, companyFolder: "/tmp/agent" },
+    1,
+    { dispatch: true, folder: "/home/neo/agent" },
+  );
+  const names = neoToolNames(servers);
+  expect(names).toContain("memory");
+  expect(names).toContain("memory_search");
+});
+
+test("neoMcpServers OMITS memory tools for the ingress-style opts (no memory/companyFolder deps at all)", () => {
+  const { d } = makeDeps();
+  // d has no `memory`/`companyFolder` set — mirrors the customer/ingress path, which never passes them.
+  const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent" });
+  const names = neoToolNames(servers);
+  expect(names).not.toContain("memory");
+  expect(names).not.toContain("memory_search");
+});
+
+test("neoMcpServers OMITS memory tools when memory is configured but scopes: [] (feature off) or the folder is out of scope", () => {
+  const { d } = makeDeps();
+  const offByDefault = neoMcpServers(
+    { ...d, memory: MEMORY_CFG, companyFolder: "/tmp/agent" }, // scopes: []
+    1,
+    { dispatch: true, folder: "/home/neo/agent" },
+  );
+  expect(neoToolNames(offByDefault)).not.toContain("memory");
+
+  const outOfScope = neoMcpServers(
+    { ...d, memory: { ...MEMORY_CFG, scopes: ["/some/other/folder"] }, companyFolder: "/tmp/agent" },
+    1,
+    { dispatch: true, folder: "/home/neo/agent" },
+  );
+  expect(neoToolNames(outOfScope)).not.toContain("memory");
+});
+
 test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged with the project name, and reports the final result on completion", async () => {
   // End-to-end: the real consumeStream (via startOrder) surfaces a tool milestone, which
   // dispatchToProject forwards to the operator's reply path tagged with the project name —
