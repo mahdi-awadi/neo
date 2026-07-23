@@ -63,30 +63,34 @@ latter to plugin skills. Official guidance: CLAUDE.md < ~200 lines; prefer fresh
 handoff artifacts over resuming fat transcripts; `/clear` free, `/compact` of a big context is
 itself expensive; queue rather than parallelize near limits.
 
-## 4. Code-intelligence MCP: gitnexus vs codebase-memory — the verdict
+## 4. Code-intelligence MCP: gitnexus vs codebase-memory — the measured verdict
 
-Verified on this server (2026-07-23):
-- **gitnexus** is installed, indexed (neo: 2,568 nodes / 4,668 edges / 147 flows), wired both as
-  a global MCP and via Neo's `gitnexusBin` config; CLI `analyze --skip-agents-md` now keeps the
-  tracked tree clean. Known warts to fix, not reasons to switch: FTS "read-only database" errors
-  under concurrent access (its hook and MCP touching the same DB), stale-index nagging after
-  every commit.
-- **codebase-memory** is, on this machine, **only dormant scaffolding inside Neo**
-  (`codebaseMemoryBin` unset; no binary in PATH; no MCP entry in `~/.claude.json`). The engine's
-  `ensureIndexed` guard and the dispatch preamble reference it, but no worker on this server has
-  ever actually had it. (Its 12% line in the usage report predates the current setup or came from
-  a differently-configured period.)
+Head-to-head run 2026-07-23 on this server, Neo repo, 5 questions with hand-verified ground
+truth, scored on correctness + bytes a worker would pay. Setup: gitnexus (npm, indexed 2,586
+symbols) vs **DeusData/codebase-memory-mcp v0.9.0** (github.com/DeusData/codebase-memory-mcp —
+single static binary, installed to `~/.local/bin`, indexed Neo in **0.51s**: 1,560 nodes/3,976
+edges; this is the exact tool-set Neo's `codebase-memory.ts` was written for).
 
-**Decision:** standardize on **exactly one** code-intel MCP per project — two graph tools loaded
-together duplicate context cost for zero benefit. **gitnexus is the working default today.**
-Consequences: (a) point Neo's engine-side pre-dispatch indexing at gitnexus (mirror the
-`ensureIndexed` pattern: run `gitnexus analyze --skip-agents-md` bounded, best-effort, before a
-worker starts) and reword the dispatch preamble's "codebase-memory" mandate to name the
-*configured* code-intel server generically; (b) fix the concurrent-access wart (serialize analyze
-vs MCP, or disable the per-Bash hook in favor of engine-triggered indexing). If codebase-memory
-is ever actually installed, run the eval before switching: same 5 architecture/impact questions
-to both on the same repo, judged on correctness, tokens consumed per useful answer, and index
-freshness — decided by evidence, not vibes.
+| Question | gitnexus | codebase-memory | Winner |
+|---|---|---|---|
+| Impact of `runOrder` (used via `deps.run ?? runOrder` DI) | `impact()`: 0 results, asserted **LOW risk** (dangerously wrong); Cypher: test caller only | `trace_call_path`: empty (broken tool); **`query_graph` over its `USAGE` edges: complete** — all 8 real usage sites incl. two the hand-built ground truth missed (631 B) | **cbm** |
+| Concept→flow: "how does dispatch work" | `query()`: **empty** (FTS index corrupt on this box) | top-4 = exactly the dispatch chain with line ranges (16.5 KB, needs a limit) | **cbm** |
+| Find budget-throttle logic | `query()`: empty | `shouldThrottle` ranked #1 + whole meter cluster (2.8 KB) | **cbm** |
+| Architecture overview | terse resources (4 modules), needs many follow-up reads | one call: entry points, hotspots (fan-in), boundaries, layers, 12 cohesion-scored clusters (22.9 KB, verbose) | **cbm** (substance) |
+| Symbol 360° `decideContext` | `context()`: all callers, ergonomic, ~1 KB | `query_graph` Cypher: same answer, 262 B (but `trace_call_path` broken) | tie |
+
+**Decision: codebase-memory is the primary code-intel MCP for Neo workers** — 4/5, including the
+only complete impact answer (its `USAGE` edge type sees function *references*, which Neo's
+dependency-injection style makes essential; gitnexus's CALLS/IMPORTS graph structurally cannot).
+It is also what Neo's engine already natively speaks: `codebaseMemoryBin` is now set, the
+`ensureIndexed` guard and dispatch preamble work unchanged. Caveats encoded into the preamble
+guidance: prefer `search_graph`/`query_graph`/`get_architecture(aspects=…)`; avoid
+`trace_call_path` (broken in 0.9.0); cap result sizes (`MAX_MCP_OUTPUT_TOKENS`).
+**gitnexus is demoted to an optional operator-side tool** (its `context()`/`rename` ergonomics
+are nice interactively) — never loaded into the same worker as codebase-memory, and only kept at
+all if its corrupt-FTS + hook-noise warts get fixed; otherwise retire it. Fairness note:
+gitnexus's Q2/Q3 losses are partly an install-health failure (corrupt FTS), but
+reliability-as-deployed is precisely what a worker experiences.
 
 ## 5. The Memory Plan (`Claude-Code-Memory-Plan-v`) — assessment and adoption
 
