@@ -52,6 +52,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`windowTokensByModel`. |
 | `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker (e.g. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, `CLAUDE_CODE_SUBAGENT_MODEL`). |
+| `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
 > (systemd's default stop timeout is 90s and would kill the process mid-drain).
@@ -105,6 +106,85 @@ doesn't know yet). It is threaded into every gate that measures context: `dispat
 `pipeline`'s pre- and post-resume gates, the loop-resume gate, and `runHandoff`'s own
 re-measurement — so a configured override changes gate verdicts, not just the number shown for
 `/status` ctx%.
+
+## Memory system (`memory`) — Phase 2: store / inject / recall
+
+Per-project long-term memory: a frozen ground-truth snapshot injected at worker start, a `memory`
+tool workers use to write durable facts (applies NEXT session, never mid-run), and a
+`memory_search` tool over a cited daily-log recall index. **Off by default** — `memory.scopes: []`
+is a total no-op until you opt a folder in. Code: `src/engine/memory.ts`, `memory-recall.ts`,
+`memory-tool.ts`; `MemoryCfg` in `src/config.ts`.
+
+| Field | Category | Default | Meaning |
+| --- | --- | --- | --- |
+| `scopes` | operator choice | `[]` | Which folders get the snapshot injected / memory tools attached: the literal keyword `"company"` (matches `companyFolder`) and/or a project's absolute folder path. Empty = the feature is entirely off. |
+| `snapshotMaxPct` | ratio of the session model's window | `0.004` (≈800 tokens on a 200k window) | MEMORY.md's char cap: `windowTokens * snapshotMaxPct * 4` (4 chars/token). |
+| `userMaxPct` | ratio of the session model's window | `0.0025` (≈500 tokens on a 200k window) | USER.md's char cap, same formula. |
+| `dreamMaxMutations` | operator choice (dream-loop budget) | `3` | Max memory-file mutations (add/replace/remove) per nightly consolidation run. |
+| `dreamMaxAdds` | operator choice (dream-loop budget) | `1` | Max NEW entries (`add`) per nightly consolidation run — a subset of `dreamMaxMutations`. |
+| `dreamMaxNetChars` | operator choice (dream-loop budget) | `250` | Max net character growth across memory files per nightly consolidation run. |
+| `dreamLookbackDays` | operator choice | `14` | How many days of daily logs the dream loop reviews per run. |
+
+`scopes` semantics: the literal string `"company"` opts the always-on company workspace
+(`cfg.companyFolder`) in; any other entry is compared as an absolute folder path (realpath-resolved,
+symlink/trailing-slash-insensitive) — a project only gets memory when its own folder appears there.
+Default `[]` means neither matches, so the whole system (snapshot injection, the `memory`/
+`memory_search` tools, the dream loop) stays inert — verified byte-identical to pre-memory behavior
+by a dedicated test.
+
+### Flush sentence (pre-handoff / pre-drain memory capture)
+
+When a context-boundary handoff, a dispatch grace-window wrap-up, or a graceful-reload drain fires
+for a memory-scoped folder, `MEMORY_FLUSH_SENTENCE` (`src/engine/context-policy.ts`) is prepended to
+the worker's wrap-up task, asking it to save durable facts via the `memory` tool and append a
+one-line session summary to today's log **before** writing the separate, ephemeral HANDOFF.md note.
+Gated by the same `memoryScopeEnabled` check every other memory injection uses — a folder outside
+`memory.scopes` never sees it, and the sentence is never merged into the base prompt text (kept
+byte-identical when memory is off, pinning the pre-memory fence).
+
+### Dream loop (nightly memory consolidation)
+
+`memory-dream` (`src/engine/loops.ts`) — disabled by default like every other cron loop; enable via
+`/loop memory-dream on` or the web console's Loops tab. Fires nightly (`0 3 * * *`), reviews the
+last `dreamLookbackDays` days of the company workspace's `memory/log/` plus MEMORY.md/USER.md, and
+proposes consolidations through the same `memory` tool — but running in **dream mode**: an
+engine-enforced budget (`dreamMaxMutations` / `dreamMaxAdds` / `dreamMaxNetChars`), tallied in a
+closure scoped to that one run. An over-budget mutation is rejected without taking effect; if the
+revert write itself fails, the run hard-stops and diaries the mutation as "applied (OVER BUDGET —
+revert failed)" rather than silently misreporting it as rejected. Every attempted mutation (applied
+or rejected) is appended to `<folder>/memory/DREAMS.md`, a plain timestamped diary — engine-written,
+no AI in the engine. Before the first attempted mutation of a run, both memory files are backed up
+to `<folder>/memory/.backups/<file>.<timestamp>.md`. The loop refuses to run at all (0 iterations,
+no worker started) when the company folder isn't in `memory.scopes` — a dream loop never spends a
+run on an opted-out folder. Like every loop, it's governed and never pushes or deploys.
+
+### Recall (`memory_search` tool)
+
+Workers get a `memory_search(query, limit?)` tool (`memory-tool.ts`) over an FTS5 (bm25) index of
+the daily log (`memory-recall.ts`; one `<folder>/memory/index.sqlite` per project). Every hit is
+cited with its `file` (relative to `memory/`, e.g. `log/2026-07-01.md`) and `day`. `limit` defaults
+to 5, max 20. This is **keyword** search (FTS5), not semantic — a query needs to share literal word
+stems with the stored line to match.
+
+### Bootstrap (`bun run memory:bootstrap <folder>`)
+
+`memory-bootstrap.ts` seeds a project's memory log once, deterministically (no AI): one dated log
+line per recorded ledger outcome for that folder, plus every non-empty line of an existing
+HANDOFF.md imported verbatim. Guarded by a `<folder>/memory/.bootstrapped` sentinel, so a re-run
+(daemon restart, re-`/open`, or invoking the CLI again) is always a safe no-op. Run it once per
+project you opt into `memory.scopes`, so its first snapshot isn't empty:
+
+```sh
+bun run memory:bootstrap /home/you/some-project
+```
+
+### `.git/info/exclude` hygiene
+
+The first `memory` write to a project folder (`applyMemoryOp` / `appendDailyLog`, via
+`ensureExcluded`) appends `memory/` to that folder's `.git/info/exclude` if it's a real git repo and
+the line isn't already there — **never** the tracked `.gitignore` (machine-local law: memory is
+per-machine/per-checkout state, not something to commit). Fail-open and a no-op outside a git repo;
+runs at most once per process per folder.
 
 ## There is no `idlePollMs` / `loopTickMs`
 

@@ -22,6 +22,20 @@ the last section maps it onto Neo.
 > escalation-auto-denied (never pushes/deploys). Operators author their own project loops from the
 > web console (see the CRUD note below); built-ins stay run/toggle-only.
 >
+> **`memory-dream` — nightly memory consolidation (Phase 2, disabled by default).** Reviews the
+> company workspace's recent `memory/log/` entries plus MEMORY.md/USER.md and proposes
+> consolidations (prefer `replace` over `remove` over `add`; unresolvable contradictions get a
+> `CONFLICT:` entry for a human to resolve) through the SAME worker-facing `memory` tool every
+> project gets, but running in engine-enforced **dream-budget** mode
+> (`memory.dreamMaxMutations`/`dreamMaxAdds`/`dreamMaxNetChars`) so an autonomous run can't runaway
+> the memory files. Every attempted mutation (applied or rejected) is diaried to
+> `<folder>/memory/DREAMS.md`; both memory files are backed up before the first attempted mutation.
+> A no-op, verifiable-by-construction gate (`dreamGateOutcome`) refuses to spend a run at all when
+> the company folder isn't in `memory.scopes` — the memory system's own opt-in default (`scopes: []`)
+> extends to the loop, not just snapshot injection. `freshSession: true` (never resumes across
+> fires). See `docs/CONFIG.md`'s "Memory system" section for the budget fields and
+> `docs/superpowers/sdd/` Phase 2 tasks for the store/inject/recall design.
+>
 > **Data-driven loop CRUD — live (2026-06-28).** Loop *definitions* are data (ledger `loop_defs`),
 > merged with the built-in library by `effectiveLoops()` and re-read each tick, so an operator
 > authors/edits/deletes loops from the admin web console (Loops tab + `/api/loop/{create,update,delete,enable}`)

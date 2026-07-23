@@ -1,8 +1,9 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readdirSync, existsSync, readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMemoryOp, memoryCaps, readMemoryFiles, CHARS_PER_TOKEN, memorySnapshot, memoryScopeEnabled } from "../src/engine/memory";
+import { applyMemoryOp, appendDailyLog, memoryCaps, readMemoryFiles, CHARS_PER_TOKEN, memorySnapshot, memoryScopeEnabled } from "../src/engine/memory";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-mem-"));
 const CFG = { scopes: ["company"], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 };
@@ -162,4 +163,24 @@ test("memoryScopeEnabled: a listed absolute folder path matches that folder only
 test("memoryScopeEnabled: empty scopes (default) is always false", () => {
   const dir = scratch();
   expect(memoryScopeEnabled({ ...CFG, scopes: [] }, dir, dir)).toBe(false);
+});
+
+test("git-exclude hygiene: a git repo gets memory/ appended to .git/info/exclude exactly once, even across repeated write-path calls", () => {
+  const dir = scratch();
+  execSync("git init -q", { cwd: dir });
+
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "first entry" }, 5_000);
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "second entry" }, 5_000);
+  appendDailyLog(dir, "a daily log line too");
+
+  const excludePath = join(dir, ".git", "info", "exclude");
+  expect(existsSync(excludePath)).toBe(true);
+  const lines = readFileSync(excludePath, "utf-8").split("\n").filter((l) => l.trim() === "memory/");
+  expect(lines).toHaveLength(1); // added exactly once, never duplicated across calls
+});
+
+test("git-exclude hygiene: a non-git folder is a fail-open no-op — no error, no exclude file written", () => {
+  const dir = scratch();
+  expect(() => applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "x" }, 5_000)).not.toThrow();
+  expect(existsSync(join(dir, ".git"))).toBe(false);
 });

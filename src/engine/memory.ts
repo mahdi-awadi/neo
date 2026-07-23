@@ -51,6 +51,7 @@ function todayLocalDate(): string {
  * disk-append success matters for the return value. Existing callers that ignore the return value
  * are unaffected (additive; grep confirms none inspected it before this change). */
 export function appendDailyLog(folder: string, line: string, day?: string): boolean {
+  ensureExcluded(folder); // lazy, once-per-process git-exclude hygiene (never blocks the write)
   if (scanMemoryText(line)) return false; // fail closed — never append/index a line that fails the scan
 
   const d = day ?? todayLocalDate();
@@ -126,6 +127,39 @@ function canonical(folder: string): string {
     return realpathSync(resolve(folder));
   } catch {
     return resolve(folder);
+  }
+}
+
+// Module-level per-process cache of folders already checked by ensureExcluded — same idiom as
+// memory-recall.ts's indexCache, keyed by canonical (realpath) folder path so a folder is only
+// ever touched once per process regardless of how many applyMemoryOp/appendDailyLog calls come in.
+const excludeChecked = new Set<string>();
+
+/** Git-exclude hygiene: appends `memory/` to `<folder>/.git/info/exclude` (creating the file, and
+ * its `info/` dir, if missing) so an operator's project repo doesn't need `memory/` added to its
+ * TRACKED `.gitignore` — machine-local law, this never touches a tracked file. No-op when `folder`
+ * isn't a real git repo: `existsSync(<folder>/.git)` is the check, which is true whether `.git` is
+ * the usual directory or the single-file gitdir pointer a git worktree uses — either way counts as
+ * "a real git repo" for this check. Also a no-op when the line is already present. Runs at most
+ * once per process per folder (see `excludeChecked` above) — called lazily from the write paths
+ * (`applyMemoryOp`, `appendDailyLog`). Fail-open: never throws — any filesystem error (including a
+ * worktree's `.git` being a file, which makes `<folder>/.git/info` an invalid path to mkdir under)
+ * is swallowed, since this is hygiene, not a guarantee, and must never block a memory write. */
+export function ensureExcluded(folder: string): void {
+  const key = canonical(folder);
+  if (excludeChecked.has(key)) return;
+  excludeChecked.add(key);
+  try {
+    if (!existsSync(join(folder, ".git"))) return;
+    const infoDir = join(folder, ".git", "info");
+    mkdirSync(infoDir, { recursive: true });
+    const excludePath = join(infoDir, "exclude");
+    const existing = existsSync(excludePath) ? readFileSync(excludePath, "utf-8") : "";
+    if (existing.split("\n").some((line) => line.trim() === "memory/")) return; // already present
+    const sep = existing && !existing.endsWith("\n") ? "\n" : "";
+    appendFileSync(excludePath, `${sep}memory/\n`, "utf-8");
+  } catch {
+    // Fail-open — git-exclude hygiene must never block a memory write.
   }
 }
 
@@ -275,6 +309,7 @@ export function applyMemoryOp(
   op: MemoryOp,
   capChars: number
 ): { ok: true } | { ok: false; error: string } {
+  ensureExcluded(folder); // lazy, once-per-process git-exclude hygiene (never blocks the write)
   const dir = memoryDir(folder);
   const filepath = join(dir, file);
 

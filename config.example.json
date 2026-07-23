@@ -30,6 +30,8 @@
 
   "contextPolicy": { "handoffPct": 0.65, "emergencyPct": 0.85, "maxTurns": 200, "maxAgeMs": 604800000, "handoffTimeoutMs": 180000 },
 
+  "memory": { "scopes": ["company"] },
+
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",
     "MAX_MCP_OUTPUT_TOKENS": "12000"
