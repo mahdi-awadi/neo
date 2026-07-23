@@ -9,7 +9,7 @@ import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
-import { memorySnapshot, memoryScopeEnabled } from "./memory";
+import { memorySnapshot, memoryEnabledFor } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -129,8 +129,7 @@ function containedInAny(folder: string, roots: string[]): boolean {
  *  snapshot injection and `neoMcpServers`' memory-tool attachment both call this ONE function so
  *  the two checks can never drift apart. */
 function memoryGate(deps: DispatchDeps, folder: string): MemoryCfg | undefined {
-  if (deps.memory === undefined || deps.companyFolder === undefined) return undefined;
-  return memoryScopeEnabled(deps.memory, folder, deps.companyFolder) ? deps.memory : undefined;
+  return memoryEnabledFor(deps.memory, folder, deps.companyFolder) ? deps.memory : undefined;
 }
 
 export function resolveProject(project: string, root = "/home", desks = DESKS_DIR): string | undefined {
@@ -215,18 +214,18 @@ export async function dispatchToProject(
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) return `No project or desk named "${project}" was found — check the name.`;
 
-  // Frozen memory snapshot, computed ONCE here at dispatch start (never on a busy-guard reuse
-  // above, which returns early without building a new order). Gated exactly like pipeline.ts's
-  // injection: absent deps.memory/deps.companyFolder (e.g. the customer/ingress path), or the
-  // folder simply not in scope (default `scopes: []`) → "" → briefWithProjectDocs(task) is
-  // untouched, byte-identical. Fail-closed: no companyFolder ⇒ no injection, even with memory set.
-  const memCfgForSnapshot = memoryGate(deps, folder);
-  const memSnap = memCfgForSnapshot ? memorySnapshot(folder, memCfgForSnapshot) : "";
+  // Build + record the order with its BASE task (project-docs preamble only — no memory snapshot
+  // yet). This happens BEFORE the busy-guard check below (existing && wasRunning can still refuse
+  // this dispatch with an early return), so a refused dispatch still leaves a plain intent record
+  // in the ledger. The memory snapshot, when the folder is in scope, is injected later — INSIDE
+  // the background continuation, once the resume id that will actually be used for this run is
+  // settled (see the comment down there) — never here, so a resumed sub-session never gets a
+  // repeated "authoritative ground truth" block stacked mid-conversation.
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",
     folder,
-    task: memSnap + briefWithProjectDocs(task),
+    task: briefWithProjectDocs(task),
     chatId: SUB_CHAT,
     createdAt: now(),
   };
@@ -294,6 +293,22 @@ export async function dispatchToProject(
         // "keep" leaves gatedResume unchanged.
       } catch {
         // context-policy is best-effort observer work — fail OPEN, keep the original resume id.
+      }
+    }
+
+    // Frozen memory snapshot: injected ONLY on a genuine fresh start — i.e. once the resume id
+    // that will ACTUALLY be used for this run is settled (gatedResume === undefined), which covers
+    // both a plain fresh dispatch (no existing/ledger session to resume) and a resume the
+    // context-policy gate just above cleared or handed off. Never inject onto a resume that's
+    // being KEPT: prepending this "authoritative ground truth" block into an already-live
+    // conversation on every repeat dispatch would stack a fresh copy mid-conversation each time,
+    // breaking the snapshot's frozen semantics. Gated exactly like pipeline.ts's own fresh-start
+    // injection (`!runDeps.resume`) and dispatch's own memory-tool attachment (memoryGate).
+    if (gatedResume === undefined) {
+      const memCfgForSnapshot = memoryGate(deps, folder);
+      if (memCfgForSnapshot) {
+        order.task = memorySnapshot(folder, memCfgForSnapshot) + order.task;
+        deps.ledger.recordOrder(order); // keep the recorded task in sync with what the worker gets
       }
     }
 

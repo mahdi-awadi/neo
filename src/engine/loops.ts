@@ -163,13 +163,12 @@ const DREAM_LOOKBACK_PLACEHOLDER = "{{DREAM_LOOKBACK_DAYS}}";
 //
 // Folder: `folder` below is a SENTINEL, not a real path — the company workspace's actual path
 // (cfg.companyFolder) isn't known until cfg loads, so resolveDreamLoop rewrites it at fire time
-// (mirrors how `prompt`'s lookback-days placeholder is resolved). KNOWN GAP: the scheduler's
-// busy-folder guard (daemon.ts tickScheduler → isFolderBusy) runs against effectiveLoops()'s
-// UNRESOLVED defs, so it checks the sentinel "company", not the real company folder — it can
-// never observe the company session as "busy" for this one loop. Low blast radius today (disabled
-// by default; a single once-nightly fire-once iteration) but a real gap if this loop is ever
-// enabled — flagged for a follow-up (fixing it means resolving the folder before the scheduler's
-// busy-check, i.e. touching daemon.ts/scheduler.ts, out of this task's file scope).
+// (mirrors how `prompt`'s lookback-days placeholder is resolved). The daemon's scheduler tick
+// resolves every loop's folder (via this exported resolveDreamLoop) BEFORE checking
+// scheduler.ts's folderBusy, so the busy-guard sees the REAL company folder here, not the
+// sentinel — and folderBusy is company-folder aware (only a RUNNING company session counts as
+// busy; the always-registered IDLE default project never starves this loop). See scheduler.ts's
+// folderBusy for the full reasoning.
 //
 // Fire-once, same "goal never met" shape as mywellbeing-checkin (docs/loops.md gotcha): runLoop
 // checks the goal BEFORE each iteration, so a goal that can be met on the FIRST check (e.g. exit 0
@@ -304,7 +303,7 @@ function formatLoops(store?: LoopStore): string {
  *  dreamGateOutcome) sees the real folder/prompt. A no-op for every other loop (dreamMemory unset)
  *  and for a dream loop fired with no cfg (falls back to the static placeholders — dreamGateOutcome
  *  refuses to run in that case anyway, so the placeholder folder is never actually opened). */
-function resolveDreamLoop(loop: LoopDef, cfg?: NeoConfig): LoopDef {
+export function resolveDreamLoop(loop: LoopDef, cfg?: NeoConfig): LoopDef {
   if (!loop.dreamMemory) return loop;
   return {
     ...loop,

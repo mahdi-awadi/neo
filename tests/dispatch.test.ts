@@ -579,6 +579,70 @@ test("memory: \"company\" scope does NOT leak into a dispatch to a different fol
   expect(seen!.task).toBe(briefWithProjectDocs("CRAFTED BRIEF for the project"));
 });
 
+test("memory: a repeat dispatch that RESUMES an already-open sub-session does NOT re-inject the frozen snapshot (no stacking mid-conversation)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  const projectDir = join(root, "eticket-v3");
+  mkdirSync(projectDir);
+  mkdirSync(join(projectDir, "memory"));
+  writeFileSync(join(projectDir, "memory", "MEMORY.md"), "§ Working on the payments migration");
+  const { d } = makeDeps();
+  // A prior dispatch already left this folder's sub-session open+idle (resumable) in the registry.
+  const priorOrder: Order = { id: "prior", source: "neo", folder: projectDir, task: "prior brief", chatId: SUB_CHAT, createdAt: 0 };
+  const existing = d.registry.add(priorOrder, 0);
+  d.registry.setSdkSessionId(existing.id, "sdk-existing-session");
+  d.registry.setStatus(existing.id, "idle");
+
+  let seen: Order | undefined;
+  const fakeStart = (o: Order) => {
+    seen = o;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject(
+    "eticket-v3",
+    "CRAFTED BRIEF for the project",
+    { ...d, memory: { ...MEMORY_CFG, scopes: [projectDir] }, companyFolder: "/tmp/agent" },
+    99,
+    { start: fakeStart as never, now: () => 1, root },
+  );
+  expect(seen!.task).not.toContain("[MEMORY — authoritative");
+  expect(seen!.task).toBe(briefWithProjectDocs("CRAFTED BRIEF for the project")); // resume → byte-identical, no snapshot
+});
+
+test("memory: the ledger's recorded order stays in sync — no snapshot recorded for a refused/resumed dispatch, present once the context-policy gate CLEARS a stale resume back to a fresh start", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  const projectDir = join(root, "eticket-v3");
+  mkdirSync(projectDir);
+  mkdirSync(join(projectDir, "memory"));
+  writeFileSync(join(projectDir, "memory", "MEMORY.md"), "§ Working on the payments migration");
+  const { d } = makeDeps();
+  const priorOrder: Order = { id: "prior", source: "neo", folder: projectDir, task: "prior brief", chatId: SUB_CHAT, createdAt: 0 };
+  const existing = d.registry.add(priorOrder, 0);
+  d.registry.setSdkSessionId(existing.id, "sdk-existing-session");
+  d.registry.setStatus(existing.id, "idle");
+
+  let seen: Order | undefined;
+  const fakeStart = (o: Order) => {
+    seen = o;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject(
+    "eticket-v3",
+    "CRAFTED BRIEF for the project",
+    { ...d, memory: { ...MEMORY_CFG, scopes: [projectDir] }, companyFolder: "/tmp/agent", contextPolicy: TEST_CONTEXT_POLICY },
+    99,
+    {
+      start: fakeStart as never,
+      now: () => 1,
+      root,
+      // Forces decideContext → "clear": the stale resume is dropped, so this becomes a genuine
+      // fresh start again, and the snapshot IS re-injected.
+      signals: () => ({ occupancy: 0.9, turns: 0, ageMs: 0, idleMs: 0 }),
+    },
+  );
+  expect(seen!.task.startsWith("[MEMORY — authoritative")).toBe(true);
+  expect(seen!.task).toContain("Working on the payments migration");
+});
+
 // The in-process "neo" server is an SDK McpServer instance (createSdkMcpServer), not a plain
 // tools array — its registered tool names live on the private-in-TS-but-public-at-runtime
 // `_registeredTools` map, the only way to assert presence/absence without going through the full

@@ -18,8 +18,8 @@ import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, stopFrontends } from "./engine/reload";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
-import { effectiveLoops, startScheduledLoop } from "./engine/loops";
-import { tickScheduler } from "./engine/scheduler";
+import { effectiveLoops, startScheduledLoop, resolveDreamLoop } from "./engine/loops";
+import { tickScheduler, folderBusy } from "./engine/scheduler";
 import { heartbeatMs, nextTickDelayMs, type HeartbeatLoop } from "./engine/heartbeat";
 import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
@@ -153,9 +153,17 @@ async function main(): Promise<void> {
       });
       if (cfg.loopSchedulerEnabled) {
         tickScheduler({
-          loops: effectiveLoops(ledger), // built-in ∪ custom, re-read each tick (no restart for new loops)
+          // built-in ∪ custom, re-read each tick (no restart for new loops) — folder-resolved
+          // (resolveDreamLoop) BEFORE scheduling so the busy-guard below checks the memory-dream
+          // loop's REAL company folder, not its unresolved "company" sentinel (a no-op for every
+          // other loop). def.name is untouched by resolution, so lastRun/enabled bookkeeping and
+          // the `start` callback both still key off the loop's real identity.
+          loops: effectiveLoops(ledger).map((l) => resolveDreamLoop(l, cfg)),
           store: ledger, // Ledger implements LoopStateStore
-          isFolderBusy: (folder) => registry.findByFolder(folder) !== undefined,
+          // Company-folder aware: the always-on default project is registered IDLE forever, so a
+          // plain presence check would starve any loop scheduled against the company folder — see
+          // scheduler.ts's folderBusy for the full reasoning.
+          isFolderBusy: (folder) => folderBusy(registry, folder, cfg.companyFolder),
           // Skip this tick when the budget meter OR a fresh API throttle says stop.
           throttled: () => meter.shouldThrottle() || cooldown.activeAt(Date.now()),
           now: Date.now(),
