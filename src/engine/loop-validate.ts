@@ -3,6 +3,7 @@
 import { statSync, realpathSync } from "node:fs";
 import type { LoopDef } from "./loops";
 import { isValidCron } from "./trigger";
+import { MIN_INTERVAL_MS } from "./heartbeat";
 
 export interface LoopInput {
   name: string;
@@ -72,7 +73,12 @@ export function validateLoopInput(
     trigger = { kind: "manual" };
   } else if (input.triggerKind === "interval") {
     if (!input.intervalMinutes || input.intervalMinutes <= 0) return { error: "interval needs intervalMinutes > 0" };
-    trigger = { kind: "interval", everyMs: Math.round(input.intervalMinutes * 60000) };
+    const everyMs = Math.round(input.intervalMinutes * 60000);
+    // The daemon's own tick can't fire more often than MIN_INTERVAL_MS (tied to the cron
+    // resolution the tick derives from — see heartbeat.ts) — an interval below that floor could
+    // never actually be honored, so this is a fact about the scheduler, not tuning.
+    if (everyMs < MIN_INTERVAL_MS) return { error: `interval must be at least ${MIN_INTERVAL_MS / 60000} minute(s) (the daemon's tick can't fire more often)` };
+    trigger = { kind: "interval", everyMs };
   } else if (input.triggerKind === "cron") {
     if (!input.cronExpr?.trim() || !isValidCron(input.cronExpr.trim())) return { error: "cron needs a valid 5-field expression" };
     trigger = { kind: "cron", expr: input.cronExpr.trim() };

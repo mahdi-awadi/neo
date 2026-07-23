@@ -20,7 +20,7 @@ import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
-import { heartbeatMs, type HeartbeatLoop } from "./engine/heartbeat";
+import { heartbeatMs, nextTickDelayMs, type HeartbeatLoop } from "./engine/heartbeat";
 import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
@@ -125,6 +125,13 @@ async function main(): Promise<void> {
       trigger: l.trigger,
     }));
   const scheduleHeartbeat = (): void => {
+    // Align the timer to the NEXT tick boundary, not "now + hb" — the tick body below (sweeps +
+    // tickScheduler) takes real time, and re-arming from "after the body ran" would drift the chain
+    // by body-duration + timer lag each cycle. A drifted tick can sample the wrong minute and
+    // silently skip a `30 3 * * *` cron's one matching minute for the day (heartbeat.ts
+    // nextTickDelayMs).
+    const hb = heartbeatMs(currentHeartbeatLoops());
+    const delay = nextTickDelayMs(Date.now(), hb);
     setTimeout(() => {
       sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now() });
       sweepStuck(registry, {
@@ -163,7 +170,7 @@ async function main(): Promise<void> {
         });
       }
       scheduleHeartbeat(); // re-derive next tick's interval from the loops enabled right now
-    }, heartbeatMs(currentHeartbeatLoops()));
+    }, delay);
   };
   scheduleHeartbeat();
   // Same computed value for both lines below — the tick is one shared clock, not two independent

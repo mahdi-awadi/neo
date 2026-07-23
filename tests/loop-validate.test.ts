@@ -61,3 +61,15 @@ test("bounds floors are enforced", () => {
   expect(validateLoopInput(base({ maxIterations: 0 }), opts)).toEqual({ error: expect.stringContaining("maxIterations") });
   expect(validateLoopInput(base({ budgetUsd: -1 }), opts)).toEqual({ error: expect.stringContaining("budgetUsd") });
 });
+
+// 2026-07-23 review finding #2: intervalMinutes > 0 alone let an interval below the daemon's own
+// tick resolution through (everyMs could round to a hot-loop-adjacent number the tick can never
+// actually honor) — reject anything under MIN_INTERVAL_MS (heartbeat.ts), not just <= 0.
+test("rejects an interval below the daemon's own tick floor (MIN_INTERVAL_MS)", () => {
+  expect(validateLoopInput(base({ triggerKind: "interval", intervalMinutes: 0.001, cronExpr: undefined }), opts)).toEqual({
+    error: expect.stringContaining("interval"),
+  });
+  // Exactly at the floor is fine.
+  const atFloor = validateLoopInput(base({ triggerKind: "interval", intervalMinutes: 1, cronExpr: undefined }), opts);
+  expect("def" in atFloor && atFloor.def.trigger).toEqual({ kind: "interval", everyMs: 60_000 });
+});
