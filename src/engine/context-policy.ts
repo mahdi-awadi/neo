@@ -10,10 +10,23 @@ import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
 
-export const CONTEXT_WINDOW_TOKENS = 200_000;
+/** Context-window size is a FACT about the model, not a tuning knob — one global constant would be
+ *  wrong the moment two different models are in play. Keyed by the model id Claude Code's own
+ *  transcripts report (`message.model`); `default` is the conservative fallback for an unknown or
+ *  absent model. Config may override per model (operator choice over facts) via
+ *  ContextPolicyCfg.windowTokensByModel — see windowTokensFor. */
+const MODEL_WINDOW_TOKENS: Record<string, number> = { default: 200_000 };
+
+/** The context-window size (tokens) for `model`, from the facts map, with `overrides` (config)
+ *  winning per model. `model === undefined` (no model found in the transcript yet) falls back to
+ *  the default fact — fail-open, never throws. */
+export function windowTokensFor(model: string | undefined, overrides?: Record<string, number>): number {
+  const m = { ...MODEL_WINDOW_TOKENS, ...overrides };
+  return (model !== undefined && m[model]) || m.default;
+}
 
 export interface ContextSignals {
-  occupancy: number; // last turn's input-side tokens / CONTEXT_WINDOW_TOKENS
+  occupancy: number; // last turn's input-side tokens / the model's context window (windowTokensFor)
   turns: number;
   ageMs: number;
   /** How long the session has sat idle since its transcript was last written (ms). 0 = fail-open
@@ -38,6 +51,11 @@ export interface ContextPolicyCfg {
   /** OPERATOR CHOICE: minimum number of (gapMs, hit) observations required before the learned TTL
    *  is trusted over cacheTtlFallbackMs. */
   cacheTtlMinObservations: number;
+  /** OPERATOR CHOICE: per-model context-window overrides, layered over the built-in facts map
+   *  (windowTokensFor's MODEL_WINDOW_TOKENS). Optional — absent/unset models fall back to the
+   *  facts map's own default. Not a new fixed knob: the window is still derived from the model
+   *  the transcript reports; this only lets an operator correct or extend the facts map. */
+  windowTokensByModel?: Record<string, number>;
 }
 
 /** Claude Code's project-dir encoding for a cwd: every "/" and "." becomes "-". */
@@ -72,7 +90,7 @@ export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg, ttlMs:
 export function sessionContext(
   folder: string,
   sdkSessionId: string,
-  opts: { projectsDir?: string; now?: () => number } = {},
+  opts: { projectsDir?: string; now?: () => number; windowTokensByModel?: Record<string, number> } = {},
 ): ContextSignals {
   const none: ContextSignals = { occupancy: 0, turns: 0, ageMs: 0, idleMs: 0 };
   if (!folder || !sdkSessionId) return none;
@@ -84,10 +102,11 @@ export function sessionContext(
     let turns = 0;
     let firstTs = 0;
     let lastInputSide = 0;
+    let lastModel: string | undefined;
     for (const line of readFileSync(path, "utf8").split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let obj: { type?: string; timestamp?: string; message?: { usage?: Record<string, number> } };
+      let obj: { type?: string; timestamp?: string; message?: { usage?: Record<string, number>; model?: string } };
       try {
         obj = JSON.parse(trimmed);
       } catch {
@@ -99,9 +118,10 @@ export function sessionContext(
       if (!u) continue;
       turns++;
       lastInputSide = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+      lastModel = obj.message?.model ?? lastModel;
     }
     return {
-      occupancy: lastInputSide / CONTEXT_WINDOW_TOKENS,
+      occupancy: lastInputSide / windowTokensFor(lastModel, opts.windowTokensByModel),
       turns,
       ageMs: firstTs ? Math.max(0, now() - firstTs) : 0,
       idleMs: Math.max(0, now() - statSync(path).mtimeMs),
@@ -246,7 +266,7 @@ export interface HandoffDeps {
  *  with a subsequent fresh session on the same folder. */
 export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
   const now = deps.now ?? (() => Date.now());
-  const sig = sessionContext(session.order.folder, session.sdkSessionId);
+  const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: cfg.windowTokensByModel });
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",

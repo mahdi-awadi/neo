@@ -6,7 +6,7 @@ import {
   decideContext,
   sessionContext,
   encodeCwd,
-  CONTEXT_WINDOW_TOKENS,
+  windowTokensFor,
   runHandoff,
   idleStateNote,
   writeIdleStateNote,
@@ -189,8 +189,28 @@ test("sessionContext reads occupancy/turns/age from the transcript JSONL", () =>
   const now = Date.parse("2026-07-08T02:00:00.000Z");
   const sig = sessionContext("/p/gold", "sess-1", { projectsDir, now: () => now });
   expect(sig.turns).toBe(2);
-  expect(sig.occupancy).toBeCloseTo((2_000 + 120_000 + 8_000) / CONTEXT_WINDOW_TOKENS, 5); // LAST turn's input-side tokens
+  // No `message.model` in this fixture → the default fact (windowTokensFor(undefined)).
+  expect(sig.occupancy).toBeCloseTo((2_000 + 120_000 + 8_000) / windowTokensFor(undefined), 5); // LAST turn's input-side tokens
   expect(sig.ageMs).toBe(2 * 3_600_000); // now - first line
+});
+
+test("window tokens derive from the session's model via the facts map, with config override winning", () => {
+  expect(windowTokensFor(undefined)).toBe(200_000); // unknown model → conservative default fact
+  expect(windowTokensFor("weird-model", { "weird-model": 500_000 })).toBe(500_000); // override map (config) wins
+});
+
+test("sessionContext divides occupancy by the model's window when the transcript reports one, not the default", () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), "neo-ctx-"));
+  const dir = join(projectsDir, encodeCwd("/p/model-window"));
+  mkdirSync(dir, { recursive: true });
+  const line = JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-07-08T00:00:00.000Z",
+    message: { model: "weird-model", usage: { input_tokens: 100_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+  });
+  writeFileSync(join(dir, "sess-model.jsonl"), line);
+  const sig = sessionContext("/p/model-window", "sess-model", { projectsDir, windowTokensByModel: { "weird-model": 500_000 } });
+  expect(sig.occupancy).toBeCloseTo(100_000 / 500_000, 5);
 });
 
 test("sessionContext fails OPEN on a missing transcript", () => {

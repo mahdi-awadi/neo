@@ -20,16 +20,12 @@ import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop } from "./engine/loops";
 import { tickScheduler } from "./engine/scheduler";
+import { heartbeatMs, type HeartbeatLoop } from "./engine/heartbeat";
 import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
 import { makeLoopReply } from "./engine/loop-mirror";
-
-// Idle-close poll interval.
-const IDLE_POLL_MS = 60 * 1000;
-// Loop scheduler tick — evaluate loop triggers once a minute.
-const LOOP_TICK_MS = 60 * 1000;
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
 // wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
@@ -98,34 +94,11 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   const requestReload = (): void => shutdown("/reload");
 
-  // Idle watchdog + stuck-watchdog — shares the registry the pipeline registers sessions in. The company is exempt.
-  setInterval(() => {
-    sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now() });
-    sweepStuck(registry, {
-      now: Date.now(),
-      stuckAfterMs: cfg.stuckAfterMs,
-      longTurnAlertMs: cfg.longTurnAlertMs,
-      alertRepeatMs: cfg.alertRepeatMs,
-      alert: (_s, text) => {
-        console.log(`[watchdog] ${text}`);
-        const adminId = admin.adminId();
-        if (cfg.telegramToken && adminId) {
-          void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ chat_id: adminId, text }),
-          }).catch(() => {});
-        }
-      },
-    });
-  }, IDLE_POLL_MS);
-
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);
   console.log("  usage     -> measured from ~/.claude transcripts (/usage); throttling opt-in via caps later");
   console.log(`  ledger    -> data/ledger.db (${ledger.listRecent().length} prior orders)`);
   console.log(`  admin     -> ${admin.adminId() ?? "unclaimed (first Telegram message becomes admin)"}`);
-  console.log(`  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every ${IDLE_POLL_MS / 1000}s (company exempt)`);
 
   // Loop scheduler — fire due cron/interval loops through the governed runProjectLoop. AI-free:
   // it only evaluates triggers + guards (busy folder / budget throttle) and starts the worker.
@@ -141,9 +114,37 @@ async function main(): Promise<void> {
     toStdout: (text, project) => console.log(`[loop] ${projectTagPrefix(project)}${text}`),
     bus,
   });
-  if (cfg.loopSchedulerEnabled) {
-    setInterval(
-      () =>
+
+  // The daemon's single derived heartbeat drives BOTH the idle/stuck sweep and the loop scheduler
+  // tick — no fixed "poll every N seconds" knob (heartbeat.ts). It's re-derived every tick (via a
+  // self-rescheduling setTimeout, not setInterval) from the loops enabled *right now*, so toggling
+  // on a fast interval loop from the web console speeds the tick up with no daemon restart.
+  const currentHeartbeatLoops = (): HeartbeatLoop[] =>
+    effectiveLoops(ledger).map((l) => ({
+      enabled: ledger.isEnabled(l.name) ?? l.enabledByDefault ?? false, // same resolution as tickScheduler
+      trigger: l.trigger,
+    }));
+  const scheduleHeartbeat = (): void => {
+    setTimeout(() => {
+      sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now() });
+      sweepStuck(registry, {
+        now: Date.now(),
+        stuckAfterMs: cfg.stuckAfterMs,
+        longTurnAlertMs: cfg.longTurnAlertMs,
+        alertRepeatMs: cfg.alertRepeatMs,
+        alert: (_s, text) => {
+          console.log(`[watchdog] ${text}`);
+          const adminId = admin.adminId();
+          if (cfg.telegramToken && adminId) {
+            void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ chat_id: adminId, text }),
+            }).catch(() => {});
+          }
+        },
+      });
+      if (cfg.loopSchedulerEnabled) {
         tickScheduler({
           loops: effectiveLoops(ledger), // built-in ∪ custom, re-read each tick (no restart for new loops)
           store: ledger, // Ledger implements LoopStateStore
@@ -159,13 +160,20 @@ async function main(): Promise<void> {
               cfg,
               store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
             }),
-        }),
-      LOOP_TICK_MS,
-    );
-    console.log(`  loops     -> scheduler on, tick every ${LOOP_TICK_MS / 1000}s (${effectiveLoops(ledger).length} loops)`);
-  } else {
-    console.log("  loops     -> scheduler OFF (NEO_LOOP_SCHEDULER=0)");
-  }
+        });
+      }
+      scheduleHeartbeat(); // re-derive next tick's interval from the loops enabled right now
+    }, heartbeatMs(currentHeartbeatLoops()));
+  };
+  scheduleHeartbeat();
+  console.log(
+    `  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every derived heartbeat tick (company exempt)`,
+  );
+  console.log(
+    cfg.loopSchedulerEnabled
+      ? `  loops     -> scheduler on, tick derived from enabled triggers — ${heartbeatMs(currentHeartbeatLoops()) / 1000}s now (${effectiveLoops(ledger).length} loops)`
+      : "  loops     -> scheduler OFF (NEO_LOOP_SCHEDULER=0)",
+  );
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
