@@ -6,7 +6,6 @@ config.json
 *.log
 data/
 dist/
-src/engine/default-project.ts
 # Runtime company/tenant data + secrets live here once ported — never committed.
 company/
 
@@ -19,3 +18,11 @@ inbox/
 
 # OS / editor cruft
 .DS_Store
+*.swp
+
+# Machine-local — per-deployment files that must never dirty the tracked tree
+CLAUDE.local.md
+AGENTS.local.md
+.claude/settings.local.json
+.gitnexus/
+.claude/skills/gitnexus/
