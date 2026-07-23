@@ -133,6 +133,7 @@ async function applyContextPolicy(
       registry: deps.registry,
       ledger: deps.ledger,
       runDeps: profileDeps(deps.cfg, "handoff"),
+      memoryFlush: memoryScopeEnabled(deps.cfg.memory, folder, deps.cfg.companyFolder),
     });
     return { resumeId: "", idleMs: 0 };
   } catch {
@@ -427,6 +428,7 @@ function startSession(
               registry,
               ledger,
               runDeps: profileDeps(deps.cfg, "handoff"),
+              memoryFlush: memoryScopeEnabled(deps.cfg.memory, order.folder, deps.cfg.companyFolder),
             });
           }
         }

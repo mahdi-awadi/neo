@@ -8,6 +8,9 @@
 import type { SessionInfo } from "../types";
 import type { Ledger, OpenSessionRow } from "./ledger";
 import type { Registry } from "./registry";
+import type { MemoryCfg } from "../config";
+import { memoryScopeEnabled } from "./memory";
+import { MEMORY_FLUSH_SENTENCE } from "./context-policy";
 
 /** Gate shared by the pipeline and dispatch: once draining, no new orders/sub-runs start. */
 export interface Lifecycle {
@@ -26,13 +29,17 @@ export function createLifecycle(): Lifecycle {
 /** Default bounded drain window before running turns are hard-interrupted. */
 export const DRAIN_WINDOW_MS_DEFAULT = 90_000;
 
-/** The wrap-up follow-up pushed into every running worker (mirrors dispatch's grace message). */
-export function wrapUpFollowUp(drainMs: number): string {
-  return (
+/** The wrap-up follow-up pushed into every running worker (mirrors dispatch's grace message).
+ *  `memoryFlush` (true when the session's folder is in memory scope — same memoryScopeEnabled gate
+ *  every other memory injection uses) prepends MEMORY_FLUSH_SENTENCE so the worker saves durable
+ *  facts to memory before its WIP note; absent/false leaves the message byte-identical to before
+ *  this parameter existed. */
+export function wrapUpFollowUp(drainMs: number, memoryFlush?: boolean): string {
+  const base =
     `♻️ Neo is restarting for an engine reload — stop working now. ` +
     `Commit any green work and write a brief WIP note (plan doc or WIP.md) so a follow-up run can resume. ` +
-    `You have ~${Math.round(drainMs / 1000)}s before this session is closed; it will be resumed after the restart.`
-  );
+    `You have ~${Math.round(drainMs / 1000)}s before this session is closed; it will be resumed after the restart.`;
+  return memoryFlush ? MEMORY_FLUSH_SENTENCE + "\n\n" + base : base;
 }
 
 const OPEN = (s: SessionInfo): boolean => s.status === "running" || s.status === "idle";
@@ -60,6 +67,14 @@ export async function drainAndPersist(opts: {
   pollMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Memory system config (Phase 2) — presence alone does NOT flush; a running session's wrap-up
+   *  follow-up only gains MEMORY_FLUSH_SENTENCE when BOTH this and `companyFolder` are set AND
+   *  `memoryScopeEnabled` says its folder is in scope (same gate every other memory injection
+   *  uses). Absent → wrapUpFollowUp is called with no flag, byte-identical to before this field. */
+  memory?: MemoryCfg;
+  /** The always-on company folder (config `companyFolder`) — needed alongside `memory` to
+   *  evaluate the `"company"` scope keyword. Absent ⇒ fail-closed: no flush even if `memory` set. */
+  companyFolder?: string;
 }): Promise<DrainResult> {
   const { registry, ledger } = opts;
   const now = opts.now ?? (() => Date.now());
@@ -69,7 +84,13 @@ export async function drainAndPersist(opts: {
 
   // Ask every mid-turn worker to wrap up (commit green work + WIP note), like the dispatch grace window.
   const running = registry.list().filter((s) => s.status === "running");
-  for (const s of running) registry.getControl(s.id)?.followUp(wrapUpFollowUp(opts.drainMs));
+  for (const s of running) {
+    const memoryFlush =
+      opts.memory !== undefined &&
+      opts.companyFolder !== undefined &&
+      memoryScopeEnabled(opts.memory, s.order.folder, opts.companyFolder);
+    registry.getControl(s.id)?.followUp(wrapUpFollowUp(opts.drainMs, memoryFlush));
+  }
 
   // Bounded drain: wait for turns to finish (their done-handlers mark the sessions idle).
   const deadline = now() + opts.drainMs;

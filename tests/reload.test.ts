@@ -14,7 +14,19 @@ import { handleMessage, type PipelineDeps } from "../src/engine/pipeline";
 import { dispatchToProject, type DispatchDeps } from "../src/engine/dispatch";
 import { handleCommand } from "../src/engine/commands";
 import { loadConfig } from "../src/config";
+import { MEMORY_FLUSH_SENTENCE } from "../src/engine/context-policy";
 import type { Order, SessionControl } from "../src/types";
+import type { MemoryCfg } from "../src/config";
+
+const MEMORY_CFG: MemoryCfg = {
+  scopes: [] as string[],
+  snapshotMaxPct: 0.004,
+  userMaxPct: 0.0025,
+  dreamMaxMutations: 3,
+  dreamMaxAdds: 1,
+  dreamMaxNetChars: 250,
+  dreamLookbackDays: 14,
+};
 
 function order(folder: string, chatId = 7): Order {
   return { id: crypto.randomUUID(), source: "neo", folder, task: "work", chatId, createdAt: 1000 };
@@ -147,6 +159,48 @@ test("drainAndPersist interrupts a session that outlives the drain window", asyn
   expect(res.interrupted).toEqual([s.id]);
   // still persisted — the resume target survives the hard abort
   expect(ledger.takeOpenSessions()[0]).toMatchObject({ folder: "/home/slow", sdkSessionId: "sdk-slow" });
+});
+
+// --- memory boundary capture: pre-drain flush sentence -------------------------------------------
+
+test("wrapUpFollowUp prepends the memory flush sentence only when memoryFlush is true", () => {
+  const plain = wrapUpFollowUp(90_000);
+  expect(plain).not.toContain(MEMORY_FLUSH_SENTENCE);
+  const flushed = wrapUpFollowUp(90_000, true);
+  expect(flushed.startsWith(MEMORY_FLUSH_SENTENCE)).toBe(true);
+  expect(flushed).toContain(plain);
+});
+
+test("drainAndPersist's wrap-up follow-up carries the flush sentence only for a scoped folder", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const scoped = registry.add(order("/home/gold"));
+  registry.setSdkSessionId(scoped.id, "sdk-gold");
+  const outOfScope = registry.add(order("/home/silver"));
+  registry.setSdkSessionId(outOfScope.id, "sdk-silver");
+  const followUps: Record<string, string> = {};
+  for (const s of [scoped, outOfScope]) {
+    registry.attachControl(s.id, {
+      followUp: (t) => {
+        followUps[s.order.folder] = t;
+        registry.setStatus(s.id, "idle");
+      },
+      interrupt: async () => {},
+    });
+  }
+
+  await drainAndPersist({
+    registry,
+    ledger,
+    drainMs: 90_000,
+    pollMs: 1,
+    sleep: async () => {},
+    memory: { ...MEMORY_CFG, scopes: ["/home/gold"] },
+    companyFolder: "/tmp/agent",
+  });
+
+  expect(followUps["/home/gold"].startsWith(MEMORY_FLUSH_SENTENCE)).toBe(true);
+  expect(followUps["/home/silver"]).not.toContain(MEMORY_FLUSH_SENTENCE);
 });
 
 test("drainAndPersist backfills a missing sdk id from the ledger's last session", async () => {

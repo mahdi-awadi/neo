@@ -287,6 +287,7 @@ export async function dispatchToProject(
             registry: deps.registry,
             ledger: deps.ledger,
             runDeps: profileDeps(workerCfg, "handoff"),
+            memoryFlush: !!memoryGate(deps, folder),
           });
           gatedResume = undefined;
         }

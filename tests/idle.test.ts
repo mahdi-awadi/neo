@@ -1,8 +1,24 @@
 import { test, expect } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { sweepIdle } from "../src/engine/idle";
 import type { Order } from "../src/types";
+import type { MemoryCfg } from "../src/config";
+
+const MEMORY_CFG: MemoryCfg = {
+  scopes: [] as string[],
+  snapshotMaxPct: 0.004,
+  userMaxPct: 0.0025,
+  dreamMaxMutations: 3,
+  dreamMaxAdds: 1,
+  dreamMaxNetChars: 250,
+  dreamLookbackDays: 14,
+};
+
+const scratch = () => mkdtempSync(join(tmpdir(), "neo-idle-"));
 
 function order(over: Partial<Order> = {}): Order {
   return {
@@ -126,4 +142,67 @@ test("sweepIdle never closes the default project, however old", () => {
   expect(closed).toEqual([]);
   expect(reg.get("company")).toBeDefined(); // still registered
   expect(reg.getDefault()?.id).toBe("company");
+});
+
+// --- memory boundary capture: deterministic idle-close log line ---------------------------------
+
+test("sweepIdle appends a deterministic log line to today's memory log when the folder is in scope", () => {
+  const dir = scratch();
+  const reg = createRegistry();
+  const led = openLedger(":memory:");
+  const o = order({ id: "a", folder: dir, chatId: 9 });
+  reg.add(o, 0);
+  reg.setSdkSessionId(o.id, "sdk-a");
+  reg.attachControl(o.id, fakeControl());
+
+  sweepIdle(reg, led, {
+    idleMs: 1000,
+    now: 2000,
+    writeStateNote: () => {}, // don't also write a real HANDOFF.md — irrelevant to this assertion
+    memory: { ...MEMORY_CFG, scopes: [dir] },
+    companyFolder: "/tmp/agent",
+  });
+
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = String(today.getMonth() + 1).padStart(2, "0");
+  const d = String(today.getDate()).padStart(2, "0");
+  const logPath = join(dir, "memory", "log", `${y}-${m}-${d}.md`);
+  const content = readFileSync(logPath, "utf-8");
+  expect(content).toContain("idle-closed:");
+  expect(content.trim().split("\n").length).toBe(1); // exactly one line for this one closed session
+});
+
+test("sweepIdle creates NO memory/ dir for a folder out of scope (default scopes: [])", () => {
+  const dir = scratch();
+  const reg = createRegistry();
+  const led = openLedger(":memory:");
+  const o = order({ id: "a", folder: dir, chatId: 9 });
+  reg.add(o, 0);
+  reg.setSdkSessionId(o.id, "sdk-a");
+  reg.attachControl(o.id, fakeControl());
+
+  sweepIdle(reg, led, {
+    idleMs: 1000,
+    now: 2000,
+    writeStateNote: () => {},
+    memory: MEMORY_CFG, // scopes: []
+    companyFolder: "/tmp/agent",
+  });
+
+  expect(existsSync(join(dir, "memory"))).toBe(false);
+});
+
+test("sweepIdle creates NO memory/ dir when memory/companyFolder are absent (default threading)", () => {
+  const dir = scratch();
+  const reg = createRegistry();
+  const led = openLedger(":memory:");
+  const o = order({ id: "a", folder: dir, chatId: 9 });
+  reg.add(o, 0);
+  reg.setSdkSessionId(o.id, "sdk-a");
+  reg.attachControl(o.id, fakeControl());
+
+  sweepIdle(reg, led, { idleMs: 1000, now: 2000, writeStateNote: () => {} });
+
+  expect(existsSync(join(dir, "memory"))).toBe(false);
 });

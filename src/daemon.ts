@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     lifecycle.beginDrain(); // refuse new orders/dispatches immediately, before we stop polling
     console.log(`[reload] ${why}: draining running sessions (≤${cfg.drainWindowMs / 1000}s), saving open sessions…`);
     void stopFrontends(stopHooks)
-      .then(() => drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs }))
+      .then(() => drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs, memory: cfg.memory, companyFolder: cfg.companyFolder }))
       .then((r) => console.log(`[reload] drained ${r.drained.length} · interrupted ${r.interrupted.length} · persisted ${r.persisted} — exiting for restart`))
       .catch((e) => console.log(`[reload] drain error: ${e instanceof Error ? e.message : e}`))
       .finally(() => process.exit(0));
@@ -133,7 +133,7 @@ async function main(): Promise<void> {
     const hb = heartbeatMs(currentHeartbeatLoops());
     const delay = nextTickDelayMs(Date.now(), hb);
     setTimeout(() => {
-      sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now() });
+      sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now(), memory: cfg.memory, companyFolder: cfg.companyFolder });
       sweepStuck(registry, {
         now: Date.now(),
         stuckAfterMs: cfg.stuckAfterMs,

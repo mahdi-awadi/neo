@@ -8,6 +8,8 @@ import {
   encodeCwd,
   windowTokensFor,
   runHandoff,
+  HANDOFF_PROMPT,
+  MEMORY_FLUSH_SENTENCE,
   idleStateNote,
   writeIdleStateNote,
   effectiveCacheTtlMs,
@@ -257,4 +259,33 @@ test("runHandoff clears even when the handoff turn times out, AND interrupts the
   await runHandoff(s, { ...CFG, handoffTimeoutMs: 5 }, { registry, ledger, start: fakeStart as never });
   expect(registry.get(s.id)?.sdkSessionId).toBe("");
   expect(interrupted).toBe(true); // the timed-out worker is interrupted, not abandoned
+});
+
+test("runHandoff prepends the memory flush sentence before HANDOFF_PROMPT when memoryFlush is true", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h5", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
+  registry.setSdkSessionId(s.id, "fat-5");
+  let sawTask: string | undefined;
+  const fakeRun = async (o: Order, _h: RunHandlers, _d?: { resume?: string }) => {
+    sawTask = o.task;
+    return { ok: true, sessionId: "fat-5", summary: "written", costUsd: 0 };
+  };
+  await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never, memoryFlush: true });
+  expect(sawTask?.startsWith(MEMORY_FLUSH_SENTENCE)).toBe(true);
+  expect(sawTask).toContain(HANDOFF_PROMPT);
+});
+
+test("runHandoff's task is byte-identical to HANDOFF_PROMPT when memoryFlush is absent (Phase-1 fence pin)", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h6", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
+  registry.setSdkSessionId(s.id, "fat-6");
+  let sawTask: string | undefined;
+  const fakeRun = async (o: Order, _h: RunHandlers, _d?: { resume?: string }) => {
+    sawTask = o.task;
+    return { ok: true, sessionId: "fat-6", summary: "written", costUsd: 0 };
+  };
+  await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never });
+  expect(sawTask).toBe(HANDOFF_PROMPT);
 });

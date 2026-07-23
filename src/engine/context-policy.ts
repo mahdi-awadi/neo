@@ -214,6 +214,15 @@ export const HANDOFF_PROMPT =
   "Write a concise state-of-work handoff to HANDOFF.md in the project root: what is in flight, " +
   "decisions made, blockers, and next steps. Overwrite any existing HANDOFF.md. Then stop — do not continue other work.";
 
+/** Prepended to HANDOFF_PROMPT (never merged into it — HANDOFF_PROMPT stays byte-identical for
+ *  the Phase-1 fence) when a handoff fires for a memory-scoped folder, so the worker captures
+ *  durable facts/decisions into memory BEFORE it writes the (separate, ephemeral) HANDOFF.md note.
+ *  Gated by the same memoryScopeEnabled check every other memory injection uses — see runHandoff's
+ *  `deps.memoryFlush` and its callers in pipeline.ts/dispatch.ts. */
+export const MEMORY_FLUSH_SENTENCE =
+  "Before writing the handoff note: save any durable facts, decisions, or workarounds from this " +
+  "session with the memory tool, and append a one-line session summary to today's memory log.";
+
 /** A short, DETERMINISTIC state-of-work note (no worker/AI) for HANDOFF.md, written when a quiet
  *  session is idle-closed — so the next run knows where it left off even when no context-boundary
  *  handoff (the richer, worker-written HANDOFF_PROMPT above) fired. Reuses the SAME single HANDOFF.md
@@ -270,6 +279,11 @@ export interface HandoffDeps {
   /** Path-profile RunDeps (model/effort/skills/env) for this handoff turn, e.g.
    *  `profileDeps(cfg, "handoff")`. Merged over the fixed resume/effort base below. */
   runDeps?: RunDeps;
+  /** True when the session's folder is in memory scope (caller's `memoryScopeEnabled` check) —
+   *  prepends MEMORY_FLUSH_SENTENCE to the handoff task so the worker saves durable facts to
+   *  memory before writing HANDOFF.md. Absent/false → task is HANDOFF_PROMPT, byte-identical to
+   *  before this field existed. */
+  memoryFlush?: boolean;
 }
 
 /** Run the handoff turn against the fat session (bounded), then ALWAYS clear its resume state.
@@ -283,7 +297,7 @@ export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, de
     id: crypto.randomUUID(),
     source: "neo",
     folder: session.order.folder,
-    task: HANDOFF_PROMPT,
+    task: deps.memoryFlush ? MEMORY_FLUSH_SENTENCE + "\n\n" + HANDOFF_PROMPT : HANDOFF_PROMPT,
     chatId: session.order.chatId,
     createdAt: now(),
   };
