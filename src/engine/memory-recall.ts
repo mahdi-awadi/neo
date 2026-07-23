@@ -22,7 +22,11 @@ export interface MemoryIndex {
    * FTS syntax errors (malformed operator queries) fail open to []. */
   search(query: string, limit: number): MemoryHit[];
   /** (Re-)indexes a file's non-empty lines as rows tagged with `day`. `path` is absolute.
-   * Deletes any existing rows for that file first, so re-indexing never duplicates. */
+   * Deletes any existing rows for that file first, so re-indexing never duplicates. Strips a
+   * leading "- " markdown-bullet prefix from each line before storing (daily-log files are the
+   * only files this indexes, and appendDailyLog writes each entry as "- <line>\n") — this keeps
+   * the stored `content` identical to what indexLine already stored for the same line, so a
+   * later re-index never silently changes a citation's content (see indexLine). */
   indexFile(path: string, day: string): void;
   /** Indexes a single already-scanned line (used by appendDailyLog's incremental update) without
    * touching other rows for that file — callers are responsible for not double-inserting.
@@ -100,12 +104,22 @@ export function openMemoryIndex(folder: string): MemoryIndex {
         return; // nothing to index
       }
       const insert = db.query(`INSERT INTO mem (content, file, day) VALUES (?, ?, ?)`);
-      for (const line of text.split("\n")) {
+      for (const raw of text.split("\n")) {
+        // Strip the "- " bullet appendDailyLog wrote, so content matches indexLine's raw form —
+        // without this, re-indexing the same file changes a citation's stored content (drift).
+        const line = raw.startsWith("- ") ? raw.slice(2) : raw;
         if (line.trim() === "") continue;
         insert.run(line, file, day);
       }
     },
     indexLine(path, day, line) {
+      // toCitationPath uses `folder` as captured in this closure at the openMemoryIndex(folder)
+      // call that created this cache entry — NOT re-derived from the `folder` argument of a
+      // later openMemoryIndex(folder) call that returned this same cached instance. Harmless in
+      // practice (citations are relative path math off `folder`, and the cache key is already
+      // the canonical/realpath'd form of that same folder), but a caller that opens the same
+      // logical folder via two different spellings (symlink vs target, trailing slash, etc.)
+      // gets citations computed against whichever spelling was used on the FIRST open.
       const file = toCitationPath(folder, path);
       db.query(`INSERT INTO mem (content, file, day) VALUES (?, ?, ?)`).run(line, file, day);
     },

@@ -79,6 +79,24 @@ test("re-indexing the same file does not duplicate rows", () => {
   expect(hits.length).toBe(1);
 });
 
+test("indexLine (via appendDailyLog) and a later indexFile store byte-identical content — no bullet-prefix drift", () => {
+  const dir = scratch();
+  appendDailyLog(dir, "Decided to use Stripe for payment processing", "2026-07-10");
+
+  const before = openMemoryIndex(dir).search("Stripe", 5);
+  expect(before.length).toBe(1);
+  const originalContent = before[0].content;
+  expect(originalContent).toBe("Decided to use Stripe for payment processing"); // raw form, no "- " bullet
+
+  // Simulate a later bootstrap/dream-loop re-index of the same on-disk log file.
+  const path = join(dir, "memory", "log", "2026-07-10.md");
+  openMemoryIndex(dir).indexFile(path, "2026-07-10");
+
+  const after = openMemoryIndex(dir).search("Stripe", 5);
+  expect(after.length).toBe(1); // still no duplicate row
+  expect(after[0].content).toBe(originalContent); // byte-equal — content must not drift on reindex
+});
+
 test("openMemoryIndex caches Database handles per canonical folder", () => {
   const dir = scratch();
   const a = openMemoryIndex(dir);
