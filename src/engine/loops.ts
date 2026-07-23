@@ -9,7 +9,7 @@ import { makeGoalCheck, READONLY_DENY, type Goal, type GoalCheck } from "./goal"
 import type { Trigger } from "./trigger";
 import type { SchedulableLoop, LoopStateStore } from "./scheduler";
 import type { LoopOutcome } from "./loop-runner";
-import type { runOrder } from "./session-runner";
+import type { runOrder, RunDeps } from "./session-runner";
 import { validateLoopInput, type LoopInput } from "./loop-validate";
 import { profileDeps } from "./worker-profile";
 import { sessionContext, decideContext } from "./context-policy";
@@ -242,7 +242,7 @@ function loopRunExtras(
   loop: LoopDef,
   deps: { run?: typeof runOrder; check?: GoalCheck; cfg?: NeoConfig },
 ): {
-  runDeps?: ReturnType<typeof profileDeps>;
+  runDeps?: RunDeps;
   freshSession?: boolean;
   gateResume?: (id: string) => Promise<string | undefined>;
   check: GoalCheck;
