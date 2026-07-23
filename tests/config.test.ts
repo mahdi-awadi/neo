@@ -155,3 +155,24 @@ test("optional MCP add-on bins are OFF by default (no hardcoded personal paths)"
     expect(loadConfig("/nonexistent-dir").gitnexusBin).toBe("/usr/bin/gitnexus");
   });
 });
+
+test("worker profiles: per-path overrides merge from config.json over inherit-everything defaults", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ workers: { handoff: { model: "haiku", effort: "low" } }, workerEnv: { MAX_MCP_OUTPUT_TOKENS: "12000" } }));
+  const cfg = loadConfig(d);
+  expect(cfg.workers.handoff.model).toBe("haiku");      // file override wins for that path
+  expect(cfg.workers.company.effort).toBe("low");       // existing code behavior, now a default
+  expect(cfg.workers.dispatch).toEqual({});             // code-writing paths inherit everything
+  expect(cfg.workerEnv.MAX_MCP_OUTPUT_TOKENS).toBe("12000");
+});
+
+test("worker profiles: QUALITY INVARIANT — absent config changes no worker's model/effort/skills", () => {
+  const cfg = loadConfig(dir());
+  // Only the two effort:"low" behaviors that already exist in code move into config; every
+  // other path (all code-writing paths included) inherits the CLI default model untouched.
+  expect(cfg.workers).toEqual({
+    company: { effort: "low" }, project: {}, dispatch: {}, loop: {},
+    judge: {}, ingress: { effort: "low" }, handoff: {},
+  });
+  expect(cfg.workerEnv).toEqual({});
+});

@@ -37,6 +37,8 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
     contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000 },
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {} },
+    workerEnv: {},
   };
 }
 

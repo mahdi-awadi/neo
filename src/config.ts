@@ -5,6 +5,20 @@ import { join } from "node:path";
 import type { Provider } from "./types";
 import type { ContextPolicyCfg } from "./engine/context-policy";
 
+/** Reasoning-effort levels accepted by the SDK. */
+export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Per-path worker launch profile. Unset fields inherit the CLI/SDK default (today's behavior). */
+export interface WorkerProfile {
+  model?: string;
+  effort?: WorkerEffort;
+  skills?: "all" | string[];
+  maxTurns?: number;
+}
+
+export type WorkerPathName =
+  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff";
+
 export interface NeoConfig {
   telegramToken: string;
   telegramAllowFrom: number[];
@@ -86,6 +100,12 @@ export interface NeoConfig {
   drainWindowMs: number;
   /** Context policy: signals, verdicts, and safe boundaries for session lifecycle management. */
   contextPolicy: ContextPolicyCfg;
+  /** Per-launch-path worker profiles (model/effort/skills/maxTurns). See the context-efficiency
+   *  design spec. Per-path objects REPLACE the default for that path when set in config.json. */
+  workers: Record<WorkerPathName, WorkerProfile>;
+  /** Extra env vars for every spawned worker (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,
+   *  MAX_MCP_OUTPUT_TOKENS, CLAUDE_CODE_SUBAGENT_MODEL), merged over process.env. */
+  workerEnv: Record<string, string>;
 }
 
 const DEFAULTS = {
@@ -108,6 +128,20 @@ const DEFAULTS = {
   alertRepeatMs: 15 * 60 * 1000,
   drainWindowMs: 90 * 1000,
   contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 7 * 24 * 3600 * 1000, handoffTimeoutMs: 180_000 },
+  // QUALITY INVARIANT: defaults reproduce today's behavior EXACTLY. The only non-empty entries
+  // are the two effort:"low" cases that already live in code (pipeline.ts:250, ingress.ts:68/71),
+  // relocated here. Economy overrides (cheaper models on handoff/judge/ingress ONLY) are opt-in
+  // via config.json — see docs/CONFIG.md "Economy mode" — never defaults, never code-writing paths.
+  workers: {
+    company: { effort: "low" },
+    project: {},
+    dispatch: {},
+    loop: {},
+    judge: {},
+    ingress: { effort: "low" },
+    handoff: {},
+  } satisfies Record<WorkerPathName, WorkerProfile>,
+  workerEnv: {} as Record<string, string>,
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -171,5 +205,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,
     drainWindowMs: fileCfg.drainWindowMs ?? DEFAULTS.drainWindowMs,
     contextPolicy: { ...DEFAULTS.contextPolicy, ...(fileCfg.contextPolicy ?? {}) },
+    workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
+    workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
   };
 }
