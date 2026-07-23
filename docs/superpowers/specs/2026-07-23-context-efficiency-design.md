@@ -10,8 +10,27 @@ setup (code-intel MCP + right skills), and **memory is a first-class goal**, not
 1. **Quality invariant.** The model doing real project work is never silently downgraded. Every
    profile defaults to *inherit* (today's exact behavior); any economy override is opt-in, allowed
    only on mechanical non-code paths, gated by measurement, and reversible by a config flip.
-2. Every knob is **config** (env > config.json > default) — no hardcoded values.
-3. The engine stays deterministic and AI-free; AI only inside workers.
+2. **No magic numbers — values are signals, ratios, or choices.** A fixed absolute in config is
+   still a magic number. Every operational value must be one of: **(a) derived** from a measured
+   signal (rate-limit utilization events, observed cache hits, transcript occupancy, trigger
+   definitions, the session's own model), **(b) a ratio** of a measured capacity (percent of the
+   *actual* context window, fraction of *observed* allowance), or **(c) an explicit operator
+   choice**. Fixed absolutes are allowed only as cold-start **fallbacks**, and each must document
+   the signal that supersedes it once data exists.
+3. The engine stays deterministic and AI-free; AI only inside workers — "smart" here means
+   *signal-derived and self-calibrating*, never model-guessed.
+
+### The smart-value layer (what replaces each fixed number)
+
+| Fixed number today (or in rev. 2) | Smart replacement | Signal (already available) |
+|---|---|---|
+| `budgetWindowUsd` $20 / 5h | **Removed, not replaced-with-another-number.** A subscription has no dollar spend — USD budgeting is the wrong model entirely (operator decision 2026-07-23). The governor throttles **background** work when observed subscription utilization crosses `1 − interactiveReservePct` (a ratio); before the first signal arrives it fails open (interactive work is never throttled by design). Per-loop `budgetUsd` bounds follow the same removal — loop bounds become iterations + utilization gating | SDK `rate_limit_event` → `RateLimitInfo` (already plumbed into `onRateLimit`) + `usage.ts` transcript windows |
+| `staleResumeMs` = fixed 1h | **Learned cache TTL**: ledger records `(idle gap, cache hit?)` per resume — the first post-resume turn's `cache_read_input_tokens` says whether the cache was warm; the threshold is computed from observations | transcript usage fields; provider-documented TTL is only the cold-start fallback until enough observations exist |
+| `windowTokens` = 200,000 | **Per-session window from the session's own model** (SDK system-init reports the model; window resolved per-model from a data map that is *fact*, not tuning; config-overridable) | transcript/system-init model id |
+| `handoffPct` / `emergencyPct` / `staleResumePct` | Stay — they are **ratios** of measured occupancy (rule b). Phase 4 telemetry may auto-nudge them per project from observed emergency events — derived, deterministic | ledger `context_events` |
+| `idlePollMs` / `loopTickMs` fixed 60s | **One derived daemon heartbeat**: cron resolution is 1 minute (a fact of cron, not tuning); with interval triggers enabled, tick = min(cron resolution, shortest enabled interval). Idle sweep rides the same heartbeat | the enabled loops' own trigger definitions |
+| Memory snapshot cap "a couple thousand chars" (the doc's number) | **Ratio of the reading session's window** (`snapshotMaxPct`); consolidation triggers when the ratio is exceeded | per-session window above |
+| `MAX_MCP_OUTPUT_TOKENS` fixed 12000 | Ratio of the worker's window, resolved to the env var at launch | per-session window above |
 
 ---
 
@@ -154,16 +173,21 @@ A ledger `onboarded` marker makes the pipeline idempotent (the doc's sentinel-fi
 
 - **Phase 1 — quality-neutral hygiene (built first; plan: `plans/2026-07-23-context-efficiency-phase1.md`, rev. 2):**
   worker-profile plumbing with **inherit-everything defaults**; `workerEnv` (earlier autocompact,
-  `MAX_MCP_OUTPUT_TOKENS` cap — quality-neutral); loop resume gated by context policy +
-  `freshSession` flag; cache-aware resume (`staleResumeMs`/`staleResumePct`); de-hardcoded
-  timing/window constants; CLAUDE.md diet. Economy model suggestions live ONLY in `docs/CONFIG.md`
+  MCP result caps — quality-neutral); loop resume gated by context policy + `freshSession` flag;
+  cache-aware resume driven by the **learned cache TTL** (per-resume cache-hit observations in the
+  ledger; provider-documented TTL only as cold-start fallback); the daemon heartbeat and context
+  window become **derived values** (from enabled trigger definitions / the session's own model per
+  the smart-value layer); CLAUDE.md diet. Economy model suggestions live ONLY in `docs/CONFIG.md`
   ("economy mode — opt-in, fenced to handoff/judge/ingress, measured, reversible"), not in defaults.
 - **Phase 2 — memory (co-primary goal):** §5 build — snapshot + injection, curated-writes skill,
   boundary capture, FTS5 recall with citations, ledger/transcript bootstrap, acceptance tests.
 - **Phase 3 — onboarding pipeline:** §6 build, incl. pointing engine indexing + the dispatch
   preamble at the configured code-intel server (gitnexus today) and the concurrency-wart fix.
 - **Phase 4 — telemetry & skill governance:** per-session token/context telemetry in the ledger
-  (the quality-vs-economy scoreboard §2 needs); optional token-based throttle; queue-over-parallel;
+  (the quality-vs-economy scoreboard §2 needs); the **rate-limit-feedback governor** *retiring the
+  USD budget meter outright* — subscription usage has no dollars; background work throttles on
+  observed utilization vs the interactive-reserve ratio, loops bound by iterations + the same
+  gate (per the smart-value layer); queue-over-parallel;
   dispatch preamble tiers (`full|lean|none` — company chooses per brief, engine enforces the
   configured default); `skillOverrides`/`disable-model-invocation` for superpowers skills that
   shouldn't auto-fire; SkillOpt (github.com/microsoft/SkillOpt) noted as an accuracy-preserving

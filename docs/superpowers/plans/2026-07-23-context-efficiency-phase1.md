@@ -12,7 +12,11 @@
 
 ## Global Constraints
 
-- Every new value lives in config (env > config.json > `DEFAULTS`) — zero hardcoded numbers in engine logic.
+- **No magic numbers** (design spec principle 2): every operational value is *derived from a
+  measured signal*, *a ratio of a measured capacity*, or *an explicit operator choice* — fixed
+  absolutes only as documented cold-start fallbacks naming the signal that supersedes them.
+- No USD/budget thinking: the deployment is subscription-based; nothing new may be denominated in
+  dollars (operator decision 2026-07-23 — existing meter retires in Phase 4).
 - Unset profile fields inherit today's behavior (SDK/CLI default model, default effort).
 - Engine stays AI-free and deterministic; fail-open on measurement errors (context-policy pattern).
 - `bunx tsc --noEmit` and `bun test` green before every commit; one commit per task.
@@ -377,81 +381,155 @@ The judge goal's worker run (`makeGoalCheck` deps in `goal.ts` call sites) gets 
 
 ---
 
-### Task 5: cache-aware resume in the context policy
+### Task 5: cache-aware resume — LEARNED cache TTL, not a fixed hour
+
+Smart-value rule: the resume-staleness threshold is **derived from observed cache behavior**. On
+every resume, the first post-resume assistant turn's `cache_read_input_tokens` (in the transcript)
+says whether the prompt cache was still warm for that idle gap. The ledger accumulates
+`(gapMs, hit)` observations; the effective TTL is computed from them. The provider-documented TTL
+(`cacheTtlFallbackMs`, operator choice) is used ONLY until enough observations exist.
 
 **Files:**
-- Modify: `src/engine/context-policy.ts` (`ContextPolicyCfg`, `sessionContext` adds `idleMs` from transcript mtime, `decideContext` adds the stale-resume rule), `src/config.ts:110` (DEFAULTS.contextPolicy)
-- Test: `tests/context-policy.test.ts`
+- Modify: `src/engine/context-policy.ts` (`ContextPolicyCfg`, `ContextSignals.idleMs`, `decideContext`, new `effectiveCacheTtlMs`), `src/engine/ledger.ts` (table `cache_observations(gap_ms INTEGER, hit INTEGER, at INTEGER)` + `recordCacheObservation`/`listCacheObservations`, following the existing `context_events` pattern at its `:251-259`), `src/engine/pipeline.ts` (record an observation where a resumed session's first result lands — the post-run check site `:336-343` already reads the transcript), `src/config.ts` (DEFAULTS.contextPolicy)
+- Test: `tests/context-policy.test.ts`, `tests/ledger.test.ts`
 
 **Interfaces:**
-- Produces: `ContextPolicyCfg` gains `staleResumeMs: number` (default `60 * 60 * 1000` — the subscription's 1h prompt-cache TTL) and `staleResumePct: number` (default `0.35`); `ContextSignals` gains `idleMs: number` (0 when unmeasurable — fail-open).
+- Produces: `ContextPolicyCfg` gains `staleResumePct: number` (a ratio — default `0.35`), `cacheTtlFallbackMs: number` (operator choice/fallback — default the provider-documented `3_600_000`), `cacheTtlMinObservations: number` (default `5`); `ContextSignals` gains `idleMs: number` (0 = fail-open); pure `effectiveCacheTtlMs(obs: { gapMs: number; hit: boolean }[], cfg): number`; `decideContext(signals, cfg, ttlMs)` takes the effective TTL as an argument (stays pure).
 
-- [ ] **Step 1: Write the failing tests** (append; reuse the file's existing fixture helpers for fake transcripts)
+- [ ] **Step 1: Write the failing tests** (append; reuse the file's fixture helpers)
 
 ```ts
-test("decideContext: stale + fat resume → handoff (cold cache would re-pay the whole context)", () => {
-  const cfg = { ...POLICY, staleResumeMs: 3_600_000, staleResumePct: 0.35 };
-  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 2 * 3_600_000 }, cfg)).toBe("handoff");
+test("effectiveCacheTtlMs: with too few observations, returns the fallback", () => {
+  expect(effectiveCacheTtlMs([], POLICY)).toBe(POLICY.cacheTtlFallbackMs);
+  expect(effectiveCacheTtlMs([{ gapMs: 60_000, hit: true }], POLICY)).toBe(POLICY.cacheTtlFallbackMs);
 });
 
-test("decideContext: stale but small, or fresh but fat-below-handoffPct, stays keep", () => {
-  const cfg = { ...POLICY, staleResumeMs: 3_600_000, staleResumePct: 0.35 };
-  expect(decideContext({ occupancy: 0.2, turns: 10, ageMs: 0, idleMs: 2 * 3_600_000 }, cfg)).toBe("keep");
-  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 60_000 }, cfg)).toBe("keep");
+test("effectiveCacheTtlMs: learns the boundary between observed hits and misses", () => {
+  const obs = [
+    { gapMs: 10 * 60_000, hit: true }, { gapMs: 30 * 60_000, hit: true },
+    { gapMs: 50 * 60_000, hit: true }, { gapMs: 70 * 60_000, hit: false },
+    { gapMs: 90 * 60_000, hit: false },
+  ];
+  // deterministic midpoint between the longest observed hit and the shortest observed miss
+  expect(effectiveCacheTtlMs(obs, POLICY)).toBe((50 * 60_000 + 70 * 60_000) / 2);
 });
 
-test("sessionContext reports idleMs from the transcript file mtime and 0 on any error", async () => {
-  const { folder, id } = writeFakeTranscript(); // existing helper in this test file
-  const ctx = await sessionContext(folder, id);
-  expect(ctx.idleMs).toBeGreaterThanOrEqual(0);
-  const missing = await sessionContext("/nope", "missing");
-  expect(missing.idleMs).toBe(0); // fail-open
+test("decideContext: idle past the effective TTL + fat transcript → handoff; either alone → keep", () => {
+  const ttl = 3_600_000;
+  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("handoff");
+  expect(decideContext({ occupancy: 0.2, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("keep");
+  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 60_000 }, POLICY, ttl)).toBe("keep");
+});
+
+test("sessionContext reports idleMs from the transcript mtime; 0 on any error (fail-open)", async () => {
+  const { folder, id } = writeFakeTranscript();
+  expect((await sessionContext(folder, id)).idleMs).toBeGreaterThanOrEqual(0);
+  expect((await sessionContext("/nope", "missing")).idleMs).toBe(0);
 });
 ```
 
 - [ ] **Step 2: Run to verify failure** — `bun test tests/context-policy.test.ts` → FAIL.
 
-- [ ] **Step 3: Implement** — `ContextPolicyCfg` gains the two fields (documented: "resume after a
-  cache-cold gap re-pays full context — hand off instead when the transcript is already fat");
-  `sessionContext` computes `idleMs = Math.max(0, Date.now() - statSync(path).mtimeMs)` inside the
-  existing try/catch (0 on error); `decideContext` adds, between the emergency and handoff rules:
+- [ ] **Step 3: Implement**
 
 ```ts
-  if (s.idleMs >= cfg.staleResumeMs && s.occupancy >= cfg.staleResumePct) return "handoff";
+/** Deterministic learned TTL: midpoint between the longest idle gap that still hit the prompt
+ *  cache and the shortest gap that missed. Falls back to the provider-documented TTL until
+ *  cacheTtlMinObservations exist or the observations don't yet bracket the boundary. */
+export function effectiveCacheTtlMs(
+  obs: { gapMs: number; hit: boolean }[],
+  cfg: ContextPolicyCfg,
+): number {
+  if (obs.length < cfg.cacheTtlMinObservations) return cfg.cacheTtlFallbackMs;
+  const hits = obs.filter((o) => o.hit).map((o) => o.gapMs);
+  const misses = obs.filter((o) => !o.hit).map((o) => o.gapMs);
+  if (!hits.length || !misses.length) return cfg.cacheTtlFallbackMs;
+  const hi = Math.max(...hits);
+  const lo = Math.min(...misses);
+  return lo > hi ? (hi + lo) / 2 : cfg.cacheTtlFallbackMs; // overlapping data → not learnable yet
+}
 ```
 
-  `DEFAULTS.contextPolicy` becomes
-  `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 7 * 24 * 3600 * 1000, handoffTimeoutMs: 180_000, staleResumeMs: 3_600_000, staleResumePct: 0.35 }`.
-  All existing `decideContext` tests must keep passing (add `idleMs: 0` to their fixtures if the type requires it).
+  `decideContext` adds (between emergency and handoff rules): `if (s.idleMs >= ttlMs && s.occupancy >= cfg.staleResumePct) return "handoff";`.
+  `sessionContext` computes `idleMs = Math.max(0, Date.now() - statSync(path).mtimeMs)` inside the existing try/catch.
+  Ledger: `cache_observations` table + record/list (cap reads to the most recent 50 — `listCacheObservations(50)`).
+  Pipeline: at the resume sites, after the first post-resume result, parse that turn's `cache_read_input_tokens` from the transcript (same read path `sessionContext` uses) and `recordCacheObservation(gapMs, cacheRead > 0)`; callers of `decideContext` pass `effectiveCacheTtlMs(ledger.listCacheObservations(50), cfg.contextPolicy)`.
+  `DEFAULTS.contextPolicy` gains `{ staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 }` — each documented as ratio / provider-fact fallback / choice per the no-magic-numbers rule.
 
 - [ ] **Step 4: Full run** — `bun test && bunx tsc --noEmit` → green.
 
-- [ ] **Step 5: Commit** — `git commit -m "feat(context): cache-aware resume — hand off fat sessions after a cache-cold idle gap"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(context): cache-aware resume with LEARNED cache TTL (ledger observations; provider TTL as cold-start fallback)"`
 
 ---
 
-### Task 6: de-hardcode `idlePollMs`, `loopTickMs`, `contextPolicy.windowTokens`
+### Task 6: derived heartbeat + per-model context window (no new fixed knobs)
+
+Smart-value rule: the daemon tick and the context window are **derived**, not configured numbers.
+The tick derives from the enabled loops' own trigger definitions (cron's one-minute resolution is
+a fact of cron, not tuning); the window derives from the model id the session's transcript itself
+reports, via a facts-map that config can override per model.
 
 **Files:**
-- Modify: `src/config.ts` (three knobs), `src/daemon.ts:30,32` (use cfg), `src/engine/context-policy.ts:13` (`CONTEXT_WINDOW_TOKENS` → `cfg.windowTokens` param with the constant as fallback default)
-- Test: `tests/config.test.ts`
+- Create: `src/engine/heartbeat.ts` (pure derivation)
+- Modify: `src/daemon.ts:30,32` (replace both fixed 60s constants with the derived heartbeat — one timer drives the idle sweep AND the scheduler tick), `src/engine/context-policy.ts:13` (`CONTEXT_WINDOW_TOKENS` → `windowTokensFor(model)`; `sessionContext` already parses the transcript — also read the last assistant message's `message.model`), `src/config.ts` (`contextPolicy.windowTokensByModel?: Record<string, number>` — an *override map*, not a number)
+- Test: `tests/heartbeat.test.ts` (new), `tests/context-policy.test.ts`
 
-- [ ] **Step 1: Failing test**
+**Interfaces:**
+- Produces: `heartbeatMs(loops: EffectiveLoop[]): number`; `windowTokensFor(model: string | undefined, overrides?: Record<string, number>): number`. (Match the real `Trigger` union field names in `src/engine/loops.ts` when implementing — the interval trigger's period field.)
+
+- [ ] **Step 1: Failing tests**
 
 ```ts
-test("timing + window knobs are config with sane defaults", () => {
-  const cfg = loadConfig(mkTmpDir());
-  expect(cfg.idlePollMs).toBe(60_000);
-  expect(cfg.loopTickMs).toBe(60_000);
-  expect(cfg.contextPolicy.windowTokens).toBe(200_000);
+import { test, expect } from "bun:test";
+import { heartbeatMs, CRON_RESOLUTION_MS } from "../src/engine/heartbeat";
+import { windowTokensFor } from "../src/engine/context-policy";
+
+test("heartbeat derives from enabled triggers: cron resolution by default, faster only if a shorter interval loop is enabled", () => {
+  expect(heartbeatMs([])).toBe(CRON_RESOLUTION_MS); // nothing enabled → cron resolution floor
+  expect(heartbeatMs([{ enabled: true, trigger: { kind: "cron", expr: "0 6 * * *" } }])).toBe(CRON_RESOLUTION_MS);
+  expect(heartbeatMs([{ enabled: true, trigger: { kind: "interval", everyMs: 30_000 } }])).toBe(30_000);
+  expect(heartbeatMs([{ enabled: false, trigger: { kind: "interval", everyMs: 5_000 } }])).toBe(CRON_RESOLUTION_MS); // disabled loops don't drive the tick
+});
+
+test("window tokens derive from the session's model via the facts map, with config override winning", () => {
+  expect(windowTokensFor(undefined)).toBe(200_000);                       // unknown model → conservative default fact
+  expect(windowTokensFor("weird-model", { "weird-model": 500_000 })).toBe(500_000); // override map (config) wins
 });
 ```
 
-- [ ] **Step 2: Run** → FAIL. **Step 3:** add `idlePollMs`/`loopTickMs` to `NeoConfig` + `DEFAULTS` + `loadConfig` (same `fileCfg.x ?? DEFAULTS.x` pattern), add `windowTokens` to `ContextPolicyCfg` + its default; `daemon.ts` reads `cfg.idlePollMs`/`cfg.loopTickMs`; `sessionContext`'s occupancy math divides by the configured `windowTokens` (threaded via the `ContextPolicyCfg` it already receives — keep the module-level constant only as the interface default).
+- [ ] **Step 2: Run** → FAIL. **Step 3: Implement**
+
+```ts
+// heartbeat.ts — the daemon's single derived tick. Cron expressions resolve at minute granularity
+// (a property of cron, not a tuning choice); an enabled interval trigger shorter than that pulls
+// the tick down to its own period. Disabled loops contribute nothing.
+export const CRON_RESOLUTION_MS = 60_000;
+export function heartbeatMs(loops: { enabled: boolean; trigger: { kind: string; everyMs?: number } }[]): number {
+  const intervals = loops
+    .filter((l) => l.enabled && l.trigger.kind === "interval" && typeof l.trigger.everyMs === "number")
+    .map((l) => l.trigger.everyMs as number);
+  return Math.min(CRON_RESOLUTION_MS, ...intervals);
+}
+```
+
+```ts
+// context-policy.ts — context windows are model FACTS (facts-map, overridable in config), never
+// one global constant. Key = the model id the transcript's assistant messages report.
+const MODEL_WINDOW_TOKENS: Record<string, number> = { default: 200_000 };
+export function windowTokensFor(model: string | undefined, overrides?: Record<string, number>): number {
+  const m = { ...MODEL_WINDOW_TOKENS, ...overrides };
+  return (model !== undefined && m[model]) || m.default;
+}
+```
+
+  `sessionContext` captures `message.model` from the last assistant line it already parses and
+  divides occupancy by `windowTokensFor(model, cfg.windowTokensByModel)`. `daemon.ts` computes
+  `heartbeatMs(effectiveLoops(...))` each sweep (re-derived, so enabling a fast loop speeds the
+  tick with no restart) and uses it for BOTH the idle sweep and the scheduler tick.
 
 - [ ] **Step 4: Full run** — `bun test && bunx tsc --noEmit` → green.
 
-- [ ] **Step 5: Commit** — `git commit -m "chore(config): idlePollMs, loopTickMs, contextPolicy.windowTokens are config, not constants"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(engine): derived daemon heartbeat + per-model context window (no fixed tick/window numbers)"`
 
 ---
 
@@ -485,6 +563,6 @@ as operator choices, never defaults — the fenced overrides and their guardrail
 
 ## Self-Review
 
-- **Spec coverage:** design §3 Phase 1 items 1→Tasks 1-3, 2→Task 4, 3→Task 5, 4→Task 6, 5→Task 7. Phases 2-4 are explicitly separate future plans.
+- **Spec coverage:** design Phase 1 items 1→Tasks 1-3, 2→Task 4, 3→Task 5 (learned cache TTL per the smart-value layer), 4→Task 6 (derived heartbeat + per-model window), 5→Task 7. Phases 2-4 are explicitly separate future plans; the memory system (spec §5, from `Claude-Code-Memory-Plan-v`) gets its own task-level plan when Phase 2 starts.
 - **Type consistency:** `RunDeps.model/skills/maxTurns/env` (Task 1) = what `profileDeps` sets (Task 3) = what `runConfig` forwards; `WorkerPathName` (Task 2) = `profileDeps` path param; `gateResume`/`freshSession`/`runDeps` names match between loop-runner, project-loop, and loops.ts.
 - **Quality invariant verified:** default config produces byte-identical SDK options for every path vs today (pinned by Task 2's `toEqual` test on the whole `workers` object); economy overrides exist only as documented opt-ins in `docs/CONFIG.md`, fenced to non-code paths.
