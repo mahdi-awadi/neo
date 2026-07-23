@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import {
@@ -154,6 +154,21 @@ test("transcriptLineCount counts the transcript's lines", () => {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "sess-lines.jsonl"), "a\nb\nc");
   expect(transcriptLineCount("/p/cache-lines", "sess-lines", { projectsDir })).toBe(3);
+});
+
+test("transcriptLineCount / firstAssistantCacheReadAfter agree on a real, every-line-newline-terminated transcript (2026-07-23 review: a naive split() would count a phantom trailing line)", () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), "neo-ctx-"));
+  const dir = join(projectsDir, encodeCwd("/p/cache-realistic"));
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "sess-realistic.jsonl");
+  const line = (n: number) => JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: n } } }) + "\n";
+  // Real ~/.claude/projects/.../*.jsonl transcripts end every line, including the last, in "\n".
+  writeFileSync(path, line(999)); // pre-resume — captured as the boundary
+  const preLines = transcriptLineCount("/p/cache-realistic", "sess-realistic", { projectsDir });
+  expect(preLines).toBe(1); // NOT 2 — no phantom trailing element from the file's own final "\n"
+  appendFileSync(path, line(0) + line(500)); // two post-resume turns, each newline-terminated
+  // afterLine = preLines must land on the FIRST appended turn (0), not the second (500).
+  expect(firstAssistantCacheReadAfter("/p/cache-realistic", "sess-realistic", preLines!, { projectsDir })).toBe(0);
 });
 
 test("encodeCwd matches Claude Code's project-dir encoding", () => {

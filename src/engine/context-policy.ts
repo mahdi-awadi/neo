@@ -126,7 +126,12 @@ export function transcriptLineCount(
   const path = join(projectsDir, encodeCwd(folder), `${sdkSessionId}.jsonl`);
   try {
     if (!existsSync(path)) return undefined;
-    return readFileSync(path, "utf8").split("\n").length;
+    // Every real transcript line (including the last) is newline-terminated, so a naive
+    // `.split("\n")` counts a phantom trailing "" element (a 1-record file would count as 2).
+    // Strip exactly one trailing newline first so this count lines up with the SAME strip
+    // firstAssistantCacheReadAfter applies before indexing — otherwise `afterLine` would land one
+    // index too far once the resume's own newline-terminated lines are appended.
+    return readFileSync(path, "utf8").replace(/\n$/, "").split("\n").length;
   } catch {
     return undefined; // fail OPEN
   }
@@ -151,7 +156,9 @@ export function firstAssistantCacheReadAfter(
   const path = join(projectsDir, encodeCwd(folder), `${sdkSessionId}.jsonl`);
   try {
     if (!existsSync(path)) return undefined;
-    const lines = readFileSync(path, "utf8").split("\n");
+    // Same trailing-newline strip as transcriptLineCount, so an `afterLine` captured from that
+    // count indexes into the SAME (phantom-element-free) split here.
+    const lines = readFileSync(path, "utf8").replace(/\n$/, "").split("\n");
     for (let i = Math.max(0, afterLine); i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (!trimmed) continue;

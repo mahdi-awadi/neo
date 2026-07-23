@@ -527,6 +527,15 @@ test("post-completion handoff fires when the finished session is fat", async () 
 // LAST turn instead of the FIRST post-resume turn would starve the misses bucket, since a later
 // turn in the same run already hits the cache the first turn just rewarmed). ---
 
+// Real transcripts are newline-terminated on EVERY line, including the last (`~/.claude/projects/
+// .../*.jsonl` always ends `}\n`) — a fixture that omits the final "\n" sidesteps the trailing-
+// newline off-by-one that `.split("\n")` introduces (a naive count picks up a phantom trailing ""
+// element). These fixtures deliberately match that real byte layout: every write/append ends
+// its last line with "\n" too.
+function assistantLine(cacheRead: number): string {
+  return JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: cacheRead } } }) + "\n";
+}
+
 test("resume records a cache observation from the FIRST post-resume turn, not a later one in the same run", async () => {
   const dir = scratch();
   const projectsDir = scratch(); // stand-in for ~/.claude/projects, isolated from the real homedir
@@ -534,9 +543,9 @@ test("resume records a cache observation from the FIRST post-resume turn, not a 
   const transcriptDir = join(projectsDir, encodeCwd(dir));
   mkdirSync(transcriptDir, { recursive: true });
   const transcriptPath = join(transcriptDir, `${sdkId}.jsonl`);
-  // Pre-resume transcript: one prior turn — its line count is the boundary a post-resume scan
-  // must start strictly AFTER.
-  writeFileSync(transcriptPath, JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 999 } } }));
+  // Pre-resume transcript: one prior turn, newline-terminated like a real transcript — its line
+  // count is the boundary a post-resume scan must start strictly AFTER.
+  writeFileSync(transcriptPath, assistantLine(999));
 
   const seams = {
     lineCount: (folder: string, id: string) => transcriptLineCount(folder, id, { projectsDir }),
@@ -566,16 +575,11 @@ test("resume records a cache observation from the FIRST post-resume turn, not a 
     signals: () => ({ occupancy: 0.1, turns: 1, ageMs: 0, idleMs: 999 }), // well under every threshold → "keep"
   });
   // Only NOW (after the gate has already read the pre-resume line count) simulate the SDK
-  // appending this resume's turns: the FIRST is a real cache miss (0); a LATER turn in the SAME
-  // run already re-hit the cache the first turn just warmed. The bug scanned to the LAST turn and
-  // would have recorded hit:true here — this pins hit:false instead.
-  appendFileSync(
-    transcriptPath,
-    "\n" +
-      JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 0 } } }) +
-      "\n" +
-      JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 500 } } }),
-  );
+  // appending this resume's turns, each newline-terminated like a real transcript: the FIRST is a
+  // real cache miss (0); a LATER turn in the SAME run already re-hit the cache the first turn just
+  // warmed. The old (last-turn) bug, and the trailing-newline off-by-one that survived its fix,
+  // would both have landed on this LATER turn and recorded hit:true — this pins hit:false instead.
+  appendFileSync(transcriptPath, assistantLine(0) + assistantLine(500));
   resolve2({ ok: true, sessionId: sdkId, summary: "done again", costUsd: 0 });
   await resumed!.done;
   await new Promise((r) => setTimeout(r, 0));
@@ -583,6 +587,53 @@ test("resume records a cache observation from the FIRST post-resume turn, not a 
   const obs = h.ledger.listCacheObservations(10);
   expect(obs).toHaveLength(1);
   expect(obs[0]).toMatchObject({ gapMs: 999, hit: false }); // first post-resume turn's cache_read was 0
+});
+
+test("resume finds a SINGLE appended post-resume turn (no off-by-one when there's only one new line)", async () => {
+  const dir = scratch();
+  const projectsDir = scratch();
+  const sdkId = "sdk-cache-3";
+  const transcriptDir = join(projectsDir, encodeCwd(dir));
+  mkdirSync(transcriptDir, { recursive: true });
+  const transcriptPath = join(transcriptDir, `${sdkId}.jsonl`);
+  writeFileSync(transcriptPath, assistantLine(999)); // pre-resume, newline-terminated
+
+  const seams = {
+    lineCount: (folder: string, id: string) => transcriptLineCount(folder, id, { projectsDir }),
+    cacheRead: (folder: string, id: string, afterLine: number) => firstAssistantCacheReadAfter(folder, id, afterLine, { projectsDir }),
+  };
+
+  let resolve1!: (r: RunResult) => void;
+  const done1 = new Promise<RunResult>((res) => (resolve1 = res));
+  const start1 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done1 }) as unknown as SessionRun;
+  const h = harness({ start: start1 });
+  const opened = await handleMessage(`/open ${dir} start`, 5, { ...h.base, ...seams });
+  resolve1({ ok: true, sessionId: sdkId, summary: "done", costUsd: 0 });
+  await opened!.done;
+  await new Promise((r) => setTimeout(r, 0));
+  h.registry.setFocus(5, h.registry.list()[0].id, "once");
+
+  let resolve2!: (r: RunResult) => void;
+  const done2 = new Promise<RunResult>((res) => (resolve2 = res));
+  const start2 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done2 }) as unknown as SessionRun;
+  const resumed = await handleMessage("continue", 5, {
+    ...h.base,
+    start: start2,
+    ...seams,
+    signals: () => ({ occupancy: 0.1, turns: 1, ageMs: 0, idleMs: 42 }),
+  });
+  // Exactly ONE post-resume turn appended — a stale `afterLine` (one index too far) would land past
+  // it and no-op (lossy but safe); the fix must still find it.
+  appendFileSync(transcriptPath, assistantLine(777));
+  resolve2({ ok: true, sessionId: sdkId, summary: "done again", costUsd: 0 });
+  await resumed!.done;
+  await new Promise((r) => setTimeout(r, 0));
+
+  const obs = h.ledger.listCacheObservations(10);
+  expect(obs).toHaveLength(1);
+  expect(obs[0]).toMatchObject({ gapMs: 42, hit: true }); // the single new turn's cache_read was 777 (> 0)
 });
 
 test("resume records nothing when the pre-resume line count can't be measured (fail-open, no false miss)", async () => {
