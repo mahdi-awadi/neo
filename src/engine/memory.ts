@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type { MemoryCfg } from "../config";
 import { openMemoryIndex } from "./memory-recall";
+import { windowTokensFor } from "./context-policy";
 
 // Re-export so existing importers of memory.ts's local type keep working.
 export type { MemoryCfg };
@@ -172,19 +173,89 @@ export function memoryScopeEnabled(cfg: MemoryCfg, folder: string, companyFolder
   return cfg.scopes.some((s) => s !== "company" && canonical(s) === target);
 }
 
+/** Scans a memory file's content entry-by-entry (whole-entry granularity, mirroring
+ * applyMemoryOp's own "§ "-delimited parsing), drops entries the write-time scan would reject —
+ * covering drift the scan never saw at write time (a hand-edit, an externally-written file) — and
+ * cap-includes the survivors in order up to `capChars`, stopping BEFORE the entry that would push
+ * the total over the cap. Returns the rebuilt content plus a short bracketed notice (empty when
+ * nothing was withheld or truncated) so an injected snapshot tells the worker it was filtered
+ * rather than silently shrinking. A single non-"§ "-formatted blob (parseEntries' one-entry
+ * fallback) is scanned/capped as one whole entry, so this applies uniformly either way. */
+function scannedAndCapped(content: string, capChars: number): { content: string; notice: string } {
+  const entries = parseEntries(content);
+  const kept: string[] = [];
+  let withheld = 0;
+  for (const e of entries) {
+    if (scanMemoryText(e)) {
+      withheld++;
+    } else {
+      kept.push(e);
+    }
+  }
+
+  const included: string[] = [];
+  let len = 0;
+  let truncated = false;
+  for (const e of kept) {
+    const entryLen = (included.length > 0 ? "\n§ " : "§ ").length + e.length;
+    if (len + entryLen > capChars) {
+      truncated = true;
+      break;
+    }
+    included.push(e);
+    len += entryLen;
+  }
+
+  const notices: string[] = [];
+  if (withheld > 0) notices.push(`[${withheld} entr${withheld === 1 ? "y" : "ies"} withheld by scan]`);
+  if (truncated) notices.push("[truncated at cap]");
+
+  return { content: included.map((e) => "§ " + e).join("\n"), notice: notices.join(" ") };
+}
+
+/** Shared gate: true only when BOTH `memory` and `companyFolder` are set AND `memoryScopeEnabled`
+ * says `folder` is in scope. Every call site across the engine that decides "is memory on for this
+ * folder" (dispatch's memoryGate, idle.ts's idle-close log line, reload.ts's drain wrap-up flush,
+ * pipeline's fresh-start snapshot + handoff flush) routes through this ONE function so the check
+ * can never drift between sites. Semantics are IDENTICAL to each site's own inline
+ * undefined-checks-then-memoryScopeEnabled from before this function existed — this only removes
+ * the duplication. `memory`/`companyFolder` optional because some callers (dispatch's
+ * DispatchDeps, idle/reload's opts) may omit them entirely (e.g. the customer/ingress path) — the
+ * fail-closed default there is "not enabled". */
+export function memoryEnabledFor(memory: MemoryCfg | undefined, folder: string, companyFolder: string | undefined): boolean {
+  if (memory === undefined || companyFolder === undefined) return false;
+  return memoryScopeEnabled(memory, folder, companyFolder);
+}
+
 /** Ground-truth wrapper injected once at worker start (frozen for the run's lifetime). Empty
- * string when both MEMORY.md and USER.md are empty — a total no-op for an unpopulated folder. */
+ * string when both MEMORY.md and USER.md are empty — a total no-op for an unpopulated folder.
+ *
+ * `cfg` sizes the SAME ratio caps (memoryCaps) the write path enforces (memoryChars/userChars,
+ * via windowTokensFor's default window — no model is known yet at inject time), so drifted or
+ * externally-grown content can never inject more than a normally-capped file would ever have held.
+ * Each file's content is also run through the write-time scan (scanMemoryText) at compose time —
+ * belt-and-braces against a file that drifted (hand-edit, external write) to contain something the
+ * scan would have rejected had it gone through applyMemoryOp. Flagged/over-cap entries are dropped
+ * with a bracketed notice (count only, never the content) rather than silently included or
+ * silently shrunk. */
 export function memorySnapshot(folder: string, cfg: MemoryCfg): string {
-  void cfg; // reserved for future truncation-at-inject; files are already capped at write time
   const { memory, user } = readMemoryFiles(folder);
   if (!memory && !user) return "";
+  const caps = memoryCaps(cfg, windowTokensFor(undefined));
+
+  const memF = scannedAndCapped(memory, caps.memoryChars);
   let out =
     "[MEMORY — authoritative ground truth. Facts here override guesses. Written by you in past\n" +
     "sessions; update via the memory tool (writes apply next session, never this one).]\n" +
-    memory;
+    memF.content;
+  if (memF.notice) out += "\n" + memF.notice;
+
   if (user) {
-    out += "\n[USER]\n" + user;
+    const userF = scannedAndCapped(user, caps.userChars);
+    out += "\n[USER]\n" + userF.content;
+    if (userF.notice) out += "\n" + userF.notice;
   }
+
   out += "\n[END MEMORY]";
   return out;
 }

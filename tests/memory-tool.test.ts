@@ -91,6 +91,53 @@ test("memory_search: cited hits formatted '<content> — <file> (<day>)'", async
   expect(textOf(res)).toBe("fixed the payments webhook retry bug — log/2026-07-01.md (2026-07-01)");
 });
 
+// --- memory_log: the third tool, routing "log a line" through appendDailyLog (scanned + indexed
+// by construction) instead of an unsupported direct file write. ---
+
+test("memory_log: happy path — the line lands in today's log file and is searchable via memory_search", async () => {
+  const folder = tmpFolder();
+  const [, searchTool, logTool] = memoryTools(folder, MEMORY_CFG, WINDOW_TOKENS);
+  const res = await logTool.handler({ line: "fixed the payments webhook retry bug" }, {});
+  expect(textOf(res)).toBe("logged");
+  const dir = join(folder, "memory", "log");
+  const files = readdirSync(dir);
+  expect(files.length).toBe(1);
+  expect(readFileSync(join(dir, files[0]), "utf-8")).toContain("fixed the payments webhook retry bug");
+  const found = await searchTool.handler({ query: "webhook" }, {});
+  expect(textOf(found)).toContain("fixed the payments webhook retry bug");
+});
+
+test("memory_log: a scan-flagged line is rejected, not written, not indexed", async () => {
+  const folder = tmpFolder();
+  const [, , logTool] = memoryTools(folder, MEMORY_CFG, WINDOW_TOKENS);
+  const res = await logTool.handler({ line: "api_key: sk-abcdefghijklmnopqrstuvwx" }, {});
+  expect(textOf(res)).toBe("rejected by scan/write failure");
+  expect(existsSync(join(folder, "memory", "log"))).toBe(false);
+});
+
+test("memory_log in dream mode: diaries every attempt (applied/rejected) and does NOT spend dream mutation/add budget", async () => {
+  const folder = tmpFolder();
+  const { opts, diary } = makeDream({ maxMutations: 1, maxAdds: 1, maxNetChars: 10_000 });
+  const [memoryTool, , logTool] = memoryTools(folder, MEMORY_CFG, WINDOW_TOKENS, { dream: opts });
+
+  const r1 = await logTool.handler({ line: "log line one" }, {});
+  const r2 = await logTool.handler({ line: "log line two" }, {});
+  const r3 = await logTool.handler({ line: "api_key: sk-abcdefghijklmnopqrstuvwx" }, {}); // scan-rejected
+  expect(textOf(r1)).toBe("logged");
+  expect(textOf(r2)).toBe("logged");
+  expect(textOf(r3)).toBe("rejected by scan/write failure");
+  expect(diary).toEqual([
+    "log: log line one — applied",
+    "log: log line two — applied",
+    "log: api_key: sk-abcdefghijklmnopqrstuvwx — rejected",
+  ]);
+
+  // maxMutations is 1: if the log calls above had wrongly spent it, this real mutation (the FIRST
+  // one) would already see the budget exhausted. It doesn't — proving log calls never touched it.
+  const addRes = await memoryTool.handler({ file: "MEMORY.md", op: "add", text: "a real mutation" }, {});
+  expect(textOf(addRes)).toContain("saved");
+});
+
 // --- Dream mode ---
 
 function makeDream(overrides: Partial<DreamOpts> = {}): { opts: DreamOpts; diary: string[] } {

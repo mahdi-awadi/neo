@@ -17,7 +17,7 @@ import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers } from "./dispatch";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
-import { memorySnapshot, memoryScopeEnabled } from "./memory";
+import { memorySnapshot, memoryEnabledFor } from "./memory";
 import {
   sessionContext,
   decideContext,
@@ -133,7 +133,7 @@ async function applyContextPolicy(
       registry: deps.registry,
       ledger: deps.ledger,
       runDeps: profileDeps(deps.cfg, "handoff"),
-      memoryFlush: memoryScopeEnabled(deps.cfg.memory, folder, deps.cfg.companyFolder),
+      memoryFlush: memoryEnabledFor(deps.cfg.memory, folder, deps.cfg.companyFolder),
     });
     return { resumeId: "", idleMs: 0 };
   } catch {
@@ -332,8 +332,8 @@ function startSession(
   }
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
   // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
-  // follow-up into a live worker). Default `scopes: []` → memoryScopeEnabled is always false.
-  if (!runDeps.resume && memoryScopeEnabled(deps.cfg.memory, order.folder, deps.cfg.companyFolder)) {
+  // follow-up into a live worker). Default `scopes: []` → memoryEnabledFor is always false.
+  if (!runDeps.resume && memoryEnabledFor(deps.cfg.memory, order.folder, deps.cfg.companyFolder)) {
     const snap = memorySnapshot(order.folder, deps.cfg.memory);
     if (snap) order = { ...order, task: `${snap}\n\n${order.task}` };
   }
@@ -428,7 +428,7 @@ function startSession(
               registry,
               ledger,
               runDeps: profileDeps(deps.cfg, "handoff"),
-              memoryFlush: memoryScopeEnabled(deps.cfg.memory, order.folder, deps.cfg.companyFolder),
+              memoryFlush: memoryEnabledFor(deps.cfg.memory, order.folder, deps.cfg.companyFolder),
             });
           }
         }

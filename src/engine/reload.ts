@@ -9,7 +9,7 @@ import type { SessionInfo } from "../types";
 import type { Ledger, OpenSessionRow } from "./ledger";
 import type { Registry } from "./registry";
 import type { MemoryCfg } from "../config";
-import { memoryScopeEnabled } from "./memory";
+import { memoryEnabledFor } from "./memory";
 import { MEMORY_FLUSH_SENTENCE } from "./context-policy";
 
 /** Gate shared by the pipeline and dispatch: once draining, no new orders/sub-runs start. */
@@ -85,10 +85,7 @@ export async function drainAndPersist(opts: {
   // Ask every mid-turn worker to wrap up (commit green work + WIP note), like the dispatch grace window.
   const running = registry.list().filter((s) => s.status === "running");
   for (const s of running) {
-    const memoryFlush =
-      opts.memory !== undefined &&
-      opts.companyFolder !== undefined &&
-      memoryScopeEnabled(opts.memory, s.order.folder, opts.companyFolder);
+    const memoryFlush = memoryEnabledFor(opts.memory, s.order.folder, opts.companyFolder);
     registry.getControl(s.id)?.followUp(wrapUpFollowUp(opts.drainMs, memoryFlush));
   }
 

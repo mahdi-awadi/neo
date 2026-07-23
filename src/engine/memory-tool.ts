@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { MemoryCfg } from "../config";
-import { applyMemoryOp, memoryCaps, memoryDir, recordMemoryHash, type MemoryOp } from "./memory";
+import { applyMemoryOp, appendDailyLog, memoryCaps, memoryDir, recordMemoryHash, type MemoryOp } from "./memory";
 import { openMemoryIndex } from "./memory-recall";
 
 type MemoryFile = "MEMORY.md" | "USER.md";
@@ -57,6 +57,13 @@ const MEMORY_SEARCH_DESCRIPTION =
   `Search your daily-log memory for past entries relevant to \`query\`. Every hit is cited with ` +
   `its file and day. \`limit\` defaults to ${DEFAULT_SEARCH_LIMIT} (max ${MAX_SEARCH_LIMIT} — an ` +
   `interface bound).`;
+
+const MEMORY_LOG_DESCRIPTION =
+  "Append a one-line entry to today's memory log (a running, dated journal — separate from " +
+  "MEMORY.md/USER.md's curated facts). Use this for a quick durable note that doesn't need the " +
+  "structured entry format, e.g. a one-line session summary. Logged lines become searchable via " +
+  "memory_search. Runs through the same write-time scan as the memory tool; a rejected line is " +
+  "silently not written (not an error — just not saved).";
 
 /** Dream-mode budgets + diary, threaded through memoryTools' closure. */
 export interface DreamOpts {
@@ -255,6 +262,21 @@ export function memoryTools(
     },
   );
 
+  const logTool = tool(
+    "memory_log",
+    MEMORY_LOG_DESCRIPTION,
+    { line: z.string() },
+    async (args: { line: string }) => {
+      // A log append is NOT a mutation of the capped MEMORY.md/USER.md files (memoryTool above) —
+      // it never touches dream.maxMutations/maxAdds/maxNetChars, even in dream mode. It IS still
+      // diaried in dream mode, applied or rejected, so the run's diary is a complete record of
+      // everything the worker attempted.
+      const ok = appendDailyLog(folder, args.line);
+      dream?.diary(`log: ${args.line} — ${ok ? "applied" : "rejected"}`);
+      return textContent(ok ? "logged" : "rejected by scan/write failure");
+    },
+  );
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return [memoryTool, searchTool] as SdkMcpToolDefinition<any>[];
+  return [memoryTool, searchTool, logTool] as SdkMcpToolDefinition<any>[];
 }

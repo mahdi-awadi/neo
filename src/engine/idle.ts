@@ -8,7 +8,7 @@ import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { MemoryCfg } from "../config";
 import { writeIdleStateNote } from "./context-policy";
-import { appendDailyLog, memoryScopeEnabled } from "./memory";
+import { appendDailyLog, memoryEnabledFor } from "./memory";
 
 /** The deterministic (no worker) one-line summary written to today's memory log when a session is
  *  idle-closed — same "last activity" fact idleStateNote's HANDOFF.md note already surfaces, just
@@ -54,7 +54,7 @@ export function sweepIdle(
     // Before ending an unused session, record where it left off so the next run can resume knowing
     // what was outstanding (deterministic engine note; never throws — see writeIdleStateNote).
     writeStateNote(s);
-    if (opts.memory !== undefined && opts.companyFolder !== undefined && memoryScopeEnabled(opts.memory, s.order.folder, opts.companyFolder)) {
+    if (memoryEnabledFor(opts.memory, s.order.folder, opts.companyFolder)) {
       appendDailyLog(s.order.folder, idleLogLine(s));
     }
     void registry.getControl(s.id)?.interrupt(); // ends the run; `done` resolves downstream

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readdirSync, existsSync, readFileSync } fro
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMemoryOp, appendDailyLog, memoryCaps, readMemoryFiles, CHARS_PER_TOKEN, memorySnapshot, memoryScopeEnabled } from "../src/engine/memory";
+import { applyMemoryOp, appendDailyLog, memoryCaps, readMemoryFiles, CHARS_PER_TOKEN, memorySnapshot, memoryScopeEnabled, memoryEnabledFor } from "../src/engine/memory";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-mem-"));
 const CFG = { scopes: ["company"], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 };
@@ -143,6 +143,35 @@ test("memorySnapshot includes the [USER] section only when USER.md is non-empty"
   expect(snap.indexOf("[END MEMORY]")).toBeGreaterThan(snap.indexOf("[USER]"));
 });
 
+test("memorySnapshot drops a scan-flagged (hand-drifted) entry and adds a withheld-count notice, keeping clean entries", () => {
+  const dir = scratch();
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "clean fact one" }, 5_000);
+  // Simulate drift: a credential-looking entry appended directly on disk, bypassing the
+  // write-time scan (an operator hand-edit or external write — the same drift ensureDriftBackup
+  // preserves rather than reverts).
+  const path = join(dir, "memory", "MEMORY.md");
+  const before = readFileSync(path, "utf-8");
+  writeFileSync(path, before + "\n§ api_key = ghp_M85SPgFKGxGAJEjpGDolVvtPmv8rAAAAAAA");
+  const snap = memorySnapshot(dir, CFG);
+  expect(snap).toContain("clean fact one");
+  expect(snap).not.toContain("ghp_M85SPgFKGxGAJEjpGDolVvtPmv8rAAAAAAA");
+  expect(snap).toContain("[1 entry withheld by scan]");
+});
+
+test("memorySnapshot cap-truncates at an entry boundary (never mid-entry) and adds a truncated notice", () => {
+  const dir = scratch();
+  // snapshotMaxPct 0.0001 * default 200,000-token window * CHARS_PER_TOKEN(4) = 80 chars.
+  const tinyCap = { ...CFG, snapshotMaxPct: 0.0001 };
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "a".repeat(40) }, 5_000);
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "b".repeat(40) }, 5_000);
+  applyMemoryOp(dir, "MEMORY.md", { kind: "add", text: "c".repeat(40) }, 5_000);
+  const snap = memorySnapshot(dir, tinyCap);
+  expect(snap).toContain("a".repeat(40)); // first entry fits, included whole
+  expect(snap).not.toContain("b".repeat(40)); // second would exceed the cap — excluded, not cut mid-entry
+  expect(snap).not.toContain("c".repeat(40));
+  expect(snap).toContain("[truncated at cap]");
+});
+
 test("memoryScopeEnabled: \"company\" keyword matches only the company folder", () => {
   const company = scratch();
   const other = scratch();
@@ -163,6 +192,16 @@ test("memoryScopeEnabled: a listed absolute folder path matches that folder only
 test("memoryScopeEnabled: empty scopes (default) is always false", () => {
   const dir = scratch();
   expect(memoryScopeEnabled({ ...CFG, scopes: [] }, dir, dir)).toBe(false);
+});
+
+test("memoryEnabledFor: identical to the inline undefined-checks-then-memoryScopeEnabled pattern it replaces", () => {
+  const company = scratch();
+  const other = scratch();
+  const cfg = { ...CFG, scopes: ["company"] };
+  expect(memoryEnabledFor(cfg, company, company)).toBe(true);
+  expect(memoryEnabledFor(cfg, other, company)).toBe(false);
+  expect(memoryEnabledFor(undefined, company, company)).toBe(false); // memory undefined → false, never throws
+  expect(memoryEnabledFor(cfg, company, undefined)).toBe(false); // companyFolder undefined → false, never throws
 });
 
 test("git-exclude hygiene: a git repo gets memory/ appended to .git/info/exclude exactly once, even across repeated write-path calls", () => {
