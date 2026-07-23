@@ -98,20 +98,24 @@ and in `runConfig`:
 - [ ] **Step 1: Write the failing tests** (append to `tests/config.test.ts`; follow that file's existing tmp-dir/config.json fixture pattern)
 
 ```ts
-test("worker profiles: defaults are conservative and per-path overrides merge from config.json", () => {
+test("worker profiles: per-path overrides merge from config.json over inherit-everything defaults", () => {
   const dir = mkTmpDir(); // reuse the file's existing helper for a temp cwd with a config.json
-  writeConfig(dir, { workers: { loop: { model: "haiku", skills: [] } }, workerEnv: { MAX_MCP_OUTPUT_TOKENS: "12000" } });
+  writeConfig(dir, { workers: { handoff: { model: "haiku", effort: "low" } }, workerEnv: { MAX_MCP_OUTPUT_TOKENS: "12000" } });
   const cfg = loadConfig(dir);
-  expect(cfg.workers.loop.model).toBe("haiku");         // file override wins for that path
-  expect(cfg.workers.company.effort).toBe("low");       // default preserved for untouched paths
-  expect(cfg.workers.dispatch).toEqual({});             // dispatch inherits everything
+  expect(cfg.workers.handoff.model).toBe("haiku");      // file override wins for that path
+  expect(cfg.workers.company.effort).toBe("low");       // existing code behavior, now a default
+  expect(cfg.workers.dispatch).toEqual({});             // code-writing paths inherit everything
   expect(cfg.workerEnv.MAX_MCP_OUTPUT_TOKENS).toBe("12000");
 });
 
-test("worker profiles: absent config yields defaults and empty workerEnv", () => {
+test("worker profiles: QUALITY INVARIANT — absent config changes no worker's model/effort/skills", () => {
   const cfg = loadConfig(mkTmpDir());
-  expect(cfg.workers.judge.model).toBe("haiku");
-  expect(cfg.workers.loop.skills).toEqual([]);
+  // Only the two effort:"low" behaviors that already exist in code move into config; every
+  // other path (all code-writing paths included) inherits the CLI default model untouched.
+  expect(cfg.workers).toEqual({
+    company: { effort: "low" }, project: {}, dispatch: {}, loop: {},
+    judge: {}, ingress: { effort: "low" }, handoff: {},
+  });
   expect(cfg.workerEnv).toEqual({});
 });
 ```
@@ -150,14 +154,18 @@ in the `NeoConfig` interface (after `contextPolicy`):
 in `DEFAULTS`:
 
 ```ts
+  // QUALITY INVARIANT: defaults reproduce today's behavior EXACTLY. The only non-empty entries
+  // are the two effort:"low" cases that already live in code (pipeline.ts:250, ingress.ts:68/71),
+  // relocated here. Economy overrides (cheaper models on handoff/judge/ingress ONLY) are opt-in
+  // via config.json — see docs/CONFIG.md "Economy mode" — never defaults, never code-writing paths.
   workers: {
-    company: { effort: "low" },               // was hardcoded in pipeline.ts:250
+    company: { effort: "low" },
     project: {},
     dispatch: {},
-    loop: { model: "sonnet", skills: [] },     // autonomous loops: cheaper, no skill preload
-    judge: { model: "haiku", effort: "low" },  // read-only LLM-judge goal checks
-    ingress: { effort: "low" },                // was hardcoded in ingress.ts:68/71
-    handoff: { model: "haiku", effort: "low" } // was effort-only in context-policy.ts:163
+    loop: {},
+    judge: {},
+    ingress: { effort: "low" },
+    handoff: {},
   } satisfies Record<WorkerPathName, WorkerProfile>,
   workerEnv: {} as Record<string, string>,
 ```
@@ -365,7 +373,7 @@ The judge goal's worker run (`makeGoalCheck` deps in `goal.ts` call sites) gets 
 
 - [ ] **Step 4: Full run** — `bun test && bunx tsc --noEmit` → green.
 
-- [ ] **Step 5: Commit** — `git commit -m "feat(loops): context-gated resume + freshSession + cheap loop/judge profiles (closes the loop context gap)"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(loops): context-gated resume + freshSession + profile plumbing (closes the loop context gap)"`
 
 ---
 
@@ -451,20 +459,25 @@ test("timing + window knobs are config with sane defaults", () => {
 
 **Files:**
 - Create: `docs/HISTORY.md` (the phase-history narrative moved out of CLAUDE.md)
-- Modify: `CLAUDE.md` (replace the per-phase "Current status" essays with a ≤10-line summary linking `docs/HISTORY.md`; target <200 lines total — official guidance), `docs/CONFIG.md` (document `workers`, `workerEnv`, the new contextPolicy + timing knobs), `config.example.json`:
+- Modify: `CLAUDE.md` (replace the per-phase "Current status" essays with a ≤10-line summary linking `docs/HISTORY.md`; target <200 lines total — official guidance), `docs/CONFIG.md` (document `workers`, `workerEnv`, the new contextPolicy + timing knobs), `config.example.json` — **quality-neutral env only, no model overrides**:
 
 ```json
-  "workers": {
-    "loop":    { "model": "sonnet", "skills": [] },
-    "judge":   { "model": "haiku",  "effort": "low" },
-    "handoff": { "model": "haiku",  "effort": "low" }
-  },
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",
-    "MAX_MCP_OUTPUT_TOKENS": "12000",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "haiku"
+    "MAX_MCP_OUTPUT_TOKENS": "12000"
   }
 ```
+
+`docs/CONFIG.md` additionally gets an **"Economy mode (opt-in, measured)"** section documenting —
+as operator choices, never defaults — the fenced overrides and their guardrail:
+
+> Eligible paths only (their output is not project work product): `handoff`, `judge`, `ingress`.
+> Example: `"workers": { "handoff": { "model": "haiku", "effort": "low" }, "judge": { "model": "haiku", "effort": "low" } }`.
+> `CLAUDE_CODE_SUBAGENT_MODEL` is the same trade for subagents inside workers — set it only after
+> reading the guardrail. Guardrail: watch ledger loop `goal-met` rate, iterations-to-green, and
+> whether resumed sessions recover from handoff notes without re-asking, for two weeks; any
+> regression → remove the override (a config flip). Code-writing paths (`company`, `project`,
+> `dispatch`, `loop`) are NOT eligible — see the design spec's quality guarantee.
 
 - [ ] **Step 1:** Move history; **Step 2:** `wc -l CLAUDE.md` < 200; **Step 3:** docs updated; **Step 4:** `bun test && bunx tsc --noEmit` (docs-only, still verify); **Step 5: Commit** — `git commit -m "docs: CLAUDE.md diet (history → docs/HISTORY.md) + document worker profiles"`
 
@@ -474,4 +487,4 @@ test("timing + window knobs are config with sane defaults", () => {
 
 - **Spec coverage:** design §3 Phase 1 items 1→Tasks 1-3, 2→Task 4, 3→Task 5, 4→Task 6, 5→Task 7. Phases 2-4 are explicitly separate future plans.
 - **Type consistency:** `RunDeps.model/skills/maxTurns/env` (Task 1) = what `profileDeps` sets (Task 3) = what `runConfig` forwards; `WorkerPathName` (Task 2) = `profileDeps` path param; `gateResume`/`freshSession`/`runDeps` names match between loop-runner, project-loop, and loops.ts.
-- **Behavior changes shipped as config defaults** (flagged, overridable): loops → sonnet + no skills; judge/handoff → haiku; everything else inherits exactly today's behavior.
+- **Quality invariant verified:** default config produces byte-identical SDK options for every path vs today (pinned by Task 2's `toEqual` test on the whole `workers` object); economy overrides exist only as documented opt-ins in `docs/CONFIG.md`, fenced to non-code paths.
