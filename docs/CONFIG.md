@@ -50,10 +50,82 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `stuckAfterMs` | `600000` (10m) | Alert when a running session has produced nothing for this long. |
 | `longTurnAlertMs` | `1200000` (20m) | Alert when one activity label has run this long. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
-| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5 }` | Session context-window lifecycle thresholds. `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations` gate the LEARNED cache-TTL resume rule: a resume idle past the *effective* cache TTL (derived from real per-resume cache-hit observations in the ledger, falling back to `cacheTtlFallbackMs` until `cacheTtlMinObservations` exist) on a transcript at/above `staleResumePct` occupancy triggers a handoff instead of a cold, unwarmed-cache resume. |
+| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`windowTokensByModel`. |
+| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. |
+| `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker (e.g. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, `CLAUDE_CODE_SUBAGENT_MODEL`). |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
 > (systemd's default stop timeout is 90s and would kill the process mid-drain).
+
+## Worker profiles (`workers`)
+
+Each of the seven launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
+`handoff` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
+`WorkerPathName` in `src/config.ts`). `profileDeps(cfg, path, base)` (`src/engine/worker-profile.ts`)
+looks up `cfg.workers[path]` and fills `model`/`effort`/`skills`/`maxTurns` onto the caller's
+`RunDeps` only where the caller didn't already set them (the caller's own values always win), then
+merges `cfg.workerEnv` with any caller-supplied `env`. A per-path object set in `config.json`
+**replaces** the built-in default object for that path (it does not merge field-by-field), so
+include every field you want to keep.
+
+**Quality invariant:** the shipped defaults reproduce today's behavior exactly. Only `company` and
+`ingress` set anything (`effort: "low"`, both pre-existing in code before this became config); every
+other path is `{}` (full inherit — same model/effort/skills/maxTurns as before this feature
+existed). Changing a path's profile in `config.json` is opt-in and the only way behavior changes.
+
+### Economy mode (opt-in, measured)
+
+Eligible paths only (their output is not project work product): `handoff`, `judge`, `ingress`.
+Example: `"workers": { "handoff": { "model": "haiku", "effort": "low" }, "judge": { "model": "haiku", "effort": "low" } }`.
+`CLAUDE_CODE_SUBAGENT_MODEL` is the same trade for subagents inside workers — set it only after
+reading the guardrail. Guardrail: watch ledger loop `goal-met` rate, iterations-to-green, and
+whether resumed sessions recover from handoff notes without re-asking, for two weeks; any
+regression → remove the override (a config flip). Code-writing paths (`company`, `project`,
+`dispatch`, `loop`) are NOT eligible — see the design spec's quality guarantee.
+
+## Context policy: learned cache TTL + per-model window
+
+Three `contextPolicy` fields (`ContextPolicyCfg` in `src/engine/context-policy.ts`) gate the
+LEARNED cache-TTL resume rule: a resume idle past the *effective* cache TTL (derived from real
+per-resume cache-hit observations in the ledger's `cache_observations` table via
+`effectiveCacheTtlMs`) on a transcript at/above `staleResumePct` occupancy triggers a handoff
+instead of a cold, unwarmed-cache resume.
+
+| Field | Category | Default | Meaning |
+| --- | --- | --- | --- |
+| `staleResumePct` | ratio | `0.35` | Occupancy above which a stale-past-TTL resume triggers handoff instead of keep. |
+| `cacheTtlFallbackMs` | provider-fact fallback | `3600000` (1h) | The provider-documented prompt-cache TTL, used until enough real observations exist to derive a learned TTL. |
+| `cacheTtlMinObservations` | operator choice | `5` | Minimum `(gapMs, hit)` observations required before the learned TTL is trusted over the fallback. |
+
+`contextPolicy.windowTokensByModel` (optional, `Record<string, number>`, unset by default) is an
+operator-choice override layered over the built-in context-window-size facts map
+(`windowTokensFor`'s `MODEL_WINDOW_TOKENS`, keyed by the model id Claude Code's own transcripts
+report). It is not a new fixed knob — the window is still derived from the model the transcript
+reports; this only lets you correct or extend the facts map (e.g. for a model id the built-in map
+doesn't know yet). It is threaded into every gate that measures context: `dispatch`'s gate,
+`pipeline`'s pre- and post-resume gates, the loop-resume gate, and `runHandoff`'s own
+re-measurement — so a configured override changes gate verdicts, not just the number shown for
+`/status` ctx%.
+
+## There is no `idlePollMs` / `loopTickMs`
+
+The daemon's scheduler tick is **derived**, not a fixed config knob. `heartbeatMs()`
+(`src/engine/heartbeat.ts`) returns `min(CRON_RESOLUTION_MS /* 60s, cron's own minute resolution */,
+...everyMs of every enabled interval-trigger loop)` — so the tick is 60s unless an *enabled* loop
+with an `interval` trigger wants something faster, in which case the fastest such interval wins
+(disabled loops and manual/cron-trigger loops never speed it up). The daemon re-derives this every
+tick from `effectiveLoops()` (built-in + data-driven loops) and self-reschedules a single
+`setTimeout` (not `setInterval`) — so enabling a fast loop speeds up the daemon with no restart, and
+there is no separate poll-interval setting to keep in sync.
+
+## `freshSession` (loop definitions, not global config)
+
+A per-loop flag (`LoopDef.freshSession?: boolean` in `src/engine/loops.ts`, also settable on
+data-driven loops via `loop-validate.ts`), not a `config.json` key. When `true`, the loop never
+resumes across iterations — every fire starts a brand-new session, overriding the normal
+context-gated resume decision entirely (useful for judge/report loops where a fresh look matters
+more than continuity). When `false`/unset, the loop defers to the normal context-policy
+`gateResume` (keep / handoff / clear based on measured occupancy).
 
 ## Recipes
 
