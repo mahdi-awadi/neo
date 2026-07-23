@@ -17,7 +17,14 @@ import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers } from "./dispatch";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
-import { sessionContext, decideContext, runHandoff, effectiveCacheTtlMs, lastTurnCacheRead } from "./context-policy";
+import {
+  sessionContext,
+  decideContext,
+  runHandoff,
+  effectiveCacheTtlMs,
+  transcriptLineCount,
+  firstAssistantCacheReadAfter,
+} from "./context-policy";
 import { profileDeps } from "./worker-profile";
 import { describeSessionStatus } from "./session-status";
 import {
@@ -65,6 +72,9 @@ export interface PipelineDeps {
   /** Test seams for the context policy (default: real transcript measurement + handoff run). */
   signals?: typeof sessionContext;
   handoff?: typeof runHandoff;
+  /** Test seams for the LEARNED-cache-TTL observation helpers (default: real transcript reads). */
+  lineCount?: typeof transcriptLineCount;
+  cacheRead?: typeof firstAssistantCacheReadAfter;
   /** Graceful-reload gate: while draining, no new orders/follow-ups start (see engine/reload.ts). */
   lifecycle?: { draining(): boolean };
   /** Shared API-throttle gate: a session throttled here arms it, and background work reads it
@@ -80,22 +90,27 @@ export interface PipelineDeps {
 }
 
 /** Apply the context policy to a persisted resume id. Returns the id to actually resume with
- *  ("" = start fresh) plus the idle gap measured at gate time (before the resume), so the caller
- *  can later record a LEARNED-cache-TTL observation against a real gapMs. Never throws (fail open
- *  = keep the id). */
+ *  ("" = start fresh), the idle gap measured at gate time (before the resume), and — on "keep" —
+ *  the OLD transcript's line count at that same moment, so the caller can later scan only the
+ *  lines a resume appends and find its first (not just its last) post-resume assistant turn (see
+ *  firstAssistantCacheReadAfter). Never throws (fail open = keep the id, no preLines). */
 async function applyContextPolicy(
   folder: string,
   sessionInfo: SessionInfo | undefined,
   resumeId: string,
   deps: PipelineDeps,
-): Promise<{ resumeId: string; idleMs: number }> {
+): Promise<{ resumeId: string; idleMs: number; preLines?: number }> {
   if (!resumeId) return { resumeId: "", idleMs: 0 };
   try {
     const signals = deps.signals ?? sessionContext;
     const sig = signals(folder, resumeId);
     const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(50), deps.cfg.contextPolicy);
     const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs);
-    if (verdict === "keep") return { resumeId, idleMs: sig.idleMs };
+    if (verdict === "keep") {
+      const lineCount = deps.lineCount ?? transcriptLineCount;
+      const preLines = lineCount(folder, resumeId);
+      return { resumeId, idleMs: sig.idleMs, preLines };
+    }
     if (verdict === "clear") {
       deps.ledger.clearSessionsFor(folder);
       deps.ledger.recordContextEvent(folder, "clear", sig.occupancy);
@@ -208,6 +223,7 @@ export async function handleMessage(
         start,
         runConfigFor(live.id, registry, deps, chatId, gate.resumeId),
         gate.idleMs,
+        gate.preLines,
       );
     } finally {
       resuming.delete(live.id);
@@ -256,6 +272,7 @@ export async function handleMessage(
       mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
     }),
     gate.idleMs,
+    gate.preLines,
   );
 }
 
@@ -297,6 +314,10 @@ function startSession(
    *  Threaded through so the run.done handler below can record a LEARNED-cache-TTL observation
    *  against a real gapMs once the resumed turn actually completes. */
   resumeIdleMs = 0,
+  /** The OLD transcript's line count at that same gate moment (undefined = unmeasured/fresh start).
+   *  Lets the run.done handler scan only the lines THIS resume appended, so it finds the FIRST
+   *  post-resume assistant turn rather than the run's last one (see firstAssistantCacheReadAfter). */
+  resumePreLines?: number,
 ): SessionRun {
   const { registry, meter, ledger } = deps;
   const project = registry.get(registryId)?.name; // tag worker output with the project name
@@ -365,12 +386,22 @@ function startSession(
     registry.touch(registryId, now());
     registry.detachControl(registryId);
     // LEARNED cache-TTL observation: this was a resume (runDeps.resume set) — was the prompt
-    // cache still warm after resumeIdleMs of idle time? Best-effort: a broken/unreadable
-    // transcript must never misrecord a false miss, so it's skipped rather than recorded as 0.
+    // cache still warm on the FIRST post-resume turn (not just some later turn in this run, which
+    // would already hit the cache that first turn rewarmed)? If the SDK forked a new transcript
+    // file for the resume (result.sessionId !== runDeps.resume), that new file's first assistant
+    // turn IS the first post-resume turn, so read it from the start; otherwise scan only the lines
+    // appended after the pre-resume line count captured at gate time — undefined (unmeasured)
+    // means skip, never guess. Best-effort: a broken/unreadable transcript must never misrecord a
+    // false miss, so it's skipped rather than recorded as 0.
     if (runDeps.resume && result.sessionId) {
       try {
-        const cacheRead = lastTurnCacheRead(order.folder, result.sessionId);
-        if (cacheRead !== undefined) ledger.recordCacheObservation(resumeIdleMs, cacheRead > 0);
+        const cacheReadFn = deps.cacheRead ?? firstAssistantCacheReadAfter;
+        const forked = result.sessionId !== runDeps.resume;
+        const afterLine = forked ? 0 : resumePreLines;
+        if (afterLine !== undefined) {
+          const cacheRead = cacheReadFn(order.folder, result.sessionId, afterLine);
+          if (cacheRead !== undefined) ledger.recordCacheObservation(resumeIdleMs, cacheRead > 0);
+        }
       } catch {
         // best-effort — never affects the resume itself
       }

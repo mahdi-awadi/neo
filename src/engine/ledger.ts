@@ -38,7 +38,7 @@ export interface Ledger {
   /** LEARNED cache-TTL input: one (idle gap before a resume, was the prompt cache still warm?)
    *  observation, so the effective staleness TTL can be derived from real behavior instead of a
    *  fixed provider-documented number (see context-policy.ts effectiveCacheTtlMs). */
-  recordCacheObservation(gapMs: number, hit: boolean): void;
+  recordCacheObservation(gapMs: number, hit: boolean, at?: number): void;
   /** Most recent observations, newest-first, capped by `limit`. */
   listCacheObservations(limit?: number): Array<{ gapMs: number; hit: boolean; at: number }>;
   /** Wipe the resume-target session id for every order in this folder (fresh start after a handoff/clear). */
@@ -271,8 +271,8 @@ export function openLedger(path: string): Ledger {
         .query(`SELECT folder, verdict, occupancy, at FROM context_events ORDER BY at DESC LIMIT ?`)
         .all(limit) as Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
     },
-    recordCacheObservation(gapMs, hit) {
-      db.query(`INSERT INTO cache_observations (gap_ms, hit, at) VALUES (?, ?, ?)`).run(gapMs, hit ? 1 : 0, Date.now());
+    recordCacheObservation(gapMs, hit, at = Date.now()) {
+      db.query(`INSERT INTO cache_observations (gap_ms, hit, at) VALUES (?, ?, ?)`).run(gapMs, hit ? 1 : 0, at);
     },
     listCacheObservations(limit = 50) {
       // rowid DESC breaks ties for observations recorded within the same millisecond.

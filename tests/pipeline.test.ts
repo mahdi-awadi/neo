@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleMessage } from "../src/engine/pipeline";
@@ -7,6 +7,7 @@ import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
+import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter } from "../src/engine/context-policy";
 import type { NeoConfig } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
@@ -520,6 +521,106 @@ test("post-completion handoff fires when the finished session is fat", async () 
   await new Promise((r) => setTimeout(r, 0));
 
   expect(handoffCalled).toBe(true);
+});
+
+// --- LEARNED cache-TTL observation recording (2026-07-23 review finding: reading the transcript's
+// LAST turn instead of the FIRST post-resume turn would starve the misses bucket, since a later
+// turn in the same run already hits the cache the first turn just rewarmed). ---
+
+test("resume records a cache observation from the FIRST post-resume turn, not a later one in the same run", async () => {
+  const dir = scratch();
+  const projectsDir = scratch(); // stand-in for ~/.claude/projects, isolated from the real homedir
+  const sdkId = "sdk-cache-1";
+  const transcriptDir = join(projectsDir, encodeCwd(dir));
+  mkdirSync(transcriptDir, { recursive: true });
+  const transcriptPath = join(transcriptDir, `${sdkId}.jsonl`);
+  // Pre-resume transcript: one prior turn — its line count is the boundary a post-resume scan
+  // must start strictly AFTER.
+  writeFileSync(transcriptPath, JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 999 } } }));
+
+  const seams = {
+    lineCount: (folder: string, id: string) => transcriptLineCount(folder, id, { projectsDir }),
+    cacheRead: (folder: string, id: string, afterLine: number) => firstAssistantCacheReadAfter(folder, id, afterLine, { projectsDir }),
+  };
+
+  // Open + finish so the session is idle/resumable with its sdk id persisted.
+  let resolve1!: (r: RunResult) => void;
+  const done1 = new Promise<RunResult>((res) => (resolve1 = res));
+  const start1 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done1 }) as unknown as SessionRun;
+  const h = harness({ start: start1 });
+  const opened = await handleMessage(`/open ${dir} start`, 4, { ...h.base, ...seams });
+  resolve1({ ok: true, sessionId: sdkId, summary: "done", costUsd: 0 });
+  await opened!.done;
+  await new Promise((r) => setTimeout(r, 0));
+  h.registry.setFocus(4, h.registry.list()[0].id, "once");
+
+  let resolve2!: (r: RunResult) => void;
+  const done2 = new Promise<RunResult>((res) => (resolve2 = res));
+  const start2 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done2 }) as unknown as SessionRun;
+  const resumed = await handleMessage("continue", 4, {
+    ...h.base,
+    start: start2,
+    ...seams,
+    signals: () => ({ occupancy: 0.1, turns: 1, ageMs: 0, idleMs: 999 }), // well under every threshold → "keep"
+  });
+  // Only NOW (after the gate has already read the pre-resume line count) simulate the SDK
+  // appending this resume's turns: the FIRST is a real cache miss (0); a LATER turn in the SAME
+  // run already re-hit the cache the first turn just warmed. The bug scanned to the LAST turn and
+  // would have recorded hit:true here — this pins hit:false instead.
+  appendFileSync(
+    transcriptPath,
+    "\n" +
+      JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 0 } } }) +
+      "\n" +
+      JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 500 } } }),
+  );
+  resolve2({ ok: true, sessionId: sdkId, summary: "done again", costUsd: 0 });
+  await resumed!.done;
+  await new Promise((r) => setTimeout(r, 0));
+
+  const obs = h.ledger.listCacheObservations(10);
+  expect(obs).toHaveLength(1);
+  expect(obs[0]).toMatchObject({ gapMs: 999, hit: false }); // first post-resume turn's cache_read was 0
+});
+
+test("resume records nothing when the pre-resume line count can't be measured (fail-open, no false miss)", async () => {
+  const dir = scratch();
+  const sdkId = "sdk-cache-2";
+  const missingProjectsDir = join(scratch(), "does-not-exist"); // never created — every read fails open
+  const seams = {
+    lineCount: (folder: string, id: string) => transcriptLineCount(folder, id, { projectsDir: missingProjectsDir }),
+    cacheRead: (folder: string, id: string, afterLine: number) =>
+      firstAssistantCacheReadAfter(folder, id, afterLine, { projectsDir: missingProjectsDir }),
+  };
+
+  let resolve1!: (r: RunResult) => void;
+  const done1 = new Promise<RunResult>((res) => (resolve1 = res));
+  const start1 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done1 }) as unknown as SessionRun;
+  const h = harness({ start: start1 });
+  const opened = await handleMessage(`/open ${dir} start`, 6, { ...h.base, ...seams });
+  resolve1({ ok: true, sessionId: sdkId, summary: "done", costUsd: 0 });
+  await opened!.done;
+  await new Promise((r) => setTimeout(r, 0));
+  h.registry.setFocus(6, h.registry.list()[0].id, "once");
+
+  let resolve2!: (r: RunResult) => void;
+  const done2 = new Promise<RunResult>((res) => (resolve2 = res));
+  const start2 = (): SessionRun =>
+    ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done: done2 }) as unknown as SessionRun;
+  const resumed = await handleMessage("continue", 6, {
+    ...h.base,
+    start: start2,
+    ...seams,
+    signals: () => ({ occupancy: 0.1, turns: 1, ageMs: 0, idleMs: 999 }),
+  });
+  resolve2({ ok: true, sessionId: sdkId, summary: "done again", costUsd: 0 });
+  await resumed!.done;
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(h.ledger.listCacheObservations(10)).toEqual([]);
 });
 
 test("startSession wires onActivity into registry.noteActivity", async () => {

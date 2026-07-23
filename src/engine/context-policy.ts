@@ -111,12 +111,12 @@ export function sessionContext(
   }
 }
 
-/** The most recent assistant turn's `cache_read_input_tokens` from the transcript (same read path
- *  as sessionContext) — used right after a resume's first turn completes to observe whether the
- *  prompt cache was still warm for the idle gap that preceded it. Returns `undefined` when the
- *  transcript can't be read or has no assistant turn at all, so a caller can skip recording rather
- *  than misrecord a false miss; fail-open, never throws. */
-export function lastTurnCacheRead(
+/** Total line count of a session's transcript file right now (same path sessionContext reads).
+ *  Captured at the context-policy gate, BEFORE a resume, so the caller can later scan only the
+ *  lines appended AFTER that point (see firstAssistantCacheReadAfter) — scanning the whole
+ *  transcript would pick up a LATER turn, which reflects a cache the resume's own first turn just
+ *  rewarmed, not the idle gap being measured. `undefined` when unreadable; fail-open, never throws. */
+export function transcriptLineCount(
   folder: string,
   sdkSessionId: string,
   opts: { projectsDir?: string } = {},
@@ -126,9 +126,34 @@ export function lastTurnCacheRead(
   const path = join(projectsDir, encodeCwd(folder), `${sdkSessionId}.jsonl`);
   try {
     if (!existsSync(path)) return undefined;
-    let last: number | undefined;
-    for (const line of readFileSync(path, "utf8").split("\n")) {
-      const trimmed = line.trim();
+    return readFileSync(path, "utf8").split("\n").length;
+  } catch {
+    return undefined; // fail OPEN
+  }
+}
+
+/** The FIRST assistant turn strictly after line index `afterLine` that carries usage — i.e. the
+ *  FIRST post-resume turn, whose `cache_read_input_tokens` is the only turn that actually reflects
+ *  whether the prompt cache survived the idle gap (a later turn in the same run would already hit
+ *  the cache that first turn just recreated, so scanning past it would starve the misses bucket and
+ *  defeat the learned TTL). Pass `afterLine: 0` to read a transcript from its start (e.g. when the
+ *  SDK forked a new transcript file for the resume). Returns `undefined` when the transcript can't
+ *  be read or has no matching turn (yet), so a caller can skip recording rather than misrecord a
+ *  false miss; fail-open, never throws. */
+export function firstAssistantCacheReadAfter(
+  folder: string,
+  sdkSessionId: string,
+  afterLine: number,
+  opts: { projectsDir?: string } = {},
+): number | undefined {
+  if (!folder || !sdkSessionId) return undefined;
+  const projectsDir = opts.projectsDir ?? join(homedir(), ".claude", "projects");
+  const path = join(projectsDir, encodeCwd(folder), `${sdkSessionId}.jsonl`);
+  try {
+    if (!existsSync(path)) return undefined;
+    const lines = readFileSync(path, "utf8").split("\n");
+    for (let i = Math.max(0, afterLine); i < lines.length; i++) {
+      const trimmed = lines[i].trim();
       if (!trimmed) continue;
       let obj: { type?: string; message?: { usage?: Record<string, number> } };
       try {
@@ -138,9 +163,9 @@ export function lastTurnCacheRead(
       }
       const u = obj.type === "assistant" ? obj.message?.usage : undefined;
       if (!u) continue;
-      last = u.cache_read_input_tokens ?? 0;
+      return u.cache_read_input_tokens ?? 0;
     }
-    return last;
+    return undefined; // no post-resume assistant turn found (yet) — skip, don't misrecord
   } catch {
     return undefined; // fail OPEN
   }

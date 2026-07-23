@@ -11,6 +11,8 @@ import {
   idleStateNote,
   writeIdleStateNote,
   effectiveCacheTtlMs,
+  transcriptLineCount,
+  firstAssistantCacheReadAfter,
 } from "../src/engine/context-policy";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
@@ -125,6 +127,33 @@ test("sessionContext reports idleMs from the transcript mtime; 0 on any error (f
   expect((await sessionContext(folder, id)).idleMs).toBeGreaterThanOrEqual(0);
   expect((await sessionContext("/nope", "missing")).idleMs).toBe(0);
   rmSync(join(homedir(), ".claude", "projects", encodeCwd(folder)), { recursive: true, force: true });
+});
+
+test("firstAssistantCacheReadAfter returns the FIRST matching turn after afterLine, not a later one", () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), "neo-ctx-"));
+  const dir = join(projectsDir, encodeCwd("/p/cache-fixture"));
+  mkdirSync(dir, { recursive: true });
+  const lines = [
+    JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 999 } } }), // pre-resume, line 0
+    JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 0 } } }), // first post-resume, line 1
+    JSON.stringify({ type: "assistant", message: { usage: { cache_read_input_tokens: 500 } } }), // later turn, line 2
+  ].join("\n");
+  writeFileSync(join(dir, "sess-cache.jsonl"), lines);
+  expect(firstAssistantCacheReadAfter("/p/cache-fixture", "sess-cache", 1, { projectsDir })).toBe(0);
+  expect(firstAssistantCacheReadAfter("/p/cache-fixture", "sess-cache", 0, { projectsDir })).toBe(999);
+});
+
+test("firstAssistantCacheReadAfter / transcriptLineCount fail OPEN (undefined) on a missing transcript", () => {
+  expect(firstAssistantCacheReadAfter("/nowhere", "nope", 0, { projectsDir: "/nonexistent" })).toBeUndefined();
+  expect(transcriptLineCount("/nowhere", "nope", { projectsDir: "/nonexistent" })).toBeUndefined();
+});
+
+test("transcriptLineCount counts the transcript's lines", () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), "neo-ctx-"));
+  const dir = join(projectsDir, encodeCwd("/p/cache-lines"));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "sess-lines.jsonl"), "a\nb\nc");
+  expect(transcriptLineCount("/p/cache-lines", "sess-lines", { projectsDir })).toBe(3);
 });
 
 test("encodeCwd matches Claude Code's project-dir encoding", () => {
