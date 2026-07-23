@@ -244,7 +244,7 @@ export async function dispatchToProject(
     if (gatedResume && deps.contextPolicy) {
       try {
         const signals = opts.signals ?? sessionContext;
-        const sig = signals(folder, gatedResume);
+        const sig = signals(folder, gatedResume, { windowTokensByModel: deps.contextPolicy.windowTokensByModel });
         const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(50), deps.contextPolicy);
         const verdict = decideContext(sig, deps.contextPolicy, ttlMs);
         if (verdict === "clear") {

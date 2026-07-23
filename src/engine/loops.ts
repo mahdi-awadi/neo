@@ -255,7 +255,7 @@ function loopRunExtras(
     freshSession: loop.freshSession,
     gateResume: cfg
       ? async (id: string) => {
-          const ctx = await sessionContext(loop.folder, id);
+          const ctx = await sessionContext(loop.folder, id, { windowTokensByModel: cfg.contextPolicy.windowTokensByModel });
           const obs = deps.store?.listCacheObservations(50) ?? [];
           const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
           return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;

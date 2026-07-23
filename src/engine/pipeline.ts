@@ -103,7 +103,7 @@ async function applyContextPolicy(
   if (!resumeId) return { resumeId: "", idleMs: 0 };
   try {
     const signals = deps.signals ?? sessionContext;
-    const sig = signals(folder, resumeId);
+    const sig = signals(folder, resumeId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
     const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(50), deps.cfg.contextPolicy);
     const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs);
     if (verdict === "keep") {
@@ -409,7 +409,7 @@ function startSession(
     try {
       if (result.sessionId) {
         const signals = deps.signals ?? sessionContext;
-        const sig = signals(order.folder, result.sessionId);
+        const sig = signals(order.folder, result.sessionId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
         const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(50), deps.cfg.contextPolicy);
         if (decideContext(sig, deps.cfg.contextPolicy, ttlMs) !== "keep") {
           const handoff = deps.handoff ?? runHandoff;

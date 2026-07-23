@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { handleMessage } from "../src/engine/pipeline";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
@@ -436,6 +436,53 @@ test("pre-resume: handoff verdict runs the handoff first, then starts fresh", as
 
   expect(calls[0]).toBe("handoff");
   expect(calls[1]).toBe("start:fresh");
+});
+
+test("pre-resume gate: a configured windowTokensByModel flips the verdict (real sessionContext, no `signals` seam — proves the cfg override actually reaches this gate, not just sessionContext's own math)", async () => {
+  const dir = scratch();
+  const sdkId = "sdk-window-override";
+  // A REAL transcript under sessionContext's default path (~/.claude/projects/<encodeCwd(dir)>/...)
+  // — deliberately NOT using a `signals` test seam, so applyContextPolicy calls the real
+  // sessionContext(folder, resumeId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel }).
+  const transcriptDir = join(homedir(), ".claude", "projects", encodeCwd(dir));
+  mkdirSync(transcriptDir, { recursive: true });
+  writeFileSync(
+    join(transcriptDir, `${sdkId}.jsonl`),
+    JSON.stringify({
+      type: "assistant",
+      timestamp: new Date().toISOString(),
+      message: { model: "big-model", usage: { input_tokens: 150_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    }),
+  );
+  try {
+    // Default 200k facts-map window: 150_000 / 200_000 = 0.75 >= handoffPct (0.65) → "handoff".
+    const f1 = fakeStart();
+    const h1 = harness({ start: f1.start });
+    h1.ledger.recordOrder({ id: "d1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+    h1.ledger.recordSession("d1", sdkId);
+    const calls: string[] = [];
+    await handleMessage(`/open ${dir} continue`, 9, {
+      ...h1.base,
+      handoff: async (s) => {
+        calls.push("handoff");
+        h1.ledger.clearSessionsFor(s.order.folder);
+      },
+    });
+    expect(calls).toEqual(["handoff"]); // default facts map (no override) → handoff, same transcript
+    expect(f1.resumeSeen()).toBeUndefined(); // fresh, not resumed
+
+    // SAME transcript, but cfg now overrides "big-model"'s window to 1,000,000 tokens:
+    // 150_000 / 1_000_000 = 0.15 — well under handoffPct → "keep" instead.
+    const f2 = fakeStart();
+    const h2 = harness({ start: f2.start });
+    h2.ledger.recordOrder({ id: "d2", source: "neo", folder: dir, task: "x", chatId: 10, createdAt: 0 });
+    h2.ledger.recordSession("d2", sdkId);
+    const cfg2 = { ...h2.base.cfg, contextPolicy: { ...h2.base.cfg.contextPolicy, windowTokensByModel: { "big-model": 1_000_000 } } };
+    await handleMessage(`/open ${dir} continue`, 10, { ...h2.base, cfg: cfg2 });
+    expect(f2.resumeSeen()).toBe(sdkId); // kept — actually resumed with the persisted sdk session id
+  } finally {
+    rmSync(transcriptDir, { recursive: true, force: true });
+  }
 });
 
 test("fresh start reads HANDOFF.md when it exists", async () => {

@@ -166,12 +166,17 @@ async function main(): Promise<void> {
     }, heartbeatMs(currentHeartbeatLoops()));
   };
   scheduleHeartbeat();
+  // Same computed value for both lines below — the tick is one shared clock, not two independent
+  // ones, and this heartbeat derives from enabled loops' triggers regardless of loopSchedulerEnabled
+  // (that flag only gates whether the tick's body actually fires tickScheduler; idle/stuck still
+  // ride the same derived clock either way).
+  const initialHeartbeatMs = heartbeatMs(currentHeartbeatLoops());
   console.log(
-    `  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every derived heartbeat tick (company exempt)`,
+    `  idle      -> close normal projects after ${cfg.idleCloseMs / 3_600_000}h quiet, sweep every derived heartbeat tick (${initialHeartbeatMs / 1000}s now, company exempt)`,
   );
   console.log(
     cfg.loopSchedulerEnabled
-      ? `  loops     -> scheduler on, tick derived from enabled triggers — ${heartbeatMs(currentHeartbeatLoops()) / 1000}s now (${effectiveLoops(ledger).length} loops)`
+      ? `  loops     -> scheduler on, tick derived from enabled triggers — ${initialHeartbeatMs / 1000}s now (${effectiveLoops(ledger).length} loops)`
       : "  loops     -> scheduler OFF (NEO_LOOP_SCHEDULER=0)",
   );
 

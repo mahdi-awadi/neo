@@ -54,7 +54,11 @@ export interface ContextPolicyCfg {
   /** OPERATOR CHOICE: per-model context-window overrides, layered over the built-in facts map
    *  (windowTokensFor's MODEL_WINDOW_TOKENS). Optional — absent/unset models fall back to the
    *  facts map's own default. Not a new fixed knob: the window is still derived from the model
-   *  the transcript reports; this only lets an operator correct or extend the facts map. */
+   *  the transcript reports; this only lets an operator correct or extend the facts map. Threaded
+   *  into every sessionContext call that feeds a keep/handoff/clear decision — dispatch.ts's
+   *  gate, pipeline.ts's pre- and post-resume gates, loops.ts's loop-resume gate, and
+   *  runHandoff's own re-measurement — so a configured override actually changes gate verdicts,
+   *  not just the number shown for /status ctx%. */
   windowTokensByModel?: Record<string, number>;
 }
 
