@@ -31,7 +31,8 @@
     "dev": "bun run src/daemon.ts",
     "start": "bun run src/daemon.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "memory:bootstrap": "bun run src/engine/memory-bootstrap.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

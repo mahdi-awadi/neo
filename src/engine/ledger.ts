@@ -53,6 +53,9 @@ export interface Ledger {
   saveOpenSessions(rows: OpenSessionRow[]): void;
   /** Read AND clear the snapshot — consumed once at boot so a later boot restores nothing stale. */
   takeOpenSessions(): OpenSessionRow[];
+  /** Every recorded outcome for orders in this folder, oldest-first (memory bootstrap: seed a
+   *  project's memory log from what the ledger already knows, instead of starting from zero). */
+  outcomesForFolder(folder: string): Array<{ orderId: string; status: string; summary: string; at: number }>;
 }
 
 /** One open session as persisted across a graceful daemon reload. */
@@ -344,6 +347,17 @@ export function openLedger(path: string): Ledger {
         .query(`SELECT session_id, folder, project FROM message_routes WHERE chat_id = ? AND message_id = ?`)
         .get(chatId, messageId) as { session_id: string; folder: string; project: string } | null;
       return row ? { sessionId: row.session_id, folder: row.folder, project: row.project } : undefined;
+    },
+    outcomesForFolder(folder) {
+      const rows = db
+        .query(
+          `SELECT o.order_id as order_id, o.status as status, o.summary as summary, o.at as at
+           FROM outcomes o JOIN orders ord ON ord.id = o.order_id
+           WHERE ord.folder = ?
+           ORDER BY o.at ASC`,
+        )
+        .all(folder) as Array<{ order_id: string; status: string; summary: string; at: number }>;
+      return rows.map((r) => ({ orderId: r.order_id, status: r.status, summary: r.summary, at: r.at }));
     },
   };
 }
