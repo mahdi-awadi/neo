@@ -5,6 +5,7 @@ import type { Order } from "../types";
 import { runOrder, type RunResult } from "./session-runner";
 import { neoMcpServers, type DispatchDeps } from "./dispatch";
 import type { TrustStore } from "./trust";
+import { profileDeps } from "./worker-profile";
 
 /** Reserved chat id for company runs driven by a customer brief (never a real operator chat). */
 export const CUSTOMER_CHAT = -3;
@@ -65,16 +66,15 @@ export async function runCompanyBrief(
       opts.tainted
         // Tainted runs are fully isolated one-shots: no resume (must not see prior company/
         // operator conversation history) and no persisted session id (see below).
-        ? { effort: "low", disallowedTools: TAINTED_DISALLOWED_TOOLS }
-        : {
+        ? profileDeps(deps.cfg, "ingress", { disallowedTools: TAINTED_DISALLOWED_TOOLS })
+        : profileDeps(deps.cfg, "ingress", {
             resume: company.sdkSessionId || undefined,
-            effort: "low",
             mcpServers: neoMcpServers(
-              { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy },
+              { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv },
               CUSTOMER_CHAT,
               { dispatch: true, folder: company.order.folder },
             ),
-          },
+          }),
     );
   } catch (e) {
     deps.ledger.recordOutcome(order.id, "error", e instanceof Error ? e.message : String(e));

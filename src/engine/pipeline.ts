@@ -18,6 +18,7 @@ import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./s
 import { neoMcpServers } from "./dispatch";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { sessionContext, decideContext, runHandoff } from "./context-policy";
+import { profileDeps } from "./worker-profile";
 import { describeSessionStatus } from "./session-status";
 import {
   apiFailureNotice,
@@ -108,7 +109,11 @@ async function applyContextPolicy(
       startedAt: 0,
       lastActivityAt: 0,
     };
-    await handoff(target, deps.cfg.contextPolicy, { registry: deps.registry, ledger: deps.ledger });
+    await handoff(target, deps.cfg.contextPolicy, {
+      registry: deps.registry,
+      ledger: deps.ledger,
+      runDeps: profileDeps(deps.cfg, "handoff"),
+    });
     return "";
   } catch {
     return resumeId; // fail open
@@ -224,10 +229,10 @@ export async function handleMessage(
 
   // 6. Register the project and start its live session (control handle for follow-up/kill/idle).
   const session = registry.add(parsed, now());
-  return startSession(parsed, session.id, chatId, deps, now, start, {
+  return startSession(parsed, session.id, chatId, deps, now, start, profileDeps(deps.cfg, "project", {
     resume: resume || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
-  });
+    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+  }));
 }
 
 /**
@@ -245,9 +250,9 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, workerEnv: deps.cfg.workerEnv }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, gitnexusBin: deps.cfg.gitnexusBin, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
   };
-  return isCompany ? { ...base, effort: "low" } : base;
+  return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }
 
 /**
@@ -338,7 +343,13 @@ function startSession(
         if (decideContext(sig, deps.cfg.contextPolicy) !== "keep") {
           const handoff = deps.handoff ?? runHandoff;
           const info = registry.get(registryId);
-          if (info) void handoff(info, deps.cfg.contextPolicy, { registry, ledger });
+          if (info) {
+            void handoff(info, deps.cfg.contextPolicy, {
+              registry,
+              ledger,
+              runDeps: profileDeps(deps.cfg, "handoff"),
+            });
+          }
         }
       }
     } catch {

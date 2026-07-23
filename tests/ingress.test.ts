@@ -28,7 +28,7 @@ test("runCompanyBrief runs the brief on the company and returns its result", asy
   };
 
   const out = await runCompanyBrief("A customer asks: where is order #7? Answer them.", {
-    cfg: {} as never, ledger, registry,
+    cfg: { workers: {}, workerEnv: {} } as never, ledger, registry,
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
     trust: openTrustStore(":memory:"),
     reply: (_c, t) => void replies.push(t),
@@ -52,7 +52,7 @@ test("tainted brief runs with zero mutating tools and no MCP servers", async () 
   };
 
   const out = await runCompanyBrief("draft a reply", {
-    cfg: {} as never, ledger, registry,
+    cfg: { workers: {}, workerEnv: {} } as never, ledger, registry,
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
     trust: openTrustStore(":memory:"),
     reply: () => {},
@@ -79,7 +79,7 @@ test("tainted brief is a fully isolated one-shot: no resume, and it never persis
   };
 
   await runCompanyBrief("draft a reply", {
-    cfg: {} as never, ledger, registry,
+    cfg: { workers: {}, workerEnv: {} } as never, ledger, registry,
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
     trust: openTrustStore(":memory:"),
     reply: () => {},
@@ -102,7 +102,7 @@ test("untainted brief keeps MCP servers and no disallowedTools (unchanged path)"
   };
 
   await runCompanyBrief("normal brief", {
-    cfg: {} as never, ledger, registry,
+    cfg: { workers: {}, workerEnv: {} } as never, ledger, registry,
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
     trust: openTrustStore(":memory:"),
     reply: () => {},

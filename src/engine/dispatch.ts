@@ -8,6 +8,7 @@ import { join, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
+import type { NeoConfig, WorkerPathName, WorkerProfile } from "../config";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -18,6 +19,7 @@ import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, type ContextPolicyCfg } from "./context-policy";
 import { describeSessionStatus, sessionsReport } from "./session-status";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
+import { profileDeps } from "./worker-profile";
 import {
   apiFailureNotice,
   apiHoldMessage,
@@ -63,6 +65,12 @@ export interface DispatchDeps {
    *  pipeline uses — a resumed sub-project session must not grow unbounded (see
    *  docs/superpowers/specs/2026-07-08-context-policy-design.md, Boundaries #3). */
   contextPolicy?: ContextPolicyCfg;
+  /** Per-launch-path worker profiles (model/effort/skills/maxTurns) — routes the dispatched
+   *  sub-run and its handoff turn through config.json's `workers.dispatch` / `workers.handoff`.
+   *  Absent → every path inherits today's behavior (see worker-profile.ts). */
+  workers?: Record<WorkerPathName, WorkerProfile>;
+  /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
+  workerEnv?: Record<string, string>;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
   lifecycle?: { draining(): boolean };
   /** Shared API-throttle gate (engine/api-retry.ts): while a throttle is fresh, a NEW sub-run is
@@ -171,6 +179,12 @@ export async function dispatchToProject(
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
+  // Worker-profile view (model/effort/skills/env by path) — absent deps.workers/workerEnv means
+  // every profileDeps() call below is a no-op (empty profile ?? {}), preserving today's behavior.
+  const workerCfg: Pick<NeoConfig, "workers" | "workerEnv"> = {
+    workers: deps.workers ?? ({} as Record<WorkerPathName, WorkerProfile>),
+    workerEnv: deps.workerEnv ?? {},
+  };
   if (deps.lifecycle?.draining()) {
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
   }
@@ -239,7 +253,11 @@ export async function dispatchToProject(
         } else if (verdict === "handoff") {
           const handoff = opts.handoff ?? runHandoff;
           const target: SessionInfo = { ...session, sdkSessionId: session.sdkSessionId || gatedResume };
-          await handoff(target, deps.contextPolicy, { registry: deps.registry, ledger: deps.ledger });
+          await handoff(target, deps.contextPolicy, {
+            registry: deps.registry,
+            ledger: deps.ledger,
+            runDeps: profileDeps(workerCfg, "handoff"),
+          });
           gatedResume = undefined;
         }
         // "keep" leaves gatedResume unchanged.
@@ -327,7 +345,7 @@ export async function dispatchToProject(
           }
         },
       },
-      { resume: gatedResume },
+      profileDeps(workerCfg, "dispatch", { resume: gatedResume }),
     );
     runRef = run;
     deps.registry.attachControl(session.id, run);

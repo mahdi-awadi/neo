@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import type { Order, SessionInfo } from "../types";
 import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
-import { runOrder, startOrder, type RunResult } from "./session-runner";
+import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
 
 export const CONTEXT_WINDOW_TOKENS = 200_000;
 
@@ -138,6 +138,9 @@ export interface HandoffDeps {
    *  be raced against the timeout, but it has no interrupt handle (best-effort no-op). */
   run?: typeof runOrder;
   now?: () => number;
+  /** Path-profile RunDeps (model/effort/skills/env) for this handoff turn, e.g.
+   *  `profileDeps(cfg, "handoff")`. Merged over the fixed resume/effort base below. */
+  runDeps?: RunDeps;
 }
 
 /** Run the handoff turn against the fat session (bounded), then ALWAYS clear its resume state.
@@ -160,7 +163,7 @@ export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, de
     const run = start(
       order,
       { onMessage: () => {}, onEscalation: async () => "deny" },
-      { resume: session.sdkSessionId || undefined, effort: "low" },
+      { resume: session.sdkSessionId || undefined, effort: "low", ...deps.runDeps },
     );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<"timeout">((res) => {

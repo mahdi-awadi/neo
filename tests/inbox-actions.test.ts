@@ -22,7 +22,7 @@ function briefHarness(draft: string) {
   return {
     seen: () => seenBrief,
     deps: {
-      cfg: {} as never, ledger, registry,
+      cfg: { workers: {}, workerEnv: {} } as never, ledger, registry,
       meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
       trust: openTrustStore(":memory:"),
       reply: () => {},
@@ -185,7 +185,7 @@ test("draftInboxReply runs the brief TAINTED (zero-tool worker)", async () => {
   };
 
   const draft = await draftInboxReply(inbox, item.id, "", {
-    cfg: {} as never, ledger, registry,
+    cfg: { workers: {}, workerEnv: {} } as never, ledger, registry,
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
     trust: openTrustStore(":memory:"),
     reply: () => {},
