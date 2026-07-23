@@ -1,12 +1,12 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { handleLoop, startLoop, startScheduledLoop, matchLoop, listLoops, loopProjectTag, createLoop, updateLoop, deleteLoop, effectiveLoops, type LoopDef } from "../src/engine/loops";
 import { openLedger } from "../src/engine/ledger";
 import { encodeCwd } from "../src/engine/context-policy";
 import type { LoopInput } from "../src/engine/loop-validate";
-import type { RunResult } from "../src/engine/session-runner";
+import type { RunResult, RunDeps } from "../src/engine/session-runner";
 import type { NeoConfig } from "../src/config";
 
 const okRun = (sid = "s"): RunResult => ({ ok: true, sessionId: sid, summary: "", costUsd: 0 });
@@ -324,4 +324,104 @@ test("mywellbeing-checkin is a fire-once daily-morning wellbeing loop", () => {
   expect(p).toContain("check-in");
   expect(p).toContain("glucose");
   expect(p).toContain("text"); // instructs the worker to emit its check-in as its text reply
+});
+
+// PIN: memory-dream exists and is disabled by default — a fresh clone / an operator who never
+// touches config.json gets no behavior change (the scheduler skips every disabled loop).
+test("effectiveLoops contains memory-dream, disabled by default (default scheduler behavior unchanged)", () => {
+  const loop = matchLoop("memory-dream");
+  expect(loop).toBeTruthy();
+  expect(loop!.enabledByDefault).toBe(false);
+  expect(loop!.trigger).toEqual({ kind: "cron", expr: "0 3 * * *" });
+  expect(loop!.bounds.maxIterations).toBe(1);
+  expect(effectiveLoops().some((l) => l.name === "memory-dream")).toBe(true);
+});
+
+// Reads a `tool()`-built SDK tool's handler off an in-process McpServer instance the same way
+// dispatch.test.ts's neoToolNames helper does (createSdkMcpServer exposes its registered tools on
+// `.instance._registeredTools` at runtime — there's no public API to call a tool without going
+// through the full MCP wire protocol).
+function toolHandler(
+  servers: Record<string, unknown> | undefined,
+  serverName: string,
+  toolName: string,
+): ((args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }>) | undefined {
+  const server = servers?.[serverName] as { instance?: { _registeredTools?: Record<string, unknown> } } | undefined;
+  const tool = server?.instance?._registeredTools?.[toolName] as
+    | { handler: (args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> }
+    | undefined;
+  return tool?.handler;
+}
+
+test("startLoop wires a dream-budgeted memory MCP server into ONLY the memory-dream loop's runDeps — a normal loop (green) gets none", async () => {
+  const companyFolder = mkdtempSync(join(tmpdir(), "neo-dream-"));
+  try {
+    const cfg = loopCfg({
+      companyFolder,
+      memory: { scopes: ["company"], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 5, dreamMaxNetChars: 10_000, dreamLookbackDays: 7 },
+    });
+
+    let dreamRunDeps: RunDeps | undefined;
+    let n1 = 0;
+    await startLoop(matchLoop("memory-dream")!, 1, {
+      reply: () => {},
+      cfg,
+      run: async (_o, _h, runDeps) => {
+        dreamRunDeps = runDeps;
+        return okRun();
+      },
+      check: async () => ({ met: n1++ > 0, detail: "" }), // not met, then met → exactly one iterate()
+    });
+
+    const memoryHandler = toolHandler(dreamRunDeps?.mcpServers, "memory", "memory");
+    expect(memoryHandler).toBeTruthy();
+    // Dream budgets are LIVE on this server: drive 3 successful adds (dreamMaxMutations: 3), then
+    // watch the 4th get rejected by the SAME budget closure — proving this isn't just tool presence.
+    for (let i = 0; i < 3; i++) {
+      const res = await memoryHandler!({ file: "MEMORY.md", op: "add", text: `dream fact ${i}`, reason: "test" }, {});
+      expect(res.content[0]?.text).toContain("saved");
+    }
+    const over = await memoryHandler!({ file: "MEMORY.md", op: "add", text: "one too many", reason: "test" }, {});
+    expect(over.content[0]?.text).toContain("dream budget exhausted");
+    // The dream diary landed in the company folder, not somewhere else.
+    expect(existsSync(join(companyFolder, "memory", "DREAMS.md"))).toBe(true);
+
+    let greenRunDeps: RunDeps | undefined;
+    let n2 = 0;
+    await startLoop(matchLoop("green")!, 1, {
+      reply: () => {},
+      cfg,
+      run: async (_o, _h, runDeps) => {
+        greenRunDeps = runDeps;
+        return okRun();
+      },
+      check: async () => ({ met: n2++ > 0, detail: "" }),
+    });
+    expect(greenRunDeps?.mcpServers).toBeUndefined();
+  } finally {
+    rmSync(companyFolder, { recursive: true, force: true });
+  }
+});
+
+test("startLoop no-ops the memory-dream loop (no worker started) when the company folder isn't in memory.scopes", async () => {
+  const companyFolder = mkdtempSync(join(tmpdir(), "neo-dream-unscoped-"));
+  try {
+    const cfg = loopCfg({ companyFolder, memory: { ...loopCfg().memory, scopes: [] } }); // NOT scoped
+    let ran = false;
+    const replies: string[] = [];
+    const out = await startLoop(matchLoop("memory-dream")!, 1, {
+      reply: (_c, t) => void replies.push(t),
+      cfg,
+      run: async () => {
+        ran = true;
+        return okRun();
+      },
+      check: async () => ({ met: false, detail: "" }),
+    });
+    expect(ran).toBe(false); // no worker started — the gate trips BEFORE runProjectLoop
+    expect(out.iterations).toBe(0);
+    expect(replies.some((r) => r.includes("memory disabled (company not in memory.scopes)"))).toBe(true);
+  } finally {
+    rmSync(companyFolder, { recursive: true, force: true });
+  }
 });

@@ -3,7 +3,9 @@
 // (manual/interval/cron), and Bounds (iterations + budget). /loop lists them; /loop <name> starts
 // one now; /loop <name> on|off toggles its schedule. Work runs through runProjectLoop, so it's
 // governed and escalation-auto-denied (never pushes/deploys). See docs/loops.md.
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { runProjectLoop, type Bounds } from "./project-loop";
 import { makeGoalCheck, READONLY_DENY, type Goal, type GoalCheck } from "./goal";
 import type { Trigger } from "./trigger";
@@ -12,7 +14,9 @@ import type { LoopOutcome } from "./loop-runner";
 import type { runOrder, RunDeps } from "./session-runner";
 import { validateLoopInput, type LoopInput } from "./loop-validate";
 import { profileDeps } from "./worker-profile";
-import { sessionContext, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW } from "./context-policy";
+import { sessionContext, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor } from "./context-policy";
+import { memoryDir, memoryScopeEnabled } from "./memory";
+import { memoryTools } from "./memory-tool";
 import type { NeoConfig } from "../config";
 import type { Ledger } from "./ledger";
 
@@ -37,6 +41,15 @@ export interface LoopDef extends SchedulableLoop {
   bounds: Bounds; // maxIterations + optional budgetUsd
   enabledByDefault?: boolean; // for scheduled loops
   freshSession?: boolean; // never resume across iterations (judge/report loops)
+  /** Marks the memory-dream consolidation loop (additive, optional — every other loop leaves this
+   *  unset and is untouched). The static `folder`/`prompt` above are placeholders: the fire path
+   *  (resolveDreamLoop) rewrites `folder` to `cfg.companyFolder` and interpolates `prompt`'s
+   *  lookback-days placeholder from `cfg.memory.dreamLookbackDays`, because the real company path
+   *  isn't known until cfg loads (unlike the other built-ins' fixed SELF_REPO/`/home/...` folders).
+   *  loopRunExtras also attaches a dream-budgeted `memory` MCP server ONLY when this is set, and
+   *  the fire path pre-checks `memoryScopeEnabled` so a company folder that isn't in
+   *  `cfg.memory.scopes` no-ops instead of burning a worker run (dreamGateOutcome). */
+  dreamMemory?: boolean;
 }
 
 export interface LoopDeps {
@@ -138,7 +151,55 @@ const MYWELLBEING_CHECKIN: LoopDef = {
   enabledByDefault: false,
 };
 
-export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN];
+// Placeholder in MEMORY_DREAM.prompt, interpolated with cfg.memory.dreamLookbackDays at fire time
+// (resolveDreamLoop) — the static def is built before cfg loads, so the real lookback window
+// isn't known until then (same reason `folder` below is a sentinel — see resolveDreamLoop).
+const DREAM_LOOKBACK_PLACEHOLDER = "{{DREAM_LOOKBACK_DAYS}}";
+
+// Nightly memory consolidation ("dreaming"): reviews the company workspace's recent daily-log
+// entries plus MEMORY.md/USER.md and proposes consolidations via the `memory` tool, running in
+// DREAM MODE — engine-enforced mutation/add/net-chars budgets (cfg.memory.dreamMax*) attached
+// ONLY to this loop's run (loopRunExtras + dreamMcpServers), never to any other worker.
+//
+// Folder: `folder` below is a SENTINEL, not a real path — the company workspace's actual path
+// (cfg.companyFolder) isn't known until cfg loads, so resolveDreamLoop rewrites it at fire time
+// (mirrors how `prompt`'s lookback-days placeholder is resolved). KNOWN GAP: the scheduler's
+// busy-folder guard (daemon.ts tickScheduler → isFolderBusy) runs against effectiveLoops()'s
+// UNRESOLVED defs, so it checks the sentinel "company", not the real company folder — it can
+// never observe the company session as "busy" for this one loop. Low blast radius today (disabled
+// by default; a single once-nightly fire-once iteration) but a real gap if this loop is ever
+// enabled — flagged for a follow-up (fixing it means resolving the folder before the scheduler's
+// busy-check, i.e. touching daemon.ts/scheduler.ts, out of this task's file scope).
+//
+// Fire-once, same "goal never met" shape as mywellbeing-checkin (docs/loops.md gotcha): runLoop
+// checks the goal BEFORE each iteration, so a goal that can be met on the FIRST check (e.g. exit 0
+// with zero iterations run) would skip the worker run entirely — the opposite of what this loop is
+// for (the run itself, and its "zero changes is success" verdict, IS the point). `sh -c false`
+// (exit 1, never met) with maxIterations 1 fires exactly one iteration, same as mywellbeing.
+const MEMORY_DREAM: LoopDef = {
+  name: "memory-dream",
+  usage: "/loop memory-dream",
+  summary: "nightly: consolidate memory/log/ + MEMORY.md/USER.md via dream-budgeted memory writes (never pushes)",
+  folder: "company", // sentinel — see the comment above; resolveDreamLoop rewrites this at fire time
+  prompt:
+    `Review the last ${DREAM_LOOKBACK_PLACEHOLDER} days of \`memory/log/\` entries, plus MEMORY.md and USER.md, ` +
+    "in this company workspace. Propose consolidations via the `memory` tool, in priority order: prefer " +
+    "`replace` over `remove` over `add`. Supersede facts that have gone stale with an updated `replace`; " +
+    "`remove` entries that no longer apply; only `add` a genuinely new, durable fact. If two entries " +
+    "contradict each other and you can't tell which is current, do not guess — `add` a `CONFLICT: <summary>` " +
+    "entry describing the contradiction for a human to resolve later. Every `memory` call is budget-enforced " +
+    "by the engine (mutation/add/net-char caps) — a rejection just means this run's budget is spent, not an " +
+    "error to retry. Making ZERO changes is a fully successful run when nothing needs consolidating — do not " +
+    "force a change just to have something to show.",
+  goal: { kind: "command", command: ["sh", "-c", "false"] }, // never met → fire-once with maxIterations 1
+  trigger: { kind: "cron", expr: "0 3 * * *" },
+  bounds: { maxIterations: 1, budgetUsd: 3 },
+  enabledByDefault: false,
+  freshSession: true,
+  dreamMemory: true,
+};
+
+export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN, MEMORY_DREAM];
 
 export function isBuiltin(name: string): boolean {
   return LOOPS.some((l) => l.name === name);
@@ -236,10 +297,71 @@ function formatLoops(store?: LoopStore): string {
   return ["Available loops:", ...effectiveLoops(store).map((l) => `${l.usage} — ${l.summary}${schedLabel(l, store)}`)].join("\n");
 }
 
+/** Rewrites `loop`'s `folder` (sentinel "company" → cfg.companyFolder) and interpolates its
+ *  `prompt`'s lookback-days placeholder from cfg — the ONE resolution step every dream-memory
+ *  fire path (startLoop, startScheduledLoop) runs before doing anything else with the loop, so
+ *  every downstream use (reply text, loopRunExtras, runProjectLoop, loopProjectTag,
+ *  dreamGateOutcome) sees the real folder/prompt. A no-op for every other loop (dreamMemory unset)
+ *  and for a dream loop fired with no cfg (falls back to the static placeholders — dreamGateOutcome
+ *  refuses to run in that case anyway, so the placeholder folder is never actually opened). */
+function resolveDreamLoop(loop: LoopDef, cfg?: NeoConfig): LoopDef {
+  if (!loop.dreamMemory) return loop;
+  return {
+    ...loop,
+    folder: cfg ? cfg.companyFolder : loop.folder,
+    prompt: cfg ? loop.prompt.replace(DREAM_LOOKBACK_PLACEHOLDER, String(cfg.memory.dreamLookbackDays)) : loop.prompt,
+  };
+}
+
+/** Deterministic pre-check for a dream-memory loop (already folder-resolved via
+ *  resolveDreamLoop): refuses to start a worker at all when there's no cfg, or the resolved
+ *  company folder isn't in `cfg.memory.scopes` — the memory system is opt-in (default `scopes: []`
+ *  is a total no-op elsewhere in the engine too, see memory.ts), so a dream loop must never spend a
+ *  worker run on a folder the operator hasn't opted in. Returns a completed 0-iteration
+ *  LoopOutcome when the gate trips, else undefined (proceed normally). A no-op for every other
+ *  loop (dreamMemory unset). */
+function dreamGateOutcome(loop: LoopDef, cfg?: NeoConfig): LoopOutcome | undefined {
+  if (!loop.dreamMemory) return undefined;
+  if (cfg && memoryScopeEnabled(cfg.memory, loop.folder, cfg.companyFolder)) return undefined;
+  return { met: false, iterations: 0, reason: "stopped", lastDetail: "memory disabled (company not in memory.scopes)", spentUsd: 0 };
+}
+
+/** Builds the dream-mode `memory` MCP server for one dream-loop run: dream-budgeted
+ *  `memory`/`memory_search` tools (memory-tool.ts) scoped to `folder`, with a diary callback that
+ *  appends every mutation ATTEMPT (applied or rejected) to `<folder>/memory/DREAMS.md`, engine-side
+ *  and deterministic (plain appendFileSync with a timestamp prefix — no AI in the engine). A fresh
+ *  server (and so a fresh, zeroed budget closure) is built per call — callers must build one per
+ *  run, never share/reuse across fires. */
+function dreamMcpServers(folder: string, cfg: NeoConfig): Record<string, unknown> {
+  const dir = memoryDir(folder);
+  const diaryPath = join(dir, "DREAMS.md");
+  const diary = (line: string): void => {
+    try {
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(diaryPath, `[${new Date().toISOString()}] ${line}\n`, "utf-8");
+    } catch {
+      // best-effort — a diary write failure must never block or fail the dream run
+    }
+  };
+  const windowTokens = windowTokensFor(undefined, cfg.contextPolicy.windowTokensByModel);
+  const tools = memoryTools(folder, cfg.memory, windowTokens, {
+    dream: {
+      maxMutations: cfg.memory.dreamMaxMutations,
+      maxAdds: cfg.memory.dreamMaxAdds,
+      maxNetChars: cfg.memory.dreamMaxNetChars,
+      diary,
+    },
+  });
+  return { memory: createSdkMcpServer({ name: "memory", version: "1.0.0", tools }) };
+}
+
 /** cfg-derived extras for a loop run: per-path RunDeps profiles (loop worker + judge), the
  *  freshSession flag, and a context-policy gate on the carried resume id — plus the (possibly
  *  test-injected) GoalCheck, so every run site spreads exactly ONE object into runProjectLoop.
- *  cfg omitted ⇒ today's behavior (no profile, no gate). */
+ *  cfg omitted ⇒ today's behavior (no profile, no gate). For the memory-dream loop ONLY
+ *  (loop.dreamMemory), also attaches the dream-budgeted `memory` MCP server to runDeps.mcpServers —
+ *  every other loop's runDeps is untouched (dreamMcpServers is never called for them). `loop` must
+ *  already be folder-resolved (resolveDreamLoop) so the server + diary target the real folder. */
 function loopRunExtras(
   loop: LoopDef,
   deps: { run?: typeof runOrder; check?: GoalCheck; cfg?: NeoConfig; store?: LoopStore },
@@ -250,8 +372,10 @@ function loopRunExtras(
   check: GoalCheck;
 } {
   const cfg = deps.cfg;
+  const runDeps = cfg ? profileDeps(cfg, "loop") : undefined;
+  if (runDeps && cfg && loop.dreamMemory) runDeps.mcpServers = dreamMcpServers(loop.folder, cfg);
   return {
-    runDeps: cfg ? profileDeps(cfg, "loop") : undefined,
+    runDeps,
     freshSession: loop.freshSession,
     gateResume: cfg
       ? async (id: string) => {
@@ -272,7 +396,13 @@ function loopRunExtras(
 }
 
 /** Run a loop end to end, streaming progress and a final outcome line to the channel. */
-export async function startLoop(loop: LoopDef, chatId: number, deps: LoopDeps): Promise<LoopOutcome> {
+export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps): Promise<LoopOutcome> {
+  const loop = resolveDreamLoop(loopIn, deps.cfg);
+  const gated = dreamGateOutcome(loop, deps.cfg);
+  if (gated) {
+    await deps.reply(chatId, `🔁 ${loop.name}: ⚠️ ${gated.lastDetail}`);
+    return gated;
+  }
   await deps.reply(chatId, `🔁 ${loop.name}: starting on ${loop.folder}…`);
   const { check, ...extras } = loopRunExtras(loop, deps);
   const out = await runProjectLoop(
@@ -328,8 +458,14 @@ export function loopProjectTag(loop: LoopDef): string {
  * when there's nothing to report. Escalations stay auto-denied (via runProjectLoop). Used by the
  * daemon's loop scheduler so scheduled-loop output reaches Telegram/web, not just daemon stdout.
  */
-export async function startScheduledLoop(loop: LoopDef, deps: ScheduledLoopDeps): Promise<LoopOutcome> {
+export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDeps): Promise<LoopOutcome> {
+  const loop = resolveDreamLoop(loopIn, deps.cfg);
   const project = loopProjectTag(loop);
+  const gated = dreamGateOutcome(loop, deps.cfg);
+  if (gated) {
+    await deps.reply(deps.chatId, gated.lastDetail, project);
+    return gated;
+  }
   const { check, ...extras } = loopRunExtras(loop, deps);
   return runProjectLoop(
     {
