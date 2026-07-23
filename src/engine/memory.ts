@@ -204,6 +204,18 @@ function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+/** Records `content`'s hash as the last-known-good write for `file`, the same bookkeeping
+ * `applyMemoryOp` does after its own atomic write. Exported additively for callers that write a
+ * memory file's content OUTSIDE applyMemoryOp's own write path (e.g. memory-tool.ts's dream-mode
+ * revert, which restores a file's prior content directly) — without this, the next legitimate
+ * `applyMemoryOp` call would see a stale recorded hash, read it as external drift, and spawn a
+ * spurious `.backups` copy via ensureDriftBackup. applyMemoryOp's own internals are unchanged. */
+export function recordMemoryHash(folder: string, file: string, content: string): void {
+  const hashes = readHashes(folder);
+  hashes[file] = sha256(content);
+  writeHashes(folder, hashes);
+}
+
 /** Anti-poisoning drift guard: if the file on disk no longer matches the hash of the engine's
  * last write, copies the current (drifted) content to `.backups/<file>.<Date.now()>.md` before
  * the next op is applied. Operator/external edits are preserved, never reverted — the next op

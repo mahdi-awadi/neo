@@ -564,6 +564,11 @@ export function neoMcpServers(
   // not by an extra flag that could drift out of sync.
   const memCfg = memoryGate(deps, opts.folder);
   if (memCfg) {
+    // model:undefined — neoMcpServers builds the MCP tool set at worker-launch time, before the
+    // SDK has reported which model this session is actually using (that only appears in the
+    // transcript once the worker starts talking), so windowTokensFor has no model to look up and
+    // falls back to its conservative default window (see context-policy.ts's MODEL_WINDOW_TOKENS).
+    // Same reasoning context-policy.ts's other "no model yet" call sites document.
     const windowTokens = windowTokensFor(undefined, deps.contextPolicy?.windowTokensByModel);
     tools.push(...memoryTools(opts.folder, memCfg, windowTokens));
   }

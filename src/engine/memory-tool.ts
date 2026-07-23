@@ -6,23 +6,36 @@
 // Dream mode (opts.dream): engine-enforced budgets for an autonomous "dream" consolidation run
 // (a later task's loop — this file only supplies the budget mechanics). A closure tallies
 // mutations/adds/net-chars across every `memory` call made through the SAME memoryTools(...)
-// instance; an op that would exceed any budget is rejected WITHOUT taking effect (net-chars is
-// checked by measuring the real before/after file-size delta and reverting the write if it would
-// blow the budget — applyMemoryOp has no dry-run mode, so a measure-then-revert is the simplest
-// correct way to know the true growth of a replace/remove before committing to it). Every attempt
-// (applied or rejected) is appended to the caller-supplied diary callback; the caller decides
-// where that line goes (the loop task writes it to <folder>/memory/DREAMS.md). Before the first
-// attempted mutation of a run, both memory files are backed up to
+// instance; an op that would exceed any budget is rejected WITHOUT taking effect.
+//
+// `add`'s growth is exact and cheap to predict from the current file content (mirrors
+// applyMemoryOp's own "\n§ "/"§ " prefix logic), so an over-budget add is pre-rejected before
+// ever touching the file. `replace`/`remove`'s growth depends on which entry matches `old_text`
+// (unknowable without applying — applyMemoryOp has no dry-run mode), so those go through
+// apply-then-measure-then-revert-if-over-budget instead.
+//
+// Revert honesty: if the revert write itself throws, the over-budget mutation STANDS on disk —
+// that must never be silently misreported as "rejected". On a revert failure this file (a) counts
+// the mutation that actually landed against the budget counters, (b) diaries a distinct
+// "applied (OVER BUDGET — revert failed)" line instead of "rejected", (c) returns a distinct tool
+// error naming the mutation as landed, and (d) hard-stops every further mutation this run
+// (fail-safe — the budget bookkeeping can no longer be trusted once one revert has failed).
+//
+// Every attempt (applied or rejected) is appended to the caller-supplied diary callback; the
+// caller decides where that line goes (the loop task writes it to <folder>/memory/DREAMS.md).
+// Before the first ATTEMPTED mutation of a run (one that's passed the count-based pre-checks —
+// not a rejection that never touches the file), both memory files are backed up to
 // `<folder>/memory/.backups/<file>.<Date.now()>.md` (mirrors memory.ts's own drift-backup
-// convention) — this happens once, before the attempt, so the backup is always genuinely pre-run
-// even if that first attempt goes on to fail inside applyMemoryOp (scan rejection, no match, …).
+// convention). A successful revert also re-records the file's content hash (memory.ts's
+// recordMemoryHash) so the NEXT legitimate applyMemoryOp call doesn't mistake the revert for
+// external drift and spawn a spurious backup of its own.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { MemoryCfg } from "../config";
-import { applyMemoryOp, memoryCaps, memoryDir, type MemoryOp } from "./memory";
+import { applyMemoryOp, memoryCaps, memoryDir, recordMemoryHash, type MemoryOp } from "./memory";
 import { openMemoryIndex } from "./memory-recall";
 
 type MemoryFile = "MEMORY.md" | "USER.md";
@@ -92,16 +105,27 @@ export function memoryTools(
   folder: string,
   cfg: MemoryCfg,
   windowTokens: number,
-  opts?: { dream?: DreamOpts },
+  opts?: {
+    dream?: DreamOpts;
+    /** TEST-ONLY seam: overrides the raw write memory-tool.ts uses to revert an over-budget
+     *  net-chars mutation, so a test can simulate a revert failure (e.g. a disk/permission error)
+     *  deterministically. Defaults to a plain `writeFileSync`. Never set this outside a test. */
+    __revertWrite?: (path: string, content: string) => void;
+  },
 ): SdkMcpToolDefinition<any>[] {
   const caps = memoryCaps(cfg, windowTokens);
   const capFor = (file: MemoryFile) => (file === "MEMORY.md" ? caps.memoryChars : caps.userChars);
 
   const dream = opts?.dream;
+  const revertWrite = opts?.__revertWrite ?? ((path: string, content: string) => writeFileSync(path, content, "utf-8"));
   let mutations = 0;
   let adds = 0;
   let netChars = 0;
   let backedUp = false;
+  // Fail-safe: set the moment a revert write itself throws — the budget bookkeeping can no
+  // longer be trusted (an over-budget mutation is sitting on disk), so every further mutation
+  // this run is refused outright rather than risk compounding the honesty problem.
+  let hardStop = false;
 
   /** One-shot, idempotent: copies both memory files (if present) to .backups/<file>.<ts>.md.
    *  Called right before the FIRST attempted mutation (whether or not it goes on to succeed), so
@@ -144,6 +168,10 @@ export function memoryTools(
       const { file, op, text, old_text: oldText, reason } = args;
 
       if (dream) {
+        if (hardStop) {
+          diaryLine(op, file, "rejected: dream run halted (prior revert failure)", reason);
+          return textContent("dream budget exhausted: run halted after a revert failure");
+        }
         if (mutations >= dream.maxMutations) {
           diaryLine(op, file, "rejected: dream budget exhausted: mutations", reason);
           return textContent("dream budget exhausted: mutations");
@@ -151,6 +179,18 @@ export function memoryTools(
         if (op === "add" && adds >= dream.maxAdds) {
           diaryLine(op, file, "rejected: dream budget exhausted: adds", reason);
           return textContent("dream budget exhausted: adds");
+        }
+        if (op === "add") {
+          // Exact, cheap prediction of an add's growth — mirrors applyMemoryOp's own
+          // "\n§ "/"§ " prefix logic — so an over-budget add is rejected WITHOUT ever touching
+          // the file (no apply-then-revert needed for this case).
+          const existing = readFileRaw(folder, file);
+          const prefixLen = existing.length > 0 ? "\n§ ".length : "§ ".length;
+          const projectedGrowth = prefixLen + (text?.length ?? 0);
+          if (netChars + projectedGrowth > dream.maxNetChars) {
+            diaryLine(op, file, "rejected: dream budget exhausted: net chars", reason);
+            return textContent("dream budget exhausted: net chars");
+          }
         }
         ensureDreamBackup(); // before the first ATTEMPTED mutation, success or not
       }
@@ -166,16 +206,28 @@ export function memoryTools(
       if (dream) {
         const after = readFileRaw(folder, file);
         const growth = after.length - before.length; // net chars added (may be <=0 for replace/remove)
-        if (netChars + growth > dream.maxNetChars) {
-          // Revert: applyMemoryOp has no dry-run, so the only way to know the true growth of a
-          // replace/remove ahead of time is to apply it and measure — undo it here to keep the
-          // net effect "rejected, not applied".
+        // `add` was already pre-checked above and never reaches this branch over budget; only
+        // replace/remove (whose growth needed the real match) can still land here over budget.
+        if (op !== "add" && netChars + growth > dream.maxNetChars) {
+          const filepath = join(memoryDir(folder), file);
           try {
-            writeFileSync(join(memoryDir(folder), file), before, "utf-8");
+            revertWrite(filepath, before);
           } catch {
-            // best-effort — if the revert write itself fails, the op regrettably stands; still
-            // report the rejection so the caller/diary reflect the intended outcome.
+            // The revert itself failed — the over-budget mutation STANDS on disk. Be honest:
+            // count what actually landed, diary it as applied (not rejected), hard-stop further
+            // mutations this run, and return a distinct error so the caller knows the budget can
+            // no longer be trusted.
+            netChars += growth;
+            mutations += 1;
+            hardStop = true;
+            diaryLine(op, file, "applied (OVER BUDGET — revert failed)", reason);
+            return textContent(
+              "over budget AND revert failed — mutation stands; treat this run's budget as exhausted",
+            );
           }
+          // Revert succeeded: re-record the (reverted) content's hash so the next legitimate
+          // applyMemoryOp call doesn't mistake this revert for external drift.
+          recordMemoryHash(folder, file, before);
           diaryLine(op, file, "rejected: dream budget exhausted: net chars", reason);
           return textContent("dream budget exhausted: net chars");
         }

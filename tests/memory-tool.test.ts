@@ -151,7 +151,7 @@ test("dream mode: 2nd add and 4th mutation are rejected; diary records every att
   expect(backups.length).toBe(2);
 });
 
-test("dream mode: an op that would exceed the net-chars budget is rejected WITHOUT applying", async () => {
+test("dream mode: an over-budget ADD is pre-rejected WITHOUT ever touching the file — byte-identical, no backup churn", async () => {
   const folder = tmpFolder();
   const { opts, diary } = makeDream({ maxMutations: 10, maxAdds: 10, maxNetChars: 5 });
   const { memoryTool } = buildTools(folder, MEMORY_CFG, opts);
@@ -161,11 +161,12 @@ test("dream mode: an op that would exceed the net-chars budget is rejected WITHO
     {},
   );
   expect(textOf(res)).toBe("dream budget exhausted: net chars");
-  // Reverted: the file must not contain the rejected entry (or exist at all, if it never had one).
+  // Pre-rejected before ever applying: the file was never created (byte-identical to "before").
   const path = join(folder, "memory", "MEMORY.md");
-  if (existsSync(path)) {
-    expect(readFileSync(path, "utf-8")).not.toContain("this text is way longer");
-  }
+  expect(existsSync(path)).toBe(false);
+  // No backup churn either — ensureDreamBackup only runs AFTER an add's over-budget pre-check
+  // passes, and this add never got that far.
+  expect(existsSync(join(folder, "memory", ".backups"))).toBe(false);
   expect(diary).toEqual(["add MEMORY.md: rejected: dream budget exhausted: net chars — too big"]);
 });
 
@@ -175,4 +176,85 @@ test("dream mode: zero mutations is a valid, recorded outcome (no backup taken i
   buildTools(folder, MEMORY_CFG, opts); // build the tools, but never call the handler
   expect(diary).toEqual([]);
   expect(existsSync(join(folder, "memory", ".backups"))).toBe(false);
+});
+
+// --- Revert-failure honesty (a `replace`/`remove` op that lands over budget, whose revert write
+// itself then fails) — the mutation stands, and every downstream signal (tool text, diary,
+// counters, further ops this run) must say so honestly rather than claim "rejected". ---
+
+test("dream mode: when the net-chars revert write itself fails, the over-budget mutation is reported as APPLIED (not rejected), counted, and halts the run", async () => {
+  const folder = tmpFolder();
+  mkdirSync(join(folder, "memory"), { recursive: true });
+  writeFileSync(join(folder, "memory", "MEMORY.md"), "§ replace-me-original");
+
+  const { opts, diary } = makeDream({ maxMutations: 10, maxAdds: 10, maxNetChars: 1 });
+  const [memoryTool] = memoryTools(folder, MEMORY_CFG, WINDOW_TOKENS, {
+    dream: opts,
+    __revertWrite: () => {
+      throw new Error("simulated disk failure");
+    },
+  });
+
+  // replace/remove growth is only knowable after applying — this one applies, is measured as
+  // over the (tiny) net-chars budget, and the injected revert write then throws.
+  const res = await memoryTool.handler(
+    {
+      file: "MEMORY.md",
+      op: "replace",
+      old_text: "replace-me-original",
+      text: "replace-me-original-plus-a-lot-more-characters-than-the-budget-allows",
+      reason: "consolidate",
+    },
+    {},
+  );
+  expect(textOf(res)).toBe("over budget AND revert failed — mutation stands; treat this run's budget as exhausted");
+
+  // The mutation genuinely stands on disk — it was never (and could never be) undone.
+  const content = readFileSync(join(folder, "memory", "MEMORY.md"), "utf-8");
+  expect(content).toContain("replace-me-original-plus-a-lot-more-characters-than-the-budget-allows");
+
+  // Diary tells the truth: "applied", not "rejected", with the distinct over-budget marker.
+  expect(diary).toEqual([
+    "replace MEMORY.md: applied (OVER BUDGET — revert failed) — consolidate",
+  ]);
+
+  // Fail-safe: every further mutation attempt this run is hard-refused, and still diaried.
+  const res2 = await memoryTool.handler({ file: "MEMORY.md", op: "add", text: "anything else" }, {});
+  expect(textOf(res2)).toBe("dream budget exhausted: run halted after a revert failure");
+  expect(diary[1]).toBe("add MEMORY.md: rejected: dream run halted (prior revert failure) — no reason given");
+  // And the halted attempt truly didn't touch the file either.
+  expect(readFileSync(join(folder, "memory", "MEMORY.md"), "utf-8")).not.toContain("anything else");
+});
+
+// --- Hash staleness after a successful revert (cosmetic per review, still worth pinning): a
+// legitimate op on the same file right after a successful revert must not trip memory.ts's own
+// drift guard (ensureDriftBackup), which would otherwise spawn an extra, spurious backup file. ---
+
+test("dream mode: a successful net-chars revert re-records the hash so the NEXT normal op spawns no spurious drift backup", async () => {
+  const folder = tmpFolder();
+  mkdirSync(join(folder, "memory"), { recursive: true });
+  writeFileSync(join(folder, "memory", "MEMORY.md"), "§ replace-me");
+
+  const { opts } = makeDream({ maxMutations: 10, maxAdds: 10, maxNetChars: 1 });
+  const [memoryTool] = memoryTools(folder, MEMORY_CFG, WINDOW_TOKENS, { dream: opts }); // real revert write (no override)
+
+  const res = await memoryTool.handler(
+    { file: "MEMORY.md", op: "replace", old_text: "replace-me", text: "replace-me-with-far-more-characters-than-the-budget" },
+    {},
+  );
+  expect(textOf(res)).toBe("dream budget exhausted: net chars");
+  // Reverted back to the original content.
+  expect(readFileSync(join(folder, "memory", "MEMORY.md"), "utf-8")).toBe("§ replace-me");
+
+  const backupsAfterRevert = readdirSync(join(folder, "memory", ".backups")).sort();
+  expect(backupsAfterRevert.length).toBe(1); // just the dream pre-run backup of MEMORY.md (USER.md never existed)
+
+  // A normal (non-dream) op on the same file, via applyMemoryOp directly (mirrors how any later
+  // real session would touch it) — must NOT see the revert as external drift.
+  const { applyMemoryOp } = await import("../src/engine/memory");
+  const normal = applyMemoryOp(folder, "MEMORY.md", { kind: "add", text: "a normal new entry" }, 10_000);
+  expect(normal.ok).toBe(true);
+
+  const backupsAfterNormalOp = readdirSync(join(folder, "memory", ".backups")).sort();
+  expect(backupsAfterNormalOp).toEqual(backupsAfterRevert); // no new (spurious drift) backup appeared
 });
