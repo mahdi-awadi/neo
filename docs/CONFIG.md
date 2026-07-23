@@ -113,7 +113,11 @@ The daemon's scheduler tick is **derived**, not a fixed config knob. `heartbeatM
 (`src/engine/heartbeat.ts`) returns `min(CRON_RESOLUTION_MS /* 60s, cron's own minute resolution */,
 ...everyMs of every enabled interval-trigger loop)` — so the tick is 60s unless an *enabled* loop
 with an `interval` trigger wants something faster, in which case the fastest such interval wins
-(disabled loops and manual/cron-trigger loops never speed it up). The daemon re-derives this every
+(disabled loops and manual/cron-trigger loops never speed it up). In practice operator-authored
+loops can't go below 60s — loop validation rejects intervals under `MIN_INTERVAL_MS` (= the 60s
+cron resolution), so today only a code-defined interval loop could pull the tick faster; the
+derivation (plus its 1s defensive floor) exists so that if one ever does, the daemon follows it
+with no restart. The daemon re-derives this every
 tick from `effectiveLoops()` (built-in + data-driven loops) and self-reschedules a single
 `setTimeout` (not `setInterval`) — so enabling a fast loop speeds up the daemon with no restart, and
 there is no separate poll-interval setting to keep in sync.
