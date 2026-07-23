@@ -1,7 +1,7 @@
 // Sentinel-guarded deterministic bootstrap: seed a folder's memory log from what the ledger
 // (outcomes) and an existing HANDOFF.md already know, so a project's memory doesn't start empty.
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedger, type Ledger } from "../src/engine/ledger";
@@ -102,4 +102,33 @@ test("a scan-rejected outcome line is not counted and not written to disk", () =
 
   // Sentinel still gets written — a run that finds nothing importable is still "bootstrapped".
   expect(existsSync(join(folder, "memory", ".bootstrapped"))).toBe(true);
+});
+
+test("filesystem failure (unwritable memory/ dir): nothing counted, nothing written, sentinel not written", () => {
+  if (process.getuid?.() === 0) {
+    // Running as root: chmod-based write-denial doesn't bite (root bypasses permission bits) —
+    // this repro can't be exercised in that environment. Skip rather than false-fail/false-pass.
+    return;
+  }
+
+  const folder = scratch();
+  const ledger = openLedger(":memory:");
+  seedOutcome(ledger, "a", folder, "built the widget");
+
+  const memDir = join(folder, "memory");
+  mkdirSync(memDir, { recursive: true });
+  chmodSync(memDir, 0o555); // read + execute only — no write, so mkdir/writeFile inside it fails
+
+  try {
+    const result = bootstrapMemory(folder, ledger);
+    // The reviewer's repro: appendDailyLog's mkdir/append fails silently, but bootstrapMemory
+    // must not count a line as imported unless it actually landed on disk.
+    expect(result).toEqual({ imported: 0, skipped: false });
+    expect(existsSync(join(memDir, "log"))).toBe(false);
+    // Sentinel write hits the same unwritable dir and also best-effort fails — unwritten on
+    // failure means a later retry (once the dir is fixed) can still bootstrap this folder.
+    expect(existsSync(join(memDir, ".bootstrapped"))).toBe(false);
+  } finally {
+    chmodSync(memDir, 0o755); // restore so the scratch dir can be cleaned up
+  }
 });

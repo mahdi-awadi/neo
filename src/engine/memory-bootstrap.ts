@@ -5,11 +5,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Ledger } from "./ledger";
-import { appendDailyLog, memoryDir, scanMemoryText } from "./memory";
+import { appendDailyLog, memoryDir } from "./memory";
 
-/** Result of one bootstrap attempt. `imported` counts lines actually appended to the log (a line
- * that fails the write-time scan is dropped and does NOT count). `skipped` is true when the
- * sentinel already existed and nothing ran. */
+/** Result of one bootstrap attempt. `imported` counts lines actually written to the log file —
+ * a line that fails the write-time scan, OR that a filesystem failure (unwritable `memory/` dir,
+ * full disk, etc.) kept from landing on disk, does NOT count (see `appendDailyLog`'s return
+ * value, which `importLine` below passes straight through). `skipped` is true when the sentinel
+ * already existed and nothing ran. */
 export interface BootstrapResult {
   imported: number;
   skipped: boolean;
@@ -29,13 +31,12 @@ function localDate(ms: number): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Appends `line` via appendDailyLog (which itself re-applies the scan and indexes on success),
- * but pre-checks the scan here so the caller can count only lines that actually landed —
- * appendDailyLog itself returns void and silently drops scan-failing lines. */
+/** Appends `line` and reports whether it actually landed on disk — single source of truth is
+ * `appendDailyLog`'s own return value (false for both a scan-rejected line and a filesystem
+ * failure, e.g. an unwritable `memory/` dir), so bootstrap's `imported` count never claims a line
+ * was written when nothing actually was. */
 function importLine(folder: string, line: string, day?: string): boolean {
-  if (scanMemoryText(line)) return false; // would be silently dropped by appendDailyLog — don't count it
-  appendDailyLog(folder, line, day);
-  return true;
+  return appendDailyLog(folder, line, day);
 }
 
 /** Seeds `folder`'s memory log from ledger outcomes + HANDOFF.md, once. No AI, fully

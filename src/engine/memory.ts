@@ -41,32 +41,42 @@ function todayLocalDate(): string {
  *
  * Fail-closed against log poisoning: the line is run through the same `scanMemoryText` write-time
  * scan used by `applyMemoryOp` first; a line that fails the scan is silently NOT appended and NOT
- * indexed (no error is thrown or returned — this mirrors the log's append-only, best-effort
- * nature, and keeps a scanned-out line from ever reaching disk or the recall index). */
-export function appendDailyLog(folder: string, line: string, day?: string): void {
-  if (scanMemoryText(line)) return; // fail closed — never append/index a line that fails the scan
+ * indexed (no error is thrown or returned as an error — this mirrors the log's append-only,
+ * best-effort nature, and keeps a scanned-out line from ever reaching disk or the recall index).
+ *
+ * Returns `true` only when the line was actually written to the log file — `false` when it was
+ * scan-rejected, OR when a filesystem failure (unwritable `memory/` dir, full disk, etc.) meant
+ * NOTHING was appended. A failure to index the already-written line afterward does not flip this
+ * back to `false` (the log file is the source of truth — see the indexing try/catch below); only
+ * disk-append success matters for the return value. Existing callers that ignore the return value
+ * are unaffected (additive; grep confirms none inspected it before this change). */
+export function appendDailyLog(folder: string, line: string, day?: string): boolean {
+  if (scanMemoryText(line)) return false; // fail closed — never append/index a line that fails the scan
 
   const d = day ?? todayLocalDate();
   const dir = logDir(folder);
   try {
     mkdirSync(dir, { recursive: true });
   } catch {
-    return; // best-effort — can't create the dir, nothing to append
+    return false; // best-effort — can't create the dir, nothing to append
   }
 
   const path = join(dir, `${d}.md`);
   try {
     appendFileSync(path, `- ${line}\n`, "utf-8");
   } catch {
-    return; // best-effort — failed append, skip indexing too (nothing was written)
+    return false; // best-effort — failed append, skip indexing too (nothing was written)
   }
 
   try {
     openMemoryIndex(folder).indexLine(path, d, line);
   } catch {
     // Best-effort — the log file is the source of truth; a failed index write just means this
-    // line isn't searchable yet (it can be recovered by a future indexFile re-index).
+    // line isn't searchable yet (it can be recovered by a future indexFile re-index). The append
+    // itself succeeded, so this still returns true.
   }
+
+  return true;
 }
 
 /** Computes character caps from window size and config percentages.
