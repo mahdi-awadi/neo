@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { runOrder, startOrder, type RunResult } from "../src/engine/session-runner";
+import { runOrder, startOrder, runConfig, type RunResult } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
 function order(task = "do it", folder = "/tmp"): Order {
@@ -459,4 +459,24 @@ test("the SDK's own api_retry events surface as activity so the watchdog sees li
     })();
   await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", onActivity: (l) => void seen.push(l) }, { query: q as never });
   expect(seen.some((l) => l.includes("api retry 2/5"))).toBe(true);
+});
+
+test("runConfig forwards model/skills/maxTurns and merges env over process.env", () => {
+  const c = runConfig({ model: "haiku", skills: [], maxTurns: 12, env: { NEO_TEST_FLAG: "1" } });
+  expect(c.model).toBe("haiku");
+  expect(c.skills).toEqual([]);
+  expect(c.maxTurns).toBe(12);
+  const env = c.env as Record<string, string | undefined>;
+  expect(env.NEO_TEST_FLAG).toBe("1");
+  expect(env.PATH).toBeDefined(); // process.env preserved underneath
+});
+
+test("runConfig still omits every unset key", () => {
+  expect(Object.keys(runConfig({}))).toEqual([]);
+});
+
+test("runConfig lets an explicit skills allowlist override the sdkOptions default", () => {
+  // sdkOptions spreads runConfig() LAST, so skills from deps must win over skills:"all"
+  const c = runConfig({ skills: ["superpowers:test-driven-development"] });
+  expect(c.skills).toEqual(["superpowers:test-driven-development"]);
 });

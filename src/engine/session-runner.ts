@@ -91,6 +91,14 @@ export interface RunDeps {
   mcpServers?: Record<string, unknown>;
   /** Tools the worker must NOT use (e.g. read-only judge runs deny Write/Edit/Bash). */
   disallowedTools?: string[];
+  /** SDK model override for this run ("haiku" | "sonnet" | "opus" | full id). Unset = inherit. */
+  model?: string;
+  /** Skills visible to this worker: "all" or an explicit allowlist ([] = none). Unset = "all". */
+  skills?: "all" | string[];
+  /** SDK cap on agentic turns for one run. Unset = uncapped. */
+  maxTurns?: number;
+  /** Extra env for the spawned worker (autocompact %, MCP output caps…), merged over process.env. */
+  env?: Record<string, string>;
 }
 
 /** Why an API call failed, as the SDK reports it (SDKAssistantMessageError). "rate_limit" and
@@ -315,6 +323,10 @@ export function runConfig(deps: RunDeps): Record<string, unknown> {
   if (deps.effort) c.effort = deps.effort;
   if (deps.mcpServers) c.mcpServers = deps.mcpServers;
   if (deps.disallowedTools) c.disallowedTools = deps.disallowedTools;
+  if (deps.model) c.model = deps.model;
+  if (deps.skills !== undefined) c.skills = deps.skills;
+  if (deps.maxTurns) c.maxTurns = deps.maxTurns;
+  if (deps.env) c.env = { ...process.env, ...deps.env };
   return c;
 }
 
