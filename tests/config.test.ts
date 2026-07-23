@@ -152,16 +152,12 @@ test("workRoot defaults to /home and reads WORK_ROOT; companyFolder defaults und
   );
 });
 
-test("optional MCP add-on bins are OFF by default (no hardcoded personal paths)", () => {
-  withEnv("GITNEXUS_BIN", undefined, () =>
-    withEnv("CODEBASE_MEMORY_BIN", undefined, () => {
-      const c = loadConfig("/nonexistent-dir");
-      expect(c.gitnexusBin).toBe("");
-      expect(c.codebaseMemoryBin).toBe("");
-    }),
-  );
-  withEnv("GITNEXUS_BIN", "/usr/bin/gitnexus", () => {
-    expect(loadConfig("/nonexistent-dir").gitnexusBin).toBe("/usr/bin/gitnexus");
+test("optional MCP add-on bin is OFF by default (no hardcoded personal paths)", () => {
+  withEnv("CODEBASE_MEMORY_BIN", undefined, () => {
+    expect(loadConfig("/nonexistent-dir").codebaseMemoryBin).toBe("");
+  });
+  withEnv("CODEBASE_MEMORY_BIN", "/usr/bin/codebase-memory-mcp", () => {
+    expect(loadConfig("/nonexistent-dir").codebaseMemoryBin).toBe("/usr/bin/codebase-memory-mcp");
   });
 });
 

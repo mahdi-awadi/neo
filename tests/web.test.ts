@@ -41,7 +41,6 @@ function cfg(): NeoConfig {
     agentIngressSecret: "",
     idleCloseMs: 24 * 60 * 60 * 1000,
     stitchApiKey: "",
-    gitnexusBin: "",
     codebaseMemoryBin: "",
     codebaseMemoryIndexTimeoutMs: 300_000,
     meetingLink: "",

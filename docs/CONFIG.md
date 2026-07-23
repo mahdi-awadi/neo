@@ -23,8 +23,7 @@ ones in `.env` (`chmod 600`).
 | `GATEWAY_SEND_URL` | env or `config.json` | *(empty)* | Customer-reply gateway `/send` endpoint. Off when empty. |
 | `MEETING_LINK` | env or `config.json` | *(empty)* | Booking link for the customer-reply CTA. |
 | `BUSINESS_NAME` | env or `config.json` | *(empty)* | Name customer replies sign off as (never "Neo"). |
-| `GITNEXUS_BIN` | env or `config.json` | *(empty)* | Path to the gitnexus MCP binary. Off when empty. |
-| `CODEBASE_MEMORY_BIN` | env or `config.json` | *(empty)* | Path to the codebase-memory MCP binary. Off when empty. |
+| `CODEBASE_MEMORY_BIN` | env or `config.json` | *(empty)* | Path to the codebase-memory MCP binary (code intelligence). Off when empty. |
 | `WORK_ROOT` | env or `config.json` | `/home` | Root holding your project repos (picker / dispatch / loop fence). |
 | `COMPANY_FOLDER` | env or `config.json` | `<repo>/agent` | The always-on "company" workspace folder. |
 | `NEO_LOOP_SCHEDULER` | env or `config.json` | `1` (on) | Set `0` to disable the loop scheduler. |
@@ -149,9 +148,10 @@ BOT_USERNAME=your_bot        # must match @BotFather /setdomain for this PUBLIC_
 Point your proxy (Traefik/Caddy/nginx) at `WEB_HOST:WEB_PORT` and terminate TLS there. Register the
 `PUBLIC_URL` domain with @BotFather (`/setdomain`) so the Telegram Login Widget works.
 
-**Enable the optional MCP servers.** If you have the binaries installed, set `GITNEXUS_BIN` and/or
-`CODEBASE_MEMORY_BIN` (and `STITCH_API_KEY` for Stitch). They attach to operator workers only —
-never to the customer/ingress path.
+**Enable the optional MCP servers.** If you have the binary installed, set `CODEBASE_MEMORY_BIN`
+(codebase-memory is Neo's one code-intelligence MCP — chosen by a measured head-to-head, see the
+2026-07-23 context-efficiency design spec) and `STITCH_API_KEY` for Stitch. They attach to operator
+workers only — never to the customer/ingress path.
 
 **Point projects at a non-`/home` root.** Set `WORK_ROOT=/srv/projects` (and, if you keep the
 company workspace elsewhere, `COMPANY_FOLDER=/srv/projects/company`).

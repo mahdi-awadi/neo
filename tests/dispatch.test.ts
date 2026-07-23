@@ -432,32 +432,26 @@ test("neoMcpServers OMITS Stitch on the customer path (stitch:false) and when no
   expect(neoMcpServers(d, 1, { dispatch: false, folder: "/x" }).stitch).toBeUndefined();
 });
 
-test("neoMcpServers attaches gitnexus + codebase-memory stdio servers when their bins are set (operator path)", () => {
+test("neoMcpServers attaches the codebase-memory stdio server when its bin is set (operator path)", () => {
   const { d } = makeDeps();
   const servers = neoMcpServers(d, 1, {
     dispatch: true,
     folder: "/home/neo/agent",
-    gitnexusBin: "/usr/bin/gitnexus",
     codebaseMemoryBin: "/root/.local/bin/codebase-memory-mcp",
   });
-  const gitnexus = servers.gitnexus as { type: string; command: string; args: string[] };
-  expect(gitnexus.type).toBe("stdio");
-  expect(gitnexus.command).toBe("/usr/bin/gitnexus");
-  expect(gitnexus.args).toEqual(["mcp"]);
   const mem = servers["codebase-memory"] as { type: string; command: string; args: string[] };
   expect(mem.type).toBe("stdio");
   expect(mem.command).toBe("/root/.local/bin/codebase-memory-mcp");
   expect(mem.args).toEqual([]);
 });
 
-test("neoMcpServers OMITS gitnexus + codebase-memory on the customer path (bins unset)", () => {
+test("neoMcpServers OMITS codebase-memory on the customer path (bin unset)", () => {
   const { d } = makeDeps();
-  // customer/ingress path passes no bins → never attached
+  // customer/ingress path passes no bin → never attached
   const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/x" });
-  expect(servers.gitnexus).toBeUndefined();
   expect(servers["codebase-memory"]).toBeUndefined();
   // empty string bin → skipped
-  expect(neoMcpServers(d, 1, { dispatch: true, folder: "/x", gitnexusBin: "" }).gitnexus).toBeUndefined();
+  expect(neoMcpServers(d, 1, { dispatch: true, folder: "/x", codebaseMemoryBin: "" })["codebase-memory"]).toBeUndefined();
 });
 
 // --- Problem 1: deterministic routing — the engine guarantees a valid, in-/home target and that

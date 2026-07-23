@@ -62,9 +62,6 @@ export interface NeoConfig {
   /** Google Stitch MCP API key (from STITCH_API_KEY env). When set, OPERATOR workers get the
    *  Stitch design-generation MCP server; the customer/ingress path never does (compliance). */
   stitchApiKey: string;
-  /** Path to the gitnexus binary; when set, OPERATOR workers get the gitnexus git/code-intelligence
-   *  MCP server (from GITNEXUS_BIN env). Empty → off. The customer/ingress path never gets it. */
-  gitnexusBin: string;
   /** Path to the codebase-memory MCP binary; when set, OPERATOR workers get the codebase-memory
    *  server (from CODEBASE_MEMORY_BIN env). Empty → off. Customer/ingress path never gets it. */
   codebaseMemoryBin: string;
@@ -203,7 +200,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     gatewaySendUrl: process.env.GATEWAY_SEND_URL ?? fileCfg.gatewaySendUrl ?? "",
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
-    gitnexusBin: process.env.GITNEXUS_BIN ?? fileCfg.gitnexusBin ?? "",
     codebaseMemoryBin: process.env.CODEBASE_MEMORY_BIN ?? fileCfg.codebaseMemoryBin ?? "",
     codebaseMemoryIndexTimeoutMs: fileCfg.codebaseMemoryIndexTimeoutMs ?? DEFAULTS.codebaseMemoryIndexTimeoutMs,
     meetingLink: process.env.MEETING_LINK ?? fileCfg.meetingLink ?? "",

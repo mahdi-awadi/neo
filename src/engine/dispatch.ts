@@ -478,7 +478,6 @@ export function neoMcpServers(
     stitch?: boolean;
     stitchKey?: string;
     /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
-    gitnexusBin?: string;
     codebaseMemoryBin?: string;
   },
 ): Record<string, unknown> {
@@ -536,11 +535,9 @@ export function neoMcpServers(
   if (opts.stitch && opts.stitchKey) {
     servers.stitch = { type: "http", url: STITCH_MCP_URL, headers: { "X-Goog-Api-Key": opts.stitchKey } };
   }
-  // Operator-only local stdio MCP servers: gitnexus (git/code intelligence) + codebase-memory.
-  // Attached only when a bin path is configured; the customer/ingress path passes none → never gets them.
-  if (opts.gitnexusBin) {
-    servers.gitnexus = { type: "stdio", command: opts.gitnexusBin, args: ["mcp"], env: {} };
-  }
+  // Operator-only local stdio MCP server: codebase-memory (the ONE code-intel MCP — see the
+  // 2026-07-23 context-efficiency design's measured verdict). Attached only when a bin path is
+  // configured; the customer/ingress path passes none → never gets it.
   if (opts.codebaseMemoryBin) {
     servers["codebase-memory"] = { type: "stdio", command: opts.codebaseMemoryBin, args: [], env: {} };
   }

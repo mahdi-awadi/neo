@@ -84,8 +84,8 @@ phase, TDD**, per `MVP-PLAN.md`.
 - **Machine-local state never touches tracked files** — `git pull` on any deployment must always be
   conflict-free. Deployment specifics go in untracked files: secrets in `.env`, knobs in
   `config.json` (e.g. `companyFolder`), personal agent notes in `CLAUDE.local.md` (auto-loaded by
-  Claude Code, gitignored). Tools that inject into tracked files must be told not to — e.g. GitNexus:
-  run `npx gitnexus analyze --skip-agents-md` and keep its block in `CLAUDE.local.md`.
+  Claude Code, gitignored). Tools that inject into tracked files must be told not to — keep any
+  tool-generated instruction blocks in `CLAUDE.local.md`, never in tracked docs.
 - **No AI in the engine.** Determinism by default; AI only inside SDK workers + Gemini reads.
 - Operator is addressed as **Neo** (not "Mahdi" — that's only the repo-author handle).
 - End commit messages with: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.

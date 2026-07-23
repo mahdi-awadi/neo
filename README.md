@@ -171,8 +171,7 @@ Precedence is **environment variable → `config.json` → built-in default**. S
 | `PUBLIC_URL` | *(empty)* | Public HTTPS URL the console is reached at (behind your proxy). |
 | `GEMINI_API_KEY` | *(empty)* | Gemini key for the customer-facing path (kept off the subscription). |
 | `STITCH_API_KEY` | *(empty)* | Google Stitch MCP (design generation) for operator workers. Off when empty. |
-| `GITNEXUS_BIN` | *(empty)* | Path to the gitnexus MCP binary. Off when empty. |
-| `CODEBASE_MEMORY_BIN` | *(empty)* | Path to the codebase-memory MCP binary. Off when empty. |
+| `CODEBASE_MEMORY_BIN` | *(empty)* | Path to the codebase-memory MCP binary (code intelligence). Off when empty. |
 | `AGENT_INGRESS_SECRET` | *(empty)* | Bearer secret for `POST /agent/ingress` + `/inbox` (gateway). |
 | `GATEWAY_SEND_URL` | *(empty)* | Customer-reply gateway `/send` endpoint. Off when empty. |
 | `MEETING_LINK` | *(empty)* | Booking link used in the customer-reply CTA. |
