@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { MemoryCfg } from "../config";
-import { applyMemoryOp, appendDailyLog, memoryCaps, memoryDir, recordMemoryHash, type MemoryOp } from "./memory";
+import { applyMemoryOp, appendDailyLog, memoryCaps, memoryDir, recordMemoryHash, scanMemoryText, type MemoryOp } from "./memory";
 import { openMemoryIndex } from "./memory-recall";
 
 type MemoryFile = "MEMORY.md" | "USER.md";
@@ -270,9 +270,17 @@ export function memoryTools(
       // A log append is NOT a mutation of the capped MEMORY.md/USER.md files (memoryTool above) —
       // it never touches dream.maxMutations/maxAdds/maxNetChars, even in dream mode. It IS still
       // diaried in dream mode, applied or rejected, so the run's diary is a complete record of
-      // everything the worker attempted.
+      // everything the worker attempted. Computed BEFORE the write so a scan rejection has its
+      // reason available for the diary even though appendDailyLog itself only returns a boolean.
+      const scanReason = scanMemoryText(args.line);
       const ok = appendDailyLog(folder, args.line);
-      dream?.diary(`log: ${args.line} — ${ok ? "applied" : "rejected"}`);
+      if (dream) {
+        // Mirrors the mutation path's diary (op/outcome/reason, never the entry's own text): a
+        // rejected line must not land verbatim in DREAMS.md just because the memory tool's OWN
+        // scan kept it out of the log/index — that would defeat the point of the scan. Record the
+        // rejection reason instead of the withheld content; the applied path is unchanged.
+        dream.diary(ok ? `log: ${args.line} — applied` : `log: (withheld) — rejected by scan: ${scanReason ?? "write failed"}`);
+      }
       return textContent(ok ? "logged" : "rejected by scan/write failure");
     },
   );

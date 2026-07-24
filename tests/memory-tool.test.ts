@@ -126,11 +126,16 @@ test("memory_log in dream mode: diaries every attempt (applied/rejected) and doe
   expect(textOf(r1)).toBe("logged");
   expect(textOf(r2)).toBe("logged");
   expect(textOf(r3)).toBe("rejected by scan/write failure");
+  // The rejected line's diary entry must NOT contain the flagged content itself (mirrors the
+  // mutation path's diary, which records only op/outcome/reason, never text) — a credential-
+  // looking string the scan kept out of the log/index must not land verbatim in DREAMS.md via the
+  // diary either. The rejection REASON is recorded instead.
   expect(diary).toEqual([
     "log: log line one — applied",
     "log: log line two — applied",
-    "log: api_key: sk-abcdefghijklmnopqrstuvwx — rejected",
+    "log: (withheld) — rejected by scan: looks like a credential",
   ]);
+  expect(diary.join("\n")).not.toContain("api_key: sk-abcdefghijklmnopqrstuvwx");
 
   // maxMutations is 1: if the log calls above had wrongly spent it, this real mutation (the FIRST
   // one) would already see the budget exhausted. It doesn't — proving log calls never touched it.
