@@ -53,6 +53,47 @@ test("skips manual loops entirely", () => {
   expect(started).toEqual([]);
 });
 
+// --- Failure isolation: one loop crashing must NEVER take down the tick (and, in the daemon, the
+// whole process). A loop's `start` throwing synchronously — or returning a rejecting promise (the
+// real 2026-07-24 crash: a loop whose folder was deleted → Bun.spawn ENOENT → uncaught rejection →
+// daemon exit 1 → every in-memory session dropped) — must be caught, reported via onError, and the
+// remaining loops must still fire.
+
+test("a loop whose start throws synchronously is caught (onError), and does not abort the tick", () => {
+  const started: string[] = [];
+  const errored: string[] = [];
+  tickScheduler({
+    loops: [loop({ name: "boom" }), loop({ name: "ok", folder: "/p2" })],
+    store: memStore(),
+    isFolderBusy: () => false,
+    throttled: () => false,
+    now: 10_000,
+    start: (d) => {
+      if (d.name === "boom") throw new Error("kaboom");
+      started.push(d.name);
+    },
+    onError: (d, err) => errored.push(`${d.name}:${(err as Error).message}`),
+  });
+  expect(errored).toEqual(["boom:kaboom"]);
+  expect(started).toEqual(["ok"]); // the tick kept going after the crash
+});
+
+test("a loop whose start REJECTS asynchronously is caught (onError), no unhandled rejection", async () => {
+  const errored: string[] = [];
+  tickScheduler({
+    loops: [loop({ name: "async-boom" })],
+    store: memStore(),
+    isFolderBusy: () => false,
+    throttled: () => false,
+    now: 10_000,
+    start: () => Promise.reject(new Error("ENOENT")),
+    onError: (d, err) => errored.push(`${d.name}:${(err as Error).message}`),
+  });
+  await Promise.resolve(); // let the rejection settle
+  await Promise.resolve();
+  expect(errored).toEqual(["async-boom:ENOENT"]);
+});
+
 // --- folderBusy: the company-folder-aware busy predicate (daemon.ts's isFolderBusy) -------------
 // The always-on default project is registered IDLE forever (registerDefaultProject), so a plain
 // presence check ("is there an OPEN session for this folder") would see the company folder as

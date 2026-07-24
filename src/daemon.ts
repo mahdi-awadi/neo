@@ -167,14 +167,30 @@ async function main(): Promise<void> {
           // Skip this tick when the budget meter OR a fresh API throttle says stop.
           throttled: () => meter.shouldThrottle() || cooldown.activeAt(Date.now()),
           now: Date.now(),
+          // Return the promise (NOT `void ...`) so tickScheduler can catch a rejecting loop run;
+          // discarding it here is exactly what let a crashing loop take down the daemon (2026-07-24).
           start: (def) =>
-            void startScheduledLoop(def, {
+            startScheduledLoop(def, {
               chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
               reply: loopReply,
               shouldStop: () => meter.shouldThrottle(),
               cfg,
               store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
             }),
+          // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
+          // engine — log it and alert the operator, but keep the daemon and other loops alive.
+          onError: (def, err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[loop] "${def.name}" failed: ${msg}`);
+            const adminId = admin.adminId();
+            if (cfg.telegramToken && adminId) {
+              void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ chat_id: adminId, text: `⚠️ loop "${def.name}" failed and was skipped: ${msg}` }),
+              }).catch(() => {});
+            }
+          },
         });
       }
       scheduleHeartbeat(); // re-derive next tick's interval from the loops enabled right now

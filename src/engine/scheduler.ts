@@ -25,7 +25,12 @@ export interface TickDeps<T extends SchedulableLoop> {
   isFolderBusy: (folder: string) => boolean;
   throttled: () => boolean;
   now: number;
-  start: (def: T) => void;
+  start: (def: T) => unknown;
+  /** Failure sink: called when a loop's `start` throws synchronously OR returns a rejecting promise.
+   *  Without this, a single loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) would
+   *  propagate an uncaught rejection and take down the whole daemon (2026-07-24). One loop failing
+   *  must never crash the engine or abort the rest of the tick. */
+  onError?: (def: T, err: unknown) => void;
 }
 
 /** Minimal shape `folderBusy` needs from the registry — decoupled from the concrete Registry type
@@ -59,6 +64,15 @@ export function tickScheduler<T extends SchedulableLoop>(deps: TickDeps<T>): voi
     if (deps.isFolderBusy(def.folder)) continue;
     if (deps.throttled()) continue;
     deps.store.setLastRun(def.name, deps.now); // record before starting → no double-fire
-    deps.start(def);
+    // Isolate each loop: a synchronous throw OR a rejecting promise from start() must be caught and
+    // reported, never propagate — one bad loop cannot crash the daemon or abort the rest of the tick.
+    try {
+      const started = deps.start(def);
+      if (started && typeof (started as PromiseLike<unknown>).then === "function") {
+        void (started as Promise<unknown>).catch((err) => deps.onError?.(def, err));
+      }
+    } catch (err) {
+      deps.onError?.(def, err);
+    }
   }
 }
