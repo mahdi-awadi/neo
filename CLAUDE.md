@@ -50,8 +50,9 @@ prompt:
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
 customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
 rate-limit recovery, data-driven loop CRUD, one-shot session focus, and context-efficiency Phase 1
-(per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window). Full
-phase-by-phase narrative: `docs/HISTORY.md`.
+(per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
+memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
+default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.
 
 Next: later context-efficiency phases (incl. the memory system) per the 2026-07-23 design spec, then
 **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board). Keep building **phase by

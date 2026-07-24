@@ -124,3 +124,17 @@ heartbeat (from enabled loops' triggers; `CRON_RESOLUTION_MS` fact) replacing th
 constants; and a per-model context window (`contextPolicy.windowTokensByModel` optional override
 map, applied at all 5 gate sites). See `docs/CONFIG.md` for the `workers`/`workerEnv`/`contextPolicy`
 field reference and `docs/superpowers/plans/2026-07-23-context-efficiency-phase1.md` for the plan.
+
+**Memory Phase 2 — live (default off):** the store/inject/recall memory system per
+`docs/superpowers/specs/2026-07-23-hermes-openclaw-upgrades-design.md` §2: capped `§ `-delimited
+memory files (MEMORY.md + USER.md, ratio caps of the model window) with a 3-op apply where an
+over-cap write errors (curation by capacity); deterministic write scan + drift backups
+(anti-poisoning); a frozen ground-truth snapshot injected at worker start (scanned + cap-truncated
+at compose; scope-gated via one shared `memoryEnabledFor`, `memory.scopes: []` default = total
+no-op); daily logs + FTS5 recall with file/day citations; `memory`/`memory_log`/`memory_search`
+MCP tools with engine-enforced dream budgets (backups, DREAMS.md audit diary, honest
+revert-failure accounting); pre-handoff flush + deterministic idle-close capture; the nightly
+`memory-dream` consolidation loop (disabled by default, fire-once, status-aware company busy
+guard); sentinel-guarded deterministic bootstrap from ledger + HANDOFF notes; the spec's three
+acceptance proofs (inject / store-frozen / recall-cited) as end-to-end tests. Opt in with
+`"memory": { "scopes": ["company"] }` in config.json. See `docs/CONFIG.md` → Memory.
