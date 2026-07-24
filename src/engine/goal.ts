@@ -16,7 +16,16 @@ export type Goal =
  * A non-zero exit (or a timeout) means not-met — which keeps the loop going. */
 export function commandGoal(opts: { command: string[]; cwd: string; timeoutMs?: number }): GoalCheck {
   return async () => {
-    const proc = Bun.spawn(opts.command, { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
+    // Bun.spawn throws synchronously if the binary can't be found OR the cwd doesn't exist (a
+    // deleted project folder is reported as ENOENT on the executable). Treat that as not-met rather
+    // than letting it escape — the scheduler contains loop failures now, but a goal-check should
+    // never throw in the first place. (2026-07-24 crash: a loop's folder was deleted.)
+    let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+    try {
+      proc = Bun.spawn(opts.command, { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
+    } catch (err) {
+      return { met: false, detail: `spawn error: ${err instanceof Error ? err.message : String(err)}` };
+    }
 
     let timedOut = false;
     const timer = opts.timeoutMs

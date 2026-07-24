@@ -32,6 +32,13 @@ test("commandGoal reports a timeout as not-met", async () => {
   expect(r.detail.toLowerCase()).toContain("timed out");
 });
 
+test("commandGoal reports a missing cwd as not-met, never throws (folder deleted → Bun.spawn ENOENT)", async () => {
+  const g = commandGoal({ command: ["sh", "-c", "false"], cwd: "/home/definitely-does-not-exist-xyz" });
+  const r = await g(); // must NOT throw
+  expect(r.met).toBe(false);
+  expect(r.detail.toLowerCase()).toContain("spawn");
+});
+
 test("judgeGoal is met when the worker votes DONE", async () => {
   const check = judgeGoal({
     criteria: "docs match",
