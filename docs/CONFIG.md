@@ -110,10 +110,11 @@ re-measurement — so a configured override changes gate verdicts, not just the 
 ## Memory system (`memory`) — Phase 2: store / inject / recall
 
 Per-project long-term memory: a frozen ground-truth snapshot injected at worker start, a `memory`
-tool workers use to write durable facts (applies NEXT session, never mid-run), and a
-`memory_search` tool over a cited daily-log recall index. **Off by default** — `memory.scopes: []`
-is a total no-op until you opt a folder in. Code: `src/engine/memory.ts`, `memory-recall.ts`,
-`memory-tool.ts`; `MemoryCfg` in `src/config.ts`.
+tool workers use to write durable curated facts (applies NEXT session, never mid-run), a `memory_log`
+tool to append a one-line note to today's running log immediately, and a `memory_search` tool over a
+cited daily-log recall index. **Off by default** — `memory.scopes: []` is a total no-op until you opt
+a folder in. Code: `src/engine/memory.ts`, `memory-recall.ts`, `memory-tool.ts`; `MemoryCfg` in
+`src/config.ts`.
 
 | Field | Category | Default | Meaning |
 | --- | --- | --- | --- |
@@ -129,8 +130,18 @@ is a total no-op until you opt a folder in. Code: `src/engine/memory.ts`, `memor
 (`cfg.companyFolder`) in; any other entry is compared as an absolute folder path (realpath-resolved,
 symlink/trailing-slash-insensitive) — a project only gets memory when its own folder appears there.
 Default `[]` means neither matches, so the whole system (snapshot injection, the `memory`/
-`memory_search` tools, the dream loop) stays inert — verified byte-identical to pre-memory behavior
-by a dedicated test.
+`memory_log`/`memory_search` tools, the dream loop) stays inert — verified byte-identical to
+pre-memory behavior by a dedicated test.
+
+### Snapshot inject (compose-time scan + caps)
+
+The injected snapshot isn't a raw copy of MEMORY.md/USER.md. At compose time each file is run through
+the same write-time poisoning scan (`scanMemoryText`) and truncated to its per-file char cap
+(`snapshotMaxPct` / `userMaxPct` of the model window). This catches drift the write-time scan never
+saw — a hand-edit or an externally-written entry — and drops offending or over-cap entries before
+they reach the worker. When anything is withheld or truncated, a short notice (`[N entries withheld
+by scan]` / a truncation marker) is appended so the worker knows it got a filtered view rather than
+silently trusting a partial one (`memorySnapshot` / `scannedAndCapped` in `memory.ts`).
 
 ### Flush sentence (pre-handoff / pre-drain memory capture)
 
@@ -141,6 +152,15 @@ one-line session summary to today's log **before** writing the separate, ephemer
 Gated by the same `memoryScopeEnabled` check every other memory injection uses — a folder outside
 `memory.scopes` never sees it, and the sentence is never merged into the base prompt text (kept
 byte-identical when memory is off, pinning the pre-memory fence).
+
+### Idle-close capture (deterministic, no worker)
+
+Distinct from the flush sentence above (which *asks a worker* to save): when a NORMAL project session
+idle-closes (the company is exempt) in a memory-scoped folder, the engine itself appends a
+deterministic one-line summary to today's log — in addition to, never instead of, the ephemeral
+HANDOFF.md note. No worker runs and no AI is involved (`idle.ts` → `appendDailyLog`). It's gated
+BEFORE the write by the same `memoryEnabledFor` check, so an out-of-scope folder never even gets a
+`memory/` dir created.
 
 ### Dream loop (nightly memory consolidation)
 
@@ -153,18 +173,27 @@ closure scoped to that one run. An over-budget mutation is rejected without taki
 revert write itself fails, the run hard-stops and diaries the mutation as "applied (OVER BUDGET —
 revert failed)" rather than silently misreporting it as rejected. Every attempted mutation (applied
 or rejected) is appended to `<folder>/memory/DREAMS.md`, a plain timestamped diary — engine-written,
-no AI in the engine. Before the first attempted mutation of a run, both memory files are backed up
+no AI in the engine. A `memory_log` append during a dream run is diaried too but is **not** a capped
+mutation — it never consumes the mutation/add/net-char budget, and a scan-rejected log line is
+recorded in the diary by its rejection reason, never its withheld content. Before the first attempted
+mutation of a run, both memory files are backed up
 to `<folder>/memory/.backups/<file>.<timestamp>.md`. The loop refuses to run at all (0 iterations,
 no worker started) when the company folder isn't in `memory.scopes` — a dream loop never spends a
 run on an opted-out folder. Like every loop, it's governed and never pushes or deploys.
 
-### Recall (`memory_search` tool)
+### Daily log & recall (`memory_log` / `memory_search`)
 
-Workers get a `memory_search(query, limit?)` tool (`memory-tool.ts`) over an FTS5 (bm25) index of
-the daily log (`memory-recall.ts`; one `<folder>/memory/index.sqlite` per project). Every hit is
-cited with its `file` (relative to `memory/`, e.g. `log/2026-07-01.md`) and `day`. `limit` defaults
-to 5, max 20. This is **keyword** search (FTS5), not semantic — a query needs to share literal word
-stems with the stored line to match.
+Beside the curated MEMORY.md/USER.md facts, each project keeps a running, dated **daily log** — a
+journal of one-line notes (e.g. a session summary). Workers append to it with `memory_log(line)`:
+unlike the `memory` tool it is *not* a capped-file mutation (it never counts against the dream
+budgets) and it takes effect immediately, but it runs through the same write-time poisoning scan — a
+rejected line is silently not written (not an error, just not saved).
+
+`memory_search(query, limit?)` (`memory-tool.ts`) reads that log back through an FTS5 (bm25) index
+(`memory-recall.ts`; one `<folder>/memory/index.sqlite` per project). Every hit is cited with its
+`file` (relative to `memory/`, e.g. `log/2026-07-01.md`) and `day`. `limit` defaults to 5, max 20.
+This is **keyword** search (FTS5), not semantic — a query needs to share literal word stems with the
+stored line to match.
 
 ### Bootstrap (`bun run memory:bootstrap <folder>`)
 
