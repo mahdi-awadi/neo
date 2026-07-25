@@ -138,3 +138,16 @@ revert-failure accounting); pre-handoff flush + deterministic idle-close capture
 guard); sentinel-guarded deterministic bootstrap from ledger + HANDOFF notes; the spec's three
 acceptance proofs (inject / store-frozen / recall-cited) as end-to-end tests. Opt in with
 `"memory": { "scopes": ["company"] }` in config.json. See `docs/CONFIG.md` → Memory.
+
+**Loop-failure isolation — live:** one crashing loop can no longer take down the whole daemon
+(2026-07-24: a scheduled loop whose project folder had been deleted → `Bun.spawn` ENOENT → uncaught
+rejection → daemon exit 1 → every in-memory session dropped). Three layers: (1) `tickScheduler`
+(`src/engine/scheduler.ts`) now treats each loop's `start` as fallible — `start(def)` may throw
+synchronously **or** return a rejecting promise (the daemon returns the real run promise instead of
+discarding it with `void`), and both are caught and routed to an `onError(def, err)` sink, so one bad
+loop never propagates and never aborts the rest of the tick; (2) the daemon's `onError` logs `[loop]
+"<name>" failed` and alerts the admin over Telegram (`⚠️ loop "<name>" failed and was skipped`), so a
+failure is visible instead of silent; (3) `commandGoal` (`src/engine/goal.ts`) wraps `Bun.spawn` in
+try/catch and reports a missing binary/cwd (a deleted project folder is reported as ENOENT on the
+executable) as **not-met** rather than throwing — a goal-check should never throw in the first place.
+Tests: `tests/scheduler.test.ts` (sync-throw + async-reject isolation), `tests/goal.test.ts` (missing cwd).

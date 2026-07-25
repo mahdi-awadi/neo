@@ -53,6 +53,18 @@ the last section maps it onto Neo.
 > (`src/engine/loops.ts`) forwards worker text only, delivered by `sendOperatorLine`
 > (`src/frontends/telegram.ts`). The interactive `/loop` path keeps `startLoop`'s start/progress/outcome
 > chrome.
+>
+> **Loop-failure isolation — live (2026-07-24).** One loop crashing can no longer take down the
+> daemon. `tickScheduler` (`src/engine/scheduler.ts`) now treats each `start(def)` as fallible — a
+> **synchronous throw** or a **rejecting promise** (the daemon returns the run promise instead of
+> discarding it) is caught and routed to an `onError(def, err)` sink, never propagating and never
+> aborting the rest of the tick. The daemon's `onError` logs `[loop] "<name>" failed` and pings the
+> admin (`⚠️ loop "<name>" failed and was skipped`), so a bad loop is visible, not silent. Belt-and-
+> braces, `commandGoal` (`src/engine/goal.ts`) wraps `Bun.spawn` in try/catch and reports a missing
+> binary/cwd (a **deleted project folder** → ENOENT on the executable) as **not-met** rather than
+> throwing — the exact 2026-07-24 crash (a loop whose folder was removed → uncaught rejection →
+> daemon exit 1 → every in-memory session dropped). Tests: `tests/scheduler.test.ts` (sync-throw +
+> async-reject), `tests/goal.test.ts` (missing cwd).
 
 ## What a loop is
 
