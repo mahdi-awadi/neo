@@ -220,6 +220,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
   let summary = "";
   let costUsd = 0;
   let apiError: ApiErrorKind | undefined; // set by the assistant fallback message / the result's status
+  let lastApiError: ApiErrorKind | undefined; // the error of the LAST turn only (for the final return)
 
   try {
     for await (const msg of queryObj) {
@@ -260,14 +261,20 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // "success", so it MUST be read too or a throttled turn passes as a completed one.
         const failed = msg.is_error === true;
         ok = msg.subtype === "success" && !failed;
-        if (failed) apiError = apiError ?? apiErrorFromStatus(msg.api_error_status as number | null);
+        // Only surface an API error when THIS turn actually failed. `apiError` may have been set by an
+        // assistant fallback earlier in the SAME session (a prior throttled turn that then recovered on
+        // a retry); a later successful turn must NOT inherit it, or the engine falsely reports "work is
+        // NOT done" on completed work (the leak-across-turns bug).
+        const turnError = failed ? (apiError ?? apiErrorFromStatus(msg.api_error_status as number | null)) : undefined;
         summary = typeof msg.result === "string" ? msg.result : "";
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
         handlers.onCost?.(costUsd);
         // Turn boundary: the worker is waiting for the next input, not mid-turn — the
         // watchdog must not treat this as silence or a grinding activity (F1).
         handlers.onActivity?.("waiting");
-        handlers.onTurnComplete?.({ ok, sessionId, summary, costUsd, apiError });
+        handlers.onTurnComplete?.({ ok, sessionId, summary, costUsd, apiError: turnError });
+        lastApiError = turnError;
+        apiError = undefined; // reset per-turn so this turn's throttle can't taint the next turn
       }
     }
   } catch {
@@ -277,7 +284,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
     if (!summary) summary = "interrupted";
   }
 
-  return { ok, sessionId, summary, costUsd, apiError };
+  return { ok, sessionId, summary, costUsd, apiError: lastApiError };
 }
 
 // A pushable async-iterable input channel: yields queued user messages, parks until the

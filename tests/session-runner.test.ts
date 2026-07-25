@@ -210,6 +210,33 @@ test("startOrder forwards rate_limit_event info via onRateLimit", async () => {
   expect(seen[0]?.rateLimitType).toBe("five_hour");
 });
 
+test("a successful turn after a throttled turn does NOT inherit the stale apiError (leak-across-turns)", async () => {
+  // Regression: apiError was scoped to the whole session and never reset per-turn, so a turn that
+  // recovered on retry (or any later turn) falsely reported the earlier throttle → "work is NOT done".
+  const q = (_args: { prompt: any; options: any }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "s" };
+      // Turn 1: throttled — assistant carries the error kind, result is_error:true (subtype still success).
+      yield { type: "assistant", error: "rate_limit", message: { content: [] } };
+      yield { type: "result", subtype: "success", is_error: true, result: "", total_cost_usd: 0, session_id: "s" };
+      // Turn 2: recovers and completes cleanly.
+      yield { type: "assistant", message: { content: [{ type: "text", text: "done for real" }] } };
+      yield { type: "result", subtype: "success", is_error: false, result: "ok", total_cost_usd: 0, session_id: "s" };
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  const turns: Array<{ ok: boolean; apiError?: string }> = [];
+  const run = startOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnComplete: (r) => turns.push({ ok: r.ok, apiError: r.apiError }) },
+    { query: q },
+  );
+  const final = await run.done;
+  expect(turns[0]).toEqual({ ok: false, apiError: "rate_limit" }); // the real throttle is still reported
+  expect(turns[1]).toEqual({ ok: true, apiError: undefined }); // the later success must NOT inherit it
+  expect(final.apiError).toBeUndefined(); // and neither does the session's final result
+});
+
 test("startOrder reports streamed cost via onCost", async () => {
   const f = fakeStreaming();
   const costs: number[] = [];
