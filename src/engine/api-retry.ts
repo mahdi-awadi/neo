@@ -13,6 +13,7 @@
 //      held instead of started, so retries and the 60s scheduler cannot amplify the storm. The
 //      operator's own interactive messages are never held: that is the reserved headroom.
 import type { ApiErrorKind } from "./session-runner";
+import type { RateLimitInfo } from "./usage";
 
 /** Server-side conditions that clear on their own — the only ones worth waiting out. An auth,
  *  billing or invalid-request failure repeats identically however long we wait. */
@@ -35,6 +36,33 @@ export function apiRetryDelayMs(attempt: number, rand: () => number = Math.rando
   return Math.round(base * (0.8 + 0.4 * rand()));
 }
 
+/** Spread applied to a reset-based wait — one-sided (never *earlier* than the reported reset, or we
+ *  just earn another 429), same 20% magnitude as the ladder's jitter so the two behave alike. */
+export const RESET_JITTER_FRAC = 0.2;
+
+/** Smart backoff. The subscription's rate_limit_event tells us the *actual* epoch-second `resetsAt`
+ *  for each window; when a window is throttling us, wait until its real reset (jittered up only)
+ *  instead of a blind 30s→2m→8m ladder that will just keep failing for the whole window. The ladder
+ *  is the fallback for when the API told us nothing (or the reported reset already passed). */
+export function resolveApiRetryDelayMs(opts: {
+  attempt: number;
+  rateLimits?: RateLimitInfo[];
+  now: number; // epoch ms
+  rand?: () => number;
+}): { delayMs: number; source: "reset" | "ladder"; resetsAt?: number } {
+  const rand = opts.rand ?? Math.random;
+  // A window is "governing" if it rejected us (or, lacking a status, simply carries a future reset).
+  const future = (opts.rateLimits ?? []).filter(
+    (r) => typeof r.resetsAt === "number" && r.resetsAt * 1000 > opts.now && r.status !== "allowed",
+  );
+  if (future.length > 0) {
+    const soonest = future.reduce((a, b) => (a.resetsAt! <= b.resetsAt! ? a : b));
+    const base = soonest.resetsAt! * 1000 - opts.now;
+    return { delayMs: Math.round(base * (1 + RESET_JITTER_FRAC * rand())), source: "reset", resetsAt: soonest.resetsAt };
+  }
+  return { delayMs: apiRetryDelayMs(opts.attempt, rand), source: "ladder" };
+}
+
 /** Gate every automatic retry: bounded, and never fighting the operator, a reload or the budget. */
 export function shouldRetryApi(opts: {
   kind?: ApiErrorKind;
@@ -52,10 +80,15 @@ export function shouldRetryApi(opts: {
   return !opts.draining && !opts.interrupted && !opts.throttled;
 }
 
-/** Human-readable seconds for operator lines ("30s", "8m"). */
-function humanMs(ms: number): string {
+/** Human-readable duration for operator lines ("45s", "2m", "1.5h"). Real reset windows can be
+ *  hours (the 5-hour / 7-day plan limits), so minutes alone would round a 2h wait to "120m". */
+export function humanDelay(ms: number): string {
   const s = Math.round(ms / 1000);
-  return s >= 60 ? `${Math.round(s / 60)}m` : `${s}s`;
+  if (s < 60) return `${s}s`;
+  const m = s / 60;
+  if (m < 60) return `${Math.round(m)}m`;
+  const h = m / 60;
+  return `${Number.isInteger(h) ? h : h.toFixed(1)}h`;
 }
 
 /** The brief re-sent into the session. The cut-off turn may have half-executed (a file written, a
@@ -68,22 +101,31 @@ export function apiRetryFollowUp(task: string): string {
   );
 }
 
-/** "⏳ #safari rate-limited by the API — retrying in 30s (1/3)." */
-export function apiRetryNotice(project: string | undefined, attempt: number, delayMs: number): string {
+/** "⏳ safari hit an API rate limit — retrying in 30s (1/3)." When the wait comes from the API's
+ *  real reset (`resetsAt`, epoch seconds), name the wall-clock resume time instead of a countdown to
+ *  giving up — a reset-based retry isn't racing a cap, it's simply waiting out the window. */
+export function apiRetryNotice(project: string | undefined, attempt: number, delayMs: number, resetsAt?: number): string {
   const who = project ? `${project} ` : "";
-  return `⏳ ${who}hit an API rate limit — retrying in ${humanMs(delayMs)} (${attempt}/${MAX_API_RETRIES}).`;
+  if (resetsAt) {
+    return `⏳ ${who}hit an API rate limit — auto-resuming at ${new Date(resetsAt * 1000).toUTCString()} (in ${humanDelay(delayMs)}).`;
+  }
+  return `⏳ ${who}hit an API rate limit — retrying in ${humanDelay(delayMs)} (${attempt}/${MAX_API_RETRIES}).`;
 }
 
-/** The give-up line. Says plainly that the work did NOT happen, so nothing is dropped in silence. */
-export function apiFailureNotice(project: string | undefined, kind: ApiErrorKind): string {
+/** The give-up line. Says plainly that the work did NOT happen, so nothing is dropped in silence.
+ *  Reports how many retries ACTUALLY ran (`attempts`) rather than a fixed "3" — when work is held
+ *  immediately (a fresh cooldown / budget throttle) zero retries happened, and claiming three is a
+ *  lie the operator learns to distrust. */
+export function apiFailureNotice(project: string | undefined, kind: ApiErrorKind, attempts: number = MAX_API_RETRIES): string {
   const who = project ? `${project}: ` : "";
   const why = kind === "rate_limit" || kind === "overloaded" ? "the API kept throttling us" : `the API failed (${kind})`;
-  return `✗ ${who}${why} after ${MAX_API_RETRIES} retries — the work is NOT done. Re-run it when you're ready.`;
+  const ran = attempts <= 0 ? "without retrying (still throttled)" : `after ${attempts} ${attempts === 1 ? "retry" : "retries"}`;
+  return `✗ ${who}${why} ${ran} — the work is NOT done. Re-run it when you're ready.`;
 }
 
 /** What a held dispatch/loop fire reports back. */
 export function apiHoldMessage(remainingMs: number): string {
-  return `⏸ The API is throttling us — new background work is on hold for ${humanMs(remainingMs)}. It'll run after that.`;
+  return `⏸ The API is throttling us — new background work is on hold for ${humanDelay(remainingMs)}. It'll run after that.`;
 }
 
 /** The engine-wide throttle gate: one shared window, armed by any worker's throttle report. */

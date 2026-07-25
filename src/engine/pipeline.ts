@@ -31,9 +31,9 @@ import { profileDeps } from "./worker-profile";
 import { describeSessionStatus } from "./session-status";
 import {
   apiFailureNotice,
-  apiRetryDelayMs,
   apiRetryFollowUp,
   apiRetryNotice,
+  resolveApiRetryDelayMs,
   shouldRetryApi,
   type ApiCooldown,
 } from "./api-retry";
@@ -367,12 +367,17 @@ function startSession(
         deps.cooldown?.note(kind, now()); // hold sibling background work while the storm lasts
         const attempt = apiRetries + 1;
         if (!shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {
-          void deps.reply(chatId, apiFailureNotice(project, kind), project);
+          void deps.reply(chatId, apiFailureNotice(project, kind, apiRetries), project);
           return;
         }
         apiRetries = attempt;
-        const delayMs = apiRetryDelayMs(attempt, deps.rand);
-        void deps.reply(chatId, apiRetryNotice(project, attempt, delayMs), project);
+        const { delayMs, resetsAt } = resolveApiRetryDelayMs({
+          attempt,
+          rateLimits: deps.usage?.snapshot(now()).rateLimits,
+          now: now(),
+          rand: deps.rand,
+        });
+        void deps.reply(chatId, apiRetryNotice(project, attempt, delayMs, resetsAt), project);
         void (deps.sleep ?? realSleep)(delayMs).then(() => {
           registry.touch(registryId, now());
           runRef?.followUp(apiRetryFollowUp(order.task));

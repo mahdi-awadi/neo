@@ -25,7 +25,7 @@ import { profileDeps } from "./worker-profile";
 import {
   apiFailureNotice,
   apiHoldMessage,
-  apiRetryDelayMs,
+  resolveApiRetryDelayMs,
   apiRetryFollowUp,
   apiRetryNotice,
   shouldRetryApi,
@@ -365,19 +365,24 @@ export async function dispatchToProject(
             const attempt = apiRetries + 1;
             if (shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottle() })) {
               apiRetries = attempt;
-              const delayMs = apiRetryDelayMs(attempt, opts.rand);
+              const { delayMs, resetsAt } = resolveApiRetryDelayMs({
+                attempt,
+                rateLimits: deps.usage?.snapshot(now()).rateLimits,
+                now: now(),
+                rand: opts.rand,
+              });
               // The wait is engine-driven, not the worker hanging: hold off the stall/ceiling
               // clocks for exactly that long, then re-send the brief into the still-open run.
               retryingUntil = now() + delayMs;
               pausedMs += delayMs;
-              void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs), name);
+              void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs, resetsAt), name);
               void (opts.sleep ?? realSleep)(delayMs).then(() => {
                 lastActivityAt = now();
                 runRef?.followUp(apiRetryFollowUp(task));
               });
               return; // keep the sub-run open — it hasn't done the work yet
             }
-            void deps.reply(replyChat, apiFailureNotice(name, kind), name);
+            void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name);
           }
           if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
         },

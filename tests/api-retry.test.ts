@@ -12,6 +12,8 @@ import {
   apiRetryNotice,
   createApiCooldown,
   isRetryableApiError,
+  resolveApiRetryDelayMs,
+  humanDelay,
   shouldRetryApi,
 } from "../src/engine/api-retry";
 
@@ -60,7 +62,66 @@ test("an attempt past the table stays at the longest delay rather than overflowi
   expect(apiRetryDelayMs(99, () => 0.5)).toBe(480_000);
 });
 
+// --- reset-aware backoff (smart, not a blind ladder) --------------------------------------------
+
+test("when the API reports when the limit resets, the retry waits until then — not the fixed ladder", () => {
+  const now = 1_700_000_000_000; // epoch ms
+  const rateLimits = [{ rateLimitType: "five_hour", status: "rejected", resetsAt: now / 1000 + 600 }];
+  const r = resolveApiRetryDelayMs({ attempt: 1, rateLimits, now, rand: () => 0 });
+  expect(r.source).toBe("reset");
+  expect(r.delayMs).toBe(600_000); // exactly the time until the reported reset (no jitter at rand()=0)
+  expect(r.resetsAt).toBe(now / 1000 + 600);
+});
+
+test("the reset-based wait is jittered upward only, so it never retries before the limit clears", () => {
+  const now = 1_700_000_000_000;
+  const rateLimits = [{ status: "rejected", resetsAt: now / 1000 + 600 }];
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits, now, rand: () => 0 }).delayMs).toBe(600_000); // floor = reset
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits, now, rand: () => 1 }).delayMs).toBe(720_000); // +20% ceiling
+});
+
+test("with several throttled windows it waits for the SOONEST reset", () => {
+  const now = 1_700_000_000_000;
+  const rateLimits = [
+    { rateLimitType: "seven_day", status: "rejected", resetsAt: now / 1000 + 600 },
+    { rateLimitType: "five_hour", status: "rejected", resetsAt: now / 1000 + 300 },
+  ];
+  const r = resolveApiRetryDelayMs({ attempt: 1, rateLimits, now, rand: () => 0 });
+  expect(r.delayMs).toBe(300_000);
+});
+
+test("no reset info (or a stale, already-passed reset) falls back to the ladder", () => {
+  const now = 1_700_000_000_000;
+  expect(resolveApiRetryDelayMs({ attempt: 2, rateLimits: [], now, rand: () => 0.5 }))
+    .toMatchObject({ delayMs: 120_000, source: "ladder" });
+  const stale = [{ status: "rejected", resetsAt: now / 1000 - 10 }];
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits: stale, now, rand: () => 0.5 }).source).toBe("ladder");
+});
+
 // --- what the worker and the operator are told ---------------------------------------------------
+
+test("humanMs reads hours for long real reset windows, not just seconds/minutes", () => {
+  expect(humanDelay(45_000)).toBe("45s");
+  expect(humanDelay(120_000)).toBe("2m");
+  expect(humanDelay(2 * 3600_000)).toBe("2h");
+  expect(humanDelay(90 * 60_000)).toBe("1.5h");
+});
+
+test("a retry scheduled from a real reset tells the operator the wall-clock resume time, not '3 retries'", () => {
+  const resetsAt = 1_700_000_000; // epoch seconds
+  const notice = apiRetryNotice("safari", 1, 600_000, resetsAt);
+  expect(notice).toContain("safari");
+  expect(notice).toContain(new Date(resetsAt * 1000).toUTCString());
+  expect(notice).not.toContain(`1/${MAX_API_RETRIES}`); // reset-based retries aren't a countdown to giving up
+});
+
+test("the give-up notice states how many attempts actually ran, never a fixed '3'", () => {
+  expect(apiFailureNotice("safari", "rate_limit", 0)).toContain("without retrying"); // held immediately
+  expect(apiFailureNotice("safari", "rate_limit", 2)).toContain("2 retries");
+  expect(apiFailureNotice("safari", "rate_limit", 2).toLowerCase()).toContain("not done");
+});
+
+// --- what the worker and the operator are told (existing) ----------------------------------------
 
 test("the retry brief re-sends the task AND warns that the cut-off attempt may be half-done", () => {
   const text = apiRetryFollowUp("port the NDC request classes");

@@ -82,6 +82,32 @@ test("a throttled turn re-sends the SAME brief into the session after the backof
   expect(w.followUps[0].toLowerCase()).toContain("already"); // warned the attempt may be half-done
 });
 
+test("a throttled turn with a known reset waits until the API's real reset, and names the resume time", async () => {
+  const dir = scratch();
+  const w = fakeWorker();
+  const slept: number[] = [];
+  const now = 1_700_000_000_000;
+  const resetsAt = now / 1000 + 600; // API says the window clears in 10 minutes
+  const usage = {
+    snapshot: () => ({ rateLimits: [{ status: "rejected", resetsAt }] }),
+    noteRateLimit: () => {},
+  };
+  const { replies, deps } = pipelineHarness({
+    start: w.start as never,
+    sleep: async (ms: number) => void slept.push(ms),
+    rand: () => 0,
+    now: () => now,
+    usage: usage as never,
+  } as Partial<PipelineDeps>);
+
+  await handleMessage(`/open ${dir} do it`, 9, deps);
+  await w.throttledTurn();
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(slept).toEqual([600_000]); // waited until the real reset, not the 30s ladder step
+  expect(replies.some((t) => t.includes(new Date(resetsAt * 1000).toUTCString()))).toBe(true);
+});
+
 test("retries stop at the cap and the operator is told the work is NOT done", async () => {
   const dir = scratch();
   const w = fakeWorker();
