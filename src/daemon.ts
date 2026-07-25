@@ -15,7 +15,7 @@ import { openTrustStore } from "./engine/trust";
 import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
-import { createLifecycle, drainAndPersist, restoreSessions, stopFrontends } from "./engine/reload";
+import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop } from "./engine/loops";
@@ -83,6 +83,10 @@ async function main(): Promise<void> {
     if (drainStarted) return;
     drainStarted = true;
     lifecycle.beginDrain(); // refuse new orders/dispatches immediately, before we stop polling
+    // Own our shutdown deadline instead of leaning on a systemd stop timeout: force-exit after the
+    // config-derived failsafe if any bounded phase overruns. Lets the unit use TimeoutStopSec=infinity
+    // (defer to the engine) so systemd never SIGKILLs mid-drain — the cause of leaked workers.
+    setTimeout(() => process.exit(1), shutdownFailsafeMs(cfg.drainWindowMs)).unref();
     console.log(`[reload] ${why}: draining running sessions (≤${cfg.drainWindowMs / 1000}s), saving open sessions…`);
     void stopFrontends(stopHooks)
       .then(() => drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs, memory: cfg.memory, companyFolder: cfg.companyFolder }))

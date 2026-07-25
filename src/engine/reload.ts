@@ -127,6 +127,19 @@ export async function drainAndPersist(opts: {
 export const STOP_FRONTENDS_TIMEOUT_MS = 5_000;
 
 /**
+ * Hard failsafe deadline for the WHOLE graceful shutdown, derived from the drain window so it never
+ * needs a hand-picked timeout (and can't drift from `drainWindowMs`). The sequence is already
+ * self-bounded: `stopFrontends` (≤ its own timeout) runs, THEN `drainAndPersist` (≤ `drainMs`), with
+ * a bounded interrupt+persist tail. Sum of those bounds = `drainMs + 2 × stopFrontends budget` (one
+ * for the frontend stop, one covering the tail). The daemon arms a timer for this and force-exits if
+ * any phase somehow overruns — so the supervisor can defer to the engine (`TimeoutStopSec=infinity`)
+ * instead of imposing a shorter, drift-prone stop timeout that SIGKILLs mid-drain.
+ */
+export function shutdownFailsafeMs(drainMs: number, stopFrontendsMs: number = STOP_FRONTENDS_TIMEOUT_MS): number {
+  return drainMs + stopFrontendsMs * 2;
+}
+
+/**
  * Stop the operator frontends before the process exits — the step that keeps a reload from
  * repeating forever. Telegram long polling only *confirms* an update by sending the next
  * getUpdates with `offset = update_id + 1`; grammy does that inside `bot.stop()`. Exiting straight

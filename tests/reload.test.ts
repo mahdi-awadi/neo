@@ -5,7 +5,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createLifecycle, drainAndPersist, restoreSessions, stopFrontends, wrapUpFollowUp } from "../src/engine/reload";
+import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends, wrapUpFollowUp, STOP_FRONTENDS_TIMEOUT_MS } from "../src/engine/reload";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger, type OpenSessionRow } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -17,6 +17,17 @@ import { loadConfig } from "../src/config";
 import { MEMORY_FLUSH_SENTENCE } from "../src/engine/context-policy";
 import type { Order, SessionControl } from "../src/types";
 import type { MemoryCfg } from "../src/config";
+
+test("the shutdown failsafe is derived from the drain window, never a hand-picked literal", () => {
+  // The sequence is stopFrontends (≤ its own timeout) THEN drainAndPersist (≤ drainMs), with a
+  // bounded interrupt+persist tail — so the failsafe must always exceed drainMs and scale WITH it.
+  const drainMs = 90_000;
+  const failsafe = shutdownFailsafeMs(drainMs);
+  expect(failsafe).toBeGreaterThan(drainMs); // never fire before the drain could legitimately finish
+  expect(failsafe).toBe(drainMs + STOP_FRONTENDS_TIMEOUT_MS * 2);
+  // Raising the drain window raises the failsafe by the same amount — they can't drift apart.
+  expect(shutdownFailsafeMs(drainMs + 30_000) - failsafe).toBe(30_000);
+});
 
 const MEMORY_CFG: MemoryCfg = {
   scopes: [] as string[],
