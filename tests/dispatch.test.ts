@@ -92,6 +92,34 @@ test("dispatch to a running folder refuses instead of stacking", async () => {
   expect(out).toContain("2m"); // how long that activity has run
 });
 
+test("dispatch to a running folder WITH a live control QUEUES the brief (like an operator reply) instead of refusing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const first = d.registry.add(
+    { id: "d1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: -2, createdAt: 0 },
+    0,
+  );
+  d.registry.setStatus(first.id, "running");
+  const followUps: string[] = [];
+  // A live worker means a control is attached — dispatch must queue behind its turn, not refuse.
+  d.registry.attachControl(first.id, {
+    followUp: (t: string) => void followUps.push(t),
+    queued: () => 0,
+    interrupt: async () => {},
+  });
+  const out = await dispatchToProject("eticket-v3", "run docker ps and report", d, 1, {
+    start: (() => {
+      throw new Error("must not start a second run onto a live folder");
+    }) as never,
+    root,
+    now: () => 0,
+  });
+  expect(followUps.length).toBe(1); // the brief was queued into the live session
+  expect(followUps[0]).toContain("run docker ps and report");
+  expect(out.toLowerCase()).toContain("queued");
+});
+
 test("background completion books the result and reports back to operator + company", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));

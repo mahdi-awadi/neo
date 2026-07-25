@@ -236,12 +236,26 @@ export async function dispatchToProject(
   const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now());
   const name = session.name;
-  // Busy guard: never stack a second run onto a folder whose session is mid-turn. Report the REAL
-  // status (what it's doing, for how long, queue depth) — not an opaque "busy" — so the company can
-  // tell the operator what's happening and decide to wait or report back, instead of a blind refusal.
+  // Busy guard. A folder's session runs ONE turn at a time, so a second concurrent run must never
+  // stack. But a live worker exposes a control whose input channel serializes messages — so instead
+  // of refusing, we QUEUE the brief behind the in-flight turn, exactly like an operator's direct
+  // reply does (pipeline.ts). This removes the asymmetry the operator hit: their replies queued and
+  // ran, while a company dispatch hard-refused the same available session as "busy". Only when the
+  // session is "running" with NO live control (e.g. control lost on a reload — a stale status) do we
+  // still refuse, rather than risk starting a second concurrent run onto the folder.
   if (existing && wasRunning) {
-    const queued = deps.registry.getControl(existing.id)?.queued?.() ?? 0;
+    const control = deps.registry.getControl(existing.id);
+    const queued = control?.queued?.() ?? 0;
     const status = describeSessionStatus(existing, now(), { queued });
+    if (control?.followUp) {
+      control.followUp(order.task);
+      deps.registry.touch(existing.id, now());
+      await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
+      return (
+        `${name} is busy — I queued this brief behind its current turn (${status}). It runs when the ` +
+        `current work yields; its output streams to the operator as ${name}.`
+      );
+    }
     return (
       `${name} is busy — ${status}. I did NOT start this dispatch; its current work must finish first. ` +
       `Its result will arrive as a follow-up when it's done — tell the operator what ${name} is doing, or retry shortly.`
