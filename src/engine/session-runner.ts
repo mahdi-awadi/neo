@@ -75,6 +75,9 @@ export interface RunHandlers {
   /** Fires at each SDK "result" message (turn boundary) with that turn's result. A single-brief
    *  caller (dispatch) uses this to detect completion — the stream itself stays open. */
   onTurnComplete?: (result: RunResult) => void;
+  /** Structured diagnostic events (session lifecycle). The engine wires this to ledger.recordEvent;
+   *  a bare worker leaves it unset. NEVER carries message bodies — kinds + small metadata only. */
+  onEvent?: (kind: string, data?: Record<string, unknown>) => void;
 }
 
 /** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
@@ -258,6 +261,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // The SDK is retrying a retryable API failure itself (its own backoff). Not a failure yet —
         // surface it as activity so the watchdog counts it as liveness and /status shows the wait.
         handlers.onActivity?.(`api retry ${msg.attempt ?? "?"}/${msg.max_retries ?? "?"}`);
+        handlers.onEvent?.("sdk_api_retry", { attempt: msg.attempt ?? null, max: msg.max_retries ?? null });
       } else if (msg.type === "rate_limit_event") {
         const info = msg.rate_limit_info as RateLimitInfo | undefined;
         if (info) handlers.onRateLimit?.(info);
@@ -287,6 +291,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
     // (idle-close / kill — verified via the P2 spike). Treat it as the session ending,
     // not a crash, so `done` resolves and the pipeline's supervise/cleanup still runs.
     if (!summary) summary = "interrupted";
+    handlers.onEvent?.("session_interrupted");
   }
 
   return { ok, sessionId, summary, costUsd, apiError: lastApiError };
@@ -351,6 +356,7 @@ export async function runOrder(
 ): Promise<RunResult> {
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const options = sdkOptions(order, handlers, runConfig(deps));
+  handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
   return consumeStream(query({ prompt: order.task, options }), handlers);
 }
 
@@ -362,6 +368,7 @@ export function startOrder(
 ): SessionRun {
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const channel = createInputChannel(userMessage(order.task));
+  handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
   const queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers, runConfig(deps)) });
   const done = consumeStream(queryObj, handlers);
 

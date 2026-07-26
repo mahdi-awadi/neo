@@ -488,6 +488,51 @@ test("the SDK's own api_retry events surface as activity so the watchdog sees li
   expect(seen.some((l) => l.includes("api retry 2/5"))).toBe(true);
 });
 
+// --- Diagnostic events (event log): the runner emits session-lifecycle events via onEvent, which
+// the engine wires to ledger.recordEvent. Kinds + small metadata only — never message bodies. ---
+
+test("onEvent fires session_start with the resume flag, and sdk_api_retry on the SDK's own retry", async () => {
+  const events: Array<{ kind: string; data?: Record<string, unknown> }> = [];
+  const q = () =>
+    (async function* () {
+      yield { type: "system", subtype: "api_retry", attempt: 2, max_retries: 5 };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (kind, data) => void events.push({ kind, data }) },
+    { query: q as never, resume: "sess-prev" },
+  );
+  expect(events[0]).toEqual({ kind: "session_start", data: { folder: "/tmp", resume: true } });
+  expect(events.some((e) => e.kind === "sdk_api_retry" && (e.data as any).attempt === 2 && (e.data as any).max === 5)).toBe(true);
+});
+
+test("onEvent fires session_start with resume:false for a fresh run", async () => {
+  const events: Array<{ kind: string; data?: Record<string, unknown> }> = [];
+  const q = () =>
+    (async function* () {
+      yield { type: "result", subtype: "success", result: "ok", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (k, d) => void events.push({ kind: k, data: d }) }, { query: q as never });
+  expect(events[0]).toEqual({ kind: "session_start", data: { folder: "/tmp", resume: false } });
+});
+
+test("onEvent fires session_interrupted when the SDK stream throws (interrupt/idle-close)", async () => {
+  const events: string[] = [];
+  const q = () =>
+    Object.assign(
+      (async function* () {
+        yield { type: "system", subtype: "init", session_id: "s" };
+        throw new Error("Claude Code returned an error result: interrupted");
+      })(),
+      { interrupt: async () => {} },
+    );
+  const run = startOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (k) => void events.push(k) }, { query: q as never });
+  await run.done;
+  expect(events).toContain("session_start");
+  expect(events).toContain("session_interrupted");
+});
+
 test("runConfig forwards model/skills/maxTurns and merges env over process.env", () => {
   const c = runConfig({ model: "haiku", skills: [], maxTurns: 12, env: { NEO_TEST_FLAG: "1" } });
   expect(c.model).toBe("haiku");
