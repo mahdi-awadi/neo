@@ -16,6 +16,7 @@ import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
+import { frontendBackend, teamLeadPreamble } from "./agent-teams";
 import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
 import { describeSessionStatus, sessionsReport } from "./session-status";
@@ -197,9 +198,16 @@ export async function dispatchToProject(
     sleep?: (ms: number) => Promise<void>;
     /** Injectable jitter source for the API-retry backoff. Defaults to Math.random. */
     rand?: () => number;
+    /** Opt-in team mode: run this brief with a lead-orchestrated subagent team.
+     *  "frontend-backend" attaches the `frontendBackend` agents map to the run AND wraps the brief
+     *  with `teamLeadPreamble`. Unset = a normal single worker (default; behaviour unchanged). */
+    team?: "frontend-backend";
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
+  // Opt-in team: when requested, the SDK gets the named subagents and the brief gets the
+  // lead-orchestration preamble. Unset ⇒ undefined ⇒ nothing below fires (default path unchanged).
+  const teamAgents = opts.team === "frontend-backend" ? frontendBackend : undefined;
   // Worker-profile view (model/effort/skills/env by path) — absent deps.workers/workerEnv means
   // every profileDeps() call below is a no-op (empty profile ?? {}), preserving today's behavior.
   const workerCfg: Pick<NeoConfig, "workers" | "workerEnv"> = {
@@ -225,7 +233,7 @@ export async function dispatchToProject(
     id: crypto.randomUUID(),
     source: "neo",
     folder,
-    task: briefWithProjectDocs(task),
+    task: briefWithProjectDocs(teamAgents ? teamLeadPreamble(task) : task),
     chatId: SUB_CHAT,
     createdAt: now(),
   };
@@ -410,7 +418,7 @@ export async function dispatchToProject(
           }
         },
       },
-      profileDeps(workerCfg, "dispatch", { resume: gatedResume }),
+      profileDeps(workerCfg, "dispatch", { resume: gatedResume, ...(teamAgents ? { agents: teamAgents } : {}) }),
     );
     runRef = run;
     deps.registry.attachControl(session.id, run);
