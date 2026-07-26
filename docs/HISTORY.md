@@ -151,3 +151,19 @@ failure is visible instead of silent; (3) `commandGoal` (`src/engine/goal.ts`) w
 try/catch and reports a missing binary/cwd (a deleted project folder is reported as ENOENT on the
 executable) as **not-met** rather than throwing — a goal-check should never throw in the first place.
 Tests: `tests/scheduler.test.ts` (sync-throw + async-reject isolation), `tests/goal.test.ts` (missing cwd).
+
+**Engine event log — implemented (branch `feat/engine-event-log`, pending reload):** a durable,
+structured diagnostic trail so instability leaves something to diagnose from (the 7 issues in the
+2026-07-25 handoff had no persistent trace). A new ledger `events` table + `recordEvent`/`listEvents`
+(`src/engine/ledger.ts`), following the `context_events`/`cache_observations` audit-table precedent —
+single INSERT on the hot path, amortised retention (prune every 1000 inserts, keep newest 50k),
+indexed on `(kind,at)`, `(order_id,at)`, `(at)`; stores kinds + small structured metadata only, never
+message bodies (those stay in `messages`). Instrumented at the points that correlate with the known
+instability: `session-runner.ts` emits `session_start`/`sdk_api_retry`/`session_interrupted` via a
+thin optional `onEvent` handler (the pure SDK core stays ledger-free); `pipeline.ts` + `dispatch.ts`
+record `api_retry`/`api_giveup` (with the resolved reset-vs-ladder delay — handoff issue 6) plus the
+full dispatch lifecycle `dispatch_refused`/`dispatch_queued`/`dispatch_start`/`dispatch_abort`/
+`dispatch_end` (the wedge/queue asymmetries — issue 7). Queryable via a new `/events [<kind>]`
+operator command (`commands.ts`, mirrors `/recent`), surfaced on Telegram + web with zero frontend
+changes. See `docs/superpowers/specs/2026-07-26-engine-event-log-design.md` +
+`docs/superpowers/plans/2026-07-26-engine-event-log.md`. TDD throughout; full suite green (591).

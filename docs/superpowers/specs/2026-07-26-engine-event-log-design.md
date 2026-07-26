@@ -153,6 +153,9 @@ filters by kind (e.g. `/events api_retry`).
 
 ## What needs a reload
 
+**Status: IMPLEMENTED** on branch `feat/engine-event-log` (TDD, 5 feature commits; full suite green,
+591 pass; `bunx tsc --noEmit` clean). NOT merged, NOT deployed, daemon NOT reloaded.
+
 All of this is engine code. It takes effect on the **next daemon reload** — which this task does NOT
 perform (per `never-restart-without-permission`). New events start being written, and `/events`
 starts working, only after the operator reloads. Nothing machine-local is tracked (the events live
