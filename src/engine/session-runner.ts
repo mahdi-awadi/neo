@@ -18,7 +18,7 @@
 //
 // Auth: draws from your Claude subscription (current behavior; see README + plan).
 import { basename } from "node:path";
-import { query as realQuery } from "@anthropic-ai/claude-agent-sdk";
+import { query as realQuery, type AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 import type { Order, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide } from "./governor";
@@ -97,6 +97,11 @@ export interface RunDeps {
   skills?: "all" | string[];
   /** SDK cap on agentic turns for one run. Unset = uncapped. */
   maxTurns?: number;
+  /** Named subagents for an opt-in, lead-orchestrated team run (SDK `agents`). Each is a governed
+   *  subagent whose tool calls re-enter this session's `canUseTool`, so the path-fence still holds
+   *  for their writes (verified — spike/agent-team-spike-findings.md). Unset = a normal single
+   *  worker (default; behaviour byte-for-byte unchanged). */
+  agents?: Record<string, AgentDefinition>;
   /** Extra env for the spawned worker (autocompact %, MCP output caps…), merged over process.env. */
   env?: Record<string, string>;
 }
@@ -333,6 +338,7 @@ export function runConfig(deps: RunDeps): Record<string, unknown> {
   if (deps.model) c.model = deps.model;
   if (deps.skills !== undefined) c.skills = deps.skills;
   if (deps.maxTurns) c.maxTurns = deps.maxTurns;
+  if (deps.agents) c.agents = deps.agents;
   if (deps.env) c.env = { ...process.env, ...deps.env };
   return c;
 }
