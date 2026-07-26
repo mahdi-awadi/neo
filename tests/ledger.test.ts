@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { openLedger } from "../src/engine/ledger";
+import { openLedger, EVENTS_KEEP, EVENTS_PRUNE_INTERVAL } from "../src/engine/ledger";
 import type { Order } from "../src/types";
 
 function order(over: Partial<Order> = {}): Order {
@@ -122,4 +122,42 @@ test("cache observations record + list, newest-first, capped by limit", () => {
   expect(rows[1]).toMatchObject({ gapMs: 10 * 60_000, hit: true });
   for (let i = 0; i < 5; i++) l.recordCacheObservation(i, true);
   expect(l.listCacheObservations(3)).toHaveLength(3);
+});
+
+test("recordEvent then listEvents round-trips kind, columns, and parsed data, newest-first", () => {
+  const l = openLedger(":memory:");
+  l.recordEvent("api_retry", { orderId: "o1", folder: "/p/safari", data: { attempt: 1, delayMs: 30000 }, at: 100 });
+  l.recordEvent("dispatch_start", { orderId: "o2", folder: "/p/gold", data: { resume: false }, at: 200 });
+  const events = l.listEvents();
+  expect(events[0]).toEqual({ kind: "dispatch_start", at: 200, orderId: "o2", sessionId: undefined, folder: "/p/gold", data: { resume: false } });
+  expect(events[1]).toMatchObject({ kind: "api_retry", at: 100, orderId: "o1", data: { attempt: 1, delayMs: 30000 } });
+});
+
+test("listEvents filters by kind and by orderId, and respects limit", () => {
+  const l = openLedger(":memory:");
+  l.recordEvent("api_retry", { orderId: "a", at: 1 });
+  l.recordEvent("api_giveup", { orderId: "a", at: 2 });
+  l.recordEvent("api_retry", { orderId: "b", at: 3 });
+  expect(l.listEvents({ kind: "api_retry" }).map((e) => e.orderId)).toEqual(["b", "a"]);
+  expect(l.listEvents({ orderId: "a" }).map((e) => e.kind)).toEqual(["api_giveup", "api_retry"]);
+  expect(l.listEvents({ limit: 1 })).toHaveLength(1);
+});
+
+test("recordEvent with no data reads back data: undefined and null columns as undefined", () => {
+  const l = openLedger(":memory:");
+  l.recordEvent("session_interrupted", { at: 5 });
+  expect(l.listEvents()[0]).toEqual({ kind: "session_interrupted", at: 5, orderId: undefined, sessionId: undefined, folder: undefined, data: undefined });
+});
+
+test("events retention prunes to bound the table (never unbounded growth)", () => {
+  const l = openLedger(":memory:");
+  const total = EVENTS_KEEP + EVENTS_PRUNE_INTERVAL + 5;
+  for (let i = 0; i < total; i++) l.recordEvent("tick", { at: i });
+  const count = l.listEvents({ limit: total }).length;
+  // Amortised: after the last prune the count can sit up to one interval above the keep-window,
+  // but it is bounded — and strictly fewer than everything inserted (pruning actually happened).
+  expect(count).toBeLessThanOrEqual(EVENTS_KEEP + EVENTS_PRUNE_INTERVAL);
+  expect(count).toBeLessThan(total);
+  // Newest rows are the ones kept (oldest pruned): the most recent event survives.
+  expect(l.listEvents({ limit: 1 })[0].at).toBe(total - 1);
 });

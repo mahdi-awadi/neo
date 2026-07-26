@@ -8,6 +8,10 @@ import { CACHE_OBS_WINDOW } from "./context-policy";
  *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
 export const ROUTE_KEEP = 20_000;
 
+/** Diagnostic event-log retention: prune in coarse batches so the hot path stays a single insert. */
+export const EVENTS_KEEP = 50_000;
+export const EVENTS_PRUNE_INTERVAL = 1000;
+
 export interface Ledger {
   recordOrder(order: Order): void;
   recordOutcome(orderId: string, status: string, summary: string): void;
@@ -56,6 +60,25 @@ export interface Ledger {
   /** Every recorded outcome for orders in this folder, oldest-first (memory bootstrap: seed a
    *  project's memory log from what the ledger already knows, instead of starting from zero). */
   outcomesForFolder(folder: string): Array<{ orderId: string; status: string; summary: string; at: number }>;
+  /** Append one diagnostic event (single cheap INSERT; retention amortised — see EVENTS_KEEP). The
+   *  durable trail to diagnose instability from (API retry loops, wedged dispatches, stalls). */
+  recordEvent(
+    kind: string,
+    input?: { orderId?: string; sessionId?: string; folder?: string; data?: Record<string, unknown>; at?: number },
+  ): void;
+  /** Recent events, newest-first. Filter by kind and/or orderId; capped by `limit` (default 50). */
+  listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): EngineEvent[];
+}
+
+/** One structured engine event (diagnostic trail). `data` is small structured metadata —
+ *  ids/counts/timings/error codes/short messages — NEVER a full message body. */
+export interface EngineEvent {
+  kind: string;
+  at: number;
+  orderId?: string;
+  sessionId?: string;
+  folder?: string;
+  data?: Record<string, unknown>;
 }
 
 /** One open session as persisted across a graceful daemon reload. */
@@ -144,6 +167,19 @@ export function openLedger(path: string): Ledger {
        PRIMARY KEY (chat_id, message_id)
      )`,
   );
+  // Structured diagnostic event log — API errors/retries + session and dispatch lifecycle
+  // transitions. The persistent trail to diagnose instability from (throttle loops, wedged
+  // dispatches, stalls); kinds + small metadata only, never message bodies (those live in messages).
+  db.run(
+    `CREATE TABLE IF NOT EXISTS events (
+       kind TEXT NOT NULL, at INTEGER NOT NULL,
+       order_id TEXT, session_id TEXT, folder TEXT, data TEXT
+     )`,
+  );
+  db.run(`CREATE INDEX IF NOT EXISTS idx_events_kind_at ON events (kind, at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_events_order_at ON events (order_id, at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_events_at ON events (at)`);
+  let eventInserts = 0;
 
   return {
     recordOrder(o) {
@@ -264,6 +300,67 @@ export function openLedger(path: string): Ledger {
     deleteLoopDef(name) {
       db.query(`DELETE FROM loop_defs WHERE name = ?`).run(name);
       db.query(`DELETE FROM loop_state WHERE name = ?`).run(name);
+    },
+    recordEvent(kind, input = {}) {
+      db.query(`INSERT INTO events (kind, at, order_id, session_id, folder, data) VALUES (?, ?, ?, ?, ?, ?)`).run(
+        kind,
+        input.at ?? Date.now(),
+        input.orderId ?? null,
+        input.sessionId ?? null,
+        input.folder ?? null,
+        input.data ? JSON.stringify(input.data) : null,
+      );
+      // Amortised retention: prune only every EVENTS_PRUNE_INTERVAL inserts, so the common path
+      // stays a single insert (never a DELETE-per-insert).
+      if (++eventInserts % EVENTS_PRUNE_INTERVAL === 0) {
+        db.query(
+          `DELETE FROM events WHERE rowid NOT IN (SELECT rowid FROM events ORDER BY at DESC, rowid DESC LIMIT ?)`,
+        ).run(EVENTS_KEEP);
+      }
+    },
+    listEvents(opts = {}) {
+      const where: string[] = [];
+      const params: Array<string | number> = [];
+      if (opts.kind) {
+        where.push("kind = ?");
+        params.push(opts.kind);
+      }
+      if (opts.orderId) {
+        where.push("order_id = ?");
+        params.push(opts.orderId);
+      }
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      params.push(opts.limit ?? 50);
+      const rows = db
+        .query(
+          `SELECT kind, at, order_id, session_id, folder, data FROM events ${clause} ORDER BY at DESC, rowid DESC LIMIT ?`,
+        )
+        .all(...params) as Array<{
+        kind: string;
+        at: number;
+        order_id: string | null;
+        session_id: string | null;
+        folder: string | null;
+        data: string | null;
+      }>;
+      return rows.map((r) => {
+        let data: Record<string, unknown> | undefined;
+        if (r.data) {
+          try {
+            data = JSON.parse(r.data);
+          } catch {
+            data = undefined; // tolerate a corrupt blob
+          }
+        }
+        return {
+          kind: r.kind,
+          at: r.at,
+          orderId: r.order_id ?? undefined,
+          sessionId: r.session_id ?? undefined,
+          folder: r.folder ?? undefined,
+          data,
+        };
+      });
     },
     recordContextEvent(folder, verdict, occupancy, at = Date.now()) {
       db.query(
