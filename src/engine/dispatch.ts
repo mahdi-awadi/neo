@@ -578,7 +578,7 @@ export function neoMcpServers(
       ),
       tool(
         "dispatch",
-        "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt.",
+        "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt. Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run.",
         {
           project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
@@ -589,11 +589,18 @@ export function neoMcpServers(
             .describe(
               "expected ceiling for this task in minutes — size it to the task (2 for a quick lookup, 60–120 for a real build). Capped by the engine; a hung (silent) worker is still aborted early regardless.",
             ),
+          team: z
+            .enum(["frontend-backend"])
+            .optional()
+            .describe(
+              "opt-in: run the brief with a lead-orchestrated backend + frontend subagent team (the lead delegates by domain, enforces file-ownership boundaries, and coordinates via a shared contract file). Omit for a normal single-worker dispatch.",
+            ),
         },
-        async (args: { project: string; task: string; timeoutMinutes?: number }) => {
+        async (args: { project: string; task: string; timeoutMinutes?: number; team?: "frontend-backend" }) => {
           const out = await dispatchToProject(args.project, args.task, deps, replyChat, {
             root: deps.workRoot,
             timeoutMs: args.timeoutMinutes ? Math.round(args.timeoutMinutes * 60_000) : undefined,
+            team: args.team,
           });
           return { content: [{ type: "text" as const, text: out }] };
         },

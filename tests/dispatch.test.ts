@@ -718,6 +718,22 @@ test("neoMcpServers OMITS memory tools when memory is configured but scopes: [] 
   expect(neoToolNames(outOfScope)).not.toContain("memory");
 });
 
+test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {
+  const { d } = makeDeps();
+  const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent" });
+  const neo = servers.neo as {
+    instance: { _registeredTools: Record<string, { inputSchema: { parse: (v: unknown) => unknown } }> };
+  };
+  const disp = neo.instance._registeredTools["dispatch"];
+  expect(disp).toBeDefined();
+  // team accepted when the operator asks for a team run
+  expect(() => disp.inputSchema.parse({ project: "eticket-v3", task: "do x", team: "frontend-backend" })).not.toThrow();
+  // team is optional → every existing caller (project + task only) still validates
+  expect(() => disp.inputSchema.parse({ project: "eticket-v3", task: "do x" })).not.toThrow();
+  // an unknown team value is rejected (enum guard — can't silently pass a bad flag through)
+  expect(() => disp.inputSchema.parse({ project: "eticket-v3", task: "do x", team: "solo" })).toThrow();
+});
+
 test("a dispatched sub-session streams its TOOL ACTIVITY to the operator, tagged with the project name, and reports the final result on completion", async () => {
   // End-to-end: the real consumeStream (via startOrder) surfaces a tool milestone, which
   // dispatchToProject forwards to the operator's reply path tagged with the project name —
