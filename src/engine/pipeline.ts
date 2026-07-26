@@ -35,6 +35,7 @@ import {
   apiRetryNotice,
   resolveApiRetryDelayMs,
   shouldRetryApi,
+  MAX_API_RETRIES,
   type ApiCooldown,
 } from "./api-retry";
 
@@ -346,6 +347,7 @@ function startSession(
       },
       onEscalation: (reason) => deps.askApproval(chatId, reason),
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
+      onEvent: (kind, data) => ledger.recordEvent(kind, { orderId: order.id, folder: order.folder, data }),
       autoApprove: () => deps.trust.isTrusted(order.folder),
       onAutoApprove: (reason) => {
         ledger.recordAutoApproval(order.id, reason);
@@ -367,16 +369,18 @@ function startSession(
         deps.cooldown?.note(kind, now()); // hold sibling background work while the storm lasts
         const attempt = apiRetries + 1;
         if (!shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {
+          ledger.recordEvent("api_giveup", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempts: apiRetries } });
           void deps.reply(chatId, apiFailureNotice(project, kind, apiRetries), project);
           return;
         }
         apiRetries = attempt;
-        const { delayMs, resetsAt } = resolveApiRetryDelayMs({
+        const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
           attempt,
           rateLimits: deps.usage?.snapshot(now()).rateLimits,
           now: now(),
           rand: deps.rand,
         });
+        ledger.recordEvent("api_retry", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempt, max: MAX_API_RETRIES, delayMs, source, resetsAt } });
         void deps.reply(chatId, apiRetryNotice(project, attempt, delayMs, resetsAt), project);
         void (deps.sleep ?? realSleep)(delayMs).then(() => {
           registry.touch(registryId, now());

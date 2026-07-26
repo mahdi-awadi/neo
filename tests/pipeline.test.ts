@@ -218,6 +218,29 @@ test("throttles a new order when the meter is over the reserve, and does not sta
   expect(h.registry.list().length).toBe(0);
 });
 
+test("a throttled turn records an api_retry event in the ledger (interactive scope)", async () => {
+  const dir = scratch();
+  let handlers!: RunHandlers;
+  const f = fakeStart({ onStart: (hh) => (handlers = hh) });
+  const h = harness({ start: f.start });
+  const base = { ...h.base, sleep: () => Promise.resolve(), now: () => 1000 };
+  await handleMessage(`/open ${dir} do it`, 5, base);
+  handlers.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+  const ev = h.ledger.listEvents({ kind: "api_retry" })[0];
+  expect(ev.data).toMatchObject({ scope: "interactive", kind: "rate_limit", attempt: 1 });
+});
+
+test("a non-retryable turn records an api_giveup event (interactive scope)", async () => {
+  const dir = scratch();
+  let handlers!: RunHandlers;
+  const f = fakeStart({ onStart: (hh) => (handlers = hh) });
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} do it`, 6, { ...h.base, now: () => 1000 });
+  handlers.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "authentication_failed" });
+  const ev = h.ledger.listEvents({ kind: "api_giveup" })[0];
+  expect(ev.data).toMatchObject({ scope: "interactive", kind: "authentication_failed", attempts: 0 });
+});
+
 test("refuses a customer-source order (firewall) and never starts it", async () => {
   const dir = scratch();
   const f = fakeStart();
