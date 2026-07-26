@@ -30,6 +30,7 @@ import {
   apiRetryFollowUp,
   apiRetryNotice,
   shouldRetryApi,
+  MAX_API_RETRIES,
   type ApiCooldown,
 } from "./api-retry";
 
@@ -215,12 +216,19 @@ export async function dispatchToProject(
     workerEnv: deps.workerEnv ?? {},
   };
   if (deps.lifecycle?.draining()) {
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "draining" } });
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
   }
   // The API is throttling us — starting another worker now just earns another 429.
-  if (deps.cooldown?.activeAt(now())) return apiHoldMessage(deps.cooldown.remainingMs(now()));
+  if (deps.cooldown?.activeAt(now())) {
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "cooldown" } });
+    return apiHoldMessage(deps.cooldown.remainingMs(now()));
+  }
   const folder = resolveProject(project, opts.root, opts.desks);
-  if (!folder) return `No project or desk named "${project}" was found — check the name.`;
+  if (!folder) {
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "not_found" } });
+    return `No project or desk named "${project}" was found — check the name.`;
+  }
 
   // Build + record the order with its BASE task (project-docs preamble only — no memory snapshot
   // yet). This happens BEFORE the busy-guard check below (existing && wasRunning can still refuse
@@ -258,12 +266,14 @@ export async function dispatchToProject(
     if (control?.followUp) {
       control.followUp(order.task);
       deps.registry.touch(existing.id, now());
+      deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name } });
       await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
       return (
         `${name} is busy — I queued this brief behind its current turn (${status}). It runs when the ` +
         `current work yields; its output streams to the operator as ${name}.`
       );
     }
+    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, reason: "busy_no_control" } });
     return (
       `${name} is busy — ${status}. I did NOT start this dispatch; its current work must finish first. ` +
       `Its result will arrive as a follow-up when it's done — tell the operator what ${name} is doing, or retry shortly.`
@@ -349,6 +359,7 @@ export async function dispatchToProject(
     }
 
     const startedAt = now();
+    deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, resume: !!gatedResume, ceilingMs, stallMs } });
     let lastActivityAt = startedAt;
     let apiRetries = 0;
     let retryingUntil = 0; // while set in the future, the sub-run is waiting out an API throttle
@@ -374,6 +385,7 @@ export async function dispatchToProject(
         },
         onEscalation: (reason) => deps.askApproval(replyChat, reason),
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
+        onEvent: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data }),
         autoApprove: () => deps.trust.isTrusted(folder),
         onAutoApprove: (reason) => {
           deps.ledger.recordAutoApproval(order.id, reason);
@@ -387,11 +399,16 @@ export async function dispatchToProject(
             const attempt = apiRetries + 1;
             if (shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottle() })) {
               apiRetries = attempt;
-              const { delayMs, resetsAt } = resolveApiRetryDelayMs({
+              const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
                 attempt,
                 rateLimits: deps.usage?.snapshot(now()).rateLimits,
                 now: now(),
                 rand: opts.rand,
+              });
+              deps.ledger.recordEvent("api_retry", {
+                orderId: order.id,
+                folder,
+                data: { scope: "dispatch", project: name, kind, attempt, max: MAX_API_RETRIES, delayMs, source, resetsAt },
               });
               // The wait is engine-driven, not the worker hanging: hold off the stall/ceiling
               // clocks for exactly that long, then re-send the brief into the still-open run.
@@ -404,6 +421,7 @@ export async function dispatchToProject(
               });
               return; // keep the sub-run open — it hasn't done the work yet
             }
+            deps.ledger.recordEvent("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
             void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name);
           }
           if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
@@ -463,6 +481,7 @@ export async function dispatchToProject(
         }
         timedOut = true;
         await run.interrupt();
+        deps.ledger.recordEvent("dispatch_abort", { orderId: order.id, folder, data: { project: name, limit } });
         const detail =
           limit === "stall"
             ? `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`
@@ -480,6 +499,12 @@ export async function dispatchToProject(
       }
       deps.meter.note({ costUsd: result.costUsd }, now());
       deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
+      deps.ledger.recordEvent("dispatch_end", {
+        orderId: order.id,
+        sessionId: result.sessionId || undefined,
+        folder,
+        data: { project: name, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
+      });
       if (timedOut || !result.ok) {
         // A dead run must not linger: an "error" session is invisible to findByFolder (never
         // reused) and to sweepIdle (never reaped), so it would sit as a zombie and force the next

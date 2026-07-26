@@ -68,6 +68,47 @@ test("dispatch returns immediately while the sub-run is still going", async () =
   expect(interrupted).toBe(false); // still running in the background — not awaited, not killed
 });
 
+test("dispatch records dispatch_start then dispatch_end in the event log", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const done = Promise.resolve<RunResult>({ ok: true, sessionId: "s9", summary: "all green", costUsd: 0.02 });
+  const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done });
+  await dispatchToProject("eticket-v3", "task", d, 1, { start: fakeStart as never, now: () => 1000, root });
+  await new Promise((r) => setTimeout(r, 10)); // let the background continuation settle
+  const kinds = d.ledger.listEvents({ limit: 50 }).map((e) => e.kind);
+  expect(kinds).toContain("dispatch_start");
+  expect(kinds).toContain("dispatch_end");
+  const end = d.ledger.listEvents({ kind: "dispatch_end" })[0];
+  expect(end.data).toMatchObject({ ok: true, timedOut: false });
+  expect(end.folder).toBe(join(root, "eticket-v3"));
+});
+
+test("a refused dispatch (unknown project) records dispatch_refused with reason not_found", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  const { d } = makeDeps();
+  await dispatchToProject("nope", "task", d, 1, { root, now: () => 0 });
+  const ev = d.ledger.listEvents({ kind: "dispatch_refused" })[0];
+  expect(ev.data).toMatchObject({ project: "nope", reason: "not_found" });
+});
+
+test("a queued-behind-busy dispatch records dispatch_queued", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const first = d.registry.add({ id: "d1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: -2, createdAt: 0 }, 0);
+  d.registry.setStatus(first.id, "running");
+  d.registry.attachControl(first.id, { followUp: () => {}, queued: () => 0, interrupt: async () => {} });
+  await dispatchToProject("eticket-v3", "run docker ps", d, 1, {
+    start: (() => {
+      throw new Error("no start");
+    }) as never,
+    root,
+    now: () => 0,
+  });
+  expect(d.ledger.listEvents({ kind: "dispatch_queued" })).toHaveLength(1);
+});
+
 test("dispatch to a running folder refuses instead of stacking", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
