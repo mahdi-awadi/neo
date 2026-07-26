@@ -128,6 +128,12 @@ const COMMANDS: Command[] = [
     run: ({ deps }) => ({ text: renderRecent(deps.ledger) }),
   },
   {
+    name: "events",
+    usage: "/events [<kind>]",
+    summary: "recent engine diagnostic events (API retries, dispatch + session lifecycle)",
+    run: ({ deps, args }) => ({ text: renderEvents(deps.ledger, args.trim() || undefined) }),
+  },
+  {
     name: "usage",
     usage: "/usage",
     summary: "subscription token usage (hourly/daily/weekly)",
@@ -335,6 +341,28 @@ function renderRecent(ledger: Ledger): string {
       const task = o.task.length > 40 ? `${o.task.slice(0, 40)}…` : o.task;
       const status = outcome ? ` (${outcome.status})` : " (pending)";
       return `${icon} ${o.folder} — "${task}"${status}`;
+    })
+    .join("\n");
+}
+
+/** Recent engine diagnostic events, newest-first, as compact lines: `HH:MM:SS · kind · where · k=v…`.
+ *  The operator's window into the durable event log (API retries, dispatch + session lifecycle).
+ *  An optional `kind` filters to one event kind (e.g. `/events api_retry`). */
+function renderEvents(ledger: Ledger, kind?: string): string {
+  const events = ledger.listEvents({ kind, limit: 20 });
+  if (events.length === 0) return kind ? `No events of kind "${kind}".` : "No events yet.";
+  return events
+    .map((e) => {
+      const t = new Date(e.at).toISOString().slice(11, 19); // HH:MM:SS (UTC)
+      const where = e.folder ? ` · ${e.folder.split("/").pop()}` : "";
+      const data = e.data
+        ? " · " +
+          Object.entries(e.data)
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" ")
+        : "";
+      return `${t} · ${e.kind}${where}${data}`;
     })
     .join("\n");
 }

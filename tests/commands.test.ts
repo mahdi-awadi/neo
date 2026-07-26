@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { handleCommand, selectProject, killProject } from "../src/engine/commands";
+import { handleCommand, selectProject, killProject, telegramCommands } from "../src/engine/commands";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { openTrustStore } from "../src/engine/trust";
@@ -176,6 +176,27 @@ test("/recent shows recent orders with their outcomes", () => {
 
 test("/recent with no orders reports none", () => {
   expect(handleCommand("/recent", 1, deps())!.text.toLowerCase()).toContain("no orders");
+});
+
+test("/events renders recent engine events newest-first; a kind arg filters", () => {
+  const ledger = openLedger(":memory:");
+  ledger.recordEvent("dispatch_start", { folder: "/p/gold", data: { project: "gold" }, at: 1 });
+  ledger.recordEvent("api_retry", { folder: "/p/safari", data: { project: "safari", attempt: 1, delayMs: 30000 }, at: 2 });
+  const all = handleCommand("/events", 1, deps({ ledger }))!.text;
+  expect(all).toContain("api_retry");
+  expect(all).toContain("dispatch_start");
+  expect(all).toContain("safari"); // folder basename surfaced
+  const filtered = handleCommand("/events api_retry", 1, deps({ ledger }))!.text;
+  expect(filtered).toContain("api_retry");
+  expect(filtered).not.toContain("dispatch_start");
+});
+
+test("/events with no events shows a friendly line", () => {
+  expect(handleCommand("/events", 1, deps())!.text.toLowerCase()).toContain("no events");
+});
+
+test("/events is advertised in telegramCommands", () => {
+  expect(telegramCommands().some((c) => c.command === "events")).toBe(true);
 });
 
 test("/usage renders hourly/daily/weekly token usage + weekly reset, no dollars", () => {
