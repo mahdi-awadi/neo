@@ -175,25 +175,48 @@ function userMessage(text: string): SdkUserMessage {
 
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
-function buildCanUseTool(handlers: RunHandlers, folder: string) {
+// Exported for direct unit testing of the fail-safe/self-heal contract (approval-resilience.test.ts).
+export function buildCanUseTool(handlers: RunHandlers, folder: string) {
   return async (tool: string, input: Record<string, unknown>) => {
-    const verdict = decide(tool, input, { folder });
-    if ("allow" in verdict) {
-      return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
+    // The whole decision path is wrapped so this callback can NEVER reject. A rejected canUseTool is
+    // turned by the SDK into an ungoverned permission failure with no recovery — the worker surfaces
+    // it as `Tool permission request failed: Error: …` and, because the callback keeps rejecting,
+    // every subsequent risky tool fails identically (the "approval channel dead without recovery"
+    // the operator saw when the escalation round-trip broke mid-session during MCP reconnect churn).
+    // Any failure here — onEscalation rejecting on a closed stream, or an unexpected throw — FAILS
+    // SAFE to a governed deny per default-escalate policy: never a thrown/hung callback, and never a
+    // silent auto-approve (a broken channel must not open a hole). The wrapper holds no state across
+    // calls, so the moment the channel is healthy again the next tool call escalates normally
+    // (self-heal — a transient break can't permanently wedge tool approvals).
+    try {
+      const verdict = decide(tool, input, { folder });
+      if ("allow" in verdict) {
+        return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
+      }
+      // deny verdict — refuse outright (never escalate, never auto-approve); the message reaches
+      // the worker as the tool result, steering it (e.g. AskUserQuestion → ask in plain text).
+      if ("deny" in verdict) {
+        return { behavior: "deny", message: verdict.deny };
+      }
+      // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start)
+      if (handlers.autoApprove?.()) {
+        handlers.onAutoApprove?.(verdict.escalate);
+        return { behavior: "allow", updatedInput: input };
+      }
+      const decision = await handlers.onEscalation(verdict.escalate);
+      if (decision === "allow") return { behavior: "allow", updatedInput: input };
+      return { behavior: "deny", message: `denied by Neo: ${verdict.escalate}` };
+    } catch (err) {
+      // The approval bridge itself failed (e.g. the operator/approval channel closed mid-escalation
+      // — "Stream closed"). Fail safe: deny, and surface it so a genuinely dead channel is visible
+      // in the event log; the next call re-attempts against a possibly-recovered channel.
+      const reason = err instanceof Error ? err.message : String(err);
+      handlers.onEvent?.("approval_error", { tool, error: reason });
+      return {
+        behavior: "deny",
+        message: `denied by Neo: approval channel unavailable (${reason}); retry once it recovers`,
+      };
     }
-    // deny verdict — refuse outright (never escalate, never auto-approve); the message reaches
-    // the worker as the tool result, steering it (e.g. AskUserQuestion → ask in plain text).
-    if ("deny" in verdict) {
-      return { behavior: "deny", message: verdict.deny };
-    }
-    // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start)
-    if (handlers.autoApprove?.()) {
-      handlers.onAutoApprove?.(verdict.escalate);
-      return { behavior: "allow", updatedInput: input };
-    }
-    const decision = await handlers.onEscalation(verdict.escalate);
-    if (decision === "allow") return { behavior: "allow", updatedInput: input };
-    return { behavior: "deny", message: `denied by Neo: ${verdict.escalate}` };
   };
 }
 
