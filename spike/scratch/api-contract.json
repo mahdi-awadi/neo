@@ -1,0 +1,105 @@
+{
+  "service": "task-service",
+  "version": "1.0.0",
+  "description": "A small CRUD API for managing tasks. The frontend can build a typed client against this contract.",
+  "baseUrl": "/api/v1",
+  "endpoints": [
+    {
+      "name": "healthCheck",
+      "method": "GET",
+      "path": "/health",
+      "request": {},
+      "response": {
+        "status": "string"
+      }
+    },
+    {
+      "name": "listTasks",
+      "method": "GET",
+      "path": "/tasks",
+      "request": {
+        "query": {
+          "status": "string?",
+          "limit": "number?",
+          "offset": "number?"
+        }
+      },
+      "response": {
+        "tasks": "Task[]",
+        "total": "number"
+      }
+    },
+    {
+      "name": "getTask",
+      "method": "GET",
+      "path": "/tasks/:id",
+      "request": {
+        "params": {
+          "id": "string"
+        }
+      },
+      "response": {
+        "task": "Task"
+      }
+    },
+    {
+      "name": "createTask",
+      "method": "POST",
+      "path": "/tasks",
+      "request": {
+        "body": {
+          "title": "string",
+          "description": "string?",
+          "dueDate": "string?"
+        }
+      },
+      "response": {
+        "task": "Task"
+      }
+    },
+    {
+      "name": "updateTask",
+      "method": "PUT",
+      "path": "/tasks/:id",
+      "request": {
+        "params": {
+          "id": "string"
+        },
+        "body": {
+          "title": "string?",
+          "description": "string?",
+          "status": "string?",
+          "dueDate": "string?"
+        }
+      },
+      "response": {
+        "task": "Task"
+      }
+    },
+    {
+      "name": "deleteTask",
+      "method": "DELETE",
+      "path": "/tasks/:id",
+      "request": {
+        "params": {
+          "id": "string"
+        }
+      },
+      "response": {
+        "deleted": "boolean",
+        "id": "string"
+      }
+    }
+  ],
+  "models": {
+    "Task": {
+      "id": "string",
+      "title": "string",
+      "description": "string",
+      "status": "string",
+      "dueDate": "string?",
+      "createdAt": "string",
+      "updatedAt": "string"
+    }
+  }
+}

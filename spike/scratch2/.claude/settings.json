@@ -1,0 +1,4 @@
+{
+  "teammateMode": "in-process",
+  "daemonColdStart": "transient"
+}

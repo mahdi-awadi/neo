@@ -1,0 +1,146 @@
+{
+  "service": "task-manager-api",
+  "version": "1.0.0",
+  "baseUrl": "/api/v1",
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "description": "Service liveness check.",
+      "request": {},
+      "response": {
+        "status": "string"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/users",
+      "description": "List all users.",
+      "request": {
+        "query": {
+          "page": "number",
+          "limit": "number"
+        }
+      },
+      "response": {
+        "users": [
+          {
+            "id": "string",
+            "name": "string",
+            "email": "string",
+            "createdAt": "string"
+          }
+        ],
+        "total": "number"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/users/{id}",
+      "description": "Fetch a single user by id.",
+      "request": {
+        "params": {
+          "id": "string"
+        }
+      },
+      "response": {
+        "id": "string",
+        "name": "string",
+        "email": "string",
+        "createdAt": "string"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/users",
+      "description": "Create a new user.",
+      "request": {
+        "body": {
+          "name": "string",
+          "email": "string"
+        }
+      },
+      "response": {
+        "id": "string",
+        "name": "string",
+        "email": "string",
+        "createdAt": "string"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/todos",
+      "description": "List todos, optionally filtered by owner.",
+      "request": {
+        "query": {
+          "userId": "string",
+          "completed": "boolean"
+        }
+      },
+      "response": {
+        "todos": [
+          {
+            "id": "string",
+            "userId": "string",
+            "title": "string",
+            "completed": "boolean",
+            "createdAt": "string"
+          }
+        ],
+        "total": "number"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/todos",
+      "description": "Create a todo for a user.",
+      "request": {
+        "body": {
+          "userId": "string",
+          "title": "string"
+        }
+      },
+      "response": {
+        "id": "string",
+        "userId": "string",
+        "title": "string",
+        "completed": "boolean",
+        "createdAt": "string"
+      }
+    },
+    {
+      "method": "PATCH",
+      "path": "/todos/{id}",
+      "description": "Update a todo (e.g. mark complete).",
+      "request": {
+        "params": {
+          "id": "string"
+        },
+        "body": {
+          "title": "string",
+          "completed": "boolean"
+        }
+      },
+      "response": {
+        "id": "string",
+        "userId": "string",
+        "title": "string",
+        "completed": "boolean",
+        "createdAt": "string"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/todos/{id}",
+      "description": "Delete a todo.",
+      "request": {
+        "params": {
+          "id": "string"
+        }
+      },
+      "response": {
+        "deleted": "boolean"
+      }
+    }
+  ]
+}
