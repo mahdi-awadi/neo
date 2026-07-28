@@ -6,8 +6,10 @@ import { join } from "node:path";
 import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import type { UsageMeter, UsageSnapshot } from "./usage";
+import type { Provider } from "../types";
 import { listLoops, type LoopInfo } from "./loops";
 import { sessionContext, type ContextSignals } from "./context-policy";
+import { workerSdkState, type WorkerSdkState } from "./sdk-choice";
 
 export interface DashProject {
   id: string;
@@ -24,6 +26,7 @@ export interface DashProject {
 
 export interface DashState {
   projects: DashProject[];
+  sdk: WorkerSdkState;
   usage: UsageSnapshot | null;
   loops: LoopInfo[];
   recent: Array<{ folder: string; task: string; status: string }>;
@@ -55,6 +58,7 @@ export function dashboardSnapshot(opts: {
   chatId: number;
   now?: number;
   reposRoot?: string;
+  sdkProvider?: Provider;
   signals?: (folder: string, sdkSessionId: string, opts?: { windowTokensByModel?: Record<string, number> }) => ContextSignals;
   /** Per-model context-window overrides (cfg.contextPolicy.windowTokensByModel), threaded into the
    *  SAME sessionContext call the gates use — so the dashboard's ctxPct agrees with the
@@ -94,6 +98,7 @@ export function dashboardSnapshot(opts: {
   }));
   return {
     projects,
+    sdk: workerSdkState(opts.sdkProvider ?? "subscription"),
     usage: opts.usage ? opts.usage.snapshot(now) : null,
     loops: listLoops(opts.ledger),
     recent,

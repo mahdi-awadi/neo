@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A personal work engine on the Claude Agent SDK: give it an order over a channel (Telegram/web); it opens the project as a governed headless Claude Code worker and streams progress back. The engine contains no AI — it routes, governs, meters, and records.",
+  "description": "A personal work engine on coding-agent SDKs: give it an order over a channel (Telegram/web); it opens the project as a governed headless worker and streams progress back. The engine contains no AI — it routes, governs, meters, and records.",
   "license": "MIT",
   "author": "Mahdi Awadi",
   "homepage": "https://github.com/mahdi-awadi/neo#readme",
@@ -17,6 +17,8 @@
   "keywords": [
     "claude",
     "claude-agent-sdk",
+    "codex",
+    "codex-sdk",
     "agent",
     "automation",
     "telegram-bot",
@@ -36,6 +38,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
+    "@openai/codex-sdk": "latest",
     "grammy": "latest"
   },
   "devDependencies": {

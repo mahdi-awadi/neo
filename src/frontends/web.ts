@@ -231,6 +231,12 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json(channel.state(), { headers: { "cache-control": "no-store, must-revalidate" } });
     }
 
+    if (req.method === "POST" && path === "/api/sdk") {
+      const body = (await req.json().catch(() => ({}))) as { provider?: unknown; sdk?: unknown };
+      const provider = typeof body.provider === "string" ? body.provider : typeof body.sdk === "string" ? body.sdk : "";
+      return Response.json(channel.setSdk(provider), { headers: { "cache-control": "no-store" } });
+    }
+
     if (req.method === "POST" && path === "/api/open") {
       const body = (await req.json().catch(() => ({}))) as { folder?: unknown; task?: unknown };
       if (typeof body.folder === "string" && typeof body.task === "string" && body.folder.trim() && body.task.trim()) {
@@ -364,6 +370,10 @@ aside{width:300px;min-width:300px;background:linear-gradient(180deg,var(--panel)
 .np select:focus,.np textarea:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
 .btn{width:100%;padding:10px;border-radius:9px;border:0;background:var(--accent);color:#06241a;font-weight:700;font-family:var(--mono);font-size:11px;letter-spacing:.06em;cursor:pointer;transition:opacity .12s}
 .btn:hover{opacity:.9}
+.sdkbox{padding:0 16px 8px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--ink);border:1px solid var(--border);border-radius:9px}
+.seg button{height:30px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer}
+.seg button:hover{color:var(--fg)}.seg button.on{background:var(--accent);color:#06241a;font-weight:700}
 #projects{flex:1;overflow-y:auto;padding:0 10px 8px}
 .proj{display:flex;align-items:center;gap:10px;padding:10px;margin:2px 0;border-radius:11px;cursor:pointer;border:1px solid transparent;transition:background .12s,border-color .12s}
 .proj:hover{background:var(--panel2)}
@@ -452,9 +462,11 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
    <textarea id="task" placeholder="What should Neo do in this project?"></textarea>
    <button class="btn" onclick="openProject()">Open project</button>
   </div>
+  <div class="sec"><span>Worker SDK</span><span id="sdk-label">Claude</span></div>
+  <div class="sdkbox" id="sdkbox"></div>
   <div class="sec"><span>Projects</span><span id="pcount"></span></div>
   <div id="projects"><div class="empty">No open projects yet.</div></div>
-  <div class="foot"><span id="ftl">—</span><span>subscription</span></div>
+  <div class="foot"><span id="ftl">—</span><span id="sdk-foot">Claude SDK</span></div>
  </aside>
  <main>
   <div class="top">
@@ -477,19 +489,30 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
  </main>
 </div>
 <script>
-var S={projects:[],usage:null,loops:[],recent:[],repos:[]};
+var S={projects:[],sdk:{provider:'subscription',label:'Claude Agent SDK',choices:[]},usage:null,loops:[],recent:[],repos:[]};
 function esc(s){return (s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 function post(p,b){return fetch(p,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});}
 function fmt(n){n=n||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'k';return ''+Math.round(n);}
 function age(ms){var s=Math.floor((ms||0)/1000);if(s<60)return s+'s';var m=Math.floor(s/60);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h';return Math.floor(h/24)+'d';}
 
 function loadState(){return fetch('/api/state?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){S=d;renderAll();});}
-function renderAll(){renderRepos();renderProjects();renderLoops();renderUsage();renderRecent();}
+function renderAll(){renderRepos();renderSdk();renderProjects();renderLoops();renderUsage();renderRecent();}
 
 function renderRepos(){var sel=document.getElementById('repo');if(sel.dataset.n==String(S.repos.length))return;sel.dataset.n=String(S.repos.length);
  var cur=sel.value;sel.innerHTML='<option value="">— pick a repo —</option>';
  S.repos.forEach(function(r){var o=document.createElement('option');o.value=r;o.textContent=r.split('/').pop();sel.appendChild(o);});
  if(cur)sel.value=cur;}
+
+function renderSdk(){var sdk=S.sdk||{provider:'subscription',label:'Claude Agent SDK',choices:[]};
+ var label=document.getElementById('sdk-label');if(label)label.textContent=sdk.provider==='codex'?'Codex':'Claude';
+ var foot=document.getElementById('sdk-foot');if(foot)foot.textContent=sdk.provider==='codex'?'Codex SDK':'Claude SDK';
+ var box=document.getElementById('sdkbox');if(!box)return;box.innerHTML='';
+ var choices=(sdk.choices&&sdk.choices.length)?sdk.choices:[{provider:'subscription',label:'Claude Agent SDK',active:sdk.provider==='subscription'},{provider:'codex',label:'OpenAI Codex SDK',active:sdk.provider==='codex'}];
+ var seg=document.createElement('div');seg.className='seg';
+ choices.forEach(function(c){var b=document.createElement('button');b.type='button';b.textContent=c.provider==='codex'?'Codex':'Claude';b.title=c.label;b.className=c.active?'on':'';
+  b.onclick=function(){setSdk(c.provider);};seg.appendChild(b);});
+ box.appendChild(seg);}
+function setSdk(provider){post('/api/sdk',{provider:provider}).then(function(r){return r.json();}).then(function(d){if(!d.ok){alert(d.error||'SDK switch failed');return;}S.sdk=d.sdk;renderSdk();});}
 
 function renderProjects(){var box=document.getElementById('projects');document.getElementById('pcount').textContent=S.projects.length||'';
  if(!S.projects.length){box.innerHTML='<div class="empty">No open projects yet.<br>Pick a repo above and open one.</div>';document.getElementById('who').textContent='no active project';return;}
@@ -629,6 +652,7 @@ es.onmessage=function(ev){var e=JSON.parse(ev.data);
  else if(e.type==='echo'){feedMsg('› '+esc(e.text),'me',filterProject);}
  else if(e.type==='notice'){feedMsg('⋯ '+esc(e.text),'me',filterProject);}
  else if(e.type==='projects'){loadState();}
+ else if(e.type==='sdk'){S.sdk=e.sdk;renderSdk();}
  else if(e.type==='escalation'){
   var c=document.createElement('div');c.className='escc';c.innerHTML='⚠ '+esc(e.reason);
   var a=document.createElement('div');a.className='acts';

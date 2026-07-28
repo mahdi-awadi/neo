@@ -4,7 +4,7 @@ import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { openTrustStore } from "../src/engine/trust";
 import { openInbox } from "../src/engine/inbox";
-import type { Order } from "../src/types";
+import type { Order, Provider } from "../src/types";
 
 function order(over: Partial<Order> = {}): Order {
   return {
@@ -22,6 +22,7 @@ function deps(
     ledger?: ReturnType<typeof openLedger>;
     usage?: any;
     inbox?: ReturnType<typeof openInbox>;
+    cfg?: { providers: { ownWork: Provider; customerWork: Provider } };
   } = {},
 ) {
   return {
@@ -30,6 +31,7 @@ function deps(
     usage: over.usage as any,
     trust: openTrustStore(":memory:"),
     inbox: over.inbox,
+    cfg: over.cfg,
     now: () => 100000,
   };
 }
@@ -197,6 +199,34 @@ test("/events with no events shows a friendly line", () => {
 
 test("/events is advertised in telegramCommands", () => {
   expect(telegramCommands().some((c) => c.command === "events")).toBe(true);
+});
+
+test("/sdk reports and switches the own-work SDK provider", () => {
+  const cfg = { providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider } };
+  const d = deps({ cfg });
+
+  expect(handleCommand("/sdk", 1, d)!.text).toContain("Claude Agent SDK");
+  const codex = handleCommand("/sdk codex", 1, d)!;
+  expect(codex.text).toContain("OpenAI Codex SDK");
+  expect(codex.sdk?.provider).toBe("codex");
+  expect(cfg.providers.ownWork).toBe("codex");
+
+  const claude = handleCommand("/sdk claude", 1, d)!;
+  expect(claude.text).toContain("Claude Agent SDK");
+  expect(claude.sdk?.provider).toBe("subscription");
+  expect(cfg.providers.ownWork).toBe("subscription");
+});
+
+test("/sdk rejects unknown or customer-only providers without changing config", () => {
+  const cfg = { providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider } };
+  const out = handleCommand("/sdk gemini", 1, deps({ cfg }))!;
+  expect(out.text).toContain("Unknown SDK");
+  expect(out.text).toContain("claude or codex");
+  expect(cfg.providers.ownWork).toBe("subscription");
+});
+
+test("/sdk is advertised in telegramCommands", () => {
+  expect(telegramCommands().some((c) => c.command === "sdk")).toBe(true);
 });
 
 test("/usage renders hourly/daily/weekly token usage + weekly reset, no dollars", () => {

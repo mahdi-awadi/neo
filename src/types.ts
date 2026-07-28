@@ -5,9 +5,10 @@ export type OrderSource = "neo" | "customer";
 
 /**
  * Which brain executes an order. Config-driven (see provider-router + config).
- * "subscription" = Claude Agent SDK on your Claude plan; "gemini" = Gemini API.
+ * "subscription" = Claude Agent SDK on your Claude plan; "codex" = OpenAI Codex SDK;
+ * "gemini" = Gemini API.
  */
-export type Provider = "subscription" | "gemini";
+export type Provider = "subscription" | "codex" | "gemini";
 
 /** A unit of work handed to the engine. */
 export interface Order {

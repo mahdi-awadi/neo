@@ -1050,6 +1050,32 @@ test("dispatch WITHOUT team attaches no agents and leaves the brief byte-for-byt
   expect(seenTask).toBe(briefWithProjectDocs("build a dashboard")); // identical to today
 });
 
+test("dispatch team mode falls back to a normal single-worker brief when Codex is selected", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  d.providers = { ownWork: "codex", customerWork: "gemini" };
+  let seenTask = "";
+  let seenDeps: Record<string, unknown> | undefined;
+  const fakeStart = (o: Order, _h: RunHandlers, dd?: Record<string, unknown>) => {
+    seenTask = o.task;
+    seenDeps = dd;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+
+  await dispatchToProject("eticket-v3", "build a dashboard", d, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+    team: "frontend-backend",
+  });
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(seenDeps?.provider).toBe("codex");
+  expect(seenDeps!).not.toHaveProperty("agents");
+  expect(seenTask).toBe(briefWithProjectDocs("build a dashboard"));
+});
+
 test("dispatch still starts the worker when ensureIndexed throws (best-effort)", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));

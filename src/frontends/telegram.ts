@@ -289,6 +289,7 @@ export function startTelegram(
       trust,
       inbox,
       requestReload: reload?.requestReload,
+      cfg,
       windowTokensByModel: cfg.contextPolicy.windowTokensByModel,
     });
     if (command !== null) {

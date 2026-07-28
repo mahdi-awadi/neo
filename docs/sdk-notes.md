@@ -106,3 +106,46 @@ run (now deleted). Findings:
   noted into the budget meter on completion.
 
 The whole Phase 2 surface (live follow-ups, idle-close+resume, interrupt) is implementation-verified.
+
+## Codex SDK adapter notes (2026-07-28)
+
+Checked against the official Codex manual and `@openai/codex-sdk@0.145.0` package types.
+
+```ts
+import { Codex } from "@openai/codex-sdk";
+
+const codex = new Codex();
+const thread = codex.startThread({
+  workingDirectory: "/path/to/project",
+  sandboxMode: "workspace-write",
+  approvalPolicy: "on-request",
+  model: "gpt-5.4",
+});
+
+const { events } = await thread.runStreamed("do the work");
+```
+
+Relevant verified TypeScript surface:
+
+- `new Codex({ env?, config?, apiKey?, baseUrl?, codexPathOverride? })`.
+- `startThread(options)` / `resumeThread(id, options)`.
+- Thread options include `workingDirectory`, `sandboxMode`, `approvalPolicy`, `model`,
+  `modelReasoningEffort`, `networkAccessEnabled`, `webSearchMode`, `additionalDirectories`, and
+  `skipGitRepoCheck`.
+- `runStreamed(input, { signal? })` yields JSON events: `thread.started`, `turn.started`,
+  `turn.completed`, `turn.failed`, `item.started` / `item.updated` / `item.completed`, and `error`.
+  Items include `agent_message`, `command_execution`, `file_change`, `mcp_tool_call`, `web_search`,
+  `todo_list`, `reasoning`, and `error`.
+
+Neo wrapper behavior:
+
+- `providers.ownWork: "subscription"` (default) keeps the Claude adapter and the existing
+  `canUseTool` governor unchanged.
+- `providers.ownWork: "codex"` selects the Codex adapter at `runOrder` / `startOrder`.
+- Codex live sessions are implemented as sequential turns on one Codex thread: the first task starts
+  a turn, `followUp()` queues later turns, `close()` resolves after the queue drains, and
+  `interrupt()` aborts the active turn via `AbortSignal`.
+- Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server
+  shape. Neo therefore maps read-only judge deny-lists to `sandboxMode: "read-only"` and records a
+  `worker_compat_warning` event for Claude-only `RunDeps` fields (`mcpServers`, `skills`, `agents`,
+  `maxTurns`, unsupported `disallowedTools`) on Codex runs.

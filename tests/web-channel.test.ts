@@ -212,6 +212,36 @@ test("openProject starts a project (form-driven) and it shows in state()", async
   expect(st.loops.find((l) => l.name === "green")).toBeTruthy();
 });
 
+test("state exposes the selected worker SDK and setSdk changes new-session routing", () => {
+  const f = fakeStart();
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  expect(ch.state().sdk.provider).toBe("subscription");
+  const res = ch.setSdk("codex");
+
+  expect(res.ok).toBe(true);
+  expect(res.sdk.provider).toBe("codex");
+  expect(eng.cfg.providers.ownWork).toBe("codex");
+  expect(ch.state().sdk.label).toContain("Codex");
+  expect(events.some((e) => e.type === "sdk" && e.sdk.provider === "codex")).toBe(true);
+});
+
+test("typed /sdk over the web mutates config and emits an sdk event", async () => {
+  const f = fakeStart();
+  const eng = engine(f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+
+  await ch.send("/sdk codex");
+
+  expect(eng.cfg.providers.ownWork).toBe("codex");
+  expect(events.some((e) => e.type === "sdk" && e.sdk.provider === "codex")).toBe(true);
+});
+
 test("resolveApproval returns false for an unknown id", () => {
   const f = fakeStart();
   const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });

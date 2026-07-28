@@ -54,6 +54,10 @@ test("route is config-driven for own work (ownWork=gemini)", () => {
   expect(route(order("neo"), cfg({ ownWork: "gemini" }))).toEqual({ provider: "gemini" });
 });
 
+test("route can select Codex SDK for Neo's own work", () => {
+  expect(route(order("neo"), cfg({ ownWork: "codex" }))).toEqual({ provider: "codex" });
+});
+
 test("route refuses customer-direct work in the MVP (Gemini path is Phase 3)", () => {
   const r = route(order("customer"), cfg());
   expect("refuse" in r).toBe(true);

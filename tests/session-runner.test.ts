@@ -84,6 +84,37 @@ function fakeStreaming(reqs: Array<{ tool: string; input: Record<string, unknown
   return { q, received, decisions, interruptCalls: () => interruptCalls, options: () => optionsSeen };
 }
 
+function fakeCodexFactory(opts: {
+  turns: (input: string) => Array<Record<string, unknown>>;
+  threadId?: string;
+}) {
+  const prompts: string[] = [];
+  const starts: unknown[] = [];
+  const resumes: Array<{ id: string; options: unknown }> = [];
+  const makeThread = (initialId: string | null) => ({
+    id: initialId,
+    async runStreamed(input: string) {
+      prompts.push(input);
+      return {
+        events: (async function* () {
+          for (const event of opts.turns(input)) yield event;
+        })(),
+      };
+    },
+  });
+  const client = {
+    startThread(options?: unknown) {
+      starts.push(options);
+      return makeThread(null);
+    },
+    resumeThread(id: string, options?: unknown) {
+      resumes.push({ id, options });
+      return makeThread(id);
+    },
+  };
+  return { prompts, starts, resumes, factory: async () => client as never };
+}
+
 test("runOrder auto-allows a safe tool (echoing updatedInput), forwards text, returns result", async () => {
   const { q, decisions } = fakeQuery([{ tool: "Write", input: { file_path: "/tmp/x", content: "y" } }]);
   const messages: string[] = [];
@@ -551,4 +582,163 @@ test("runConfig lets an explicit skills allowlist override the sdkOptions defaul
   // sdkOptions spreads runConfig() LAST, so skills from deps must win over skills:"all"
   const c = runConfig({ skills: ["superpowers:test-driven-development"] });
   expect(c.skills).toEqual(["superpowers:test-driven-development"]);
+});
+
+test("runConfig maps Claude model aliases to Codex effort tiers instead of forwarding them", () => {
+  const c = runConfig({ provider: "codex", model: "sonnet" });
+  expect(c.model).toBeUndefined();
+  expect(c.effort).toBe("medium");
+
+  const explicitEffort = runConfig({ provider: "codex", model: "opus", effort: "xhigh" });
+  expect(explicitEffort.model).toBeUndefined();
+  expect(explicitEffort.effort).toBe("xhigh"); // caller effort wins over alias-derived effort
+});
+
+test("runOrder can execute through the Codex SDK adapter", async () => {
+  const f = fakeCodexFactory({
+    turns: () => [
+      { type: "thread.started", thread_id: "codex-thread-1" },
+      { type: "item.completed", item: { id: "i1", type: "agent_message", text: "working through codex" } },
+      { type: "item.completed", item: { id: "i2", type: "command_execution", command: "bun test", status: "completed", aggregated_output: "", exit_code: 0 } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 0 } },
+    ],
+  });
+  const messages: string[] = [];
+  const activity: string[] = [];
+  const events: Array<{ kind: string; data?: Record<string, unknown> }> = [];
+
+  const result = await runOrder(
+    order(),
+    {
+      onMessage: (t) => messages.push(t),
+      onEscalation: async () => "deny",
+      onActivity: (l) => activity.push(l),
+      onEvent: (kind, data) => events.push({ kind, data }),
+    },
+    { provider: "codex", codexFactory: f.factory, model: "gpt-5.4", effort: "high" },
+  );
+
+  expect(f.starts[0]).toMatchObject({
+    workingDirectory: "/tmp",
+    sandboxMode: "workspace-write",
+    approvalPolicy: "on-request",
+    skipGitRepoCheck: true,
+    model: "gpt-5.4",
+    modelReasoningEffort: "high",
+  });
+  expect(messages).toContain("working through codex");
+  expect(messages.some((m) => m.includes("bun test"))).toBe(true);
+  expect(activity).toContain("Bash: bun test");
+  expect(events[0]).toEqual({ kind: "session_start", data: { folder: "/tmp", resume: false, provider: "codex" } });
+  expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "working through codex", costUsd: 0 });
+});
+
+test("Codex adapter translates Claude model aliases before opening a thread", async () => {
+  const f = fakeCodexFactory({
+    turns: () => [
+      { type: "thread.started", thread_id: "codex-thread-1" },
+      { type: "turn.completed", usage: null },
+    ],
+  });
+  const events: Array<{ kind: string; data?: Record<string, unknown> }> = [];
+
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (kind, data) => events.push({ kind, data }) },
+    { provider: "codex", codexFactory: f.factory, model: "claude-3-5-sonnet-latest" },
+  );
+
+  expect(f.starts[0]).toMatchObject({
+    workingDirectory: "/tmp",
+    modelReasoningEffort: "medium",
+  });
+  expect((f.starts[0] as { model?: string }).model).toBeUndefined();
+  expect(events).toContainEqual({
+    kind: "worker_model_resolve",
+    data: { provider: "codex", from: "claude-3-5-sonnet-latest", model: null, effort: "medium", reason: "claude-tier-sonnet" },
+  });
+});
+
+test("Codex adapter translates read-only runs and records Claude-only option warnings", async () => {
+  const f = fakeCodexFactory({
+    turns: () => [
+      { type: "thread.started", thread_id: "codex-thread-1" },
+      { type: "turn.completed", usage: null },
+    ],
+  });
+  const events: Array<{ kind: string; data?: Record<string, unknown> }> = [];
+
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (kind, data) => events.push({ kind, data }) },
+    {
+      provider: "codex",
+      codexFactory: f.factory,
+      disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash"],
+      mcpServers: { neo: {} },
+    },
+  );
+
+  expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only" });
+  expect(events).toContainEqual({
+    kind: "worker_compat_warning",
+    data: { provider: "codex", unsupported: ["mcpServers"] },
+  });
+});
+
+test("Codex adapter reports table-driven warnings for unsupported Claude SDK fields", async () => {
+  const f = fakeCodexFactory({
+    turns: () => [
+      { type: "thread.started", thread_id: "codex-thread-1" },
+      { type: "turn.completed", usage: null },
+    ],
+  });
+  const events: Array<{ kind: string; data?: Record<string, unknown> }> = [];
+
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (kind, data) => events.push({ kind, data }) },
+    {
+      provider: "codex",
+      codexFactory: f.factory,
+      disallowedTools: ["Write"],
+      mcpServers: { neo: {} },
+      skills: [],
+      maxTurns: 4,
+      agents: { backend: { description: "backend", prompt: "own the API" } },
+    },
+  );
+
+  expect(events).toContainEqual({
+    kind: "worker_compat_warning",
+    data: { provider: "codex", unsupported: ["mcpServers", "skills", "maxTurns", "agents", "disallowedTools"] },
+  });
+});
+
+test("startOrder queues follow-ups as sequential Codex SDK turns on the same thread", async () => {
+  const f = fakeCodexFactory({
+    turns: (input) => [
+      { type: "thread.started", thread_id: "codex-thread-1" },
+      { type: "item.completed", item: { id: crypto.randomUUID(), type: "agent_message", text: `ack:${input}` } },
+      { type: "turn.completed", usage: null },
+    ],
+  });
+  const messages: string[] = [];
+  const turns: RunResult[] = [];
+
+  const run = startOrder(
+    order("first"),
+    { onMessage: (t) => messages.push(t), onEscalation: async () => "deny", onTurnComplete: (r) => turns.push(r) },
+    { provider: "codex", codexFactory: f.factory, resume: "codex-prev" },
+  );
+  while (turns.length === 0) await new Promise((r) => setTimeout(r, 1));
+  run.followUp("second");
+  while (turns.length < 2) await new Promise((r) => setTimeout(r, 1));
+  run.close();
+  const result = await run.done;
+
+  expect(f.resumes[0]).toMatchObject({ id: "codex-prev", options: { workingDirectory: "/tmp" } });
+  expect(f.prompts).toEqual(["first", "second"]);
+  expect(messages).toEqual(["ack:first", "ack:second"]);
+  expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "ack:second" });
 });

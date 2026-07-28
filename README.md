@@ -1,16 +1,17 @@
 # Neo
 
-**A personal work engine on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/typescript).**
+**A personal work engine on coding-agent SDKs: Claude Agent SDK by default, OpenAI Codex SDK optionally.**
 You give Neo an order over a channel ("open this project and do X"); it opens the project as a
-governed, headless [Claude Code](https://claude.com/claude-code) worker, drives the work
+governed, headless worker, drives the work
 deterministically, and streams progress back to you. No `cd`, no terminal, no tmux.
 
 **Core principle:** AI *decides*; the engine *acts and governs*. The engine itself contains **no
-AI** — it routes, governs, meters, and records. AI lives only inside SDK workers (Claude, on your
-own subscription) and, optionally, customer-message reading (Gemini).
+AI** — it routes, governs, meters, and records. AI lives only inside SDK workers (Claude or Codex)
+and, optionally, customer-message reading (Gemini).
 
 > Neo runs the Agent SDK on **your** machine against **your** folders on **your** Claude
-> subscription. It is a single-user, self-hosted tool for doing *your own* work.
+> subscription by default. You can flip new operator work to OpenAI Codex SDK with `/sdk codex`,
+> the web console switch, or `config.json`.
 
 ## Architecture
 
@@ -19,9 +20,9 @@ Frontend  (Telegram / web console)                 ← you talk to projects here
    ↕
 Engine    (orders · provider routing · governance  ← deterministic. no AI. THIS repo.
            · budget · ledger · loops)
-   ↕  query(task, { cwd, canUseTool, mcpServers, settingSources })
-Worker    (Claude Agent SDK = Claude Code in a      ← does the actual project work
-           project folder, on your subscription)
+   ↕  runOrder/startOrder wrapper
+Worker    (Claude Agent SDK by default, or Codex    ← does the actual project work
+           SDK when selected in config)
 ```
 
 - **Frontends** — a Telegram bot and a web operator console, both driving the same pipeline.
@@ -29,16 +30,19 @@ Worker    (Claude Agent SDK = Claude Code in a      ← does the actual project 
   that reserves interactive headroom, a session registry with idle-close + resume, a governor that
   path-fences file writes and escalates risky tools, a ledger (bun:sqlite), and a `trigger → action
   → goal` **loop runtime** for autonomous work.
-- **Worker** — a Claude Code session (`@anthropic-ai/claude-agent-sdk`) opened in a project folder,
-  loading `~/.claude` plugins/skills and that folder's `CLAUDE.md` / `.mcp.json` / settings.
+- **Worker** — a SDK session opened in a project folder. The default Claude adapter uses
+  `@anthropic-ai/claude-agent-sdk`, loading `~/.claude` plugins/skills and that folder's
+  `CLAUDE.md` / `.mcp.json` / settings. The optional Codex adapter uses `@openai/codex-sdk` threads
+  with Codex sandbox/approval controls.
 
 ## Features
 
 - **Two operator frontends, one engine.** A Telegram bot and a web console both drive the same
   `source:"neo"` SDK pipeline — sharing the registry, budget meter, ledger, and admin. Plain
   messages stream as **follow-ups into the running worker**.
-- **Compliance firewall, in code.** Your own work runs on your Claude subscription; customer-direct
-  work is refused onto it and routed to Gemini. Enforced by `provider-router.ts`, never a prompt.
+- **Compliance firewall, in code.** Your own work runs on the configured operator worker SDK
+  (`subscription`/Claude by default, optionally `codex`); customer-direct work is refused onto the
+  Claude subscription and routed to Gemini. Enforced by `provider-router.ts`, never a prompt.
 - **Governed workers.** A default-escalate governor path-fences file writes to the session's project
   folder and escalates unknown/foreign MCP tools, `WebFetch`, and out-of-folder writes to the
   operator (autonomous paths auto-deny). Customer-tainted briefs run with **zero tools**.
@@ -72,6 +76,8 @@ Worker    (Claude Agent SDK = Claude Code in a      ← does the actual project 
 - **[Bun](https://bun.sh)** ≥ 1.0 (`curl -fsSL https://bun.sh/install | bash`).
 - A **Claude subscription** with **[Claude Code](https://claude.com/claude-code)** installed and
   logged in — the Agent SDK runs the worker on that subscription (no API key needed).
+- *(Optional)* **Codex SDK/CLI auth** if you set `providers.ownWork` to `"codex"`: use local Codex
+  login or provide `CODEX_API_KEY` in the process environment.
 - A **Telegram bot** — create one with [@BotFather](https://t.me/BotFather) and copy its token.
 - *(Optional)* a TLS reverse proxy (Traefik/Caddy/nginx) if you want the web console on a public
   domain, and a **Gemini API key** if you run the customer-facing path.
@@ -150,6 +156,7 @@ The same commands work over Telegram and the web console.
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |
 | `/usage` | Subscription token usage + rate-limit status. |
+| `/sdk [claude\|codex]` | Show or switch the worker SDK used for new own-work sessions. |
 | `/reload` | Gracefully restart the engine (drains running sessions, resumes them after). |
 | `/help` | Show the command list. |
 
@@ -185,15 +192,17 @@ routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CON
 
 ### The compliance firewall (enforced in code, not prompts)
 
-- **Your own work → your Claude subscription** via the Agent SDK. Provider choice lives in config so
-  a future plan change is a flip, not a rewrite.
+- **Your own work → configured operator SDK**. Default is the Claude Agent SDK on your Claude
+  subscription (`"subscription"`); use `/sdk codex`, the web console switch, or set
+  `providers.ownWork` to `"codex"` to use OpenAI Codex SDK for new sessions.
 - **Customer-direct work → Gemini.** `provider-router.ts` refuses, in code, to route
   `source: "customer"` onto the subscription. Neo never offers a customer a Claude login.
 - **Budget guard.** Background SDK work shares your subscription pool, so the meter reserves
   interactive headroom (`subscriptionInteractiveReservePct`) and throttles background work.
 - **Approval gate.** The governor is default-escalate: unknown/foreign MCP tools, `WebFetch`, and
-  out-of-folder writes ask the operator (autonomous paths auto-deny). File writes are path-fenced to
-  the session's project folder.
+  out-of-folder writes ask the operator on the Claude path (autonomous paths auto-deny). File writes
+  are path-fenced to the session's project folder. The Codex path uses Codex sandbox/approval policy;
+  Codex SDK does not expose Claude's `canUseTool` hook.
 
 ## Loops (autonomy)
 

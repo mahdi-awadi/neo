@@ -1,9 +1,9 @@
 # Neo
 
 Neo is a personal work **engine**. You give it an order ("open this project and do X"); it opens
-the project as a headless Claude Code worker via the **Claude Agent SDK**, governs the work
-deterministically, and streams progress back over a channel (Telegram first). No `cd`, no terminal,
-no tmux.
+the project as a headless coding-agent worker (Claude Agent SDK by default, OpenAI Codex SDK
+optionally), governs the work deterministically, and streams progress back over a channel (Telegram
+first). No `cd`, no terminal, no tmux.
 
 **Core principle:** AI *decides*; the engine *acts and governs*. The engine itself contains **no
 AI** — it routes, governs, meters, and records. AI lives only inside SDK workers (Claude, on your
@@ -20,8 +20,8 @@ Frontend  (Telegram / email / WhatsApp)            ← you talk to projects here
 Engine    (orders · provider routing · governance  ← deterministic. THIS repo's job.
            · budget · ledger)
    ↕  query(task, { cwd, canUseTool, mcpServers, settingSources })
-Worker    (Claude Agent SDK = Claude Code in a      ← does the actual project work
-           project folder, on your subscription)
+Worker    (Claude Agent SDK by default, or Codex    ← does the actual project work
+           SDK when selected in config)
 ```
 
 ## Rules that live in CODE, not prompts (the compliance firewall)
@@ -29,7 +29,8 @@ Worker    (Claude Agent SDK = Claude Code in a      ← does the actual project 
 These are enforced by `src/engine/provider-router.ts` and `governor.ts` — never by trusting a
 prompt:
 
-- **Your own work → your Claude subscription** (via the Agent SDK). It draws from your normal
+- **Your own work → configured operator SDK** (Claude Agent SDK on your subscription by default;
+  OpenAI Codex SDK when `providers.ownWork` is `"codex"`). The Claude default draws from your normal
   subscription usage limits today. The monthly-credit change Anthropic announced is **paused**;
   nothing changed. Do **not** build credit/overflow accounting (YAGNI). Keep the provider choice in
   `config` so if the plan ever changes it's a config flip, not a rewrite.
@@ -55,9 +56,10 @@ down the daemon), one-shot session focus, and context-efficiency Phase 1
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
 default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.
 
-Next: later context-efficiency phases (incl. the memory system) per the 2026-07-23 design spec, then
-**Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board). Keep building **phase by
-phase, TDD**, per `MVP-PLAN.md`.
+Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
+not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,
+then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board). Keep building
+**phase by phase, TDD**, per `MVP-PLAN.md`.
 
 ## How to work here
 

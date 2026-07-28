@@ -167,3 +167,16 @@ full dispatch lifecycle `dispatch_refused`/`dispatch_queued`/`dispatch_start`/`d
 operator command (`commands.ts`, mirrors `/recent`), surfaced on Telegram + web with zero frontend
 changes. See `docs/superpowers/specs/2026-07-26-engine-event-log-design.md` +
 `docs/superpowers/plans/2026-07-26-engine-event-log.md`. TDD throughout; full suite green (591).
+
+**Worker SDK wrapper — live:** `session-runner.ts` now exposes one internal worker boundary
+(`runOrder` / `startOrder`) with provider adapters behind it. The default `"subscription"` path is
+the existing Claude Agent SDK adapter, unchanged: `query()`, streaming input, resume, interrupt,
+`canUseTool`, in-process MCP servers, partial-message heartbeats, and API retry/cost handling. A new
+`"codex"` own-work provider selects the OpenAI Codex SDK adapter (`@openai/codex-sdk`): starts or
+resumes Codex threads in the target folder, streams Codex JSON events into Neo's message/activity
+hooks, queues follow-ups as sequential turns on the same thread, and aborts with `AbortSignal`.
+`profileDeps()` threads `providers.ownWork` through every launch path, so choosing Codex is a
+`config.json` flip (`{ "providers": { "ownWork": "codex", "customerWork": "gemini" } }`). Boundary
+kept explicit: Codex SDK does not expose Claude's `canUseTool` hook or Anthropic in-process MCP
+shape, so Codex runs use Codex sandbox/approval policy and emit `worker_compat_warning` for
+Claude-only run options; read-only judge runs translate to Codex `sandboxMode:"read-only"`.

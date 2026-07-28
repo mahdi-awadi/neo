@@ -23,6 +23,7 @@ import { describeSessionStatus, sessionsReport } from "./session-status";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
+import { supportsRunConfigField } from "./model-resolver";
 import {
   apiFailureNotice,
   apiHoldMessage,
@@ -73,6 +74,8 @@ export interface DispatchDeps {
    *  sub-run and its handoff turn through config.json's `workers.dispatch` / `workers.handoff`.
    *  Absent → every path inherits today's behavior (see worker-profile.ts). */
   workers?: Record<WorkerPathName, WorkerProfile>;
+  /** Own-work provider choice, threaded into dispatched worker launches when present. */
+  providers?: NeoConfig["providers"];
   /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
   workerEnv?: Record<string, string>;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
@@ -199,22 +202,28 @@ export async function dispatchToProject(
     sleep?: (ms: number) => Promise<void>;
     /** Injectable jitter source for the API-retry backoff. Defaults to Math.random. */
     rand?: () => number;
-    /** Opt-in team mode: run this brief with a lead-orchestrated subagent team.
-     *  "frontend-backend" attaches the `frontendBackend` agents map to the run AND wraps the brief
-     *  with `teamLeadPreamble`. Unset = a normal single worker (default; behaviour unchanged). */
+    /** Opt-in team mode for SDKs that support `agents`: run this brief with a lead-orchestrated
+     *  subagent team. Codex falls back to the normal single-worker brief. */
     team?: "frontend-backend";
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
-  // Opt-in team: when requested, the SDK gets the named subagents and the brief gets the
-  // lead-orchestration preamble. Unset ⇒ undefined ⇒ nothing below fires (default path unchanged).
-  const teamAgents = opts.team === "frontend-backend" ? frontendBackend : undefined;
   // Worker-profile view (model/effort/skills/env by path) — absent deps.workers/workerEnv means
   // every profileDeps() call below is a no-op (empty profile ?? {}), preserving today's behavior.
   const workerCfg: Pick<NeoConfig, "workers" | "workerEnv"> = {
     workers: deps.workers ?? ({} as Record<WorkerPathName, WorkerProfile>),
     workerEnv: deps.workerEnv ?? {},
   };
+  const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers">> = {
+    ...workerCfg,
+    providers: deps.providers,
+  };
+  // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
+  // preamble. Codex receives the original brief as a normal single-worker coding task.
+  const teamAgents =
+    opts.team === "frontend-backend" && supportsRunConfigField(providerCfg.providers?.ownWork, "agents")
+      ? frontendBackend
+      : undefined;
   if (deps.lifecycle?.draining()) {
     deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "draining" } });
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
@@ -317,7 +326,7 @@ export async function dispatchToProject(
           await handoff(target, deps.contextPolicy, {
             registry: deps.registry,
             ledger: deps.ledger,
-            runDeps: profileDeps(workerCfg, "handoff"),
+            runDeps: profileDeps(providerCfg, "handoff"),
             memoryFlush: !!memoryGate(deps, folder),
           });
           gatedResume = undefined;
@@ -436,7 +445,7 @@ export async function dispatchToProject(
           }
         },
       },
-      profileDeps(workerCfg, "dispatch", { resume: gatedResume, ...(teamAgents ? { agents: teamAgents } : {}) }),
+      profileDeps(providerCfg, "dispatch", { resume: gatedResume, ...(teamAgents ? { agents: teamAgents } : {}) }),
     );
     runRef = run;
     deps.registry.attachControl(session.id, run);

@@ -6,6 +6,7 @@
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
+import type { NeoConfig } from "../config";
 import type { UsageMeter, RateLimitInfo } from "./usage";
 import type { TrustStore } from "./trust";
 import type { Inbox } from "./inbox";
@@ -13,6 +14,7 @@ import { renderInboxList, type InboxListEntry } from "./inbox-actions";
 import type { SessionInfo } from "../types";
 import { sessionContext, type ContextSignals } from "./context-policy";
 import { humanAge } from "./session-status";
+import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
 
 export interface CommandDeps {
   registry: Registry;
@@ -37,6 +39,8 @@ export interface CommandDeps {
   windowTokensByModel?: Record<string, number>;
   /** Graceful reload (/reload): the daemon injects drain-then-exit; channels without it can't reload. */
   requestReload?: () => void;
+  /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. */
+  cfg?: Pick<NeoConfig, "providers">;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -54,6 +58,8 @@ export interface CommandResult {
   select?: SelectableProject[];
   /** Tappable customer-inbox rows (for /inbox) — frontends render these as buttons. */
   inbox?: InboxListEntry[];
+  /** Updated worker-SDK state (for web UI controls). */
+  sdk?: WorkerSdkState;
 }
 
 interface CommandContext {
@@ -138,6 +144,13 @@ const COMMANDS: Command[] = [
     usage: "/usage",
     summary: "subscription token usage (hourly/daily/weekly)",
     run: ({ deps, now }) => ({ text: renderUsage(deps.usage, now) }),
+  },
+  {
+    name: "sdk",
+    aliases: ["provider"],
+    usage: "/sdk [claude|codex]",
+    summary: "show or switch the worker SDK for new own-work sessions",
+    run: ({ deps, args }) => sdkCommand(args.trim(), deps.cfg),
   },
   {
     name: "reload",
@@ -259,6 +272,26 @@ function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandRe
   const all = deps.trust.list();
   const list = all.length ? `\nTrusted: ${all.join(", ")}` : "";
   return { text: `${target.name} (${folder}): ${here}\nUsage: /trust on · /trust off${list}` };
+}
+
+function sdkCommand(arg: string, cfg: CommandDeps["cfg"]): CommandResult {
+  if (!cfg) return { text: "SDK switching unavailable on this channel." };
+  if (!arg) {
+    const current = workerSdkState(cfg.providers.ownWork);
+    return {
+      text: `Worker SDK: ${current.label}\nUsage: /sdk claude · /sdk codex\nNew sessions use this setting; running sessions keep their current SDK.`,
+      sdk: current,
+    };
+  }
+  const result = setWorkerSdk(cfg, arg);
+  if (!result.ok) {
+    return { text: `Unknown SDK: ${arg}\n${result.error}`, sdk: result.sdk };
+  }
+  const changed = result.changed ? "set to" : "already set to";
+  return {
+    text: `Worker SDK ${changed} ${workerSdkLabel(result.sdk.provider)}. New sessions use it; running sessions keep their current SDK.`,
+    sdk: result.sdk,
+  };
 }
 
 function statusIcon(status: SessionInfo["status"]): string {

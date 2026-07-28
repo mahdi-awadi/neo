@@ -8,7 +8,9 @@ import type { ContextPolicyCfg } from "./engine/context-policy";
 /** Reasoning-effort levels accepted by the SDK. */
 export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-/** Per-path worker launch profile. Unset fields inherit the CLI/SDK default (today's behavior). */
+/** Per-path worker launch profile. Unset fields inherit the CLI/SDK default (today's behavior).
+ *  Fields are applied through the SDK compatibility table; Codex ignores Claude-only controls such
+ *  as `skills` and `maxTurns`. */
 export interface WorkerProfile {
   model?: string;
   effort?: WorkerEffort;
@@ -61,8 +63,8 @@ export interface NeoConfig {
    *  startup hint only. From PUBLIC_URL env; empty → no public URL is advertised. */
   publicUrl: string;
   /**
-   * Provider routing, kept in config so a future Anthropic plan change is a flip,
-   * not a code rewrite. Defaults encode the compliance firewall.
+   * Provider routing, kept in config so the operator can choose the worker SDK without
+   * a code rewrite. Defaults encode the compliance firewall.
    */
   providers: { ownWork: Provider; customerWork: Provider };
   /** Fraction of the Claude subscription pool reserved for Neo's interactive use. */
@@ -126,8 +128,9 @@ export interface NeoConfig {
   /** Per-launch-path worker profiles (model/effort/skills/maxTurns). See the context-efficiency
    *  design spec. Per-path objects REPLACE the default for that path when set in config.json. */
   workers: Record<WorkerPathName, WorkerProfile>;
-  /** Extra env vars for every spawned worker (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,
-   *  MAX_MCP_OUTPUT_TOKENS, CLAUDE_CODE_SUBAGENT_MODEL), merged over process.env. */
+  /** Extra env vars for every spawned worker, merged over process.env after provider filtering.
+   *  Claude Code knobs (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, MAX_MCP_OUTPUT_TOKENS,
+   *  CLAUDE_CODE_SUBAGENT_MODEL) are applied only on the Claude adapter. */
   workerEnv: Record<string, string>;
   /** Memory system (Phase 2): scopes + ratio caps + dream-loop budgets. Default `scopes: []` — a
    *  total no-op until the operator opts a folder in. */

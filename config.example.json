@@ -3,6 +3,7 @@
 
   "telegramAllowFrom": [],
   "providers": { "ownWork": "subscription", "customerWork": "gemini" },
+  "// providers.ownWork": "May also be \"codex\" to run operator work through the OpenAI Codex SDK.",
   "subscriptionInteractiveReservePct": 0.2,
 
   "workRoot": "/home",
@@ -32,6 +33,7 @@
 
   "memory": { "scopes": ["company"] },
 
+  "// workerEnv": "Claude Code env knobs apply only with providers.ownWork=\"subscription\". When ownWork=\"codex\", CLAUDE_*, ANTHROPIC_*, and MAX_MCP_OUTPUT_TOKENS are filtered before launch.",
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",
     "MAX_MCP_OUTPUT_TOKENS": "12000"

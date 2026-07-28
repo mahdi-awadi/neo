@@ -27,6 +27,7 @@ import { dashboardSnapshot, type DashState } from "./dashboard";
 import { mdToHtml } from "./format";
 import type { UsageMeter } from "./usage";
 import type { OperatorBus } from "./operator-bus";
+import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -41,6 +42,7 @@ export type WebEvent =
   | { type: "escalation"; id: string; reason: string }
   | { type: "projects"; text: string; items: SelectableProject[] }
   | { type: "loops"; items: LoopInfo[] }
+  | { type: "sdk"; sdk: WorkerSdkState }
   | { type: "file"; name: string; url: string; project?: string };
 
 export interface WebChannel {
@@ -66,6 +68,8 @@ export interface WebChannel {
   deleteLoop(name: string): { ok: boolean; error?: string };
   /** Enable/disable a loop's schedule. */
   setLoopEnabled(name: string, on: boolean): void;
+  /** Switch the worker SDK used for new own-work sessions. */
+  setSdk(provider: string): { ok: boolean; error?: string; sdk: WorkerSdkState };
   /** Structured snapshot for the dashboard (projects · usage · loops · recent · repos). */
   state(): DashState;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
@@ -148,9 +152,11 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         trust: opts.engine.trust,
         requestReload: opts.requestReload,
+        cfg: opts.engine.cfg,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
       if (command !== null) {
+        if (command.sdk) emit({ type: "sdk", sdk: command.sdk });
         if (command.select?.length) {
           emit({ type: "projects", text: command.text, items: command.select });
         } else {
@@ -224,6 +230,11 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       opts.engine.ledger.setEnabled(name, on);
       emit({ type: "loops", items: listLoops(opts.engine.ledger) });
     },
+    setSdk(provider) {
+      const result = setWorkerSdk(opts.engine.cfg, provider);
+      if (result.ok) emit({ type: "sdk", sdk: result.sdk });
+      return result.ok ? { ok: true, sdk: result.sdk } : { ok: false, error: result.error, sdk: result.sdk };
+    },
     state() {
       return dashboardSnapshot({
         registry: opts.engine.registry,
@@ -231,6 +242,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         chatId: opts.chatId,
         reposRoot: opts.engine.cfg.workRoot, // scan the operator's configured project root
+        sdkProvider: opts.engine.cfg.providers.ownWork,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
     },

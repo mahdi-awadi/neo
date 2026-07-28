@@ -1,6 +1,7 @@
-// The execution core: opens a project folder as a headless Claude Code worker via the
-// Claude Agent SDK and streams its work back to the engine. Replaces operant's tmux +
-// shim + Ink-scraping entirely.
+// The execution core: opens a project folder as a headless coding-agent worker and streams its
+// work back to the engine. The public boundary (`runOrder` / `startOrder`) is provider-neutral;
+// adapters behind it target Claude Agent SDK (default) or OpenAI Codex SDK. Replaces operant's
+// tmux + shim + Ink-scraping entirely.
 //
 // Two entry points:
 //   runOrder   — single-shot: open the folder, run one task to completion (Phase-1 path).
@@ -16,12 +17,32 @@
 //
 // SPIKE FINDING (docs/sdk-notes.md): the canUseTool ALLOW decision MUST echo `updatedInput`.
 //
-// Auth: draws from your Claude subscription (current behavior; see README + plan).
+// Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
+// CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
 import { basename } from "node:path";
 import { query as realQuery, type AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
-import type { Order, SessionControl } from "../types";
+import {
+  Codex,
+  type ApprovalMode as CodexApprovalMode,
+  type CodexOptions,
+  type ModelReasoningEffort as CodexReasoningEffort,
+  type SandboxMode as CodexSandboxMode,
+  type ThreadEvent as CodexThreadEvent,
+  type ThreadOptions as CodexThreadOptions,
+  type WebSearchMode as CodexWebSearchMode,
+} from "@openai/codex-sdk";
+import type { Order, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide } from "./governor";
+import {
+  filterSdkEnv,
+  readOnlySandboxRequested,
+  resolveModelSelection,
+  supportedRunConfigFields,
+  unsupportedRunFields,
+  type RunConfigField,
+  type WorkerModelProvider,
+} from "./model-resolver";
 
 // High-frequency, low-signal read/navigation tools — surfacing every one would spam the operator,
 // so the stream stays quiet for these (the worker's assistant text + the milestones below carry it).
@@ -85,28 +106,42 @@ export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Per-run dependencies/config: an injectable query (tests) and optional SDK options. */
 export interface RunDeps {
+  /** Worker SDK/provider to use. Default "subscription" = Claude Agent SDK; "codex" = Codex SDK. */
+  provider?: Provider;
   query?: QueryFn;
+  /** Injectable Codex client factory for tests; default constructs `new Codex(...)`. */
+  codexFactory?: CodexFactory;
   /** Resume a prior SDK session id (idle-close → resume). */
   resume?: string;
   /** Reasoning effort for this session (the chief-of-staff runs "low" for fast routing). */
   effort?: EffortLevel;
-  /** Extra in-process MCP servers/tools (e.g. the default project's `dispatch` tool). */
+  /** Extra in-process MCP servers/tools (e.g. the default project's `dispatch` tool). Claude-only;
+   *  Codex records a compatibility warning because its SDK wrapper doesn't accept this shape. */
   mcpServers?: Record<string, unknown>;
-  /** Tools the worker must NOT use (e.g. read-only judge runs deny Write/Edit/Bash). */
+  /** Tools the worker must NOT use (e.g. read-only judge runs deny Write/Edit/Bash). Codex maps
+   *  the standard read-only deny-list to sandboxMode:"read-only"; arbitrary deny-lists warn. */
   disallowedTools?: string[];
-  /** SDK model override for this run ("haiku" | "sonnet" | "opus" | full id). Unset = inherit. */
+  /** SDK model override for this run. Resolved through the SDK table: Claude tier aliases
+   *  ("haiku" | "sonnet" | "opus") stay Claude aliases on subscription and become Codex effort
+   *  tiers on Codex. Unset = inherit. */
   model?: string;
-  /** Skills visible to this worker: "all" or an explicit allowlist ([] = none). Unset = "all". */
+  /** Skills visible to a Claude worker: "all" or an explicit allowlist ([] = none). Unset = "all". */
   skills?: "all" | string[];
-  /** SDK cap on agentic turns for one run. Unset = uncapped. */
+  /** Claude SDK cap on agentic turns for one run. Unset = uncapped. */
   maxTurns?: number;
-  /** Named subagents for an opt-in, lead-orchestrated team run (SDK `agents`). Each is a governed
-   *  subagent whose tool calls re-enter this session's `canUseTool`, so the path-fence still holds
-   *  for their writes (verified — spike/agent-team-spike-findings.md). Unset = a normal single
-   *  worker (default; behaviour byte-for-byte unchanged). */
+  /** Named Claude subagents for an opt-in, lead-orchestrated team run (SDK `agents`). Each is a
+   *  governed subagent whose tool calls re-enter this session's `canUseTool`, so the path-fence
+   *  still holds for their writes (verified — spike/agent-team-spike-findings.md). Unset = a normal
+   *  single worker (default; behaviour byte-for-byte unchanged). */
   agents?: Record<string, AgentDefinition>;
-  /** Extra env for the spawned worker (autocompact %, MCP output caps…), merged over process.env. */
+  /** Extra env for the spawned worker, merged over process.env after SDK-specific filtering. */
   env?: Record<string, string>;
+  /** Codex SDK controls. These are ignored by the Claude adapter. */
+  codexSandboxMode?: CodexSandboxMode;
+  codexApprovalPolicy?: CodexApprovalMode;
+  codexSkipGitRepoCheck?: boolean;
+  codexNetworkAccessEnabled?: boolean;
+  codexWebSearchMode?: CodexWebSearchMode;
 }
 
 /** Why an API call failed, as the SDK reports it (SDKAssistantMessageError). "rate_limit" and
@@ -168,6 +203,16 @@ type QueryFn = (args: {
   prompt: string | AsyncIterable<SdkUserMessage>;
   options: Record<string, unknown>;
 }) => QueryObject;
+type CodexStreamedTurn = { events: AsyncGenerator<CodexThreadEvent> };
+type CodexThreadLike = {
+  readonly id: string | null;
+  runStreamed(input: string, turnOptions?: { signal?: AbortSignal }): Promise<CodexStreamedTurn>;
+};
+type CodexClientLike = {
+  startThread(options?: CodexThreadOptions): CodexThreadLike;
+  resumeThread(id: string, options?: CodexThreadOptions): CodexThreadLike;
+};
+export type CodexFactory = (options: CodexOptions) => CodexClientLike | Promise<CodexClientLike>;
 
 function userMessage(text: string): SdkUserMessage {
   return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
@@ -356,18 +401,214 @@ function createInputChannel(first: SdkUserMessage) {
   };
 }
 
+function codexEffort(effort: EffortLevel | undefined): CodexReasoningEffort | undefined {
+  if (!effort) return undefined;
+  if (effort === "max") return "xhigh";
+  return effort;
+}
+
+function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
+  const model = resolveModelSelection("codex", deps);
+  const c: CodexThreadOptions = {
+    workingDirectory: order.folder,
+    sandboxMode: deps.codexSandboxMode ?? (readOnlySandboxRequested(deps.disallowedTools) ? "read-only" : "workspace-write"),
+    approvalPolicy: deps.codexApprovalPolicy ?? "on-request",
+    skipGitRepoCheck: deps.codexSkipGitRepoCheck ?? true,
+  };
+  if (model.model) c.model = model.model;
+  const effort = codexEffort(model.effort);
+  if (effort) c.modelReasoningEffort = effort;
+  if (deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
+  if (deps.codexWebSearchMode) c.webSearchMode = deps.codexWebSearchMode;
+  return c;
+}
+
+function mergedSdkEnv(provider: Provider, env: Record<string, string>): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  return filterSdkEnv(provider, { ...merged, ...env });
+}
+
+function codexClientOptions(deps: RunDeps): CodexOptions {
+  const c: CodexOptions = {};
+  if (deps.env) c.env = mergedSdkEnv("codex", deps.env);
+  return c;
+}
+
+async function makeCodexClient(deps: RunDeps): Promise<CodexClientLike> {
+  const factory = deps.codexFactory ?? ((options: CodexOptions) => new Codex(options));
+  return factory(codexClientOptions(deps));
+}
+
+function apiErrorFromCodexMessage(message: string): ApiErrorKind | undefined {
+  const lower = message.toLowerCase();
+  if (lower.includes("rate limit") || lower.includes("429")) return "rate_limit";
+  if (lower.includes("overloaded") || lower.includes("529")) return "overloaded";
+  if (lower.includes("401") || lower.includes("403") || lower.includes("authentication")) return "authentication_failed";
+  if (lower.includes("billing")) return "billing_error";
+  if (lower.includes("model") && lower.includes("not found")) return "model_not_found";
+  return undefined;
+}
+
+function codexItemMilestone(item: { type?: string; [k: string]: unknown }): string | undefined {
+  if (item.type === "command_execution" && typeof item.command === "string") {
+    return toolMilestone("Bash", { command: item.command });
+  }
+  if (item.type === "file_change" && Array.isArray(item.changes)) {
+    const first = item.changes.find((c) => c && typeof c === "object") as { path?: unknown } | undefined;
+    return toolMilestone("Edit", { path: typeof first?.path === "string" ? first.path : undefined });
+  }
+  if (item.type === "mcp_tool_call" && typeof item.tool === "string") {
+    return toolMilestone(String(item.tool), item.arguments);
+  }
+  return undefined;
+}
+
+function codexItemActivity(item: { type?: string; [k: string]: unknown }): string | undefined {
+  if (item.type === "command_execution" && typeof item.command === "string") {
+    return `Bash${item.command ? `: ${toolDetail({ command: item.command })}` : ""}`;
+  }
+  if (item.type === "file_change" && Array.isArray(item.changes)) {
+    const first = item.changes.find((c) => c && typeof c === "object") as { path?: unknown } | undefined;
+    const path = typeof first?.path === "string" ? first.path : "";
+    return `Edit${path ? `: ${toolDetail({ path })}` : ""}`;
+  }
+  if (item.type === "mcp_tool_call" && typeof item.tool === "string") {
+    const detail = toolDetail(item.arguments);
+    return `${item.tool}${detail ? `: ${detail}` : ""}`;
+  }
+  return undefined;
+}
+
+async function consumeCodexTurn(
+  thread: CodexThreadLike,
+  input: string,
+  handlers: RunHandlers,
+  signal?: AbortSignal,
+): Promise<RunResult> {
+  let ok = false;
+  let sessionId = thread.id ?? "";
+  let summary = "";
+  let apiError: ApiErrorKind | undefined;
+
+  try {
+    const { events } = await thread.runStreamed(input, signal ? { signal } : undefined);
+    for await (const event of events) {
+      handlers.onHeartbeat?.();
+      if (event.type === "thread.started") {
+        sessionId = event.thread_id;
+      } else if (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") {
+        const item = event.item as { type?: string; text?: string; message?: string; [k: string]: unknown };
+        if (event.type === "item.completed" && item.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
+          summary = item.text.trim();
+          handlers.onActivity?.("replying");
+          handlers.onMessage(summary);
+        } else if (event.type === "item.completed" && item.type === "error" && typeof item.message === "string") {
+          summary = item.message;
+          apiError = apiErrorFromCodexMessage(summary);
+        } else {
+          const label = codexItemActivity(item);
+          if (label) handlers.onActivity?.(label);
+          if (event.type === "item.completed") {
+            const line = codexItemMilestone(item);
+            if (line) handlers.onMessage(line);
+          }
+        }
+      } else if (event.type === "turn.completed") {
+        ok = true;
+        handlers.onActivity?.("waiting");
+        const result = { ok, sessionId: sessionId || thread.id || "", summary, costUsd: 0, apiError };
+        handlers.onTurnComplete?.(result);
+      } else if (event.type === "turn.failed") {
+        ok = false;
+        summary = event.error.message;
+        apiError = apiErrorFromCodexMessage(summary) ?? "unknown";
+        const result = { ok, sessionId: sessionId || thread.id || "", summary, costUsd: 0, apiError };
+        handlers.onTurnComplete?.(result);
+      } else if (event.type === "error") {
+        ok = false;
+        summary = event.message;
+        apiError = apiErrorFromCodexMessage(summary) ?? "unknown";
+      }
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    summary = summary || reason || "interrupted";
+    apiError = apiErrorFromCodexMessage(summary);
+    if (signal?.aborted) handlers.onEvent?.("session_interrupted");
+    else handlers.onEvent?.("worker_error", { provider: "codex", error: reason });
+  }
+
+  return { ok, sessionId: sessionId || thread.id || "", summary, costUsd: 0, apiError };
+}
+
+function createTextTurnQueue(first: string) {
+  const queue: string[] = [first];
+  let wake: (() => void) | null = null;
+  let closed = false;
+
+  return {
+    push(text: string) {
+      if (closed) return;
+      queue.push(text);
+      wake?.();
+      wake = null;
+    },
+    close() {
+      closed = true;
+      wake?.();
+      wake = null;
+    },
+    queued() {
+      return queue.length;
+    },
+    async next(): Promise<string | undefined> {
+      while (queue.length === 0) {
+        if (closed) return undefined;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+      return queue.shift();
+    },
+  };
+}
+
+function resolvedRunDeps(deps: RunDeps, provider: WorkerModelProvider, handlers?: RunHandlers): RunDeps {
+  const model = resolveModelSelection(provider, deps);
+  if (model.changed) {
+    handlers?.onEvent?.("worker_model_resolve", {
+      provider,
+      from: model.originalModel,
+      model: model.model ?? null,
+      effort: model.effort ?? null,
+      reason: model.reason,
+    });
+  }
+  return { ...deps, model: model.model, effort: model.effort };
+}
+
 // Only-defined keys survive into the SDK options (so absent fields aren't sent as undefined).
-export function runConfig(deps: RunDeps): Record<string, unknown> {
+export function runConfig(deps: RunDeps, provider: Provider = deps.provider ?? "subscription"): Record<string, unknown> {
+  const resolved = resolveModelSelection(provider, deps);
   const c: Record<string, unknown> = {};
-  if (deps.resume) c.resume = deps.resume;
-  if (deps.effort) c.effort = deps.effort;
-  if (deps.mcpServers) c.mcpServers = deps.mcpServers;
-  if (deps.disallowedTools) c.disallowedTools = deps.disallowedTools;
-  if (deps.model) c.model = deps.model;
-  if (deps.skills !== undefined) c.skills = deps.skills;
-  if (deps.maxTurns) c.maxTurns = deps.maxTurns;
-  if (deps.agents) c.agents = deps.agents;
-  if (deps.env) c.env = { ...process.env, ...deps.env };
+  const values: Record<RunConfigField, unknown> = {
+    resume: deps.resume || undefined,
+    effort: resolved.effort,
+    mcpServers: deps.mcpServers,
+    disallowedTools: deps.disallowedTools,
+    model: resolved.model,
+    skills: deps.skills,
+    maxTurns: deps.maxTurns || undefined,
+    agents: deps.agents,
+    env: deps.env ? mergedSdkEnv(provider, deps.env) : undefined,
+  };
+  for (const field of supportedRunConfigFields(provider)) {
+    const value = values[field];
+    if (value !== undefined) c[field] = value;
+  }
   return c;
 }
 
@@ -377,10 +618,35 @@ export async function runOrder(
   handlers: RunHandlers,
   deps: RunDeps = {},
 ): Promise<RunResult> {
+  if (deps.provider === "codex") return runCodexOrder(order, handlers, deps);
+  return runClaudeOrder(order, handlers, deps);
+}
+
+async function runClaudeOrder(
+  order: Order,
+  handlers: RunHandlers,
+  deps: RunDeps = {},
+): Promise<RunResult> {
+  deps = resolvedRunDeps(deps, "subscription", handlers);
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const options = sdkOptions(order, handlers, runConfig(deps));
   handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
   return consumeStream(query({ prompt: order.task, options }), handlers);
+}
+
+async function runCodexOrder(
+  order: Order,
+  handlers: RunHandlers,
+  deps: RunDeps = {},
+): Promise<RunResult> {
+  deps = resolvedRunDeps(deps, "codex", handlers);
+  handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
+  const unsupported = unsupportedRunFields("codex", deps);
+  if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
+  const client = await makeCodexClient(deps);
+  const options = codexThreadOptions(order, deps);
+  const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
+  return consumeCodexTurn(thread, order.task, handlers);
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
@@ -389,6 +655,16 @@ export function startOrder(
   handlers: RunHandlers,
   deps: RunDeps = {},
 ): SessionRun {
+  if (deps.provider === "codex") return startCodexOrder(order, handlers, deps);
+  return startClaudeOrder(order, handlers, deps);
+}
+
+function startClaudeOrder(
+  order: Order,
+  handlers: RunHandlers,
+  deps: RunDeps = {},
+): SessionRun {
+  deps = resolvedRunDeps(deps, "subscription", handlers);
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const channel = createInputChannel(userMessage(order.task));
   handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
@@ -407,6 +683,57 @@ export function startOrder(
     },
     queued: () => channel.queued(),
     close: () => channel.close(),
+    done,
+  };
+}
+
+function startCodexOrder(
+  order: Order,
+  handlers: RunHandlers,
+  deps: RunDeps = {},
+): SessionRun {
+  deps = resolvedRunDeps(deps, "codex", handlers);
+  const queue = createTextTurnQueue(order.task);
+  let currentAbort: AbortController | undefined;
+  let interruptRequested = false;
+
+  const done = (async () => {
+    handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
+    const unsupported = unsupportedRunFields("codex", deps);
+    if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
+    let final: RunResult = { ok: false, sessionId: deps.resume ?? "", summary: "", costUsd: 0 };
+    try {
+      const client = await makeCodexClient(deps);
+      const options = codexThreadOptions(order, deps);
+      const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
+      for (;;) {
+        const next = await queue.next();
+        if (next === undefined) break;
+        currentAbort = new AbortController();
+        final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
+        currentAbort = undefined;
+        if (!final.ok) break;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      final = { ok: false, sessionId: final.sessionId, summary: reason, costUsd: 0, apiError: apiErrorFromCodexMessage(reason) };
+    }
+    if (interruptRequested && !final.summary) {
+      handlers.onEvent?.("session_interrupted");
+      return { ...final, summary: "interrupted" };
+    }
+    return final;
+  })();
+
+  return {
+    followUp: (text) => queue.push(text),
+    interrupt: async () => {
+      interruptRequested = true;
+      queue.close();
+      currentAbort?.abort();
+    },
+    queued: () => queue.queued(),
+    close: () => queue.close(),
     done,
   };
 }

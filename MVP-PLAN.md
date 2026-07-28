@@ -5,15 +5,16 @@
 > checkbox (`- [ ]`) syntax. Read `CLAUDE.md` first.
 
 **Goal:** Neo is a personal work *engine*. You give it an order ("open this project and do X") and
-it opens the project as a headless Claude Code worker (Claude Agent SDK), governs the work
-deterministically, and streams progress back over Telegram — no `cd`, no terminal, no tmux.
+it opens the project as a headless coding-agent worker (Claude Agent SDK by default; OpenAI Codex
+SDK optionally), governs the work deterministically, and streams progress back over Telegram — no
+`cd`, no terminal, no tmux.
 
 **Architecture:** Three layers — Frontend (channels) → Engine (deterministic: orders, provider
-routing, governance, budget, ledger) → Worker (Agent SDK = Claude Code in a folder). AI decides;
-the engine acts and governs.
+routing, governance, budget, ledger) → Worker (coding-agent SDK in a folder). AI decides; the engine
+acts and governs.
 
-**Tech Stack:** Bun + TypeScript · `@anthropic-ai/claude-agent-sdk` · grammy (Telegram) ·
-bun:sqlite (ledger) · MCP (worker→engine callback channel).
+**Tech Stack:** Bun + TypeScript · `@anthropic-ai/claude-agent-sdk` · `@openai/codex-sdk` · grammy
+(Telegram) · bun:sqlite (ledger) · MCP (worker→engine callback channel).
 
 **Decision (locked):** New project (not an evolution of operant). Port the proven, model-agnostic
 modules from `/home/operant`; drop its tmux/shim/socket/scraper spine. See `CLAUDE.md` → "Why these
@@ -24,8 +25,9 @@ decisions."
 ## Global Constraints (copied into every task's context)
 
 - **PROVIDER FIREWALL (compliance, enforced in engine code — never a prompt):**
-  - **Subscription (Agent SDK)** → only Neo's own work. It draws from your normal Claude
-    subscription usage limits today; the monthly-credit change is **paused** — build **no** credit
+  - **Operator SDK (`providers.ownWork`)** → only Neo's own work. Default `subscription` uses the
+    Claude Agent SDK and draws from your normal Claude subscription usage limits today; `codex` uses
+    the OpenAI Codex SDK. The Anthropic monthly-credit change is **paused** — build **no** credit
     accounting (YAGNI). Provider choice stays in `config` so a future plan change is a flip.
   - **Gemini** → all customer-direct interaction. The router must **refuse in code** to route
     `source: "customer"` to the subscription. Never offer customers a Claude login.

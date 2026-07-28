@@ -35,7 +35,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `telegramAllowFrom` | `[]` | Numeric Telegram ids allowed to reach the bot / claim admin. Empty → first-come trust-on-first-use. |
-| `providers` | `{ ownWork: "subscription", customerWork: "gemini" }` | Provider routing (the compliance firewall). |
+| `providers` | `{ ownWork: "subscription", customerWork: "gemini" }` | Provider routing (the compliance firewall). `ownWork` may be `"subscription"` (Claude Agent SDK, default) or `"codex"` (OpenAI Codex SDK). |
 | `subscriptionInteractiveReservePct` | `0.2` | Fraction of the subscription pool reserved for interactive use. |
 | `budgetWindowUsd` | `20` | Per-window USD budget for background SDK work. |
 | `budgetWindowMs` | `18000000` (5h) | Rolling budget window, matching the subscription usage window. |
@@ -51,7 +51,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
 | `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`windowTokensByModel`. |
 | `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. |
-| `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker (e.g. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, `CLAUDE_CODE_SUBAGENT_MODEL`). |
+| `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
@@ -62,9 +62,12 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 Each of the seven launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
 `handoff` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
 `WorkerPathName` in `src/config.ts`). `profileDeps(cfg, path, base)` (`src/engine/worker-profile.ts`)
-looks up `cfg.workers[path]` and fills `model`/`effort`/`skills`/`maxTurns` onto the caller's
-`RunDeps` only where the caller didn't already set them (the caller's own values always win), then
-merges `cfg.workerEnv` with any caller-supplied `env`. A per-path object set in `config.json`
+looks up `cfg.workers[path]` and fills the configured own-work provider plus
+`model`/`effort`/`skills`/`maxTurns` onto the caller's `RunDeps` only where the caller didn't
+already set them (the caller's own values always win), then merges `cfg.workerEnv` with any
+caller-supplied `env`. Those fields are applied through the SDK compatibility table in
+`src/engine/model-resolver.ts`: Claude gets the Claude-only controls, while Codex keeps
+`model`/`effort` and drops profile-level `skills`/`maxTurns`. A per-path object set in `config.json`
 **replaces** the built-in default object for that path (it does not merge field-by-field), so
 include every field you want to keep.
 
@@ -82,6 +85,48 @@ reading the guardrail. Guardrail: watch ledger loop `goal-met` rate, iterations-
 whether resumed sessions recover from handoff notes without re-asking, for two weeks; any
 regression → remove the override (a config flip). Code-writing paths (`company`, `project`,
 `dispatch`, `loop`) are NOT eligible — see the design spec's quality guarantee.
+
+## Worker SDK provider
+
+By default Neo runs operator work through the Claude Agent SDK:
+
+```json
+{ "providers": { "ownWork": "subscription", "customerWork": "gemini" } }
+```
+
+Set `ownWork` to `"codex"` to run operator workers through the OpenAI Codex SDK instead:
+
+```json
+{ "providers": { "ownWork": "codex", "customerWork": "gemini" } }
+```
+
+At runtime, the operator can switch the same value for new sessions with `/sdk claude`,
+`/sdk codex`, or the Worker SDK segmented control in the web console. Existing sessions keep the
+SDK they started with; restart persistence still comes from `config.json`.
+
+The runner wrapper keeps the engine-facing API the same (`runOrder` / `startOrder`), including live
+follow-ups and resume. The Claude adapter keeps Neo's existing `canUseTool` governor and in-process
+MCP servers. The Codex adapter uses Codex SDK threads with `workingDirectory`, `sandboxMode`,
+`approvalPolicy`, model, and reasoning-effort controls; it streams Codex JSON events into Neo's
+message/activity/event hooks. Compatibility is table-driven in `src/engine/model-resolver.ts`:
+
+| Run/profile setting | `subscription` (Claude Agent SDK) | `codex` (OpenAI Codex SDK) |
+| --- | --- | --- |
+| `model` | Forwarded. `haiku`, `sonnet`, and `opus` remain Claude tier aliases. | Provider-native model IDs pass through. Claude tier aliases map to Codex default model plus effort (`haiku`→`low`, `sonnet`→`medium`, `opus`→`high`). |
+| `effort` | Forwarded to the Claude adapter. | Forwarded as Codex reasoning effort (`max` becomes Codex `xhigh`). |
+| `skills` / `maxTurns` | Forwarded to Claude Code. | Dropped from worker profiles and omitted from Codex launch config; direct `RunDeps` usage records `worker_compat_warning`. |
+| `agents` / dispatch team mode | Forwarded to Claude Code; team dispatch adds the lead-agent preamble. | Unsupported. Team dispatch falls back to a normal single-worker brief; direct `agents` usage records `worker_compat_warning`. |
+| `mcpServers` | In-process MCP servers attach to the Claude SDK. | Unsupported by the current Codex wrapper shape; records `worker_compat_warning`. |
+| `disallowedTools` | Forwarded to Claude Code/governor. | The standard read-only deny-list (`Write`, `Edit`, `NotebookEdit`, `Bash`) becomes Codex `sandboxMode: "read-only"`. Other tool deny-lists record `worker_compat_warning`. |
+| `workerEnv` | Merged over `process.env` unchanged. | `CLAUDE_*`, `ANTHROPIC_*`, and `MAX_MCP_OUTPUT_TOKENS` are filtered before launch; other keys such as `CODEX_API_KEY` stay available. |
+
+Worker profile `model` values are resolved at the SDK boundary. Provider-native model IDs pass
+through unchanged, but Claude tier aliases do not leak into Codex: `haiku` maps to Codex default
+model + `low` effort, `sonnet` to default model + `medium` effort, and `opus` to default model +
+`high` effort. An explicit `effort` in the worker profile wins over the alias-derived effort.
+
+Codex SDK auth is handled by Codex itself: use your local Codex login or provide `CODEX_API_KEY` in
+the process environment. Neo does not read or store that key directly.
 
 ## Context policy: learned cache TTL + per-model window
 

@@ -74,11 +74,13 @@ function fakeStart(onStart?: (h: RunHandlers) => void) {
 function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnType<typeof fakeStart> } = {}) {
   const registry = createRegistry();
   const admin = over.admin ?? openAdminStore(":memory:");
+  const config = cfg();
   return {
     registry,
     admin,
+    cfg: config,
     instance: createWebApp({
-      engine: { cfg: cfg(), ledger: openLedger(":memory:"), registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
+      engine: { cfg: config, ledger: openLedger(":memory:"), registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
       botToken: TOKEN,
       botUsername: "neo_bot",
       sessions: createSessionStore({ secret: "websecret", ttlSec: 100000 }),
@@ -170,6 +172,26 @@ test("POST /api/loop/create rejects invalid input with ok:false", async () => {
   );
   expect(res.status).toBe(200);
   expect(await res.json()).toMatchObject({ ok: false });
+});
+
+test("POST /api/sdk with a session switches the worker SDK", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+
+  const res = await a.instance.fetch(
+    new Request("http://neo.test/api/sdk", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ provider: "codex" }),
+    }),
+  );
+
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ ok: true, sdk: { provider: "codex" } });
+  expect(a.cfg.providers.ownWork).toBe("codex");
+
+  const state = await a.instance.fetch(new Request("http://neo.test/api/state", { headers: { cookie } }));
+  expect(await state.json()).toMatchObject({ sdk: { provider: "codex" } });
 });
 
 test("GET / serves the login page when unauthenticated and the console when authenticated", async () => {

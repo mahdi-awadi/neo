@@ -69,13 +69,15 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
     resolveDone = res;
   });
   let resumeSeen: string | undefined;
+  let providerSeen: unknown;
   const followUps: string[] = [];
-  const start = (_o: Order, h: RunHandlers, d?: { resume?: string }): SessionRun => {
+  const start = (_o: Order, h: RunHandlers, d?: { resume?: string; provider?: unknown }): SessionRun => {
     resumeSeen = d?.resume;
+    providerSeen = d?.provider;
     opts.onStart?.(h);
     return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, close: () => {}, done };
   };
-  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, followUps: () => followUps };
+  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
 }
 
 function harness(over: { meter?: Meter; start?: ReturnType<typeof fakeStart>["start"] } = {}) {
@@ -123,6 +125,20 @@ test("starts a live order, streams text, registers it, then records the outcome 
   expect(h.registry.list().length).toBe(1);
   expect(h.registry.list()[0].status).toBe("idle");
   expect(h.registry.getControl(h.registry.list()[0].id)).toBeUndefined(); // dead handle dropped
+});
+
+test("starts a new order with the configured worker SDK provider", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.base.cfg.providers.ownWork = "codex";
+
+  const run = await handleMessage(`/open ${dir} use the codex adapter`, 9, h.base);
+
+  expect(h.replies.some((r) => r.includes("(codex)"))).toBe(true);
+  expect(f.providerSeen()).toBe("codex");
+  f.finish({ ok: true, sessionId: "codex-thread-1", summary: "done", costUsd: 0 });
+  await run!.done;
 });
 
 test("logs the full conversation: inbound user text and every outbound reply", async () => {
