@@ -4,6 +4,8 @@
 // caller falls through to the order pipeline. `select` is the set of tappable projects for
 // /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { NeoConfig } from "../config";
@@ -77,6 +79,11 @@ interface Command {
   run(ctx: CommandContext): CommandResult;
 }
 
+interface TrustTarget {
+  name: string;
+  folder: string;
+}
+
 const COMMANDS: Command[] = [
   {
     name: "list",
@@ -116,8 +123,8 @@ const COMMANDS: Command[] = [
   },
   {
     name: "trust",
-    usage: "/trust [on|off]",
-    summary: "auto-approve all actions for the active project (no Allow/Deny prompts)",
+    usage: "/trust [<project-or-folder>] [on|off]",
+    summary: "auto-approve all actions for a project (no Allow/Deny prompts)",
     run: ({ deps, args, chatId }) => trustCommand(args.trim(), chatId, deps),
   },
   {
@@ -255,15 +262,21 @@ function inboxCommand(deps: CommandDeps): CommandResult {
   return { text, inbox: items };
 }
 
-function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandResult {
-  const target = deps.registry.findByChat(chatId) ?? deps.registry.getDefault();
-  if (!target) return { text: "No active project to trust." };
-  const folder = target.order.folder;
-  if (arg === "on" || arg === "off") {
-    deps.trust.setTrust(folder, arg === "on");
+function trustCommand(args: string, chatId: number, deps: CommandDeps): CommandResult {
+  const parts = args.split(/\s+/).filter(Boolean);
+  const last = parts.at(-1);
+  const mode = last === "on" || last === "off" ? last : undefined;
+  const targetArg = mode ? parts.slice(0, -1).join(" ") : parts.join(" ");
+  const target = resolveTrustTarget(targetArg, chatId, deps.registry);
+  if (!target) {
+    return { text: targetArg ? `Project or folder not found: ${targetArg}` : "No active project to trust." };
+  }
+  const folder = target.folder;
+  if (mode) {
+    deps.trust.setTrust(folder, mode === "on");
     return {
       text:
-        arg === "on"
+        mode === "on"
           ? `🔓 trusting ${target.name} (${folder}) — actions auto-approve, no prompts.`
           : `🔒 no longer trusting ${target.name} (${folder}) — actions will prompt again.`,
     };
@@ -271,7 +284,19 @@ function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandRe
   const here = deps.trust.isTrusted(folder) ? "🔓 trusted" : "🔒 not trusted";
   const all = deps.trust.list();
   const list = all.length ? `\nTrusted: ${all.join(", ")}` : "";
-  return { text: `${target.name} (${folder}): ${here}\nUsage: /trust on · /trust off${list}` };
+  return { text: `${target.name} (${folder}): ${here}\nUsage: /trust [<project-or-folder>] [on|off]${list}` };
+}
+
+function resolveTrustTarget(targetArg: string, chatId: number, registry: Registry): TrustTarget | undefined {
+  if (!targetArg) {
+    const active = registry.findByChat(chatId) ?? registry.getDefault();
+    return active ? { name: active.name, folder: active.order.folder } : undefined;
+  }
+  const open = registry.findByName(targetArg);
+  if (open) return { name: open.name, folder: open.order.folder };
+  const folder = targetArg.startsWith("/") ? targetArg : join("/home", targetArg);
+  if (!existsSync(folder)) return undefined;
+  return { name: targetArg.startsWith("/") ? basename(folder) : targetArg, folder };
 }
 
 function sdkCommand(arg: string, cfg: CommandDeps["cfg"]): CommandResult {

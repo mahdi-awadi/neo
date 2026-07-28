@@ -151,7 +151,7 @@ The same commands work over Telegram and the web console.
 | `/pin <name>` | Keep talking to a project across messages (until `/unpin`). |
 | `/unpin` (`/company`, `/main`) | Return focus to the company / main agent. |
 | `/kill <name>` | Stop a project session. |
-| `/trust [on\|off]` | Auto-approve actions for the focused project (skip Allow/Deny prompts). |
+| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). |
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |

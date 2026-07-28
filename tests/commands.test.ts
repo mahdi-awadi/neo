@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { handleCommand, selectProject, killProject, telegramCommands } from "../src/engine/commands";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
@@ -75,6 +78,7 @@ test("/help lists the available commands including /open", () => {
   expect(out).toContain("/open");
   expect(out).toContain("/list");
   expect(out).toContain("/kill");
+  expect(out).toContain("/trust [<project-or-folder>] [on|off]");
 });
 
 test("/list shows open projects with name, folder, status, and task", () => {
@@ -342,6 +346,48 @@ test("/trust on then /trust toggles and reports trust when a project is explicit
   expect(handleCommand("/trust", 5, d)!.text).toContain("trusted");
   expect(handleCommand("/trust off", 5, d)!.text).toContain("🔒");
   expect(trust.isTrusted("/home/neo/myproject")).toBe(false);
+});
+
+test("/trust can pre-trust an unopened absolute folder", () => {
+  const folder = mkdtempSync(join(tmpdir(), "neo-trust-"));
+  try {
+    const trust = openTrustStore(":memory:");
+    const d = { registry: createRegistry(), ledger: openLedger(":memory:"), trust, now: () => 1 };
+
+    expect(handleCommand(`/trust ${folder} on`, 5, d)!.text).toContain("🔓");
+    expect(trust.isTrusted(folder)).toBe(true);
+    expect(handleCommand(`/trust ${folder}`, 5, d)!.text).toContain("trusted");
+    expect(handleCommand(`/trust ${folder} off`, 5, d)!.text).toContain("🔒");
+    expect(trust.isTrusted(folder)).toBe(false);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("/trust can pre-trust an unopened bare project name under /home", () => {
+  const trust = openTrustStore(":memory:");
+  const d = { registry: createRegistry(), ledger: openLedger(":memory:"), trust, now: () => 1 };
+
+  expect(handleCommand("/trust neo on", 5, d)!.text).toContain("🔓");
+  expect(trust.isTrusted("/home/neo")).toBe(true);
+  expect(handleCommand("/trust neo", 5, d)!.text).toContain("/home/neo");
+});
+
+test("/trust with an explicit open session name uses that session folder", () => {
+  const registry = createRegistry();
+  registry.add(order({ folder: "/workspace/adminli", chatId: 5 }), 1);
+  const trust = openTrustStore(":memory:");
+  const d = { registry, ledger: openLedger(":memory:"), trust, now: () => 1 };
+
+  expect(handleCommand("/trust adminli on", 5, d)!.text).toContain("/workspace/adminli");
+  expect(trust.isTrusted("/workspace/adminli")).toBe(true);
+});
+
+test("/trust with an unknown explicit target returns a clear not-found message", () => {
+  const out = handleCommand("/trust definitely-not-a-real-neo-project on", 5, deps())!.text;
+
+  expect(out).toContain("Project or folder not found");
+  expect(out).toContain("definitely-not-a-real-neo-project");
 });
 
 test("/status shows current activity, busy duration, and queue depth for running sessions", () => {
