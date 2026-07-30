@@ -180,3 +180,8 @@ hooks, queues follow-ups as sequential turns on the same thread, and aborts with
 kept explicit: Codex SDK does not expose Claude's `canUseTool` hook or Anthropic in-process MCP
 shape, so Codex runs use Codex sandbox/approval policy and emit `worker_compat_warning` for
 Claude-only run options; read-only judge runs translate to Codex `sandboxMode:"read-only"`.
+
+**Trust command explicit targets — live:** `/trust` still defaults to the focused project, then the
+always-on company, but it can now pre-trust an explicit open session name, existing absolute folder,
+or bare project name under `/home`: `/trust [<project-or-folder>] [on|off]`. Unknown explicit targets
+return a not-found message instead of silently toggling the focused project.

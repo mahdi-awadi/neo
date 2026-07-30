@@ -733,14 +733,15 @@ git commit -m "feat(neo): wire per-project trust into pipeline and dispatch" \
 
 **Interfaces:**
 - Consumes: `TrustStore`.
-- Produces: `CommandDeps.trust: TrustStore`; `/trust [on|off]` command; `renderList(registry, trust, now, chatId)`.
+- Produces: `CommandDeps.trust: TrustStore`; `/trust [<project-or-folder>] [on|off]` command;
+  `renderList(registry, trust, now, chatId)`.
 
 - [ ] **Step 1: Write the failing test** — append to `tests/commands.test.ts`:
 
 ```ts
 import { openTrustStore } from "../src/engine/trust";
 
-test("/trust on then /trust toggles and reports trust for the active project", () => {
+test("/trust on then /trust toggles and reports trust for the fallback project", () => {
   const registry = createRegistry();
   const o = order({ id: "company", folder: "/home/neo/agent", chatId: -1 });
   registry.add(o, 0);
@@ -753,6 +754,15 @@ test("/trust on then /trust toggles and reports trust for the active project", (
   expect(handleCommand("/trust", 5, d)!.text).toContain("trusted");
   expect(handleCommand("/trust off", 5, d)!.text).toContain("🔒");
   expect(trust.isTrusted("/home/neo/agent")).toBe(false);
+});
+
+test("/trust can pre-trust an unopened bare project name under /home", () => {
+  const trust = openTrustStore(":memory:");
+  const d = { registry: createRegistry(), ledger: openLedger(":memory:"), trust, now: () => 1 };
+
+  expect(handleCommand("/trust neo on", 5, d)!.text).toContain("🔓");
+  expect(trust.isTrusted("/home/neo")).toBe(true);
+  expect(handleCommand("/trust neo", 5, d)!.text).toContain("/home/neo");
 });
 ```
 
@@ -774,13 +784,20 @@ In `src/engine/commands.ts`, add to `CommandDeps`:
 
 > Or add `import type { TrustStore } from "./trust";` at the top and `trust: TrustStore;`.
 
+Add the path helpers near the top of `src/engine/commands.ts`:
+
+```ts
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
+```
+
 Add to the `COMMANDS` array (place after `kill`):
 
 ```ts
   {
     name: "trust",
-    usage: "/trust [on|off]",
-    summary: "auto-approve all actions for the active project (no Allow/Deny prompts)",
+    usage: "/trust [<project-or-folder>] [on|off]",
+    summary: "auto-approve all actions for a project (no Allow/Deny prompts)",
     run: ({ deps, args, chatId }) => trustCommand(args.trim(), chatId, deps),
   },
 ```
@@ -788,15 +805,26 @@ Add to the `COMMANDS` array (place after `kill`):
 Add the helper function:
 
 ```ts
-function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandResult {
-  const target = deps.registry.findByChat(chatId) ?? deps.registry.getDefault();
-  if (!target) return { text: "No active project to trust." };
-  const folder = target.order.folder;
-  if (arg === "on" || arg === "off") {
-    deps.trust.setTrust(folder, arg === "on");
+interface TrustTarget {
+  name: string;
+  folder: string;
+}
+
+function trustCommand(args: string, chatId: number, deps: CommandDeps): CommandResult {
+  const parts = args.split(/\s+/).filter(Boolean);
+  const last = parts.at(-1);
+  const mode = last === "on" || last === "off" ? last : undefined;
+  const targetArg = mode ? parts.slice(0, -1).join(" ") : parts.join(" ");
+  const target = resolveTrustTarget(targetArg, chatId, deps.registry);
+  if (!target) {
+    return { text: targetArg ? `Project or folder not found: ${targetArg}` : "No active project to trust." };
+  }
+  const folder = target.folder;
+  if (mode) {
+    deps.trust.setTrust(folder, mode === "on");
     return {
       text:
-        arg === "on"
+        mode === "on"
           ? `🔓 trusting ${target.name} (${folder}) — actions auto-approve, no prompts.`
           : `🔒 no longer trusting ${target.name} (${folder}) — actions will prompt again.`,
     };
@@ -804,7 +832,19 @@ function trustCommand(arg: string, chatId: number, deps: CommandDeps): CommandRe
   const here = deps.trust.isTrusted(folder) ? "🔓 trusted" : "🔒 not trusted";
   const all = deps.trust.list();
   const list = all.length ? `\nTrusted: ${all.join(", ")}` : "";
-  return { text: `${target.name} (${folder}): ${here}\nUsage: /trust on · /trust off${list}` };
+  return { text: `${target.name} (${folder}): ${here}\nUsage: /trust [<project-or-folder>] [on|off]${list}` };
+}
+
+function resolveTrustTarget(targetArg: string, chatId: number, registry: Registry): TrustTarget | undefined {
+  if (!targetArg) {
+    const active = registry.findByChat(chatId) ?? registry.getDefault();
+    return active ? { name: active.name, folder: active.order.folder } : undefined;
+  }
+  const open = registry.findByName(targetArg);
+  if (open) return { name: open.name, folder: open.order.folder };
+  const folder = targetArg.startsWith("/") ? targetArg : join("/home", targetArg);
+  if (!existsSync(folder)) return undefined;
+  return { name: targetArg.startsWith("/") ? basename(folder) : targetArg, folder };
 }
 ```
 

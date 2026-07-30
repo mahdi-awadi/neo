@@ -1,7 +1,7 @@
 # Design: always-on company · 24h normal idle · per-project trust · file transfer
 
 **Date:** 2026-06-20
-**Status:** approved (brainstorming) — ready for implementation plan
+**Status:** implemented; amended 2026-07-28 for explicit `/trust` targets
 
 ## Problem
 
@@ -126,10 +126,13 @@ This is the compensating control now that the human gate can be bypassed.
 **`src/engine/commands.ts`:**
 - `CommandDeps` gains `trust: TrustStore`.
 - New `/trust` command:
-  - `/trust` → status: whether the chat's active project is trusted, plus the list of trusted
-    folders and usage hint.
-  - `/trust on` / `/trust off` → toggle trust for the chat's active project
-    (`findByChat(chatId) ?? getDefault()`), echoing the resulting state.
+  - `/trust` → status for the focused project, falling back to the default project
+    (`findByChat(chatId) ?? getDefault()`), plus the trusted-folder list and usage hint.
+  - `/trust <project-or-folder>` → status for an explicit target.
+  - `/trust [<project-or-folder>] on` / `/trust [<project-or-folder>] off` → toggle trust for the
+    resolved target, echoing the resulting state.
+  - Target resolution checks open session names first, then existing absolute folders, then existing
+    bare project names under `/home`; an unknown explicit target returns a clear not-found message.
 - `/list` marks trusted projects with a 🔓.
 
 **Both frontends** route through `handleCommand`, so Telegram and the web console both get `/trust`
@@ -142,6 +145,9 @@ Telegram frontend, the web `EngineDeps`, and `dispatch`.
   never auto-approves a safe tool differently (still allowed) — and the thunk is read at call time.
 - `recordAutoApproval` persists.
 - `/trust on` then `/trust` reports trusted; `/trust off` reports untrusted.
+- `/trust <absolute-folder> on`, `/trust <bare-project-name> on`, and `/trust <open-session-name> on`
+  trust the resolved folder even when it is not the focused project; unknown explicit targets are
+  rejected with a not-found message.
 
 ---
 
@@ -219,7 +225,8 @@ Worker (Claude Agent SDK)
 ## Files touched
 
 - `src/engine/idle.ts` — skip default in sweep.
-- `src/engine/commands.ts` — protect default from `/kill`; add `/trust`; 🔓 in `/list`; `CommandDeps.trust`.
+- `src/engine/commands.ts` — protect default from `/kill`; add `/trust` with explicit target
+  resolution; 🔓 in `/list`; `CommandDeps.trust`.
 - `src/config.ts` — `idleCloseMs` (default 24h).
 - `src/daemon.ts` — use `cfg.idleCloseMs`; construct + thread `TrustStore`; thread `sendFile`.
 - `src/engine/pipeline.ts` — `trust` + `sendFile` deps; `autoApprove`/`onAutoApprove` wiring; `touch` on output.
@@ -234,8 +241,9 @@ Worker (Claude Agent SDK)
 ## Verification
 
 - TDD per piece; `bun test` + `bunx tsc --noEmit` green before any piece is "done".
-- Manual after wiring: `/trust on` → risky command runs with no prompt and an FYI line + ledger row;
-  `/trust off` → prompts again. Attach a file in Telegram and web → lands in `<folder>/inbox/`.
+- Manual after wiring: `/trust [<project-or-folder>] on` → risky command runs with no prompt and an
+  FYI line + ledger row; `/trust [<project-or-folder>] off` → prompts again. Attach a file in
+  Telegram and web → lands in `<folder>/inbox/`.
   Have a worker call `send_file` → arrives in both channels.
 
 ## Implementation order
