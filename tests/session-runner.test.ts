@@ -498,6 +498,23 @@ test("api error kind falls back to the HTTP status when no assistant error field
   expect(res.apiError).toBe("overloaded");
 });
 
+test("api error kind falls back to Claude's result text when status/error are missing", async () => {
+  const q = () =>
+    (async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        result: "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited",
+        total_cost_usd: 0,
+        session_id: "s",
+      };
+    })();
+  const res = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(res.ok).toBe(false);
+  expect(res.apiError).toBe("rate_limit");
+});
+
 test("a clean turn reports no api error", async () => {
   const q = () =>
     (async function* () {

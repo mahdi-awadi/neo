@@ -159,12 +159,26 @@ export type ApiErrorKind =
   | "unknown";
 
 /** Map the result's HTTP status to an error kind, for when no assistant error field arrived. */
-function apiErrorFromStatus(status: number | null | undefined): ApiErrorKind {
+function apiErrorFromStatus(status: number | null | undefined): ApiErrorKind | undefined {
   if (status === 429) return "rate_limit";
   if (status === 529) return "overloaded";
   if (status === 401 || status === 403) return "authentication_failed";
   if (typeof status === "number" && status >= 500) return "server_error";
-  return "unknown";
+  return undefined;
+}
+
+function apiErrorFromMessage(message: string): ApiErrorKind | undefined {
+  const lower = message.toLowerCase();
+  if (lower.includes("rate limit") || lower.includes("rate limited") || lower.includes("temporarily limiting requests") || lower.includes("429")) {
+    return "rate_limit";
+  }
+  if (lower.includes("overloaded") || lower.includes("529")) return "overloaded";
+  if (lower.includes("401") || lower.includes("403") || lower.includes("authentication")) return "authentication_failed";
+  if (lower.includes("billing")) return "billing_error";
+  if (lower.includes("invalid request")) return "invalid_request";
+  if (lower.includes("model") && lower.includes("not found")) return "model_not_found";
+  if (lower.includes("max output")) return "max_output_tokens";
+  return undefined;
 }
 
 export interface RunResult {
@@ -342,8 +356,10 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // assistant fallback earlier in the SAME session (a prior throttled turn that then recovered on
         // a retry); a later successful turn must NOT inherit it, or the engine falsely reports "work is
         // NOT done" on completed work (the leak-across-turns bug).
-        const turnError = failed ? (apiError ?? apiErrorFromStatus(msg.api_error_status as number | null)) : undefined;
         summary = typeof msg.result === "string" ? msg.result : "";
+        const turnError = failed
+          ? (apiError ?? apiErrorFromStatus(msg.api_error_status as number | null) ?? apiErrorFromMessage(summary) ?? "unknown")
+          : undefined;
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
         handlers.onCost?.(costUsd);
         // Turn boundary: the worker is waiting for the next input, not mid-turn — the
