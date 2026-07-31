@@ -66,7 +66,12 @@ canUseTool: async (tool, input) => {
 - `"assistant"` — `msg.message.content` is an array of blocks; text is `block.type === "text"` →
   `block.text`.
 - `"result"` — terminal; `subtype: "success"`, plus `total_cost_usd`, `num_turns`. Read the final
-  outcome here.
+  outcome here, but do **not** trust `subtype` alone: Claude API failures can arrive as
+  `subtype:"success"` with `is_error:true`. Neo treats that as a failed turn and resolves
+  `RunResult.apiError` from, in order, the assistant `error` field, `api_error_status` (429 →
+  `rate_limit`, 529 → `overloaded`, 401/403 → `authentication_failed`, 5xx → `server_error`), then
+  recognizable result text such as "temporarily limiting requests" / "Rate limited". If none match,
+  the kind is `unknown`; successful later turns clear the prior turn's API error.
 
 ## Auth
 

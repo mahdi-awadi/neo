@@ -84,17 +84,21 @@ mid-drain). Module: `src/engine/reload.ts`.
 Server is temporarily limiting requests · Rate limited") and the SDK reports the dead turn as
 `subtype:"success"` **with `is_error:true`** — the engine used to read only the subtype, so a
 throttled turn was booked as *done* and the brief vanished silently (2026-07-22: four sessions at
-once). Now `session-runner` reads `is_error` + the assistant `error` kind (`RunResult.apiError`)
-and surfaces the SDK's own `system/api_retry` events as activity, and `api-retry.ts` owns the
-policy: retryable kinds (`rate_limit`/`overloaded`/`server_error`) get a bounded second-tier
-backoff — 30s → 2m → 8m, ±20% jitter so co-throttled sessions don't sync up — re-sending the SAME
-brief into the SAME live session, prefixed with a warning that the cut-off attempt may be half-done.
+once). Now `session-runner` reads `is_error` and resolves `RunResult.apiError` from the assistant
+`error` kind, the result's `api_error_status`, or (last resort) the result text — covering the
+text-only Claude throttle failures that arrive with no status/error field. It also surfaces the
+SDK's own `system/api_retry` events as activity, and `api-retry.ts` owns the policy: retryable kinds
+(`rate_limit`/`overloaded`/`server_error`) get a bounded second-tier backoff — 30s → 2m → 8m, ±20%
+jitter so co-throttled sessions don't sync up — re-sending the SAME brief into the SAME live
+session, prefixed with a warning that the cut-off attempt may be half-done.
 Retries never fight the operator (interrupt/kill), a reload drain, or the budget meter, and after
-`MAX_API_RETRIES` the operator is told plainly the work is **not** done. One shared `ApiCooldown`
-gate (armed by any throttled worker, 60s) holds **new background work** — dispatches and loop fires
-— while the storm lasts; interactive operator messages are never held (that's the reserved
-headroom). A dispatch's backoff wait pauses the stall clock and doesn't count against the dispatch
-ceiling.
+`MAX_API_RETRIES` the operator is told plainly the work is **not** done. A zero-retry give-up now
+only says "still throttled" for held server-side retryable kinds; unknown/auth/billing/invalid
+failures report "without retrying" without pretending the engine is still rate-limited. One shared
+`ApiCooldown` gate (armed by any throttled worker, 60s) holds **new background work** — dispatches
+and loop fires — while the storm lasts; interactive operator messages are never held (that's the
+reserved headroom). A dispatch's backoff wait pauses the stall clock and doesn't count against the
+dispatch ceiling.
 
 **Data-driven loop CRUD — live:** loop *definitions* are now data (ledger `loop_defs`), merged with
 the built-in library by `effectiveLoops()` and re-read each scheduler tick, so an operator can
