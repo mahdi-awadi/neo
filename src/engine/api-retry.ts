@@ -119,7 +119,13 @@ export function apiRetryNotice(project: string | undefined, attempt: number, del
 export function apiFailureNotice(project: string | undefined, kind: ApiErrorKind, attempts: number = MAX_API_RETRIES): string {
   const who = project ? `${project}: ` : "";
   const why = kind === "rate_limit" || kind === "overloaded" ? "the API kept throttling us" : `the API failed (${kind})`;
-  const ran = attempts <= 0 ? "without retrying (still throttled)" : `after ${attempts} ${attempts === 1 ? "retry" : "retries"}`;
+  const held = kind === "rate_limit" || kind === "overloaded" || kind === "server_error";
+  const ran =
+    attempts <= 0
+      ? held
+        ? "without retrying (still throttled)"
+        : "without retrying"
+      : `after ${attempts} ${attempts === 1 ? "retry" : "retries"}`;
   return `✗ ${who}${why} ${ran} — the work is NOT done. Re-run it when you're ready.`;
 }
 

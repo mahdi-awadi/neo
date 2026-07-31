@@ -121,6 +121,12 @@ test("the give-up notice states how many attempts actually ran, never a fixed '3
   expect(apiFailureNotice("safari", "rate_limit", 2).toLowerCase()).toContain("not done");
 });
 
+test("unknown API failures do not pretend the engine is still throttled", () => {
+  const notice = apiFailureNotice("agent", "unknown", 0);
+  expect(notice).toContain("the API failed (unknown) without retrying");
+  expect(notice).not.toContain("still throttled");
+});
+
 // --- what the worker and the operator are told (existing) ----------------------------------------
 
 test("the retry brief re-sends the task AND warns that the cut-off attempt may be half-done", () => {
