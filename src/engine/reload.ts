@@ -108,7 +108,8 @@ export async function drainAndPersist(opts: {
       name: s.name,
       folder: s.order.folder,
       chatId: s.order.chatId,
-      sdkSessionId: s.sdkSessionId || ledger.lastSessionFor(s.order.folder, s.order.chatId) || "",
+      sdkSessionId: s.sdkSessionId || ledger.lastSessionFor(s.order.folder, s.order.chatId, s.sdkProvider) || "",
+      sdkProvider: s.sdkProvider, // the id is only resumable under the SDK that minted it
       task: s.order.task,
       source: s.order.source,
       createdAt: s.order.createdAt,
@@ -178,10 +179,10 @@ export async function stopFrontends(
 export function restoreSessions(registry: Registry, ledger: Ledger, now: () => number = Date.now): SessionInfo[] {
   const restored: SessionInfo[] = [];
   for (const row of ledger.takeOpenSessions()) {
-    const sdkSessionId = row.sdkSessionId || ledger.lastSessionFor(row.folder, row.chatId) || "";
+    const sdkSessionId = row.sdkSessionId || ledger.lastSessionFor(row.folder, row.chatId, row.sdkProvider) || "";
     const existing = registry.findByFolder(row.folder);
     if (existing) {
-      if (sdkSessionId && !existing.sdkSessionId) registry.setSdkSessionId(existing.id, sdkSessionId);
+      if (sdkSessionId && !existing.sdkSessionId) registry.setSdkSessionId(existing.id, sdkSessionId, row.sdkProvider);
       continue;
     }
     const session = registry.add(
@@ -189,7 +190,7 @@ export function restoreSessions(registry: Registry, ledger: Ledger, now: () => n
       now(),
     );
     registry.setStatus(session.id, "idle"); // idle = resumable; the next follow-up/dispatch resumes it
-    if (sdkSessionId) registry.setSdkSessionId(session.id, sdkSessionId);
+    if (sdkSessionId) registry.setSdkSessionId(session.id, sdkSessionId, row.sdkProvider);
     restored.push(session);
   }
   return restored;

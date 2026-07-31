@@ -216,7 +216,7 @@ export function startTelegram(
     const chatId = ctx.chat.id;
     // A reply on the attachment targets that project; resolve it (focus, or clarify) before saving.
     const routing = routeReply(
-      { registry, ledger, routes },
+      { registry, ledger, routes, worker: cfg.providers.ownWork },
       {
         chatId,
         replyToMessageId: ctx.message?.reply_to_message?.message_id,
@@ -306,7 +306,7 @@ export function startTelegram(
     // If the operator replied to a specific worker message, route this follow-up to that project.
     // An unattributable reply is NOT silently sent to the company — we ask them to name the project.
     const routing = routeReply(
-      { registry, ledger, routes },
+      { registry, ledger, routes, worker: cfg.providers.ownWork },
       {
         chatId,
         replyToMessageId: ctx.message.reply_to_message?.message_id,

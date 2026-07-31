@@ -4,7 +4,7 @@
 // Keyed by the stable order id; addressable by short name (for /kill) and by chat (for
 // follow-up routing). The unique-name scheme is ported from operant, trimmed.
 import { basename } from "node:path";
-import type { Order, SessionControl, SessionInfo } from "../types";
+import type { Order, Provider, SessionControl, SessionInfo } from "../types";
 
 /** Statuses for a session that is still live (followable / killable). */
 const OPEN: ReadonlySet<SessionInfo["status"]> = new Set(["running", "idle"]);
@@ -34,7 +34,9 @@ export interface Registry {
   /** The most-recently-active OPEN session for a folder (so dispatch reuses it, not a duplicate). */
   findByFolder(folder: string): SessionInfo | undefined;
   setStatus(id: string, status: SessionInfo["status"]): void;
-  setSdkSessionId(id: string, sdkSessionId: string): void;
+  /** Record the live SDK session id and (when known) WHICH SDK minted it, so a later resume never
+   *  hands a Codex thread id to Claude or vice versa. */
+  setSdkSessionId(id: string, sdkSessionId: string, provider?: Provider): void;
   touch(id: string, now?: number): void;
   /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
   attachControl(id: string, control: SessionControl): void;
@@ -122,9 +124,13 @@ export function createRegistry(): Registry {
       const s = sessions.get(id);
       if (s) s.status = status;
     },
-    setSdkSessionId(id, sdkSessionId) {
+    setSdkSessionId(id, sdkSessionId, provider) {
       const s = sessions.get(id);
-      if (s) s.sdkSessionId = sdkSessionId;
+      if (!s) return;
+      s.sdkSessionId = sdkSessionId;
+      // Clearing the id (context-policy handoff) clears its owner too — a provider left behind on
+      // an empty id would claim ownership of the NEXT SDK's session.
+      s.sdkProvider = sdkSessionId ? (provider ?? s.sdkProvider) : undefined;
     },
     touch(id, now = Date.now()) {
       const s = sessions.get(id);

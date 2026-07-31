@@ -1,7 +1,7 @@
 // Durable record of orders and their outcomes. The deterministic bookkeeping layer —
 // the part of operant that already was an "engine" (ported to bun:sqlite, trimmed).
 import { Database } from "bun:sqlite";
-import type { Order, OrderSource, RouteTarget } from "../types";
+import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
 
 /** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
@@ -16,10 +16,15 @@ export interface Ledger {
   recordOrder(order: Order): void;
   recordOutcome(orderId: string, status: string, summary: string): void;
   getOutcome(orderId: string): { status: string; summary: string } | undefined;
-  /** Persist the worker's SDK session id against an order, so it can later be resumed. */
-  recordSession(orderId: string, sdkSessionId: string): void;
-  /** The most recently recorded SDK session id for a folder/chat (for resume), if any. */
-  lastSessionFor(folder: string, chatId: number): string | undefined;
+  /** Persist the worker's SDK session id against an order, so it can later be resumed. `provider`
+   *  records WHICH SDK minted it — a session id is only meaningful to the SDK that issued it. */
+  recordSession(orderId: string, sdkSessionId: string, provider?: Provider): void;
+  /** The most recently recorded SDK session id for a folder/chat (for resume), if any. When
+   *  `provider` is given, ids minted by a DIFFERENT SDK are skipped: handing a Codex thread id to
+   *  the Claude SDK (or vice versa) fails the run outright ("No conversation found with session
+   *  ID"). Ids recorded before ownership was tracked have no owner and are still returned — see
+   *  canResumeWith for why unknown ownership is tried rather than discarded. */
+  lastSessionFor(folder: string, chatId: number, provider?: Provider): string | undefined;
   listRecent(limit?: number): Order[];
   /** Audit: a risky action that trust auto-approved (the compensating control for the bypassed gate). */
   recordAutoApproval(orderId: string, reason: string): void;
@@ -88,6 +93,9 @@ export interface OpenSessionRow {
   folder: string;
   chatId: number;
   sdkSessionId: string;
+  /** Which SDK minted `sdkSessionId` — carried across the reload so the restored session resumes
+   *  under its own SDK and never hands the id to a different one. */
+  sdkProvider?: Provider;
   task: string;
   source: OrderSource;
   createdAt: number;
@@ -108,10 +116,15 @@ export function openLedger(path: string): Ledger {
        sdk_session_id TEXT
      )`,
   );
-  // Migrate dbs created before sdk_session_id existed.
+  // Migrate dbs created before sdk_session_id / sdk_provider existed. Rows written before
+  // sdk_provider have a NULL provider: unprovable ownership, so a provider-filtered read skips
+  // them (one fresh start) rather than risking a cross-SDK resume that kills the session.
   const cols = db.query(`PRAGMA table_info(orders)`).all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === "sdk_session_id")) {
     db.run(`ALTER TABLE orders ADD COLUMN sdk_session_id TEXT`);
+  }
+  if (!cols.some((c) => c.name === "sdk_provider")) {
+    db.run(`ALTER TABLE orders ADD COLUMN sdk_provider TEXT`);
   }
   db.run(
     `CREATE TABLE IF NOT EXISTS outcomes (
@@ -145,6 +158,10 @@ export function openLedger(path: string): Ledger {
        sdk_session_id TEXT NOT NULL, task TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL
      )`,
   );
+  const openCols = db.query(`PRAGMA table_info(open_sessions)`).all() as Array<{ name: string }>;
+  if (!openCols.some((c) => c.name === "sdk_provider")) {
+    db.run(`ALTER TABLE open_sessions ADD COLUMN sdk_provider TEXT`);
+  }
   // Audit trail of context-policy verdicts (handoff/clear) fired per folder.
   db.run(
     `CREATE TABLE IF NOT EXISTS context_events (
@@ -199,17 +216,22 @@ export function openLedger(path: string): Ledger {
         .get(orderId) as { status: string; summary: string } | null;
       return row ?? undefined;
     },
-    recordSession(orderId, sdkSessionId) {
-      db.query(`UPDATE orders SET sdk_session_id = ? WHERE id = ?`).run(sdkSessionId, orderId);
+    recordSession(orderId, sdkSessionId, provider) {
+      db.query(`UPDATE orders SET sdk_session_id = ?, sdk_provider = ? WHERE id = ?`).run(
+        sdkSessionId,
+        provider ?? null,
+        orderId,
+      );
     },
-    lastSessionFor(folder, chatId) {
+    lastSessionFor(folder, chatId, provider) {
       const row = db
         .query(
           `SELECT sdk_session_id FROM orders
            WHERE folder = ? AND chat_id = ? AND sdk_session_id IS NOT NULL AND sdk_session_id != ''
+             AND (?3 IS NULL OR sdk_provider IS NULL OR sdk_provider = ?3)
            ORDER BY created_at DESC LIMIT 1`,
         )
-        .get(folder, chatId) as { sdk_session_id: string } | null;
+        .get(folder, chatId, provider ?? null) as { sdk_session_id: string } | null;
       return row?.sdk_session_id ?? undefined;
     },
     listRecent(limit = 20) {
@@ -386,15 +408,16 @@ export function openLedger(path: string): Ledger {
     saveOpenSessions(rows) {
       db.run(`DELETE FROM open_sessions`);
       const insert = db.query(
-        `INSERT INTO open_sessions (id, name, folder, chat_id, sdk_session_id, task, source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO open_sessions (id, name, folder, chat_id, sdk_session_id, sdk_provider, task, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
-      for (const r of rows) insert.run(r.id, r.name, r.folder, r.chatId, r.sdkSessionId, r.task, r.source, r.createdAt);
+      for (const r of rows)
+        insert.run(r.id, r.name, r.folder, r.chatId, r.sdkSessionId, r.sdkProvider ?? null, r.task, r.source, r.createdAt);
     },
     takeOpenSessions() {
       const rows = db
         .query(
-          `SELECT id, name, folder, chat_id, sdk_session_id, task, source, created_at
+          `SELECT id, name, folder, chat_id, sdk_session_id, sdk_provider, task, source, created_at
            FROM open_sessions ORDER BY created_at`,
         )
         .all() as Array<{
@@ -403,6 +426,7 @@ export function openLedger(path: string): Ledger {
         folder: string;
         chat_id: number;
         sdk_session_id: string;
+        sdk_provider: string | null;
         task: string;
         source: string;
         created_at: number;
@@ -414,6 +438,7 @@ export function openLedger(path: string): Ledger {
         folder: r.folder,
         chatId: r.chat_id,
         sdkSessionId: r.sdk_session_id,
+        sdkProvider: (r.sdk_provider as Provider | null) ?? undefined,
         task: r.task,
         source: r.source as OrderSource,
         createdAt: r.created_at,
@@ -422,7 +447,7 @@ export function openLedger(path: string): Ledger {
     clearSessionsFor(folder) {
       // Sessions are stored as sdk_session_id on the orders row; wipe the resume target for
       // every order in this folder, so lastSessionFor(folder, *) returns undefined afterward.
-      db.query(`UPDATE orders SET sdk_session_id = NULL WHERE folder = ?`).run(folder);
+      db.query(`UPDATE orders SET sdk_session_id = NULL, sdk_provider = NULL WHERE folder = ?`).run(folder);
     },
     rememberRoute(chatId, messageId, target) {
       db.query(

@@ -6,6 +6,7 @@ import { runOrder, type RunResult } from "./session-runner";
 import { neoMcpServers, type DispatchDeps } from "./dispatch";
 import type { TrustStore } from "./trust";
 import { profileDeps } from "./worker-profile";
+import { canResumeWith } from "./sdk-choice";
 
 /** Reserved chat id for company runs driven by a customer brief (never a real operator chat). */
 export const CUSTOMER_CHAT = -3;
@@ -68,7 +69,9 @@ export async function runCompanyBrief(
         // operator conversation history) and no persisted session id (see below).
         ? profileDeps(deps.cfg, "ingress", { disallowedTools: TAINTED_DISALLOWED_TOOLS })
         : profileDeps(deps.cfg, "ingress", {
-            resume: company.sdkSessionId || undefined,
+            // Same-SDK ids only: an id minted by the other worker SDK is a dead resume target.
+            resume:
+              (canResumeWith(company.sdkProvider, deps.cfg.providers?.ownWork) ? company.sdkSessionId : "") || undefined,
             mcpServers: neoMcpServers(
               { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv },
               CUSTOMER_CHAT,
@@ -85,8 +88,8 @@ export async function runCompanyBrief(
   // Never persist a tainted session id: it must not become the company session that a later
   // untainted run resumes into (that would hand the poisoned context tools).
   if (result.sessionId && !opts.tainted) {
-    deps.registry.setSdkSessionId(company.id, result.sessionId);
-    deps.ledger.recordSession(order.id, result.sessionId);
+    deps.registry.setSdkSessionId(company.id, result.sessionId, deps.cfg.providers?.ownWork);
+    deps.ledger.recordSession(order.id, result.sessionId, deps.cfg.providers?.ownWork);
   }
   deps.meter.note({ costUsd: result.costUsd }, now());
   deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary ?? "");

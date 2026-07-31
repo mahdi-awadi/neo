@@ -33,6 +33,24 @@ export function normalizeWorkerSdk(input: string): WorkerSdkProvider | undefined
   return SDK_ALIASES[input.trim().toLowerCase()];
 }
 
+/**
+ * May `worker` resume a session id minted by `mintedBy`?
+ *
+ * A session id is private to the SDK that issued it: a Codex thread id handed to the Claude SDK
+ * dies instantly with "No conversation found with session ID: …" (and vice versa), which before
+ * this check read as an API failure and left the project unreachable — every message resumed the
+ * same dead id, and the run never survived long enough to mint a live one.
+ *
+ * A KNOWN mismatch is refused here, so the doomed attempt never happens. An id with no recorded
+ * owner (written before ids carried their SDK) is still tried: continuity is worth more than one
+ * round-trip, and if it turns out dead the runner restarts cold on its own (RESUME_MISSING_RE in
+ * session-runner) and re-mints an id that IS tagged. Prevention where we have proof, recovery
+ * where we don't.
+ */
+export function canResumeWith(mintedBy: Provider | undefined, worker: Provider | undefined): boolean {
+  return mintedBy === undefined || mintedBy === worker;
+}
+
 export function workerSdkLabel(provider: Provider): string {
   if (provider === "subscription" || provider === "codex") return SDK_LABELS[provider];
   return `${provider} (not an operator SDK)`;

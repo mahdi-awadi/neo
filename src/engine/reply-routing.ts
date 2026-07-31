@@ -8,7 +8,7 @@
 //   • resolvable to a session that must be RESUMED → { deliver } carries the replied-to original so
 //     the re-opened worker re-grounds in what it previously said (it lost that memory on close)
 //   • an unattributable reply → { clarify } — ask the operator to name the project, never guess
-import type { Order } from "../types";
+import type { Order, Provider } from "../types";
 import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import type { MessageRoutes } from "./message-routes";
@@ -28,6 +28,8 @@ export interface ReplyRoutingDeps {
   ledger: Ledger;
   routes: MessageRoutes;
   now?: () => number;
+  /** The worker SDK new sessions run on — only ITS session ids are valid resume targets. */
+  worker?: Provider;
 }
 
 export interface ReplyInput {
@@ -73,7 +75,7 @@ export function routeReply(deps: ReplyRoutingDeps, input: ReplyInput): ReplyResu
   if (!id) {
     // Idle-closed / evicted / post-reload gap: rebuild an idle, resumable entry from the folder's
     // last recorded SDK session, so the pipeline's resume branch reopens the same conversation.
-    const resumeId = ledger.lastSessionFor(target.folder, input.chatId) ?? "";
+    const resumeId = ledger.lastSessionFor(target.folder, input.chatId, deps.worker) ?? "";
     const order: Order = {
       id: crypto.randomUUID(),
       source: "neo",
@@ -84,7 +86,7 @@ export function routeReply(deps: ReplyRoutingDeps, input: ReplyInput): ReplyResu
     };
     const session = registry.add(order, now());
     registry.setStatus(session.id, "idle"); // idle = the pipeline's resume branch picks it up
-    if (resumeId) registry.setSdkSessionId(session.id, resumeId);
+    if (resumeId) registry.setSdkSessionId(session.id, resumeId, deps.worker);
     id = session.id;
   }
   registry.setFocus(input.chatId, id, "once");

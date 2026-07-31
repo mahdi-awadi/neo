@@ -181,6 +181,20 @@ function apiErrorFromMessage(message: string): ApiErrorKind | undefined {
   return undefined;
 }
 
+/** The SDK refusing a `resume` id it has no conversation for. NOT an API failure — nothing was
+ *  sent to Anthropic (0 turns, $0, no HTTP status) — so it must never be reported as one, and it
+ *  clears by starting fresh rather than by waiting. Seen whenever the id belongs to another SDK
+ *  (a Codex thread id after `/sdk claude`) or its transcript was pruned/deleted. */
+const RESUME_MISSING_RE = /no conversation found with session id/i;
+
+/** The failure text the SDK reports out-of-band: an is_error result carries `errors[]` and no
+ *  `result` string, so without this the summary is empty and the cause is invisible. */
+function resultErrorText(msg: SdkMessage): string {
+  const errors = msg.errors;
+  if (!Array.isArray(errors)) return "";
+  return errors.filter((e): e is string => typeof e === "string" && e.trim() !== "").join("; ");
+}
+
 export interface RunResult {
   ok: boolean;
   /** SDK session id, for resume/fork. */
@@ -191,6 +205,9 @@ export interface RunResult {
    *  this as subtype:"success" WITH is_error:true, so reading the subtype alone recorded a
    *  throttled turn as done and silently dropped the brief. */
   apiError?: ApiErrorKind;
+  /** The resume id was rejected as unknown by this SDK (see RESUME_MISSING_RE). The engine retries
+   *  once from scratch; the flag stays on the result so callers never treat it as an API failure. */
+  resumeMissing?: boolean;
 }
 
 /** A live, long-running session: push follow-ups, interrupt, await the final result. */
@@ -311,6 +328,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
   let costUsd = 0;
   let apiError: ApiErrorKind | undefined; // set by the assistant fallback message / the result's status
   let lastApiError: ApiErrorKind | undefined; // the error of the LAST turn only (for the final return)
+  let resumeMissing = false; // the SDK rejected our resume id — recoverable by starting fresh
 
   try {
     for await (const msg of queryObj) {
@@ -356,10 +374,16 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // assistant fallback earlier in the SAME session (a prior throttled turn that then recovered on
         // a retry); a later successful turn must NOT inherit it, or the engine falsely reports "work is
         // NOT done" on completed work (the leak-across-turns bug).
-        summary = typeof msg.result === "string" ? msg.result : "";
-        const turnError = failed
-          ? (apiError ?? apiErrorFromStatus(msg.api_error_status as number | null) ?? apiErrorFromMessage(summary) ?? "unknown")
-          : undefined;
+        // An is_error result reports its cause in `errors[]`, NOT in `result` — fall back to it so
+        // the summary names the real failure instead of being empty (which classified as "unknown").
+        summary = typeof msg.result === "string" ? msg.result : resultErrorText(msg);
+        // A rejected resume id is a local precondition failure, not an API failure: nothing was
+        // sent, so blaming the API ("the API failed (unknown)") is both wrong and unactionable.
+        if (failed && RESUME_MISSING_RE.test(summary)) resumeMissing = true;
+        const turnError =
+          failed && !resumeMissing
+            ? (apiError ?? apiErrorFromStatus(msg.api_error_status as number | null) ?? apiErrorFromMessage(summary) ?? "unknown")
+            : undefined;
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
         handlers.onCost?.(costUsd);
         // Turn boundary: the worker is waiting for the next input, not mid-turn — the
@@ -370,15 +394,20 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         apiError = undefined; // reset per-turn so this turn's throttle can't taint the next turn
       }
     }
-  } catch {
+  } catch (err) {
     // The SDK throws from readMessages when a turn is interrupted mid-tool-use
     // (idle-close / kill — verified via the P2 spike). Treat it as the session ending,
     // not a crash, so `done` resolves and the pipeline's supervise/cleanup still runs.
-    if (!summary) summary = "interrupted";
-    handlers.onEvent?.("session_interrupted");
+    // A rejected resume id also surfaces as a throw (right after the is_error result); that is a
+    // retryable precondition failure, not an interruption, so it must not be reported as one.
+    if (RESUME_MISSING_RE.test(String((err as Error)?.message ?? err))) resumeMissing = true;
+    if (!resumeMissing) {
+      if (!summary) summary = "interrupted";
+      handlers.onEvent?.("session_interrupted");
+    }
   }
 
-  return { ok, sessionId, summary, costUsd, apiError: lastApiError };
+  return { ok, sessionId, summary, costUsd, apiError: lastApiError, resumeMissing: resumeMissing || undefined };
 }
 
 // A pushable async-iterable input channel: yields queued user messages, parks until the
@@ -387,6 +416,11 @@ function createInputChannel(first: SdkUserMessage) {
   const queue: SdkUserMessage[] = [first];
   let wake: (() => void) | null = null;
   let closed = false;
+  // Everything pushed so far, kept ONLY until the session is known to have started (see
+  // stopRecording). A start that dies on a rejected resume id completes zero turns, so replaying
+  // the whole history into the replacement channel is exactly the work still owed — draining the
+  // undelivered tail alone would drop a brief the dead session had already pulled but never ran.
+  let history: SdkUserMessage[] | null = [first];
 
   const iterator = (async function* () {
     while (true) {
@@ -403,6 +437,7 @@ function createInputChannel(first: SdkUserMessage) {
     push(msg: SdkUserMessage) {
       if (closed) return;
       queue.push(msg);
+      history?.push(msg);
       wake?.();
       wake = null;
     },
@@ -413,6 +448,16 @@ function createInputChannel(first: SdkUserMessage) {
     },
     queued() {
       return queue.length;
+    },
+    /** Every message this channel was given, for replay into a replacement channel when the
+     *  session has to be restarted from scratch (see startClaudeOrder). */
+    history(): SdkUserMessage[] {
+      return history ? [...history] : [];
+    },
+    /** Drop the replay buffer once a restart is no longer possible — a live session must not hold
+     *  its whole conversation in memory. */
+    stopRecording() {
+      history = null;
     },
   };
 }
@@ -645,9 +690,23 @@ async function runClaudeOrder(
 ): Promise<RunResult> {
   deps = resolvedRunDeps(deps, "subscription", handlers);
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
-  const options = sdkOptions(order, handlers, runConfig(deps));
-  handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
-  return consumeStream(query({ prompt: order.task, options }), handlers);
+  const run = (d: RunDeps) => {
+    handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
+    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d)) }), handlers);
+  };
+  const first = await run(deps);
+  if (!first.resumeMissing || !deps.resume) return first;
+  // The stale id is unusable and re-sending it would fail identically forever — start fresh ONCE
+  // so the brief still runs (and mints a live id that replaces the dead one).
+  noteResumeMissing(handlers, order, deps.resume);
+  return run({ ...deps, resume: undefined });
+}
+
+/** Tell the operator's log why a session restarted cold; the reply itself stays quiet because the
+ *  retry runs the brief normally — there is nothing for them to redo. */
+function noteResumeMissing(handlers: RunHandlers, order: Order, resume: string): void {
+  handlers.onEvent?.("resume_missing", { folder: order.folder, resume });
+  handlers.onActivity?.("starting fresh");
 }
 
 async function runCodexOrder(
@@ -682,23 +741,53 @@ function startClaudeOrder(
 ): SessionRun {
   deps = resolvedRunDeps(deps, "subscription", handlers);
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
-  const channel = createInputChannel(userMessage(order.task));
-  handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
-  const queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers, runConfig(deps)) });
-  const done = consumeStream(queryObj, handlers);
+  // The live handle stays valid across a restart (below), so it must always address the CURRENT
+  // channel/query — never the dead first pair.
+  let channel = createInputChannel(userMessage(order.task));
+  let queryObj: QueryObject;
+  let closeRequested = false;
+
+  const open = (d: RunDeps) => {
+    handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
+    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers, runConfig(d)) });
+    return consumeStream(queryObj, handlers);
+  };
+
+  const done = (async () => {
+    const first = await open(deps);
+    if (!first.resumeMissing || !deps.resume) {
+      channel.stopRecording();
+      return first;
+    }
+    // The resume id is dead (another SDK's, or a pruned transcript). Replay every message this
+    // session was given into a fresh channel and start cold ONCE — otherwise each new message
+    // resumes the same dead id and the project can never be reached again.
+    noteResumeMissing(handlers, order, deps.resume);
+    const replay = channel.history();
+    const [head, ...rest] = replay.length > 0 ? replay : [userMessage(order.task)];
+    channel = createInputChannel(head!);
+    for (const msg of rest) channel.push(msg);
+    channel.stopRecording(); // one restart only
+    if (closeRequested) channel.close();
+    return open({ ...deps, resume: undefined });
+  })();
 
   return {
     followUp: (text) => channel.push(userMessage(text)),
     interrupt: async () => {
+      closeRequested = true;
       channel.close();
       try {
-        await queryObj.interrupt?.();
+        await queryObj?.interrupt?.();
       } catch {
         // best-effort — the worker may already be ending
       }
     },
     queued: () => channel.queued(),
-    close: () => channel.close(),
+    close: () => {
+      closeRequested = true;
+      channel.close();
+    },
     done,
   };
 }

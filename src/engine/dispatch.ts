@@ -23,6 +23,7 @@ import { describeSessionStatus, sessionsReport } from "./session-status";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
+import { canResumeWith } from "./sdk-choice";
 import { supportsRunConfigField } from "./model-resolver";
 import {
   apiFailureNotice,
@@ -294,7 +295,13 @@ export async function dispatchToProject(
   }
   await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
 
-  const resume = existing?.sdkSessionId || deps.ledger.lastSessionFor(folder, SUB_CHAT) || undefined;
+  // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
+  // versa) is rejected outright, and before the ownership check that read as an API failure.
+  const worker = providerCfg.providers?.ownWork;
+  const resume =
+    (canResumeWith(existing?.sdkProvider, worker) ? existing?.sdkSessionId : undefined) ||
+    deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
+    undefined;
   const start = opts.start ?? startOrder;
   // Per-dispatch ceiling: the caller (the company knows if this is a 2-minute lookup or a
   // 2-hour build) may request one, hard-capped so a dispatch can never run unbounded.
@@ -503,8 +510,8 @@ export async function dispatchToProject(
     }
     try {
       if (result.sessionId) {
-        deps.registry.setSdkSessionId(session.id, result.sessionId);
-        deps.ledger.recordSession(order.id, result.sessionId);
+        deps.registry.setSdkSessionId(session.id, result.sessionId, worker);
+        deps.ledger.recordSession(order.id, result.sessionId, worker);
       }
       deps.meter.note({ costUsd: result.costUsd }, now());
       deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);

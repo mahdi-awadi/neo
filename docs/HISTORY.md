@@ -189,3 +189,20 @@ Claude-only run options; read-only judge runs translate to Codex `sandboxMode:"r
 always-on company, but it can now pre-trust an explicit open session name, existing absolute folder,
 or bare project name under `/home`: `/trust [<project-or-folder>] [on|off]`. Unknown explicit targets
 return a not-found message instead of silently toggling the focused project.
+
+**Cross-SDK resume — fixed:** switching the worker SDK (`/sdk claude` after two days on Codex) left
+every message failing with "✗ agent: the API failed (unknown) — the work is NOT done". The persisted
+`sdk_session_id` for the company was a **Codex thread id**; the Claude SDK answered a resume on it
+in ~1s with `result{ is_error:true, num_turns:0, errors:["No conversation found with session ID: …"] }`
+and then threw. Neo read no HTTP status and no `result` text, classified it as an API error of kind
+`unknown`, and gave up — and because the run died before it could mint a Claude id, the next message
+resumed the same dead id: permanently stuck, on a healthy API. Two layers now:
+*prevention* — session ids carry the SDK that minted them (`orders.sdk_provider`,
+`open_sessions.sdk_provider`, `SessionInfo.sdkProvider`), and `canResumeWith()` refuses a proven
+cross-SDK resume everywhere a resume is chosen (pipeline, dispatch, ingress, reply-routing, reload);
+*recovery* — the runner reads the result's `errors[]`, treats "No conversation found" as a rejected
+precondition rather than an API failure (never reported as one, never retried by the throttle
+ladder), and restarts cold ONCE, replaying the brief plus anything queued so no work is dropped.
+Ids with no recorded owner (written before this) are still tried — continuity is worth a round-trip,
+and recovery re-mints a tagged id — so the stuck company self-heals on its first message after
+reload. Verified against the real SDK end-to-end, not just fakes. TDD; full suite green (630).

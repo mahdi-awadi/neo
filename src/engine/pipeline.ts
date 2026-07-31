@@ -28,6 +28,7 @@ import {
   CACHE_OBS_WINDOW,
 } from "./context-policy";
 import { profileDeps } from "./worker-profile";
+import { canResumeWith } from "./sdk-choice";
 import { describeSessionStatus } from "./session-status";
 import {
   apiFailureNotice,
@@ -215,7 +216,10 @@ export async function handleMessage(
     await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
     resuming.add(live.id);
     try {
-      const gate = live.sdkSessionId
+      // Resume only under the SDK that minted the id — after `/sdk claude` a Codex thread id (or
+      // vice versa) is not a resume target, it is a dead session that kills the run.
+      const resumable = live.sdkSessionId && canResumeWith(live.sdkProvider, deps.cfg.providers?.ownWork);
+      const gate = resumable
         ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps)
         : { resumeId: "", idleMs: 0 };
       return startSession(
@@ -255,7 +259,7 @@ export async function handleMessage(
   }
 
   // 5. Resume a prior session for this folder/chat, if one was recorded.
-  const priorResume = ledger.lastSessionFor(parsed.folder, parsed.chatId);
+  const priorResume = ledger.lastSessionFor(parsed.folder, parsed.chatId, deps.cfg.providers?.ownWork);
   const gate = priorResume ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps) : { resumeId: "", idleMs: 0 };
   const resume = gate.resumeId;
 
@@ -395,8 +399,10 @@ function startSession(
 
   void run.done.then((result) => {
     if (result.sessionId) {
-      registry.setSdkSessionId(registryId, result.sessionId);
-      ledger.recordSession(order.id, result.sessionId);
+      // Tag the id with the SDK that minted it — a later resume under a different worker SDK must
+      // start fresh instead of feeding it an id it has never heard of.
+      registry.setSdkSessionId(registryId, result.sessionId, runDeps.provider);
+      ledger.recordSession(order.id, result.sessionId, runDeps.provider);
     }
     meter.note({ costUsd: result.costUsd }, now());
     ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);

@@ -45,7 +45,7 @@ export function sweepIdle(
     if (!open) {
       // Terminal leftovers ("error"/"done") have no live run to close — but left registered they
       // block name reuse and accumulate as zombies. Reap them silently (not counted as "closed").
-      if (s.sdkSessionId) ledger.recordSession(s.id, s.sdkSessionId);
+      if (s.sdkSessionId) ledger.recordSession(s.id, s.sdkSessionId, s.sdkProvider);
       registry.remove(s.id);
       continue;
     }
@@ -58,7 +58,7 @@ export function sweepIdle(
       appendDailyLog(s.order.folder, idleLogLine(s));
     }
     void registry.getControl(s.id)?.interrupt(); // ends the run; `done` resolves downstream
-    if (s.sdkSessionId) ledger.recordSession(s.id, s.sdkSessionId); // keep the resume target
+    if (s.sdkSessionId) ledger.recordSession(s.id, s.sdkSessionId, s.sdkProvider); // keep the resume target
     registry.setStatus(s.id, "done");
     registry.remove(s.id);
     closed.push(s);

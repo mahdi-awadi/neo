@@ -154,3 +154,24 @@ Neo wrapper behavior:
   shape. Neo therefore maps read-only judge deny-lists to `sandboxMode: "read-only"` and records a
   `worker_compat_warning` event for Claude-only `RunDeps` fields (`mcpServers`, `skills`, `agents`,
   `maxTurns`, unsupported `disallowedTools`) on Codex runs.
+
+## Resume ids are private to their SDK (verified 2026-07-31)
+
+A `resume` id only means something to the SDK that issued it. Feeding the Claude SDK an id it does
+not know (a Codex thread id, or a pruned transcript) fails locally, before any API call:
+
+```
+{ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0,
+  total_cost_usd: 0, session_id: "<the id you passed>",
+  errors: ["No conversation found with session ID: <id>"] }
+```
+
+…and the SDK then **throws** `Claude Code returned an error result: No conversation found …`.
+
+Two traps this sets, both hit in production:
+
+- There is **no `result` string and no `api_error_status`** on that message — the cause is only in
+  `errors[]`. Read it, or the failure summary is empty and classifies as a generic API error.
+- The failure is **not an API failure**: 0 turns, $0, nothing sent. Waiting/retrying cannot fix it;
+  only starting fresh can. Neo detects it (`RESUME_MISSING_RE`), restarts cold once, and tags every
+  minted id with its provider so the mismatch is prevented next time (`canResumeWith`).

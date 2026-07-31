@@ -67,6 +67,9 @@ export interface SessionInfo {
   name: string;
   /** SDK session id (used for resume/fork). Empty until the first message arrives. */
   sdkSessionId: string;
+  /** Which SDK minted `sdkSessionId`. A session id is only meaningful to its own SDK, so a resume
+   *  under a different worker SDK (`/sdk claude` after a Codex run) must start fresh instead. */
+  sdkProvider?: Provider;
   order: Order;
   status: "running" | "idle" | "done" | "error";
   startedAt: number;
