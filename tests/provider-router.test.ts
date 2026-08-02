@@ -38,6 +38,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     eventsKeep: 50_000,
     codebaseMemoryListTimeoutMs: 15_000,
     inboxListDefault: 100,
+    messageRoutesCacheCap: 2_000,
     stuckAfterMs: 600_000,
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,

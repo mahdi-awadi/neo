@@ -132,7 +132,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 
     // Inbox list for the dashboard (operator-only).
     if (req.method === "GET" && path === "/api/inbox") {
-      return Response.json({ items: deps.inbox?.list() ?? [] }, { headers: { "cache-control": "no-store" } });
+      return Response.json({ items: deps.inbox?.list(deps.engine.cfg.inboxListDefault) ?? [] }, { headers: { "cache-control": "no-store" } });
     }
 
     // Operator sends an inbox item to the agent → the COMPANY drafts a reply (stored as a draft,

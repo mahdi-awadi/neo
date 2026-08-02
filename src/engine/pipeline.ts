@@ -107,7 +107,7 @@ async function applyContextPolicy(
   try {
     const signals = deps.signals ?? sessionContext;
     const sig = signals(folder, resumeId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
-    const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
+    const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
     const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs);
     if (verdict === "keep") {
       const lineCount = deps.lineCount ?? transcriptLineCount;
@@ -437,7 +437,7 @@ function startSession(
       if (result.sessionId) {
         const signals = deps.signals ?? sessionContext;
         const sig = signals(order.folder, result.sessionId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
-        const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
+        const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
         if (decideContext(sig, deps.cfg.contextPolicy, ttlMs) !== "keep") {
           const handoff = deps.handoff ?? runHandoff;
           const info = registry.get(registryId);

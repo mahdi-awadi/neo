@@ -379,7 +379,7 @@ function loopRunExtras(
     gateResume: cfg
       ? async (id: string) => {
           const ctx = await sessionContext(loop.folder, id, { windowTokensByModel: cfg.contextPolicy.windowTokensByModel });
-          const obs = deps.store?.listCacheObservations(CACHE_OBS_WINDOW) ?? [];
+          const obs = deps.store?.listCacheObservations(cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW) ?? [];
           const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
           return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;
         }

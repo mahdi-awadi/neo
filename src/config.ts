@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Provider } from "./types";
-import type { ContextPolicyCfg } from "./engine/context-policy";
+import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy";
 
 /** Reasoning-effort levels accepted by the SDK. */
 export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -136,6 +136,9 @@ export interface NeoConfig {
   /** Default page size for the customer inbox list when a caller omits one (the operator-facing
    *  web console list). Default 100. */
   inboxListDefault: number;
+  /** In-memory reply-route cache bound (oldest evicted first). The ledger is the durable source of
+   *  truth behind it, so this only sizes the fast front cache. Default 2000. */
+  messageRoutesCacheCap: number;
   /** Alert when a running session has produced nothing for this long (ms). Default 10 min. */
   stuckAfterMs: number;
   /** Alert when one activity label has run this long (ms). Default 20 min. */
@@ -184,6 +187,7 @@ const DEFAULTS = {
   eventsKeep: 50_000,
   codebaseMemoryListTimeoutMs: 15_000,
   inboxListDefault: 100,
+  messageRoutesCacheCap: 2_000,
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
@@ -202,6 +206,9 @@ const DEFAULTS = {
     cacheTtlFallbackMs: 3_600_000,
     // operator choice: minimum observations before the learned TTL is trusted over the fallback.
     cacheTtlMinObservations: 5,
+    // operator choice: rolling sample size for the learned-cache-TTL window (references the module
+    // constant so the default can never drift from the code's own fallback).
+    cacheObsWindow: CACHE_OBS_WINDOW,
   },
   // QUALITY INVARIANT: defaults reproduce today's behavior EXACTLY. The only non-empty entries
   // are the two effort:"low" cases that already live in code (pipeline.ts:250, ingress.ts:68/71),
@@ -293,6 +300,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     eventsKeep: fileCfg.eventsKeep ?? DEFAULTS.eventsKeep,
     codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,
     inboxListDefault: fileCfg.inboxListDefault ?? DEFAULTS.inboxListDefault,
+    messageRoutesCacheCap: fileCfg.messageRoutesCacheCap ?? DEFAULTS.messageRoutesCacheCap,
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

@@ -113,7 +113,20 @@ test("contextPolicy defaults per spec", () => {
     staleResumePct: 0.35,
     cacheTtlFallbackMs: 3_600_000,
     cacheTtlMinObservations: 5,
+    cacheObsWindow: 50,
   });
+});
+
+test("messageRoutesCacheCap + contextPolicy.cacheObsWindow default and read config.json", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.messageRoutesCacheCap).toBe(2_000);
+  expect(c.contextPolicy.cacheObsWindow).toBe(50);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ messageRoutesCacheCap: 42, contextPolicy: { cacheObsWindow: 8 } }));
+  const o = loadConfig(d);
+  expect(o.messageRoutesCacheCap).toBe(42);
+  expect(o.contextPolicy.cacheObsWindow).toBe(8);
+  expect(o.contextPolicy.handoffPct).toBe(0.65); // unset contextPolicy fields keep defaults
 });
 
 /** Run `fn` with `key` forced to `value` (or unset when undefined), restoring the prior value after. */

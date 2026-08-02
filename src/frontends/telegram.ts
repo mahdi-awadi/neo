@@ -134,7 +134,7 @@ export function startTelegram(
   // Remembers which project each sent worker message came from, so replying to a specific
   // message routes the follow-up back to that project (see send() + the reply handling below).
   // Ledger-backed so a mapping survives /reload — a lost route used to misroute the reply to the company.
-  const routes = createMessageRoutes({ ledger });
+  const routes = createMessageRoutes({ ledger, cacheCap: cfg.messageRoutesCacheCap });
 
   // Send a worker line and record which project it belongs to, so the operator can REPLY to that
   // specific message to route a follow-up into its project (see routeReply). The line itself is

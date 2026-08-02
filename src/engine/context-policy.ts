@@ -51,6 +51,10 @@ export interface ContextPolicyCfg {
   /** OPERATOR CHOICE: minimum number of (gapMs, hit) observations required before the learned TTL
    *  is trusted over cacheTtlFallbackMs. */
   cacheTtlMinObservations: number;
+  /** OPERATOR CHOICE: rolling sample size for the learned-cache-TTL window — how many of the most
+   *  recent (gapMs, hit) observations the learner keeps. Optional; falls back to CACHE_OBS_WINDOW
+   *  when unset (e.g. a hand-built test fixture). */
+  cacheObsWindow?: number;
   /** OPERATOR CHOICE: per-model context-window overrides, layered over the built-in facts map
    *  (windowTokensFor's MODEL_WINDOW_TOKENS). Optional — absent/unset models fall back to the
    *  facts map's own default. Not a new fixed knob: the window is still derived from the model
