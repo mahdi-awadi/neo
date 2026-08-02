@@ -87,6 +87,21 @@ test("config.json overrides the API retry policy (ladder length = retry count)",
   expect(c.apiCooldownMs).toBe(5000);
 });
 
+test("retention + list knobs default per spec and read config.json", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.routeKeep).toBe(20_000);
+  expect(c.eventsKeep).toBe(50_000);
+  expect(c.codebaseMemoryListTimeoutMs).toBe(15_000);
+  expect(c.inboxListDefault).toBe(100);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ routeKeep: 5, eventsKeep: 7, codebaseMemoryListTimeoutMs: 9, inboxListDefault: 11 }));
+  const o = loadConfig(d);
+  expect(o.routeKeep).toBe(5);
+  expect(o.eventsKeep).toBe(7);
+  expect(o.codebaseMemoryListTimeoutMs).toBe(9);
+  expect(o.inboxListDefault).toBe(11);
+});
+
 test("contextPolicy defaults per spec", () => {
   const c = loadConfig("/nonexistent-dir");
   expect(c.contextPolicy).toEqual({

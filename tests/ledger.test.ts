@@ -149,6 +149,19 @@ test("recordEvent with no data reads back data: undefined and null columns as un
   expect(l.listEvents()[0]).toEqual({ kind: "session_interrupted", at: 5, orderId: undefined, sessionId: undefined, folder: undefined, data: undefined });
 });
 
+test("retention caps are configurable via openLedger opts (not hardcoded)", () => {
+  const l = openLedger(":memory:", { eventsKeep: 10, routeKeep: 3 });
+  // The prune fires exactly on the EVENTS_PRUNE_INTERVAL-th insert, trimming to the CONFIGURED
+  // cap of 10 (the built-in default of 50 000 would leave all 1000).
+  for (let i = 0; i < EVENTS_PRUNE_INTERVAL; i++) l.recordEvent("tick", { at: i });
+  expect(l.listEvents({ limit: 9999 }).length).toBe(10);
+  expect(l.listEvents({ limit: 1 })[0].at).toBe(EVENTS_PRUNE_INTERVAL - 1); // newest survives
+  // Routes prune on every insert; only the newest routeKeep=3 (messageIds 7,8,9) survive.
+  for (let m = 0; m < 10; m++) l.rememberRoute(1, m, { sessionId: "s", folder: "/f", project: "p" });
+  expect(l.routeFor(1, 9)).toBeDefined();
+  expect(l.routeFor(1, 6)).toBeUndefined();
+});
+
 test("events retention prunes to bound the table (never unbounded growth)", () => {
   const l = openLedger(":memory:");
   const total = EVENTS_KEEP + EVENTS_PRUNE_INTERVAL + 5;

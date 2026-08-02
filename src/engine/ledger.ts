@@ -107,8 +107,12 @@ export interface ConversationMessage {
   at: number;
 }
 
-export function openLedger(path: string): Ledger {
+/** Retention caps default to the module constants (behavior-preserving); the daemon passes the
+ *  operator-configured `routeKeep`/`eventsKeep` so these bounds are tuning, not baked-in. */
+export function openLedger(path: string, opts: { routeKeep?: number; eventsKeep?: number } = {}): Ledger {
   const db = new Database(path);
+  const routeKeep = opts.routeKeep ?? ROUTE_KEEP;
+  const eventsKeep = opts.eventsKeep ?? EVENTS_KEEP;
   db.run(
     `CREATE TABLE IF NOT EXISTS orders (
        id TEXT PRIMARY KEY, source TEXT NOT NULL, folder TEXT NOT NULL,
@@ -337,7 +341,7 @@ export function openLedger(path: string): Ledger {
       if (++eventInserts % EVENTS_PRUNE_INTERVAL === 0) {
         db.query(
           `DELETE FROM events WHERE rowid NOT IN (SELECT rowid FROM events ORDER BY at DESC, rowid DESC LIMIT ?)`,
-        ).run(EVENTS_KEEP);
+        ).run(eventsKeep);
       }
     },
     listEvents(opts = {}) {
@@ -462,7 +466,7 @@ export function openLedger(path: string): Ledger {
         `DELETE FROM message_routes WHERE rowid NOT IN (
            SELECT rowid FROM message_routes ORDER BY at DESC, rowid DESC LIMIT ?
          )`,
-      ).run(ROUTE_KEEP);
+      ).run(routeKeep);
     },
     routeFor(chatId, messageId) {
       const row = db

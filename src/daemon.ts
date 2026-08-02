@@ -45,7 +45,7 @@ async function resolveBotUsername(token: string, configured: string): Promise<st
 async function main(): Promise<void> {
   const cfg = loadConfig();
   mkdirSync("data", { recursive: true });
-  const ledger = openLedger("data/ledger.db");
+  const ledger = openLedger("data/ledger.db", { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep });
   const admin = openAdminStore("data/admin.db");
   const registry = createRegistry();
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
