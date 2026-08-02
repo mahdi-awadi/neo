@@ -36,7 +36,6 @@ import {
   apiRetryNotice,
   resolveApiRetryDelayMs,
   shouldRetryApi,
-  MAX_API_RETRIES,
   type ApiCooldown,
 } from "./api-retry";
 
@@ -277,7 +276,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -299,7 +298,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
+    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }
@@ -371,8 +370,10 @@ function startSession(
         const kind = result.apiError;
         if (!kind) return;
         deps.cooldown?.note(kind, now()); // hold sibling background work while the storm lasts
+        const ladder = deps.cfg.apiRetryLadderMs;
+        const maxRetries = ladder.length;
         const attempt = apiRetries + 1;
-        if (!shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {
+        if (!shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {
           ledger.recordEvent("api_giveup", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempts: apiRetries } });
           void deps.reply(chatId, apiFailureNotice(project, kind, apiRetries), project);
           return;
@@ -383,9 +384,11 @@ function startSession(
           rateLimits: deps.usage?.snapshot(now()).rateLimits,
           now: now(),
           rand: deps.rand,
+          ladder,
+          jitterFrac: deps.cfg.apiRetryJitterFrac,
         });
-        ledger.recordEvent("api_retry", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempt, max: MAX_API_RETRIES, delayMs, source, resetsAt } });
-        void deps.reply(chatId, apiRetryNotice(project, attempt, delayMs, resetsAt), project);
+        ledger.recordEvent("api_retry", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempt, max: maxRetries, delayMs, source, resetsAt } });
+        void deps.reply(chatId, apiRetryNotice(project, attempt, delayMs, resetsAt, maxRetries), project);
         void (deps.sleep ?? realSleep)(delayMs).then(() => {
           registry.touch(registryId, now());
           runRef?.followUp(apiRetryFollowUp(order.task));

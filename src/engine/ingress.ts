@@ -73,7 +73,7 @@ export async function runCompanyBrief(
             resume:
               (canResumeWith(company.sdkProvider, deps.cfg.providers?.ownWork) ? company.sdkSessionId : "") || undefined,
             mcpServers: neoMcpServers(
-              { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv },
+              { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv },
               CUSTOMER_CHAT,
               { dispatch: true, folder: company.order.folder },
             ),

@@ -114,6 +114,28 @@ export interface NeoConfig {
   /** Grace window (ms) after a limit fires: the worker is told to commit green work + write a
    *  WIP note before the hard abort. Default 75 s. */
   dispatchGraceMs: number;
+  /** Second-tier API-throttle backoff ladder (ms per attempt) — the wait before re-sending a
+   *  rate-limited brief when the API gave no real reset time. The number of automatic retries is
+   *  DERIVED from this array's length (not a separate knob). Default [30s, 2m, 8m]. */
+  apiRetryLadderMs: number[];
+  /** Jitter magnitude (0-1) applied to every retry wait so co-throttled workers don't sync up:
+   *  ladder waits get ±frac, reset-based waits get +frac (upward only). Default 0.2 (±20%). */
+  apiRetryJitterFrac: number;
+  /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
+   *  scheduler can't amplify a rate-limit storm. Default 60 s. */
+  apiCooldownMs: number;
+  /** Reply-route retention cap: max persisted message→project routes (oldest pruned). The ledger
+   *  is the source of truth; this only bounds ancient rows. Default 20 000. */
+  routeKeep: number;
+  /** Diagnostic event-log retention cap: max rows kept in the events table (pruned in batches).
+   *  Default 50 000. */
+  eventsKeep: number;
+  /** Bounded wait (ms) for a codebase-memory list_projects op (the sibling of
+   *  codebaseMemoryIndexTimeoutMs). Default 15 s. */
+  codebaseMemoryListTimeoutMs: number;
+  /** Default page size for the customer inbox list when a caller omits one (the operator-facing
+   *  web console list). Default 100. */
+  inboxListDefault: number;
   /** Alert when a running session has produced nothing for this long (ms). Default 10 min. */
   stuckAfterMs: number;
   /** Alert when one activity label has run this long (ms). Default 20 min. */
@@ -152,6 +174,16 @@ const DEFAULTS = {
   dispatchTimeoutMaxMs: 2 * 60 * 60 * 1000,
   dispatchStallMs: 5 * 60 * 1000,
   dispatchGraceMs: 75 * 1000,
+  // API-throttle recovery policy (see api-retry.ts). These reproduce the pre-config constants
+  // exactly, so behavior is byte-identical until an operator overrides them.
+  apiRetryLadderMs: [30_000, 120_000, 480_000],
+  apiRetryJitterFrac: 0.2,
+  apiCooldownMs: 60_000,
+  // Ledger retention caps (see ledger.ts) — operator policy, not a fact; defaults preserve today's.
+  routeKeep: 20_000,
+  eventsKeep: 50_000,
+  codebaseMemoryListTimeoutMs: 15_000,
+  inboxListDefault: 100,
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
@@ -254,6 +286,13 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     dispatchTimeoutMaxMs: fileCfg.dispatchTimeoutMaxMs ?? DEFAULTS.dispatchTimeoutMaxMs,
     dispatchStallMs: fileCfg.dispatchStallMs ?? DEFAULTS.dispatchStallMs,
     dispatchGraceMs: fileCfg.dispatchGraceMs ?? DEFAULTS.dispatchGraceMs,
+    apiRetryLadderMs: fileCfg.apiRetryLadderMs ?? DEFAULTS.apiRetryLadderMs,
+    apiRetryJitterFrac: fileCfg.apiRetryJitterFrac ?? DEFAULTS.apiRetryJitterFrac,
+    apiCooldownMs: fileCfg.apiCooldownMs ?? DEFAULTS.apiCooldownMs,
+    routeKeep: fileCfg.routeKeep ?? DEFAULTS.routeKeep,
+    eventsKeep: fileCfg.eventsKeep ?? DEFAULTS.eventsKeep,
+    codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,
+    inboxListDefault: fileCfg.inboxListDefault ?? DEFAULTS.inboxListDefault,
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

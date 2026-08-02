@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   // One shared API-throttle gate for the whole engine: any worker that gets rate-limited/overloaded
   // arms it, and NEW background work (dispatches, loop fires) waits it out instead of earning
   // another 429. The operator's own interactive messages are never held — that's the headroom.
-  const cooldown = createApiCooldown();
+  const cooldown = createApiCooldown({ cooldownMs: cfg.apiCooldownMs });
   // Frontend stop hooks, run FIRST on shutdown. Telegram long polling only confirms an update on
   // the *next* getUpdates (grammy does it in bot.stop()), so exiting straight after the /reload
   // handler left that update unconfirmed — Telegram redelivered it on boot and the daemon reloaded

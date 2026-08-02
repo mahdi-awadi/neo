@@ -32,7 +32,7 @@ import {
   apiRetryFollowUp,
   apiRetryNotice,
   shouldRetryApi,
-  MAX_API_RETRIES,
+  API_RETRY_DELAYS_MS,
   type ApiCooldown,
 } from "./api-retry";
 
@@ -67,6 +67,12 @@ export interface DispatchDeps {
   /** Grace window (ms): on a limit, tell the worker to commit green work + write a WIP note,
    *  then hard-abort. Default DISPATCH_GRACE_MS_DEFAULT (75s). */
   dispatchGraceMs?: number;
+  /** API-throttle backoff ladder (ms/attempt) for a rate-limited sub-run — retry COUNT derives
+   *  from its length. Absent → the built-in default (config `apiRetryLadderMs`). */
+  apiRetryLadderMs?: number[];
+  /** Jitter magnitude (0-1) for retry waits. Absent → the built-in default (config
+   *  `apiRetryJitterFrac`). */
+  apiRetryJitterFrac?: number;
   /** When set, gate dispatch's session reuse through the same context policy the interactive
    *  pipeline uses — a resumed sub-project session must not grow unbounded (see
    *  docs/superpowers/specs/2026-07-08-context-policy-design.md, Boundaries #3). */
@@ -309,6 +315,8 @@ export async function dispatchToProject(
   const ceilingMs = Math.min(opts.timeoutMs ?? deps.dispatchTimeoutMs ?? DISPATCH_TIMEOUT_MS_DEFAULT, maxMs);
   const stallMs = deps.dispatchStallMs ?? DISPATCH_STALL_MS_DEFAULT;
   const graceMs = deps.dispatchGraceMs ?? DISPATCH_GRACE_MS_DEFAULT;
+  const retryLadder = deps.apiRetryLadderMs && deps.apiRetryLadderMs.length > 0 ? deps.apiRetryLadderMs : [...API_RETRY_DELAYS_MS];
+  const maxRetries = retryLadder.length;
 
   // Background continuation: bounded await, then bookkeeping + report-back. NEVER awaited here —
   // the company's turn ends immediately (operator requirement: the main agent is always free).
@@ -413,24 +421,26 @@ export async function dispatchToProject(
           if (kind) {
             deps.cooldown?.note(kind, now()); // sibling dispatches/loops back off too
             const attempt = apiRetries + 1;
-            if (shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottle() })) {
+            if (shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottle() })) {
               apiRetries = attempt;
               const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
                 attempt,
                 rateLimits: deps.usage?.snapshot(now()).rateLimits,
                 now: now(),
                 rand: opts.rand,
+                ladder: retryLadder,
+                jitterFrac: deps.apiRetryJitterFrac,
               });
               deps.ledger.recordEvent("api_retry", {
                 orderId: order.id,
                 folder,
-                data: { scope: "dispatch", project: name, kind, attempt, max: MAX_API_RETRIES, delayMs, source, resetsAt },
+                data: { scope: "dispatch", project: name, kind, attempt, max: maxRetries, delayMs, source, resetsAt },
               });
               // The wait is engine-driven, not the worker hanging: hold off the stall/ceiling
               // clocks for exactly that long, then re-send the brief into the still-open run.
               retryingUntil = now() + delayMs;
               pausedMs += delayMs;
-              void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs, resetsAt), name);
+              void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs, resetsAt, maxRetries), name);
               void (opts.sleep ?? realSleep)(delayMs).then(() => {
                 lastActivityAt = now();
                 runRef?.followUp(apiRetryFollowUp(task));

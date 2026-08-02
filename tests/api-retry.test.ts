@@ -62,6 +62,45 @@ test("an attempt past the table stays at the longest delay rather than overflowi
   expect(apiRetryDelayMs(99, () => 0.5)).toBe(480_000);
 });
 
+// --- the ladder + jitter are config, not baked-in --------------------------------------------------
+
+test("the backoff ladder is configurable, defaulting to the built-in policy", () => {
+  const ladder = [1000, 5000];
+  expect(apiRetryDelayMs(1, () => 0.5, ladder, 0)).toBe(1000);
+  expect(apiRetryDelayMs(2, () => 0.5, ladder, 0)).toBe(5000);
+  expect(apiRetryDelayMs(99, () => 0.5, ladder, 0)).toBe(5000); // clamp to the last configured step
+  // Omitting the ladder falls back to the built-in default — behavior preserved.
+  expect(apiRetryDelayMs(1, () => 0.5)).toBe(30_000);
+});
+
+test("the jitter fraction is configurable (default 0.2 = ±20%)", () => {
+  expect(apiRetryDelayMs(1, () => 0, [1000], 0.5)).toBe(500); // -50%
+  expect(apiRetryDelayMs(1, () => 1, [1000], 0.5)).toBe(1500); // +50%
+  expect(apiRetryDelayMs(1, () => 0, [1000], 0)).toBe(1000); // no jitter
+});
+
+test("resolveApiRetryDelayMs takes a configurable ladder + jitter for the fallback path", () => {
+  const now = 1_700_000_000_000;
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits: [], now, rand: () => 0.5, ladder: [7000], jitterFrac: 0 }))
+    .toMatchObject({ delayMs: 7000, source: "ladder" });
+  // Reset path honors the same configurable jitter fraction.
+  const rl = [{ status: "rejected", resetsAt: now / 1000 + 100 }];
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits: rl, now, rand: () => 1, jitterFrac: 0.5 }).delayMs).toBe(150_000); // 100_000 × 1.5
+});
+
+test("shouldRetryApi's cap follows the configured ladder length, not a fixed 3", () => {
+  const base = { kind: "rate_limit" as const };
+  expect(shouldRetryApi({ ...base, attempt: 2, maxRetries: 2 })).toBe(true);
+  expect(shouldRetryApi({ ...base, attempt: 3, maxRetries: 2 })).toBe(false);
+  // Omitting maxRetries keeps the default cap (built-in ladder length).
+  expect(shouldRetryApi({ ...base, attempt: MAX_API_RETRIES })).toBe(true);
+});
+
+test("the operator notices show the configured cap in the countdown", () => {
+  expect(apiRetryNotice("safari", 1, 1000, undefined, 2)).toContain("1/2");
+  expect(apiFailureNotice("safari", "rate_limit", 2)).toContain("2 retries");
+});
+
 // --- reset-aware backoff (smart, not a blind ladder) --------------------------------------------
 
 test("when the API reports when the limit resets, the retry waits until then — not the fixed ladder", () => {

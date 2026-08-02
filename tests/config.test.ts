@@ -71,6 +71,22 @@ test("watchdog thresholds default per spec", () => {
   expect(c.alertRepeatMs).toBe(900_000);
 });
 
+test("API retry policy defaults (ladder 30s/2m/8m, jitter 0.2, cooldown 60s)", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.apiRetryLadderMs).toEqual([30_000, 120_000, 480_000]);
+  expect(c.apiRetryJitterFrac).toBe(0.2);
+  expect(c.apiCooldownMs).toBe(60_000);
+});
+
+test("config.json overrides the API retry policy (ladder length = retry count)", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ apiRetryLadderMs: [1000, 2000], apiRetryJitterFrac: 0, apiCooldownMs: 5000 }));
+  const c = loadConfig(d);
+  expect(c.apiRetryLadderMs).toEqual([1000, 2000]);
+  expect(c.apiRetryJitterFrac).toBe(0);
+  expect(c.apiCooldownMs).toBe(5000);
+});
+
 test("contextPolicy defaults per spec", () => {
   const c = loadConfig("/nonexistent-dir");
   expect(c.contextPolicy).toEqual({
