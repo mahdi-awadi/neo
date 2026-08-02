@@ -44,12 +44,20 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `dispatchTimeoutMaxMs` | `7200000` (2h) | Hard cap on any per-dispatch ceiling a caller may request. |
 | `dispatchStallMs` | `300000` (5m) | Abort a dispatched sub-run that produces no activity for this long. |
 | `dispatchGraceMs` | `75000` (75s) | Grace window to commit green work + write a WIP note before a hard abort. |
+| `apiRetryLadderMs` | `[30000, 120000, 480000]` (30s→2m→8m) | Second-tier backoff waits (ms/attempt) when a rate-limited turn gives no real reset time. The number of automatic retries is **derived from this array's length** — a longer ladder means more retries, no separate knob. |
+| `apiRetryJitterFrac` | `0.2` (±20%) | Jitter magnitude (0–1) on every retry wait so co-throttled workers don't sync up: ladder waits get ±frac, reset-based waits get +frac (upward only). |
+| `apiCooldownMs` | `60000` (60s) | Engine-wide hold on **new** background work after a throttle report, so retries + the scheduler can't amplify a rate-limit storm. |
+| `routeKeep` | `20000` | Reply-route retention cap: max persisted message→project routes (oldest pruned; the ledger stays the source of truth). |
+| `eventsKeep` | `50000` | Diagnostic event-log retention cap: max rows kept in the `events` table (pruned in amortised batches). |
 | `codebaseMemoryIndexTimeoutMs` | `300000` (5m) | Bounded wait for an engine-side codebase-memory `index_repository` before a dispatch proceeds anyway (best-effort). |
+| `codebaseMemoryListTimeoutMs` | `15000` (15s) | Bounded wait for a codebase-memory `list_projects` op (the sibling of the index timeout above). |
+| `inboxListDefault` | `100` | Default page size for the customer-inbox list in the web console when no explicit limit is given. |
+| `messageRoutesCacheCap` | `2000` | In-memory reply-route cache bound (oldest evicted first); the ledger backs it, so this only sizes the fast front cache. |
 | `drainWindowMs` | `90000` (90s) | Graceful-reload wait for running turns to wrap up before interrupt. |
 | `stuckAfterMs` | `600000` (10m) | Alert when a running session has produced nothing for this long. |
 | `longTurnAlertMs` | `1200000` (20m) | Alert when one activity label has run this long. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
-| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`windowTokensByModel`. |
+| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
 | `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
@@ -141,6 +149,7 @@ instead of a cold, unwarmed-cache resume.
 | `staleResumePct` | ratio | `0.35` | Occupancy above which a stale-past-TTL resume triggers handoff instead of keep. |
 | `cacheTtlFallbackMs` | provider-fact fallback | `3600000` (1h) | The provider-documented prompt-cache TTL, used until enough real observations exist to derive a learned TTL. |
 | `cacheTtlMinObservations` | operator choice | `5` | Minimum `(gapMs, hit)` observations required before the learned TTL is trusted over the fallback. |
+| `cacheObsWindow` | operator choice | `50` | Rolling sample size for the learned-TTL window — how many of the most recent `(gapMs, hit)` observations the learner keeps. |
 
 `contextPolicy.windowTokensByModel` (optional, `Record<string, number>`, unset by default) is an
 operator-choice override layered over the built-in context-window-size facts map
