@@ -759,3 +759,49 @@ test("startOrder queues follow-ups as sequential Codex SDK turns on the same thr
   expect(messages).toEqual(["ack:first", "ack:second"]);
   expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "ack:second" });
 });
+
+test("surfaces a concise result preview for Bash but stays quiet for navigation tools", async () => {
+  const q = () =>
+    (async function* () {
+      yield {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hi" } },
+            { type: "tool_use", id: "t2", name: "Read", input: { file_path: "/x" } },
+          ],
+        },
+      };
+      yield {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: "hello world output" },
+            { type: "tool_result", tool_use_id: "t2", content: "file body that should stay quiet" },
+          ],
+        },
+      };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  const msgs: string[] = [];
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  expect(msgs.some((m) => m.includes("🔧 Bash"))).toBe(true); // command milestone
+  expect(msgs.some((m) => m.startsWith("↳") && m.includes("hello world output"))).toBe(true); // its result
+  expect(msgs.some((m) => m.includes("file body that should stay quiet"))).toBe(false); // Read result stays quiet
+});
+
+test("truncates a long tool result and flags an errored one", async () => {
+  const long = "x".repeat(2000);
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "big" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: long, is_error: true }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  const msgs: string[] = [];
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  const preview = msgs.find((m) => m.includes("⚠️"));
+  expect(preview).toBeDefined();
+  expect(preview!.endsWith("…")).toBe(true); // truncated
+  expect(preview!.length).toBeLessThan(650); // ~600 cap + prefix, not the full 2000
+});

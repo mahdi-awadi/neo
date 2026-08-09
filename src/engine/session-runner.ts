@@ -48,6 +48,32 @@ import {
 // so the stream stays quiet for these (the worker's assistant text + the milestones below carry it).
 const QUIET_TOOLS = new Set(["Read", "Glob", "Grep", "TodoWrite", "NotebookRead", "ListMcpResources"]);
 
+// Tools whose RESULT is surfaced back to the operator (a concise "↳ output" preview after the
+// milestone) — Bash + web/MCP/Task calls, whose output is the actual answer the operator wants to
+// see. The QUIET navigation tools plus the boring "file updated" writers stay result-silent so the
+// stream doesn't turn into a firehose; their outcome shows in the worker's own summary text instead.
+const RESULT_SILENT_TOOLS = new Set([...QUIET_TOOLS, "Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+// Max chars of a tool result to echo to the operator — a preview, not the whole payload (the SDK
+// hands the full output to the model regardless). Kept small so many commands don't flood the chat.
+const RESULT_PREVIEW_MAX = 600;
+
+/** A concise, operator-facing preview of a tool_result payload (string, or the SDK's content-block
+ *  array), trimmed and truncated. Empty string => nothing worth surfacing. */
+function toolResultPreview(content: unknown): string {
+  let text = "";
+  if (typeof content === "string") text = content;
+  else if (Array.isArray(content)) {
+    text = (content as Array<{ type?: string; text?: string }>)
+      .filter((b) => b?.type === "text" && typeof b.text === "string")
+      .map((b) => b.text as string)
+      .join("\n");
+  }
+  text = text.trim();
+  if (!text) return "";
+  return text.length > RESULT_PREVIEW_MAX ? `${text.slice(0, RESULT_PREVIEW_MAX - 1)}…` : text;
+}
+
 /** A short, human target for a tool call, drawn from whichever common input field is present. */
 function toolDetail(input: unknown): string {
   if (!input || typeof input !== "object") return "";
@@ -329,6 +355,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
   let apiError: ApiErrorKind | undefined; // set by the assistant fallback message / the result's status
   let lastApiError: ApiErrorKind | undefined; // the error of the LAST turn only (for the final return)
   let resumeMissing = false; // the SDK rejected our resume id — recoverable by starting fresh
+  const toolShortById = new Map<string, string>(); // tool_use id -> short name, to gate its later result
 
   try {
     for await (const msg of queryObj) {
@@ -344,17 +371,32 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         if (typeof msg.error === "string") apiError = msg.error as ApiErrorKind;
         const content = (msg.message as { content?: unknown } | undefined)?.content;
         if (Array.isArray(content)) {
-          for (const b of content as Array<{ type?: string; text?: string; name?: string; input?: unknown }>) {
+          for (const b of content as Array<{ type?: string; text?: string; name?: string; input?: unknown; id?: string }>) {
             if (b?.type === "text" && b.text?.trim()) {
               handlers.onActivity?.("replying");
               handlers.onMessage(b.text.trim());
             } else if (b?.type === "tool_use" && typeof b.name === "string") {
               const short = b.name.startsWith("mcp__") ? b.name.split("__").pop() ?? b.name : b.name;
+              if (typeof b.id === "string") toolShortById.set(b.id, short);
               const detail = toolDetail(b.input);
               handlers.onActivity?.(`${short}${detail ? `: ${detail}` : ""}`);
               const line = toolMilestone(b.name, b.input);
               if (line) handlers.onMessage(line);
             }
+          }
+        }
+      } else if (msg.type === "user") {
+        // tool_result blocks come back as a `user` message. Surface a concise output preview for the
+        // meaningful tools (Bash/web/MCP/Task) so the operator sees the RESULT of a command, not just
+        // the "🔧 Bash: …" milestone — navigation + boring writers stay quiet (RESULT_SILENT_TOOLS).
+        const content = (msg.message as { content?: unknown } | undefined)?.content;
+        if (Array.isArray(content)) {
+          for (const b of content as Array<{ type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
+            if (b?.type !== "tool_result") continue;
+            const short = b.tool_use_id ? toolShortById.get(b.tool_use_id) : undefined;
+            if (!short || RESULT_SILENT_TOOLS.has(short)) continue; // unknown or low-signal → stay quiet
+            const preview = toolResultPreview(b.content);
+            if (preview) handlers.onMessage(`${b.is_error ? "⚠️ ↳" : "↳"} ${preview}`);
           }
         }
       } else if (msg.type === "system" && msg.subtype === "api_retry") {
