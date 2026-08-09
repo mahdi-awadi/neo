@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chunkText, deliverChunked, TELEGRAM_MAX, type ChunkSendResult } from "../src/engine/format";
+import { chunkMarkdown, chunkText, deliverChunked, TELEGRAM_MAX, type ChunkSendResult } from "../src/engine/format";
 
 describe("chunkText", () => {
   test("short text is returned as a single chunk", () => {
@@ -54,6 +54,37 @@ describe("deliverChunked", () => {
     for (const m of sent) expect(m.body.length).toBeLessThanOrEqual(TELEGRAM_MAX); // every send fits
     expect(sent[0].body.startsWith("#eticket_v3 ")).toBe(true); // tag on the first chunk only
     expect(firstId).toBe(100);
+  });
+
+  test("a table that spans multiple chunks renders as <pre> in EVERY chunk — no raw pipes leak", async () => {
+    // The real-world repro (#video_app completion status): a multi-row table inside a report that
+    // exceeds the chunk budget. The chunker must not orphan body rows from their header/separator,
+    // or the continuation chunks render as raw markdown pipes instead of an aligned table.
+    const rows = Array.from({ length: 13 }, (_, i) => {
+      const n = 53 - i;
+      return `| ${n} | Task ${n}: implement feature ${n} and wire it end-to-end across the whole app | flutter | ${i % 2 ? "DONE" : "Not started"} | needs the backend route, client wiring, loading + error + empty states, analytics events, localization strings, a self review, a peer review pass, and full QA sign-off before it can ship to the production app stores |`;
+    });
+    const table = ["| # | Title | Layer | Status | What's left |", "|---|-------|-------|--------|-------------|", ...rows].join("\n");
+    const report = `## Completion status\n\nHere is the full task breakdown for the pending release:\n\n${table}\n\n## Verdict\nCompleted: NO — 6 of 13 tasks remain, mostly backend-blocked flutter screens.`;
+    expect(report.length).toBeGreaterThan(4000); // forces a multi-chunk split
+
+    const { send, sent } = makeSender();
+    await deliverChunked(send, report, "#video_app ");
+
+    expect(sent.length).toBeGreaterThan(1); // the report did split across chunks
+    for (const m of sent) {
+      expect(m.body.length).toBeLessThanOrEqual(TELEGRAM_MAX);
+      // Every chunk was sent as rich HTML (not the plain-text fallback that would leak raw pipes)…
+      expect(m.html).toBe(true);
+      // …and no raw markdown table pipe survives in any rendered chunk (tableToPre strips them).
+      expect(m.body).not.toContain("|");
+    }
+    // Data integrity: a row from the FIRST rows and one from the LAST rows both survived, rendered.
+    expect(sent.some((m) => m.body.includes("Task 53"))).toBe(true);
+    expect(sent.some((m) => m.body.includes("Task 41"))).toBe(true);
+    // Every chunk that carries table rows repeats the column header so it stays a readable table.
+    const tableChunks = sent.filter((m) => /Task \d+/.test(m.body));
+    for (const m of tableChunks) expect(m.body).toContain("Title");
   });
 
   test("falls back to plain text when the markup is rejected", async () => {

@@ -67,6 +67,72 @@ test("a table with surrounding prose keeps the prose and renders the table", () 
   expect(html).toContain("That&#39;s all.".replace("&#39;", "'")); // apostrophe not escaped
 });
 
+test("renders the real worker report shape (# header column, |---| separator, prose around it)", () => {
+  // The exact repro: a '#' first column, a ragged '|---|---|' separator, surrounding ## headings.
+  const report = [
+    "## Completion status",
+    "",
+    "| # | Title | Layer | Status | What's left |",
+    "|---|-------|-------|--------|-------------|",
+    "| 53 | api endpoint | flutter | Not started | wire it up |",
+    "| 52 | Account deletion | flutter | DONE | — |",
+    "",
+    "## Verdict",
+    "Completed: NO",
+  ].join("\n");
+  const tg = mdToHtml(report, { tables: "pre" });
+  expect(tg).toContain("<pre>");
+  expect(tg).not.toContain("|"); // every pipe consumed into the aligned <pre> — none left raw
+  expect(tg).toContain("Account deletion");
+  expect(tg).toContain("<b>Verdict</b>"); // prose around the table still renders
+});
+
+test("detects a separator with alignment colons (:--: / :--)", () => {
+  const tg = mdToHtml("| L | R |\n| :-- | --: |\n| a | b |", { tables: "pre" });
+  expect(tg).toContain("<pre>");
+  expect(tg).not.toContain("|");
+});
+
+// --- chunkMarkdown: table-aware source splitting so tables survive chunking ---
+import { chunkMarkdown } from "../src/engine/format";
+
+const isSep = (l: string) => /-/.test(l) && /^[\s:|-]+$/.test(l.trim());
+
+test("chunkMarkdown: text with no table splits on line boundaries like a plain chunker", () => {
+  const lines = Array.from({ length: 50 }, (_, i) => `row-${i}`);
+  const chunks = chunkMarkdown(lines.join("\n"), 40);
+  for (const c of chunks) expect(c.length).toBeLessThanOrEqual(40);
+  expect(chunks.join("\n").split("\n")).toEqual(lines); // order-preserving, lossless
+});
+
+test("chunkMarkdown: a table smaller than the budget is kept whole with its surrounding prose", () => {
+  const table = "| City | Region |\n|------|--------|\n| Baghdad | Central |\n| Erbil | North |";
+  const chunks = chunkMarkdown(`Intro line\n${table}\nOutro line`, 4096);
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0]).toContain("Intro line");
+  expect(chunks[0]).toContain("| Baghdad | Central |");
+});
+
+test("chunkMarkdown: an over-budget table is split on row boundaries, header+separator repeated on each piece", () => {
+  const header = "| id | note |";
+  const sep = "|----|------|";
+  const rows = Array.from({ length: 40 }, (_, i) => `| ${i} | ${"detail ".repeat(4)} |`);
+  const table = [header, sep, ...rows].join("\n");
+  const chunks = chunkMarkdown(table, 200);
+
+  expect(chunks.length).toBeGreaterThan(1);
+  for (const c of chunks) {
+    expect(c.length).toBeLessThanOrEqual(200);
+    const cl = c.split("\n");
+    // Each chunk starts with the header row immediately followed by the separator, so mdToHtml
+    // detects it as a table again — no orphaned body rows.
+    expect(cl[0]).toBe(header);
+    expect(isSep(cl[1]!)).toBe(true);
+  }
+  // No body row is lost: every original row appears in exactly one chunk.
+  for (const row of rows) expect(chunks.filter((c) => c.includes(row)).length).toBe(1);
+});
+
 // --- projectHashtag: clickable Telegram hashtags per project ---
 import { projectHashtag } from "../src/engine/format";
 
