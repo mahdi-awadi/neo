@@ -23,7 +23,7 @@ import { handleCommand, selectProject, killProject, telegramCommands, type Selec
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
-import { mdToHtml, projectHashtag } from "../engine/format";
+import { deliverChunked, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import type { ApiCooldown } from "../engine/api-retry";
 
@@ -73,18 +73,21 @@ async function sendFormatted(
   project?: string,
 ): Promise<number | undefined> {
   const tag = projectTagPrefix(project);
-  try {
-    const m = await bot.api.sendMessage(chatId, tag + mdToHtml(text, { tables: "pre" }), { parse_mode: "HTML" });
-    return m.message_id;
-  } catch {
-    try {
-      const m = await bot.api.sendMessage(chatId, tag + text);
-      return m.message_id;
-    } catch {
-      // give up silently — a dropped progress line shouldn't crash the bot
-      return undefined;
-    }
-  }
+  // Chunk long output: Telegram rejects any single message over 4096 chars, so a long/table-heavy
+  // report must be split into multiple rich messages (never dropped). deliverChunked builds each
+  // body (rich HTML, or plain hard-split fallback); we just send whatever body it hands us.
+  return deliverChunked(
+    async (body, html) => {
+      try {
+        const m = await bot.api.sendMessage(chatId, body, html ? { parse_mode: "HTML" } : {});
+        return { ok: true, id: m.message_id };
+      } catch {
+        return { ok: false };
+      }
+    },
+    text,
+    tag,
+  );
 }
 
 /** Post a single line to the operator's chat over the raw Bot API (no grammy Bot instance needed),
@@ -99,12 +102,20 @@ export async function sendOperatorLine(token: string, chatId: number, text: stri
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text: body, ...(html ? { parse_mode: "HTML" } : {}) }),
     });
-  try {
-    const r = await post(tag + mdToHtml(text, { tables: "pre" }), true);
-    if (!r.ok) await post(tag + text, false); // Telegram rejected the markup — resend as plain text
-  } catch {
-    // a dropped loop line must never crash the daemon
-  }
+  // Chunk long output so a >4096-char line/report is split into multiple messages instead of being
+  // rejected+dropped by Telegram. deliverChunked handles rich-HTML-then-plain fallback per chunk.
+  await deliverChunked(
+    async (body, html) => {
+      try {
+        const r = await post(body, html);
+        return { ok: r.ok };
+      } catch {
+        return { ok: false }; // a dropped loop line must never crash the daemon
+      }
+    },
+    text,
+    tag,
+  );
 }
 
 export function startTelegram(
