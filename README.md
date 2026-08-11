@@ -40,6 +40,11 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
 - **Two operator frontends, one engine.** A Telegram bot and a web console both drive the same
   `source:"neo"` SDK pipeline — sharing the registry, budget meter, ledger, and admin. Plain
   messages stream as **follow-ups into the running worker**.
+- **Full-fidelity progress stream.** Worker progress streams back as it happens — tool milestones
+  plus a concise **result preview** (`↳ …`) for the meaningful tools (Bash / web / MCP / Task), so
+  you see a command's output, not just that it ran. Long reports are **chunked** to fit Telegram's
+  4096-char limit (never silently dropped), and the chunker is **table-aware** so a Markdown table
+  survives the split and renders as an aligned block instead of raw pipes.
 - **Compliance firewall, in code.** Your own work runs on the configured operator worker SDK
   (`subscription`/Claude by default, optionally `codex`); customer-direct work is refused onto the
   Claude subscription and routed to Gemini. Enforced by `provider-router.ts`, never a prompt.
@@ -219,7 +224,7 @@ Stack: **Bun + TypeScript**, test-driven.
 
 ```bash
 bun install
-bun test              # run the suite (346 tests)
+bun test              # run the suite (655 tests)
 bunx tsc --noEmit     # typecheck
 bun run src/daemon.ts # run the engine
 ```

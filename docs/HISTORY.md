@@ -206,3 +206,33 @@ ladder), and restarts cold ONCE, replaying the brief plus anything queued so no 
 Ids with no recorded owner (written before this) are still tried — continuity is worth a round-trip,
 and recovery re-mints a tagged id — so the stuck company self-heals on its first message after
 reload. Verified against the real SDK end-to-end, not just fakes. TDD; full suite green (630).
+
+**Operational limits config-ified — live:** the last hardcoded operational bounds moved into `config`
+behind the usual env→file→default precedence, so tuning them is a `config.json` edit, not a code
+change (every default preserves today's behavior). API-throttle recovery is now data-driven:
+`apiRetryLadderMs` is the second-tier backoff ladder whose *length* also sets how many automatic
+retries run (no separate count knob), `apiRetryJitterFrac` adds per-wait jitter so co-throttled
+workers don't resync, and `apiCooldownMs` is an engine-wide hold on **new** background work after a
+throttle report so retries + the scheduler can't amplify a rate-limit storm. Ledger retention is
+capped by `routeKeep` (message→project routes) + `eventsKeep` (the `events` table), oldest rows
+pruned in amortised batches with the ledger still the source of truth. The remaining assumed bounds
+became knobs too — `codebaseMemoryListTimeoutMs`, `inboxListDefault`, `messageRoutesCacheCap`, and
+`contextPolicy.cacheObsWindow` (the learned-cache-TTL rolling sample size). Full reference in
+`docs/CONFIG.md`.
+
+**Telegram delivery robustness — fixed:** three gaps in how worker progress reached the operator.
+*(1) Long reports were silently dropped* — Telegram's `sendMessage` rejects any text over 4096 chars
+(verified empirically), and the single-shot send fell through to a silent catch, so long/table-heavy
+reports delivered only the short narration lines. `chunkText` + `deliverChunked` (`format.ts`) now
+split on line boundaries under the 4096 cap, send each chunk as rich HTML, and hard-split to plain
+text if the markup is rejected — never drop, only the first chunk is tagged. *(2) Tables broke across
+chunks* — a plain line-boundary split orphaned a table's body rows from the header+separator that
+`mdToHtml` needs to detect a table, so continuation chunks leaked raw `| … |` pipes. `chunkMarkdown`
+is table-aware: it keeps a table whole where it fits, or splits on row boundaries and re-emits the
+header+separator at the top of each piece, so every chunk is independently detectable and renders as
+an aligned `<pre>` (the web-console `tables:"html"` path is unchanged). *(3) Tool results were
+invisible* — the stream showed the `🔧 Bash: …` milestone but never the command's output.
+`session-runner.ts` now surfaces a concise `↳ <output>` preview (`⚠️ ↳` on error, truncated to 600
+chars) for the meaningful tools (Bash/web/MCP/Task), gated by a `tool_use` id→name map; navigation
+(Read/Glob/Grep) and boring writers (Write/Edit) stay result-silent so the stream isn't a firehose.
+Requires a daemon restart to activate. TDD; full suite green (655).
