@@ -10,12 +10,12 @@ Context before Neo engine reload:
   - sha256: `a9bb44beadbf5e66535e5e994d823b30644492ceabd0d97fe2559ac285b64ca8`
 - Persian presentation notes for the charts were prepared:
   - `outbox/chart-presentation-notes-fa.md`
-- Attempted direct Telegram send of `outbox/chart-presentation-notes-fa.md`.
-  - Failed because this sandbox could not resolve `api.telegram.org`.
-  - Internal Neo `send_file` exists in daemon code, but was not exposed as a callable tool in this session.
+- Transport note:
+  - In this SDK mode, do not call Telegram/channel APIs directly.
+  - Do not rely on Neo's in-process MCP `send_file` tool being callable.
+  - When the operator asks to send/attach a file, create it inside `agent` and reply with the exact project-relative or absolute path. Neo watches the chat and owns delivery.
 
 Resume task:
 
-- If the operator still wants Telegram delivery, use the Neo worker `send_file` tool from a session where it is exposed, or send the file from the host/daemon context:
+- If the operator still wants Telegram delivery, reply with this exact file path so Neo can deliver it:
   - `/home/neo/data/codexbot/agent/outbox/chart-presentation-notes-fa.md`
-
