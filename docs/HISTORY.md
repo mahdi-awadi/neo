@@ -236,3 +236,26 @@ invisible* — the stream showed the `🔧 Bash: …` milestone but never the co
 chars) for the meaningful tools (Bash/web/MCP/Task), gated by a `tool_use` id→name map; navigation
 (Read/Glob/Grep) and boring writers (Write/Edit) stay result-silent so the stream isn't a firehose.
 Requires a daemon restart to activate. TDD; full suite green (655).
+
+**Provider-neutral file delivery — live:** the operator can get a worker-produced file back over the
+channel with no AI turn, two ways. `/sendfile [<project>] <path> [caption]` (aliases `/send_file`,
+`/file`) resolves the project (an explicit name, else the focused/default one), splits quoted args,
+and delivers a path-fenced file through the same `sendProjectFile` sender the in-process `send_file`
+MCP tool uses — now hardened to report `unavailable` on a channel that can't send files and to catch a
+send failure instead of throwing (`dispatch.ts`). Natural-language delivery
+(`handleNaturalSendFileRequest` in `commands.ts`) recognises a "send me the file" intent in English,
+Persian, and Arabic — with negation and diagnostic guards so "don't send it" or "why did it keep
+sending the file" never fire — extracts the path from the current message, the replied-to message, or
+the recent assistant transcript (markdown links, backticked paths, absolute/relative paths, bare
+filenames), picks the open project the file actually lives inside (realpath-fenced, `statSync`
+regular-file check), and sends it; when it finds no path it says so instead of guessing. Both
+frontends wire both entry points (`telegram.ts`, `web-channel.ts`), and the web `/msg` route now
+`await`s `channel.send` so the synchronous send-reply lands in the response. This is chiefly the
+fallback for the **Codex** SDK, which can't reach Neo's in-process MCP tools: `session-runner.ts`
+prepends a "Codex transport note" to every Codex turn telling the worker to write the file inside its
+project and reply with the exact path (and never call channel APIs directly — Neo owns delivery), and
+`model-resolver.ts` now also denies engine/front-end secrets (`TELEGRAM_TOKEN`, `GEMINI_API_KEY`,
+`AGENT_INGRESS_SECRET`, `STITCH_API_KEY`) to worker processes so a worker can't reach a channel
+itself. Alongside it, tapping a project in `/list` now **pins** focus (sticky until `/unpin`) instead
+of a one-shot switch — typed `/use` stays the one-shot route. Requires a daemon restart to activate.
+TDD; full suite green (668).

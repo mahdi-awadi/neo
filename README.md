@@ -45,6 +45,12 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   you see a command's output, not just that it ran. Long reports are **chunked** to fit Telegram's
   4096-char limit (never silently dropped), and the chunker is **table-aware** so a Markdown table
   survives the split and renders as an aligned block instead of raw pipes.
+- **Provider-neutral file delivery.** Get a worker-produced file back over the channel with no AI
+  turn: `/sendfile [<project>] <path> [caption]`, or just ask in plain language ("send me the report"
+  — English, Persian, or Arabic). Neo resolves the path from your message, the replied-to message, or
+  the recent transcript, picks the open project the file lives inside, and delivers it through the same
+  **path-fenced** sender the worker's `send_file` MCP tool uses. This is also the fallback for the
+  Codex SDK, which can't call Neo's in-process tools — a Codex worker just replies with the file path.
 - **Compliance firewall, in code.** Your own work runs on the configured operator worker SDK
   (`subscription`/Claude by default, optionally `codex`); customer-direct work is refused onto the
   Claude subscription and routed to Gemini. Enforced by `provider-router.ts`, never a prompt.
@@ -57,9 +63,10 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
 - **Live, concurrent, resumable sessions.** Multiple projects run concurrently in a registry; quiet
   sessions **idle-close** and persist their SDK id so a later `/open` **resumes** them. A context
   policy measures each session and hands off at safe boundaries before it fills the window.
-- **One-shot project focus.** The default target is always the company; addressing a project is
-  explicit and reverts after a single message (`/pin` to hold it), so stray messages never stick to a
-  project. When a project is busy, the reply reports its **real status** — not an opaque "busy".
+- **One-shot project focus.** The default target is always the company; typing `/use <name>` addresses
+  a project for a single message, then reverts (`/pin`, or a tap in `/list`, holds focus), so stray
+  messages never stick to a project. When a project is busy, the reply reports its **real status** —
+  not an opaque "busy".
 - **The "company" — an always-on default project** that answers free-text orders when nothing else
   is active, and can **dispatch** project work to governed sub-workers, bounded by a stall/liveness
   monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window). A `sessions`
@@ -132,11 +139,11 @@ The default target for a plain message is always **the company** (the main/chief
 Addressing a specific project is **explicit and one-shot**: you direct *one* message to a project,
 then focus reverts to the company — so a stray next message never sticks to a project.
 
-- **Address a project for one message:** `/use <name>` (then send your message), tap a project in
-  `/list`, or reply to one of its streamed messages. After that one message, you're back on the company.
-- **Have a back-and-forth with a project:** `/pin <name>` holds focus on it across messages; `/unpin`
-  (alias `/company`, `/main`) returns to the company. `/list` marks the focused project `▶` (one-shot)
-  or `📌` (pinned).
+- **Address a project for one message:** `/use <name>` (then send your message) or reply to one of its
+  streamed messages. After that one message, you're back on the company.
+- **Have a back-and-forth with a project:** `/pin <name>` — or **tap the project in `/list`** — holds
+  focus on it across messages; `/unpin` (alias `/company`, `/main`) returns to the company. `/list`
+  marks the focused project `▶` (one-shot) or `📌` (pinned).
 - **`/open <folder> <task>`** delivers its task to the project (that's the one message) and reverts to
   the company; `/pin` it if you want to keep working there.
 
@@ -151,8 +158,9 @@ The same commands work over Telegram and the web console.
 | Command | Does |
 | --- | --- |
 | `/open <folder> <task>` | Start a project session (or resume one) and give it a task; reverts to the company after. |
-| `/list` (`/ls`, `/status`) | List open projects with live status (`▶`/`📌` = focused); tap a name to address it once. |
+| `/list` (`/ls`, `/status`) | List open projects with live status (`▶`/`📌` = focused); tap a name to pin focus on it. |
 | `/use <name>` | Address a project for your **next message only**, then revert to the company. |
+| `/sendfile [<project>] <path> [caption]` | Deliver a path-fenced file from a project to this channel (no AI turn); also works in plain language ("send me the file"). |
 | `/pin <name>` | Keep talking to a project across messages (until `/unpin`). |
 | `/unpin` (`/company`, `/main`) | Return focus to the company / main agent. |
 | `/kill <name>` | Stop a project session. |
@@ -224,7 +232,7 @@ Stack: **Bun + TypeScript**, test-driven.
 
 ```bash
 bun install
-bun test              # run the suite (655 tests)
+bun test              # run the suite (668 tests)
 bunx tsc --noEmit     # typecheck
 bun run src/daemon.ts # run the engine
 ```
