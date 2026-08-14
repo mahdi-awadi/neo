@@ -173,9 +173,13 @@ export function briefWithProjectDocs(task: string): string {
     "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
     "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
     "REQUIRED — use the `codebase-memory` MCP FIRST. The engine has already indexed this project for " +
-    "you, so the structural map is ready to query. Start every investigation there: get_architecture " +
-    "for the module layout, then search_code / query_graph to find the code that matters. Read source " +
-    "files directly ONLY for what the map doesn't cover — never as your default way in.\n\n" +
+    "you, so the structural map is ready to query. Call `list_projects` FIRST and pass the EXACT " +
+    "project name it returns whose `root_path` matches (or contains) your working directory — do NOT " +
+    "guess or construct the project name. Guessing yields \"project not found\": this repo may be " +
+    "indexed under a path-derived name, and its code can live in a subfolder indexed as its own " +
+    "project. Then get_architecture for the module layout with that name, then search_code / " +
+    "query_graph to find the code that matters. Read source files directly ONLY for what the map " +
+    "doesn't cover — never as your default way in.\n\n" +
     "REQUIRED — use the superpowers skills for the shape of work at hand: brainstorming → " +
     "writing-plans for design, systematic-debugging to root-cause any bug, and test-driven-development " +
     "for implementation (write the failing test first).\n\n" +

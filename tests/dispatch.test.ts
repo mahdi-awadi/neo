@@ -952,6 +952,7 @@ test("briefWithProjectDocs preamble requires codebase-memory + superpowers, stat
   expect(out).toContain("REQUIRED"); // MANDATORY, not optional
   expect(out.toLowerCase()).toContain("codebase-memory"); // structural map FIRST
   expect(out.toLowerCase()).toContain("already indexed"); // engine guarantees the map is ready
+  expect(out.toLowerCase()).toContain("list_projects"); // look up the EXACT project name, don't guess it
   expect(out.toLowerCase()).toContain("superpowers"); // use the skills
   expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last
 });
