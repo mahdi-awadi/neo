@@ -9,6 +9,10 @@ import type { Verdict } from "../types";
 /** Per-session context the governor judges against (the worker's project folder = SDK cwd). */
 export interface GovernorCtx {
   folder: string;
+  /** True when this is an operator own-work session the operator has `/trust on`-ed. Lets the
+   *  governor allow trust-gated own-work tools (WebFetch). Absent/false on untrusted and on
+   *  autonomous/customer paths (they pass an inert trust store), so those never get the allow. */
+  trusted?: boolean;
 }
 
 /** Risky bash patterns that must never auto-run — they escalate to Neo. Defense-in-depth
@@ -53,6 +57,16 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
     return {
       deny: "Neo has no structured-question UI. Ask the operator your question in plain text instead; their reply arrives as a normal follow-up message. Do not assume a default — wait for the answer.",
     };
+  }
+
+  // WebFetch is a real own-work capability (research: reading public pages) but NOT blanket-safe
+  // like WebSearch — it fetches arbitrary URLs, so it's an exfiltration channel. Gate it on trust:
+  // a trusted operator own-work session allows it; otherwise escalate (interactive ask; auto-deny on
+  // autonomous/customer paths, where `trusted` is always false). On customer/tainted runs WebFetch
+  // is also stripped before it ever reaches here (TAINTED_DISALLOWED_TOOLS), so this is own-work only.
+  if (tool === "WebFetch") {
+    if (ctx.trusted) return { allow: true };
+    return { escalate: "WebFetch (web read) needs approval — `/trust on` this project to auto-allow its own-work web reads" };
   }
 
   if (SAFE_TOOLS.has(tool)) return { allow: true };

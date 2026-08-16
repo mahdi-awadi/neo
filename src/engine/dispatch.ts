@@ -173,6 +173,9 @@ export function briefWithProjectDocs(task: string): string {
     "REQUIRED — use the superpowers skills for the shape of work at hand: brainstorming → " +
     "writing-plans for design, systematic-debugging to root-cause any bug, and test-driven-development " +
     "for implementation (write the failing test first).\n\n" +
+    "WebSearch and WebFetch are YOUR own-work research tools — there is NO Gemini fallback (Gemini is " +
+    "only for direct customer messages). If either fails as not-loaded, load it with ToolSearch first, " +
+    "then call it again. WebSearch is always allowed; WebFetch needs the project trusted (`/trust on`).\n\n" +
     task
   );
 }

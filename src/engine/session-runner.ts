@@ -265,7 +265,12 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string) {
     // calls, so the moment the channel is healthy again the next tool call escalates normally
     // (self-heal — a transient break can't permanently wedge tool approvals).
     try {
-      const verdict = decide(tool, input, { folder });
+      // Read the trust thunk NOW (not at start): a trusted operator own-work session lets the
+      // governor allow trust-gated own-work tools (e.g. WebFetch) and, below, auto-approve any
+      // other escalated tool. Autonomous/customer paths pass an inert trust store (denyAllTrust),
+      // so `trusted` is false there — WebFetch escalates and then auto-denies.
+      const trusted = handlers.autoApprove?.() ?? false;
+      const verdict = decide(tool, input, { folder, trusted });
       if ("allow" in verdict) {
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
       }
@@ -274,8 +279,8 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string) {
       if ("deny" in verdict) {
         return { behavior: "deny", message: verdict.deny };
       }
-      // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start)
-      if (handlers.autoApprove?.()) {
+      // escalate verdict — auto-approve if this project is trusted
+      if (trusted) {
         handlers.onAutoApprove?.(verdict.escalate);
         return { behavior: "allow", updatedInput: input };
       }

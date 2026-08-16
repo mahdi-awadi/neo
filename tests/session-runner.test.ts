@@ -338,6 +338,30 @@ test("trust off still escalates a risky tool", async () => {
   expect(decisions[0].behavior).toBe("deny");
 });
 
+test("trusted own-work session allows WebFetch (the operator's own web research)", async () => {
+  const { q, decisions } = fakeQuery([{ tool: "WebFetch", input: { url: "https://example.com" } }]);
+  let escalated = false;
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => ((escalated = true), "deny"), autoApprove: () => true },
+    { query: q },
+  );
+  expect(decisions[0].behavior).toBe("allow");
+  expect(escalated).toBe(false); // trusted own-work WebFetch is a governor allow, not an escalation
+});
+
+test("customer/tainted (untrusted, auto-deny) session denies WebFetch", async () => {
+  const { q, decisions } = fakeQuery([{ tool: "WebFetch", input: { url: "https://example.com" } }]);
+  // The customer/ingress path passes an inert trust store (denyAllTrust) and an auto-deny channel:
+  // WebFetch escalates, then denies. (Belt-and-braces: it's also stripped by TAINTED_DISALLOWED_TOOLS.)
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", autoApprove: () => false },
+    { query: q },
+  );
+  expect(decisions[0].behavior).toBe("deny");
+});
+
 // --- Problem 2: surface TOOL ACTIVITY in the stream, so a worker doing a long stretch of
 // edits/bash/tests (little assistant text) isn't invisible to the operator. ---
 

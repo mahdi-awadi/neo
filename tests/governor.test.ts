@@ -18,9 +18,22 @@ test("governor allows Neo's own MCP tools, escalates foreign MCP tools", () => {
 });
 
 test("governor escalates unknown tools (default-escalate)", () => {
-  expect("escalate" in decide("WebFetch", { url: "https://x" }, CTX)).toBe(true);
   expect("escalate" in decide("KillShell", {}, CTX)).toBe(true);
   expect("escalate" in decide("SomeFutureTool", {}, CTX)).toBe(true);
+});
+
+test("governor trust-gates WebFetch: trusted own-work allows, otherwise escalates", () => {
+  // A trusted operator own-work session may read the web (the operator's own research). WebFetch
+  // is NOT blanket-safe like WebSearch (it can fetch arbitrary URLs — an exfiltration channel), so
+  // it rides the session's trust flag instead of SAFE_TOOLS.
+  expect(decide("WebFetch", { url: "https://x" }, { folder: "/p", trusted: true })).toEqual({ allow: true });
+  // Untrusted own-work → escalate (interactive ask; auto-denies on autonomous/customer paths, where
+  // `trusted` is always false). The reason names trust so the operator knows how to enable it.
+  const untrusted = decide("WebFetch", { url: "https://x" }, { folder: "/p", trusted: false });
+  expect("escalate" in untrusted).toBe(true);
+  if ("escalate" in untrusted) expect(untrusted.escalate.toLowerCase()).toContain("trust");
+  // Trust flag absent (customer/legacy ctx) defaults to not-trusted → escalate (never a silent allow).
+  expect("escalate" in decide("WebFetch", { url: "https://x" }, CTX)).toBe(true);
 });
 
 test("governor allows in-folder file writes", () => {
