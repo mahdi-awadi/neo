@@ -53,7 +53,10 @@ window (`dispatchGraceMs`, 75s: commit green work + WIP note) before the hard ab
 stuck-watchdog alerts the admin when a running session goes silent. Every dispatched brief is
 auto-prefixed (`briefWithProjectDocs`) with a preamble telling the worker to read its own rule/doc
 `.md` files, use the `codebase-memory` MCP FIRST for a structural map (**REQUIRED**, not "if
-indexed" — read source files only for what the map misses), and use the superpowers skills — the
+indexed" — call `list_projects` first and pass the exact project name it returns for the working
+directory, never a guessed one, because a repo can be indexed under a path-derived name or in a
+subfolder as its own project; then read source files only for what the map misses), and use the
+superpowers skills — the
 engine appends it so the operator never has to and it can't be omitted. The "must use
 codebase-memory" instruction is made satisfiable in code: before a worker starts, the engine
 (`ensureIndexed` in `src/engine/codebase-memory.ts`) checks the target folder against
