@@ -57,6 +57,12 @@ export interface SessionControl {
   interrupt(): Promise<void>;
   /** Follow-ups waiting behind the in-flight turn (observability; optional for old fakes). */
   queued?(): number;
+  /** True while a turn is being processed RIGHT NOW, as opposed to the session sitting idle
+   *  between turns. A live session's registry `status` stays "running" for its whole lifetime (it
+   *  flips back to "idle" only when the whole run ends), so status alone cannot tell a worker
+   *  mid-turn from one waiting for the next brief — this is the signal that can. Optional for old
+   *  fakes (absent → treated as not-active, i.e. idle). */
+  active?(): boolean;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */

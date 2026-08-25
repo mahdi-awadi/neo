@@ -30,6 +30,7 @@ function fakeWorker() {
       followUp: (t) => void followUps.push(t),
       interrupt: async () => {},
       queued: () => 0,
+      active: () => false,
       close: () => void (closed = true),
       done: new Promise<RunResult>(() => {}),
     };

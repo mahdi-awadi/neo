@@ -395,6 +395,48 @@ test("onActivity reports every tool_use and text block; queued() counts waiting 
   expect(labels).toContain("replying");
 });
 
+test("startOrder.active() tracks turn-in-flight, and a follow-up queued mid-turn flushes when the turn completes", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const received: string[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((r) => {
+    releaseFirst = r;
+  });
+  // Fake SDK: acks each user message, but HOLDS the first turn open on `firstGate` so the test can
+  // observe a turn genuinely in flight and queue a follow-up behind it.
+  const q = (args: { prompt: AsyncIterable<{ message: { content: string } }>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-1" };
+      let n = 0;
+      for await (const userMsg of args.prompt) {
+        n++;
+        received.push(userMsg.message.content);
+        if (n === 1) await firstGate; // first turn stays in flight until released
+        yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "sess-1" };
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  const run = startOrder(order("first brief"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+
+  await tick(); // let the SDK pull + start the first turn
+  expect(run.active()).toBe(true); // a turn is being processed right now
+  expect(received).toEqual(["first brief"]);
+
+  // A brief arriving mid-turn must QUEUE behind the in-flight turn, not be dropped or run concurrently.
+  run.followUp("second brief");
+  await tick();
+  expect(received).toEqual(["first brief"]); // still queued behind the live turn
+
+  releaseFirst(); // the first turn completes → the channel must FLUSH the queued brief
+  await tick();
+  await tick();
+  expect(received).toEqual(["first brief", "second brief"]); // flushed and ran
+  expect(run.active()).toBe(false); // both turns done → idle between turns
+
+  await run.interrupt(); // drain the still-open session so no generator outlives the test
+});
+
 // --- Turn-boundary completion (2026-07-08: dispatch never detected sub-run completion — the
 // input channel stays open forever, so run.done only resolved via interrupt, and every dispatch
 // ended as a false "stall" timeout losing the worker's real report). startOrder must signal each

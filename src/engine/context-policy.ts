@@ -345,6 +345,7 @@ function wrapRunAsStart(run: typeof runOrder): typeof startOrder {
         // best-effort — the legacy single-shot seam has no real interrupt handle
       },
       queued: () => 0,
+      active: () => false,
       done,
     } as unknown as ReturnType<typeof startOrder>;
   };

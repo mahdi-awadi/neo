@@ -83,7 +83,7 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, close: () => {}, done };
+    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, done };
   };
   return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
 }
@@ -297,6 +297,7 @@ function routingStart(followed: string[]) {
     followUp: (t) => void followed.push(`${o.folder}:${t}`),
     interrupt: async () => {},
     queued: () => 0,
+    active: () => false,
     close: () => {},
     done: new Promise<RunResult>(() => {}),
   });

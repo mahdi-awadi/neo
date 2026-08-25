@@ -242,6 +242,8 @@ export interface SessionRun extends SessionControl {
   done: Promise<RunResult>;
   /** Follow-ups waiting behind the in-flight turn. */
   queued(): number;
+  /** True while a turn is being processed right now (false when the session is idle between turns). */
+  active(): boolean;
   /** Graceful close: end the input channel WITHOUT interrupting the SDK — the stream drains and
    *  `done` resolves with the last turn's result. The session stays resumable. */
   close(): void;
@@ -454,7 +456,9 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
 
 // A pushable async-iterable input channel: yields queued user messages, parks until the
 // next push, and ends once closed and drained (graceful close lets the in-flight turn finish).
-function createInputChannel(first: SdkUserMessage) {
+// `onDeliver` fires the instant a message is handed to the SDK (pulled from the queue) — the start
+// of a turn — so the caller can track whether a turn is in flight (delivered vs. completed).
+function createInputChannel(first: SdkUserMessage, onDeliver?: () => void) {
   const queue: SdkUserMessage[] = [first];
   let wake: (() => void) | null = null;
   let closed = false;
@@ -466,7 +470,11 @@ function createInputChannel(first: SdkUserMessage) {
 
   const iterator = (async function* () {
     while (true) {
-      while (queue.length > 0) yield queue.shift()!;
+      while (queue.length > 0) {
+        const msg = queue.shift()!;
+        onDeliver?.();
+        yield msg;
+      }
       if (closed) return;
       await new Promise<void>((resolve) => {
         wake = resolve;
@@ -783,16 +791,32 @@ function startClaudeOrder(
 ): SessionRun {
   deps = resolvedRunDeps(deps, "subscription", handlers);
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
+  // Turn tracking: a turn is in flight from the instant the SDK is handed a message (delivered)
+  // until that turn's `result` arrives (completed). `active()` reports delivered > completed, so a
+  // caller can tell a worker mid-turn from one sitting idle between turns — which the registry
+  // `status` cannot, since a live session stays "running" its whole life. Monotonic counters live
+  // in this scope so they survive a resume-missing restart (below), which recreates the channel.
+  let delivered = 0;
+  let completed = 0;
+  const onDeliver = () => void delivered++;
+  // Count every turn boundary, wrapping (not replacing) the caller's own onTurnComplete.
+  const tracked: RunHandlers = {
+    ...handlers,
+    onTurnComplete: (result) => {
+      completed++;
+      handlers.onTurnComplete?.(result);
+    },
+  };
   // The live handle stays valid across a restart (below), so it must always address the CURRENT
   // channel/query — never the dead first pair.
-  let channel = createInputChannel(userMessage(order.task));
+  let channel = createInputChannel(userMessage(order.task), onDeliver);
   let queryObj: QueryObject;
   let closeRequested = false;
 
   const open = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers, runConfig(d)) });
-    return consumeStream(queryObj, handlers);
+    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(d)) });
+    return consumeStream(queryObj, tracked);
   };
 
   const done = (async () => {
@@ -807,7 +831,7 @@ function startClaudeOrder(
     noteResumeMissing(handlers, order, deps.resume);
     const replay = channel.history();
     const [head, ...rest] = replay.length > 0 ? replay : [userMessage(order.task)];
-    channel = createInputChannel(head!);
+    channel = createInputChannel(head!, onDeliver);
     for (const msg of rest) channel.push(msg);
     channel.stopRecording(); // one restart only
     if (closeRequested) channel.close();
@@ -826,6 +850,7 @@ function startClaudeOrder(
       }
     },
     queued: () => channel.queued(),
+    active: () => delivered > completed,
     close: () => {
       closeRequested = true;
       channel.close();
@@ -843,6 +868,10 @@ function startCodexOrder(
   const queue = createTextTurnQueue(order.task);
   let currentAbort: AbortController | undefined;
   let interruptRequested = false;
+  // A turn is in flight only while consumeCodexTurn runs (Codex processes one turn at a time); idle
+  // otherwise. Same `active()` contract as the Claude path so dispatch's busy/idle decision is
+  // provider-neutral.
+  let turnActive = false;
 
   const done = (async () => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
@@ -857,11 +886,14 @@ function startCodexOrder(
         const next = await queue.next();
         if (next === undefined) break;
         currentAbort = new AbortController();
+        turnActive = true;
         final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
+        turnActive = false;
         currentAbort = undefined;
         if (!final.ok) break;
       }
     } catch (err) {
+      turnActive = false;
       const reason = err instanceof Error ? err.message : String(err);
       final = { ok: false, sessionId: final.sessionId, summary: reason, costUsd: 0, apiError: apiErrorFromCodexMessage(reason) };
     }
@@ -880,6 +912,7 @@ function startCodexOrder(
       currentAbort?.abort();
     },
     queued: () => queue.queued(),
+    active: () => turnActive,
     close: () => queue.close(),
     done,
   };
