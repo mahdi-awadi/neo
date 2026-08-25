@@ -272,31 +272,45 @@ export async function dispatchToProject(
   const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now());
   const name = session.name;
-  // Busy guard. A folder's session runs ONE turn at a time, so a second concurrent run must never
-  // stack. But a live worker exposes a control whose input channel serializes messages — so instead
-  // of refusing, we QUEUE the brief behind the in-flight turn, exactly like an operator's direct
-  // reply does (pipeline.ts). This removes the asymmetry the operator hit: their replies queued and
-  // ran, while a company dispatch hard-refused the same available session as "busy". Only when the
-  // session is "running" with NO live control (e.g. control lost on a reload — a stale status) do we
-  // still refuse, rather than risk starting a second concurrent run onto the folder.
+  // Reuse guard. A folder's session runs ONE turn at a time, so a second concurrent run must never
+  // stack onto it. But "reuse" is NOT the same as "busy": a live session's registry status stays
+  // "running" for its WHOLE lifetime (it flips back to "idle" only when the whole run ends), so
+  // status alone can't tell a worker mid-turn from one sitting idle between turns. The real signal
+  // is the control's active() — a turn genuinely in flight right now:
+  //   • idle (no turn in flight) → deliver the brief NOW into the warm session; its input channel
+  //     pulls it immediately, exactly like a fresh dispatch, so a free project is never parked
+  //     behind a false "busy".
+  //   • mid-turn → QUEUE behind the in-flight turn (like an operator's reply); the channel flushes
+  //     it the moment that turn yields.
+  //   • "running" but NO live control to accept a follow-up (a stale mark, e.g. control lost on a
+  //     reload) → refuse rather than enqueue into the void or start a second concurrent run.
   if (existing && wasRunning) {
     const control = deps.registry.getControl(existing.id);
     const queued = control?.queued?.() ?? 0;
     const status = describeSessionStatus(existing, now(), { queued });
     if (control?.followUp) {
+      const turnActive = control.active?.() === true; // the REAL "a turn is being processed" signal
       control.followUp(order.task);
       deps.registry.touch(existing.id, now());
-      deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name } });
-      await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
+      if (turnActive) {
+        deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name } });
+        await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
+        return (
+          `${name} is busy — I queued this brief behind its current turn (${status}). It runs when the ` +
+          `current work yields; its output streams to the operator as ${name}.`
+        );
+      }
+      // Alive but IDLE between turns: the follow-up is pulled and run immediately.
+      deps.ledger.recordEvent("dispatch_delivered", { orderId: order.id, folder, data: { project: name, reuse: "idle" } });
+      await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
       return (
-        `${name} is busy — I queued this brief behind its current turn (${status}). It runs when the ` +
-        `current work yields; its output streams to the operator as ${name}.`
+        `dispatched to ${name} — it was idle, so this runs now; its output streams to the operator as ${name}.`
       );
     }
-    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, reason: "busy_no_control" } });
+    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, reason: "stale_running_no_control" } });
     return (
-      `${name} is busy — ${status}. I did NOT start this dispatch; its current work must finish first. ` +
-      `Its result will arrive as a follow-up when it's done — tell the operator what ${name} is doing, or retry shortly.`
+      `${name} appears busy — ${status} — but I have no live handle to queue behind (it may be mid-reload). ` +
+      `I did NOT start a second run; retry shortly and it will deliver once the session settles.`
     );
   }
   if (existing) {

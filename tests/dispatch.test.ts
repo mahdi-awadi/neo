@@ -92,13 +92,14 @@ test("a refused dispatch (unknown project) records dispatch_refused with reason 
   expect(ev.data).toMatchObject({ project: "nope", reason: "not_found" });
 });
 
-test("a queued-behind-busy dispatch records dispatch_queued", async () => {
+test("a queued-behind-busy dispatch records dispatch_queued (a turn is in flight)", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
   const { d } = makeDeps();
   const first = d.registry.add({ id: "d1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: -2, createdAt: 0 }, 0);
   d.registry.setStatus(first.id, "running");
-  d.registry.attachControl(first.id, { followUp: () => {}, queued: () => 0, interrupt: async () => {} });
+  // A turn IS being processed right now (active) → the brief queues behind it, not delivered-idle.
+  d.registry.attachControl(first.id, { followUp: () => {}, queued: () => 1, active: () => true, interrupt: async () => {} });
   await dispatchToProject("eticket-v3", "run docker ps", d, 1, {
     start: (() => {
       throw new Error("no start");
@@ -107,6 +108,7 @@ test("a queued-behind-busy dispatch records dispatch_queued", async () => {
     now: () => 0,
   });
   expect(d.ledger.listEvents({ kind: "dispatch_queued" })).toHaveLength(1);
+  expect(d.ledger.listEvents({ kind: "dispatch_delivered" })).toHaveLength(0);
 });
 
 test("dispatch to a running folder refuses instead of stacking", async () => {
@@ -133,7 +135,7 @@ test("dispatch to a running folder refuses instead of stacking", async () => {
   expect(out).toContain("2m"); // how long that activity has run
 });
 
-test("dispatch to a running folder WITH a live control QUEUES the brief (like an operator reply) instead of refusing", async () => {
+test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) instead of refusing", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
   const { d } = makeDeps();
@@ -143,10 +145,11 @@ test("dispatch to a running folder WITH a live control QUEUES the brief (like an
   );
   d.registry.setStatus(first.id, "running");
   const followUps: string[] = [];
-  // A live worker means a control is attached — dispatch must queue behind its turn, not refuse.
+  // A live worker mid-turn (active) means dispatch must queue behind its turn, not refuse.
   d.registry.attachControl(first.id, {
     followUp: (t: string) => void followUps.push(t),
-    queued: () => 0,
+    queued: () => 1,
+    active: () => true,
     interrupt: async () => {},
   });
   const out = await dispatchToProject("eticket-v3", "run docker ps and report", d, 1, {
@@ -159,6 +162,43 @@ test("dispatch to a running folder WITH a live control QUEUES the brief (like an
   expect(followUps.length).toBe(1); // the brief was queued into the live session
   expect(followUps[0]).toContain("run docker ps and report");
   expect(out.toLowerCase()).toContain("queued");
+});
+
+test("dispatch to an idle-but-'running' session (no turn in flight) delivers the brief NOW, not queue-as-busy", async () => {
+  // The bug: a live session's registry status stays "running" for its WHOLE lifetime (it flips back
+  // to "idle" only when the whole run ends), so a session sitting idle BETWEEN turns still reads
+  // "running". Deciding busy on that coarse signal parks a free project behind a false "busy". The
+  // real signal is the control's active() — a turn genuinely in flight. Here active() is false.
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const first = d.registry.add(
+    { id: "d1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: -2, createdAt: 0 },
+    0,
+  );
+  d.registry.setStatus(first.id, "running");
+  const followUps: string[] = [];
+  // Live control, but NO turn is being processed right now (active() === false).
+  d.registry.attachControl(first.id, {
+    followUp: (t: string) => void followUps.push(t),
+    queued: () => 0,
+    active: () => false,
+    interrupt: async () => {},
+  });
+  const out = await dispatchToProject("eticket-v3", "run docker ps and report", d, 1, {
+    start: (() => {
+      throw new Error("must not start a second run onto a live folder");
+    }) as never,
+    root,
+    now: () => 0,
+  });
+  expect(followUps.length).toBe(1); // delivered into the warm session — runs immediately
+  expect(followUps[0]).toContain("run docker ps and report");
+  expect(out.toLowerCase()).not.toContain("busy"); // it was idle — never report a false "busy"
+  expect(out.toLowerCase()).not.toContain("queued"); // delivered now, not parked behind a turn
+  // Recorded as an idle delivery, not a busy enqueue.
+  expect(d.ledger.listEvents({ kind: "dispatch_delivered" })).toHaveLength(1);
+  expect(d.ledger.listEvents({ kind: "dispatch_queued" })).toHaveLength(0);
 });
 
 test("background completion books the result and reports back to operator + company", async () => {
