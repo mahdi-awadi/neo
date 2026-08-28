@@ -239,3 +239,21 @@ invisible* — the stream showed the `🔧 Bash: …` milestone but never the co
 chars) for the meaningful tools (Bash/web/MCP/Task), gated by a `tool_use` id→name map; navigation
 (Read/Glob/Grep) and boring writers (Write/Edit) stay result-silent so the stream isn't a firehose.
 Requires a daemon restart to activate. TDD; full suite green (655).
+
+**Dispatch false-busy → deliver to an idle session — fixed:** a company dispatch to a live project
+could report it "busy" and queue behind it even when the session sat idle between turns, because the
+guard decided on the registry `status`. But `status` stays `"running"` for a live session's whole
+lifetime — it flips to `"idle"` only when the entire run ends — so it can't tell a worker mid-turn
+from one waiting for the next brief. A new turn-in-flight signal, `SessionControl.active()`, reports
+the real state. The Claude runner counts turn boundaries: a message `delivered` to the SDK against
+its `result` `completed`, with monotonic counters in the run scope so they survive a resume-missing
+restart (which recreates the input channel). The Codex runner flips a flag around each
+`consumeCodexTurn` — the same contract, so the busy/idle decision is provider-neutral. `dispatch.ts`
+now branches on `active()`, not on `status`. An **idle** live session takes the brief **now** (its
+input channel pulls it immediately, exactly like a fresh dispatch, so a free project is never parked
+behind a false "busy"). A **mid-turn** session **queues** behind the in-flight turn, like an operator
+reply, and the channel flushes it the moment that turn yields. A session marked `"running"` with
+**no live control** — a stale mark, for example after control is lost on a reload — is **refused**
+rather than enqueued into the void or started as a second concurrent run. The three outcomes record
+distinct ledger events (`dispatch_delivered`, `dispatch_queued`, `dispatch_refused`). Requires a
+daemon restart to activate. TDD; full suite green (657).

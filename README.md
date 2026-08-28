@@ -140,9 +140,12 @@ then focus reverts to the company — so a stray next message never sticks to a 
 - **`/open <folder> <task>`** delivers its task to the project (that's the one message) and reverts to
   the company; `/pin` it if you want to keep working there.
 
-When a message or a company **dispatch** can't run because a project is occupied, the reply reports the
-**real status** — which project, what it's doing, how long, and how many follow-ups are queued — not a
-bare "busy". The company also has a `sessions` tool to see every project's live state at once.
+A company **dispatch** to an already-open project checks whether a turn is really in flight, not just
+whether the session is live. An **idle** project takes the brief right away. A **mid-turn** project
+**queues** it behind the current turn. A stale session with no live handle is refused. When a dispatch
+queues or refuses, the reply reports the **real status** — which project, what it's doing, how long,
+and how many follow-ups are queued — not a bare "busy". The company also has a `sessions` tool to see
+every project's live state at once.
 
 ### Operator commands
 
@@ -224,7 +227,7 @@ Stack: **Bun + TypeScript**, test-driven.
 
 ```bash
 bun install
-bun test              # run the suite (655 tests)
+bun test              # run the suite (657 tests)
 bunx tsc --noEmit     # typecheck
 bun run src/daemon.ts # run the engine
 ```
