@@ -620,6 +620,10 @@ export function neoMcpServers(
     stitchKey?: string;
     /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
     codebaseMemoryBin?: string;
+    /** Operator-only: attach the Playwright browser-automation MCP (headless chromium) so every
+     *  operator project worker can drive a real browser for web/UI testing. Never on the customer
+     *  path (browser automation there would let customer-tainted work reach arbitrary URLs). */
+    playwright?: boolean;
   },
 ): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -703,6 +707,17 @@ export function neoMcpServers(
   // configured; the customer/ingress path passes none → never gets it.
   if (opts.codebaseMemoryBin) {
     servers["codebase-memory"] = { type: "stdio", command: opts.codebaseMemoryBin, args: [], env: {} };
+  }
+  // Operator-only: Playwright browser-automation MCP (headless chromium) for web/UI testing across
+  // all operator projects. Lazy — the browser only launches when a tool is actually called, so the
+  // per-worker cost is just a lightweight stdio process. Never attached on the customer/ingress path.
+  if (opts.playwright) {
+    servers.playwright = {
+      type: "stdio",
+      command: "playwright-mcp",
+      args: ["--headless", "--isolated"],
+      env: {},
+    };
   }
   return servers;
 }
