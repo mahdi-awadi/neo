@@ -1,6 +1,25 @@
 import { test, expect } from "bun:test";
-import { projectTagPrefix, outboundTag } from "../src/frontends/telegram";
+import { projectTagPrefix, outboundTag, structuredKeyboard } from "../src/frontends/telegram";
 import { mdToHtml } from "../src/engine/format";
+import { singleQuestionAsk, emptySelection, applyTap, encodeOptionTap, encodeSubmit, encodeOther } from "../src/engine/structured-question";
+
+test("structuredKeyboard maps the pure spec to grammy buttons with the right callback data + ✓", () => {
+  const ask = singleQuestionAsk("features?", ["Auth", "Billing"], true); // multi-select → Submit shown
+  const sel = applyTap(ask, emptySelection(ask), 0, 0); // Auth selected
+  const flat = structuredKeyboard("d1", ask, sel).inline_keyboard.flat();
+  const datas = flat.map((b) => "callback_data" in b ? b.callback_data : undefined);
+  expect(datas).toContain(encodeOptionTap("d1", 0, 0));
+  expect(datas).toContain(encodeSubmit("d1")); // Submit for multi-select
+  expect(datas).toContain(encodeOther("d1")); // implicit free-form Other
+  const auth = flat.find((b) => "callback_data" in b && b.callback_data === encodeOptionTap("d1", 0, 0))!;
+  expect(auth.text).toContain("✓"); // the selected option is checkmarked
+
+  // A single single-select question shows NO Submit (it resolves on one tap — today's UX).
+  const single = structuredKeyboard("d2", singleQuestionAsk("Postgres or Mongo?", ["Postgres", "Mongo"]))
+    .inline_keyboard.flat()
+    .map((b) => ("callback_data" in b ? b.callback_data : undefined));
+  expect(single).not.toContain(encodeSubmit("d2"));
+});
 
 test("projectTagPrefix: hashtag + trailing space for a project", () => {
   expect(projectTagPrefix("waselni")).toBe("#waselni ");

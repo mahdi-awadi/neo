@@ -2,7 +2,7 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
-import { Bot, InlineKeyboard, InputFile } from "grammy";
+import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
 import { saveInbound } from "../engine/files";
 import type { NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "../engine/ledger";
@@ -28,6 +28,18 @@ import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import { surfaceFor, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
 import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
 import type { ApiCooldown } from "../engine/api-retry";
+import {
+  keyboardRows,
+  parseDecisionCallback,
+  emptySelection,
+  applyTap,
+  isComplete,
+  needsSubmit,
+  answerText,
+  type StructuredAsk,
+  type Selection,
+  type DecisionTap,
+} from "../engine/structured-question";
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
  *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
@@ -199,12 +211,16 @@ export function startTelegram(
     rec: { id: string; project?: string; folder?: string },
     question: string,
     options?: string[],
+    spec?: StructuredAsk,
   ): Promise<{ chatId: number; messageId: number } | undefined> {
     const target = cfg.decisionsChatId ?? admin.adminId();
     if (target === undefined) return undefined; // no operator claimed yet — the queue still holds it
     const body = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${question}`;
+    // A structured ask (multi-select / multi-question) renders the richer keyboard; a flat single
+    // choice keeps the legacy one-tap keyboard so its UX is unchanged.
+    const keyboard = spec ? structuredKeyboard(rec.id, spec) : decisionKeyboard(rec.id, options);
     try {
-      const m = await bot.api.sendMessage(target, body, { reply_markup: decisionKeyboard(rec.id, options) });
+      const m = await bot.api.sendMessage(target, body, { reply_markup: keyboard });
       // Wire a plain reply to this message back into the raising project (routeReply), when its
       // session is still around; if it's closed, the decision-answer path re-registers from the ledger.
       if (rec.folder) {
@@ -233,6 +249,9 @@ export function startTelegram(
   // Decisions awaiting a typed "Other / type an answer", keyed by chat id -> decision id: the
   // operator tapped ✏️ on a raised decision, so their next message is the free-text answer.
   const pendingDecisionAnswer = new Map<number, string>();
+  // In-progress selection for a STRUCTURED decision, keyed by decision id. Ephemeral UI state: the
+  // decision row itself is durable, so a restart mid-selection just re-renders fresh from empty.
+  const pendingStructuredSelection = new Map<string, Selection>();
 
   // Deliver an answer to a tracked decision and resume the project that raised it. One path behind
   // all three answer gestures — a plain REPLY to the decision message, a tapped option button, or a
@@ -240,9 +259,91 @@ export function startTelegram(
   // digest) and seeds a focused resume; we then run the pipeline so the blocked worker continues
   // with the answer. A decision with no resumable folder (e.g. an escalation) just gets acknowledged.
   async function answerAndResume(dec: DecisionRow, answer: string, chatId: number): Promise<void> {
+    pendingStructuredSelection.delete(dec.id); // drop any in-progress selection — this decision is done
     const brief = answerDecision({ registry, ledger, routes, worker: cfg.providers.ownWork }, dec, answer, chatId);
     await bot.api.sendMessage(chatId, `✅ answered — resuming ${dec.project ?? "the project"}.`);
     if (brief) await handleMessage(brief, chatId, pipelineDeps());
+  }
+
+  // Handle a tap on a raised decision's keyboard: an option, a Submit (structured), or "✏️ Other".
+  // Thin wiring — the pure structured-question module owns the selection logic; a flat (legacy)
+  // decision keeps its one-tap-resolves behavior. All three answer gestures end at answerAndResume.
+  async function handleDecisionTap(ctx: Context, tap: DecisionTap): Promise<void> {
+    const chatId = ctx.chat?.id ?? 0;
+    const dec = ledger.decisionById(tap.id);
+    if (!dec || dec.status !== "open") {
+      await ctx.answerCallbackQuery("already answered");
+      try {
+        await ctx.editMessageReplyMarkup();
+      } catch {
+        // buttons already gone / "not modified" — ignore
+      }
+      return;
+    }
+
+    // "✏️ Other / type an answer": capture the operator's next message as a free-text answer.
+    if (tap.kind === "other") {
+      pendingDecisionAnswer.set(chatId, tap.id);
+      await ctx.answerCallbackQuery();
+      await bot.api.sendMessage(chatId, "✏️ Send your answer as your next message — I'll deliver it to the project.");
+      return;
+    }
+
+    // A STRUCTURED decision (multi-select / multi-question): accumulate a selection; Submit resolves.
+    if (dec.spec) {
+      const ask = dec.spec;
+      if (tap.kind === "submit") {
+        const sel = pendingStructuredSelection.get(tap.id) ?? emptySelection(ask);
+        if (!isComplete(ask, sel)) {
+          await ctx.answerCallbackQuery("pick an option for each question");
+          return;
+        }
+        await ctx.answerCallbackQuery("submitted");
+        try {
+          await ctx.editMessageReplyMarkup();
+        } catch {
+          // "not modified" — ignore
+        }
+        await answerAndResume(dec, answerText(ask, sel), chatId);
+        return;
+      }
+      const sel = applyTap(ask, pendingStructuredSelection.get(tap.id) ?? emptySelection(ask), tap.qIdx, tap.optIdx);
+      pendingStructuredSelection.set(tap.id, sel);
+      // A single single-select question resolves on this one tap (today's UX — no Submit needed).
+      if (!needsSubmit(ask) && isComplete(ask, sel)) {
+        const answer = answerText(ask, sel);
+        await ctx.answerCallbackQuery(`answered: ${answer.slice(0, 40)}`);
+        try {
+          await ctx.editMessageReplyMarkup();
+        } catch {
+          // "not modified" — ignore
+        }
+        await answerAndResume(dec, answer, chatId);
+        return;
+      }
+      // Multi-select / multi-question: re-render the keyboard with the updated (✓) selection.
+      await ctx.answerCallbackQuery();
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: structuredKeyboard(tap.id, ask, sel) });
+      } catch {
+        // "not modified" — ignore
+      }
+      return;
+    }
+
+    // A FLAT (legacy) decision: options[] only. Submit doesn't apply; an option tap resolves directly.
+    if (tap.kind === "submit") {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+    const chosen = dec.options?.[tap.optIdx] ?? `option ${Number.isNaN(tap.optIdx) ? "?" : tap.optIdx}`;
+    await ctx.answerCallbackQuery(`answered: ${chosen.slice(0, 40)}`);
+    try {
+      await ctx.editMessageReplyMarkup(); // drop the option buttons
+    } catch {
+      // "message is not modified" — ignore
+    }
+    await answerAndResume(dec, chosen, chatId);
   }
 
   // Gate: an optional pre-allowlist, then trust-on-first-use — the first allowed id to
@@ -571,47 +672,13 @@ export function startTelegram(
       return;
     }
 
-    // Tap a raised decision's OPTION button (ask_operator with options) — record the chosen option
-    // as the answer, resolve it, and resume the raising project. The label is the persisted option at
-    // <idx> (options are stored on the decision row), so the callback data stays short.
-    if (cb.startsWith("dec:")) {
-      const [, id, idxStr] = cb.split(":");
-      const chatId = ctx.chat?.id ?? 0;
-      const dec = id ? ledger.decisionById(id) : undefined;
-      if (!dec || dec.status !== "open") {
-        await ctx.answerCallbackQuery("already answered");
-        try {
-          await ctx.editMessageReplyMarkup();
-        } catch {
-          // buttons already gone / "not modified" — ignore
-        }
-        return;
-      }
-      const idx = Number(idxStr);
-      const chosen = dec.options?.[idx] ?? `option ${Number.isNaN(idx) ? "?" : idx}`;
-      await ctx.answerCallbackQuery(`answered: ${chosen.slice(0, 40)}`);
-      try {
-        await ctx.editMessageReplyMarkup(); // drop the option buttons
-      } catch {
-        // "message is not modified" — ignore
-      }
-      await answerAndResume(dec, chosen, chatId);
-      return;
-    }
-
-    // Tap "✏️ Other / type an answer" on a raised decision — capture the operator's next text
-    // message as the free-text answer (see the pendingDecisionAnswer intake in the text handler).
-    if (cb.startsWith("deco:")) {
-      const id = cb.slice("deco:".length);
-      const chatId = ctx.chat?.id ?? 0;
-      const dec = ledger.decisionById(id);
-      await ctx.answerCallbackQuery();
-      if (!dec || dec.status !== "open") {
-        await bot.api.sendMessage(chatId, "That decision is no longer open.");
-        return;
-      }
-      pendingDecisionAnswer.set(chatId, id);
-      await bot.api.sendMessage(chatId, "✏️ Send your answer as your next message — I'll deliver it to the project.");
+    // Tap on a raised decision's keyboard — an option, a Submit (structured multi-select /
+    // multi-question), or "✏️ Other" (free-form). All decision callbacks parse here (backward
+    // compatible with the legacy flat `dec:<id>:<idx>`); the pure structured-question module owns the
+    // selection logic, so this stays thin I/O wiring.
+    const tap = parseDecisionCallback(cb);
+    if (tap) {
+      await handleDecisionTap(ctx, tap);
       return;
     }
 
@@ -668,6 +735,19 @@ export function decisionKeyboard(id: string, options?: string[]): InlineKeyboard
   // stays tappable; each on its own row since option labels can be long.
   if (options?.length) options.slice(0, 8).forEach((label, i) => kb.text(label.slice(0, 60), `dec:${id}:${i}`).row());
   kb.text("✏️ Other / type an answer", `deco:${id}`);
+  return kb;
+}
+
+/** Build the inline keyboard for a STRUCTURED decision (Feature 1) from the pure keyboard spec:
+ *  option buttons (checkmarked when selected), a "✅ Submit" when the ask needs one (multi-select /
+ *  multi-question), and the "✏️ Other" free-form affordance last. `sel` shows the in-progress picks.
+ *  Kept pure/exported (the module owns the layout) so it's unit-testable without a Bot. */
+export function structuredKeyboard(id: string, ask: StructuredAsk, sel?: Selection): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const row of keyboardRows(id, ask, sel)) {
+    for (const btn of row) kb.text(btn.label, btn.data);
+    kb.row();
+  }
   return kb;
 }
 
