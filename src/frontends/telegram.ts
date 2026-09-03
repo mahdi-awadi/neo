@@ -5,7 +5,7 @@
 import { Bot, InlineKeyboard, InputFile } from "grammy";
 import { saveInbound } from "../engine/files";
 import type { NeoConfig } from "../config";
-import type { Ledger } from "../engine/ledger";
+import type { Ledger, DecisionRow } from "../engine/ledger";
 import type { Registry } from "../engine/registry";
 import type { Meter } from "../engine/budget";
 import type { AdminStore } from "../engine/admin";
@@ -18,7 +18,7 @@ import { openTrustStore } from "../engine/trust";
 import { handleMessage } from "../engine/pipeline";
 import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
-import { routeReply } from "../engine/reply-routing";
+import { routeReply, answerDecision } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, telegramCommands, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
@@ -26,6 +26,7 @@ import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import { surfaceFor, priorityBadge, type Priority } from "../engine/priority";
+import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
 import type { ApiCooldown } from "../engine/api-retry";
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
@@ -149,8 +150,9 @@ export function startTelegram(
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
   const allow = new Set(cfg.telegramAllowFrom);
-  // Pending approvals keyed by a per-request token: callback press -> resolver.
-  const pending = new Map<string, (decision: "allow" | "deny") => void>();
+  // Pending approvals keyed by a per-request token: callback press -> resolver + the tracked
+  // decision row the escalation opened (resolved when the button is pressed).
+  const pending = new Map<string, { resolve: (decision: "allow" | "deny") => void; decisionId: string }>();
   // Remembers which project each sent worker message came from, so replying to a specific
   // message routes the follow-up back to that project (see send() + the reply handling below).
   // Ledger-backed so a mapping survives /reload — a lost route used to misroute the reply to the company.
@@ -216,6 +218,20 @@ export function startTelegram(
   );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
+  // Decisions awaiting a typed "Other / type an answer", keyed by chat id -> decision id: the
+  // operator tapped ✏️ on a raised decision, so their next message is the free-text answer.
+  const pendingDecisionAnswer = new Map<number, string>();
+
+  // Deliver an answer to a tracked decision and resume the project that raised it. One path behind
+  // all three answer gestures — a plain REPLY to the decision message, a tapped option button, or a
+  // typed "Other" answer: answerDecision marks the row answered (dropping it from /decisions + the
+  // digest) and seeds a focused resume; we then run the pipeline so the blocked worker continues
+  // with the answer. A decision with no resumable folder (e.g. an escalation) just gets acknowledged.
+  async function answerAndResume(dec: DecisionRow, answer: string, chatId: number): Promise<void> {
+    const brief = answerDecision({ registry, ledger, routes, worker: cfg.providers.ownWork }, dec, answer, chatId);
+    await bot.api.sendMessage(chatId, `✅ answered — resuming ${dec.project ?? "the project"}.`);
+    if (brief) await handleMessage(brief, chatId, pipelineDeps());
+  }
 
   // Gate: an optional pre-allowlist, then trust-on-first-use — the first allowed id to
   // message the bot becomes the sole admin (shared with the web console).
@@ -242,11 +258,20 @@ export function startTelegram(
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
-        pending.set(token, resolve);
+        // Track the escalation as a DECISION so an ignored allow/deny still shows in /decisions + the
+        // secretary digest and survives a restart (the in-memory resolver is lost on restart, but the
+        // row stays OPEN — no silent loss). Best-effort project/folder attribution for grouping.
+        const sess = registry.findByChat(cid);
+        const decisionId = openEscalationDecision(ledger, { reason, project: sess?.name, folder: sess?.order.folder, chatId: cid });
+        pending.set(token, { resolve, decisionId });
         const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
-        void bot.api.sendMessage(cid, `⚠️ Approve this action?\n${reason}`, { reply_markup: kb });
-        // The actionable buttons stay here; the web console just SEES the gate is pending.
-        bus?.mirror("telegram", { kind: "notice", text: `⏳ approval pending on Telegram: ${reason}` });
+        // Route the blocking approval to the unmuted Decisions channel (falls back to the DM when
+        // decisionsChatId is unset — today's behavior). The Allow/Deny buttons stay actionable here;
+        // the web console just SEES the gate is pending.
+        void bot.api.sendMessage(surfaceChat(cid, "decision"), `${priorityBadge("decision")} Approve this action?\n${reason}`, {
+          reply_markup: kb,
+        });
+        bus?.mirror("telegram", { kind: "notice", text: `⏳ approval pending: ${reason}` });
       }),
     sendFile: (cid, path, caption) =>
       void bot.api.sendDocument(cid, new InputFile(path), caption ? { caption } : {}),
@@ -322,6 +347,17 @@ export function startTelegram(
       return;
     }
 
+    // A pending "Other / type an answer" for a raised decision takes this message as the answer
+    // (not an order/command): resolve the decision and resume the project that raised it.
+    const answerDecId = pendingDecisionAnswer.get(chatId);
+    if (answerDecId !== undefined) {
+      pendingDecisionAnswer.delete(chatId);
+      const dec = ledger.decisionById(answerDecId);
+      if (dec && dec.status === "open") await answerAndResume(dec, ctx.message.text, chatId);
+      else void bot.api.sendMessage(chatId, "That decision is no longer open.");
+      return;
+    }
+
     // Bare /loop → tappable run buttons; /loop <name> starts a background loop (streams progress).
     if (ctx.message.text.trim() === "/loop") {
       const kb = new InlineKeyboard();
@@ -360,6 +396,18 @@ export function startTelegram(
         void bot.api.sendMessage(chatId, command.text);
       }
       return;
+    }
+
+    // If the operator REPLIED to a tracked decision's channel message, that reply IS the answer:
+    // resolve it and resume the raising project. Checked before routeReply — the decision row carries
+    // its own resume target (folder), so nothing blocking is ever lost to a generic reply route.
+    const replyToId = ctx.message.reply_to_message?.message_id;
+    if (replyToId !== undefined) {
+      const dec = ledger.decisionByMessage(chatId, replyToId);
+      if (dec && dec.status === "open" && dec.kind === "decision") {
+        await answerAndResume(dec, ctx.message.text, chatId);
+        return;
+      }
     }
 
     // If the operator replied to a specific worker message, route this follow-up to that project.
@@ -511,13 +559,59 @@ export function startTelegram(
       return;
     }
 
+    // Tap a raised decision's OPTION button (ask_operator with options) — record the chosen option
+    // as the answer, resolve it, and resume the raising project. The label is the persisted option at
+    // <idx> (options are stored on the decision row), so the callback data stays short.
+    if (cb.startsWith("dec:")) {
+      const [, id, idxStr] = cb.split(":");
+      const chatId = ctx.chat?.id ?? 0;
+      const dec = id ? ledger.decisionById(id) : undefined;
+      if (!dec || dec.status !== "open") {
+        await ctx.answerCallbackQuery("already answered");
+        try {
+          await ctx.editMessageReplyMarkup();
+        } catch {
+          // buttons already gone / "not modified" — ignore
+        }
+        return;
+      }
+      const idx = Number(idxStr);
+      const chosen = dec.options?.[idx] ?? `option ${Number.isNaN(idx) ? "?" : idx}`;
+      await ctx.answerCallbackQuery(`answered: ${chosen.slice(0, 40)}`);
+      try {
+        await ctx.editMessageReplyMarkup(); // drop the option buttons
+      } catch {
+        // "message is not modified" — ignore
+      }
+      await answerAndResume(dec, chosen, chatId);
+      return;
+    }
+
+    // Tap "✏️ Other / type an answer" on a raised decision — capture the operator's next text
+    // message as the free-text answer (see the pendingDecisionAnswer intake in the text handler).
+    if (cb.startsWith("deco:")) {
+      const id = cb.slice("deco:".length);
+      const chatId = ctx.chat?.id ?? 0;
+      const dec = ledger.decisionById(id);
+      await ctx.answerCallbackQuery();
+      if (!dec || dec.status !== "open") {
+        await bot.api.sendMessage(chatId, "That decision is no longer open.");
+        return;
+      }
+      pendingDecisionAnswer.set(chatId, id);
+      await bot.api.sendMessage(chatId, "✏️ Send your answer as your next message — I'll deliver it to the project.");
+      return;
+    }
+
     const [kind, token] = ctx.callbackQuery.data.split(":");
-    const resolve = token ? pending.get(token) : undefined;
-    if (resolve) {
+    const pend = token ? pending.get(token) : undefined;
+    if (pend) {
       pending.delete(token);
-      resolve(kind === "a" ? "allow" : "deny");
-      bus?.mirror("telegram", { kind: "notice", text: `approval ${kind === "a" ? "allow" : "deny"} on Telegram` });
-      await ctx.answerCallbackQuery(kind === "a" ? "Allowed" : "Denied");
+      const verdict = kind === "a" ? "allow" : "deny";
+      pend.resolve(verdict); // unblock the waiting worker
+      resolveEscalationDecision(ledger, pend.decisionId, verdict); // close the tracked decision row
+      bus?.mirror("telegram", { kind: "notice", text: `approval ${verdict} on Telegram` });
+      await ctx.answerCallbackQuery(verdict === "allow" ? "Allowed" : "Denied");
       await ctx.editMessageReplyMarkup(); // drop the buttons
     } else {
       await ctx.answerCallbackQuery();

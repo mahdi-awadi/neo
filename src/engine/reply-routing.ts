@@ -10,7 +10,7 @@
 //   • an unattributable reply → { clarify } — ask the operator to name the project, never guess
 import type { Order, Provider } from "../types";
 import type { Registry } from "./registry";
-import type { Ledger } from "./ledger";
+import type { Ledger, DecisionRow } from "./ledger";
 import type { MessageRoutes } from "./message-routes";
 
 /** Shown when a reply can't be tied to any project — instead of silently hitting the company. */
@@ -61,35 +61,57 @@ export function routeReply(deps: ReplyRoutingDeps, input: ReplyInput): ReplyResu
   if (!target) return { clarify: UNRESOLVED_REPLY_MESSAGE };
 
   // Prefer the folder (stable) over the stored session id (changes across idle-close) to re-find
-  // the live session — this is what makes a persisted route survive reload/idle-close.
+  // the live session — this is what makes a persisted route survive reload/idle-close. A running
+  // session still remembers what it sent → deliver as-is; otherwise it's RESUMED, so carry the
+  // replied-to original to re-ground the re-opened worker in what it said before.
   const open = registry.findByFolder(target.folder);
-  if (open && open.status === "running") {
-    // Still mid-flight → it remembers what it sent; just focus it, no re-grounding needed.
-    registry.setFocus(input.chatId, open.id, "once");
-    return { deliver: input.text };
-  }
+  const running = open?.status === "running";
+  const deliver = running || !input.replyToText ? input.text : repliedContextBrief(input.replyToText, input.text);
+  deliverIntoFolder(deps, target.folder, input.chatId, input.text); // focus + (re)seed a resumable entry
+  return { deliver };
+}
 
-  // The session will be RESUMED (idle in-registry, or fully closed). Ensure there's a focused entry,
-  // then carry the replied-to original so the re-opened worker re-grounds in what it said before.
+/** Ensure a focused, resumable session exists for `folder` and return the text to handleMessage into
+ *  it. The ONE session-seeding path shared by routeReply (the operator replied to a worker line) and
+ *  the decision-answer path (the operator answered a tracked decision): a running session is just
+ *  focused once; an idle/closed one is rebuilt as an idle, resume-seeded entry from the folder's last
+ *  recorded SDK session so the pipeline's resume branch reopens the same conversation. Focus is
+ *  mode "once" — a stray next message never sticks to the project. */
+export function deliverIntoFolder(deps: ReplyRoutingDeps, folder: string, chatId: number, text: string): string {
+  const { registry, ledger } = deps;
+  const now = deps.now ?? (() => Date.now());
+  const open = registry.findByFolder(folder);
   let id = open?.id;
   if (!id) {
     // Idle-closed / evicted / post-reload gap: rebuild an idle, resumable entry from the folder's
     // last recorded SDK session, so the pipeline's resume branch reopens the same conversation.
-    const resumeId = ledger.lastSessionFor(target.folder, input.chatId, deps.worker) ?? "";
-    const order: Order = {
-      id: crypto.randomUUID(),
-      source: "neo",
-      folder: target.folder,
-      task: input.text,
-      chatId: input.chatId,
-      createdAt: now(),
-    };
+    const resumeId = ledger.lastSessionFor(folder, chatId, deps.worker) ?? "";
+    const order: Order = { id: crypto.randomUUID(), source: "neo", folder, task: text, chatId, createdAt: now() };
     const session = registry.add(order, now());
     registry.setStatus(session.id, "idle"); // idle = the pipeline's resume branch picks it up
     if (resumeId) registry.setSdkSessionId(session.id, resumeId, deps.worker);
     id = session.id;
   }
-  registry.setFocus(input.chatId, id, "once");
-  const deliver = input.replyToText ? repliedContextBrief(input.replyToText, input.text) : input.text;
-  return { deliver };
+  registry.setFocus(chatId, id, "once");
+  return text;
+}
+
+/** Record an answer to a tracked decision and seed a resume of the project that raised it. The ONE
+ *  path behind every answer gesture (a plain REPLY to the decision message, a tapped option button,
+ *  or a typed "Other" answer): it marks the row answered — so it drops out of /decisions + the
+ *  secretary digest — then, when the decision carries a resumable `folder`, seeds a focused resume
+ *  and returns the grounded brief to handleMessage. Returns `undefined` when there is no folder to
+ *  resume (e.g. a governor escalation with no project — that unblocks via its in-memory Allow/Deny
+ *  resolver instead). Pure bookkeeping + registry seeding; the frontend does the actual send. */
+export function answerDecision(
+  deps: ReplyRoutingDeps,
+  dec: Pick<DecisionRow, "id" | "folder" | "question">,
+  answer: string,
+  chatId: number,
+): string | undefined {
+  deps.ledger.resolveDecision(dec.id, answer);
+  if (!dec.folder) return undefined;
+  const brief = repliedContextBrief(dec.question, answer);
+  deliverIntoFolder(deps, dec.folder, chatId, brief);
+  return brief;
 }
