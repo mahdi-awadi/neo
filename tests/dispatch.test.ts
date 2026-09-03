@@ -883,6 +883,21 @@ test("ask_operator works with no options (free-form question path)", async () =>
   expect(open[0]!.options).toBeUndefined();
 });
 
+// The operator's rule (2026-09-03): questions raised via ask_operator were "shallow, patch-shaped,
+// not standard." The tool DESCRIPTION must force the worker to challenge itself first — root-cause,
+// standard fix (not a patch), self-critique — and only escalate a genuine operator decision.
+test("ask_operator description forces self-challenge BEFORE asking (root-cause, standard fix not a patch)", () => {
+  const { d } = makeDeps();
+  const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
+  const servers = neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" });
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { description: string }> } };
+  const desc = neo.instance._registeredTools["ask_operator"]!.description.toLowerCase();
+  expect(desc).toContain("root cause"); // trace the real cause first
+  expect(desc).toContain("industry-standard"); // the correct standard fix...
+  expect(desc).toContain("patch"); // ...not the quickest patch
+  expect(desc).toContain("do it and report"); // one right fix exists → don't ask
+});
+
 test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {
   const { d } = makeDeps();
   const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent" });
@@ -1078,6 +1093,12 @@ test("briefWithProjectDocs preamble requires codebase-memory + superpowers, stat
   expect(out.toLowerCase()).toContain("already indexed"); // engine guarantees the map is ready
   expect(out.toLowerCase()).toContain("list_projects"); // look up the EXACT project name, don't guess it
   expect(out.toLowerCase()).toContain("superpowers"); // use the skills
+  // Challenge-yourself-first mandate (2026-09-03): no shallow patch-menu decisions — the worker
+  // must root-cause + reach for the standard fix + self-critique BEFORE raising anything.
+  const low = out.toLowerCase();
+  expect(low).toContain("root cause"); // trace the real cause, not the symptom
+  expect(low).toContain("industry-standard"); // the correct standard fix...
+  expect(low).toContain("patch"); // ...not the quickest patch
   expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last
 });
 

@@ -177,8 +177,12 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
  *  rest of a project's rule/docs .md files never reach it unless the brief says so. Every
  *  dispatched brief gets this preamble so the worker (1) reads its own rules, (2) uses the
  *  codebase-memory MCP FIRST for a structural map — REQUIRED, not optional — reading source files
- *  directly only for what the map doesn't cover, and (3) uses the superpowers skills for the shape
- *  of work at hand. (2) is made satisfiable by the engine: `ensureIndexed` (see codebase-memory.ts)
+ *  directly only for what the map doesn't cover, (3) uses the superpowers skills for the shape
+ *  of work at hand, and (4) challenges itself BEFORE raising any operator question — root-cause the
+ *  real issue, reach for the industry-standard fix (not a patch), self-critique its options, and
+ *  only escalate a decision that is genuinely the operator's (mirrors the `ask_operator` precondition
+ *  so a worker can't turn a solvable bug into a shallow patch-menu). (2) is made satisfiable by the
+ *  engine: `ensureIndexed` (see codebase-memory.ts)
  *  indexes the folder before the worker starts, because the governor denies subagents the index
  *  tools so a worker can never self-index. The engine appends this automatically so the operator
  *  never has to and it can't be omitted. */
@@ -198,6 +202,14 @@ export function briefWithProjectDocs(task: string): string {
     "REQUIRED — use the superpowers skills for the shape of work at hand: brainstorming → " +
     "writing-plans for design, systematic-debugging to root-cause any bug, and test-driven-development " +
     "for implementation (write the failing test first).\n\n" +
+    "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
+    "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
+    "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +
+    "ONLY a decision that is genuinely theirs: product/UX policy, cost, an irreversible or external " +
+    "action, or a real trade-off between two sound options. If there is one correct standard fix, " +
+    "do it and report it — do not ask. When you must ask (via ask_operator), show your work: the " +
+    "root cause you found, the standard fix you recommend, and why; every option you offer must be " +
+    "defensible on its own — no patch-level options.\n\n" +
     task
   );
 }
@@ -736,7 +748,11 @@ export function neoMcpServers(
     tools.push(
       tool(
         "ask_operator",
-        "Ask the operator a question that BLOCKS this work — a decision or approval you need before you can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). It goes to the operator's high-priority Decisions channel and is tracked until they answer. Pass `options` (2-5 short labels) when the answer is a choice — the operator gets tappable buttons; omit `options` for a free-form question (they type a reply). Set `multiSelect: true` when the operator may pick SEVERAL of the options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
+        "Ask the operator a question that BLOCKS this work — a decision or approval you need before you can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). " +
+          "BEFORE you call this, challenge yourself: (1) trace the real root cause in the code, not the symptom; (2) determine the correct industry-standard fix, not the quickest patch; (3) criticize your own options and drop any that are only workarounds. " +
+          "Escalate ONLY a decision that is genuinely the operator's: product/UX policy, cost, an irreversible or external action, or a real trade-off between two sound options. If there is one correct standard fix, do it and report — do NOT ask. " +
+          "When you do ask, show your work: the root cause you found, the standard fix you recommend, and why; every option you offer must be defensible on its own — no patch-level options. " +
+          "It goes to the operator's high-priority Decisions channel and is tracked until they answer. Pass `options` (2-5 short labels) when the answer is a choice — the operator gets tappable buttons; omit `options` for a free-form question (they type a reply). Set `multiSelect: true` when the operator may pick SEVERAL of the options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
         {
           question: z.string().describe("the blocking question, in plain language"),
           options: z
