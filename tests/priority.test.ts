@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   surfaceFor,
+  routeChat,
   priorityBadge,
   priorityStyle,
   styleLine,
@@ -44,6 +45,32 @@ test("only decision, alert and result reach the decisions surface — progress +
   const all: Priority[] = ["decision", "alert", "result", "progress", "done"];
   const decisions = all.filter((p) => surfaceFor(p) === "decisions");
   expect(decisions.sort()).toEqual(["alert", "decision", "result"]);
+});
+
+// --- routeChat: resolve a line's concrete chat, defense-in-depth against group flooding ---
+
+test("routeChat sends firehose lines to the DM and attention lines to the group", () => {
+  const chats = { cid: 111, adminDm: 111, group: 222 };
+  expect(routeChat("progress", chats)).toBe(111);
+  expect(routeChat("done", chats)).toBe(111);
+  expect(routeChat("decision", chats)).toBe(222);
+  expect(routeChat("alert", chats)).toBe(222);
+  expect(routeChat("result", chats)).toBe(222);
+});
+
+test("routeChat NEVER lets a firehose line land in the group — a group-homed session's progress diverts to the DM", () => {
+  // cid IS the group (a session mistakenly homed to the group, e.g. via a resumed decision): a
+  // progress/done line must still divert to the DM firehose, so the group is never flooded.
+  expect(routeChat("progress", { cid: 222, adminDm: 111, group: 222 })).toBe(111);
+  expect(routeChat("done", { cid: 222, adminDm: 111, group: 222 })).toBe(111);
+  // but that same session's decision/result still reaches the group (the group stays high-signal).
+  expect(routeChat("result", { cid: 222, adminDm: 111, group: 222 })).toBe(222);
+  expect(routeChat("decision", { cid: 222, adminDm: 111, group: 222 })).toBe(222);
+});
+
+test("routeChat with no group configured keeps every line in the given chat (safe degrade)", () => {
+  expect(routeChat("decision", { cid: 111, adminDm: 111, group: undefined })).toBe(111);
+  expect(routeChat("progress", { cid: 111, adminDm: 111, group: undefined })).toBe(111);
 });
 
 // --- Feature 2: central priority style map ---

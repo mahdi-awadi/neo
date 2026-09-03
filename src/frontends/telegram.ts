@@ -25,7 +25,7 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry }
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
-import { surfaceFor, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
+import { surfaceFor, routeChat, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
 import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
 import type { ApiCooldown } from "../engine/api-retry";
 import {
@@ -195,11 +195,12 @@ export function startTelegram(
     }
   }
 
-  // Resolve which chat a priority renders in: DECISION/ALERT → the Decisions chat (or the DM if
-  // unset), PROGRESS/DONE → the DM firehose. `dm` is the caller's intended chat (always the admin's
-  // DM in practice); this only ever REDIRECTS attention-priority lines to the Decisions channel.
+  // Resolve which chat a priority renders in (delegates to the pure routeChat rule): DECISION/ALERT/
+  // RESULT → the Decisions group (or the DM if unset); PROGRESS/DONE → the DM firehose. `dm` is the
+  // caller's intended chat. Defense in depth: even if `dm` IS the group (a session mistakenly homed
+  // there), a firehose line still diverts to the admin DM — routine progress can never flood the group.
   const surfaceChat = (dm: number, priority?: Priority): number =>
-    surfaceFor(priority ?? "progress") === "decisions" ? (cfg.decisionsChatId ?? dm) : dm;
+    routeChat(priority, { cid: dm, adminDm: admin.adminId(), group: cfg.decisionsChatId });
 
   // Post a raised decision (from the `ask_operator` tool) to the operator's high-priority Decisions
   // channel with a tappable inline keyboard (option buttons + an "other / type an answer"
@@ -260,9 +261,12 @@ export function startTelegram(
   // with the answer. A decision with no resumable folder (e.g. an escalation) just gets acknowledged.
   async function answerAndResume(dec: DecisionRow, answer: string, chatId: number): Promise<void> {
     pendingStructuredSelection.delete(dec.id); // drop any in-progress selection — this decision is done
-    const brief = answerDecision({ registry, ledger, routes, worker: cfg.providers.ownWork }, dec, answer, chatId);
+    const resumed = answerDecision({ registry, ledger, routes, worker: cfg.providers.ownWork }, dec, answer, chatId);
+    // The acknowledgement stays in the chat the operator answered in (the group, when tapped there),
+    // so they see confirmation where they acted. But the RESUME runs on the decision's ORIGINAL chat
+    // (the DM) so the reopened session's progress flows to the muted firehose, never floods the group.
     await bot.api.sendMessage(chatId, `✅ answered — resuming ${dec.project ?? "the project"}.`);
-    if (brief) await handleMessage(brief, chatId, pipelineDeps());
+    if (resumed) await handleMessage(resumed.brief, resumed.homeChat, pipelineDeps());
   }
 
   // Handle a tap on a raised decision's keyboard: an option, a Submit (structured), or "✏️ Other".

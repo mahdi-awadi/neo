@@ -331,3 +331,19 @@ stays `done` → DM, because the operator is already in that conversation and an
 be noise. Routine `progress` can never be promoted, so the group never gets streamed chatter. Built
 TDD (result → decisions, progress → DM, group gets no routine progress). Going live needs a daemon
 restart (operator-gated). `tsc` clean; suite green (one pre-existing env-only config test unrelated).
+
+**Bug fix — answering a decision in the group no longer floods the group with progress.** Same branch.
+When the operator answered a tracked decision **in the unmuted Decisions group**, the raising project
+resumed but then streamed ALL its progress to the group instead of the DM. Root cause (two parts):
+(1) `answerDecision` (`reply-routing.ts`) seeded the resume against the chat the ANSWER arrived on
+(the group), so `deliverIntoFolder` homed the reopened Order + focus to the group. The decision row
+already stored the ORIGINAL raising chat (`chat_id`, the DM) separately from `decision_chat_id` (the
+group it was posted to). Fix: resume against `dec.chatId` (fall back to the answer chat), and return
+the resolved `homeChat` so the frontend runs the resumed turn on the DM too. The answer
+acknowledgement still lands in the chat the operator answered in. (2) Defense in depth: a new pure
+`routeChat(priority, {cid, adminDm, group})` (`priority.ts`) makes a firehose (`progress`/`done`) line
+divert to the DM even if a session's chat IS the group, so routine progress can NEVER reach the group
+regardless of where a session is homed; `surfaceChat` now delegates to it. Built TDD (answer-in-group
+→ resume-in-DM; group-homed progress → DM; decision/result still → group; both a tapped button and a
+typed reply). Needs a daemon restart (operator-gated). `tsc` clean; suite green (same pre-existing
+env-only config test unrelated).

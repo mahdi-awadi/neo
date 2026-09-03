@@ -105,13 +105,18 @@ export function deliverIntoFolder(deps: ReplyRoutingDeps, folder: string, chatId
  *  resolver instead). Pure bookkeeping + registry seeding; the frontend does the actual send. */
 export function answerDecision(
   deps: ReplyRoutingDeps,
-  dec: Pick<DecisionRow, "id" | "folder" | "question">,
+  dec: Pick<DecisionRow, "id" | "folder" | "question" | "chatId">,
   answer: string,
   chatId: number,
-): string | undefined {
+): { brief: string; homeChat: number } | undefined {
   deps.ledger.resolveDecision(dec.id, answer);
   if (!dec.folder) return undefined;
+  // Resume against the ORIGINAL raising chat (the DM the raising session was homed to), NOT the chat
+  // the answer arrived on. A decision posted to the unmuted Decisions group is answered THERE; homing
+  // the resume to that group would flood it with the project's streamed progress. Fall back to the
+  // answer chat only when the decision has no stored raising chat (e.g. it was posted to the DM).
+  const homeChat = dec.chatId ?? chatId;
   const brief = repliedContextBrief(dec.question, answer);
-  deliverIntoFolder(deps, dec.folder, chatId, brief);
-  return brief;
+  deliverIntoFolder(deps, dec.folder, homeChat, brief);
+  return { brief, homeChat };
 }

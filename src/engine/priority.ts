@@ -20,6 +20,21 @@ export function surfaceFor(p: Priority): "decisions" | "firehose" {
   return p === "decision" || p === "alert" || p === "result" ? "decisions" : "firehose";
 }
 
+/** Resolve the concrete chat a line renders in, given the caller's chat (`cid`), the operator's DM
+ *  firehose (`adminDm`), and the unmuted Decisions group (`group`, undefined when not configured).
+ *  decision/alert/result → the group (fall back to `cid` when there is no group); progress/done →
+ *  the DM firehose, ALWAYS. Defense in depth: if `cid` IS the group (a session mistakenly homed to
+ *  the group), a firehose line diverts to `adminDm`, so routine progress can never flood the group —
+ *  regardless of where a session is homed. Pure + AI-free; the ONE routing rule surfaces render from. */
+export function routeChat(
+  priority: Priority | undefined,
+  chats: { cid: number; adminDm?: number; group?: number },
+): number {
+  const { cid, adminDm, group } = chats;
+  if (surfaceFor(priority ?? "progress") === "decisions") return group ?? cid;
+  return group !== undefined && cid === group ? (adminDm ?? cid) : cid;
+}
+
 /** The visual style for a priority. Telegram has no text colors, so "color" = a consistent accent
  *  emoji + a short label. This is the ONE data-driven source every surface renders from, so styling
  *  is configurable here (not hardcoded per call site). One accent per line — tasteful, not a firehose
