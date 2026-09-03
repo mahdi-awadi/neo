@@ -268,3 +268,27 @@ on first tool use, so the idle cost per worker is one light stdio process. This 
 Playwright tools are foreign MCP tools, so they still default-escalate — an interactive operator
 dispatch asks for approval, and an autonomous path auto-denies. Needs a daemon restart to activate.
 `tsc` clean, full suite green (657).
+
+**Priority tags · decisions queue · secretary loop — nothing blocking is lost.** Neo runs many
+projects and sends a high volume of messages; the operator muted the bot, so blocking questions got
+lost in the noise. The engine now gives every outbound line a deterministic **priority** —
+`decision`, `alert`, `progress`, or `done` (`src/engine/priority.ts`, pure, AI-free) — and splits the
+output into two surfaces: a muted **firehose** (the admin DM) for `progress`/`done`, and a
+high-priority **Decisions** channel (`decisionsChatId`, kept unmuted) for `decision`/`alert`. The tag
+comes from intent the sender already has, never from reading prose: a worker raises a blocking
+question through the `ask_operator` MCP tool (options → tappable buttons); a governor escalation
+(Allow/Deny) is a decision too; dispatch/API/loop failures are alerts. Each is recorded in a durable
+`decisions` ledger table, so the queue survives a restart. **Answering resolves and unblocks:** a
+tapped option, a typed "Other" answer, or a plain Telegram **reply** to the decision message all mark
+the row answered and **resume the raising project's session** with the answer, reusing the
+reply-routing resume path (`deliverIntoFolder`/`answerDecision` in `reply-routing.ts`). An ignored
+escalation stays OPEN — surfaced later, never silently dropped. Finally a **secretary** loop
+(`src/engine/loops.ts`, opt-in, latest model) reviews the open queue on a cadence (`secretaryCron`,
+default every 2h in waking hours), writes ONE warm digest to the Decisions channel, and flags items
+past `secretaryStaleHours` as escalations; the engine renders the queue deterministically into the
+prompt and the worker only phrases it (no AI in the engine, and the worker never mutates a decision).
+The digest is silent when the queue is empty. The firewall holds by construction: `ask_operator`
+attaches only on operator paths, so customer-tainted work can never raise a decision. Config knobs:
+`decisionsChatId`, `decisionsKeep`, `secretaryCron`, `secretaryStaleHours`, `workers.secretary`
+(`docs/CONFIG.md`). Built phase by phase, TDD. Going live needs a daemon restart (operator-gated).
+`tsc` clean; full suite green (695).

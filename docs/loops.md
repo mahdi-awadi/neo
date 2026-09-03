@@ -36,6 +36,17 @@ the last section maps it onto Neo.
 > fires). See `docs/CONFIG.md`'s "Memory system" section for the budget fields and
 > `docs/superpowers/sdd/` Phase 2 tasks for the store/inject/recall design.
 >
+> **`secretary` — decisions digest (disabled by default).** A scheduled worker (the latest model, the
+> `workers.secretary` profile) that keeps the operator reminded of everything blocking. At each fire
+> the engine reads the pending-decisions queue **deterministically**, renders it (project · age ·
+> reminder count · question) into the prompt, and stamps a reminder on each open row; the worker only
+> phrases and prioritises it into ONE warm digest — it never invents or mutates a decision. The digest
+> streams to the high-priority **Decisions** channel (`decisionsChatId`); items waiting longer than
+> `secretaryStaleHours` are flagged as escalations. A no-op gate (`secretaryGateOutcome`) refuses to
+> spend a run when the queue is empty — a quiet queue means a quiet secretary. Cadence is
+> `secretaryCron` (default every 2h, 08:00–22:00 server-local); `freshSession: true`, fire-once. Turn
+> it on with `/loop secretary on`. See `docs/CONFIG.md` for the knobs.
+>
 > **Data-driven loop CRUD — live (2026-06-28).** Loop *definitions* are data (ledger `loop_defs`),
 > merged with the built-in library by `effectiveLoops()` and re-read each tick, so an operator
 > authors/edits/deletes loops from the admin web console (Loops tab + `/api/loop/{create,update,delete,enable}`)

@@ -27,6 +27,8 @@ ones in `.env` (`chmod 600`).
 | `WORK_ROOT` | env or `config.json` | `/home` | Root holding your project repos (picker / dispatch / loop fence). |
 | `COMPANY_FOLDER` | env or `config.json` | `<repo>/agent` | The always-on "company" workspace folder. |
 | `NEO_LOOP_SCHEDULER` | env or `config.json` | `1` (on) | Set `0` to disable the loop scheduler. |
+| `DECISIONS_CHAT_ID` | env or `config.json` | *(unset)* | Telegram chat/group id for the high-priority **Decisions** channel — blocking questions, escalations, failures. Keep it unmuted; mute the normal DM (the firehose). Unset → decisions are still tagged, tracked, and reminded, but post to the admin DM. |
+| `SECRETARY_CRON` | env or `config.json` | `0 8-22/2 * * *` | Cron (server-local) for the secretary digest loop. The loop is still opt-in (`/loop secretary on`). |
 
 ## Structured knobs (`config.json`)
 
@@ -49,6 +51,10 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `apiCooldownMs` | `60000` (60s) | Engine-wide hold on **new** background work after a throttle report, so retries + the scheduler can't amplify a rate-limit storm. |
 | `routeKeep` | `20000` | Reply-route retention cap: max persisted message→project routes (oldest pruned; the ledger stays the source of truth). |
 | `eventsKeep` | `50000` | Diagnostic event-log retention cap: max rows kept in the `events` table (pruned in amortised batches). |
+| `decisionsChatId` | *(unset)* | The Decisions channel chat id (also `DECISIONS_CHAT_ID`). See the `.env` table above. |
+| `decisionsKeep` | `5000` | Pending-decisions retention cap: max RESOLVED (answered/dismissed) decision rows kept. OPEN rows are never pruned. |
+| `secretaryCron` | `"0 8-22/2 * * *"` | Secretary digest cadence (also `SECRETARY_CRON`) — every 2h, 08:00–22:00, server-local. Opt-in (`/loop secretary on`). |
+| `secretaryStaleHours` | `24` | A decision waiting longer than this many hours is flagged **STALE** (an escalation) in the digest. |
 | `codebaseMemoryIndexTimeoutMs` | `300000` (5m) | Bounded wait for an engine-side codebase-memory `index_repository` before a dispatch proceeds anyway (best-effort). |
 | `codebaseMemoryListTimeoutMs` | `15000` (15s) | Bounded wait for a codebase-memory `list_projects` op (the sibling of the index timeout above). |
 | `inboxListDefault` | `100` | Default page size for the customer-inbox list in the web console when no explicit limit is given. |
@@ -58,7 +64,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `longTurnAlertMs` | `1200000` (20m) | Alert when one activity label has run this long. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
 | `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
-| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. |
+| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. Set `secretary` to run the digest loop on the latest model. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
 
@@ -67,8 +73,8 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 
 ## Worker profiles (`workers`)
 
-Each of the seven launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
-`handoff` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
+Each of the eight launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
+`handoff`, `secretary` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
 `WorkerPathName` in `src/config.ts`). `profileDeps(cfg, path, base)` (`src/engine/worker-profile.ts`)
 looks up `cfg.workers[path]` and fills the configured own-work provider plus
 `model`/`effort`/`skills`/`maxTurns` onto the caller's `RunDeps` only where the caller didn't
