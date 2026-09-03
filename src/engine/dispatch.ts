@@ -10,6 +10,7 @@ import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
+import { singleQuestionAsk, type StructuredAsk } from "./structured-question";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
@@ -67,6 +68,9 @@ export interface DispatchDeps {
     rec: { id: string; project?: string; folder?: string },
     question: string,
     options?: string[],
+    /** A structured multi-question / multi-select ask (Feature 1). When set, the frontend renders the
+     *  richer tappable keyboard from it instead of the flat `options`. */
+    spec?: StructuredAsk,
   ) => Promise<{ chatId: number; messageId: number } | undefined>;
   /** Default per-dispatch ceiling (ms) when the caller doesn't request one. Default DISPATCH_TIMEOUT_MS_DEFAULT. */
   dispatchTimeoutMs?: number;
@@ -627,6 +631,45 @@ export async function sendProjectFile(
   return `sent ${path}`;
 }
 
+/** Raise a blocking operator DECISION and post it to the Decisions channel, returning its id. The
+ *  ONE path behind every blocking-question gesture — the `ask_operator` MCP tool AND the serviced
+ *  native `AskUserQuestion` — so both enqueue a durable, tracked decision, post the tappable keyboard
+ *  the same way, and record the sent message id (so a plain reply resolves the exact decision). Pass
+ *  `spec` for a structured multi-question / multi-select ask, or `options` for a flat single choice.
+ *  When no `postDecision` is wired (customer/ingress path — the firewall), the decision is still
+ *  queued (surfaced by /decisions + the secretary digest), just not posted to a channel. */
+export async function raiseOperatorDecision(
+  deps: Pick<DispatchDeps, "ledger" | "postDecision">,
+  params: {
+    project?: string;
+    folder?: string;
+    orderId?: string;
+    chatId: number;
+    question: string;
+    options?: string[];
+    spec?: StructuredAsk;
+  },
+): Promise<string> {
+  const id = deps.ledger.openDecision({
+    kind: "decision",
+    project: params.project,
+    folder: params.folder,
+    orderId: params.orderId,
+    chatId: params.chatId,
+    question: params.question,
+    options: params.options,
+    spec: params.spec,
+  });
+  const posted = await deps.postDecision?.({ id, project: params.project, folder: params.folder }, params.question, params.options, params.spec);
+  if (posted) deps.ledger.setDecisionMessage(id, posted.chatId, posted.messageId);
+  deps.ledger.recordEvent("decision_raised", {
+    orderId: params.orderId,
+    folder: params.folder,
+    data: { project: params.project, id, structured: !!params.spec, options: params.options?.length ?? 0, posted: !!posted },
+  });
+  return id;
+}
+
 /** Google Stitch MCP server (HTTP transport) — design generation for operator workers. */
 export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
 
@@ -676,34 +719,33 @@ export function neoMcpServers(
   // `options` when given), captures the message id, and tells the worker to check-point + stop — the
   // operator's tap/reply resumes this session as a follow-up (single-shot dispatch + resume-on-reply).
   if (deps.postDecision) {
-    const postDecision = deps.postDecision;
     tools.push(
       tool(
         "ask_operator",
-        "Ask the operator a question that BLOCKS this work — a decision or approval you need before you can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). It goes to the operator's high-priority Decisions channel and is tracked until they answer. Pass `options` (2-5 short labels) when the answer is a choice — the operator gets tappable buttons; omit `options` for a free-form question (they type a reply). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
+        "Ask the operator a question that BLOCKS this work — a decision or approval you need before you can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). It goes to the operator's high-priority Decisions channel and is tracked until they answer. Pass `options` (2-5 short labels) when the answer is a choice — the operator gets tappable buttons; omit `options` for a free-form question (they type a reply). Set `multiSelect: true` when the operator may pick SEVERAL of the options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
         {
           question: z.string().describe("the blocking question, in plain language"),
           options: z
             .array(z.string())
             .optional()
             .describe("2-5 short answer labels the operator can tap; omit for a free-form typed answer"),
+          multiSelect: z
+            .boolean()
+            .optional()
+            .describe("set true when the operator may choose SEVERAL of the options (tap each, then Submit); default single choice"),
         },
-        async (args: { question: string; options?: string[] }) => {
-          const id = deps.ledger.openDecision({
-            kind: "decision",
+        async (args: { question: string; options?: string[]; multiSelect?: boolean }) => {
+          // multi-select needs the structured `spec` (the flat `options` path is one-tap single-choice);
+          // a plain single choice keeps the flat form so its one-tap UX is byte-for-byte unchanged.
+          const spec = args.multiSelect && args.options?.length ? singleQuestionAsk(args.question, args.options, true) : undefined;
+          const id = await raiseOperatorDecision(deps, {
             project: opts.projectName,
             folder: opts.folder,
             orderId: opts.orderId,
             chatId: replyChat,
             question: args.question,
-            options: args.options,
-          });
-          const posted = await postDecision({ id, project: opts.projectName, folder: opts.folder }, args.question, args.options);
-          if (posted) deps.ledger.setDecisionMessage(id, posted.chatId, posted.messageId);
-          deps.ledger.recordEvent("decision_raised", {
-            orderId: opts.orderId,
-            folder: opts.folder,
-            data: { project: opts.projectName, id, options: args.options?.length ?? 0, posted: !!posted },
+            options: spec ? undefined : args.options,
+            spec,
           });
           return {
             content: [

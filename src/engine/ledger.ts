@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
+import type { StructuredAsk } from "./structured-question";
 
 /** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
  *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
@@ -30,6 +31,9 @@ export interface NewDecision {
   chatId?: number;
   question: string;
   options?: string[];
+  /** A structured multi-question / multi-select ask (Feature 1). When set, the frontend renders the
+   *  richer keyboard from this and accumulates a selection; `options` remains the simple flat form. */
+  spec?: StructuredAsk;
 }
 
 export interface DecisionRow extends NewDecision {
@@ -271,6 +275,7 @@ export function openLedger(
        chat_id INTEGER,
        question TEXT NOT NULL,
        options TEXT,
+       spec TEXT,
        status TEXT NOT NULL,
        created_at INTEGER NOT NULL,
        answered_at INTEGER,
@@ -281,6 +286,12 @@ export function openLedger(
        reminder_count INTEGER NOT NULL DEFAULT 0
      )`,
   );
+  // Migrate dbs created before the structured-ask `spec` column existed (Feature 1). A NULL spec is
+  // a plain/flat decision — read back as undefined, so legacy rows are unaffected.
+  const decisionCols = db.query(`PRAGMA table_info(decisions)`).all() as Array<{ name: string }>;
+  if (!decisionCols.some((c) => c.name === "spec")) {
+    db.run(`ALTER TABLE decisions ADD COLUMN spec TEXT`);
+  }
   db.run(`CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions (status, created_at)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_decisions_msg ON decisions (decision_chat_id, decision_message_id)`);
   let decisionCloses = 0;
@@ -572,8 +583,8 @@ export function openLedger(
       const id = crypto.randomUUID();
       db.query(
         `INSERT INTO decisions
-           (id, kind, project, folder, order_id, session_id, chat_id, question, options, status, created_at, reminder_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0)`,
+           (id, kind, project, folder, order_id, session_id, chat_id, question, options, spec, status, created_at, reminder_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0)`,
       ).run(
         id,
         rec.kind,
@@ -584,6 +595,7 @@ export function openLedger(
         rec.chatId ?? null,
         rec.question,
         rec.options && rec.options.length ? JSON.stringify(rec.options) : null,
+        rec.spec ? JSON.stringify(rec.spec) : null,
         at,
       );
       return id;
@@ -652,6 +664,7 @@ interface DecisionDbRow {
   chat_id: number | null;
   question: string;
   options: string | null;
+  spec: string | null;
   status: string;
   created_at: number;
   answered_at: number | null;
@@ -673,6 +686,15 @@ function mapDecisionRow(r: DecisionDbRow): DecisionRow {
       options = undefined; // tolerate a corrupt blob
     }
   }
+  let spec: StructuredAsk | undefined;
+  if (r.spec) {
+    try {
+      const parsed = JSON.parse(r.spec);
+      if (parsed && Array.isArray(parsed.questions)) spec = parsed as StructuredAsk;
+    } catch {
+      spec = undefined; // tolerate a corrupt blob
+    }
+  }
   return {
     id: r.id,
     kind: r.kind as "decision" | "alert",
@@ -683,6 +705,7 @@ function mapDecisionRow(r: DecisionDbRow): DecisionRow {
     chatId: r.chat_id ?? undefined,
     question: r.question,
     options,
+    spec,
     status: r.status as DecisionRow["status"],
     createdAt: r.created_at,
     answeredAt: r.answered_at ?? undefined,

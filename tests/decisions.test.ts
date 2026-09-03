@@ -30,6 +30,25 @@ test("options round-trip through the row (tappable answers survive persistence)"
   expect(l.listOpenDecisions()[0]!.options).toEqual(["Yes", "No", "Wait"]);
 });
 
+test("structured spec round-trips through the row (multi-question / multi-select survive persistence)", () => {
+  const l = openLedger(":memory:");
+  const spec = {
+    questions: [
+      { question: "DB?", header: "DB", options: ["Postgres", "Mongo"], multiSelect: false },
+      { question: "Regions?", header: "Regions", options: ["US", "EU"], multiSelect: true },
+    ],
+  };
+  const id = l.openDecision({ kind: "decision", question: "DB? / Regions?", spec });
+  expect(l.decisionById(id)!.spec).toEqual(spec);
+  expect(l.listOpenDecisions()[0]!.spec).toEqual(spec);
+});
+
+test("a decision with no spec reads back undefined (legacy rows unaffected)", () => {
+  const l = openLedger(":memory:");
+  const id = l.openDecision({ kind: "decision", question: "plain?" });
+  expect(l.decisionById(id)!.spec).toBeUndefined();
+});
+
 test("setDecisionMessage + decisionByMessage find a posted decision", () => {
   const l = openLedger(":memory:");
   const id = l.openDecision({ kind: "decision", question: "?" });
