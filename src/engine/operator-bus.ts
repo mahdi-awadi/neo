@@ -7,12 +7,14 @@
 // its own output. So a mirrored line can never become an order or re-broadcast — structurally, not
 // by convention. `mirror(originId, …)` excludes the origin (which already displayed the line
 // locally): that exclusion is both the loop guard and the de-dupe.
+import type { Priority } from "./priority";
 
 /** One line to display across surfaces. `reply` = Neo output / worker progress; `echo` = the
  *  operator's own inbound message arriving from another surface; `notice` = display-only chrome
- *  (e.g. "approval pending on the other surface"). */
+ *  (e.g. "approval pending on the other surface"). A `reply` carries an optional `priority` so a
+ *  surface can style/route it (e.g. the web can badge a DECISION); absent = today's PROGRESS. */
 export type BusLine =
-  | { kind: "reply"; text: string; project?: string }
+  | { kind: "reply"; text: string; project?: string; priority?: Priority }
   | { kind: "echo"; text: string }
   | { kind: "notice"; text: string };
 
