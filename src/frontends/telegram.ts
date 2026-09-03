@@ -25,6 +25,7 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry }
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
+import { surfaceFor, type Priority } from "../engine/priority";
 import type { ApiCooldown } from "../engine/api-retry";
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
@@ -41,17 +42,25 @@ export function projectTagPrefix(project?: string): string {
  *  mirrored line can't become an order (see operator-bus.ts). No admin claimed yet → no-op. */
 export function makeTelegramSink(deps: {
   adminId: () => number | undefined;
-  reply: (chatId: number, text: string, project?: string) => void;
+  /** The unmuted "Decisions" chat (cfg.decisionsChatId). A DECISION/ALERT reply routes here; a
+   *  PROGRESS/DONE reply stays in the admin DM (the muted firehose). Unset/undefined → decisions
+   *  degrade safely to the DM. Optional so tests/older call sites that don't split surfaces work. */
+  decisionsChatId?: () => number | undefined;
+  reply: (chatId: number, text: string, project?: string, priority?: Priority) => void;
   plain: (chatId: number, text: string) => void;
 }): OperatorSink {
   return {
     id: "telegram",
     deliver: (line) => {
-      const chatId = deps.adminId();
-      if (chatId === undefined) return; // nowhere to deliver — no operator has claimed admin yet
-      if (line.kind === "reply") deps.reply(chatId, line.text, line.project);
-      else if (line.kind === "echo") deps.plain(chatId, `🌐 you (web): ${line.text}`);
-      else deps.plain(chatId, line.text);
+      const dm = deps.adminId();
+      if (dm === undefined) return; // nowhere to deliver — no operator has claimed admin yet
+      if (line.kind === "reply") {
+        // Two-surface routing: DECISION/ALERT → the notified Decisions chat (fall back to the DM
+        // when it isn't configured); PROGRESS/DONE → the muted DM firehose. Deterministic (surfaceFor).
+        const target = surfaceFor(line.priority ?? "progress") === "decisions" ? (deps.decisionsChatId?.() ?? dm) : dm;
+        deps.reply(target, line.text, line.project, line.priority);
+      } else if (line.kind === "echo") deps.plain(dm, `🌐 you (web): ${line.text}`);
+      else deps.plain(dm, line.text);
     },
   };
 }
@@ -149,7 +158,9 @@ export function startTelegram(
 
   // Send a worker line and record which project it belongs to, so the operator can REPLY to that
   // specific message to route a follow-up into its project (see routeReply). The line itself is
-  // a normal message, not a quote-reply.
+  // a normal message, not a quote-reply. `chatId` is already the resolved TARGET surface (the
+  // caller applied surfaceFor); the route is recorded on whichever chat the message actually
+  // lands in, so a reply to it (in the DM or the Decisions chat) routes back to the right project.
   async function send(chatId: number, text: string, project?: string): Promise<void> {
     const messageId = await sendFormatted(bot, chatId, text, project);
     if (messageId !== undefined && project) {
@@ -158,11 +169,19 @@ export function startTelegram(
     }
   }
 
+  // Resolve which chat a priority renders in: DECISION/ALERT → the Decisions chat (or the DM if
+  // unset), PROGRESS/DONE → the DM firehose. `dm` is the caller's intended chat (always the admin's
+  // DM in practice); this only ever REDIRECTS attention-priority lines to the Decisions channel.
+  const surfaceChat = (dm: number, priority?: Priority): number =>
+    surfaceFor(priority ?? "progress") === "decisions" ? (cfg.decisionsChatId ?? dm) : dm;
+
   // Register this surface as an operator sink: lines mirrored from the OTHER surface (the web
-  // console) render in the admin's DM (admin.adminId()). Output-only — never re-enters the pipeline.
+  // console) render in the admin's DM (admin.adminId()) or the Decisions chat by priority.
+  // Output-only — never re-enters the pipeline.
   bus?.register(
     makeTelegramSink({
       adminId: () => admin.adminId(),
+      decisionsChatId: () => cfg.decisionsChatId,
       reply: (cid, text, project) => void send(cid, text, project),
       plain: (cid, text) => void sendFormatted(bot, cid, text),
     }),
@@ -187,9 +206,9 @@ export function startTelegram(
     lifecycle: reload?.lifecycle,
     cooldown: reload?.cooldown,
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
-    reply: (cid, text, project) => {
-      void send(cid, text, project); // local delivery (unchanged)
-      bus?.mirror("telegram", { kind: "reply", text, project }); // + mirror to the web console
+    reply: (cid, text, project, priority) => {
+      void send(surfaceChat(cid, priority), text, project); // local delivery, routed by surface
+      bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
     },
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {

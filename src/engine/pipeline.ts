@@ -30,6 +30,7 @@ import {
 import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
 import { describeSessionStatus } from "./session-status";
+import type { Priority } from "./priority";
 import {
   apiFailureNotice,
   apiRetryFollowUp,
@@ -66,8 +67,10 @@ export interface PipelineDeps {
   /** Per-project trust — when a folder is trusted, risky tools auto-approve. */
   trust: TrustStore;
   /** Send a line to the channel. `project` (a session's short name) tags worker output so a
-   *  multi-project feed can show which project each message came from. */
-  reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
+   *  multi-project feed can show which project each message came from. `priority` (default
+   *  PROGRESS) routes the line to a surface: DECISION/ALERT → the notified Decisions channel,
+   *  PROGRESS/DONE → the muted firehose (see engine/priority.ts + the frontend). */
+  reply: (chatId: number, text: string, project?: string, priority?: Priority) => void | Promise<void>;
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
@@ -170,9 +173,9 @@ export async function handleMessage(
   const rawAskApproval = deps.askApproval;
   deps = {
     ...deps,
-    reply: (c, t, project) => {
+    reply: (c, t, project, priority) => {
       ledger.recordMessage(c, "assistant", t);
-      return rawReply(c, t, project);
+      return rawReply(c, t, project, priority);
     },
     askApproval: async (c, reason) => {
       ledger.recordMessage(c, "assistant", `⚠ approve? ${reason}`);
