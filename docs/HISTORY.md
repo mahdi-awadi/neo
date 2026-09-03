@@ -272,10 +272,10 @@ dispatch asks for approval, and an autonomous path auto-denies. Needs a daemon r
 **Priority tags · decisions queue · secretary loop — nothing blocking is lost.** Neo runs many
 projects and sends a high volume of messages; the operator muted the bot, so blocking questions got
 lost in the noise. The engine now gives every outbound line a deterministic **priority** —
-`decision`, `alert`, `progress`, or `done` (`src/engine/priority.ts`, pure, AI-free) — and splits the
-output into two surfaces: a muted **firehose** (the admin DM) for `progress`/`done`, and a
-high-priority **Decisions** channel (`decisionsChatId`, kept unmuted) for `decision`/`alert`. The tag
-comes from intent the sender already has, never from reading prose: a worker raises a blocking
+`decision`, `alert`, `result`, `progress`, or `done` (`src/engine/priority.ts`, pure, AI-free) — and
+splits the output into two surfaces: a muted **firehose** (the admin DM) for `progress`/`done`, and a
+high-priority **Decisions** channel (`decisionsChatId`, kept unmuted) for `decision`/`alert`/`result`.
+The tag comes from intent the sender already has, never from reading prose: a worker raises a blocking
 question through the `ask_operator` MCP tool (options → tappable buttons); a governor escalation
 (Allow/Deny) is a decision too; dispatch/API/loop failures are alerts. Each is recorded in a durable
 `decisions` ledger table, so the queue survives a restart. **Answering resolves and unblocks:** a
@@ -319,3 +319,15 @@ per-call-site ✓/✗ (pipeline) and ✅/⛔ (dispatch) glyphs are removed. Esca
 markup — a metacharacter-heavy message still sends, proven by test). Built TDD, commit per piece.
 Going live needs a daemon restart (operator-gated). `tsc` clean; full suite green (730; one
 pre-existing env-only config test unrelated to this work).
+
+**Result routing — the Decisions group carries important outcomes, not just questions.** A follow-up
+on the same branch. The operator keeps the Decisions group unmuted and wants it high-signal: only
+decision questions and important **outcomes**. Before this, a job's completion was tagged `done`,
+which stayed in the muted DM firehose, so a finished dispatch was easy to miss. A new deterministic
+`result` priority (`priority.ts`) routes to the Decisions group, styled ✅ RESULT. The split is by
+**call site**, never by reading prose: a background **dispatch** completion (`dispatch.ts`, the
+`"<name> finished: …"` line) is a `result` → group; an **interactive-turn** completion (`pipeline.ts`)
+stays `done` → DM, because the operator is already in that conversation and an echo to the group would
+be noise. Routine `progress` can never be promoted, so the group never gets streamed chatter. Built
+TDD (result → decisions, progress → DM, group gets no routine progress). Going live needs a daemon
+restart (operator-gated). `tsc` clean; suite green (one pre-existing env-only config test unrelated).

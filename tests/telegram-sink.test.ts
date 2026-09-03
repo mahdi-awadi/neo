@@ -61,16 +61,26 @@ test("a notice line is delivered as plain text", () => {
   expect(s.plains).toEqual([{ chatId: 555, text: "⏳ approval pending on the web console: rm -rf" }]);
 });
 
-test("a decision line goes to the decisions chat; progress + done stay in the DM", () => {
+test("decision, alert + result go to the decisions chat; progress + done stay in the DM", () => {
   const s = spy();
   const sink = makeTelegramSink({ adminId: () => 111, decisionsChatId: () => 222, reply: s.reply, plain: s.plain });
   sink.deliver({ kind: "reply", text: "which design?", priority: "decision" });
   sink.deliver({ kind: "reply", text: "an error", priority: "alert" });
+  sink.deliver({ kind: "reply", text: "eticket finished: shipped the fix", priority: "result" });
   sink.deliver({ kind: "reply", text: "working…", priority: "progress" });
   sink.deliver({ kind: "reply", text: "done!", priority: "done" });
-  expect(s.replies.map((r) => r.chatId)).toEqual([222, 222, 111, 111]);
+  expect(s.replies.map((r) => r.chatId)).toEqual([222, 222, 222, 111, 111]);
   // priority is forwarded so downstream (send/mirror) can act on it.
   expect(s.replies[0]!.priority).toBe("decision");
+});
+
+test("the decisions group receives no routine progress — a progress line only ever lands in the DM", () => {
+  const s = spy();
+  const sink = makeTelegramSink({ adminId: () => 111, decisionsChatId: () => 222, reply: s.reply, plain: s.plain });
+  sink.deliver({ kind: "reply", text: "step 1 of 4…", priority: "progress" });
+  sink.deliver({ kind: "reply", text: "streamed worker text" }); // untagged = progress
+  expect(s.replies.every((r) => r.chatId === 111)).toBe(true);
+  expect(s.replies.some((r) => r.chatId === 222)).toBe(false);
 });
 
 test("with no decisions chat configured, a decision line falls back to the admin DM", () => {

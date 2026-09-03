@@ -68,10 +68,13 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window). A `sessions`
   tool gives it live awareness of every project's state.
 - **Priority routing + a decisions queue — nothing blocking is lost.** Every outbound line gets a
-  deterministic priority (`decision`/`alert`/`progress`/`done`, AI-free), rendered with a consistent
-  colored accent (decision 🔵, alert 🔴, done 🟢; progress is the silent firehose). Blocking
-  questions, escalations, and failures route to a high-priority **Decisions** channel you keep
-  unmuted (`decisionsChatId`), while progress/done stay in the muted firehose. A worker raises a
+  deterministic priority (`decision`/`alert`/`result`/`progress`/`done`, AI-free), rendered with a
+  consistent colored accent (decision 🔵, alert 🔴, result ✅, done 🟢; progress is the silent
+  firehose). Blocking questions, escalations, failures, and important **results** (a finished
+  dispatch — shipped/fixed/committed) route to a high-priority **Decisions** channel you keep
+  unmuted (`decisionsChatId`), while routine progress and interactive-turn `done` replies stay in
+  the muted firehose. The `result`/`done` split is by call site (a walked-away background job vs. a
+  reply in a live DM), never by reading prose, so the group stays high-signal. A worker raises a
   blocking question with the `ask_operator` tool — tappable options, optional `multiSelect`, always an
   implicit free-form "Other" — and the SDK's native structured-question tool is serviced the same way;
   it's tracked in a durable queue that survives a restart. **Answering** — a tapped button (or several,

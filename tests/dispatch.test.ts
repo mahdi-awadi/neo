@@ -87,7 +87,8 @@ test("dispatch records dispatch_start then dispatch_end in the event log", async
 test("dispatch tags its final line: DONE on success, ALERT on failure", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
-  // success → the completion line is tagged done (the 🟢 accent is added by the frontend, Feature 2)
+  // success → the completion line is tagged result: a finished background job is an important
+  // outcome, so it routes to the unmuted Decisions group (✅ accent added by the frontend, Feature 2)
   {
     const { d, replies } = makeDeps();
     const done = Promise.resolve<RunResult>({ ok: true, sessionId: "s1", summary: "all green", costUsd: 0 });
@@ -95,7 +96,7 @@ test("dispatch tags its final line: DONE on success, ALERT on failure", async ()
     await dispatchToProject("eticket-v3", "t", d, 1, { start: fakeStart as never, now: () => 0, root });
     await new Promise((r) => setTimeout(r, 10));
     const finished = replies.find((r) => r.text.includes("finished"));
-    expect(finished?.priority).toBe("done");
+    expect(finished?.priority).toBe("result");
   }
   // failure → the completion line is tagged alert (an ALERT surfaces on the Decisions channel)
   {

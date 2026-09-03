@@ -126,19 +126,34 @@ digest proves too costly (see Open Questions).
 ### 5.1 Priority model — `src/engine/priority.ts` (new, pure, AI-free)
 
 ```ts
-export type Priority = "decision" | "alert" | "progress" | "done";
+export type Priority = "decision" | "alert" | "result" | "progress" | "done";
 
-/** Which surface a priority goes to. decision+alert → the high-priority Decisions
- *  channel; progress+done → the muted firehose. Pure function, unit-tested. */
+/** Which surface a priority goes to. decision+alert+result → the high-priority
+ *  Decisions channel; progress+done → the muted firehose. Pure function, unit-tested. */
 export function surfaceFor(p: Priority): "decisions" | "firehose";
 
-/** A short leading marker for the line (e.g. "🔷 DECISION", "⛔ ALERT"). Rendering only. */
+/** A short leading marker for the line (e.g. "🔵 DECISION", "🔴 ALERT", "✅ RESULT"). Rendering only. */
 export function priorityBadge(p: Priority): string;
 ```
 
 The default priority everywhere is `progress`, so any un-tagged line keeps today's
 behavior (it lands in the firehose). We only tag the specific call sites that carry
-DECISION/ALERT/DONE intent.
+DECISION/ALERT/RESULT/DONE intent.
+
+**`result` vs `done` — the split is the call site, never the text (added later).**
+The operator keeps the Decisions group unmuted for two things only: decision
+questions and important **outcomes**. So a genuine job outcome must reach the group,
+but routine chatter must not. We split the two completion sites by intent:
+
+- `result` = a background job/**dispatch** completion (the `"<name> finished: …"`
+  line in `dispatch.ts` — an outcome the operator walked away from: shipped, fixed,
+  committed, build-live). It routes to the Decisions group.
+- `done` = an **interactive-turn** completion (`pipeline.ts` — the operator is
+  already in that DM conversation). It stays in the muted DM firehose; an echo to the
+  group would only be noise.
+
+Because the decision is made by the emit site — not by scanning prose — streamed
+`progress` can never be promoted to the group, and the model stays AI-free.
 
 ### 5.2 Deterministic tag sources (the full map)
 
@@ -150,7 +165,8 @@ DECISION/ALERT/DONE intent.
 | API give-up notice (`apiFailureNotice`) | `alert` | `dispatch.ts:469`, `pipeline.ts` |
 | Loop-failure alert (`⚠️ loop … failed`) | `alert` | `daemon.ts:186` |
 | Stuck-session watchdog alert | `alert` | `daemon.ts:145` |
-| Dispatch completion line (`✅ … finished`) | `done` | `dispatch.ts:563` |
+| Dispatch/job completion line (`✅ … finished`) | `result` | `dispatch.ts` finish path |
+| Interactive-turn completion line | `done` | `pipeline.ts` turn end |
 | Streamed worker text, `→ dispatching`, `→ queued`, iteration progress | `progress` | `dispatch.ts:418,305,300`, loops |
 | Secretary digest | `decision` (or a `reminder` sub-kind) | secretary loop |
 

@@ -473,8 +473,10 @@ function startSession(
     } catch {
       // policy is an observer — never break the completion path
     }
-    // A completed interactive turn is DONE (muted firehose); a failed one is an ALERT (Decisions).
-    // The frontend prepends the single priority accent (🟢/🔴) — no per-call-site glyph here (Feature 2).
+    // A completed interactive turn is DONE — it stays in the muted DM firehose (the operator is
+    // already in this conversation; it is not a walked-away job, so it is NOT a `result` and must not
+    // spam the group). A failed one is an ALERT the operator must see (Decisions). The frontend
+    // prepends the single priority accent (🟢/🔴) — no per-call-site glyph here (Feature 2).
     void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert");
   });
 
