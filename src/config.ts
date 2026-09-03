@@ -136,6 +136,9 @@ export interface NeoConfig {
   /** Diagnostic event-log retention cap: max rows kept in the events table (pruned in batches).
    *  Default 50 000. */
   eventsKeep: number;
+  /** Pending-decisions retention cap: max RESOLVED (answered/dismissed) decision rows kept (open
+   *  rows are never pruned). Pruned in amortised batches. Default 5 000. */
+  decisionsKeep: number;
   /** Bounded wait (ms) for a codebase-memory list_projects op (the sibling of
    *  codebaseMemoryIndexTimeoutMs). Default 15 s. */
   codebaseMemoryListTimeoutMs: number;
@@ -191,6 +194,7 @@ const DEFAULTS = {
   // Ledger retention caps (see ledger.ts) — operator policy, not a fact; defaults preserve today's.
   routeKeep: 20_000,
   eventsKeep: 50_000,
+  decisionsKeep: 5_000,
   codebaseMemoryListTimeoutMs: 15_000,
   inboxListDefault: 100,
   messageRoutesCacheCap: 2_000,
@@ -305,6 +309,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     apiCooldownMs: fileCfg.apiCooldownMs ?? DEFAULTS.apiCooldownMs,
     routeKeep: fileCfg.routeKeep ?? DEFAULTS.routeKeep,
     eventsKeep: fileCfg.eventsKeep ?? DEFAULTS.eventsKeep,
+    decisionsKeep: fileCfg.decisionsKeep ?? DEFAULTS.decisionsKeep,
     codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,
     inboxListDefault: fileCfg.inboxListDefault ?? DEFAULTS.inboxListDefault,
     messageRoutesCacheCap: fileCfg.messageRoutesCacheCap ?? DEFAULTS.messageRoutesCacheCap,

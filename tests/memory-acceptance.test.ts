@@ -53,6 +53,7 @@ function cfg(): NeoConfig {
     apiCooldownMs: 60_000,
     routeKeep: 20_000,
     eventsKeep: 50_000,
+    decisionsKeep: 5_000,
     codebaseMemoryListTimeoutMs: 15_000,
     inboxListDefault: 100,
     messageRoutesCacheCap: 2_000,

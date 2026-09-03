@@ -12,6 +12,40 @@ export const ROUTE_KEEP = 20_000;
 export const EVENTS_KEEP = 50_000;
 export const EVENTS_PRUNE_INTERVAL = 1000;
 
+/** Pending-decisions retention: decisions are low-volume, so keep a generous window of resolved
+ *  (answered/dismissed) rows; OPEN rows are never pruned. Pruned in amortised batches. */
+export const DECISIONS_KEEP = 5_000;
+export const DECISIONS_PRUNE_INTERVAL = 200;
+
+/** A blocking question / alert the operator must act on — the durable pending-decisions queue.
+ *  `kind:"decision"` needs an answer (a worker question or a governor escalation); `kind:"alert"`
+ *  just needs acknowledging (a failure). `options`, when set, are tappable answers the frontend
+ *  renders as an inline keyboard. */
+export interface NewDecision {
+  kind: "decision" | "alert";
+  project?: string;
+  folder?: string;
+  orderId?: string;
+  sessionId?: string;
+  chatId?: number;
+  question: string;
+  options?: string[];
+}
+
+export interface DecisionRow extends NewDecision {
+  id: string;
+  status: "open" | "answered" | "dismissed";
+  createdAt: number;
+  answeredAt?: number;
+  answer?: string;
+  /** The channel the decision message was posted in + its message id — so a REPLY to it resolves
+   *  the decision (decisionByMessage) and a later edit can mark it answered. */
+  decisionChatId?: number;
+  decisionMessageId?: number;
+  lastRemindedAt?: number;
+  reminderCount: number;
+}
+
 export interface Ledger {
   recordOrder(order: Order): void;
   recordOutcome(orderId: string, status: string, summary: string): void;
@@ -73,6 +107,23 @@ export interface Ledger {
   ): void;
   /** Recent events, newest-first. Filter by kind and/or orderId; capped by `limit` (default 50). */
   listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): EngineEvent[];
+  /** Enqueue a pending decision/alert. Returns its id. The queue survives a daemon restart. */
+  openDecision(rec: NewDecision, at?: number): string;
+  /** Record the channel + message id a decision was posted to (after the frontend sends it), so a
+   *  reply to that message can resolve it. */
+  setDecisionMessage(id: string, chatId: number, messageId: number): void;
+  /** Open (unanswered) decisions/alerts, oldest-first — the secretary digest + /decisions read this. */
+  listOpenDecisions(): DecisionRow[];
+  /** The decision a replied-to channel message belongs to (the operator answered by replying). */
+  decisionByMessage(chatId: number, messageId: number): DecisionRow | undefined;
+  /** A decision by its id (the tappable-answer callback carries the id directly). */
+  decisionById(id: string): DecisionRow | undefined;
+  /** Mark a decision answered + record the answer (the operator answered / a button was tapped). */
+  resolveDecision(id: string, answer: string, at?: number): void;
+  /** Close an alert (or a decision) without an answer — the operator acknowledged it. */
+  dismissDecision(id: string): void;
+  /** Stamp the reminder fields (lastRemindedAt + reminderCount++) after a secretary digest. */
+  noteDecisionsReminded(ids: string[], at?: number): void;
 }
 
 /** One structured engine event (diagnostic trail). `data` is small structured metadata —
@@ -109,10 +160,14 @@ export interface ConversationMessage {
 
 /** Retention caps default to the module constants (behavior-preserving); the daemon passes the
  *  operator-configured `routeKeep`/`eventsKeep` so these bounds are tuning, not baked-in. */
-export function openLedger(path: string, opts: { routeKeep?: number; eventsKeep?: number } = {}): Ledger {
+export function openLedger(
+  path: string,
+  opts: { routeKeep?: number; eventsKeep?: number; decisionsKeep?: number } = {},
+): Ledger {
   const db = new Database(path);
   const routeKeep = opts.routeKeep ?? ROUTE_KEEP;
   const eventsKeep = opts.eventsKeep ?? EVENTS_KEEP;
+  const decisionsKeep = opts.decisionsKeep ?? DECISIONS_KEEP;
   db.run(
     `CREATE TABLE IF NOT EXISTS orders (
        id TEXT PRIMARY KEY, source TEXT NOT NULL, folder TEXT NOT NULL,
@@ -201,6 +256,34 @@ export function openLedger(path: string, opts: { routeKeep?: number; eventsKeep?
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_order_at ON events (order_id, at)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_at ON events (at)`);
   let eventInserts = 0;
+
+  // Pending-decisions queue: blocking worker questions + governor escalations (kind 'decision') and
+  // failure alerts (kind 'alert'). Each stays OPEN until the operator answers/dismisses it, so a
+  // blocking question is never lost across a daemon restart (unlike the in-memory approval resolver).
+  db.run(
+    `CREATE TABLE IF NOT EXISTS decisions (
+       id TEXT PRIMARY KEY,
+       kind TEXT NOT NULL,
+       project TEXT,
+       folder TEXT,
+       order_id TEXT,
+       session_id TEXT,
+       chat_id INTEGER,
+       question TEXT NOT NULL,
+       options TEXT,
+       status TEXT NOT NULL,
+       created_at INTEGER NOT NULL,
+       answered_at INTEGER,
+       answer TEXT,
+       decision_chat_id INTEGER,
+       decision_message_id INTEGER,
+       last_reminded_at INTEGER,
+       reminder_count INTEGER NOT NULL DEFAULT 0
+     )`,
+  );
+  db.run(`CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions (status, created_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_decisions_msg ON decisions (decision_chat_id, decision_message_id)`);
+  let decisionCloses = 0;
 
   return {
     recordOrder(o) {
@@ -485,5 +568,128 @@ export function openLedger(path: string, opts: { routeKeep?: number; eventsKeep?
         .all(folder) as Array<{ order_id: string; status: string; summary: string; at: number }>;
       return rows.map((r) => ({ orderId: r.order_id, status: r.status, summary: r.summary, at: r.at }));
     },
+    openDecision(rec, at = Date.now()) {
+      const id = crypto.randomUUID();
+      db.query(
+        `INSERT INTO decisions
+           (id, kind, project, folder, order_id, session_id, chat_id, question, options, status, created_at, reminder_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0)`,
+      ).run(
+        id,
+        rec.kind,
+        rec.project ?? null,
+        rec.folder ?? null,
+        rec.orderId ?? null,
+        rec.sessionId ?? null,
+        rec.chatId ?? null,
+        rec.question,
+        rec.options && rec.options.length ? JSON.stringify(rec.options) : null,
+        at,
+      );
+      return id;
+    },
+    setDecisionMessage(id, chatId, messageId) {
+      db.query(`UPDATE decisions SET decision_chat_id = ?, decision_message_id = ? WHERE id = ?`).run(
+        chatId,
+        messageId,
+        id,
+      );
+    },
+    listOpenDecisions() {
+      const rows = db
+        .query(`SELECT * FROM decisions WHERE status = 'open' ORDER BY created_at ASC, rowid ASC`)
+        .all() as DecisionDbRow[];
+      return rows.map(mapDecisionRow);
+    },
+    decisionByMessage(chatId, messageId) {
+      const row = db
+        .query(`SELECT * FROM decisions WHERE decision_chat_id = ? AND decision_message_id = ?`)
+        .get(chatId, messageId) as DecisionDbRow | null;
+      return row ? mapDecisionRow(row) : undefined;
+    },
+    decisionById(id) {
+      const row = db.query(`SELECT * FROM decisions WHERE id = ?`).get(id) as DecisionDbRow | null;
+      return row ? mapDecisionRow(row) : undefined;
+    },
+    resolveDecision(id, answer, at = Date.now()) {
+      db.query(`UPDATE decisions SET status = 'answered', answer = ?, answered_at = ? WHERE id = ?`).run(answer, at, id);
+      pruneDecisions();
+    },
+    dismissDecision(id) {
+      db.query(`UPDATE decisions SET status = 'dismissed', answered_at = ? WHERE id = ?`).run(Date.now(), id);
+      pruneDecisions();
+    },
+    noteDecisionsReminded(ids, at = Date.now()) {
+      if (ids.length === 0) return;
+      const stmt = db.query(
+        `UPDATE decisions SET last_reminded_at = ?, reminder_count = reminder_count + 1 WHERE id = ?`,
+      );
+      for (const id of ids) stmt.run(at, id);
+    },
+  };
+
+  /** Amortised retention for the low-volume decisions queue: only ever drop CLOSED
+   *  (answered/dismissed) rows past the keep-window; OPEN rows are never pruned. Runs every
+   *  DECISIONS_PRUNE_INTERVAL closes so the common resolve/dismiss stays a single UPDATE. */
+  function pruneDecisions(): void {
+    if (++decisionCloses % DECISIONS_PRUNE_INTERVAL !== 0) return;
+    db.query(
+      `DELETE FROM decisions WHERE status != 'open' AND rowid NOT IN (
+         SELECT rowid FROM decisions WHERE status != 'open' ORDER BY COALESCE(answered_at, created_at) DESC, rowid DESC LIMIT ?
+       )`,
+    ).run(decisionsKeep);
+  }
+}
+
+/** The raw decisions row shape as stored in SQLite (snake_case, nullable columns). */
+interface DecisionDbRow {
+  id: string;
+  kind: string;
+  project: string | null;
+  folder: string | null;
+  order_id: string | null;
+  session_id: string | null;
+  chat_id: number | null;
+  question: string;
+  options: string | null;
+  status: string;
+  created_at: number;
+  answered_at: number | null;
+  answer: string | null;
+  decision_chat_id: number | null;
+  decision_message_id: number | null;
+  last_reminded_at: number | null;
+  reminder_count: number;
+}
+
+/** Map a stored decisions row to the public DecisionRow (drops nulls, parses the options JSON). */
+function mapDecisionRow(r: DecisionDbRow): DecisionRow {
+  let options: string[] | undefined;
+  if (r.options) {
+    try {
+      const parsed = JSON.parse(r.options);
+      if (Array.isArray(parsed)) options = parsed as string[];
+    } catch {
+      options = undefined; // tolerate a corrupt blob
+    }
+  }
+  return {
+    id: r.id,
+    kind: r.kind as "decision" | "alert",
+    project: r.project ?? undefined,
+    folder: r.folder ?? undefined,
+    orderId: r.order_id ?? undefined,
+    sessionId: r.session_id ?? undefined,
+    chatId: r.chat_id ?? undefined,
+    question: r.question,
+    options,
+    status: r.status as DecisionRow["status"],
+    createdAt: r.created_at,
+    answeredAt: r.answered_at ?? undefined,
+    answer: r.answer ?? undefined,
+    decisionChatId: r.decision_chat_id ?? undefined,
+    decisionMessageId: r.decision_message_id ?? undefined,
+    lastRemindedAt: r.last_reminded_at ?? undefined,
+    reminderCount: r.reminder_count,
   };
 }
