@@ -378,7 +378,7 @@ function startSession(
         const attempt = apiRetries + 1;
         if (!shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {
           ledger.recordEvent("api_giveup", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempts: apiRetries } });
-          void deps.reply(chatId, apiFailureNotice(project, kind, apiRetries), project);
+          void deps.reply(chatId, apiFailureNotice(project, kind, apiRetries), project, "alert");
           return;
         }
         apiRetries = attempt;
@@ -457,7 +457,8 @@ function startSession(
     } catch {
       // policy is an observer — never break the completion path
     }
-    void deps.reply(chatId, result.ok ? `✓ ${result.summary}` : `✗ ${result.summary || "failed"}`, project);
+    // A completed interactive turn is DONE (muted firehose); a failed one is an ALERT (Decisions).
+    void deps.reply(chatId, result.ok ? `✓ ${result.summary}` : `✗ ${result.summary || "failed"}`, project, result.ok ? "done" : "alert");
   });
 
   return run;

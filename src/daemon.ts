@@ -98,6 +98,20 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   const requestReload = (): void => shutdown("/reload");
 
+  // Post an ALERT-priority engine line (watchdog stalls, loop-failure) straight to the operator over
+  // the raw Bot API — these fire from the daemon tick, outside the pipeline/sink. Routes to the
+  // unmuted Decisions chat when configured (so a stall/crash is never lost in the muted DM), else
+  // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
+  const alertOperator = (text: string): void => {
+    const target = cfg.decisionsChatId ?? admin.adminId();
+    if (!cfg.telegramToken || target === undefined) return;
+    void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: target, text }),
+    }).catch(() => {});
+  };
+
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);
   console.log("  usage     -> measured from ~/.claude transcripts (/usage); throttling opt-in via caps later");
@@ -145,14 +159,7 @@ async function main(): Promise<void> {
         alertRepeatMs: cfg.alertRepeatMs,
         alert: (_s, text) => {
           console.log(`[watchdog] ${text}`);
-          const adminId = admin.adminId();
-          if (cfg.telegramToken && adminId) {
-            void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ chat_id: adminId, text }),
-            }).catch(() => {});
-          }
+          alertOperator(text); // ALERT → the Decisions channel (or the DM if unset)
         },
       });
       if (cfg.loopSchedulerEnabled) {
@@ -186,14 +193,7 @@ async function main(): Promise<void> {
           onError: (def, err) => {
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`[loop] "${def.name}" failed: ${msg}`);
-            const adminId = admin.adminId();
-            if (cfg.telegramToken && adminId) {
-              void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ chat_id: adminId, text: `⚠️ loop "${def.name}" failed and was skipped: ${msg}` }),
-              }).catch(() => {});
-            }
+            alertOperator(`⚠️ loop "${def.name}" failed and was skipped: ${msg}`); // ALERT → Decisions
           },
         });
       }

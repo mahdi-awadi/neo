@@ -9,6 +9,7 @@ import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
+import type { Priority } from "./priority";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
@@ -53,7 +54,7 @@ export interface DispatchDeps {
   meter: Meter;
   usage?: UsageMeter;
   trust: TrustStore;
-  reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
+  reply: (chatId: number, text: string, project?: string, priority?: Priority) => void | Promise<void>;
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
@@ -466,7 +467,7 @@ export async function dispatchToProject(
               return; // keep the sub-run open — it hasn't done the work yet
             }
             deps.ledger.recordEvent("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
-            void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name);
+            void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name, "alert");
           }
           if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
         },
@@ -561,7 +562,8 @@ export async function dispatchToProject(
         deps.registry.detachControl(session.id);
       }
       const line = result.ok ? `✅ ${name} finished: ${result.summary || "done"}` : `⛔ ${name}: ${result.summary || "failed"}`;
-      await deps.reply(replyChat, line, name);
+      // A finish is DONE (muted firehose); a failure is an ALERT the operator must see (Decisions).
+      await deps.reply(replyChat, line, name, result.ok ? "done" : "alert");
       // Feed the result back into the live company session so it can act on it next turn.
       const company = deps.registry.getDefault();
       const control = company && company.id !== session.id ? deps.registry.getControl(company.id) : undefined;

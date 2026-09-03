@@ -40,13 +40,13 @@ test("resolveProject resolves a desk name (research, dev, …), projects winning
 });
 
 function makeDeps() {
-  const replies: Array<{ text: string; project?: string }> = [];
+  const replies: Array<{ text: string; project?: string; priority?: string }> = [];
   const d: DispatchDeps = {
     ledger: openLedger(":memory:"),
     registry: createRegistry(),
     meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
     trust: openTrustStore(":memory:"),
-    reply: (_c, text, project) => void replies.push({ text, project }),
+    reply: (_c, text, project, priority) => void replies.push({ text, project, priority }),
     askApproval: async () => "deny",
   };
   return { d, replies };
@@ -82,6 +82,31 @@ test("dispatch records dispatch_start then dispatch_end in the event log", async
   const end = d.ledger.listEvents({ kind: "dispatch_end" })[0];
   expect(end.data).toMatchObject({ ok: true, timedOut: false });
   expect(end.folder).toBe(join(root, "eticket-v3"));
+});
+
+test("dispatch tags its final line: DONE on success, ALERT on failure", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  // success → the ✅ finished line is tagged done
+  {
+    const { d, replies } = makeDeps();
+    const done = Promise.resolve<RunResult>({ ok: true, sessionId: "s1", summary: "all green", costUsd: 0 });
+    const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done });
+    await dispatchToProject("eticket-v3", "t", d, 1, { start: fakeStart as never, now: () => 0, root });
+    await new Promise((r) => setTimeout(r, 10));
+    const finished = replies.find((r) => r.text.startsWith("✅"));
+    expect(finished?.priority).toBe("done");
+  }
+  // failure → the ⛔ line is tagged alert (an ALERT surfaces on the Decisions channel)
+  {
+    const { d, replies } = makeDeps();
+    const done = Promise.resolve<RunResult>({ ok: false, sessionId: "s2", summary: "boom", costUsd: 0 });
+    const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done });
+    await dispatchToProject("eticket-v3", "t", d, 1, { start: fakeStart as never, now: () => 0, root });
+    await new Promise((r) => setTimeout(r, 10));
+    const failed = replies.find((r) => r.text.startsWith("⛔"));
+    expect(failed?.priority).toBe("alert");
+  }
 });
 
 test("a refused dispatch (unknown project) records dispatch_refused with reason not_found", async () => {
