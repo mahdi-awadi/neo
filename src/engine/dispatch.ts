@@ -581,8 +581,9 @@ export async function dispatchToProject(
         deps.registry.touch(session.id, now());
         deps.registry.detachControl(session.id);
       }
-      const line = result.ok ? `✅ ${name} finished: ${result.summary || "done"}` : `⛔ ${name}: ${result.summary || "failed"}`;
+      const line = result.ok ? `${name} finished: ${result.summary || "done"}` : `${name}: ${result.summary || "failed"}`;
       // A finish is DONE (muted firehose); a failure is an ALERT the operator must see (Decisions).
+      // The frontend prepends the single priority accent (🟢/🔴) — no per-call-site glyph (Feature 2).
       await deps.reply(replyChat, line, name, result.ok ? "done" : "alert");
       // Feed the result back into the live company session so it can act on it next turn.
       const company = deps.registry.getDefault();

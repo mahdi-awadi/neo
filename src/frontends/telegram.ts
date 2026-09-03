@@ -25,7 +25,7 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry }
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
-import { surfaceFor, priorityBadge, type Priority } from "../engine/priority";
+import { surfaceFor, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
 import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
 import type { ApiCooldown } from "../engine/api-retry";
 
@@ -34,6 +34,15 @@ import type { ApiCooldown } from "../engine/api-retry";
  *  text — never wrapped in <code>/<pre> — so Telegram auto-links it under parse_mode HTML too. */
 export function projectTagPrefix(project?: string): string {
   return project ? `${projectHashtag(project)} ` : "";
+}
+
+/** The full first-chunk prefix for an outbound line: the priority's single colored accent (🟢/🔴/…
+ *  from the central style map, empty for the silent `progress` firehose) then the clickable #project
+ *  tag. This is the ONE place styling + attribution compose, so every Telegram outbound line reads
+ *  consistently (Feature 2). Both parts stay plain text (outside any code entity) so Telegram renders
+ *  the emoji and auto-links the hashtag under parse_mode HTML. */
+export function outboundTag(project?: string, priority?: Priority): string {
+  return `${accentPrefix(priority)}${projectTagPrefix(project)}`;
 }
 
 /** Build the Telegram operator sink (pure — no Bot instance, so it's unit-testable). Lines mirrored
@@ -81,8 +90,11 @@ async function sendFormatted(
   chatId: number,
   text: string,
   project?: string,
+  priority?: Priority,
 ): Promise<number | undefined> {
-  const tag = projectTagPrefix(project);
+  // Feature 2: the first chunk leads with the priority's single colored accent, then the #project
+  // tag. progress (the default) is silent, so streamed worker output reads exactly as it did before.
+  const tag = outboundTag(project, priority);
   // Chunk long output: Telegram rejects any single message over 4096 chars, so a long/table-heavy
   // report must be split into multiple rich messages (never dropped). deliverChunked builds each
   // body (rich HTML, or plain hard-split fallback); we just send whatever body it hands us.
@@ -163,8 +175,8 @@ export function startTelegram(
   // a normal message, not a quote-reply. `chatId` is already the resolved TARGET surface (the
   // caller applied surfaceFor); the route is recorded on whichever chat the message actually
   // lands in, so a reply to it (in the DM or the Decisions chat) routes back to the right project.
-  async function send(chatId: number, text: string, project?: string): Promise<void> {
-    const messageId = await sendFormatted(bot, chatId, text, project);
+  async function send(chatId: number, text: string, project?: string, priority?: Priority): Promise<void> {
+    const messageId = await sendFormatted(bot, chatId, text, project, priority);
     if (messageId !== undefined && project) {
       const session = registry.findByName(project);
       if (session) routes.remember(chatId, messageId, { sessionId: session.id, folder: session.order.folder, project });
@@ -212,7 +224,7 @@ export function startTelegram(
     makeTelegramSink({
       adminId: () => admin.adminId(),
       decisionsChatId: () => cfg.decisionsChatId,
-      reply: (cid, text, project) => void send(cid, text, project),
+      reply: (cid, text, project, priority) => void send(cid, text, project, priority),
       plain: (cid, text) => void sendFormatted(bot, cid, text),
     }),
   );
@@ -251,7 +263,7 @@ export function startTelegram(
     cooldown: reload?.cooldown,
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
     reply: (cid, text, project, priority) => {
-      void send(surfaceChat(cid, priority), text, project); // local delivery, routed by surface
+      void send(surfaceChat(cid, priority), text, project, priority); // local delivery, routed + styled by priority
       bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel

@@ -463,7 +463,8 @@ function startSession(
       // policy is an observer — never break the completion path
     }
     // A completed interactive turn is DONE (muted firehose); a failed one is an ALERT (Decisions).
-    void deps.reply(chatId, result.ok ? `✓ ${result.summary}` : `✗ ${result.summary || "failed"}`, project, result.ok ? "done" : "alert");
+    // The frontend prepends the single priority accent (🟢/🔴) — no per-call-site glyph here (Feature 2).
+    void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert");
   });
 
   return run;

@@ -25,6 +25,7 @@ import {
 import type { LoopInput } from "./loop-validate";
 import { dashboardSnapshot, type DashState } from "./dashboard";
 import { mdToHtml } from "./format";
+import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
 import type { OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
@@ -99,7 +100,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   opts.bus?.register({
     id: "web",
     deliver: (line) => {
-      if (line.kind === "reply") message(line.text, line.project);
+      // Feature 2: a mirrored reply keeps the same single colored accent the other surface shows.
+      // The accent is plain emoji text, so it degrades gracefully through mdToHtml (no rich markup).
+      if (line.kind === "reply") message(styleLine(line.text, line.priority), line.project);
       else if (line.kind === "echo") emit({ type: "echo", text: line.text });
       else emit({ type: "notice", text: line.text });
     },
@@ -119,9 +122,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     ...opts.engine,
     usage: opts.usage,
     codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg),
-    reply: (_chatId, text, project) => {
-      message(text, project); // local delivery (unchanged)
-      opts.bus?.mirror("web", { kind: "reply", text, project }); // + mirror to Telegram
+    reply: (_chatId, text, project, priority) => {
+      message(styleLine(text, priority), project); // local delivery, styled by priority (Feature 2)
+      opts.bus?.mirror("web", { kind: "reply", text, project, priority }); // + mirror to Telegram
     },
     askApproval: (_chatId, reason) =>
       new Promise<"allow" | "deny">((resolve) => {

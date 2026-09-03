@@ -87,24 +87,24 @@ test("dispatch records dispatch_start then dispatch_end in the event log", async
 test("dispatch tags its final line: DONE on success, ALERT on failure", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
-  // success → the ✅ finished line is tagged done
+  // success → the completion line is tagged done (the 🟢 accent is added by the frontend, Feature 2)
   {
     const { d, replies } = makeDeps();
     const done = Promise.resolve<RunResult>({ ok: true, sessionId: "s1", summary: "all green", costUsd: 0 });
     const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done });
     await dispatchToProject("eticket-v3", "t", d, 1, { start: fakeStart as never, now: () => 0, root });
     await new Promise((r) => setTimeout(r, 10));
-    const finished = replies.find((r) => r.text.startsWith("✅"));
+    const finished = replies.find((r) => r.text.includes("finished"));
     expect(finished?.priority).toBe("done");
   }
-  // failure → the ⛔ line is tagged alert (an ALERT surfaces on the Decisions channel)
+  // failure → the completion line is tagged alert (an ALERT surfaces on the Decisions channel)
   {
     const { d, replies } = makeDeps();
     const done = Promise.resolve<RunResult>({ ok: false, sessionId: "s2", summary: "boom", costUsd: 0 });
     const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done });
     await dispatchToProject("eticket-v3", "t", d, 1, { start: fakeStart as never, now: () => 0, root });
     await new Promise((r) => setTimeout(r, 10));
-    const failed = replies.find((r) => r.text.startsWith("⛔"));
+    const failed = replies.find((r) => r.text.includes("boom"));
     expect(failed?.priority).toBe("alert");
   }
 });

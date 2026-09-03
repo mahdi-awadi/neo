@@ -133,6 +133,41 @@ test("chunkMarkdown: an over-budget table is split on row boundaries, header+sep
   for (const row of rows) expect(chunks.filter((c) => c.includes(row)).length).toBe(1);
 });
 
+// --- escaping + plain-text fallback: a message full of metacharacters must never fail to send ---
+import { deliverChunked } from "../src/engine/format";
+
+test("mdToHtml escapes MarkdownV2/HTML metacharacters without throwing", () => {
+  // Every Telegram MarkdownV2 special char + the HTML-significant trio, all in one line.
+  const meta = "_ * [ ] ( ) ~ ` > # + - = | { } . ! < & > done";
+  const html = mdToHtml(meta, { tables: "pre" });
+  // The HTML-significant chars are escaped (so parse_mode HTML can't break or inject).
+  expect(html).toContain("&lt;");
+  expect(html).toContain("&amp;");
+  expect(html).toContain("&gt;");
+});
+
+test("a styled line full of metacharacters still sends via the plain-text fallback", async () => {
+  // Simulate Telegram rejecting the rich markup (html=true → not ok); plain text (html=false) is
+  // accepted. deliverChunked must fall back so the message is delivered, never dropped.
+  const sent: Array<{ body: string; html: boolean }> = [];
+  const send = async (body: string, html: boolean) => {
+    sent.push({ body, html });
+    return html ? { ok: false } : { ok: true, id: 7 };
+  };
+  const accent = accentPrefix("alert"); // "🔴 " — the Feature-2 style prefix, on the first chunk
+  const text = "build _broke_ on `main` <deploy> at 50% & [stage] — retry? {now}";
+  const firstId = await deliverChunked(send, text, accent + "#eticket_v3 ");
+
+  expect(firstId).toBe(7); // delivered
+  const plain = sent.find((s) => !s.html);
+  expect(plain).toBeDefined();
+  // The raw text and the accent both survive in the plain body (never dropped, never mangled).
+  expect(plain!.body).toContain("build _broke_ on `main`");
+  expect(plain!.body.startsWith("🔴 #eticket_v3 ")).toBe(true);
+});
+
+import { accentPrefix } from "../src/engine/priority";
+
 // --- projectHashtag: clickable Telegram hashtags per project ---
 import { projectHashtag } from "../src/engine/format";
 
