@@ -18,7 +18,7 @@ import { sessionContext, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, w
 import { memoryDir, memoryScopeEnabled } from "./memory";
 import { memoryTools } from "./memory-tool";
 import type { NeoConfig } from "../config";
-import type { Ledger } from "./ledger";
+import type { Ledger, DecisionRow } from "./ledger";
 
 /** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
 export interface LoopDefStore {
@@ -50,6 +50,13 @@ export interface LoopDef extends SchedulableLoop {
    *  the fire path pre-checks `memoryScopeEnabled` so a company folder that isn't in
    *  `cfg.memory.scopes` no-ops instead of burning a worker run (dreamGateOutcome). */
   dreamMemory?: boolean;
+  /** Marks the secretary digest loop (additive, optional — every other loop leaves this unset). Like
+   *  `dreamMemory`, the static `folder`/`prompt`/`trigger` are placeholders: the fire path
+   *  (resolveSecretaryLoop) rewrites `folder` to `cfg.companyFolder`, `trigger` to `cfg.secretaryCron`,
+   *  and interpolates the open-decisions queue into `prompt` (stamping a reminder on each). The fire
+   *  path pre-checks the queue so an empty queue no-ops instead of burning a worker run
+   *  (secretaryGateOutcome). Runs on the `workers.secretary` profile (the latest model). */
+  secretary?: boolean;
 }
 
 export interface LoopDeps {
@@ -198,7 +205,47 @@ const MEMORY_DREAM: LoopDef = {
   dreamMemory: true,
 };
 
-export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN, MEMORY_DREAM];
+// Placeholders in SECRETARY.prompt, interpolated at fire time (resolveSecretaryLoop) once the queue
+// is known — the static def is built before cfg/the ledger load (same reason `folder`/`trigger` below
+// are placeholders). The engine renders the queue DETERMINISTICALLY into {{OPEN_DECISIONS}}; the
+// worker only phrases + prioritises it (no AI in the engine; the worker never invents/mutates facts).
+const OPEN_DECISIONS_PLACEHOLDER = "{{OPEN_DECISIONS}}";
+const STALE_HOURS_PLACEHOLDER = "{{STALE_HOURS}}";
+const DEFAULT_STALE_HOURS = 24;
+
+// The secretary digest loop: a scheduled worker (latest model, `workers.secretary`) that reviews the
+// open-decisions queue and writes ONE consolidated digest to the operator's high-priority Decisions
+// channel, flagging stale items. SILENT when the queue is empty (secretaryGateOutcome no-ops before
+// spending a worker run). Read-only over the queue — only the operator (answer/dismiss) or the engine
+// changes decision state; the data reaches the worker through the prompt, not a tool.
+//
+// Fire-once, same "goal never met" shape as memory-dream/mywellbeing (docs/loops.md gotcha): the run
+// itself IS the point, so `sh -c false` (exit 1, never met) + maxIterations 1 fires exactly once.
+// `folder`/`trigger` are placeholders resolved from cfg at fire time (resolveSecretaryLoop), like the
+// dream loop — the real company path + cadence aren't known until cfg loads.
+export const SECRETARY: LoopDef = {
+  name: "secretary",
+  usage: "/loop secretary",
+  summary: "waking hours: digest the open-decisions queue to the Decisions channel; silent when empty",
+  folder: "company", // sentinel — resolveSecretaryLoop rewrites this to cfg.companyFolder at fire time
+  prompt:
+    "You are Neo's secretary. These blocking decisions are still waiting on the operator (READ-ONLY — " +
+    "the engine tracks them; do NOT try to answer, resolve, or change them):\n\n" +
+    `${OPEN_DECISIONS_PLACEHOLDER}\n\n` +
+    "Write ONE short, warm digest as your reply — the operator reads it on their high-priority " +
+    'Decisions channel. Lead with the headline count ("N decisions wait on you across M projects"). ' +
+    "Group by project, stalest first. For each, one line: what is blocked and the clear ask. Flag any " +
+    `item waiting longer than ${STALE_HOURS_PLACEHOLDER}h as an escalation (it has been reminded before). ` +
+    "Be concise — no preamble, no essay, plain English. Do not invent anything not in the list above.",
+  goal: { kind: "command", command: ["sh", "-c", "false"] }, // never met → fire-once with maxIterations 1
+  trigger: { kind: "cron", expr: "0 8-22/2 * * *" }, // resolveSecretaryLoop overrides expr from cfg.secretaryCron
+  bounds: { maxIterations: 1, budgetUsd: 2 },
+  enabledByDefault: false,
+  freshSession: true,
+  secretary: true,
+};
+
+export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN, MEMORY_DREAM, SECRETARY];
 
 export function isBuiltin(name: string): boolean {
   return LOOPS.some((l) => l.name === name);
@@ -325,6 +372,64 @@ function dreamGateOutcome(loop: LoopDef, cfg?: NeoConfig): LoopOutcome | undefin
   return { met: false, iterations: 0, reason: "stopped", lastDetail: "memory disabled (company not in memory.scopes)", spentUsd: 0 };
 }
 
+/** Render the open-decisions queue into a compact, factual list for the secretary prompt — one line
+ *  per decision (project · age · reminder count · question), stale items marked. Deterministic + AI-
+ *  free: the engine grounds the digest in real queue data; the worker only phrases and prioritises. */
+function renderOpenDecisions(rows: DecisionRow[], now: number, staleHours: number): string {
+  const staleMs = staleHours * 3_600_000;
+  return rows
+    .map((d) => {
+      const ageH = Math.max(0, Math.round((now - d.createdAt) / 3_600_000));
+      const stale = now - d.createdAt >= staleMs ? " ⚠️ STALE" : "";
+      const proj = d.project ? `[${d.project}] ` : "";
+      const reminded = d.reminderCount > 0 ? ` (reminded ${d.reminderCount}×)` : "";
+      return `- ${proj}${d.question} — waiting ${ageH}h${reminded}${stale}`;
+    })
+    .join("\n");
+}
+
+/** Fire-time resolution for the secretary loop (mirrors resolveDreamLoop). Rewrites the sentinel
+ *  `folder` to `cfg.companyFolder` and `trigger` to `cfg.secretaryCron` (both known only once cfg
+ *  loads). WITH a ledger it also does the full fire-time step: render the open-decisions queue into
+ *  the `{{OPEN_DECISIONS}}` placeholder and stamp a reminder on each open row (the operator keeps
+ *  being reminded). WITHOUT a ledger — the scheduler's folder/trigger pre-resolve — it leaves the
+ *  placeholder for the fire path to interpolate once, when the worker actually runs. A no-op for
+ *  every other loop (secretary unset). Idempotent on folder/trigger; the queue interpolation runs
+ *  only while the placeholder is still present, so a second (ledger) call won't double-stamp. */
+export function resolveSecretaryLoop(
+  loop: LoopDef,
+  cfg?: NeoConfig,
+  ledger?: Pick<Ledger, "listOpenDecisions" | "noteDecisionsReminded">,
+  now: number = Date.now(),
+): LoopDef {
+  if (!loop.secretary) return loop;
+  const resolved: LoopDef = {
+    ...loop,
+    folder: cfg ? cfg.companyFolder : loop.folder,
+    trigger: cfg ? { kind: "cron", expr: cfg.secretaryCron } : loop.trigger,
+  };
+  if (!ledger || !resolved.prompt.includes(OPEN_DECISIONS_PLACEHOLDER)) return resolved;
+  const staleHours = cfg?.secretaryStaleHours ?? DEFAULT_STALE_HOURS;
+  const open = ledger.listOpenDecisions();
+  resolved.prompt = resolved.prompt
+    .replace(OPEN_DECISIONS_PLACEHOLDER, renderOpenDecisions(open, now, staleHours))
+    .replace(STALE_HOURS_PLACEHOLDER, String(staleHours));
+  ledger.noteDecisionsReminded(
+    open.map((d) => d.id),
+    now,
+  );
+  return resolved;
+}
+
+/** Deterministic pre-check for the secretary loop: a quiet queue means a quiet secretary. Returns a
+ *  completed 0-iteration LoopOutcome (run NO worker) when there are no open decisions to digest, else
+ *  undefined (proceed). A no-op for every other loop (secretary unset). Mirrors dreamGateOutcome. */
+export function secretaryGateOutcome(loop: LoopDef, ledger: Pick<Ledger, "listOpenDecisions">): LoopOutcome | undefined {
+  if (!loop.secretary) return undefined;
+  if (ledger.listOpenDecisions().length > 0) return undefined;
+  return { met: false, iterations: 0, reason: "stopped", lastDetail: "no open decisions — nothing to digest", spentUsd: 0 };
+}
+
 /** Builds the dream-mode `memory` MCP server for one dream-loop run: dream-budgeted
  *  `memory`/`memory_search` tools (memory-tool.ts) scoped to `folder`, with a diary callback that
  *  appends every mutation ATTEMPT (applied or rejected) to `<folder>/memory/DREAMS.md`, engine-side
@@ -371,7 +476,9 @@ function loopRunExtras(
   check: GoalCheck;
 } {
   const cfg = deps.cfg;
-  const runDeps = cfg ? profileDeps(cfg, "loop") : undefined;
+  // The secretary digest runs on its own worker profile (the latest model, `workers.secretary`);
+  // every other loop uses the shared `loop` profile.
+  const runDeps = cfg ? profileDeps(cfg, loop.secretary ? "secretary" : "loop") : undefined;
   if (runDeps && cfg && loop.dreamMemory) runDeps.mcpServers = dreamMcpServers(loop.folder, cfg);
   return {
     runDeps,

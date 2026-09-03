@@ -7,7 +7,7 @@ const cfg = {
     company: { effort: "low" as const }, project: {}, dispatch: {},
     loop: { model: "sonnet", skills: [] as string[] },
     judge: { model: "haiku", effort: "low" as const },
-    ingress: { effort: "low" as const }, handoff: { model: "haiku", effort: "low" as const },
+    ingress: { effort: "low" as const }, handoff: { model: "haiku", effort: "low" as const }, secretary: {},
   },
   workerEnv: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "70" },
 };

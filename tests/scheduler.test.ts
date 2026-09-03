@@ -169,6 +169,8 @@ function fakeNeoConfig(companyFolder: string): NeoConfig {
     routeKeep: 20_000,
     eventsKeep: 50_000,
     decisionsKeep: 5_000,
+    secretaryCron: "0 8-22/2 * * *",
+    secretaryStaleHours: 24,
     codebaseMemoryListTimeoutMs: 15_000,
     inboxListDefault: 100,
     messageRoutesCacheCap: 2_000,
@@ -186,7 +188,7 @@ function fakeNeoConfig(companyFolder: string): NeoConfig {
       cacheTtlFallbackMs: 3_600_000,
       cacheTtlMinObservations: 5,
     },
-    workers: { company: {}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {}, handoff: {} },
+    workers: { company: {}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {}, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: ["company"], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
   };

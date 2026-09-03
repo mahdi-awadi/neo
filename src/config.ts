@@ -45,7 +45,7 @@ export interface MemoryCfg {
 }
 
 export type WorkerPathName =
-  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff";
+  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff" | "secretary";
 
 export interface NeoConfig {
   telegramToken: string;
@@ -139,6 +139,14 @@ export interface NeoConfig {
   /** Pending-decisions retention cap: max RESOLVED (answered/dismissed) decision rows kept (open
    *  rows are never pruned). Pruned in amortised batches. Default 5 000. */
   decisionsKeep: number;
+  /** Secretary digest loop cadence (5-field cron, server-local). The loop reviews the open-decisions
+   *  queue and sends ONE consolidated digest to the Decisions channel; SILENT when the queue is empty
+   *  (no worker run). Opt-in (disabled by default like other loops). Default every 2h, 08:00–22:00.
+   *  From SECRETARY_CRON env, then config.json. */
+  secretaryCron: string;
+  /** A decision older than this many hours is flagged in the digest as STALE (an escalation the
+   *  operator keeps being reminded about). Default 24. */
+  secretaryStaleHours: number;
   /** Bounded wait (ms) for a codebase-memory list_projects op (the sibling of
    *  codebaseMemoryIndexTimeoutMs). Default 15 s. */
   codebaseMemoryListTimeoutMs: number;
@@ -195,6 +203,10 @@ const DEFAULTS = {
   routeKeep: 20_000,
   eventsKeep: 50_000,
   decisionsKeep: 5_000,
+  // Secretary digest loop: opt-in (enabledByDefault:false on the LoopDef), so these are only the
+  // cadence/staleness knobs. Every 2h during waking hours; a decision older than 24h reads as stale.
+  secretaryCron: "0 8-22/2 * * *",
+  secretaryStaleHours: 24,
   codebaseMemoryListTimeoutMs: 15_000,
   inboxListDefault: 100,
   messageRoutesCacheCap: 2_000,
@@ -232,6 +244,9 @@ const DEFAULTS = {
     judge: {},
     ingress: { effort: "low" },
     handoff: {},
+    // The secretary reviews the queue on the LATEST model (a config.json override recommends the
+    // newest model); the empty default keeps today's model until the operator sets one.
+    secretary: {},
   } satisfies Record<WorkerPathName, WorkerProfile>,
   workerEnv: {} as Record<string, string>,
   // QUALITY INVARIANT: scopes:[] is the pin — the memory system is a total no-op until an
@@ -310,6 +325,8 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     routeKeep: fileCfg.routeKeep ?? DEFAULTS.routeKeep,
     eventsKeep: fileCfg.eventsKeep ?? DEFAULTS.eventsKeep,
     decisionsKeep: fileCfg.decisionsKeep ?? DEFAULTS.decisionsKeep,
+    secretaryCron: process.env.SECRETARY_CRON ?? fileCfg.secretaryCron ?? DEFAULTS.secretaryCron,
+    secretaryStaleHours: fileCfg.secretaryStaleHours ?? DEFAULTS.secretaryStaleHours,
     codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,
     inboxListDefault: fileCfg.inboxListDefault ?? DEFAULTS.inboxListDefault,
     messageRoutesCacheCap: fileCfg.messageRoutesCacheCap ?? DEFAULTS.messageRoutesCacheCap,

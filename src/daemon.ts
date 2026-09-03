@@ -18,7 +18,7 @@ import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
-import { effectiveLoops, startScheduledLoop, resolveDreamLoop } from "./engine/loops";
+import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
 import { heartbeatMs, nextTickDelayMs, type HeartbeatLoop } from "./engine/heartbeat";
 import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
@@ -137,10 +137,15 @@ async function main(): Promise<void> {
   // tick — no fixed "poll every N seconds" knob (heartbeat.ts). It's re-derived every tick (via a
   // self-rescheduling setTimeout, not setInterval) from the loops enabled *right now*, so toggling
   // on a fast interval loop from the web console speeds the tick up with no daemon restart.
+  // Resolve a loop's sentinel folder + trigger from cfg BEFORE the scheduler/heartbeat read them —
+  // memory-dream's folder AND the secretary loop's folder + cadence (cfg.secretaryCron) come from
+  // config, not the static def. No ledger here → NO queue interpolation / reminder stamping (that
+  // happens once, at fire time, in the secretary branch of `start` below). A no-op for every other loop.
+  const resolveLoop = (l: LoopDef): LoopDef => resolveSecretaryLoop(resolveDreamLoop(l, cfg), cfg);
   const currentHeartbeatLoops = (): HeartbeatLoop[] =>
     effectiveLoops(ledger).map((l) => ({
       enabled: ledger.isEnabled(l.name) ?? l.enabledByDefault ?? false, // same resolution as tickScheduler
-      trigger: l.trigger,
+      trigger: resolveLoop(l).trigger, // secretaryCron-aware so the derived heartbeat samples the real cadence
     }));
   const scheduleHeartbeat = (): void => {
     // Align the timer to the NEXT tick boundary, not "now + hb" — the tick body below (sweeps +
@@ -169,7 +174,7 @@ async function main(): Promise<void> {
           // loop's REAL company folder, not its unresolved "company" sentinel (a no-op for every
           // other loop). def.name is untouched by resolution, so lastRun/enabled bookkeeping and
           // the `start` callback both still key off the loop's real identity.
-          loops: effectiveLoops(ledger).map((l) => resolveDreamLoop(l, cfg)),
+          loops: effectiveLoops(ledger).map(resolveLoop),
           store: ledger, // Ledger implements LoopStateStore
           // Company-folder aware: the always-on default project is registered IDLE forever, so a
           // plain presence check would starve any loop scheduled against the company folder — see
@@ -180,14 +185,30 @@ async function main(): Promise<void> {
           now: Date.now(),
           // Return the promise (NOT `void ...`) so tickScheduler can catch a rejecting loop run;
           // discarding it here is exactly what let a crashing loop take down the daemon (2026-07-24).
-          start: (def) =>
-            startScheduledLoop(def, {
+          start: (def) => {
+            // The secretary digest: a quiet queue means a quiet secretary (no worker run), and its
+            // digest routes to the unmuted Decisions channel (falls back to the DM when unset). The
+            // full fire-time resolve reads the queue + stamps a reminder on each open decision — done
+            // ONCE here (only when the loop actually fires), never in the folder/trigger pre-resolve.
+            if (def.secretary) {
+              const gate = secretaryGateOutcome(def, ledger);
+              if (gate) return Promise.resolve(gate); // empty queue → silent, no worker, no stamping
+              return startScheduledLoop(resolveSecretaryLoop(def, cfg, ledger), {
+                chatId: cfg.decisionsChatId ?? admin.adminId() ?? -1, // digest → the Decisions channel
+                reply: loopReply,
+                shouldStop: () => meter.shouldThrottle(),
+                cfg,
+                store: ledger,
+              });
+            }
+            return startScheduledLoop(def, {
               chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
               reply: loopReply,
               shouldStop: () => meter.shouldThrottle(),
               cfg,
               store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
-            }),
+            });
+          },
           // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
           // engine — log it and alert the operator, but keep the daemon and other loops alive.
           onError: (def, err) => {

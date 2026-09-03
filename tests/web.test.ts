@@ -56,6 +56,8 @@ function cfg(): NeoConfig {
     routeKeep: 20_000,
     eventsKeep: 50_000,
     decisionsKeep: 5_000,
+    secretaryCron: "0 8-22/2 * * *",
+    secretaryStaleHours: 24,
     codebaseMemoryListTimeoutMs: 15_000,
     inboxListDefault: 100,
     messageRoutesCacheCap: 2_000,
@@ -64,7 +66,7 @@ function cfg(): NeoConfig {
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
     contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
-    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {} },
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
   };

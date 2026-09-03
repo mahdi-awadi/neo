@@ -232,7 +232,7 @@ test("worker profiles: QUALITY INVARIANT — absent config changes no worker's m
   // other path (all code-writing paths included) inherits the CLI default model untouched.
   expect(cfg.workers).toEqual({
     company: { effort: "low" }, project: {}, dispatch: {}, loop: {},
-    judge: {}, ingress: { effort: "low" }, handoff: {},
+    judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {},
   });
   expect(cfg.workerEnv).toEqual({});
 });
