@@ -34,6 +34,7 @@ import {
 import type { Order, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide } from "./governor";
+import { fromAskUserQuestionInput, type StructuredAsk } from "./structured-question";
 import {
   filterSdkEnv,
   readOnlySandboxRequested,
@@ -125,6 +126,11 @@ export interface RunHandlers {
   /** Structured diagnostic events (session lifecycle). The engine wires this to ledger.recordEvent;
    *  a bare worker leaves it unset. NEVER carries message bodies — kinds + small metadata only. */
   onEvent?: (kind: string, data?: Record<string, unknown>) => void;
+  /** Service the SDK's native AskUserQuestion tool by raising a tracked structured decision (tappable
+   *  buttons on the Decisions channel). Wired only on operator surfaces (its presence = the same
+   *  firewall gate as ask_operator: the customer/ingress path leaves it unset, so its AskUserQuestion
+   *  still gets the plain steer). Absent → the tool is denied with the plain "ask in plain text" note. */
+  onStructuredQuestion?: (ask: StructuredAsk) => void | Promise<void>;
 }
 
 /** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
@@ -277,6 +283,12 @@ function userMessage(text: string): SdkUserMessage {
   return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
 }
 
+/** What the worker is told after its native AskUserQuestion was serviced into a tracked decision —
+ *  the same fire-and-suspend steer ask_operator returns. Must mention STOP (the worker check-points
+ *  and waits for the operator's tap/reply to resume it). */
+export const STRUCTURED_QUESTION_RAISED =
+  "Raised with the operator as a tracked decision with tappable options. Check-point your work (commit green work / write a WIP note) and STOP — the operator's answer will resume this session as a follow-up. Do not assume a default.";
+
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
 // Exported for direct unit testing of the fail-safe/self-heal contract (approval-resilience.test.ts).
@@ -293,6 +305,19 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string) {
     // calls, so the moment the channel is healthy again the next tool call escalates normally
     // (self-heal — a transient break can't permanently wedge tool approvals).
     try {
+      // Feature 1: service the SDK's native structured-question tool through the decisions machinery
+      // instead of hard-denying it — but ONLY when the engine wired the hook (operator surfaces;
+      // absent on the customer/ingress path = firewall). Raise the tracked ask, then deny the tool
+      // with the same check-point + STOP steer ask_operator returns: the SDK can't render buttons
+      // headlessly, so the worker suspends and the operator's tap/reply resumes it as a follow-up.
+      if (tool === "AskUserQuestion" && handlers.onStructuredQuestion) {
+        const ask = fromAskUserQuestionInput(input);
+        if (ask) {
+          await handlers.onStructuredQuestion(ask);
+          return { behavior: "deny", message: STRUCTURED_QUESTION_RAISED };
+        }
+        // unparseable / empty → fall through to the plain steer below (never raise an empty ask)
+      }
       const verdict = decide(tool, input, { folder });
       if ("allow" in verdict) {
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };

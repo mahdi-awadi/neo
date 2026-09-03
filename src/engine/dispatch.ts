@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
-import { singleQuestionAsk, type StructuredAsk } from "./structured-question";
+import { singleQuestionAsk, questionSummary, type StructuredAsk } from "./structured-question";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
@@ -442,6 +442,19 @@ export async function dispatchToProject(
         },
         onEscalation: (reason) => deps.askApproval(replyChat, reason),
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
+        // A dispatched worker's native AskUserQuestion is serviced the same way (gated on postDecision).
+        onStructuredQuestion: deps.postDecision
+          ? async (ask) => {
+              await raiseOperatorDecision(deps, {
+                project: name,
+                folder,
+                orderId: order.id,
+                chatId: replyChat,
+                question: questionSummary(ask),
+                spec: ask,
+              });
+            }
+          : undefined,
         onEvent: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data }),
         autoApprove: () => deps.trust.isTrusted(folder),
         onAutoApprove: (reason) => {

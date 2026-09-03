@@ -15,7 +15,8 @@ import type { TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { neoMcpServers, type DispatchDeps } from "./dispatch";
+import { neoMcpServers, raiseOperatorDecision, type DispatchDeps } from "./dispatch";
+import { questionSummary } from "./structured-question";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import {
@@ -357,6 +358,16 @@ function startSession(
         void deps.reply(chatId, t, project);
       },
       onEscalation: (reason) => deps.askApproval(chatId, reason),
+      // Service the worker's native AskUserQuestion by raising a tracked structured decision. Gated on
+      // postDecision (the operator surface wired it) — the same firewall gate as ask_operator.
+      onStructuredQuestion: deps.postDecision
+        ? async (ask) => {
+            await raiseOperatorDecision(
+              { ledger, postDecision: deps.postDecision },
+              { project, folder: order.folder, orderId: order.id, chatId, question: questionSummary(ask), spec: ask },
+            );
+          }
+        : undefined,
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       onEvent: (kind, data) => ledger.recordEvent(kind, { orderId: order.id, folder: order.folder, data }),
       autoApprove: () => deps.trust.isTrusted(order.folder),
