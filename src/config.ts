@@ -54,6 +54,12 @@ export interface NeoConfig {
   /** The bot's @username (no leading @) — required by the web console's Telegram Login Widget.
    *  From BOT_USERNAME env; when empty the daemon resolves it via getMe at startup. */
   botUsername: string;
+  /** OPERATOR CHOICE — the high-priority "Decisions" Telegram chat/group the operator keeps
+   *  UNMUTED. DECISION/ALERT lines (blocking questions, escalations, failures) route here while the
+   *  normal DM stays a muted firehose for PROGRESS/DONE. From DECISIONS_CHAT_ID env, then config.json.
+   *  Unset → decisions still get tagged, persisted, and reminded, but they post to the admin DM
+   *  (today's behavior). See docs/superpowers/specs/2026-09-03-priority-decisions-secretary-design.md. */
+  decisionsChatId?: number;
   /** Interface the web operator console binds. Default 127.0.0.1 (localhost only — put a reverse
    *  proxy / TLS front door like Traefik in front). Set WEB_HOST to a bridge IP to expose it. */
   webHost: string;
@@ -269,6 +275,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     telegramAllowFrom: fileCfg.telegramAllowFrom ?? [],
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     botUsername: process.env.BOT_USERNAME ?? fileCfg.botUsername ?? "",
+    decisionsChatId: process.env.DECISIONS_CHAT_ID ? Number(process.env.DECISIONS_CHAT_ID) : fileCfg.decisionsChatId,
     webHost: process.env.WEB_HOST ?? fileCfg.webHost ?? DEFAULTS.webHost,
     webPort: process.env.WEB_PORT ? Number(process.env.WEB_PORT) : (fileCfg.webPort ?? DEFAULTS.webPort),
     publicUrl: process.env.PUBLIC_URL ?? fileCfg.publicUrl ?? "",
