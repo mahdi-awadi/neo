@@ -104,10 +104,14 @@ test("retention + list knobs default per spec and read config.json", () => {
 });
 
 test("decisionsChatId is undefined by default, reads config.json, and env wins", () => {
-  expect(loadConfig("/nonexistent-dir").decisionsChatId).toBeUndefined();
+  withEnv("DECISIONS_CHAT_ID", undefined, () => {
+    expect(loadConfig("/nonexistent-dir").decisionsChatId).toBeUndefined();
+    const d = dir();
+    writeFileSync(join(d, "config.json"), JSON.stringify({ decisionsChatId: -100123 }));
+    expect(loadConfig(d).decisionsChatId).toBe(-100123);
+  });
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ decisionsChatId: -100123 }));
-  expect(loadConfig(d).decisionsChatId).toBe(-100123);
   withEnv("DECISIONS_CHAT_ID", "-100999", () => {
     expect(loadConfig(d).decisionsChatId).toBe(-100999); // env over file
   });
