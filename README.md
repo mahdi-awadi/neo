@@ -68,14 +68,16 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window). A `sessions`
   tool gives it live awareness of every project's state.
 - **Priority routing + a decisions queue — nothing blocking is lost.** Every outbound line gets a
-  deterministic priority (`decision`/`alert`/`progress`/`done`, AI-free). Blocking questions,
-  escalations, and failures route to a high-priority **Decisions** channel you keep unmuted
-  (`decisionsChatId`), while progress/done stay in the muted firehose. A worker raises a blocking
-  question with the `ask_operator` tool (tappable options); it's tracked in a durable queue that
-  survives a restart. **Answering** — a tapped button, a typed answer, or a plain reply to the
-  decision message — resolves it and **resumes the raising project**. An opt-in **secretary** loop
-  (latest model) digests the open queue to the Decisions channel on a cadence and escalates stale
-  items; silent when the queue is empty.
+  deterministic priority (`decision`/`alert`/`progress`/`done`, AI-free), rendered with a consistent
+  colored accent (decision 🔵, alert 🔴, done 🟢; progress is the silent firehose). Blocking
+  questions, escalations, and failures route to a high-priority **Decisions** channel you keep
+  unmuted (`decisionsChatId`), while progress/done stay in the muted firehose. A worker raises a
+  blocking question with the `ask_operator` tool — tappable options, optional `multiSelect`, always an
+  implicit free-form "Other" — and the SDK's native structured-question tool is serviced the same way;
+  it's tracked in a durable queue that survives a restart. **Answering** — a tapped button (or several,
+  then Submit), a typed answer, or a plain reply to the decision message — resolves it and **resumes
+  the raising project**. An opt-in **secretary** loop (latest model) digests the open queue to the
+  Decisions channel on a cadence and escalates stale items; silent when the queue is empty.
 - **Loop runtime (autonomy).** `trigger → action → goal` loops run autonomous work through the same
   governed worker; loop **definitions are data** — author, edit, and toggle them from the web
   console with no restart.

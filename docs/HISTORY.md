@@ -292,3 +292,30 @@ attaches only on operator paths, so customer-tainted work can never raise a deci
 `decisionsChatId`, `decisionsKeep`, `secretaryCron`, `secretaryStaleHours`, `workers.secretary`
 (`docs/CONFIG.md`). Built phase by phase, TDD. Going live needs a daemon restart (operator-gated).
 `tsc` clean; full suite green (695).
+
+**Structured questions + styled/colored operator messages.** Two follow-ups to the decisions work,
+both about how operator Telegram messages look and how the engine asks. **(1) A first-class
+structured-question path**, reusing the decisions machinery — not a parallel system. The SDK's native
+`AskUserQuestion` tool used to hard-error ("Neo has no structured-question UI"); it is now SERVICED:
+`buildCanUseTool` parses it into a `StructuredAsk` (`src/engine/structured-question.ts`, pure) and
+raises a tracked decision with tappable buttons, then denies the tool with the same check-point +
+STOP steer `ask_operator` returns (the worker suspends; the operator's tap/reply resumes it). This is
+wired through a `RunHandlers.onStructuredQuestion` hook on the interactive + dispatched paths, gated
+on `postDecision` — the SAME firewall gate as `ask_operator`, so customer-tainted work still gets only
+the plain steer. The `ask_operator` MCP tool gains a `multiSelect` flag. A structured ask (1–4
+questions, each 2–5 options, optional multi-select, always an implicit free-form "Other") is stored on
+the decision row (`spec` column, migration-guarded) so it survives a restart; taps accumulate an
+ephemeral selection (single-select resolves on one tap as before; multi-select / multi-question show a
+`✅ Submit`), and answering resumes the raising session with the combined answer. The pure module owns
+all the logic (normalize, callback encode/decode — backward-compatible with the legacy
+`dec:<id>:<idx>` — selection reducer, keyboard spec); the frontend stays thin. **(2) Styled + colored
+messages.** Telegram has no text colors, so "color" = one data-driven accent-emoji map keyed by the
+existing priority (`PRIORITY_STYLES` in `priority.ts`: decision 🔵, alert 🔴, done 🟢; `progress` is
+the silent firehose default). The accent is applied once at each surface's formatting boundary —
+Telegram `sendFormatted` (`outboundTag` composes accent + `#project` tag) and the web mirror — so both
+render consistently and degrade to plain text where rich markup isn't supported; the redundant
+per-call-site ✓/✗ (pipeline) and ✅/⛔ (dispatch) glyphs are removed. Escaping is safe by construction
+(the HTML `parse_mode` path escapes bodies and falls back to plain text if Telegram rejects the
+markup — a metacharacter-heavy message still sends, proven by test). Built TDD, commit per piece.
+Going live needs a daemon restart (operator-gated). `tsc` clean; full suite green (730; one
+pre-existing env-only config test unrelated to this work).
