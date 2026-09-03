@@ -25,7 +25,7 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry }
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
-import { surfaceFor, type Priority } from "../engine/priority";
+import { surfaceFor, priorityBadge, type Priority } from "../engine/priority";
 import type { ApiCooldown } from "../engine/api-retry";
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
@@ -175,6 +175,34 @@ export function startTelegram(
   const surfaceChat = (dm: number, priority?: Priority): number =>
     surfaceFor(priority ?? "progress") === "decisions" ? (cfg.decisionsChatId ?? dm) : dm;
 
+  // Post a raised decision (from the `ask_operator` tool) to the operator's high-priority Decisions
+  // channel with a tappable inline keyboard (option buttons + an "other / type an answer"
+  // affordance). Registers the sent message in the reply-routing map so a plain REPLY to it also
+  // resumes the raising project. Returns the sent message id so the engine can store it on the
+  // decision row (a tap/reply then resolves that exact decision). Best-effort — a send failure just
+  // means the decision stays queued (surfaced by the secretary digest / /decisions) with no channel post.
+  async function postDecision(
+    rec: { id: string; project?: string; folder?: string },
+    question: string,
+    options?: string[],
+  ): Promise<{ chatId: number; messageId: number } | undefined> {
+    const target = cfg.decisionsChatId ?? admin.adminId();
+    if (target === undefined) return undefined; // no operator claimed yet — the queue still holds it
+    const body = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${question}`;
+    try {
+      const m = await bot.api.sendMessage(target, body, { reply_markup: decisionKeyboard(rec.id, options) });
+      // Wire a plain reply to this message back into the raising project (routeReply), when its
+      // session is still around; if it's closed, the decision-answer path re-registers from the ledger.
+      if (rec.folder) {
+        const session = registry.findByFolder(rec.folder);
+        if (session) routes.remember(target, m.message_id, { sessionId: session.id, folder: rec.folder, project: rec.project ?? session.name });
+      }
+      return { chatId: target, messageId: m.message_id };
+    } catch {
+      return undefined;
+    }
+  }
+
   // Register this surface as an operator sink: lines mirrored from the OTHER surface (the web
   // console) render in the admin's DM (admin.adminId()) or the Decisions chat by priority.
   // Output-only — never re-enters the pipeline.
@@ -210,6 +238,7 @@ export function startTelegram(
       void send(surfaceChat(cid, priority), text, project); // local delivery, routed by surface
       bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
     },
+    postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
@@ -521,6 +550,19 @@ export async function registerTelegramCommands(bot: Bot): Promise<void> {
 
 function commandsEqual(a: { command: string; description: string }[], b: TelegramCommand[]): boolean {
   return a.length === b.length && a.every((c, i) => c.command === b[i]!.command && c.description === b[i]!.description);
+}
+
+/** The inline keyboard for a raised decision: one tappable button per option (`dec:<id>:<idx>`),
+ *  then an "✏️ Other / type an answer" affordance (`deco:<id>`) that captures the operator's next
+ *  message as a free-text answer. A free-form question (no options) shows just the Other button —
+ *  the operator can also simply REPLY to the message. Kept pure/exported so it's unit-testable. */
+export function decisionKeyboard(id: string, options?: string[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  // Cap at 8 options so the callback data stays well under Telegram's 64-byte limit and the keyboard
+  // stays tappable; each on its own row since option labels can be long.
+  if (options?.length) options.slice(0, 8).forEach((label, i) => kb.text(label.slice(0, 60), `dec:${id}:${i}`).row());
+  kb.text("✏️ Other / type an answer", `deco:${id}`);
+  return kb;
 }
 
 /** One button per open project; the active one is starred. Tapping fires a `use:<id>` callback. */

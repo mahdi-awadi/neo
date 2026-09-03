@@ -15,7 +15,7 @@ import type { TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { neoMcpServers } from "./dispatch";
+import { neoMcpServers, type DispatchDeps } from "./dispatch";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import {
@@ -72,6 +72,10 @@ export interface PipelineDeps {
    *  PROGRESS/DONE → the muted firehose (see engine/priority.ts + the frontend). */
   reply: (chatId: number, text: string, project?: string, priority?: Priority) => void | Promise<void>;
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
+  /** Post a raised decision to the operator's Decisions channel (frontend-supplied; builds the
+   *  inline keyboard). Threaded into neoMcpServers so the `ask_operator` tool can post — and its
+   *  presence gates that tool (operator surfaces only; never the customer/ingress path). */
+  postDecision?: DispatchDeps["postDecision"];
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
   now?: () => number;
@@ -279,7 +283,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: false, folder: parsed.folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: false, folder: parsed.folder, projectName: session.name, orderId: parsed.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -297,11 +301,12 @@ function runConfigFor(
   chatId: number,
   sdkSessionId: string,
 ): RunDeps {
-  const folder = registry.get(id)?.order.folder ?? "/nonexistent-neo-session";
+  const info = registry.get(id);
+  const folder = info?.order.folder ?? "/nonexistent-neo-session";
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: isCompany, folder, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: isCompany, folder, projectName: info?.name, orderId: info?.order.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }

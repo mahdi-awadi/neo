@@ -1,5 +1,23 @@
 import { test, expect } from "bun:test";
-import { makeTelegramSink } from "../src/frontends/telegram";
+import { makeTelegramSink, decisionKeyboard } from "../src/frontends/telegram";
+
+test("decisionKeyboard renders one dec:<id>:<idx> button per option + an 'other' affordance", () => {
+  const kb = decisionKeyboard("abc-123", ["Postgres", "Mongo"]);
+  const rows = kb.inline_keyboard;
+  expect(rows.flat().map((b: any) => b.callback_data)).toEqual(["dec:abc-123:0", "dec:abc-123:1", "deco:abc-123"]);
+  expect(rows.flat().map((b: any) => b.text)).toEqual(["Postgres", "Mongo", "✏️ Other / type an answer"]);
+});
+
+test("decisionKeyboard with no options shows only the 'other / type an answer' button", () => {
+  const kb = decisionKeyboard("x9", []);
+  expect(kb.inline_keyboard.flat().map((b: any) => b.callback_data)).toEqual(["deco:x9"]);
+});
+
+test("decisionKeyboard caps at 8 option buttons (callback data stays under Telegram's limit)", () => {
+  const kb = decisionKeyboard("z", Array.from({ length: 12 }, (_, i) => `opt${i}`));
+  const optBtns = kb.inline_keyboard.flat().filter((b: any) => b.callback_data.startsWith("dec:"));
+  expect(optBtns).toHaveLength(8);
+});
 
 /** Capture the reply/plain calls the sink makes, so we can assert routing without a live Bot. */
 function spy() {

@@ -786,6 +786,15 @@ function neoToolNames(servers: Record<string, unknown>): string[] {
   return Object.keys(neo.instance._registeredTools);
 }
 
+/** Pull a `tool()`-built handler off the in-process "neo" MCP server so a test can invoke it directly. */
+function neoToolHandler(
+  servers: Record<string, unknown>,
+  toolName: string,
+): ((args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }>) | undefined {
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> }> } };
+  return neo.instance._registeredTools[toolName]?.handler;
+}
+
 test("neoMcpServers attaches memory + memory_search when the memory gate is open (scope enabled + folder matches)", () => {
   const { d } = makeDeps();
   const servers = neoMcpServers(
@@ -822,6 +831,55 @@ test("neoMcpServers OMITS memory tools when memory is configured but scopes: [] 
     { dispatch: true, folder: "/home/neo/agent" },
   );
   expect(neoToolNames(outOfScope)).not.toContain("memory");
+});
+
+test("ask_operator attaches on operator paths ONLY when postDecision is wired (firewall)", () => {
+  const { d } = makeDeps();
+  // No postDecision → not attached (the customer/ingress path never wires it).
+  expect(neoToolNames(neoMcpServers(d, 1, { dispatch: false, folder: "/home/acme" }))).not.toContain("ask_operator");
+  // postDecision present → attached, regardless of the dispatch flag (all operator project workers).
+  const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
+  expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" }))).toContain("ask_operator");
+  expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: true, folder: "/home/acme" }))).toContain("ask_operator");
+});
+
+test("ask_operator opens a tracked decision, posts it, captures the message id, and tells the worker to stop", async () => {
+  const { d } = makeDeps();
+  const posted: Array<{ id: string; question: string; options?: string[] }> = [];
+  const deps: DispatchDeps = {
+    ...d,
+    postDecision: async (rec, question, options) => {
+      posted.push({ id: rec.id, question, options });
+      return { chatId: 222, messageId: 900 };
+    },
+  };
+  const servers = neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme", orderId: "ord-1" });
+  const handler = neoToolHandler(servers, "ask_operator")!;
+  const res = await handler({ question: "Which DB — Postgres or Mongo?", options: ["Postgres", "Mongo"] }, {});
+
+  // One open decision, carrying the project/folder/order + options.
+  const open = d.ledger.listOpenDecisions();
+  expect(open).toHaveLength(1);
+  expect(open[0]).toMatchObject({ kind: "decision", project: "acme", folder: "/home/acme", orderId: "ord-1", question: "Which DB — Postgres or Mongo?" });
+  expect(open[0]!.options).toEqual(["Postgres", "Mongo"]);
+  // It was posted to the Decisions channel and the message id captured back into the row.
+  expect(posted).toHaveLength(1);
+  expect(posted[0]!.options).toEqual(["Postgres", "Mongo"]);
+  expect(d.ledger.decisionByMessage(222, 900)?.id).toBe(open[0]!.id);
+  // A decision_raised event is recorded.
+  expect(d.ledger.listEvents({ kind: "decision_raised" })).toHaveLength(1);
+  // The worker is told to checkpoint + stop (single-shot; the answer resumes it as a follow-up).
+  expect(res.content[0]?.text?.toLowerCase()).toContain("stop");
+});
+
+test("ask_operator works with no options (free-form question path)", async () => {
+  const { d } = makeDeps();
+  const deps: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 5, messageId: 6 }) };
+  const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme" }), "ask_operator")!;
+  await handler({ question: "What is the prod API key?" }, {});
+  const open = d.ledger.listOpenDecisions();
+  expect(open).toHaveLength(1);
+  expect(open[0]!.options).toBeUndefined();
 });
 
 test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {

@@ -58,6 +58,16 @@ export interface DispatchDeps {
   askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
+  /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
+   *  message id (so a reply/edit can find it). The frontend supplies this — it builds the inline
+   *  keyboard from `options` (tappable answers) + an "other / type an answer" affordance. Its
+   *  PRESENCE gates the `ask_operator` tool: only operator surfaces (Telegram/web) wire it, so the
+   *  customer/ingress path never gets ask_operator — the firewall, by construction. */
+  postDecision?: (
+    rec: { id: string; project?: string; folder?: string },
+    question: string,
+    options?: string[],
+  ) => Promise<{ chatId: number; messageId: number } | undefined>;
   /** Default per-dispatch ceiling (ms) when the caller doesn't request one. Default DISPATCH_TIMEOUT_MS_DEFAULT. */
   dispatchTimeoutMs?: number;
   /** Hard cap (ms) on any caller-requested ceiling. Default DISPATCH_TIMEOUT_MAX_MS_DEFAULT (2h). */
@@ -481,7 +491,17 @@ export async function dispatchToProject(
           }
         },
       },
-      profileDeps(providerCfg, "dispatch", { resume: gatedResume, ...(teamAgents ? { agents: teamAgents } : {}) }),
+      profileDeps(providerCfg, "dispatch", {
+        resume: gatedResume,
+        // Attach the in-process "neo" MCP server so a dispatched sub-project worker gets the same
+        // operator-facing tools a directly-opened project does: `send_file` and — when the frontend
+        // wired `postDecision` — `ask_operator` (the ONE way it raises a blocking question). Without
+        // this the sub-worker (the most common path — the operator dispatches project work) had no
+        // way to ask the operator anything. `dispatch:false` (no recursive dispatch); memory tools
+        // stay gated by memoryGate (off unless the folder is in scope).
+        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, folder, projectName: name, orderId: order.id }),
+        ...(teamAgents ? { agents: teamAgents } : {}),
+      }),
     );
     runRef = run;
     deps.registry.attachControl(session.id, run);
@@ -618,6 +638,10 @@ export function neoMcpServers(
   opts: {
     dispatch: boolean;
     folder: string;
+    /** The project name + raising order id, recorded on any decision this worker raises (so the
+     *  digest/queue can show which project waits, and the answer can resume the right session). */
+    projectName?: string;
+    orderId?: string;
     stitch?: boolean;
     stitchKey?: string;
     /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
@@ -643,6 +667,57 @@ export function neoMcpServers(
       },
     ),
   ];
+  // `ask_operator` — the ONE structured way a worker raises a BLOCKING question/decision to the
+  // operator. Attached to ALL operator project workers (regardless of the dispatch flag), gated
+  // ONLY on `deps.postDecision` being wired: that closure exists only on the operator surfaces
+  // (Telegram/web), never on the customer/ingress path, so customer-tainted work can never raise a
+  // decision. The tool enqueues a tracked DECISION, posts it to the Decisions channel (with tappable
+  // `options` when given), captures the message id, and tells the worker to check-point + stop — the
+  // operator's tap/reply resumes this session as a follow-up (single-shot dispatch + resume-on-reply).
+  if (deps.postDecision) {
+    const postDecision = deps.postDecision;
+    tools.push(
+      tool(
+        "ask_operator",
+        "Ask the operator a question that BLOCKS this work — a decision or approval you need before you can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). It goes to the operator's high-priority Decisions channel and is tracked until they answer. Pass `options` (2-5 short labels) when the answer is a choice — the operator gets tappable buttons; omit `options` for a free-form question (they type a reply). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
+        {
+          question: z.string().describe("the blocking question, in plain language"),
+          options: z
+            .array(z.string())
+            .optional()
+            .describe("2-5 short answer labels the operator can tap; omit for a free-form typed answer"),
+        },
+        async (args: { question: string; options?: string[] }) => {
+          const id = deps.ledger.openDecision({
+            kind: "decision",
+            project: opts.projectName,
+            folder: opts.folder,
+            orderId: opts.orderId,
+            chatId: replyChat,
+            question: args.question,
+            options: args.options,
+          });
+          const posted = await postDecision({ id, project: opts.projectName, folder: opts.folder }, args.question, args.options);
+          if (posted) deps.ledger.setDecisionMessage(id, posted.chatId, posted.messageId);
+          deps.ledger.recordEvent("decision_raised", {
+            orderId: opts.orderId,
+            folder: opts.folder,
+            data: { project: opts.projectName, id, options: args.options?.length ?? 0, posted: !!posted },
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `Raised with the operator (decision #${id.slice(0, 8)}). Check-point your work (commit green work / write a WIP note) and STOP — ` +
+                  `the operator's answer will resume this session as a follow-up. Do not assume a default.`,
+              },
+            ],
+          };
+        },
+      ),
+    );
+  }
   if (opts.dispatch) {
     tools.push(
       tool(
