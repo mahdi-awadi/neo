@@ -316,5 +316,11 @@ Point your proxy (Traefik/Caddy/nginx) at `WEB_HOST:WEB_PORT` and terminate TLS 
 2026-07-23 context-efficiency design spec) and `STITCH_API_KEY` for Stitch. They attach to operator
 workers only — never to the customer/ingress path.
 
+Operator workers also get a **Playwright browser MCP** (headless, isolated Chromium) for web/UI
+testing. This one needs no config — it attaches automatically on the operator path, never the
+customer/ingress path. It requires the `playwright-mcp` binary on `PATH` (`@playwright/mcp`) and a
+Chromium browser (`playwright install chromium`). If the binary is absent, the MCP does not start and
+the worker runs without it. The browser launches only on first tool use.
+
 **Point projects at a non-`/home` root.** Set `WORK_ROOT=/srv/projects` (and, if you keep the
 company workspace elsewhere, `COMPANY_FOLDER=/srv/projects/company`).

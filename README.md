@@ -51,6 +51,9 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
 - **Governed workers.** A default-escalate governor path-fences file writes to the session's project
   folder and escalates unknown/foreign MCP tools, `WebFetch`, and out-of-folder writes to the
   operator (autonomous paths auto-deny). Customer-tainted briefs run with **zero tools**.
+- **Browser automation for web/UI testing.** Every operator project worker gets a headless Playwright
+  MCP (isolated Chromium). The browser launches only on first tool use, and the MCP never attaches on
+  the customer/ingress path.
 - **Budget & usage metering.** A rolling meter reserves interactive headroom and throttles
   background work; `/usage` reports measured subscription token usage and rate-limit status read
   from Claude Code's own transcripts.

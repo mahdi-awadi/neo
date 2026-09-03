@@ -257,3 +257,14 @@ reply, and the channel flushes it the moment that turn yields. A session marked 
 rather than enqueued into the void or started as a second concurrent run. The three outcomes record
 distinct ledger events (`dispatch_delivered`, `dispatch_queued`, `dispatch_refused`). Requires a
 daemon restart to activate. TDD; full suite green (657).
+
+**Playwright browser MCP on every operator project worker:** operator project workers now get a
+headless-Chromium **Playwright MCP** (`playwright-mcp --headless --isolated`) so a project can drive a
+real browser for web and UI testing. `neoMcpServers` gained a `playwright` opt-in flag, and both
+operator call sites in `pipeline.ts` pass it. The customer/ingress path (`ingress.ts`) passes no flag,
+so browser automation never reaches customer-tainted work. The MCP is lazy — the browser launches only
+on first tool use, so the idle cost per worker is one light stdio process. This needs the
+`playwright-mcp` binary (`@playwright/mcp`) and a Chromium browser. The governor is unchanged:
+Playwright tools are foreign MCP tools, so they still default-escalate — an interactive operator
+dispatch asks for approval, and an autonomous path auto-denies. Needs a daemon restart to activate.
+`tsc` clean, full suite green (657).
