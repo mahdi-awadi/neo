@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
-    "@openai/codex-sdk": "latest",
+    "@openai/codex-sdk": "^0.153.4",
     "grammy": "latest"
   },
   "devDependencies": {
