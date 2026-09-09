@@ -11,15 +11,32 @@
 export interface StructuredQuestion {
   header?: string;
   question: string;
+  /** The button labels — index-addressed by every callback / selection / answer path. Kept a plain
+   *  string[] so that logic never changes when a decision gains richer content. */
   options: string[];
+  /** Index-aligned with `options`: "what this option means + its trade-off/consequence", shown in the
+   *  message body (never on the button — buttons stay short). Optional; absent = bare labels. */
+  optionDetails?: string[];
   /** Optional on hand-built asks; normalizeAsk always sets it. Absent = single-select. */
   multiSelect?: boolean;
+  /** Index of the option Neo recommends (single-select decisions). Marked with a ⭐ in the body and,
+   *  for single-select, on the button. Out-of-range values are dropped by normalizeAsk. */
+  recommended?: number;
 }
 
 /** A structured ask = 1..MAX_QUESTIONS questions, answered together and resumed once with a combined
- *  answer. There is always an implicit free-form "Other" (the typed-answer path) on top of these. */
+ *  answer. There is always an implicit free-form "Other" (the typed-answer path) on top of these.
+ *  A MATURED decision (the `ask_operator` path) also carries a title, the problem/root-cause context,
+ *  and a recommendation — so the operator sees ONE well-formed decision, not a bare question. */
 export interface StructuredAsk {
   questions: StructuredQuestion[];
+  /** One-line title of the decision (matured `ask_operator` asks). */
+  title?: string;
+  /** 1–3 plain-English lines: what happened + the root cause, so the operator sees WHY a decision
+   *  is needed (matured `ask_operator` asks). */
+  context?: string;
+  /** Which option Neo advises + one line of why (the decision still stays with the operator). */
+  recommendation?: string;
 }
 
 /** Native AskUserQuestion caps at 4 questions; keep parity so a serviced ask never silently drops. */
@@ -29,12 +46,62 @@ export const MAX_OPTIONS = 5;
 
 /** Longest option label kept on a button (Telegram truncates long labels anyway). */
 const MAX_LABEL = 60;
+/** Longest per-option detail kept in the message body — a sentence, not an essay. */
+const MAX_DETAIL = 240;
 
 const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
 
 /** Build a one-question ask (the `ask_operator` MCP path). `multiSelect` defaults to false. */
 export function singleQuestionAsk(question: string, options: string[], multiSelect = false): StructuredAsk {
   return normalizeAsk({ questions: [{ question, options, multiSelect }] })!;
+}
+
+/** One option of a matured decision: a short button `label`, a `detail` (what it means + its
+ *  trade-off/consequence), and an optional `recommended` flag on the one Neo advises. */
+export interface MaturedOption {
+  label: string;
+  detail: string;
+  recommended?: boolean;
+}
+
+/** The `ask_operator` matured-decision input: ONE decision, fully formed. The Zod schema at the tool
+ *  boundary enforces this shape (required fields + 2..MAX_OPTIONS options) so a shapeless question
+ *  cannot be raised; `maturedAsk` normalizes it into a StructuredAsk. */
+export interface MaturedDecisionInput {
+  title: string;
+  context: string;
+  options: MaturedOption[];
+  recommendation: string;
+  multiSelect?: boolean;
+  /** Optional crisp restatement of the question; defaults to `title`. */
+  question?: string;
+}
+
+/** Build the single-question StructuredAsk behind a matured `ask_operator` decision: the title
+ *  doubles as the question (unless a crisp one is given), each option carries its detail, the
+ *  recommended flag becomes the recommended index, and title/context/recommendation ride on the ask.
+ *  Returns undefined for a degenerate decision (no title, or fewer than 2 real options) — a
+ *  belt-and-suspenders check behind the tool's Zod schema. */
+export function maturedAsk(input: MaturedDecisionInput): StructuredAsk | undefined {
+  const title = str(input?.title);
+  const rawOpts = Array.isArray(input?.options) ? input.options : [];
+  const recommendedFlag = rawOpts.findIndex((o) => !!o?.recommended);
+  const ask = normalizeAsk({
+    title,
+    context: str(input?.context),
+    recommendation: str(input?.recommendation),
+    questions: [
+      {
+        question: str(input?.question) || title,
+        options: rawOpts.map((o) => str(o?.label)),
+        optionDetails: rawOpts.map((o) => str(o?.detail)),
+        recommended: recommendedFlag >= 0 ? recommendedFlag : undefined,
+        multiSelect: !!input?.multiSelect,
+      },
+    ],
+  });
+  if (!ask || !title || (ask.questions[0]?.options.length ?? 0) < 2) return undefined;
+  return ask;
 }
 
 /** Clamp + trim a raw ask into a valid StructuredAsk, or `undefined` when nothing usable is left
@@ -46,14 +113,40 @@ export function normalizeAsk(raw: unknown): StructuredAsk | undefined {
   for (const q of rawQuestions.slice(0, MAX_QUESTIONS)) {
     const question = str((q as { question?: unknown })?.question);
     const rawOpts = (q as { options?: unknown })?.options;
-    const options = Array.isArray(rawOpts)
-      ? rawOpts.map((o) => str(o).slice(0, MAX_LABEL)).filter((s) => s.length > 0).slice(0, MAX_OPTIONS)
-      : [];
-    if (!question || options.length === 0) continue; // drop a degenerate question
+    const rawDetails = (q as { optionDetails?: unknown })?.optionDetails;
+    const detailAt = (i: number): string =>
+      Array.isArray(rawDetails) ? str(rawDetails[i]).slice(0, MAX_DETAIL) : "";
+    // Pair each label with its aligned detail, drop empty-label options, then clamp — so details AND
+    // the recommended index stay aligned to the SURVIVING options (indices shift when one is dropped).
+    const kept: Array<{ label: string; detail: string; origIdx: number }> = [];
+    if (Array.isArray(rawOpts)) {
+      rawOpts.forEach((o, i) => {
+        const label = str(o).slice(0, MAX_LABEL);
+        if (label) kept.push({ label, detail: detailAt(i), origIdx: i });
+      });
+    }
+    const clamped = kept.slice(0, MAX_OPTIONS);
+    if (!question || clamped.length === 0) continue; // drop a degenerate question
     const header = str((q as { header?: unknown })?.header) || undefined;
-    questions.push({ question, header, options, multiSelect: !!(q as { multiSelect?: unknown })?.multiSelect });
+    const details = clamped.map((c) => c.detail);
+    const rawRec = (q as { recommended?: unknown })?.recommended;
+    const rec = typeof rawRec === "number" ? clamped.findIndex((c) => c.origIdx === rawRec) : -1;
+    questions.push({
+      question,
+      header,
+      options: clamped.map((c) => c.label),
+      optionDetails: details.some((d) => d.length > 0) ? details : undefined,
+      multiSelect: !!(q as { multiSelect?: unknown })?.multiSelect,
+      recommended: rec >= 0 ? rec : undefined,
+    });
   }
-  return questions.length ? { questions } : undefined;
+  if (!questions.length) return undefined;
+  return {
+    questions,
+    title: str((raw as { title?: unknown })?.title) || undefined,
+    context: str((raw as { context?: unknown })?.context) || undefined,
+    recommendation: str((raw as { recommendation?: unknown })?.recommendation) || undefined,
+  };
 }
 
 /** Map the SDK's native `AskUserQuestion` tool input ({ questions:[{ question, header, multiSelect,
@@ -63,12 +156,15 @@ export function fromAskUserQuestionInput(input: unknown): StructuredAsk | undefi
   if (!Array.isArray(rawQuestions)) return undefined;
   const questions = rawQuestions.map((q) => {
     const rawOpts = (q as { options?: unknown })?.options;
-    const options = Array.isArray(rawOpts) ? rawOpts.map((o) => str((o as { label?: unknown })?.label)) : [];
+    const opts = Array.isArray(rawOpts) ? rawOpts : [];
     return {
       question: str((q as { question?: unknown })?.question),
       header: str((q as { header?: unknown })?.header),
       multiSelect: !!(q as { multiSelect?: unknown })?.multiSelect,
-      options,
+      options: opts.map((o) => str((o as { label?: unknown })?.label)),
+      // Native AskUserQuestion options carry a `description` — keep it as the option's detail so a
+      // serviced native question renders as richly as a matured ask_operator one (no longer dropped).
+      optionDetails: opts.map((o) => str((o as { description?: unknown })?.description)),
     };
   });
   return normalizeAsk({ questions });
@@ -174,6 +270,41 @@ export function questionSummary(ask: StructuredAsk): string {
     .join("\n");
 }
 
+/** One `• label — detail ⭐` line per option (⭐ on the recommended one). Details go in the BODY, not
+ *  on the buttons — so the operator reads what each choice means without a long button label. */
+function optionLines(q: StructuredQuestion): string {
+  return q.options
+    .map((label, i) => {
+      const detail = q.optionDetails?.[i];
+      const star = q.recommended === i ? " ⭐" : "";
+      return `• ${label}${detail ? ` — ${detail}` : ""}${star}`;
+    })
+    .join("\n");
+}
+
+/** The full matured-decision body rendered above the buttons: the title (or the single question),
+ *  the problem/root-cause context, each option with its detail (⭐ recommended), and a recommendation
+ *  line. Every part is optional and omitted when absent — a bare `singleQuestionAsk` renders as just
+ *  its question + option labels (today's read). A multi-question ask keeps the numbered per-question
+ *  layout, each question listing its own options. Channel-agnostic plain text; the frontend prepends
+ *  the priority badge + #project tag and handles HTML-escaping. */
+export function decisionBody(ask: StructuredAsk): string {
+  const parts: string[] = [];
+  const heading = ask.title || (ask.questions.length === 1 ? ask.questions[0]!.question : "");
+  if (heading) parts.push(heading);
+  if (ask.context) parts.push(ask.context);
+  if (ask.questions.length === 1) {
+    parts.push(optionLines(ask.questions[0]!));
+  } else {
+    ask.questions.forEach((q, i) => {
+      const head = `${i + 1}. ${q.header ? `${q.header}: ` : ""}${q.question}${q.multiSelect ? " (pick any)" : ""}`;
+      parts.push(`${head}\n${optionLines(q)}`);
+    });
+  }
+  if (ask.recommendation) parts.push(`Recommendation: ${ask.recommendation}`);
+  return parts.filter((p) => p.length > 0).join("\n\n");
+}
+
 // --- keyboard spec (channel-agnostic; the frontend maps it to a grammy InlineKeyboard) ---
 
 /** One tappable button: a display `label` and the callback `data` it fires. */
@@ -192,7 +323,9 @@ export function keyboardRows(id: string, ask: StructuredAsk, sel: Selection = em
   ask.questions.forEach((q, qIdx) => {
     q.options.forEach((label, optIdx) => {
       const picked = (sel[qIdx] ?? []).includes(optIdx);
-      const prefix = picked ? "✓ " : "";
+      // ✓ once picked; else ⭐ on the recommended option (single-select only — a multi-select's ✓
+      // toggles would clash with a persistent star). The button label stays short; detail is in the body.
+      const prefix = picked ? "✓ " : !q.multiSelect && q.recommended === optIdx ? "⭐ " : "";
       const tag = multiQ && q.header ? `${q.header}: ` : "";
       rows.push([{ label: `${prefix}${tag}${label}`.slice(0, MAX_LABEL), data: encodeOptionTap(id, qIdx, optIdx) }]);
     });

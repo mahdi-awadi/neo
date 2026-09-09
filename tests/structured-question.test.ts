@@ -14,6 +14,8 @@ import {
   answerText,
   keyboardRows,
   questionSummary,
+  maturedAsk,
+  decisionBody,
   MAX_OPTIONS,
   type StructuredAsk,
 } from "../src/engine/structured-question";
@@ -183,4 +185,112 @@ test("questionSummary: single question is the plain text; multi is a numbered li
   expect(sum).toContain("DB?");
   expect(sum).toContain("2.");
   expect(sum).toContain("Region?");
+});
+
+// --- matured decisions (schema-enforced shape: title + context + option details + recommendation) ---
+
+const MATURED = {
+  title: "Fix the log-ingestion consumer",
+  context: "Vector is deployed but not consuming: the JetStream consumer was never created, so wire logs queue and drop after retention. Root cause is missing consumer wiring, not Vector.",
+  options: [
+    { label: "Redeploy Vector", detail: "quickest; but does not create the missing consumer, so ingestion still fails" },
+    { label: "JetStream + consumer", detail: "create the durable consumer Vector reads from; fixes the root cause with existing infra", recommended: true },
+    { label: "Dedicated Go consumer", detail: "most control; a new service to own and deploy" },
+  ],
+  recommendation: "JetStream + consumer — fixes the root cause with infra we already run, no new service to maintain.",
+};
+
+test("maturedAsk builds a single-question ask carrying title/context/recommendation + per-option details", () => {
+  const ask = maturedAsk(MATURED)!;
+  expect(ask.title).toBe(MATURED.title);
+  expect(ask.context).toBe(MATURED.context);
+  expect(ask.recommendation).toBe(MATURED.recommendation);
+  expect(ask.questions).toHaveLength(1);
+  const q = ask.questions[0]!;
+  expect(q.question).toBe(MATURED.title); // title doubles as the question when none given
+  expect(q.options).toEqual(["Redeploy Vector", "JetStream + consumer", "Dedicated Go consumer"]);
+  expect(q.optionDetails).toEqual([MATURED.options[0]!.detail, MATURED.options[1]!.detail, MATURED.options[2]!.detail]);
+  expect(q.recommended).toBe(1); // index of the option flagged recommended
+  expect(q.multiSelect).toBe(false);
+});
+
+test("maturedAsk keeps a distinct crisp question and honours multiSelect", () => {
+  const ask = maturedAsk({ ...MATURED, question: "How do we fix ingestion?", multiSelect: true })!;
+  expect(ask.questions[0]!.question).toBe("How do we fix ingestion?");
+  expect(ask.questions[0]!.multiSelect).toBe(true);
+});
+
+test("maturedAsk rejects degenerate input (fewer than 2 usable options, or empty title)", () => {
+  expect(maturedAsk({ ...MATURED, options: [MATURED.options[0]!] })).toBeUndefined();
+  expect(maturedAsk({ ...MATURED, title: "  " })).toBeUndefined();
+  expect(maturedAsk({ ...MATURED, options: [{ label: "", detail: "x" }, { label: "", detail: "y" }] })).toBeUndefined();
+});
+
+test("normalizeAsk carries the new fields and re-aligns optionDetails + recommended when options are filtered", () => {
+  const ask = normalizeAsk({
+    title: "T",
+    context: "C",
+    recommendation: "R",
+    questions: [
+      {
+        question: "pick",
+        options: ["", "A", "B"], // the empty label is dropped → details/recommended must re-align
+        optionDetails: ["dropped", "detA", "detB"],
+        recommended: 2, // pointed at "B" before the drop → should shift to index 1 after
+      },
+    ],
+  })!;
+  expect(ask.title).toBe("T");
+  expect(ask.context).toBe("C");
+  expect(ask.recommendation).toBe("R");
+  const q = ask.questions[0]!;
+  expect(q.options).toEqual(["A", "B"]);
+  expect(q.optionDetails).toEqual(["detA", "detB"]);
+  expect(q.recommended).toBe(1);
+});
+
+test("fromAskUserQuestionInput keeps each native option's description as optionDetails", () => {
+  const ask = fromAskUserQuestionInput({
+    questions: [
+      {
+        question: "Which database?",
+        header: "DB",
+        options: [
+          { label: "Postgres", description: "relational, strong consistency" },
+          { label: "Mongo", description: "document, flexible schema" },
+        ],
+      },
+    ],
+  })!;
+  expect(ask.questions[0]!.options).toEqual(["Postgres", "Mongo"]);
+  expect(ask.questions[0]!.optionDetails).toEqual(["relational, strong consistency", "document, flexible schema"]);
+});
+
+test("decisionBody renders title, context, each option with its detail, a starred recommendation, and a recommendation line", () => {
+  const body = decisionBody(maturedAsk(MATURED)!);
+  expect(body.startsWith(MATURED.title)).toBe(true); // title is the first line (badge/#project prepend before it)
+  expect(body).toContain(MATURED.context);
+  expect(body).toContain("Redeploy Vector — quickest");
+  expect(body).toContain("JetStream + consumer — create the durable consumer");
+  expect(body).toContain("⭐"); // the recommended option is marked
+  expect(body).toContain("Recommendation:");
+  expect(body).toContain("no new service to maintain");
+});
+
+test("decisionBody degrades gracefully: no title/context/recommendation → just the question + bare options", () => {
+  const body = decisionBody(singleQuestionAsk("Postgres or Mongo?", ["Postgres", "Mongo"]));
+  expect(body).toContain("Postgres or Mongo?");
+  expect(body).toContain("Postgres");
+  expect(body).toContain("Mongo");
+  expect(body).not.toContain("Recommendation:");
+  expect(body).not.toContain("⭐");
+});
+
+test("keyboardRows stars the recommended option's button (single-select), labels stay short", () => {
+  const ask = maturedAsk(MATURED)!;
+  const flat = keyboardRows("d1", ask).flat();
+  const recBtn = flat.find((b) => b.data === encodeOptionTap("d1", 0, 1))!; // "JetStream + consumer"
+  expect(recBtn.label).toContain("⭐");
+  const otherBtn = flat.find((b) => b.data === encodeOptionTap("d1", 0, 0))!;
+  expect(otherBtn.label).not.toContain("⭐");
 });
