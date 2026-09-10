@@ -347,3 +347,35 @@ regardless of where a session is homed; `surfaceChat` now delegates to it. Built
 → resume-in-DM; group-homed progress → DM; decision/result still → group; both a tapped button and a
 typed reply). Needs a daemon restart (operator-gated). `tsc` clean; suite green (same pre-existing
 env-only config test unrelated).
+
+**Matured operator decisions — the schema makes a shapeless question impossible to raise.** Same
+branch. An `eticket_prod` worker raised a decision the operator called unclear: three separate
+questions ("Scope / Granularity / Ingestion") mashed into one message, flat option chips, no context,
+no recommendation. Root cause, in code: the `ask_operator` schema was `{ question: string, options?:
+string[], multiSelect? }` — `question` is free text, so a worker crams several decisions into one
+call; there is **no `context` field** for the root cause and **no `recommendation` field**; and
+`options: string[]` is a bare label with nothing behind it. Prose guidance in the tool description
+(the earlier self-challenge hardening — root-cause first, the industry-standard fix not a patch,
+self-critique) nudged but never guaranteed the shape. The fix is a **schema-enforced matured
+decision**: one `ask_operator` call now carries a crisp `title`, the `context` (what happened + the
+root cause), 2–5 `options` that each state what they mean + their trade-off, and a `recommendation`
+(which + why); the description adds *raise exactly ONE decision per call — never bundle several*. Zod
+`.min(2)` + required fields reject a shapeless or bundled question at the tool boundary, so the SDK
+hands the worker a validation error and forces a well-formed retry — that is the hard guarantee
+(depth is still only nudged, not proven). It **enriches, does not fork**: `StructuredQuestion` gains
+`optionDetails`/`recommended`, `StructuredAsk` gains `title`/`context`/`recommendation`, but `options`
+stays the index-addressed `string[]`, so every existing path (callbacks, `applyTap`, `answerText`,
+`keyboardRows`, the legacy flat form) is untouched; the new fields ride in the same `spec` JSON column
+and old rows degrade gracefully. `maturedAsk` (`structured-question.ts`, pure) normalizes the tool
+input into the single-question ask; `decisionBody` renders the title, the root cause, each option as
+`• label — detail` (⭐ on the recommended one), and a `Recommendation:` line; `fromAskUserQuestionInput`
+now keeps the SDK-native option `description` as its detail (it used to throw it away), so native
+structured questions render just as richly. AI stays out of the engine — it only validates shape,
+renders, and routes; any *writing* of context/recommendation is the worker's job. The **maturing
+reviewer** (a fresh worker that sharpens a shallow ask before it posts) is designed as the next phase
+on the same choke point (`raiseOperatorDecision`), not built. Design doc:
+`docs/superpowers/specs/2026-09-09-matured-decisions-design.md`. Built TDD (schema rejects the bare/
+bundled/contextless/recommendation-less forms; `maturedAsk` builds + aligns details and the
+recommended index; `decisionBody` renders + degrades). Going live needs a daemon restart
+(operator-gated; the tool schema + description are read at worker launch). `tsc` clean; full suite
+green (750).

@@ -74,10 +74,13 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   dispatch — shipped/fixed/committed) route to a high-priority **Decisions** channel you keep
   unmuted (`decisionsChatId`), while routine progress and interactive-turn `done` replies stay in
   the muted firehose. The `result`/`done` split is by call site (a walked-away background job vs. a
-  reply in a live DM), never by reading prose, so the group stays high-signal. A worker raises a
-  blocking question with the `ask_operator` tool — tappable options, optional `multiSelect`, always an
-  implicit free-form "Other" — and the SDK's native structured-question tool is serviced the same way;
-  it's tracked in a durable queue that survives a restart. **Answering** — a tapped button (or several,
+  reply in a live DM), never by reading prose, so the group stays high-signal. A worker raises ONE
+  **matured decision** with the `ask_operator` tool — a schema enforces the shape, so every decision
+  carries a crisp title, the problem + root cause, 2–5 options that each state their own trade-off, and
+  a recommendation (tappable buttons with the recommended one ⭐, optional `multiSelect`, always an
+  implicit free-form "Other"); a shapeless or bundled question is rejected at the tool boundary. The
+  SDK's native structured-question tool is serviced the same way; it's tracked in a durable queue that
+  survives a restart. **Answering** — a tapped button (or several,
   then Submit), a typed answer, or a plain reply to the decision message — resolves it and **resumes
   the raising project**. An opt-in **secretary** loop (latest model) digests the open queue to the
   Decisions channel on a cadence and escalates stale items; silent when the queue is empty.
