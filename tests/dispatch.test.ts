@@ -635,6 +635,19 @@ test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolati
   expect(seen!.chatId).toBe(-2); // SUB_CHAT — isolated from the operator's routing
 });
 
+test("preamble wires the two-phase design→build flow: domain-modeling (CONTEXT.md/ADR) before superpowers TDD", () => {
+  const brief = briefWithProjectDocs("X");
+  // Design phase: the mattpocock design skills adopted 2026-09-10 (model-invocable only).
+  expect(brief).toContain("domain-modeling");
+  expect(brief).toContain("CONTEXT.md");
+  expect(brief).toContain("codebase-design");
+  // Ordering language: design/model first, THEN build.
+  expect(brief.indexOf("domain-modeling")).toBeLessThan(brief.indexOf("test-driven-development"));
+  // The interactive-only slash-command skills must NOT be told to workers (disable-model-invocation).
+  expect(brief).not.toContain("grill-with-docs");
+  expect(brief).not.toContain("to-tickets");
+});
+
 const MEMORY_CFG = {
   scopes: [] as string[],
   snapshotMaxPct: 0.004,

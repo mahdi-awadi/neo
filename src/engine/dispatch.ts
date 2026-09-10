@@ -177,8 +177,11 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
  *  rest of a project's rule/docs .md files never reach it unless the brief says so. Every
  *  dispatched brief gets this preamble so the worker (1) reads its own rules, (2) uses the
  *  codebase-memory MCP FIRST for a structural map — REQUIRED, not optional — reading source files
- *  directly only for what the map doesn't cover, (3) uses the superpowers skills for the shape
- *  of work at hand, and (4) challenges itself BEFORE raising any operator question — root-cause the
+ *  directly only for what the map doesn't cover, (3) works in two phases — DESIGN (sharpen the
+ *  domain model with domain-modeling/codebase-design into a CONTEXT.md glossary + ADRs, then a
+ *  spec) then BUILD (superpowers TDD → verify → code-review); the mattpocock design skills adopted
+ *  2026-09-10 are model-invocable, the interactive-only ones (grill-with-docs/to-spec/to-tickets)
+ *  are deliberately NOT told to workers — and (4) challenges itself BEFORE raising any operator question — root-cause the
  *  real issue, reach for the industry-standard fix (not a patch), self-critique its options, and
  *  only escalate a decision that is genuinely the operator's (mirrors the `ask_operator` precondition
  *  so a worker can't turn a solvable bug into a shallow patch-menu). (2) is made satisfiable by the
@@ -199,9 +202,18 @@ export function briefWithProjectDocs(task: string): string {
     "project. Then get_architecture for the module layout with that name, then search_code / " +
     "query_graph to find the code that matters. Read source files directly ONLY for what the map " +
     "doesn't cover — never as your default way in.\n\n" +
-    "REQUIRED — use the superpowers skills for the shape of work at hand: brainstorming → " +
-    "writing-plans for design, systematic-debugging to root-cause any bug, and test-driven-development " +
-    "for implementation (write the failing test first).\n\n" +
+    "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
+    "  DESIGN — before writing code for any feature or non-trivial change, sharpen the domain model " +
+    "with the `domain-modeling` and `codebase-design` skills: define the real terms precisely and " +
+    "write/update this project's `CONTEXT.md` glossary, and record each genuine design decision as a " +
+    "short ADR (rejected alternatives included). Then synthesize a concise spec for the change — its " +
+    "acceptance criteria and edge cases — and design it as one clean seam (a lot of behavior behind a " +
+    "small, testable interface). Use `superpowers:brainstorming` → `writing-plans` for the plan itself. " +
+    "For a bug, `superpowers:systematic-debugging` to root-cause first. (Skip the CONTEXT.md/ADR step " +
+    "only for a trivial mechanical edit, and say you did.)\n" +
+    "  BUILD — implement against that spec with `superpowers:test-driven-development` (write the failing " +
+    "test first, per acceptance criterion), then `superpowers:verification-before-completion` and " +
+    "`requesting-code-review` before claiming done.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
     "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +
