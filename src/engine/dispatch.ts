@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
-import { singleQuestionAsk, questionSummary, type StructuredAsk } from "./structured-question";
+import { maturedAsk, questionSummary, MAX_OPTIONS, type StructuredAsk, type MaturedDecisionInput } from "./structured-question";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
@@ -741,40 +741,73 @@ export function neoMcpServers(
   // operator. Attached to ALL operator project workers (regardless of the dispatch flag), gated
   // ONLY on `deps.postDecision` being wired: that closure exists only on the operator surfaces
   // (Telegram/web), never on the customer/ingress path, so customer-tainted work can never raise a
-  // decision. The tool enqueues a tracked DECISION, posts it to the Decisions channel (with tappable
-  // `options` when given), captures the message id, and tells the worker to check-point + stop — the
-  // operator's tap/reply resumes this session as a follow-up (single-shot dispatch + resume-on-reply).
+  // decision. It enqueues ONE tracked, matured DECISION (title + root-cause context + options-with-
+  // trade-offs + recommendation — the Zod schema makes a shapeless question impossible to raise),
+  // posts it to the Decisions channel with tappable option buttons, captures the message id, and tells
+  // the worker to check-point + stop — the operator's tap/reply resumes this session as a follow-up.
   if (deps.postDecision) {
     tools.push(
       tool(
         "ask_operator",
-        "Ask the operator a question that BLOCKS this work — a decision or approval you need before you can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). " +
+        "Raise ONE matured decision the operator must make before this work can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). " +
           "BEFORE you call this, challenge yourself: (1) trace the real root cause in the code, not the symptom; (2) determine the correct industry-standard fix, not the quickest patch; (3) criticize your own options and drop any that are only workarounds. " +
           "Escalate ONLY a decision that is genuinely the operator's: product/UX policy, cost, an irreversible or external action, or a real trade-off between two sound options. If there is one correct standard fix, do it and report — do NOT ask. " +
-          "When you do ask, show your work: the root cause you found, the standard fix you recommend, and why; every option you offer must be defensible on its own — no patch-level options. " +
-          "It goes to the operator's high-priority Decisions channel and is tracked until they answer. Pass `options` (2-5 short labels) when the answer is a choice — the operator gets tappable buttons; omit `options` for a free-form question (they type a reply). Set `multiSelect: true` when the operator may pick SEVERAL of the options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
+          "Raise exactly one decision per call: each call carries a crisp `title`, the `context` (what happened + the root cause), 2–5 `options` that each state what they mean + their trade-off (no patch-level options), and your `recommendation` (which + why). If you have several independent decisions, call ask_operator once per decision — never bundle several into one. " +
+          "It goes to the operator's high-priority Decisions channel and is tracked until they answer. Set `multiSelect: true` when the operator may pick SEVERAL of the options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
         {
-          question: z.string().describe("the blocking question, in plain language"),
+          title: z.string().describe("one-line title of the SINGLE decision"),
+          context: z
+            .string()
+            .describe("1–3 plain lines: what happened + the ROOT CAUSE, so the operator sees WHY a decision is needed"),
           options: z
-            .array(z.string())
-            .optional()
-            .describe("2-5 short answer labels the operator can tap; omit for a free-form typed answer"),
+            .array(
+              z.object({
+                label: z.string().describe("short button label the operator taps"),
+                detail: z
+                  .string()
+                  .describe("what this option concretely means + its trade-off (cost/risk/effort) — never a patch-level option"),
+                recommended: z.boolean().optional().describe("set on the ONE option you recommend"),
+              }),
+            )
+            .min(2)
+            .max(MAX_OPTIONS)
+            .describe("2–5 defensible options, each carrying its own trade-off detail"),
+          recommendation: z
+            .string()
+            .describe("which option you advise + one line WHY (the decision still stays with the operator)"),
           multiSelect: z
             .boolean()
             .optional()
             .describe("set true when the operator may choose SEVERAL of the options (tap each, then Submit); default single choice"),
+          question: z
+            .string()
+            .optional()
+            .describe("optional crisp restatement of the question shown above the buttons; defaults to the title"),
         },
-        async (args: { question: string; options?: string[]; multiSelect?: boolean }) => {
-          // multi-select needs the structured `spec` (the flat `options` path is one-tap single-choice);
-          // a plain single choice keeps the flat form so its one-tap UX is byte-for-byte unchanged.
-          const spec = args.multiSelect && args.options?.length ? singleQuestionAsk(args.question, args.options, true) : undefined;
+        async (args: MaturedDecisionInput) => {
+          // The Zod schema already guarantees the matured shape; `maturedAsk` normalizes it into the
+          // StructuredAsk that rides on the decision row (belt-and-suspenders: undefined on degenerate
+          // input). The crisp title becomes the row's question; context/options+details/recommendation
+          // live on the spec.
+          const spec = maturedAsk(args);
+          if (!spec) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text:
+                    "That decision was not well-formed — it needs a title, a root-cause context, 2+ options (each with a trade-off detail), " +
+                    "and a recommendation. Re-raise it as one fully matured decision.",
+                },
+              ],
+            };
+          }
           const id = await raiseOperatorDecision(deps, {
             project: opts.projectName,
             folder: opts.folder,
             orderId: opts.orderId,
             chatId: replyChat,
-            question: args.question,
-            options: spec ? undefined : args.options,
+            question: spec.title ?? args.title,
             spec,
           });
           return {

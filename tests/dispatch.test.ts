@@ -8,6 +8,7 @@ import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import type { Order } from "../src/types";
+import type { StructuredAsk } from "../src/engine/structured-question";
 import { startOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
 import type { ContextPolicyCfg, ContextSignals } from "../src/engine/context-policy";
 
@@ -844,49 +845,92 @@ test("ask_operator attaches on operator paths ONLY when postDecision is wired (f
   expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: true, folder: "/home/acme" }))).toContain("ask_operator");
 });
 
-test("ask_operator opens a tracked decision, posts it, captures the message id, and tells the worker to stop", async () => {
+// A fully-matured decision the worker raises: one title, the problem/root cause, options that each
+// explain what they mean + their trade-off, and a recommendation. This is the shape the operator
+// asked for (no more bundled, contextless, bare-label "patch menus").
+const MATURED_ARGS = {
+  title: "Fix the log-ingestion consumer",
+  context:
+    "Vector is deployed but not consuming: the JetStream consumer was never created, so logs queue and drop after retention. Root cause is missing consumer wiring, not Vector.",
+  options: [
+    { label: "Redeploy Vector", detail: "quickest; but does not create the missing consumer, so ingestion still fails" },
+    { label: "JetStream + consumer", detail: "create the durable consumer Vector reads from; fixes the root cause with existing infra", recommended: true },
+    { label: "Dedicated Go consumer", detail: "most control; a new service to own and deploy" },
+  ],
+  recommendation: "JetStream + consumer — fixes the root cause with infra we already run, no new service to maintain.",
+};
+
+test("ask_operator matures the question: ONE tracked decision carrying title/context/options+details/recommendation", async () => {
   const { d } = makeDeps();
-  const posted: Array<{ id: string; question: string; options?: string[] }> = [];
+  const posted: Array<{ id: string; question: string; options?: string[]; spec?: StructuredAsk }> = [];
   const deps: DispatchDeps = {
     ...d,
-    postDecision: async (rec, question, options) => {
-      posted.push({ id: rec.id, question, options });
+    postDecision: async (rec, question, options, spec) => {
+      posted.push({ id: rec.id, question, options, spec });
       return { chatId: 222, messageId: 900 };
     },
   };
   const servers = neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme", orderId: "ord-1" });
   const handler = neoToolHandler(servers, "ask_operator")!;
-  const res = await handler({ question: "Which DB — Postgres or Mongo?", options: ["Postgres", "Mongo"] }, {});
+  const res = await handler(MATURED_ARGS, {});
 
-  // One open decision, carrying the project/folder/order + options.
+  // One open decision, carrying the project/folder/order; the crisp title is the row's `question`,
+  // the rich content (context, per-option details, recommendation) rides on the structured spec.
   const open = d.ledger.listOpenDecisions();
   expect(open).toHaveLength(1);
-  expect(open[0]).toMatchObject({ kind: "decision", project: "acme", folder: "/home/acme", orderId: "ord-1", question: "Which DB — Postgres or Mongo?" });
-  expect(open[0]!.options).toEqual(["Postgres", "Mongo"]);
-  // It was posted to the Decisions channel and the message id captured back into the row.
+  expect(open[0]).toMatchObject({ kind: "decision", project: "acme", folder: "/home/acme", orderId: "ord-1" });
+  expect(open[0]!.question).toBe(MATURED_ARGS.title);
+  const spec = open[0]!.spec!;
+  expect(spec.title).toBe(MATURED_ARGS.title);
+  expect(spec.context).toBe(MATURED_ARGS.context);
+  expect(spec.recommendation).toBe(MATURED_ARGS.recommendation);
+  expect(spec.questions[0]!.options).toEqual(["Redeploy Vector", "JetStream + consumer", "Dedicated Go consumer"]);
+  expect(spec.questions[0]!.optionDetails?.[1]).toContain("durable consumer");
+  expect(spec.questions[0]!.recommended).toBe(1);
+  // Posted to the Decisions channel WITH the spec (not the flat options); message id captured back.
   expect(posted).toHaveLength(1);
-  expect(posted[0]!.options).toEqual(["Postgres", "Mongo"]);
+  expect(posted[0]!.spec).toEqual(spec);
   expect(d.ledger.decisionByMessage(222, 900)?.id).toBe(open[0]!.id);
-  // A decision_raised event is recorded.
   expect(d.ledger.listEvents({ kind: "decision_raised" })).toHaveLength(1);
   // The worker is told to checkpoint + stop (single-shot; the answer resumes it as a follow-up).
   expect(res.content[0]?.text?.toLowerCase()).toContain("stop");
 });
 
-test("ask_operator works with no options (free-form question path)", async () => {
+test("ask_operator honours multiSelect and a distinct crisp question", async () => {
   const { d } = makeDeps();
   const deps: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 5, messageId: 6 }) };
   const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme" }), "ask_operator")!;
-  await handler({ question: "What is the prod API key?" }, {});
-  const open = d.ledger.listOpenDecisions();
-  expect(open).toHaveLength(1);
-  expect(open[0]!.options).toBeUndefined();
+  await handler({ ...MATURED_ARGS, question: "How should we fix ingestion?", multiSelect: true }, {});
+  const spec = d.ledger.listOpenDecisions()[0]!.spec!;
+  expect(spec.questions[0]!.question).toBe("How should we fix ingestion?");
+  expect(spec.questions[0]!.multiSelect).toBe(true);
+});
+
+// The HARD guarantee: the schema makes a shapeless question impossible to raise. Invalid inputs are
+// rejected at the tool boundary (Zod .parse), so a worker cannot bundle decisions or drop the
+// context/options/recommendation — it is forced to re-ask in the matured shape.
+test("ask_operator SCHEMA enforces the matured shape (shapeless questions rejected at the boundary)", () => {
+  const { d } = makeDeps();
+  const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
+  const servers = neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" });
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { inputSchema: { parse: (v: unknown) => unknown } }> } };
+  const schema = neo.instance._registeredTools["ask_operator"]!.inputSchema;
+  expect(() => schema.parse(MATURED_ARGS)).not.toThrow(); // a full matured decision validates
+  expect(() => schema.parse({ question: "Which DB — Postgres or Mongo?" })).toThrow(); // old bare question
+  expect(() => schema.parse({ question: "?", options: ["Postgres", "Mongo"] })).toThrow(); // flat string options
+  expect(() => schema.parse({ ...MATURED_ARGS, options: [MATURED_ARGS.options[0]] })).toThrow(); // <2 options
+  const { context: _c, ...noContext } = MATURED_ARGS;
+  expect(() => schema.parse(noContext)).toThrow(); // root cause is required
+  const { recommendation: _r, ...noRec } = MATURED_ARGS;
+  expect(() => schema.parse(noRec)).toThrow(); // recommendation is required
+  const bareOptions = { ...MATURED_ARGS, options: [{ label: "A" }, { label: "B" }] };
+  expect(() => schema.parse(bareOptions)).toThrow(); // each option needs a detail (trade-off)
 });
 
 // The operator's rule (2026-09-03): questions raised via ask_operator were "shallow, patch-shaped,
 // not standard." The tool DESCRIPTION must force the worker to challenge itself first — root-cause,
-// standard fix (not a patch), self-critique — and only escalate a genuine operator decision.
-test("ask_operator description forces self-challenge BEFORE asking (root-cause, standard fix not a patch)", () => {
+// standard fix (not a patch), self-critique — escalate only a genuine operator decision, ONE per call.
+test("ask_operator description forces self-challenge + one-decision-per-call", () => {
   const { d } = makeDeps();
   const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
   const servers = neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" });
@@ -896,6 +940,7 @@ test("ask_operator description forces self-challenge BEFORE asking (root-cause, 
   expect(desc).toContain("industry-standard"); // the correct standard fix...
   expect(desc).toContain("patch"); // ...not the quickest patch
   expect(desc).toContain("do it and report"); // one right fix exists → don't ask
+  expect(desc).toContain("one decision"); // one decision per call — never bundle several
 });
 
 test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {
