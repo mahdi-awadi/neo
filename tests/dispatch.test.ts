@@ -111,6 +111,51 @@ test("dispatch tags its final line: DONE on success, ALERT on failure", async ()
   }
 });
 
+test("every completed brief's result is fed back to the company session, not only the last", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "proj"));
+  const { d } = makeDeps();
+  // A live company/default session with a control that records the follow-ups it receives.
+  const company = d.registry.add({ id: "company", source: "neo", folder: join(root, "company"), task: "", chatId: 1, createdAt: 0 }, 0);
+  d.registry.setDefault(company.id);
+  const companyFollowUps: string[] = [];
+  d.registry.attachControl(company.id, { followUp: (t) => void companyFollowUps.push(t), queued: () => 0, active: () => false, interrupt: async () => {} });
+
+  // A warm session that finishes TWO briefs (two terminal turns) before it ends — the reuse/pipeline
+  // shape. Previously only the final turn reached the company; now each terminal turn does.
+  const done = Promise.resolve<RunResult>({ ok: true, sessionId: "s", summary: "brief two done", costUsd: 0 });
+  const fakeStart = (_o: Order, handlers: RunHandlers) => {
+    queueMicrotask(() => {
+      handlers.onTurnComplete?.({ ok: true, sessionId: "s", summary: "brief one done", costUsd: 0 });
+      handlers.onTurnComplete?.({ ok: true, sessionId: "s", summary: "brief two done", costUsd: 0 });
+    });
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done };
+  };
+  await dispatchToProject("proj", "brief", d, 1, { start: fakeStart as never, now: () => 0, root });
+  await new Promise((r) => setTimeout(r, 20));
+  const results = companyFollowUps.filter((t) => t.startsWith("[dispatch result]"));
+  expect(results.some((t) => t.includes("brief one done"))).toBe(true); // the intermediate brief reported
+  expect(results.some((t) => t.includes("brief two done"))).toBe(true); // the final brief reported
+  expect(results.filter((t) => t.includes("brief two done")).length).toBe(1); // per-turn + end-of-run dedup → no double
+});
+
+test("an aborted/timeout result (no terminal turn) still reaches the company session once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "proj"));
+  const { d } = makeDeps();
+  const company = d.registry.add({ id: "company", source: "neo", folder: join(root, "company"), task: "", chatId: 1, createdAt: 0 }, 0);
+  d.registry.setDefault(company.id);
+  const companyFollowUps: string[] = [];
+  d.registry.attachControl(company.id, { followUp: (t) => void companyFollowUps.push(t), queued: () => 0, active: () => false, interrupt: async () => {} });
+  // done resolves with a synthetic error result and NO onTurnComplete ever fires (the abort/error path).
+  const done = Promise.resolve<RunResult>({ ok: false, sessionId: "", summary: "timed out: hit the ceiling", costUsd: 0 });
+  const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done });
+  await dispatchToProject("proj", "brief", d, 1, { start: fakeStart as never, now: () => 0, root });
+  await new Promise((r) => setTimeout(r, 20));
+  const results = companyFollowUps.filter((t) => t.startsWith("[dispatch result]"));
+  expect(results.filter((t) => t.includes("timed out")).length).toBe(1); // end-of-run block covers the un-turned result
+});
+
 test("a refused dispatch (unknown project) records dispatch_refused with reason not_found", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   const { d } = makeDeps();

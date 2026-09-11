@@ -450,6 +450,21 @@ export async function dispatchToProject(
     // run.done alone would falsely "stall" out minutes after the worker already finished). Close
     // the channel gracefully so done resolves with the worker's own final result; the session
     // stays resumable (idle bookkeeping below is unchanged).
+    // Feed EACH completed brief's result back to the live company (dispatcher) session — not just
+    // the final one at session end. A warm project session runs many briefs over its life: the reuse
+    // path streams follow-ups into ONE background continuation, and previously only the last turn's
+    // result reached the company (line ~633), so every earlier/pipelined brief reported to the
+    // operator's chat ALONE — forcing the operator to forward it back by hand. Reporting per terminal
+    // turn closes that gap; `lastCompanyReport` dedupes so the end-of-run block below only fires for
+    // an abort/interrupt result that never surfaced as a normal turn.
+    let lastCompanyReport: { summary: string; ok: boolean } | undefined;
+    const reportToCompany = (r: { summary: string; ok: boolean }) => {
+      const companySession = deps.registry.getDefault();
+      const companyControl =
+        companySession && companySession.id !== session.id ? deps.registry.getControl(companySession.id) : undefined;
+      companyControl?.followUp(`[dispatch result] ${name}: ${r.summary || (r.ok ? "done" : "failed")}`);
+      lastCompanyReport = { summary: r.summary, ok: r.ok };
+    };
     let runRef: ReturnType<typeof startOrder> | undefined;
     const run = start(
       order,
@@ -520,6 +535,10 @@ export async function dispatchToProject(
             deps.ledger.recordEvent("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
             void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name, "alert");
           }
+          // A terminal turn (the brief finished — not an API-retry that returned above to re-send it)
+          // is a result the dispatcher wants. Report it now so every brief in a reused/pipelined
+          // session reaches the company, not only the final one at session end.
+          if (!result.apiError) reportToCompany(result);
           if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
         },
         onActivity: (label) => {
@@ -627,10 +646,13 @@ export async function dispatchToProject(
       // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
       // The frontend prepends the single priority accent (✅/🔴) — no per-call-site glyph (Feature 2).
       await deps.reply(replyChat, line, name, result.ok ? "result" : "alert");
-      // Feed the result back into the live company session so it can act on it next turn.
-      const company = deps.registry.getDefault();
-      const control = company && company.id !== session.id ? deps.registry.getControl(company.id) : undefined;
-      control?.followUp(`[dispatch result] ${name}: ${result.summary || (result.ok ? "done" : "failed")}`);
+      // End-of-run report to the company: only for a result that never surfaced as a normal terminal
+      // turn — a timeout/abort/interrupt synthesises a result WITHOUT an onTurnComplete, so it wasn't
+      // reported per-turn above. A normal finish was already fed back per-turn; skip it here so the
+      // company never gets the last brief twice.
+      if (!lastCompanyReport || lastCompanyReport.summary !== result.summary || lastCompanyReport.ok !== result.ok) {
+        reportToCompany(result);
+      }
     } catch {
       // observer/bookkeeping errors must not surface into the worker path
     }
