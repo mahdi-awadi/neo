@@ -66,7 +66,9 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
 - **The "company" — an always-on default project** that answers free-text orders when nothing else
   is active, and can **dispatch** project work to governed sub-workers, bounded by a stall/liveness
   monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window). A `sessions`
-  tool gives it live awareness of every project's state.
+  tool gives it live awareness of every project's state. Every dispatched brief steers the worker
+  through a two-phase **design → build** flow: DESIGN — sharpen the domain model into a `CONTEXT.md`
+  glossary + ADRs and a spec (one clean seam) — then BUILD with TDD → verify → code-review.
 - **Priority routing + a decisions queue — nothing blocking is lost.** Every outbound line gets a
   deterministic priority (`decision`/`alert`/`result`/`progress`/`done`, AI-free), rendered with a
   consistent colored accent (decision 🔵, alert 🔴, result ✅, done 🟢; progress is the silent

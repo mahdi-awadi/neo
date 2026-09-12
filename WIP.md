@@ -1,16 +1,20 @@
 # WIP — resume after engine reload (2026-09-10)
 
-**Branch:** `feat/structured-questions-and-styled-messages` (42 commits ahead of `master`, unpushed, working tree clean)
+**Branch:** `feat/mattpocock-domain-design-skills` (43 commits ahead of `master`, unpushed, working tree clean)
 
 ## State: GREEN
 - `bunx tsc --noEmit` — clean
-- `bun test` — 750 pass, 0 fail (one wall-clock timeout test, `dispatch.test.ts:474`, flakes only
-  under full-suite load; passes in isolation and on rerun — not tied to this work).
-- Last relevant commit `1c8ec27` feat(decisions): wire ask_operator to the schema-enforced matured
-  shape — the tool schema + handler now match the matured tests the branch already carried, so the
-  branch compiles and the 4 previously-red dispatch tests pass.
+- `bun test` — 751 pass, 0 fail.
+- Latest commit `b69dc01` feat(dispatch): wire the two-phase design→build flow into the worker
+  preamble — the last piece on top of the structured-questions + matured-decisions work this branch
+  carries.
 
 ## What this branch delivers (built + committed; the in-progress restart activates it)
+- **Two-phase design→build worker flow:** every dispatched brief now steers the worker through DESIGN
+  (sharpen the domain model with the model-invocable `domain-modeling` + `codebase-design` skills into
+  a `CONTEXT.md` glossary + ADRs, then a spec — one clean seam) then BUILD (superpowers TDD → verify →
+  code-review). The interactive-only Matt Pocock skills (grill/to-spec/to-tickets) are NOT told to
+  governed workers, which cannot invoke them. See memory `mattpocock-skills-evaluation` (`b69dc01`).
 - Structured-question Telegram keyboards (tap/submit/other) + governor servicing native AskUserQuestion.
 - Deterministic message-priority model; job RESULTS → Decisions group, progress stays in the DM.
 - `answerDecision` homes to the decision's original DM chat, not the answering group.

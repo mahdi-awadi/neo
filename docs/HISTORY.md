@@ -379,3 +379,27 @@ bundled/contextless/recommendation-less forms; `maturedAsk` builds + aligns deta
 recommended index; `decisionBody` renders + degrades). Going live needs a daemon restart
 (operator-gated; the tool schema + description are read at worker launch). `tsc` clean; full suite
 green (750).
+
+**Two-phase design→build worker flow — dispatched work is designed before it is built.** Same
+branch. The dispatch preamble (`briefWithProjectDocs`) told every worker to "use the superpowers
+skills for the shape of work at hand" — a flat list that let a worker go straight to code. It now
+steers the worker through **two phases**. **DESIGN** first: before writing code for any feature or
+non-trivial change, sharpen the domain model with the model-invocable **`domain-modeling`** and
+**`codebase-design`** skills — define the real terms and write/update the project's `CONTEXT.md`
+glossary, record each genuine design decision as a short ADR (rejected alternatives included), then
+synthesize a concise spec (acceptance criteria + edge cases) and design it as one clean seam (a lot
+of behavior behind a small, testable interface); use `brainstorming` → `writing-plans` for the plan
+and `systematic-debugging` to root-cause a bug first. **BUILD** second: implement against that spec
+with `test-driven-development` (the failing test first, per acceptance criterion), then
+`verification-before-completion` + `requesting-code-review` before claiming done. A trivial mechanical
+edit may skip the CONTEXT.md/ADR step but must say so. The two design skills are the model-invocable
+half of Matt Pocock's skill set, adopted 2026-09-10 and pinned into `~/.claude/skills` on the `user`
+settingSource with a `PINNED.txt` provenance note; the interactive-only ones
+(`grill-with-docs`/`to-spec`/`to-tickets`, all disable-model-invocation) are deliberately NOT named
+to workers — a governed autonomous worker cannot invoke them. Evaluated in a dev-desk trial (memory
+`mattpocock-skills-evaluation`): the design phase's highest-value output was making a "total order"
+tiebreak explicit — exactly the eticket Sindibad nondeterministic-group bug class. Built TDD (a new
+`dispatch.test.ts` assertion: the preamble names `domain-modeling`/`CONTEXT.md`/`codebase-design`
+before `test-driven-development` and omits the disable-model-invocation skills). Going live needs a
+daemon restart (operator-gated; the preamble is read at worker launch). `tsc` clean; full suite green
+(751).
