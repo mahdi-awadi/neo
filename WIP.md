@@ -1,13 +1,25 @@
-# WIP — resume after engine reload (2026-09-10)
+# WIP — resume after engine reload (2026-09-13)
 
-**Branch:** `feat/mattpocock-domain-design-skills` (43 commits ahead of `master`, unpushed, working tree clean)
+**Branch:** `fix/dispatch-stall-background-wait` (off `feat/mattpocock-domain-design-skills`, unpushed,
+working tree clean apart from the unrelated `package.json`/`bun.lock` SDK-pin WIP — leave that alone).
 
 ## State: GREEN
 - `bunx tsc --noEmit` — clean
-- `bun test` — 751 pass, 0 fail.
-- Latest commit `b69dc01` feat(dispatch): wire the two-phase design→build flow into the worker
-  preamble — the last piece on top of the structured-questions + matured-decisions work this branch
-  carries.
+- `bun test` — 752 pass, 0 fail.
+- Latest work: engine-bug investigation for the waselni go-live worker (see below + HISTORY).
+
+## Latest fix — dispatched workers killed on a background wait; "permission stream" hiccups are SDK-side
+- **Permission-stream errors = SDK-side, not ours.** Zero `approval_error` events all-time; waselni is
+  trusted so tools auto-approve with no escalation round-trip; `buildCanUseTool` is already
+  stateless + fail-safe + self-healing. The worker's own read ("a harness hiccup") was right. SDK
+  `0.3.270`; mitigation = fewer/shorter calls per session.
+- **Stall abort of a non-hung worker = ours, by contract.** The liveness monitor only sees streamed
+  SDK events, so a worker parked on a background wait/Monitor/long `sleep`/`gh run watch` yields
+  nothing for >5 min and is killed though not hung. Fix = the dispatch preamble now forbids background
+  waits and requires short FOREGROUND polling (<90 s) + finishing within the single-shot run.
+  Rejected raising `stallMs` / counting in-flight tools as activity (would blind the hung-worker guard).
+- TDD: `dispatch.test.ts` preamble assertion + `approval-resilience.test.ts` 300-repeated-call guard.
+- **Restart pending** (operator-gated): the preamble is read at worker launch, so it is inert until then.
 
 ## What this branch delivers (built + committed; the in-progress restart activates it)
 - **Two-phase design→build worker flow:** every dispatched brief now steers the worker through DESIGN

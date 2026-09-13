@@ -403,3 +403,38 @@ tiebreak explicit — exactly the eticket Sindibad nondeterministic-group bug cl
 before `test-driven-development` and omits the disable-model-invocation skills). Going live needs a
 daemon restart (operator-gated; the preamble is read at worker launch). `tsc` clean; full suite green
 (751).
+
+**Engine bug: dispatched workers killed while waiting on a background wait; "permission stream"
+hiccups are SDK-side, not ours.** Branch `fix/dispatch-stall-background-wait`. A waselni go-live
+worker reported the permission stream "erroring on repeated calls — a harness hiccup, not a CI
+problem," then went idle on a background Monitor and was aborted by the 5-minute stall detector
+(ledger `dispatch_abort` `limit:"stall"`, 2026-09-13 13:05 + 14:19 UTC). Root cause, two layers.
+**(1) The permission-stream errors are SDK-side.** Every tool call — even an auto-approved one — is
+routed through the SDK's `canUseTool` control-request protocol over the child `claude` process's
+stdio; on a long, high-volume session (hundreds of `gh run view`/`sleep` calls) that control stream
+transiently errors. Our governor never threw: **zero `approval_error` events all-time**, and waselni
+is a *trusted* folder, so `autoApprove` returns allow instantly with no escalation round-trip.
+`buildCanUseTool` is already hardened (stateless + try/catch fail-safe + self-heal), so the worker
+recovered — the "harness hiccup" it described. Pinned to SDK `0.3.270`; the mitigation is fewer,
+shorter calls per session (below). **(2) The stall abort of a non-hung worker is ours, by contract.**
+The dispatch liveness monitor bumps `lastActivityAt` only when the SDK generator yields an event
+(`onHeartbeat` fires on every streamed event; also `onMessage`/`onActivity`/`onTurnComplete`, and the
+clock is held through engine-driven API-retry waits), and aborts at `t - lastActivityAt >= stallMs`
+(default 5 min, `dispatch.ts`). A single step that blocks silently — a background wait/Monitor, a
+long `sleep`, `gh run watch`, tailing logs — yields no events for its whole duration, so a worker
+that is merely *waiting* looks identical to a hung one and is killed. The SDK exposes no in-tool-call
+progress signal (`includePartialMessages` streams assistant tokens, not tool execution), so the
+engine cannot observe liveness inside one opaque call. Rejected the engine-timer "fixes" — counting
+an in-flight tool as activity, or raising `stallMs` — because they blind the detector to genuinely
+hung tool calls, trading a precise guard for up-to-ceiling (2 h) hangs. The correct fix is the
+**behavioral contract**: the dispatch preamble (`briefWithProjectDocs`) now forbids background
+waits/Monitor and requires short FOREGROUND polling (status check → brief `sleep` → check again, each
+under 90 s) and finishing within the single-shot run — so tool-call boundaries keep the heartbeat
+fresh while the detector still catches true silence. What counts as "activity" is unchanged (any
+streamed SDK event); what changed is the worker contract that keeps those events flowing. Built TDD
+(a new `dispatch.test.ts` preamble assertion for the no-background-wait / poll-in-foreground /
+single-shot rule; an `approval-resilience.test.ts` guard that 300 repeated trusted calls auto-allow
+with no state leak, pinning that repeated-call robustness is ours-clean). No CONTEXT.md/ADR files (the
+repo has no ADR convention; this is a one-line contract + guard-test edit) — the decision and its
+rejected alternatives are recorded here and in memory. Going live needs a daemon restart
+(operator-gated; the preamble is read at worker launch). `tsc` clean; full suite green (752).

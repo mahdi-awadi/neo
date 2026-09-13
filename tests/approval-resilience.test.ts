@@ -48,6 +48,26 @@ test("an approval-channel failure is surfaced as an approval_error event", async
   expect(events.some((e) => e.kind === "approval_error")).toBe(true);
 });
 
+// A waselni-style go-live runs HUNDREDS of tool calls in one long-lived, trusted session. The worker
+// reported "the permission stream is erroring on repeated calls." Our canUseTool holds NO state
+// across calls and, on a trusted folder, returns allow without any escalation round-trip — so repeated
+// calls can never degrade or wedge on our side. This pins that (the erroring is SDK-side, not ours).
+test("repeated calls on a trusted folder auto-allow cleanly and never degrade (no state leak across calls)", async () => {
+  const escalations: string[] = [];
+  const canUse = buildCanUseTool(
+    handlers({
+      autoApprove: () => true, // waselni is trusted → risky tools auto-approve, no operator round-trip
+      onEscalation: async (r) => { escalations.push(r); return "deny"; },
+    }),
+    "/home/waselni",
+  );
+  for (let i = 0; i < 300; i++) {
+    const v = await canUse("Bash", { command: `git push origin main # attempt ${i}` }); // RISKY_BASH → escalates unless trusted
+    expect(v.behavior).toBe("allow"); // trusted short-circuit holds on every one of 300 calls
+  }
+  expect(escalations).toHaveLength(0); // trusted path never hits the escalation channel at all
+});
+
 test("the approval bridge self-heals — the next call escalates normally once the channel recovers", async () => {
   let healthy = false;
   const canUse = buildCanUseTool(

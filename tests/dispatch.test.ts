@@ -1157,6 +1157,14 @@ test("briefWithProjectDocs preamble requires codebase-memory + superpowers, stat
   expect(low).toContain("root cause"); // trace the real cause, not the symptom
   expect(low).toContain("industry-standard"); // the correct standard fix...
   expect(low).toContain("patch"); // ...not the quickest patch
+  // Liveness contract (2026-09-13 engine-bug fix): the stall detector sees only streamed activity, so
+  // a worker that parks on a background wait/Monitor (or one long silent step) is killed though not
+  // hung. The preamble must forbid background waits and require short foreground polling.
+  expect(low).toContain("background wait"); // never park on a background wait...
+  expect(low).toContain("monitor"); // ...or a Monitor
+  expect(low).toContain("poll"); // poll instead
+  expect(low).toContain("foreground"); // ...in short FOREGROUND steps
+  expect(low).toContain("single-shot"); // finish within this run — not re-invoked later
   expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last
 });
 

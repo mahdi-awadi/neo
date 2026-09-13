@@ -222,6 +222,16 @@ export function briefWithProjectDocs(task: string): string {
     "do it and report it — do not ask. When you must ask (via ask_operator), show your work: the " +
     "root cause you found, the standard fix you recommend, and why; every option you offer must be " +
     "defensible on its own — no patch-level options.\n\n" +
+    "REQUIRED — stay alive; never park on a background wait. Neo watches your STREAMED tool/step " +
+    "activity to tell a working worker from a hung one, and ABORTS a sub-run after ~5 minutes with no " +
+    "such activity. A single step that blocks silently for minutes produces NO activity and is killed " +
+    "even though it is not hung — this includes a background wait or Monitor, a long `sleep`, " +
+    "`gh run watch`, tailing logs, or any \"wait for the CI/build/deploy to finish\" command. So NEVER " +
+    "use a background wait or Monitor: when you must wait on CI, a build, or a deploy, POLL in short " +
+    "FOREGROUND steps under 90 seconds each — check status (e.g. `gh run view`), a brief `sleep`, then " +
+    "check again — so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
+    "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
+    "poll to a terminal state here rather than \"standing by\" for a later event.\n\n" +
     task
   );
 }
