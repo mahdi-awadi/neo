@@ -438,3 +438,68 @@ with no state leak, pinning that repeated-call robustness is ours-clean). No CON
 repo has no ADR convention; this is a one-line contract + guard-test edit) — the decision and its
 rejected alternatives are recorded here and in memory. Going live needs a daemon restart
 (operator-gated; the preamble is read at worker launch). `tsc` clean; full suite green (752).
+
+**Engine bug: the interactive reserve was gating the wrong side — the operator's own turn was
+throttled while background dispatches ran unchecked.** On 2026-09-13 at 16:50 UTC the operator's
+`/open /home/waselni say hi back` was answered `throttled: protecting interactive headroom — try
+again shortly`. Root cause: `handleMessage` — the operator's interactive entry point — called
+`meter.shouldThrottle()` (`pipeline.ts:263`), the same class-blind predicate the loop scheduler
+uses for background work. The meter is a single in-memory pool over a rolling 5 h window
+(`budgetWindowUsd` 20 × `1 - subscriptionInteractiveReservePct` 0.2 = a $16 background allowance),
+and the daemon had been up since 06:37 UTC, so the window held every dispatch charge of the day:
+$0.76 + $11.89 + $15.56 + $4.35 + $9.82 = **$42.39 against $16**. Every one of those dollars was
+background dispatch work; the operator was refused by a guard whose entire purpose is to keep room
+*for* them. The mirror image was also true and is the other half of the bug: `dispatchToProject`
+checked `draining` and the API `cooldown` but **never** the meter, so background dispatches kept
+starting while over budget — the reserve was enforced against exactly the wrong party. Notably the
+API-cooldown gate next door had the invariant right all along and said so in a comment
+(`api-retry.ts:12-14`, `daemon.ts:70-73`: "the operator's own interactive messages are never held —
+that's the headroom"); the budget guard simply contradicted it.
+
+The fix makes **work class** a first-class domain term (`CONTEXT.md`): an order is either an
+*interactive turn* (the operator is waiting) or *background work* (dispatch, loop, scheduler,
+secretary, dream), orthogonal to `source`. `Meter.shouldThrottle` is renamed
+**`shouldThrottleBackground`** so the class is in the name and no call site can gate an operator
+turn without reading obviously wrong; the interactive gate at `pipeline.ts` is deleted outright, the
+matching gate is added to `dispatchToProject` (refusal recorded as `dispatch_refused` /
+`reason: "budget"`), and the interactive retry gate no longer passes `throttled` — the background
+reserve must not cut the operator's own retry short. Rejected: giving interactive turns a *higher*
+engine-side threshold (an interactive turn hitting any engine-local ceiling means the reserve
+failed), and keeping one predicate with a per-call-site flag (that is the shape that produced the
+bug — a flag defaults, a name cannot). The engine now has exactly one authority that may refuse an
+operator turn: Anthropic. When a rate-limit window is actively `rejected` with its real `resetsAt`
+still ahead, the turn is **warned** with the wall-clock reset time and started anyway
+(`apiExhaustionWarning`) rather than refused on a possibly stale snapshot — failing closed on the
+operator is precisely the failure being removed, and the existing retry path already reports a real
+refusal honestly. Background work is what gets held meanwhile. Built TDD (four failing tests first:
+an interactive turn starts at $42-over-$8; its API retry is not suppressed; the rejected-window
+warning names the reset time and still starts; and a background dispatch *is* held at that same
+usage, with a companion test that it still runs under the reserve). Self-review caught one thing the
+first cut got wrong: reading the windows via `usage.snapshot()` would have put a full walk of
+`~/.claude/projects` — every transcript re-read — on the path *every* operator message takes, so
+`UsageMeter` grew a cheap in-memory `rateLimits()` accessor and the interactive gate uses that;
+`snapshot()` stays for `/usage`. A review pass then caught five more: the warning fired only on
+`/open` (most operator messages are plain-text follow-ups that return from branch 1, so it moved to
+the top of `handleMessage`); it was sent at `"alert"` priority, which would repost an identical line
+into the unmuted Decisions channel on every message for the hours a window lasts (now default
+priority, the operator's own chat); it claimed "background work is held meanwhile", which is simply
+untrue (removed); the dispatch gate sat *before* `resolveProject`, so a typo'd project reported a
+budget hold instead of "not found" (reordered); and `budgetHoldMessage` claimed the dispatch would
+"go through after the window rolls off" when nothing queues or re-issues it — it now names the real
+spent-vs-allowance figures, says the work was dropped, and points at `/open`. The same pass found a
+pre-existing bug this change newly exposes: `resolveApiRetryDelayMs` treated any window that was not
+`allowed` as governing, so an `allowed_warning` (merely *approaching* a limit) made a retry wait out
+the full reset — up to 7 days on a `seven_day` window. Harmless while the interactive retry was
+short-circuited by the budget gate; reachable the moment that gate was removed, so it now governs
+only on `rejected` (or a bare future reset), with a test.
+
+**The calibration is the operator's call and is deliberately not guessed.** `dispatchToProject` has
+exactly one caller — the company session's `dispatch` tool — so a hold lands on work the operator
+just asked for conversationally, one hop from their message. At the `20` default the background
+allowance is $16 while real dispatches measured on this box cost $10–35 each, so one dispatch can
+arm the hold for the rest of the window. The gate is what was asked for and is correct; the dollar
+figure is a cost decision, so `docs/CONFIG.md` states the real cost range and leaves the number
+alone. Decision recorded in `docs/adr/0001-interactive-reserve-gates-background-work-only.md` — the
+repo's first ADR, which also notes the unbuilt follow-up (work class following the *originating
+trigger*, so an operator-requested dispatch inherits `interactive`). `tsc` clean; full suite green
+(761). Going live needs a daemon restart (operator-gated).

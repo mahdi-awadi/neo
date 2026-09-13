@@ -7,6 +7,7 @@ import { applyMemoryOp } from "../src/engine/memory";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
+import { createUsageMeter } from "../src/engine/usage";
 import { openTrustStore } from "../src/engine/trust";
 import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter } from "../src/engine/context-policy";
 import type { NeoConfig } from "../src/config";
@@ -232,17 +233,121 @@ test("a free-text order with no active project routes to the default project", a
   expect(h.replies.some((r) => r.toLowerCase().includes("resum"))).toBe(true);
 });
 
-test("throttles a new order when the meter is over the reserve, and does not start it", async () => {
+// The interactive reserve exists to keep headroom FOR the operator against background work, so it
+// must never refuse the operator's own turn. (2026-09-13: `/open /home/waselni say hi back` was
+// answered "throttled: protecting interactive headroom" after background dispatches had spent
+// $42.39 against a $16 background allowance. See docs/adr/0001-*.md.)
+test("starts the operator's interactive turn even when background spend is far over the reserve", async () => {
   const dir = scratch();
-  const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // available $8
-  meter.note({ costUsd: 9 }); // over reserve
+  const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // background allowance $8
+  meter.note({ costUsd: 42 }); // background work blew through it
   const f = fakeStart();
   const h = harness({ start: f.start, meter });
 
-  await handleMessage(`/open ${dir} do it`, 1, h.base);
+  await handleMessage(`/open ${dir} say hi back`, 1, h.base);
 
-  expect(h.replies.some((r) => r.toLowerCase().includes("throttle"))).toBe(true);
-  expect(h.registry.list().length).toBe(0);
+  expect(h.replies.some((r) => r.toLowerCase().includes("throttle"))).toBe(false);
+  expect(h.replies.some((r) => r.toLowerCase().includes("headroom"))).toBe(false);
+  expect(h.registry.list().length).toBe(1); // the turn actually started
+});
+
+test("does not suppress an interactive turn's API retry because background spend is over the reserve", async () => {
+  const dir = scratch();
+  const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 });
+  meter.note({ costUsd: 42 });
+  let handlers!: RunHandlers;
+  const f = fakeStart({ onStart: (hh) => (handlers = hh) });
+  const h = harness({ start: f.start, meter });
+  const base = { ...h.base, sleep: () => Promise.resolve(), now: () => 1000 };
+
+  await handleMessage(`/open ${dir} do it`, 5, base);
+  handlers.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+
+  expect(h.ledger.listEvents({ kind: "api_retry" }).length).toBe(1);
+  expect(h.ledger.listEvents({ kind: "api_giveup" }).length).toBe(0);
+});
+
+test("warns with the real reset time when a rate-limit window is rejecting us, and still starts the turn", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const now = 1_000_000;
+  const resetsAt = Math.floor(now / 1000) + 3600; // one hour out, epoch SECONDS
+  // `snapshot()` walks ~/.claude/projects and re-reads every transcript — far too heavy for a path
+  // every operator message takes. Throwing here pins that the interactive gate reads the cheap
+  // in-memory rate-limit state instead.
+  const base = {
+    ...h.base,
+    now: () => now,
+    usage: {
+      snapshot: () => {
+        throw new Error("snapshot() must not be called on the interactive path");
+      },
+      rateLimits: () => [{ status: "rejected", rateLimitType: "five_hour", resetsAt }],
+      noteRateLimit: () => {},
+    } as never,
+  };
+
+  await handleMessage(`/open ${dir} say hi back`, 1, base);
+
+  const warned = h.replies.find((r) => r.includes("rate-limit"));
+  expect(warned).toBeDefined();
+  expect(warned).toContain(new Date(resetsAt * 1000).toUTCString());
+  expect(h.replies.some((r) => r.toLowerCase().includes("headroom"))).toBe(false);
+  expect(h.registry.list().length).toBe(1); // warned, not refused
+});
+
+test("rateLimits() returns the latest window per type, straight from memory", () => {
+  const meter = createUsageMeter({ projectsDir: join(tmpdir(), "neo-no-such-projects-dir") });
+  expect(meter.rateLimits()).toEqual([]);
+
+  meter.noteRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: 42 });
+  meter.noteRateLimit({ status: "allowed", rateLimitType: "five_hour", resetsAt: 99 }); // latest wins
+
+  expect(meter.rateLimits()).toEqual([{ status: "allowed", rateLimitType: "five_hour", resetsAt: 99 }]);
+});
+
+// A rejected window lasts hours. The warning is advisory context for the turn the operator just
+// sent, so it belongs in their own conversation — routing it "alert" would repost an identical
+// line into the unmuted Decisions group on every message for the whole window.
+test("routes the rate-limit warning to the operator's own chat, not the Decisions channel", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const replies: Array<{ text: string; priority?: string }> = [];
+  const h = harness({ start: f.start });
+  const now = 1_000_000;
+  const base = {
+    ...h.base,
+    now: () => now,
+    reply: (_c: number, t: string, _p?: string, priority?: string) => void replies.push({ text: t, priority }),
+    usage: { rateLimits: () => [{ status: "rejected", rateLimitType: "five_hour", resetsAt: now / 1000 + 3600 }], noteRateLimit: () => {} } as never,
+  };
+
+  await handleMessage(`/open ${dir} say hi back`, 1, base);
+
+  const warned = replies.find((r) => r.text.includes("rate-limit"));
+  expect(warned).toBeDefined();
+  expect(warned!.priority).toBeUndefined(); // default (progress) → the operator's own chat
+});
+
+// Most operator messages are plain text into the live/company session, which returns from the
+// follow-up branch long before the order-parsing path. Warning only on `/open` misses them.
+test("warns about a rejecting rate-limit window on a plain-text follow-up too, and still delivers it", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const def = h.registry.add({ id: "def", source: "neo", folder: "/home/neo/agent", task: "init", chatId: -1, createdAt: 1 }, 1);
+  h.registry.setDefault(def.id);
+  h.registry.setStatus(def.id, "idle");
+  h.registry.setSdkSessionId(def.id, "sdk-def");
+  const now = 1_000_000;
+  const resetsAt = now / 1000 + 3600;
+  const usage = { rateLimits: () => [{ status: "rejected", rateLimitType: "five_hour", resetsAt }], noteRateLimit: () => {} } as never;
+
+  // plain text — never reaches the order-parsing path, it resumes the company session
+  await handleMessage("say hi back", 9, { ...h.base, now: () => now, usage });
+
+  expect(h.replies.some((r) => r.includes("rate-limit"))).toBe(true);
+  expect(f.resumeSeen()).toBe("sdk-def"); // warned, not swallowed — the turn still ran
 });
 
 test("a throttled turn records an api_retry event in the ledger (interactive scope)", async () => {

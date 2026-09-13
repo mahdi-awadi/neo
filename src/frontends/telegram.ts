@@ -486,7 +486,7 @@ export function startTelegram(
       handleLoop(ctx.message.text, chatId, {
         reply: (cid, t) => void bot.api.sendMessage(cid, t),
         store: ledger,
-        shouldStop: () => meter.shouldThrottle(),
+        shouldStop: () => meter.shouldThrottleBackground(),
         cfg,
       })
     )
@@ -670,7 +670,7 @@ export function startTelegram(
         void startLoop(loop, ctx.chat?.id ?? 0, {
           reply: (cid, t) => void bot.api.sendMessage(cid, t),
           store: ledger,
-          shouldStop: () => meter.shouldThrottle(),
+          shouldStop: () => meter.shouldThrottleBackground(),
           cfg,
         });
       return;

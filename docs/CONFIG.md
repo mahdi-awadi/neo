@@ -38,8 +38,8 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | --- | --- | --- |
 | `telegramAllowFrom` | `[]` | Numeric Telegram ids allowed to reach the bot / claim admin. Empty → first-come trust-on-first-use. |
 | `providers` | `{ ownWork: "subscription", customerWork: "gemini" }` | Provider routing (the compliance firewall). `ownWork` may be `"subscription"` (Claude Agent SDK, default) or `"codex"` (OpenAI Codex SDK). |
-| `subscriptionInteractiveReservePct` | `0.2` | Fraction of the subscription pool reserved for interactive use. |
-| `budgetWindowUsd` | `20` | Per-window USD budget for background SDK work. |
+| `subscriptionInteractiveReservePct` | `0.2` | Slice of `budgetWindowUsd` held back for the operator's own turns. It gates **background work only** — dispatches, loop fires and scheduled jobs are held once *total* window spend reaches the rest (the background allowance, `budgetWindowUsd × (1 - pct)`). It is never a ceiling on an interactive turn; those are what it reserves room for (ADR 0001). |
+| `budgetWindowUsd` | `20` | Total USD budget per rolling window. Background work may use `× (1 - subscriptionInteractiveReservePct)` of it. Real dispatches on this box run $10–35 each, so the `20` default holds most dispatches almost immediately — size it to what you actually want background work to spend per window. |
 | `budgetWindowMs` | `18000000` (5h) | Rolling budget window, matching the subscription usage window. |
 | `idleCloseMs` | `86400000` (24h) | Idle-close threshold for normal projects (the company is exempt). |
 | `dispatchTimeoutMs` | `900000` (15m) | Default per-dispatch ceiling when the caller doesn't request one. |

@@ -89,8 +89,10 @@ test("a throttled turn with a known reset waits until the API's real reset, and 
   const slept: number[] = [];
   const now = 1_700_000_000_000;
   const resetsAt = now / 1000 + 600; // API says the window clears in 10 minutes
+  const limits = [{ status: "rejected", resetsAt }];
   const usage = {
-    snapshot: () => ({ rateLimits: [{ status: "rejected", resetsAt }] }),
+    snapshot: () => ({ rateLimits: limits }),
+    rateLimits: () => limits,
     noteRateLimit: () => {},
   };
   const { replies, deps } = pipelineHarness({

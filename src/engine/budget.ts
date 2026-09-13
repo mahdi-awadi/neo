@@ -5,14 +5,32 @@
 // MVP model: a per-window USD budget; background work may spend up to (1 - reservePct)
 // of it, leaving the reserve as your interactive headroom. Cost comes from the SDK's
 // `total_cost_usd` (verified in the Phase 0 spike).
+//
+// The window charges TOTAL spend — interactive turns, dispatches and ingress all book here — and
+// background work is what gets measured against the allowance. So a heavy interactive day also
+// stops background work: correct, because only the reserve would be left and that is yours. The
+// converse never holds; see shouldThrottleBackground and ADR 0001.
+//
+// NOT persisted: the window lives in this process, so a restart zeroes it. Known gap, and loops
+// never call note() either — both mean measured spend under-reports. Worth fixing when the budget
+// becomes load-bearing; today it only gates dispatch + the scheduler.
 
 export interface Meter {
-  /** True when background work should pause to protect interactive headroom. */
-  shouldThrottle(now?: number): boolean;
+  /** True when BACKGROUND work (dispatches, loop fires, scheduled jobs) must pause because the
+   *  window is spent down to the interactive reserve.
+   *
+   *  There is deliberately no interactive counterpart. The reserve is a ceiling ON background work,
+   *  held FOR the operator's own turns — gating an interactive turn with it is the exact failure it
+   *  exists to prevent (see docs/adr/0001-interactive-reserve-gates-background-work-only.md). The
+   *  name carries the work class so no call site can gate the operator by accident. */
+  shouldThrottleBackground(now?: number): boolean;
   /** Record usage observed from a finished/streaming run. */
   note(usage: { costUsd?: number; turns?: number }, now?: number): void;
   /** USD spent within the current window (for `/status`). */
   spent(now?: number): number;
+  /** The background allowance: `windowBudgetUsd × (1 - reservePct)`. The rest of the window is the
+   *  operator's reserve. Exposed so a hold can report the real numbers instead of an opaque refusal. */
+  allowance(): number;
   /** USD of non-reserved budget still available within the window (for `/status`). */
   remaining(now?: number): number;
 }
@@ -41,10 +59,23 @@ export function createMeter(opts: {
 
   return {
     spent,
+    allowance: () => available,
     remaining: (now = Date.now()) => Math.max(0, available - spent(now)),
-    shouldThrottle: (now = Date.now()) => spent(now) >= available,
+    shouldThrottleBackground: (now = Date.now()) => spent(now) >= available,
     note: (usage, now = Date.now()) => {
       charges.push({ at: now, usd: usage.costUsd ?? 0 });
     },
   };
+}
+
+/** What a held background dispatch reports back. Names the real numbers so a hold diagnoses itself
+ *  instead of looking like the engine being down, and says plainly that the work was DROPPED — the
+ *  engine queues nothing and will not re-issue it. */
+export function budgetHoldMessage(spentUsd: number, allowanceUsd: number): string {
+  return (
+    `⏸ Background work is on hold — $${spentUsd.toFixed(2)} of the $${allowanceUsd.toFixed(2)} background ` +
+    `allowance is spent this window, and the rest is reserved for your own turns. This dispatch was ` +
+    `NOT queued; re-send it after the window rolls off, or open the project yourself with /open — ` +
+    `your own turns are never held. Raise \`budgetWindowUsd\` if this fires too often.`
+  );
 }

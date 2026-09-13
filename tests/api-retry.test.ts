@@ -5,6 +5,7 @@ import { test, expect } from "bun:test";
 import {
   API_RETRY_DELAYS_MS,
   MAX_API_RETRIES,
+  apiExhaustionWarning,
   apiFailureNotice,
   apiHoldMessage,
   apiRetryDelayMs,
@@ -214,4 +215,35 @@ test("only server-side throttles arm the gate — a billing error must not freez
 
 test("the hold message tells the operator how long the engine is pausing", () => {
   expect(apiHoldMessage(45_000)).toContain("45s");
+});
+
+// `allowed_warning` means "approaching the limit", NOT rejected (usage.ts RateLimitInfo, rendered
+// as "near limit" by /usage). Treating it as governing makes a retry wait out the whole window —
+// up to 7 days for a seven_day window — for a transient error the API never actually refused.
+test("a window that is only WARNING (not rejected) does not govern the retry wait", () => {
+  const now = 1_700_000_000_000;
+  const out = resolveApiRetryDelayMs({
+    attempt: 1,
+    rateLimits: [{ status: "allowed_warning", rateLimitType: "seven_day", resetsAt: now / 1000 + 5 * 86400 }],
+    now,
+    rand: () => 0,
+  });
+  expect(out.source).toBe("ladder");
+  expect(out.delayMs).toBeLessThan(60_000); // the 30s ladder step, not five days
+});
+
+test("apiExhaustionWarning names the soonest rejecting window and stays quiet otherwise", () => {
+  const now = 1_700_000_000_000;
+  expect(apiExhaustionWarning(undefined, now)).toBeUndefined();
+  expect(apiExhaustionWarning([], now)).toBeUndefined();
+  // only warning, or already reset → nothing to say
+  expect(apiExhaustionWarning([{ status: "allowed_warning", resetsAt: now / 1000 + 600 }], now)).toBeUndefined();
+  expect(apiExhaustionWarning([{ status: "rejected", resetsAt: now / 1000 - 600 }], now)).toBeUndefined();
+
+  const soon = now / 1000 + 600;
+  const msg = apiExhaustionWarning(
+    [{ status: "rejected", rateLimitType: "seven_day", resetsAt: now / 1000 + 86400 }, { status: "rejected", rateLimitType: "five_hour", resetsAt: soon }],
+    now,
+  );
+  expect(msg).toContain(new Date(soon * 1000).toUTCString());
 });

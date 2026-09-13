@@ -65,7 +65,7 @@ export interface LoopDeps {
   run?: typeof runOrder;
   /** Injectable goal (tests); defaults to the loop's Goal. */
   check?: GoalCheck;
-  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottle). */
+  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottleBackground). */
   shouldStop?: () => boolean;
   /** Loop store (def CRUD + state) for /loop <name> on|off, custom-loop run, and schedule status. */
   store?: LoopStore;
@@ -540,7 +540,7 @@ export interface ScheduledLoopDeps {
   run?: typeof runOrder;
   /** Injectable goal (tests); defaults to the loop's Goal. */
   check?: GoalCheck;
-  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottle). */
+  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottleBackground). */
   shouldStop?: () => boolean;
   /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
    *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */

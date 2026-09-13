@@ -229,7 +229,11 @@ routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CON
 - **Customer-direct work → Gemini.** `provider-router.ts` refuses, in code, to route
   `source: "customer"` onto the subscription. Neo never offers a customer a Claude login.
 - **Budget guard.** Background SDK work shares your subscription pool, so the meter reserves
-  interactive headroom (`subscriptionInteractiveReservePct`) and throttles background work.
+  interactive headroom (`subscriptionInteractiveReservePct`) and throttles background work — and
+  only background work. `meter.shouldThrottleBackground()` gates dispatches, loop fires and the
+  scheduler; the operator's own interactive turns are never gated by it, because they are what the
+  reserve is held for (ADR 0001). When Anthropic itself is rejecting a window, an interactive turn
+  is warned with the real reset time and started anyway, never refused by the engine.
 - **Approval gate.** The governor is default-escalate: unknown/foreign MCP tools, `WebFetch`, and
   out-of-folder writes ask the operator on the Claude path (autonomous paths auto-deny). File writes
   are path-fenced to the session's project folder. The Codex path uses Codex sandbox/approval policy;

@@ -68,9 +68,12 @@ export function resolveApiRetryDelayMs(opts: {
 }): { delayMs: number; source: "reset" | "ladder"; resetsAt?: number } {
   const rand = opts.rand ?? Math.random;
   const jitterFrac = opts.jitterFrac ?? API_RETRY_JITTER_FRAC_DEFAULT;
-  // A window is "governing" if it rejected us (or, lacking a status, simply carries a future reset).
+  // A window is "governing" only if it actually REJECTED us. `allowed_warning` means we are merely
+  // approaching that window's limit — waiting out its full reset (up to 7 days for `seven_day`) for
+  // a transient error the API never refused parks the session for days. Lacking a status at all we
+  // still treat a future reset as governing: the SDK only reports a window when it is biting.
   const future = (opts.rateLimits ?? []).filter(
-    (r) => typeof r.resetsAt === "number" && r.resetsAt * 1000 > opts.now && r.status !== "allowed",
+    (r) => typeof r.resetsAt === "number" && r.resetsAt * 1000 > opts.now && (r.status === undefined || r.status === "rejected"),
   );
   if (future.length > 0) {
     const soonest = future.reduce((a, b) => (a.resetsAt! <= b.resetsAt! ? a : b));
@@ -154,6 +157,24 @@ export function apiFailureNotice(project: string | undefined, kind: ApiErrorKind
         : "without retrying"
       : `after ${attempts} ${attempts === 1 ? "retry" : "retries"}`;
   return `✗ ${who}${why} ${ran} — the work is NOT done. Re-run it when you're ready.`;
+}
+
+/** The operator-facing warning when Anthropic is actively REJECTING a window (not merely warning),
+ *  with its real reset still ahead of us. Advisory only: the engine never refuses the operator's
+ *  own turn — only Anthropic can, and when it does the retry path above reports it honestly. This
+ *  exists so the operator learns the true reason and reset time up front instead of a misleading
+ *  engine-side "throttled" line. Returns undefined when nothing is rejecting us. */
+export function apiExhaustionWarning(rateLimits: RateLimitInfo[] | undefined, now: number): string | undefined {
+  const rejected = (rateLimits ?? []).filter(
+    (r) => r.status === "rejected" && typeof r.resetsAt === "number" && r.resetsAt * 1000 > now,
+  );
+  if (rejected.length === 0) return undefined;
+  const soonest = rejected.reduce((a, b) => (a.resetsAt! <= b.resetsAt! ? a : b));
+  const at = soonest.resetsAt! * 1000;
+  return (
+    `⚠ Anthropic is rate-limiting the subscription until ${new Date(at).toUTCString()} ` +
+    `(in ${humanDelay(at - now)}) — starting your turn anyway; it may fail until then.`
+  );
 }
 
 /** What a held dispatch/loop fire reports back. */

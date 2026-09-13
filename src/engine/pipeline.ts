@@ -33,6 +33,7 @@ import { canResumeWith } from "./sdk-choice";
 import { describeSessionStatus } from "./session-status";
 import type { Priority } from "./priority";
 import {
+  apiExhaustionWarning,
   apiFailureNotice,
   apiRetryFollowUp,
   apiRetryNotice,
@@ -190,6 +191,15 @@ export async function handleMessage(
     },
   };
 
+  // Anthropic is actively REJECTING a window: say so, with its real reset, then carry on. This sits
+  // ahead of every branch below because most operator messages are plain-text follow-ups that
+  // return from branch 1 — warning only on `/open` would miss them. Advisory, never a refusal: the
+  // engine does not gate the operator's own turn, it just stops them guessing why a turn failed
+  // (ADR 0001). Default priority keeps it in their own chat — a rejected window lasts hours, and an
+  // "alert" would repost this line into the unmuted Decisions channel on every message.
+  const exhausted = apiExhaustionWarning(deps.usage?.rateLimits(), now());
+  if (exhausted) await deps.reply(chatId, exhausted);
+
   // 1. Plain-text follow-up. The DEFAULT target is the always-on company (source:"neo"), which
   //    decides what to do with the order. A project is addressed EXPLICITLY and ONE-SHOT: a chat's
   //    focus (mode "once") reverts to the company after this one message, so a stray next message
@@ -259,11 +269,11 @@ export async function handleMessage(
     return null;
   }
 
-  // 4. Budget guard — never drain the interactive headroom you use yourself.
-  if (meter.shouldThrottle(now())) {
-    await deps.reply(chatId, "throttled: protecting interactive headroom — try again shortly");
-    return null;
-  }
+  // 4. NO budget gate here — this is the operator's own interactive turn. The interactive reserve
+  //    is a ceiling on BACKGROUND work (dispatch + scheduler read it), held FOR this turn; applying
+  //    it here refused the very thing it protects (ADR 0001). The rate-limit warning that replaced
+  //    it lives at the TOP of this function, because most operator messages are plain text and
+  //    return from the follow-up branch long before reaching here.
 
   // 5. Resume a prior session for this folder/chat, if one was recorded.
   const priorResume = ledger.lastSessionFor(parsed.folder, parsed.chatId, deps.cfg.providers?.ownWork);
@@ -392,7 +402,9 @@ function startSession(
         const ladder = deps.cfg.apiRetryLadderMs;
         const maxRetries = ladder.length;
         const attempt = apiRetries + 1;
-        if (!shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {
+        // No `throttled` here: this is the operator's own turn being retried, and the background
+        // reserve must not cut it short (ADR 0001). Only drain/interrupt/attempt-cap stop it.
+        if (!shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining() })) {
           ledger.recordEvent("api_giveup", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempts: apiRetries } });
           void deps.reply(chatId, apiFailureNotice(project, kind, apiRetries), project, "alert");
           return;
@@ -400,7 +412,7 @@ function startSession(
         apiRetries = attempt;
         const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
           attempt,
-          rateLimits: deps.usage?.snapshot(now()).rateLimits,
+          rateLimits: deps.usage?.rateLimits(),
           now: now(),
           rand: deps.rand,
           ladder,

@@ -14,7 +14,7 @@ import { maturedAsk, questionSummary, MAX_OPTIONS, type StructuredAsk, type Matu
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
-import type { Meter } from "./budget";
+import { budgetHoldMessage, type Meter } from "./budget";
 import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
@@ -298,6 +298,14 @@ export async function dispatchToProject(
     deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "not_found" } });
     return `No project or desk named "${project}" was found — check the name.`;
   }
+  // A dispatch is BACKGROUND work, so it is what the interactive reserve caps. Holding it here is
+  // how the operator's own turns keep their headroom — the gate belongs on this side, never on the
+  // interactive path (ADR 0001). AFTER resolveProject on purpose: a typo'd project name must still
+  // report "not found" while over budget, not a hold that hides the real error.
+  if (deps.meter.shouldThrottleBackground(now())) {
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "budget" } });
+    return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
+  }
 
   // Build + record the order with its BASE task (project-docs preamble only — no memory snapshot
   // yet). This happens BEFORE the busy-guard check below (existing && wasRunning can still refuse
@@ -501,11 +509,11 @@ export async function dispatchToProject(
           if (kind) {
             deps.cooldown?.note(kind, now()); // sibling dispatches/loops back off too
             const attempt = apiRetries + 1;
-            if (shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottle() })) {
+            if (shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottleBackground() })) {
               apiRetries = attempt;
               const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
                 attempt,
-                rateLimits: deps.usage?.snapshot(now()).rateLimits,
+                rateLimits: deps.usage?.rateLimits(),
                 now: now(),
                 rand: opts.rand,
                 ladder: retryLadder,

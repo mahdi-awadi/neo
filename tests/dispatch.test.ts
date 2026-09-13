@@ -119,6 +119,46 @@ test("a refused dispatch (unknown project) records dispatch_refused with reason 
   expect(ev.data).toMatchObject({ project: "nope", reason: "not_found" });
 });
 
+// The other half of the interactive reserve: background work is exactly what the reserve caps.
+// Before this, dispatch never consulted the meter at all, so background dispatches kept starting
+// while over budget — and the operator got throttled instead. See docs/adr/0001-*.md.
+test("a background dispatch IS held when spend is over the interactive reserve", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  d.meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // background allowance $8
+  d.meter.note({ costUsd: 42 });
+  let started = false;
+  const fakeStart = () => {
+    started = true;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+
+  const out = await dispatchToProject("eticket-v3", "task", d, 1, { start: fakeStart as never, now: () => 0, root });
+
+  expect(started).toBe(false);
+  expect(out.toLowerCase()).toContain("hold");
+  const ev = d.ledger.listEvents({ kind: "dispatch_refused" })[0];
+  expect(ev.data).toMatchObject({ project: "eticket-v3", reason: "budget" });
+});
+
+test("a background dispatch still runs while spend is under the interactive reserve", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  d.meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 });
+  d.meter.note({ costUsd: 1 });
+  let started = false;
+  const fakeStart = () => {
+    started = true;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+
+  await dispatchToProject("eticket-v3", "task", d, 1, { start: fakeStart as never, now: () => 0, root });
+
+  expect(started).toBe(true);
+});
+
 test("a queued-behind-busy dispatch records dispatch_queued (a turn is in flight)", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));

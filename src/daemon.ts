@@ -181,7 +181,7 @@ async function main(): Promise<void> {
           // scheduler.ts's folderBusy for the full reasoning.
           isFolderBusy: (folder) => folderBusy(registry, folder, cfg.companyFolder),
           // Skip this tick when the budget meter OR a fresh API throttle says stop.
-          throttled: () => meter.shouldThrottle() || cooldown.activeAt(Date.now()),
+          throttled: () => meter.shouldThrottleBackground() || cooldown.activeAt(Date.now()),
           now: Date.now(),
           // Return the promise (NOT `void ...`) so tickScheduler can catch a rejecting loop run;
           // discarding it here is exactly what let a crashing loop take down the daemon (2026-07-24).
@@ -196,7 +196,7 @@ async function main(): Promise<void> {
               return startScheduledLoop(resolveSecretaryLoop(def, cfg, ledger), {
                 chatId: cfg.decisionsChatId ?? admin.adminId() ?? -1, // digest → the Decisions channel
                 reply: loopReply,
-                shouldStop: () => meter.shouldThrottle(),
+                shouldStop: () => meter.shouldThrottleBackground(),
                 cfg,
                 store: ledger,
               });
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
             return startScheduledLoop(def, {
               chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
               reply: loopReply,
-              shouldStop: () => meter.shouldThrottle(),
+              shouldStop: () => meter.shouldThrottleBackground(),
               cfg,
               store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
             });
