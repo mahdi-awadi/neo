@@ -14,7 +14,7 @@ import { maturedAsk, questionSummary, MAX_OPTIONS, type StructuredAsk, type Matu
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
-import { budgetHoldMessage, type Meter } from "./budget";
+import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type WorkClass } from "./budget";
 import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
@@ -265,9 +265,15 @@ export async function dispatchToProject(
     /** Opt-in team mode for SDKs that support `agents`: run this brief with a lead-orchestrated
      *  subagent team. Codex falls back to the normal single-worker brief. */
     team?: "frontend-backend";
+    /** What TRIGGERED this dispatch — the operator's own turn (`interactive`) or the scheduler
+     *  (`background`). The `dispatch` tool passes the class of the worker that called it, so a
+     *  dispatch the company makes while servicing an operator message inherits `interactive` and is
+     *  never held by the interactive reserve. Omitted ⇒ DEFAULT_WORK_CLASS (background). */
+    workClass?: WorkClass;
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
+  const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
   // Worker-profile view (model/effort/skills/env by path) — absent deps.workers/workerEnv means
   // every profileDeps() call below is a no-op (empty profile ?? {}), preserving today's behavior.
   const workerCfg: Pick<NeoConfig, "workers" | "workerEnv"> = {
@@ -285,25 +291,26 @@ export async function dispatchToProject(
       ? frontendBackend
       : undefined;
   if (deps.lifecycle?.draining()) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "draining" } });
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "draining" } });
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
   }
   // The API is throttling us — starting another worker now just earns another 429.
   if (deps.cooldown?.activeAt(now())) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "cooldown" } });
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "cooldown" } });
     return apiHoldMessage(deps.cooldown.remainingMs(now()));
   }
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "not_found" } });
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "not_found" } });
     return `No project or desk named "${project}" was found — check the name.`;
   }
-  // A dispatch is BACKGROUND work, so it is what the interactive reserve caps. Holding it here is
-  // how the operator's own turns keep their headroom — the gate belongs on this side, never on the
-  // interactive path (ADR 0001). AFTER resolveProject on purpose: a typo'd project name must still
-  // report "not found" while over budget, not a hold that hides the real error.
-  if (deps.meter.shouldThrottleBackground(now())) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "budget" } });
+  // The interactive reserve caps BACKGROUND work only, and a dispatch's class follows the trigger
+  // that originated it, not the fact that it is a dispatch: scheduler-fired work is held here, while
+  // a dispatch the operator asked for conversationally is their own turn continuing and runs (ADR
+  // 0001 + its follow-up). AFTER resolveProject on purpose: a typo'd project name must still report
+  // "not found" while over budget, not a hold that hides the real error.
+  if (heldByReserve(workClass, deps.meter, now())) {
+    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "budget" } });
     return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
   }
 
@@ -350,7 +357,7 @@ export async function dispatchToProject(
       control.followUp(order.task);
       deps.registry.touch(existing.id, now());
       if (turnActive) {
-        deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name } });
+        deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name, workClass } });
         await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
         return (
           `${name} is busy — I queued this brief behind its current turn (${status}). It runs when the ` +
@@ -358,13 +365,13 @@ export async function dispatchToProject(
         );
       }
       // Alive but IDLE between turns: the follow-up is pulled and run immediately.
-      deps.ledger.recordEvent("dispatch_delivered", { orderId: order.id, folder, data: { project: name, reuse: "idle" } });
+      deps.ledger.recordEvent("dispatch_delivered", { orderId: order.id, folder, data: { project: name, workClass, reuse: "idle" } });
       await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
       return (
         `dispatched to ${name} — it was idle, so this runs now; its output streams to the operator as ${name}.`
       );
     }
-    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, reason: "stale_running_no_control" } });
+    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control" } });
     return (
       `${name} appears busy — ${status} — but I have no live handle to queue behind (it may be mid-reload). ` +
       `I did NOT start a second run; retry shortly and it will deliver once the session settles.`
@@ -458,7 +465,7 @@ export async function dispatchToProject(
     }
 
     const startedAt = now();
-    deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, resume: !!gatedResume, ceilingMs, stallMs } });
+    deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, ceilingMs, stallMs } });
     let lastActivityAt = startedAt;
     let apiRetries = 0;
     let retryingUntil = 0; // while set in the future, the sub-run is waiting out an API throttle
@@ -509,7 +516,9 @@ export async function dispatchToProject(
           if (kind) {
             deps.cooldown?.note(kind, now()); // sibling dispatches/loops back off too
             const attempt = apiRetries + 1;
-            if (shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottleBackground() })) {
+            // Same rule as the gate above: the reserve may cut a BACKGROUND sub-run's retries
+            // short, never an operator-originated one — that retry is their own turn still trying.
+            if (shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: heldByReserve(workClass, deps.meter, now()) })) {
               apiRetries = attempt;
               const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
                 attempt,
@@ -557,8 +566,10 @@ export async function dispatchToProject(
         // wired `postDecision` — `ask_operator` (the ONE way it raises a blocking question). Without
         // this the sub-worker (the most common path — the operator dispatches project work) had no
         // way to ask the operator anything. `dispatch:false` (no recursive dispatch); memory tools
-        // stay gated by memoryGate (off unless the folder is in scope).
-        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, folder, projectName: name, orderId: order.id }),
+        // stay gated by memoryGate (off unless the folder is in scope). The sub-worker inherits THIS
+        // dispatch's work class, so a sub-dispatch would follow the same originating trigger (inert
+        // while recursive dispatch stays off — the invariant holds by construction, not by memory).
+        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, orderId: order.id }),
         ...(teamAgents ? { agents: teamAgents } : {}),
       }),
     );
@@ -605,7 +616,7 @@ export async function dispatchToProject(
         }
         timedOut = true;
         await run.interrupt();
-        deps.ledger.recordEvent("dispatch_abort", { orderId: order.id, folder, data: { project: name, limit } });
+        deps.ledger.recordEvent("dispatch_abort", { orderId: order.id, folder, data: { project: name, workClass, limit } });
         const detail =
           limit === "stall"
             ? `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`
@@ -627,7 +638,8 @@ export async function dispatchToProject(
         orderId: order.id,
         sessionId: result.sessionId || undefined,
         folder,
-        data: { project: name, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
+        // workClass + costUsd together are what lets the meter report interactive vs background spend.
+        data: { project: name, workClass, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
       });
       if (timedOut || !result.ok) {
         // A dead run must not linger: an "error" session is invisible to findByFolder (never
@@ -737,6 +749,12 @@ export function neoMcpServers(
   replyChat: number,
   opts: {
     dispatch: boolean;
+    /** What TRIGGERED the worker these tools are built for — an operator turn (`interactive`) or
+     *  the scheduler (`background`). Decided ONCE here, at launch, and captured in the `dispatch`
+     *  tool's closure, so every dispatch this worker makes (and every sub-worker it spawns)
+     *  inherits it. Omitted ⇒ DEFAULT_WORK_CLASS (background) — see budget.ts for why that default
+     *  is the safe one. */
+    workClass?: WorkClass;
     folder: string;
     /** The project name + raising order id, recorded on any decision this worker raises (so the
      *  digest/queue can show which project waits, and the answer can resume the right session). */
@@ -887,6 +905,10 @@ export function neoMcpServers(
             root: deps.workRoot,
             timeoutMs: args.timeoutMinutes ? Math.round(args.timeoutMinutes * 60_000) : undefined,
             team: args.team,
+            // The dispatch inherits the class of the worker calling the tool: the company session
+            // servicing an operator message dispatches as `interactive`, a scheduler-fired one as
+            // `background`. This is the whole of the "class follows the originating trigger" rule.
+            workClass: opts.workClass ?? DEFAULT_WORK_CLASS,
           });
           return { content: [{ type: "text" as const, text: out }] };
         },

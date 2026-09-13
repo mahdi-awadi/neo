@@ -122,7 +122,7 @@ test("a refused dispatch (unknown project) records dispatch_refused with reason 
 // The other half of the interactive reserve: background work is exactly what the reserve caps.
 // Before this, dispatch never consulted the meter at all, so background dispatches kept starting
 // while over budget — and the operator got throttled instead. See docs/adr/0001-*.md.
-test("a background dispatch IS held when spend is over the interactive reserve", async () => {
+test("a loop-originated (background) dispatch IS held when spend is over the interactive reserve", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
   const { d } = makeDeps();
@@ -134,12 +134,114 @@ test("a background dispatch IS held when spend is over the interactive reserve",
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
 
-  const out = await dispatchToProject("eticket-v3", "task", d, 1, { start: fakeStart as never, now: () => 0, root });
+  const out = await dispatchToProject("eticket-v3", "task", d, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+    workClass: "background",
+  });
 
   expect(started).toBe(false);
   expect(out.toLowerCase()).toContain("hold");
   const ev = d.ledger.listEvents({ kind: "dispatch_refused" })[0];
-  expect(ev.data).toMatchObject({ project: "eticket-v3", reason: "budget" });
+  expect(ev.data).toMatchObject({ project: "eticket-v3", reason: "budget", workClass: "background" });
+});
+
+// The ADR 0001 follow-up: work class follows the ORIGINATING TRIGGER, not the mechanism. The
+// company's `dispatch` tool is one hop from the operator's own message, so a dispatch it makes
+// while servicing that message is the operator's turn continuing — the reserve is held FOR it and
+// must never hold it. Same meter, same usage, opposite answer from the loop-originated case above.
+test("an operator-originated (interactive) dispatch starts at the SAME usage that holds a background one", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  d.meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // background allowance $8
+  d.meter.note({ costUsd: 42 }); // …spent 5× over
+  let started = false;
+  const fakeStart = () => {
+    started = true;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+
+  const out = await dispatchToProject("eticket-v3", "task", d, 1, {
+    start: fakeStart as never,
+    now: () => 0,
+    root,
+    workClass: "interactive",
+  });
+
+  expect(started).toBe(true);
+  expect(out).toContain("dispatched to");
+  expect(d.ledger.listEvents({ kind: "dispatch_refused" })).toHaveLength(0);
+});
+
+test("a dispatch that states no class is treated as background (fail-safe default)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  d.meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 });
+  d.meter.note({ costUsd: 42 });
+
+  const out = await dispatchToProject("eticket-v3", "task", d, 1, { now: () => 0, root });
+
+  expect(out.toLowerCase()).toContain("hold");
+});
+
+test("dispatch events carry the work class, so spend can later be split interactive vs background", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const done = Promise.resolve<RunResult>({ ok: true, sessionId: "s9", summary: "done", costUsd: 0.42 });
+  const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done });
+
+  await dispatchToProject("eticket-v3", "task", d, 1, {
+    start: fakeStart as never,
+    now: () => 1000,
+    root,
+    workClass: "interactive",
+  });
+  await new Promise((r) => setTimeout(r, 10)); // let the background continuation settle
+
+  expect(d.ledger.listEvents({ kind: "dispatch_start" })[0].data).toMatchObject({ workClass: "interactive" });
+  expect(d.ledger.listEvents({ kind: "dispatch_end" })[0].data).toMatchObject({ workClass: "interactive", costUsd: 0.42 });
+});
+
+// Inheritance: the class is decided ONCE, when the worker that owns the `dispatch` tool is
+// launched, and every dispatch that worker makes inherits it. Both cases use an over-budget meter
+// and a folder whose session is mid-turn, so the brief queues instead of starting a real worker —
+// the ONLY difference is the class the session was launched with.
+test("the dispatch tool inherits the work class its session was launched with", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+
+  const busyDeps = (): DispatchDeps => {
+    const { d } = makeDeps();
+    d.workRoot = root;
+    d.meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 });
+    d.meter.note({ costUsd: 42 }); // over the background allowance
+    const live = d.registry.add({ id: "d1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: -2, createdAt: 0 }, 0);
+    d.registry.setStatus(live.id, "running");
+    d.registry.attachControl(live.id, { followUp: () => {}, queued: () => 1, active: () => true, interrupt: async () => {} });
+    return d;
+  };
+
+  // An operator session (pipeline.ts) → its dispatches are interactive → past the reserve.
+  const operator = busyDeps();
+  const opTool = neoToolHandler(
+    neoMcpServers(operator, 1, { dispatch: true, folder: "/home/neo/agent", workClass: "interactive" }),
+    "dispatch",
+  )!;
+  const opOut = (await opTool({ project: "eticket-v3", task: "ship it" }, {})).content[0].text ?? "";
+  expect(opOut).toContain("queued"); // passed the budget gate (and queued behind the live turn)
+
+  // A scheduler-fired session → its dispatches are background → held by the reserve.
+  const scheduled = busyDeps();
+  const bgTool = neoToolHandler(
+    neoMcpServers(scheduled, 1, { dispatch: true, folder: "/home/neo/agent", workClass: "background" }),
+    "dispatch",
+  )!;
+  const bgOut = (await bgTool({ project: "eticket-v3", task: "ship it" }, {})).content[0].text ?? "";
+  expect(bgOut.toLowerCase()).toContain("hold");
 });
 
 test("a background dispatch still runs while spend is under the interactive reserve", async () => {

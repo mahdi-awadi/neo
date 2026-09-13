@@ -503,3 +503,47 @@ alone. Decision recorded in `docs/adr/0001-interactive-reserve-gates-background-
 repo's first ADR, which also notes the unbuilt follow-up (work class following the *originating
 trigger*, so an operator-requested dispatch inherits `interactive`). `tsc` clean; full suite green
 (761). Going live needs a daemon restart (operator-gated).
+
+**Work class now follows the originating trigger, so a conversational order is never held.** The
+operator took the follow-up the ADR above had left unbuilt, and closed the calibration question with
+it rather than with a bigger number. The reasoning: `dispatchToProject` has exactly one caller — the
+company session's `dispatch` tool — and that session is one hop from the operator's own message, so
+classifying by *mechanism* ("a dispatch is background work") meant the reserve would hold nearly
+every order the operator typed conversationally. At the `20` default that is a $16 allowance against
+real dispatches measured at $10–35 each; no dollar figure repairs a rule that counts the operator's
+own work against a reserve held *for* them. So the rule changed, not the number: work is
+`interactive` or `background` by **what triggered it**. `handleMessage` — the operator's only entry
+point, since every caller uses the default `source: "neo"` — launches `interactive` workers, the
+`dispatch` tool inherits the class of the worker calling it, and a sub-worker inherits it again;
+`background` is scheduler-fired work (loop fires, cron/automations, the secretary, the dream sweep)
+plus the customer-brief ingress run, where nobody is at the keyboard either. The class is decided
+ONCE per worker launch (`pipeline.ts` interactive, `ingress.ts` background) and captured in the
+tool's closure, so no call site re-derives it and no mechanism can imply it.
+
+The seam is one function: `heldByReserve(workClass, meter)` in `budget.ts` — the single answer to
+"does the interactive reserve apply to this work?" — used by both the dispatch gate and the sub-run's
+API-retry gate, which previously cut an operator-originated retry short on the same predicate. Beside
+it sits `DEFAULT_WORK_CLASS = "background"`, pinned by its own test: unclassified work is background
+on purpose, so a forgotten wiring can only ever *over*-protect the reserve (a visible hold that names
+its spent-vs-allowance numbers and that `/open` bypasses) and can never silently switch the guard off.
+That default is the one deliberate concession — making the class a required field would have touched
+~60 existing test call sites for no behavioural gain. Every `dispatch_*` event now carries
+`workClass`, so `dispatch_end`'s existing `costUsd` splits into interactive vs background spend with
+no new accounting. Rejected along the way: raising `budgetWindowUsd` (treats a classification bug as a
+calibration problem — the same refusal returns one busy day later), and gating on whether an operator
+session is live (liveness is not the question; the company sits registered and idle forever, so that
+rule would read "almost always interactive" by coincidence rather than by intent). Two honest limits
+are recorded in the ADR: loop workers hold no `dispatch` tool today, so a loop-originated dispatch is
+currently unreachable in production — it is wired and tested anyway, so the day a loop gets the tool
+it is background without anyone remembering to make it so; and because the class is captured per
+*launch*, a message that queues as a follow-up into an already-live worker inherits that worker's
+class, a seconds-wide window that only an operator message landing mid customer-brief run can hit.
+Built TDD (eight failing tests first: three on `heldByReserve`, one pinning the default, and four in
+`dispatch.test.ts` — an interactive dispatch starting at the very usage that holds a background one,
+the fail-safe default, the class riding on the events, and the `dispatch` tool inheriting its
+session's class, proven by invoking the real MCP handler against a mid-turn folder so the brief
+queues instead of spawning a worker). ADR 0001 amended with the new rule, its rejected alternatives
+and its consequences; `CONTEXT.md` gains **originating trigger** and re-scopes *interactive turn* /
+*background work* / *dispatch*; `docs/CONFIG.md` and `README.md` now say `budgetWindowUsd` governs
+background work alone. `tsc` clean; full suite green (769). Going live needs a daemon restart
+(operator-gated) — the running daemon still classes every dispatch as background.

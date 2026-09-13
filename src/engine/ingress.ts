@@ -75,7 +75,9 @@ export async function runCompanyBrief(
             mcpServers: neoMcpServers(
               { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv },
               CUSTOMER_CHAT,
-              { dispatch: true, folder: company.order.folder },
+              // BACKGROUND: a customer brief is not the operator's turn — nobody is waiting at the
+              // keyboard — so dispatches this run makes stay under the interactive reserve.
+              { dispatch: true, workClass: "background", folder: company.order.folder },
             ),
           }),
     );

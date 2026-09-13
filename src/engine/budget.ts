@@ -68,6 +68,30 @@ export function createMeter(opts: {
   };
 }
 
+/** Which trigger a piece of work traces back to. `interactive` = the operator asked for it and is
+ *  waiting (a message/command, and anything the engine does one hop from it on their behalf, like a
+ *  dispatch the company makes while servicing that message). `background` = the engine started it
+ *  while they were elsewhere (a loop fire, a scheduler tick, the secretary, the dream sweep, a
+ *  customer-brief ingress run). It follows the ORIGINATING TRIGGER, never the mechanism — see
+ *  docs/adr/0001-interactive-reserve-gates-background-work-only.md. */
+export type WorkClass = "interactive" | "background";
+
+/** The class for a launch that does not state one. Unclassified work is BACKGROUND on purpose: a
+ *  missed wiring can then only over-protect the reserve — a visible hold that names its numbers and
+ *  that the operator can bypass with `/open` — and can never silently switch the guard off. */
+export const DEFAULT_WORK_CLASS: WorkClass = "background";
+
+/** The ONE answer to "does the interactive reserve apply to this work?": true only when the work is
+ *  BACKGROUND and the window is spent down to the reserve. Interactive work is never held, however
+ *  far over the allowance the window is — that is what the reserve is being held for (ADR 0001). */
+export function heldByReserve(
+  workClass: WorkClass,
+  meter: Pick<Meter, "shouldThrottleBackground">,
+  now?: number,
+): boolean {
+  return workClass === "background" && meter.shouldThrottleBackground(now);
+}
+
 /** What a held background dispatch reports back. Names the real numbers so a hold diagnoses itself
  *  instead of looking like the engine being down, and says plainly that the work was DROPPED — the
  *  engine queues nothing and will not re-issue it. */

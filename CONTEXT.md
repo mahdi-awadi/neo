@@ -24,17 +24,26 @@ _Avoid_: origin, requester
 
 **Work class**:
 Whether the operator is *waiting* for the answer. An order is either an **interactive turn** or
-**background work**. Orthogonal to source: both classes are the operator's own work.
+**background work**. It follows the **originating trigger**, not the mechanism: what matters is
+what set the work in motion, not how the engine carries it out. Orthogonal to source: both classes
+are the operator's own work.
 _Avoid_: mode, kind, type
+
+**Originating trigger**:
+The event a piece of work traces back to — an operator message or command, or a schedule firing.
+Decided once, when a worker is launched, and inherited by everything that launch goes on to start.
+_Avoid_: caller, parent, entry point
 
 **Interactive turn**:
 An order the operator typed and is waiting on — a Telegram message or command, `/open`, a reply in
-a project chat, a web-console message. The operator is at the keyboard.
+a project chat, a web-console message — *and* whatever the engine does on their behalf while
+servicing it, such as a dispatch the company makes one hop from their message. The operator is at
+the keyboard either way.
 _Avoid_: foreground, live message, manual run
 
 **Background work**:
-An order the engine starts on the operator's behalf while they are elsewhere — a dispatch into
-another project, a loop fire, a scheduler tick, the secretary, the dream/memory sweep.
+An order the engine starts while the operator is elsewhere — a loop fire, a scheduler tick, the
+secretary, the dream/memory sweep, a run driven by a customer brief. Nobody is waiting on it.
 _Avoid_: async work, automation, autonomous run
 
 ### Budget and limits
@@ -60,7 +69,8 @@ _Avoid_: background budget, background quota
 
 **Throttle**:
 The engine refusing to *start* background work because it has used up everything outside the
-interactive reserve. Applies to background work alone.
+interactive reserve. Applies to background work alone — including a dispatch, when a schedule is
+what originated it.
 _Avoid_: rate limit, block, pause
 
 **Rate limit**:
@@ -87,7 +97,8 @@ _Avoid_: thread, conversation
 
 **Dispatch**:
 Sending an order into another project's folder as its own governed session, streaming its progress
-back and returning its result. Always background work.
+back and returning its result. Its work class is inherited, not fixed: a dispatch made while
+servicing an operator message is an interactive turn; a scheduler-fired one is background work.
 _Avoid_: delegate, forward, handoff
 
 **Loop**:

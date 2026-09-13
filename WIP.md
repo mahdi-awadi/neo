@@ -6,8 +6,32 @@ that alone).
 
 ## State: GREEN
 - `bunx tsc --noEmit` — clean
-- `bun test` — 761 pass, 0 fail.
-- Latest work: engine-bug investigation for the waselni go-live worker (see below + HISTORY).
+- `bun test` — 769 pass, 0 fail.
+- Latest work: work class now follows the originating trigger (see below + HISTORY).
+
+## Latest fix — work class follows the ORIGINATING TRIGGER, so a conversational order is never held
+- **Why:** ADR 0001 put the budget gate on the right side (background work) but classified by
+  *mechanism* — "a dispatch is background". `dispatchToProject` has one caller, the company's
+  `dispatch` tool, one hop from the operator's message, so at a $16 allowance vs $10–35 real
+  dispatches nearly every conversational order would have been held. Operator's call: classify by
+  what TRIGGERED the work.
+- **Rule:** `handleMessage` (the operator's only entry point) launches `interactive` workers; the
+  `dispatch` tool inherits the class of the worker calling it, and a sub-worker inherits it again.
+  `background` = loop fires, cron/automations, secretary, dream sweep, customer-brief ingress runs.
+  Decided once per launch (`pipeline.ts:297,320` interactive · `ingress.ts:78` background), captured
+  in the tool's closure — never re-derived at a call site.
+- **Seam:** `heldByReserve(workClass, meter)` in `budget.ts` is the ONE answer to "does the reserve
+  apply?" (used by the dispatch gate *and* the sub-run's API-retry gate), plus
+  `DEFAULT_WORK_CLASS = "background"` — unclassified work can only over-protect, never silently
+  disable the guard.
+- Dispatch events now carry `workClass`, so `dispatch_end`'s `costUsd` splits interactive vs
+  background spend with no new accounting.
+- TDD: 4 in `budget.test.ts`, 4 in `dispatch.test.ts` (interactive starts at the same usage that
+  holds a background one · fail-safe default · events carry the class · the tool inherits its
+  session's class, proven through the real MCP handler). ADR 0001 amended; `CONTEXT.md`,
+  `docs/CONFIG.md`, `README.md` updated.
+- **Restart pending** (operator-gated): the running daemon still classifies every dispatch as
+  background.
 
 ## Latest fix — the interactive reserve was throttling the operator instead of background work
 - **Symptom:** `/open /home/waselni say hi back` (2026-09-13 16:50 UTC) → `throttled: protecting
@@ -31,11 +55,9 @@ that alone).
   a retry could wait out a 7-day window — now only `rejected` governs.
 - TDD: failing tests first — 6 in `pipeline.test.ts`, 2 in `dispatch.test.ts` (one is the
   under-the-reserve control), 2 in `api-retry.test.ts`.
-- **OPEN — operator decision:** `budgetWindowUsd` default `20` ⇒ $16 background allowance, but real
-  dispatches here cost $10–35 each, so one dispatch can hold every later dispatch for the rest of the
-  5 h window. The gate is right; the number needs your call. Raise it in `config.json`, or take the
-  ADR's unbuilt follow-up (work class follows the originating trigger, so an operator-requested
-  dispatch counts as interactive).
+- **RESOLVED** — the `budgetWindowUsd` calibration question is closed: the operator chose the ADR's
+  follow-up (work class follows the originating trigger), so the `20` default now governs background
+  work alone. See the newer section above.
 - **Restart pending** (operator-gated): the running daemon still holds the old in-memory meter and
   the old gate, so the operator stays throttle-able until it restarts.
 
