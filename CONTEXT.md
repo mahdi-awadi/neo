@@ -105,6 +105,21 @@ _Avoid_: delegate, forward, handoff
 A trigger, a repeated action, and a goal that ends it. Always background work.
 _Avoid_: cron job, automation, schedule
 
+**Dispatch preamble**:
+The fixed instruction block the engine prepends to every dispatched brief, before the brief's own
+text. It carries what a worker cannot be trusted to know or be told by hand: read the project's
+rules, query the structural map first, design then build, meet the engineering baseline, challenge
+yourself before asking, stay alive. It is engine-owned, so no brief can omit it — and it is context
+the operator pays for on every run, so it stays terse.
+_Avoid_: prompt, system prompt, header
+
+**Engineering baseline**:
+The operator's standing definition of acceptable code — standard i18n catalogues, `.env` +
+environments defaulting to dev, Docker, no hardcoding, reuse what exists. Not a style preference:
+code that misses it is a failed order, even when it runs. Stated once in `CLAUDE.md` and carried to
+every worker by the dispatch preamble.
+_Avoid_: guidelines, best practices, coding standards
+
 **Escalation**:
 The governor stopping a worker to ask the operator for permission to do something risky.
 _Avoid_: approval request, prompt, confirmation

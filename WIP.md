@@ -6,8 +6,8 @@ that alone).
 
 ## State: GREEN
 - `bunx tsc --noEmit` — clean
-- `bun test` — 769 pass, 0 fail.
-- Latest work: work class now follows the originating trigger (see below + HISTORY).
+- `bun test` — 772 pass, 0 fail.
+- Latest work: the engineering baseline now rides in the dispatch preamble (see below + HISTORY).
 
 ## Latest fix — work class follows the ORIGINATING TRIGGER, so a conversational order is never held
 - **Why:** ADR 0001 put the budget gate on the right side (background work) but classified by
@@ -72,6 +72,17 @@ that alone).
   waits and requires short FOREGROUND polling (<90 s) + finishing within the single-shot run.
   Rejected raising `stallMs` / counting in-flight tools as activity (would blind the hung-worker guard).
 - TDD: `dispatch.test.ts` preamble assertion + `approval-resilience.test.ts` 300-repeated-call guard.
+- **Restart pending** (operator-gated): the preamble is read at worker launch, so it is inert until then.
+
+## Latest change — the engineering baseline rides in the dispatch preamble, not in the brief
+- **Why:** the operator's hard rule (non-standard code = failure; the five items live in `CLAUDE.md`)
+  only ever reached a worker when the brief author typed it. A dispatched worker loads the *target*
+  folder's `CLAUDE.md`, never Neo's, so the engine is the only place the rule cannot be forgotten.
+- **Seam:** `briefWithProjectDocs` (`src/engine/dispatch.ts`) — one block beside the other standing
+  instructions. Rejected: per-project `CLAUDE.md` copies (drift; new projects start without it) and a
+  governor check (it gates tool calls, not judgments about a finished change). ADR `docs/adr/0002`.
+- **Cost:** preamble 3627 → 4311 chars (~1080 tokens per dispatch); a test pins a 5000-char ceiling.
+- TDD: 2 in `dispatch.test.ts` (one assertion per baseline item + the size ceiling).
 - **Restart pending** (operator-gated): the preamble is read at worker launch, so it is inert until then.
 
 ## What this branch delivers (built + committed; the in-progress restart activates it)

@@ -181,7 +181,11 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
  *  domain model with domain-modeling/codebase-design into a CONTEXT.md glossary + ADRs, then a
  *  spec) then BUILD (superpowers TDD → verify → code-review); the mattpocock design skills adopted
  *  2026-09-10 are model-invocable, the interactive-only ones (grill-with-docs/to-spec/to-tickets)
- *  are deliberately NOT told to workers — and (4) challenges itself BEFORE raising any operator question — root-cause the
+ *  are deliberately NOT told to workers — (4) meets the operator's **engineering baseline** (i18n
+ *  catalogues, `.env`/dev-by-default, Docker, no hardcoding, reuse what exists — stated in this
+ *  repo's CLAUDE.md, which a worker dispatched into ANOTHER folder never loads, so the preamble is
+ *  the only place it can't be forgotten by whoever writes the brief:
+ *  docs/adr/0002-engineering-baseline-lives-in-the-dispatch-preamble.md) — and (5) challenges itself BEFORE raising any operator question — root-cause the
  *  real issue, reach for the industry-standard fix (not a patch), self-critique its options, and
  *  only escalate a decision that is genuinely the operator's (mirrors the `ask_operator` precondition
  *  so a worker can't turn a solvable bug into a shallow patch-menu). (2) is made satisfiable by the
@@ -214,6 +218,14 @@ export function briefWithProjectDocs(task: string): string {
     "  BUILD — implement against that spec with `superpowers:test-driven-development` (write the failing " +
     "test first, per acceptance criterion), then `superpowers:verification-before-completion` and " +
     "`requesting-code-review` before claiming done.\n\n" +
+    "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
+    "failure, even when it works. (1) i18n through standard per-locale catalogues (react-i18next or " +
+    "the stack's equivalent), namespaced keys, AR+EN complete — never literal user-facing strings in " +
+    "components, never a bespoke translation mechanism. (2) `.env` + environments, dev by default, " +
+    "failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
+    "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it: extend " +
+    "what is there, never a second implementation. Meet these in what you ship; a change that misses " +
+    "one is not done.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
     "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +

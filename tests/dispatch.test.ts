@@ -1310,6 +1310,30 @@ test("briefWithProjectDocs preamble requires codebase-memory + superpowers, stat
   expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last
 });
 
+// --- Engineering baseline (operator hard rule, 2026-09-18): non-standard code is a failure even
+// when it works. The rule lives in this repo's CLAUDE.md, which a worker dispatched into ANOTHER
+// folder never loads — so the preamble is the only place it can't be forgotten by whoever writes
+// the brief (docs/adr/0002-engineering-baseline-lives-in-the-dispatch-preamble.md). ---
+
+test("briefWithProjectDocs carries the engineering baseline: i18n · env/dev · Docker · no hardcoding · reuse", () => {
+  const low = briefWithProjectDocs("DO THE WORK").toLowerCase();
+  expect(low).toContain("not industry-standard"); // framed as a no-go, not a preference
+  expect(low).toContain("i18n"); // 1. standard per-locale catalogues...
+  expect(low).toContain("ar+en"); // ...complete in both languages
+  expect(low).toContain(".env"); // 2. env + environments...
+  expect(low).toContain("dev by default"); // ...fail closed to dev, never prod
+  expect(low).toContain("docker"); // 3. everything runs in Docker
+  expect(low).toContain("hardcod"); // 4. no hardcoding — values live in env/DB/config
+  expect(low).toContain("reuse"); // 5. read what exists and extend it...
+  expect(low).toContain("second implementation"); // ...never a parallel one
+});
+
+test("the dispatch preamble stays terse — every worker pays for it on every run", () => {
+  // A ceiling, not a target: the preamble is engine-owned context charged to the operator on each
+  // dispatch, so a new rule must be phrased tightly rather than appended as prose.
+  expect(briefWithProjectDocs("").length).toBeLessThan(5000);
+});
+
 test("dispatch injects the codebase-memory + superpowers instruction into every brief automatically", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));

@@ -81,6 +81,23 @@ then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board).
   ... }`. The full shape is documented in `src/engine/session-runner.ts` (SDK findings:
   `docs/sdk-notes.md`).
 
+## Engineering baseline (operator hard rule, 2026-09-18 — every project, every dispatch brief)
+
+Code that is not industry-standard is a **failure / no-go**, even when it works:
+
+1. **Standard i18n translation files** (react-i18next or the stack's equivalent: one catalogue per
+   locale, namespaced keys, AR+EN complete). No literal user-facing strings in components, no
+   bespoke translation mechanism.
+2. **`.env` + environments**; everything **starts as dev** by default (fail closed to dev-safe
+   behaviour, never to prod).
+3. **Everything runs in Docker.**
+4. **No hardcoding** — values live in env/DB/config.
+5. **Read the existing code first and REUSE it** — extend what exists; never a second implementation.
+
+Every dispatched worker gets this automatically: the dispatch preamble (`briefWithProjectDocs` in
+`src/engine/dispatch.ts`) carries it, because a worker sent into another folder loads *that*
+project's CLAUDE.md, never this one. Don't re-type it into briefs.
+
 ## Conventions
 
 - **Secrets** in `.env` (gitignored, `chmod 600`). Runtime/tenant data under `company/` is

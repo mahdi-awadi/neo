@@ -547,3 +547,20 @@ and its consequences; `CONTEXT.md` gains **originating trigger** and re-scopes *
 *background work* / *dispatch*; `docs/CONFIG.md` and `README.md` now say `budgetWindowUsd` governs
 background work alone. `tsc` clean; full suite green (769). Going live needs a daemon restart
 (operator-gated) — the running daemon still classes every dispatch as background.
+
+**The engineering baseline is now engine-carried, not brief-carried (2026-09-18).** The operator's
+hard rule — non-standard code is a failure even when it works (the five items are listed once, in
+`CLAUDE.md`) — lived only in this repo's `CLAUDE.md`. A dispatched worker loads the *target*
+folder's `CLAUDE.md`, never Neo's, so the baseline reached a worker only when whoever wrote the
+brief remembered to type it. `briefWithProjectDocs` now carries it alongside the other standing
+instructions (project docs, codebase-memory first, design→build, challenge yourself, stay alive),
+phrased tightly and stack-neutrally ("or the stack's equivalent") because targets range from an
+Expo app to a Go service to this engine. Rejected: copying the baseline into every project's
+`CLAUDE.md` (N copies drift; new projects start without it) and enforcing it in the governor (it
+gates tool calls, and "is this i18n'd?" is a judgment about a finished change, not a tool
+decision) — see `docs/adr/0002-engineering-baseline-lives-in-the-dispatch-preamble.md`;
+`CONTEXT.md` gains **dispatch preamble** and **engineering baseline**. The preamble grows 3627 →
+4311 chars (~1080 tokens, charged on every dispatch), so a second test pins a 5000-char ceiling —
+a new rule must be phrased tightly, not appended as prose. Built TDD (a preamble assertion per
+baseline item + the size ceiling). `tsc` clean; full suite green (772). Going live needs a daemon
+restart (operator-gated) — the preamble is read at worker launch.
