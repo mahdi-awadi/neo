@@ -10,12 +10,19 @@ import type { Provider } from "../types";
 import { listLoops, type LoopInfo } from "./loops";
 import { sessionContext, type ContextSignals } from "./context-policy";
 import { workerSdkState, type WorkerSdkState } from "./sdk-choice";
+import { describeSession, stateOf } from "./session-status";
+import type { SessionState } from "./liveness";
 
 export interface DashProject {
   id: string;
   name: string;
   folder: string;
+  /** Registry LIFECYCLE (running/idle/done/error) — bookkeeping only; never show it as a status. */
   status: string;
+  /** What it is DOING: working / quiet / idle / starting / awaiting-operator / wedged. */
+  state: SessionState;
+  /** The same one-line status /list and the company's `sessions` tool render. */
+  line: string;
   task: string;
   active: boolean;
   ageMs: number;
@@ -83,6 +90,8 @@ export function dashboardSnapshot(opts: {
       name: s.name,
       folder: s.order.folder,
       status: s.status,
+      state: stateOf(opts.registry, s, now),
+      line: describeSession(opts.registry, s, now),
       task: s.order.task,
       active: s.id === activeId,
       ageMs: now - s.startedAt,

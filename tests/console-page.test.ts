@@ -25,3 +25,11 @@ test("consolePage's stream handler renders mirrored echo + notice events", () =>
   // Cross-surface chrome (e.g. approval pending on Telegram) → a display-only notice row.
   expect(body).toContain("e.type==='notice'");
 });
+
+test("consolePage renders the derived session state, not the registry lifecycle word", () => {
+  const html = consolePage();
+  // The project row must read the honest one-liner the engine derived, not `status`.
+  expect(html).toContain("p.line");
+  expect(html).toContain("p.state");
+  expect(html).not.toContain("p.status==='running'");
+});

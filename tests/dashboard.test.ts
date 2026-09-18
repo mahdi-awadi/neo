@@ -101,3 +101,22 @@ test("dashboard rows expose ctxPct via the default sessionContext (no signals in
   expect(rows.find((r) => r.id === "d2")!.ctxPct).toBe(0);
   expect(rows.find((r) => r.id === "d3")!.ctxPct).toBeUndefined();
 });
+
+// The console has to speak the same vocabulary as /list and `sessions` — a project shown as
+// "running" while it sits between turns is the same lie on a third surface.
+test("dashboardSnapshot carries the derived state and the one-line status per project", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ folder: "/p/alpha", task: "build x" }), 0);
+  registry.attachControl(a.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true });
+  registry.noteActivity(a.id, "Bash: bun test", 0);
+  const b = registry.add(order({ folder: "/p/beta", task: "fix y" }), 0);
+  registry.attachControl(b.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false });
+
+  const snap = dashboardSnapshot({ registry, ledger: openLedger(":memory:"), chatId: 0, now: 10_000, reposRoot: "/tmp" });
+  const alpha = snap.projects.find((p) => p.name === "alpha")!;
+  const beta = snap.projects.find((p) => p.name === "beta")!;
+  expect(alpha.state).toBe("working");
+  expect(alpha.line).toContain("Bash: bun test");
+  expect(beta.state).toBe("idle");
+  expect(beta.line).toContain("nothing in flight");
+});

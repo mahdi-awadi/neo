@@ -518,7 +518,8 @@ function renderProjects(){var box=document.getElementById('projects');document.g
  if(!S.projects.length){box.innerHTML='<div class="empty">No open projects yet.<br>Pick a repo above and open one.</div>';document.getElementById('who').textContent='no active project';return;}
  box.innerHTML='';var active=null;
  S.projects.forEach(function(p){var d=document.createElement('div');d.className='proj'+(p.active?' on':'');
-  d.innerHTML='<span class="dot '+(p.status==='running'?'running':(p.status==='idle'?'idle':''))+'"></span><div class="meta"><div class="nm">'+esc(p.name)+'</div><div class="fo">'+esc(p.folder)+' · '+p.status+' · '+age(p.ageMs)+'</div></div>';
+  var busy=(p.state==='working'||p.state==='quiet');
+  d.innerHTML='<span class="dot '+(p.state==='wedged'?'':(busy?'running':'idle'))+'"></span><div class="meta"><div class="nm">'+esc(p.name)+'</div><div class="fo">'+esc(p.folder)+' · '+esc(p.line||p.state)+'</div></div>';
   d.onclick=function(){setFilter(p.name);tab('activity');post('/select',{id:p.id}).then(loadState);};
   var k=document.createElement('button');k.className='kbtn';k.textContent='✕';k.title='kill';
   k.onclick=function(ev){ev.stopPropagation();post('/kill',{id:p.id}).then(loadState);};
