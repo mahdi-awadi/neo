@@ -21,7 +21,8 @@ import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { frontendBackend, teamLeadPreamble } from "./agent-teams";
 import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
-import { describeSessionStatus, sessionsReport } from "./session-status";
+import { describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
+import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
@@ -79,6 +80,9 @@ export interface DispatchDeps {
   /** Abort a sub-run with NO activity for this long (ms) — a busy worker stays alive up to the
    *  ceiling. Default DISPATCH_STALL_MS_DEFAULT (5m). */
   dispatchStallMs?: number;
+  /** Thresholds behind the derived session state reported to the operator (wedged/quiet).
+   *  Absent → DEFAULT_LIVENESS_THRESHOLDS. */
+  liveness?: LivenessThresholds;
   /** Grace window (ms): on a limit, tell the worker to commit green work + write a WIP note,
    *  then hard-abort. Default DISPATCH_GRACE_MS_DEFAULT (75s). */
   dispatchGraceMs?: number;
@@ -133,6 +137,9 @@ export const DISPATCH_TIMEOUT_MAX_MS_DEFAULT = 7_200_000;
 export const DISPATCH_STALL_MS_DEFAULT = 300_000;
 /** Wrap-up grace window (ms) — 75 seconds between the limit firing and the hard abort. */
 export const DISPATCH_GRACE_MS_DEFAULT = 75_000;
+/** Activity label for the window between "session registered" and "worker attached" (indexing +
+ *  context gate). Makes the `starting` state self-explaining wherever it is rendered. */
+export const PREPARING_LABEL = "preparing: indexing + context gate";
 
 /**
  * Resolve a project reference to a folder: an absolute path, else a repo under `root` (/home),
@@ -362,18 +369,23 @@ export async function dispatchToProject(
   //     reload) → refuse rather than enqueue into the void or start a second concurrent run.
   if (existing && wasRunning) {
     const control = deps.registry.getControl(existing.id);
-    const queued = control?.queued?.() ?? 0;
-    const status = describeSessionStatus(existing, now(), { queued });
+    // The SAME authoritative signal the operator's status line reads — state, both clocks, queue —
+    // so a busy/queued reply can never disagree with what `sessions` says about the same project.
+    const status = describeSession(deps.registry, existing, now(), deps.liveness);
     if (control?.followUp) {
       const turnActive = control.active?.() === true; // the REAL "a turn is being processed" signal
       control.followUp(order.task);
       deps.registry.touch(existing.id, now());
+      // A brief arriving IS the answer to whatever the session was blocked on (or supersedes it):
+      // leaving the block set would keep reporting awaiting-operator for a session now working.
+      deps.registry.noteBlocked(existing.id, undefined);
       if (turnActive) {
         deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name, workClass } });
         await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
         return (
-          `${name} is busy — I queued this brief behind its current turn (${status}). It runs when the ` +
-          `current work yields; its output streams to the operator as ${name}.`
+          `${name} is working — I queued this brief behind its current turn (${status}). It runs when the ` +
+          `current work yields; its output streams to the operator as ${name}. This is NORMAL, not a ` +
+          `wedged session: only a "wedged" state means it is stuck.`
         );
       }
       // Alive but IDLE between turns: the follow-up is pulled and run immediately.
@@ -383,16 +395,25 @@ export async function dispatchToProject(
         `dispatched to ${name} — it was idle, so this runs now; its output streams to the operator as ${name}.`
       );
     }
-    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control" } });
+    // No live handle. Usually NOT a fault: the previous dispatch marked the session running and is
+    // still preparing it (ensureIndexed on a big repo takes minutes) — `stateOf` calls that
+    // `starting`. Say which it is instead of implying the project is broken.
+    const state = stateOf(deps.registry, existing, now(), deps.liveness);
+    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control", state } });
     return (
-      `${name} appears busy — ${status} — but I have no live handle to queue behind (it may be mid-reload). ` +
-      `I did NOT start a second run; retry shortly and it will deliver once the session settles.`
+      `${name} is ${state} — ${status} — and has no live handle to queue behind yet` +
+      (state === "starting" ? " (the engine is still preparing it: indexing + context gate)" : " (it may be mid-reload)") +
+      `. I did NOT start a second run; retry shortly and it will deliver once the session settles.`
     );
   }
   if (existing) {
     deps.registry.setStatus(existing.id, "running");
     deps.registry.touch(existing.id, now());
   }
+  // The entry is marked running here but its worker is attached only at the end of the background
+  // continuation below, after ensureIndexed + the context gate. Label that gap so the gap explains
+  // itself in `sessions`/`/list` instead of showing as an unexplained handle-less "running".
+  deps.registry.noteActivity(session.id, PREPARING_LABEL, now());
   await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
 
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
@@ -478,6 +499,15 @@ export async function dispatchToProject(
 
     const startedAt = now();
     deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, ceilingMs, stallMs } });
+    // Every registry write below is pure observation: a failure in it must never surface into the
+    // worker's own path (the same contract the activity tracker has always had).
+    const noteRegistry = (fn: () => void) => {
+      try {
+        fn();
+      } catch {
+        /* observer only */
+      }
+    };
     let lastActivityAt = startedAt;
     let apiRetries = 0;
     let retryingUntil = 0; // while set in the future, the sub-run is waiting out an API throttle
@@ -493,25 +523,44 @@ export async function dispatchToProject(
       {
         onMessage: (t) => {
           lastActivityAt = now();
+          noteRegistry(() => deps.registry.noteOutput(session.id, now()));
           void deps.reply(replyChat, t, name);
         },
         // Liveness pulse on ANY streamed SDK event (partial deltas, tool_use/tool_result, system):
         // a worker mid-generation (e.g. writing a huge file — one long turn, no completed message)
-        // keeps this clock fresh, so the stall abort fires only on TRUE silence (BUG 1).
+        // keeps this clock fresh, so the stall abort fires only on TRUE silence (BUG 1). It goes to
+        // the REGISTRY as well as the local clock — keeping the one true liveness signal private to
+        // this function is what left `sessions`, the watchdog and the idle sweep judging a busy
+        // worker from a coarser one (docs/adr/0003-…).
         onHeartbeat: () => {
           lastActivityAt = now();
+          noteRegistry(() => deps.registry.noteHeartbeat(session.id, now()));
         },
-        onEscalation: (reason) => deps.askApproval(replyChat, reason),
+        // An escalation SUSPENDS the worker mid-tool with no SDK events at all, so without marking
+        // it the stall monitor would abort a worker that is doing exactly what it was told to do.
+        onEscalation: async (reason) => {
+          noteRegistry(() => deps.registry.noteBlocked(session.id, { kind: "approval", label: reason, since: now() }));
+          try {
+            return await deps.askApproval(replyChat, reason);
+          } finally {
+            lastActivityAt = now(); // the wait was the operator's, not the worker's
+            noteRegistry(() => deps.registry.noteBlocked(session.id, undefined));
+          }
+        },
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
         // A dispatched worker's native AskUserQuestion is serviced the same way (gated on postDecision).
         onStructuredQuestion: deps.postDecision
           ? async (ask) => {
+              const question = questionSummary(ask);
+              // The worker check-points and stops after this: it is awaiting the OPERATOR, not
+              // hung. The block clears when a brief/answer is delivered back into the session.
+              noteRegistry(() => deps.registry.noteBlocked(session.id, { kind: "decision", label: question, since: now() }));
               await raiseOperatorDecision(deps, {
                 project: name,
                 folder,
                 orderId: order.id,
                 chatId: replyChat,
-                question: questionSummary(ask),
+                question,
                 spec: ask,
               });
             }
@@ -563,12 +612,7 @@ export async function dispatchToProject(
         },
         onActivity: (label) => {
           lastActivityAt = now();
-          try {
-            deps.registry.noteActivity(session.id, label, now());
-            deps.registry.touch(session.id, now());
-          } catch {
-            /* observer only */
-          }
+          noteRegistry(() => deps.registry.noteActivity(session.id, label, now()));
         },
       },
       profileDeps(providerCfg, "dispatch", {
@@ -611,9 +655,42 @@ export async function dispatchToProject(
           lastActivityAt = t;
           continue;
         }
+        // Waiting for the OPERATOR (a permission escalation, a raised decision) is not the worker
+        // being hung — it is the worker doing what it was told. Its clock is the operator's, so the
+        // stall window never runs while the block is set. The per-dispatch ceiling still bounds it.
+        if (deps.registry.get(session.id)?.blockedOn) lastActivityAt = t;
         if (t - startedAt - pausedMs >= ceilingMs) limit = "ceiling";
         else if (t - lastActivityAt >= stallMs) limit = "stall";
         if (!limit) continue;
+        // State the evidence BEFORE acting on it, so a wrong abort is diagnosable from the log
+        // alone — including the cheap "this looks like a command sitting on an interactive prompt"
+        // read, which is how a `cp -i` hang becomes obvious instead of mysterious.
+        // Judge the evidence on THIS decision's own window (the dispatch stall limit), not the
+        // display thresholds — a recorded state that disagrees with the abort it explains is worse
+        // than none. quietAfterMs keeps its display meaning.
+        const evidence = sessionEvidence(deps.registry, session, t, {
+          wedgedAfterMs: stallMs,
+          quietAfterMs: deps.liveness?.quietAfterMs ?? DEFAULT_LIVENESS_THRESHOLDS.quietAfterMs,
+        });
+        deps.ledger.recordEvent("dispatch_stall_evidence", {
+          orderId: order.id,
+          folder,
+          data: {
+            project: name,
+            limit,
+            state: evidence.state,
+            inTurn: evidence.inTurn,
+            queued: evidence.queued,
+            lastActivityMs: t - lastActivityAt,
+            lastOutputMs: evidence.lastOutputMs,
+            activity: evidence.activity ?? null,
+            stdinWait: evidence.stdinWait,
+            elapsedMs: t - startedAt,
+            pausedMs,
+            stallMs,
+            ceilingMs,
+          },
+        });
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave
         // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
         run.followUp(
@@ -662,6 +739,7 @@ export async function dispatchToProject(
       } else {
         deps.registry.setStatus(session.id, "idle");
         deps.registry.touch(session.id, now());
+        deps.registry.noteBlocked(session.id, undefined); // the run is over — nothing is blocked
         deps.registry.detachControl(session.id);
       }
       const line = result.ok ? `${name} finished: ${result.summary || "done"}` : `${name}: ${result.summary || "failed"}`;
@@ -890,7 +968,7 @@ export function neoMcpServers(
         "sessions",
         "List the operator's live project sessions and what each is doing RIGHT NOW (idle / running-what / how long / how many follow-ups queued). Use this to answer the operator about a project's status, or — when a dispatch reports a project busy — to decide whether to wait for it or report back. Returns text.",
         {},
-        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now()) }] }),
+        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now(), deps.liveness) }] }),
       ),
       tool(
         "dispatch",

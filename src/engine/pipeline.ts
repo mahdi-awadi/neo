@@ -30,7 +30,7 @@ import {
 } from "./context-policy";
 import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
-import { describeSessionStatus } from "./session-status";
+import { describeSession } from "./session-status";
 import type { Priority } from "./priority";
 import {
   apiExhaustionWarning,
@@ -214,9 +214,12 @@ export async function handleMessage(
       // bare "busy": what it's doing, for how long, and how deep the queue is.
       control.followUp(text.trim());
       registry.touch(live.id, now());
+      // The operator's message IS the answer to whatever this session was blocked on (or replaces
+      // the question) — keeping the block set would keep reporting awaiting-operator for a session
+      // that is now working.
+      registry.noteBlocked(live.id, undefined);
       if (oneShot) registry.clearFocus(chatId);
-      const queued = control.queued?.() ?? 0;
-      await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSessionStatus(live, now(), { queued })}`);
+      await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSession(registry, live, now(), deps.cfg.liveness)}`);
       return null;
     }
     // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
@@ -368,17 +371,52 @@ function startSession(
     order,
     {
       onMessage: (t) => {
-        registry.touch(registryId, now());
+        registry.noteOutput(registryId, now());
         void deps.reply(chatId, t, project);
       },
-      onEscalation: (reason) => deps.askApproval(chatId, reason),
+      // Liveness pulse on ANY streamed SDK event — the authoritative clock the watchdog, the idle
+      // sweep and every status line read. Without it a worker mid-generation (a long turn writing
+      // one huge file) reads as silent and is alerted on / swept as idle (docs/adr/0003-…).
+      onHeartbeat: () => {
+        try {
+          registry.noteHeartbeat(registryId, now());
+        } catch {
+          // observer only — never break the worker path
+        }
+      },
+      // An escalation suspends the worker mid-tool with no SDK events: mark it so it reads as
+      // awaiting-operator rather than silent, and clear it the moment the operator answers.
+      onEscalation: async (reason) => {
+        try {
+          registry.noteBlocked(registryId, { kind: "approval", label: reason, since: now() });
+        } catch {
+          /* observer only */
+        }
+        try {
+          return await deps.askApproval(chatId, reason);
+        } finally {
+          try {
+            registry.noteBlocked(registryId, undefined);
+            registry.touch(registryId, now());
+          } catch {
+            /* observer only */
+          }
+        }
+      },
       // Service the worker's native AskUserQuestion by raising a tracked structured decision. Gated on
       // postDecision (the operator surface wired it) — the same firewall gate as ask_operator.
       onStructuredQuestion: deps.postDecision
         ? async (ask) => {
+            const question = questionSummary(ask);
+            // The worker check-points and stops after raising this: awaiting the OPERATOR, not hung.
+            try {
+              registry.noteBlocked(registryId, { kind: "decision", label: question, since: now() });
+            } catch {
+              /* observer only */
+            }
             await raiseOperatorDecision(
               { ledger, postDecision: deps.postDecision },
-              { project, folder: order.folder, orderId: order.id, chatId, question: questionSummary(ask), spec: ask },
+              { project, folder: order.folder, orderId: order.id, chatId, question, spec: ask },
             );
           }
         : undefined,
@@ -391,8 +429,7 @@ function startSession(
       },
       onActivity: (label) => {
         try {
-          registry.noteActivity(registryId, label, now());
-          registry.touch(registryId, now());
+          registry.noteActivity(registryId, label, now()); // advances the activity clock too
         } catch {
           // observer only — never break the worker path
         }
@@ -447,6 +484,7 @@ function startSession(
     // Keep the project listed as idle; drop the dead handle so the next follow-up resumes.
     registry.setStatus(registryId, "idle");
     registry.touch(registryId, now());
+    registry.noteBlocked(registryId, undefined); // the run is over — nothing is blocked
     registry.detachControl(registryId);
     // LEARNED cache-TTL observation: this was a resume (runDeps.resume set) — was the prompt
     // cache still warm on the FIRST post-resume turn (not just some later turn in this run, which

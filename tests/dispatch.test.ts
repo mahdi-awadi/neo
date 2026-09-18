@@ -298,10 +298,13 @@ test("dispatch to a running folder refuses instead of stacking", async () => {
     root,
     now: () => 120_000,
   });
-  // Not an opaque "busy": the company gets the real status so it can tell the operator + decide.
-  expect(out).toContain("busy");
+  // Not an opaque "busy": the company gets the REAL state so it can tell the operator + decide.
+  // A registered session with no worker handle is `starting` (the engine is still preparing it) —
+  // calling that "busy" is what made healthy projects read as broken.
+  expect(out).toContain("starting");
   expect(out).toContain("running tests");
-  expect(out).toContain("2m"); // how long that activity has run
+  expect(out).toContain("2m"); // how long it has been in this state
+  expect(out).toContain("did NOT start a second run");
 });
 
 test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) instead of refusing", async () => {

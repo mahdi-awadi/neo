@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Provider } from "./types";
 import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy";
+import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./engine/liveness";
 
 /** Reasoning-effort levels accepted by the SDK. */
 export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -156,7 +157,11 @@ export interface NeoConfig {
   /** In-memory reply-route cache bound (oldest evicted first). The ledger is the durable source of
    *  truth behind it, so this only sizes the fast front cache. Default 2000. */
   messageRoutesCacheCap: number;
-  /** Alert when a running session has produced nothing for this long (ms). Default 10 min. */
+  /** Thresholds behind the DERIVED session state (working/quiet/idle/awaiting-operator/wedged) the
+   *  operator and the company session are shown. See engine/liveness.ts + ADR 0003. Optional:
+   *  absent ⇒ DEFAULT_LIVENESS_THRESHOLDS at the point of use, so no caller has to thread it. */
+  liveness?: LivenessThresholds;
+  /** Alert when a running session has produced NO ACTIVITY for this long (ms). Default 10 min. */
   stuckAfterMs: number;
   /** Alert when one activity label has run this long (ms). Default 20 min. */
   longTurnAlertMs: number;
@@ -210,6 +215,7 @@ const DEFAULTS = {
   codebaseMemoryListTimeoutMs: 15_000,
   inboxListDefault: 100,
   messageRoutesCacheCap: 2_000,
+  liveness: DEFAULT_LIVENESS_THRESHOLDS,
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
@@ -330,6 +336,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,
     inboxListDefault: fileCfg.inboxListDefault ?? DEFAULTS.inboxListDefault,
     messageRoutesCacheCap: fileCfg.messageRoutesCacheCap ?? DEFAULTS.messageRoutesCacheCap,
+    liveness: { ...DEFAULTS.liveness, ...(fileCfg.liveness ?? {}) },
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

@@ -479,20 +479,42 @@ test("a pinned project keeps receiving follow-ups until unpinned", async () => {
   expect(followed).toContain(`${companyDir}:three — back to company`);
 });
 
-test("a busy project's follow-up reply reports the real status, not an opaque 'busy'", async () => {
+test("a working project's follow-up reply reports the real state, not an opaque 'busy'", async () => {
   const dirA = scratch();
   const followed: string[] = [];
   const h = harness({ start: routingStart(followed) });
   await handleMessage(`/open ${dirA} a`, 5, h.base);
   const a = h.registry.list().find((s) => s.order.folder === dirA)!;
-  h.registry.noteActivity(a.id, "running tests", 0);
+  // A turn is genuinely in flight — that, not the registry's lifetime `status`, is what "busy" means.
+  h.registry.attachControl(a.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 1, active: () => true });
+  h.registry.noteActivity(a.id, "running tests", 110_000);
   h.registry.setFocus(5, a.id, "pinned");
 
   await handleMessage("status?", 5, { ...h.base, now: () => 120_000 });
 
   const line = h.replies.find((r) => r.includes("queued for"))!;
+  expect(line).toContain("working");
   expect(line).toContain("running tests");
-  expect(line).toContain("2m"); // activity age surfaced
+  expect(line).toContain("last activity 0s ago"); // delivering the brief is itself an interaction
+  expect(line).toContain("1 queued");
+  expect(line).not.toContain("wedged");
+});
+
+test("a follow-up into a project sitting between turns says idle, not busy or wedged", async () => {
+  const dirA = scratch();
+  const followed: string[] = [];
+  const h = harness({ start: routingStart(followed) }); // its control reports active() === false
+  await handleMessage(`/open ${dirA} a`, 5, h.base);
+  const a = h.registry.list().find((s) => s.order.folder === dirA)!;
+  h.registry.noteActivity(a.id, "waiting", 0);
+  h.registry.setFocus(5, a.id, "pinned");
+
+  await handleMessage("status?", 5, { ...h.base, now: () => 10 * 60 * 60 * 1000 });
+
+  const line = h.replies.find((r) => r.includes("queued for"))!;
+  expect(line).toContain("idle");
+  expect(line).toContain("nothing in flight");
+  expect(line).not.toContain("wedged");
 });
 
 test("resumes when a prior session id exists for the folder/chat", async () => {
