@@ -4,7 +4,7 @@
 // Keyed by the stable order id; addressable by short name (for /kill) and by chat (for
 // follow-up routing). The unique-name scheme is ported from operant, trimmed.
 import { basename } from "node:path";
-import type { Order, Provider, SessionControl, SessionInfo } from "../types";
+import type { BlockedOn, Order, Provider, SessionControl, SessionInfo } from "../types";
 
 /** Statuses for a session that is still live (followable / killable). */
 const OPEN: ReadonlySet<SessionInfo["status"]> = new Set(["running", "idle"]);
@@ -38,6 +38,16 @@ export interface Registry {
    *  hands a Codex thread id to Claude or vice versa. */
   setSdkSessionId(id: string, sdkSessionId: string, provider?: Provider): void;
   touch(id: string, now?: number): void;
+  /** Liveness pulse: ANY streamed worker event. Advances the authoritative activity clock and
+   *  nothing else — the label is left alone, so "what is it doing" stays meaningful while
+   *  "is it alive" stays fresh. This is the ONLY signal wedged/stall/idle decisions read. */
+  noteHeartbeat(id: string, now?: number): void;
+  /** The worker produced an operator-VISIBLE line. Advances the output clock AND the activity
+   *  clock (output is activity); the reverse is deliberately not true. */
+  noteOutput(id: string, now?: number): void;
+  /** Record (or clear, with `undefined`) what the operator owes this session. While set, the
+   *  session is awaiting-operator: never wedged, never stall-aborted. */
+  noteBlocked(id: string, blocked: BlockedOn | undefined): void;
   /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
   attachControl(id: string, control: SessionControl): void;
   /** Drop the control handle when a run ends, keeping the session (now resumable, not live). */
@@ -87,6 +97,7 @@ export function createRegistry(): Registry {
         status: "running",
         startedAt: now,
         lastActivityAt: now,
+        lastOutputAt: now,
       };
       sessions.set(session.id, session);
       return session;
@@ -136,9 +147,26 @@ export function createRegistry(): Registry {
       const s = sessions.get(id);
       if (s) s.lastActivityAt = now;
     },
+    noteHeartbeat(id, now = Date.now()) {
+      const s = sessions.get(id);
+      if (s) s.lastActivityAt = now;
+    },
+    noteOutput(id, now = Date.now()) {
+      const s = sessions.get(id);
+      if (!s) return;
+      s.lastOutputAt = now;
+      s.lastActivityAt = now;
+    },
+    noteBlocked(id, blockedOn) {
+      const s = sessions.get(id);
+      if (s) s.blockedOn = blockedOn;
+    },
     noteActivity(id, label, now = Date.now()) {
       const s = sessions.get(id);
       if (!s) return;
+      // A tool call IS a sign of life, even when it repeats the previous label — the clock must
+      // move even though `since` (the age of the LABEL) deliberately does not.
+      s.lastActivityAt = now;
       if (s.activity?.label !== label) s.activity = { label, since: now };
     },
     noteAlert(id, now = Date.now()) {

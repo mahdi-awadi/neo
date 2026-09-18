@@ -1,4 +1,7 @@
 // Shared types for the Neo engine.
+import type { BlockedOn } from "./engine/liveness";
+
+export type { BlockedOn };
 
 /** Where an order originated. Drives provider routing (the compliance firewall). */
 export type OrderSource = "neo" | "customer";
@@ -77,12 +80,24 @@ export interface SessionInfo {
    *  under a different worker SDK (`/sdk claude` after a Codex run) must start fresh instead. */
   sdkProvider?: Provider;
   order: Order;
+  /** LIFECYCLE of this registry entry — `running` while a run is open, `idle` once it ends. NOT
+   *  what the worker is doing: it stays `running` for the session's whole life, including while it
+   *  sits between turns. Never report it to the operator; report `sessionState()` (liveness.ts). */
   status: "running" | "idle" | "done" | "error";
   startedAt: number;
-  /** Last time the worker produced output or took input — drives idle-close. */
+  /** THE authoritative liveness clock: the last time ANY worker activity was seen — every streamed
+   *  SDK event, including partial generation deltas that produce no operator-visible line. Wedged /
+   *  stall / idle-close decisions read this and nothing else (docs/adr/0003-…). */
   lastActivityAt: number;
-  /** What the worker is doing right now (last tool/text), for /status + the stuck-watchdog. */
+  /** Last time the worker produced operator-VISIBLE output. Reported, never judged — a worker can
+   *  be busy for an hour without saying anything. Absent on entries that never emitted. */
+  lastOutputAt?: number;
+  /** What the worker is doing right now (last tool/text), for /status + the stuck-watchdog. NOTE
+   *  `since` is the age of this LABEL, not of the session's last sign of life — never judge on it. */
   activity?: { label: string; since: number };
+  /** Set while the operator owes this session an answer (a permission escalation or a raised
+   *  decision). Such a session is never wedged and is never stall-aborted. */
+  blockedOn?: BlockedOn;
   /** Last time the stuck-watchdog alerted about this session (dedup). */
   alertedAt?: number;
 }

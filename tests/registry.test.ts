@@ -148,3 +148,45 @@ test("noteAlert stamps alertedAt", () => {
   r.noteAlert(s.id, 42);
   expect(r.get(s.id)?.alertedAt).toBe(42);
 });
+
+test("noteHeartbeat advances the authoritative activity clock without touching the label", () => {
+  const r = createRegistry();
+  const s = r.add({ id: "h1", source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: 0 }, 0);
+  r.noteActivity(s.id, "Bash: bun test", 100);
+  r.noteHeartbeat(s.id, 5_000); // a partial generation delta: alive, nothing new to show
+  expect(r.get(s.id)?.lastActivityAt).toBe(5_000);
+  expect(r.get(s.id)?.activity).toEqual({ label: "Bash: bun test", since: 100 });
+});
+
+test("noteActivity also advances the activity clock (a tool call IS activity)", () => {
+  const r = createRegistry();
+  const s = r.add({ id: "h2", source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: 0 }, 0);
+  r.noteActivity(s.id, "Bash: bun test", 100);
+  expect(r.get(s.id)?.lastActivityAt).toBe(100);
+  r.noteActivity(s.id, "Bash: bun test", 900); // same label, still a fresh sign of life
+  expect(r.get(s.id)?.lastActivityAt).toBe(900);
+});
+
+test("noteOutput advances both clocks — operator-visible output is also activity", () => {
+  const r = createRegistry();
+  const s = r.add({ id: "h3", source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: 0 }, 0);
+  r.noteOutput(s.id, 700);
+  expect(r.get(s.id)?.lastOutputAt).toBe(700);
+  expect(r.get(s.id)?.lastActivityAt).toBe(700);
+});
+
+test("noteBlocked records and clears what the operator owes the session", () => {
+  const r = createRegistry();
+  const s = r.add({ id: "h4", source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: 0 }, 0);
+  r.noteBlocked(s.id, { kind: "approval", label: "Write outside project", since: 10 });
+  expect(r.get(s.id)?.blockedOn).toEqual({ kind: "approval", label: "Write outside project", since: 10 });
+  r.noteBlocked(s.id, undefined);
+  expect(r.get(s.id)?.blockedOn).toBeUndefined();
+});
+
+test("the clock helpers ignore an unknown id instead of throwing (observer-only contract)", () => {
+  const r = createRegistry();
+  expect(() => r.noteHeartbeat("gone", 1)).not.toThrow();
+  expect(() => r.noteOutput("gone", 1)).not.toThrow();
+  expect(() => r.noteBlocked("gone", undefined)).not.toThrow();
+});

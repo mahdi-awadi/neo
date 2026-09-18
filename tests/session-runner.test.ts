@@ -847,3 +847,52 @@ test("truncates a long tool result and flags an errored one", async () => {
   expect(preview!.endsWith("…")).toBe(true); // truncated
   expect(preview!.length).toBeLessThan(650); // ~600 cap + prefix, not the full 2000
 });
+
+// --- active() must never drift permanently out of true (2026-09-18). It used to be
+// `delivered > completed`: a turn that ends WITHOUT an SDK `result` — an interrupt, a stream error,
+// a resume-missing restart — bumps `delivered` only, so the session reported "busy" forever and
+// every later dispatch was refused with "busy — queued" against a healthy project. ---
+
+test("active() clears when a turn ends without a result message (stream error)", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const q = (args: { prompt: AsyncIterable<{ message: { content: string } }>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-err" };
+      for await (const _msg of args.prompt) {
+        throw new Error("stream closed mid-turn"); // no `result` ever arrives
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  const run = startOrder(order("brief"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+
+  await run.done;
+  await tick();
+  expect(run.active()).toBe(false); // the run is over — it cannot still be "processing a turn"
+});
+
+test("active() clears when the run is interrupted mid-turn", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const q = (args: { prompt: AsyncIterable<{ message: { content: string } }>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-int" };
+      for await (const _msg of args.prompt) {
+        await gate; // held open until the test interrupts
+        yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "sess-int" };
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => release() });
+  };
+  const run = startOrder(order("brief"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+
+  await tick();
+  expect(run.active()).toBe(true);
+  await run.interrupt();
+  await run.done;
+  await tick();
+  expect(run.active()).toBe(false);
+});

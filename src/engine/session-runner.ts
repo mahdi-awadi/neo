@@ -817,18 +817,23 @@ function startClaudeOrder(
   deps = resolvedRunDeps(deps, "subscription", handlers);
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   // Turn tracking: a turn is in flight from the instant the SDK is handed a message (delivered)
-  // until that turn's `result` arrives (completed). `active()` reports delivered > completed, so a
-  // caller can tell a worker mid-turn from one sitting idle between turns — which the registry
-  // `status` cannot, since a live session stays "running" its whole life. Monotonic counters live
-  // in this scope so they survive a resume-missing restart (below), which recreates the channel.
-  let delivered = 0;
-  let completed = 0;
-  const onDeliver = () => void delivered++;
-  // Count every turn boundary, wrapping (not replacing) the caller's own onTurnComplete.
+  // until that turn's `result` arrives. `active()` reports it, so a caller can tell a worker
+  // mid-turn from one sitting idle between turns — which the registry `status` cannot, since a live
+  // session stays "running" its whole life.
+  //
+  // A FLAG, deliberately not a `delivered > completed` counter difference (the shape this used to
+  // have): a turn that ends without an SDK `result` — an interrupt, a stream error, the
+  // resume-missing restart below — bumped `delivered` only and left the session reporting busy
+  // FOREVER, which is how dispatch came to refuse healthy projects with "busy — queued". The flag
+  // is cleared at every turn boundary AND when the run ends, so it cannot drift. It lives in this
+  // scope so it survives the restart, which recreates the channel.
+  let inTurn = false;
+  const onDeliver = () => void (inTurn = true);
+  // Clear at every turn boundary, wrapping (not replacing) the caller's own onTurnComplete.
   const tracked: RunHandlers = {
     ...handlers,
     onTurnComplete: (result) => {
-      completed++;
+      inTurn = false;
       handlers.onTurnComplete?.(result);
     },
   };
@@ -861,7 +866,9 @@ function startClaudeOrder(
     channel.stopRecording(); // one restart only
     if (closeRequested) channel.close();
     return open({ ...deps, resume: undefined });
-  })();
+  })().finally(() => {
+    inTurn = false; // the run is over — it cannot still be processing a turn
+  });
 
   return {
     followUp: (text) => channel.push(userMessage(text)),
@@ -875,7 +882,7 @@ function startClaudeOrder(
       }
     },
     queued: () => channel.queued(),
-    active: () => delivered > completed,
+    active: () => inTurn,
     close: () => {
       closeRequested = true;
       channel.close();
