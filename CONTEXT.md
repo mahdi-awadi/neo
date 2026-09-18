@@ -123,3 +123,58 @@ _Avoid_: guidelines, best practices, coding standards
 **Escalation**:
 The governor stopping a worker to ask the operator for permission to do something risky.
 _Avoid_: approval request, prompt, confirmation
+
+### Telling a working session from a wedged one
+
+**Activity**:
+Any evidence that a worker is still doing something — *any* streamed SDK event: a partial
+generation delta, a tool call, a tool result, a system event, a turn result. Deliberately wider
+than anything the operator can read: a worker writing one enormous file for ten minutes is
+producing activity and no output.
+_Avoid_: heartbeat, progress, event, output
+
+**Last activity**:
+When the engine last saw activity from a session. The single authoritative liveness clock:
+everything that judges alive-or-wedged reads this and nothing else.
+_Avoid_: last seen, last touch, last message
+
+**Last output**:
+When a session last produced something the operator can read. Useful ("it has told me nothing for
+20 minutes"), but it is *not* a liveness signal — judging liveness by it is what makes a busy
+worker look dead.
+_Avoid_: last activity, last reply
+
+**Turn**:
+One brief handed to a session and worked to its conclusion. A session works one turn at a time;
+further briefs queue behind the one in flight.
+_Avoid_: request, job, run
+
+**In-turn / between-turns**:
+Whether a turn is being worked *right now*. Orthogonal to whether the session is open: a session
+sitting between turns is healthy and instantly available, however long it has sat there.
+_Avoid_: busy, active, running
+
+**Session state**:
+The one word for what a session is doing, **derived** from the clocks above and never stored:
+- **working** — in-turn, activity seen recently.
+- **quiet** — in-turn and alive, but nothing operator-visible for a while (a long build, a big file).
+- **idle** — open, between turns. Healthy and available now, at any age.
+- **awaiting-operator** — in-turn but blocked on the operator (a permission escalation, or a raised
+  decision). The clock that matters is the operator's, so this state is never wedged and never
+  stall-aborted.
+- **wedged** — in-turn, and no activity past the wedge threshold. The only state that means
+  something is actually wrong.
+_Avoid_: busy, stuck, hung, running
+
+**Session status**:
+The lifecycle of the registry entry — `running` while a run is open, `idle` once it ends, then
+`done`/`error`. Bookkeeping, *not* what the worker is doing: it stays `running` for a session's
+whole life, including while it sits between turns. Never report it to the operator; report the
+**session state**.
+_Avoid_: state, status (unqualified)
+
+**Stall abort**:
+Dispatch ending a sub-run that has shown no **activity** for the stall window. It measures activity
+and never output, it is paused while the session is awaiting the operator, and it records the
+evidence it acted on before it fires.
+_Avoid_: timeout, kill, watchdog
