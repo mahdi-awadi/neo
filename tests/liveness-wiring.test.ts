@@ -181,3 +181,24 @@ test("delivering a brief clears a raised decision but never a pending approval",
   clearDecisionBlock(d.registry, s.id);
   expect(d.registry.get(s.id)!.blockedOn).toMatchObject({ kind: "approval" });
 });
+
+// A dispatch landing on a project that is blocked on the operator must say THAT — "is working"
+// would send the company looking for progress that cannot happen until the operator answers.
+test("dispatch to a project awaiting the operator names that state, not 'working'", async () => {
+  const root = projectRoot();
+  const folder = join(root, "acme");
+  const { d } = makeDeps();
+  const s = d.registry.add({ id: "o-blocked", source: "neo", folder, task: "t", chatId: -2, createdAt: 0 }, 0);
+  d.registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true });
+  d.registry.noteBlocked(s.id, { kind: "decision", label: "Postgres or Mongo?", since: 0 });
+
+  const out = await dispatchToProject("acme", "next task", d, 1, {
+    start: (() => {
+      throw new Error("must not start");
+    }) as never,
+    root,
+    now: () => 60_000,
+  });
+  expect(out).toContain("awaiting-operator");
+  expect(out).not.toContain("is working");
+});

@@ -372,6 +372,7 @@ export async function dispatchToProject(
     // The SAME authoritative signal the operator's status line reads — state, both clocks, queue —
     // so a busy/queued reply can never disagree with what `sessions` says about the same project.
     const status = describeSession(deps.registry, existing, now(), deps.liveness);
+    const state = stateOf(deps.registry, existing, now(), deps.liveness);
     if (control?.followUp) {
       const turnActive = control.active?.() === true; // the REAL "a turn is being processed" signal
       control.followUp(order.task);
@@ -383,9 +384,10 @@ export async function dispatchToProject(
         deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name, workClass } });
         await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
         return (
-          `${name} is working — I queued this brief behind its current turn (${status}). It runs when the ` +
-          `current work yields; its output streams to the operator as ${name}. This is NORMAL, not a ` +
-          `wedged session: only a "wedged" state means it is stuck.`
+          `${name} is ${state} — I queued this brief behind its current turn (${status}). It runs when the ` +
+          `current work yields; its output streams to the operator as ${name}. Unless that state is ` +
+          `"wedged" this is NORMAL and needs nothing from you` +
+          (state === "awaiting-operator" ? " EXCEPT the operator's answer to the question it raised." : ".")
         );
       }
       // Alive but IDLE between turns: the follow-up is pulled and run immediately.
@@ -398,11 +400,14 @@ export async function dispatchToProject(
     // No live handle. Usually NOT a fault: the previous dispatch marked the session running and is
     // still preparing it (ensureIndexed on a big repo takes minutes) — `stateOf` calls that
     // `starting`. Say which it is instead of implying the project is broken.
-    const state = stateOf(deps.registry, existing, now(), deps.liveness);
     deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control", state } });
     return (
       `${name} is ${state} — ${status} — and has no live handle to queue behind yet` +
-      (state === "starting" ? " (the engine is still preparing it: indexing + context gate)" : " (it may be mid-reload)") +
+      (state === "starting"
+        ? " (the engine is still preparing it: indexing + context gate)"
+        : state === "awaiting-operator"
+          ? " (it is waiting on the operator's answer)"
+          : " (it may be mid-reload)") +
       `. I did NOT start a second run; retry shortly and it will deliver once the session settles.`
     );
   }
