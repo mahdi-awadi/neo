@@ -548,6 +548,13 @@ and its consequences; `CONTEXT.md` gains **originating trigger** and re-scopes *
 background work alone. `tsc` clean; full suite green (769). Going live needs a daemon restart
 (operator-gated) — the running daemon still classes every dispatch as background.
 
+**Telegram group commands + SDK reproducibility:** `handleCommand` now accepts Telegram's
+group-chat command form (`/command@bot_username`) by stripping the bot suffix before command
+lookup; `/sdk@neo_bot codex` therefore switches the provider exactly like `/sdk codex` instead of
+falling through into ordinary work. The Claude Agent SDK dependency is now pinned to `0.3.270`
+rather than floating on `latest`, making installs reproducible while retaining the version in the
+lockfile. Built TDD (the suffixed `/sdk` path switches the configured provider).
+
 **The engineering baseline is now engine-carried, not brief-carried (2026-09-18).** The operator's
 hard rule — non-standard code is a failure even when it works (the five items are listed once, in
 `CLAUDE.md`) — lived only in this repo's `CLAUDE.md`. A dispatched worker loads the *target*
@@ -564,3 +571,34 @@ decision) — see `docs/adr/0002-engineering-baseline-lives-in-the-dispatch-prea
 a new rule must be phrased tightly, not appended as prose. Built TDD (a preamble assertion per
 baseline item + the size ceiling). `tsc` clean; full suite green (772). Going live needs a daemon
 restart (operator-gated) — the preamble is read at worker launch.
+
+**Neo can tell a working session from a wedged one (2026-09-18).** The operator caught the engine
+lying in both directions on the same day: `sessions` reported `adminli · running · waiting for 10h ·
+up 1d` while adminli was healthy and answered the next brief 3.4 s later (the company read that as
+wedged and offered to restart a working project), a worker hung ~9 minutes on an interactive `cp -i`
+prompt with nothing noticing, and dispatch refused healthy projects as "busy — queued" / "busy but
+no live handle". One defect underneath all of it: the engine held several partial signals and no
+authoritative one. `status` is entry lifecycle and reads `running` for a session's whole life;
+`activity.since` is the age of a *label*, which between turns is `waiting`; `lastActivityAt` was fed
+only by completed tool calls; and `onHeartbeat` — the one handler that fires on *every* streamed SDK
+event — was wired solely to a local variable inside `dispatch.ts`, where nothing else could read it.
+`active()` was `delivered > completed`, so any turn ending without an SDK `result` (an interrupt, a
+stream error, the resume-missing restart) left a session reporting busy **forever**.
+
+The fix is one seam: `src/engine/liveness.ts` decides, purely, from two clocks — **last activity**
+(any streamed event; the only thing alive-or-wedged may read) and **last output** (reported, never
+judged) — plus whether a turn is in flight and whether the operator owes an answer. It yields one
+state: `starting` / `working` / `quiet` / `idle` / `awaiting-operator` / `wedged`, and every surface
+(`/list`, the `sessions` tool, the web console, dispatch's busy replies) renders that word and both
+ages. `running` is gone from operator text. A session between turns is `idle` at any age; the gap
+between "registered" and "worker attached" (folder indexing + the context gate — minutes on a big
+repo) is `starting`, not "appears busy". Escalations and raised decisions mark the session blocked,
+so the dispatch stall monitor pauses instead of aborting a worker that is waiting on the operator,
+and the watchdog swaps its blanket "label is `waiting` → never alert" exemption (which made a
+session wedged *at* a turn boundary undetectable) for the correct one. Every abort/alert records its
+evidence first — both ages, the label, the turn state, the queue depth, and a cheap `looksLikeStdinWait`
+read that names a `cp -i`-shaped hang. Thresholds are config (`liveness.wedgedAfterMs`,
+`quietAfterMs`). See `docs/adr/0003-one-activity-clock-one-derived-session-state.md`; `CONTEXT.md`
+gains the whole vocabulary. Built TDD (41 new assertions across liveness, registry, session-runner,
+session-status, watchdog, dashboard and the dispatch wiring). `tsc` clean; full suite green (813).
+Going live needs a daemon restart (operator-gated).

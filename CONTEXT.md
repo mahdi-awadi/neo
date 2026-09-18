@@ -156,6 +156,8 @@ _Avoid_: busy, active, running
 
 **Session state**:
 The one word for what a session is doing, **derived** from the clocks above and never stored:
+- **starting** — registered, but its worker is not attached yet (the engine is still preparing it:
+  indexing the folder, running the context gate). It cannot take a brief; nothing is wrong either.
 - **working** — in-turn, activity seen recently.
 - **quiet** — in-turn and alive, but nothing operator-visible for a while (a long build, a big file).
 - **idle** — open, between turns. Healthy and available now, at any age.

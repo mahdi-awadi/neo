@@ -60,8 +60,9 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `inboxListDefault` | `100` | Default page size for the customer-inbox list in the web console when no explicit limit is given. |
 | `messageRoutesCacheCap` | `2000` | In-memory reply-route cache bound (oldest evicted first); the ledger backs it, so this only sizes the fast front cache. |
 | `drainWindowMs` | `90000` (90s) | Graceful-reload wait for running turns to wrap up before interrupt. |
-| `stuckAfterMs` | `600000` (10m) | Alert when a running session has produced nothing for this long. |
-| `longTurnAlertMs` | `1200000` (20m) | Alert when one activity label has run this long. |
+| `liveness` | `{ wedgedAfterMs: 300000, quietAfterMs: 180000 }` | Thresholds behind the **derived session state** every surface reports (`working` / `quiet` / `idle` / `starting` / `awaiting-operator` / `wedged`). `wedgedAfterMs` = a turn is in flight and nothing at all has been seen for this long; `quietAfterMs` = alive, but nothing operator-visible for this long. See "Session liveness" below. |
+| `stuckAfterMs` | `600000` (10m) | Watchdog: alert when a session **with a turn in flight** shows NO activity for this long (any streamed SDK event counts as activity). A session sitting between turns, or waiting on the operator, is never alerted however old it is. |
+| `longTurnAlertMs` | `1200000` (20m) | Watchdog: an FYI when one activity label has run this long **while still pulsing** — explicitly not a "stuck" claim. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
 | `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
 | `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. Set `secretary` to run the digest loop on the latest model. |
@@ -330,3 +331,35 @@ the worker runs without it. The browser launches only on first tool use.
 
 **Point projects at a non-`/home` root.** Set `WORK_ROOT=/srv/projects` (and, if you keep the
 company workspace elsewhere, `COMPANY_FOLDER=/srv/projects/company`).
+
+## Session liveness
+
+Neo keeps **two** clocks per session and judges on exactly one of them:
+
+- **last activity** — the last time *any* streamed SDK event arrived (a partial generation delta, a
+  tool call, a tool result, a system event, a turn result). This is the only signal that decides
+  alive-or-wedged: the dispatch stall abort, the stuck watchdog, the idle sweep and every status
+  line read it and nothing else.
+- **last output** — the last operator-visible line. Always reported, never judged: a worker writing
+  one huge file for ten minutes is silent to you and perfectly alive.
+
+From those, plus whether a turn is in flight and whether the operator owes it an answer, the engine
+derives ONE state and shows that word everywhere (`/list`, the company's `sessions` tool, the web
+console, dispatch's busy replies):
+
+| State | Means | Action |
+|---|---|---|
+| `working` | A turn is in flight and activity is fresh. | Nothing. |
+| `quiet` | Alive, but nothing operator-visible for `quietAfterMs` (a long build, a big file). | Nothing. |
+| `idle` | Open, between turns. **Healthy and free at any age** — a project idle for two days answers instantly. | Nothing. |
+| `starting` | Registered, worker not attached yet (folder indexing + the context gate). | Retry shortly. |
+| `awaiting-operator` | Blocked on a permission escalation or a raised decision. Never stall-aborted; its clock is yours. | Answer it. |
+| `wedged` | A turn is in flight and there has been NO activity past the threshold. | The only state worth `/kill`. |
+
+The registry's own `status` (`running`/`idle`/`done`/`error`) is entry *lifecycle* bookkeeping — it
+reads `running` for a session's whole life — and is deliberately never shown as a status.
+
+Every abort or alert records its evidence to the event log first (`dispatch_stall_evidence`,
+`session_stuck`): both clock ages, the last activity label, the turn state, the queue depth, and a
+cheap "this command looks like it is waiting on stdin" read for interactive-prompt hangs such as
+`cp -i`. Read them with `/events dispatch_stall_evidence` or `/events session_stuck`.

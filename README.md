@@ -176,6 +176,9 @@ every project's live state at once.
 
 The same commands work over Telegram and the web console.
 
+In a Telegram group, Telegram may address a command as `/command@your_bot_username`; Neo accepts
+that form too (for example, `/sdk@neo_bot codex`).
+
 | Command | Does |
 | --- | --- |
 | `/open <folder> <task>` | Start a project session (or resume one) and give it a task; reverts to the company after. |
@@ -220,6 +223,12 @@ Precedence is **environment variable → `config.json` → built-in default**. S
 | `COMPANY_FOLDER` | `<repo>/agent` | The always-on "company" workspace folder. |
 | `NEO_LOOP_SCHEDULER` | `1` | Set `0` to disable the autonomous loop scheduler. |
 | `DECISIONS_CHAT_ID` | *(unset)* | Telegram chat id for the unmuted **Decisions** channel (blocking questions/escalations/failures). Unset → decisions post to the admin DM but are still tracked + reminded. |
+
+**Session liveness.** Every surface reports one derived state — `working` · `quiet` · `idle` ·
+`starting` · `awaiting-operator` · `wedged` — plus two ages, `last activity` (any streamed SDK
+event) and `last output` (what you can read). Only `wedged` means something is wrong: a session
+between turns is `idle` and free at any age. Aborts and alerts log their evidence first
+(`/events dispatch_stall_evidence`, `/events session_stuck`). See `docs/CONFIG.md`.
 
 Structured knobs in `config.json` (budgets, dispatch/watchdog timeouts, context policy, provider
 routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CONFIG.md)**.

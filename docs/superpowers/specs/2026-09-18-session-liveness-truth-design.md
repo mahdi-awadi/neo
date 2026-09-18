@@ -47,12 +47,14 @@ Root causes, with file:line:
 `src/engine/liveness.ts` — pure, clock-injected, no I/O:
 
 ```ts
-export type SessionState = "working" | "quiet" | "idle" | "awaiting-operator" | "wedged";
+export type SessionState =
+  | "starting" | "working" | "quiet" | "idle" | "awaiting-operator" | "wedged";
 
 export interface LivenessSignals {
   /** A turn is being worked right now (control.active()). */
   inTurn: boolean;
   queued: number;
+  hasWorker?: boolean;            // false = registered, worker not attached yet
   blockedOn?: BlockedOn;          // set while the operator owes an answer
 }
 export interface LivenessThresholds { wedgedAfterMs: number; quietAfterMs: number }
@@ -68,12 +70,17 @@ Decision order (first match wins):
 |---|-----------|-------|
 | 1 | `status` is not `running` | `idle` |
 | 2 | `blockedOn` set | `awaiting-operator` |
-| 3 | not `inTurn` | `idle` |
-| 4 | `now - lastActivityAt >= wedgedAfterMs` | `wedged` |
-| 5 | `now - lastOutputAt >= quietAfterMs` | `quiet` |
-| 6 | otherwise | `working` |
+| 3 | no worker handle attached | `starting` |
+| 4 | not `inTurn` | `idle` |
+| 5 | `now - lastActivityAt >= wedgedAfterMs` | `wedged` |
+| 6 | `now - lastOutputAt >= quietAfterMs` | `quiet` |
+| 7 | otherwise | `working` |
 
-Only rules 4 and 5 read a clock, and only rule 4 can mean "something is wrong". Nothing reads
+(Rule 3 was added during the build: root cause 6 needs a word for "registered, worker not attached
+yet". Calling that `idle` would be a new lie — it cannot take a brief — and calling it busy was the
+old one.)
+
+Only rules 5 and 6 read a clock, and only rule 5 can mean "something is wrong". Nothing reads
 `activity.since`; it survives as a *label age* for display only.
 
 ### Model changes

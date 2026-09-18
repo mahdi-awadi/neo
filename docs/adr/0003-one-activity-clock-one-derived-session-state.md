@@ -40,9 +40,11 @@ authoritative one**, and it reported the wrong one.
 2. **Output is reported, never judged.** `lastOutputAt` is a second, separate clock for what the
    operator can read. It appears in status text and never in a decision.
 3. **State is derived, not stored.** One pure function, `sessionState()` in `src/engine/liveness.ts`,
-   maps (status, in-turn, blocked-on, the two clocks, thresholds) to exactly one of `working`,
-   `quiet`, `idle`, `awaiting-operator`, `wedged`. Everything operator-facing renders that word;
-   nothing renders `status` any more.
+   maps (status, in-turn, worker-attached, blocked-on, the two clocks, thresholds) to exactly one of
+   `starting`, `working`, `quiet`, `idle`, `awaiting-operator`, `wedged`. Everything operator-facing
+   renders that word; nothing renders `status` any more. `starting` exists because the gap between
+   "session registered" and "worker attached" (folder indexing + the context gate — minutes on a big
+   repo) is neither idle nor busy, and calling it either one is a lie the engine was already telling.
 4. **Awaiting the operator is a first-class state.** The engine marks a session blocked when it
    raises a permission escalation or a decision, and clears it on the answer. A blocked session is
    never wedged, and its stall clock is paused exactly like the API-retry backoff already is.
