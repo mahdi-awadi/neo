@@ -475,13 +475,15 @@ test("a BUSY sub-run (streaming activity) is NOT stall-aborted even long past th
   await dispatchToProject(
     "eticket-v3",
     "long build",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 20, dispatchGraceMs: 5 },
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 200, dispatchGraceMs: 20 },
     1,
     { start: fakeStart as never, root },
   );
-  // keep the worker "busy": activity every 5ms, well inside the 20ms stall window
-  const beat = setInterval(() => handlers?.onActivity?.("Bash"), 5);
-  await new Promise((r) => setTimeout(r, 100)); // 5× the stall window
+  // Keep the worker "busy": activity every 20ms, an order of magnitude inside the 200ms stall
+  // window. (The margin is deliberate — at 5ms/20ms a single event-loop hiccup under a full-suite
+  // run false-failed this test.)
+  const beat = setInterval(() => handlers?.onActivity?.("Bash"), 20);
+  await new Promise((r) => setTimeout(r, 700)); // 3.5x the stall window
   clearInterval(beat);
   expect(interrupted).toBe(false);
 });
@@ -506,7 +508,7 @@ test("a sub-run emitting a steady drip of partial stream_events (one long genera
       yield { type: "system", subtype: "init", session_id: "sub-1" };
       while (!stopped) {
         yield { type: "stream_event", event: { type: "content_block_delta" }, session_id: "sub-1" };
-        await new Promise((r) => setTimeout(r, 5)); // 5ms gap << 20ms stall window
+        await new Promise((r) => setTimeout(r, 20)); // 20ms gap << 200ms stall window
       }
     })();
     return Object.assign(gen, {
@@ -519,11 +521,11 @@ test("a sub-run emitting a steady drip of partial stream_events (one long genera
   await dispatchToProject(
     "eticket-v3",
     "write a huge plan file",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 20, dispatchGraceMs: 5 },
+    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 200, dispatchGraceMs: 20 },
     1,
     { start: start as never, root },
   );
-  await new Promise((r) => setTimeout(r, 120)); // 6× the stall window, while deltas keep dripping
+  await new Promise((r) => setTimeout(r, 700)); // 3.5x the stall window, while deltas keep dripping
   expect(interrupted).toBe(false); // busy generating → never falsely stall-aborted
   stopped = true; // let the fake stream end so no timer outlives the test
 });
