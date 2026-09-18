@@ -481,3 +481,17 @@ test("/list shows a working project's activity and its last-activity age", () =>
   expect(out).toContain("Bash: bun test");
   expect(out).toContain("last activity 10s ago");
 });
+
+test("/list's icon follows the derived state — a wedged project is not a green dot", () => {
+  const registry = createRegistry();
+  const idle = registry.add(order({ folder: "/p/alpha" }), 0);
+  registry.attachControl(idle.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false });
+  const stuck = registry.add(order({ folder: "/p/beta" }), 0);
+  registry.attachControl(stuck.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true });
+
+  const out = handleCommand("/list", 1, deps({ registry, now: () => 30 * 60 * 1000 }))!.text;
+  const alpha = out.split("\n").find((l) => l.includes("alpha"))!;
+  const beta = out.split("\n").find((l) => l.includes("beta"))!;
+  expect(alpha).not.toContain("🟢"); // idle between turns — free, not busy
+  expect(beta).toContain("🔴"); // wedged — the only row worth acting on
+});

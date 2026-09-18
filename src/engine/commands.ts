@@ -13,9 +13,9 @@ import type { UsageMeter, RateLimitInfo } from "./usage";
 import type { TrustStore } from "./trust";
 import type { Inbox } from "./inbox";
 import { renderInboxList, type InboxListEntry } from "./inbox-actions";
-import type { SessionInfo } from "../types";
 import { sessionContext, type ContextSignals } from "./context-policy";
-import { describeSession } from "./session-status";
+import { describeSession, stateOf } from "./session-status";
+import type { SessionState } from "./liveness";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
 
 export interface CommandDeps {
@@ -322,8 +322,14 @@ function sdkCommand(arg: string, cfg: CommandDeps["cfg"]): CommandResult {
   };
 }
 
-function statusIcon(status: SessionInfo["status"]): string {
-  return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
+/** The dot follows the DERIVED state, so the glance and the words agree: a session sitting between
+ *  turns is not a busy green dot, and the one row worth acting on is the only red one. */
+function stateIcon(state: SessionState): string {
+  if (state === "wedged") return "🔴";
+  if (state === "awaiting-operator") return "🟠";
+  if (state === "working" || state === "quiet") return "🟢";
+  if (state === "starting") return "🟡";
+  return "⚪️";
 }
 
 function renderList(
@@ -357,6 +363,7 @@ function renderList(
       // lifecycle bookkeeping and is never shown — "running" for an idle session is the lie this
       // whole surface was built on (ADR 0003).
       const live = describeSession(registry, s, now);
+      const state = stateOf(registry, s, now);
       let ctx = "";
       if (s.sdkSessionId) {
         try {
@@ -366,7 +373,7 @@ function renderList(
           // skip on error
         }
       }
-      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx} · "${task}"`;
+      return `${star}${stateIcon(state)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx} · "${task}"`;
     })
     .join("\n");
   return { text, select };
