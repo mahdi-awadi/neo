@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { dispatchToProject, raiseOperatorDecision, type DispatchDeps } from "../src/engine/dispatch";
-import { stateOf } from "../src/engine/session-status";
+import { clearDecisionBlock, stateOf } from "../src/engine/session-status";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -163,4 +163,21 @@ test("raising a decision for a folder with no live session is harmless", async (
   const { d } = makeDeps({ postDecision: async () => ({ chatId: 9, messageId: 1 }) });
   const id = await raiseOperatorDecision(d, { folder: "/p/nothing-open", chatId: 1, question: "q?" });
   expect(id).toBeTruthy();
+});
+
+// A brief arriving answers a raised DECISION (or supersedes it). It does NOT answer a pending
+// permission escalation — that approval is still suspending the worker mid-tool, and clearing it
+// would hand the stall monitor a worker that is still legitimately waiting.
+test("delivering a brief clears a raised decision but never a pending approval", async () => {
+  const folder = "/p/acme";
+  const { d } = makeDeps();
+  const s = d.registry.add({ id: "o-clear", source: "neo", folder, task: "t", chatId: -2, createdAt: 0 }, 0);
+
+  d.registry.noteBlocked(s.id, { kind: "decision", label: "Postgres or Mongo?", since: 0 });
+  clearDecisionBlock(d.registry, s.id);
+  expect(d.registry.get(s.id)!.blockedOn).toBeUndefined();
+
+  d.registry.noteBlocked(s.id, { kind: "approval", label: "Write outside project", since: 0 });
+  clearDecisionBlock(d.registry, s.id);
+  expect(d.registry.get(s.id)!.blockedOn).toMatchObject({ kind: "approval" });
 });

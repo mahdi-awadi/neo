@@ -30,7 +30,7 @@ import {
 } from "./context-policy";
 import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
-import { describeSession } from "./session-status";
+import { clearDecisionBlock, describeSession } from "./session-status";
 import type { Priority } from "./priority";
 import {
   apiExhaustionWarning,
@@ -214,10 +214,9 @@ export async function handleMessage(
       // bare "busy": what it's doing, for how long, and how deep the queue is.
       control.followUp(text.trim());
       registry.touch(live.id, now());
-      // The operator's message IS the answer to whatever this session was blocked on (or replaces
-      // the question) — keeping the block set would keep reporting awaiting-operator for a session
-      // that is now working.
-      registry.noteBlocked(live.id, undefined);
+      // The operator's message answers (or replaces) a raised DECISION. A pending approval is
+      // left alone — it is still suspending the worker mid-tool and clears on their verdict.
+      clearDecisionBlock(registry, live.id);
       if (oneShot) registry.clearFocus(chatId);
       await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSession(registry, live, now(), deps.cfg.liveness)}`);
       return null;

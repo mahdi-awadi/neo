@@ -21,7 +21,7 @@ import { runOrder, startOrder, type RunResult } from "./session-runner";
 import { frontendBackend, teamLeadPreamble } from "./agent-teams";
 import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
-import { describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
+import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memoryTools } from "./memory-tool";
@@ -376,9 +376,9 @@ export async function dispatchToProject(
       const turnActive = control.active?.() === true; // the REAL "a turn is being processed" signal
       control.followUp(order.task);
       deps.registry.touch(existing.id, now());
-      // A brief arriving IS the answer to whatever the session was blocked on (or supersedes it):
-      // leaving the block set would keep reporting awaiting-operator for a session now working.
-      deps.registry.noteBlocked(existing.id, undefined);
+      // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
+      // alone, since that one is still suspending the worker mid-tool.
+      clearDecisionBlock(deps.registry, existing.id);
       if (turnActive) {
         deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name, workClass } });
         await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);

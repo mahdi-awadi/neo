@@ -41,6 +41,20 @@ export function liveSignals(registry: Registry, s: SessionInfo): LivenessSignals
   };
 }
 
+/**
+ * A brief/answer has been delivered into this session — clear a raised DECISION block, because the
+ * message either answers it or supersedes it. Deliberately leaves an `approval` block alone: that
+ * one is suspending the worker mid-tool and clears itself when the operator answers, so dropping it
+ * here would hand the stall monitor a worker that is still legitimately waiting.
+ */
+export function clearDecisionBlock(registry: Registry, id: string): void {
+  try {
+    if (registry.get(id)?.blockedOn?.kind === "decision") registry.noteBlocked(id, undefined);
+  } catch {
+    // observer only — never break the delivery path
+  }
+}
+
 /** The facts behind a session's state — for logging an abort/alert before it fires. */
 export function sessionEvidence(
   registry: Registry,
@@ -83,7 +97,7 @@ export function describeSession(
 export interface SessionStatusView {
   name: string;
   folder: string;
-  /** What it is DOING (working/quiet/idle/awaiting-operator/wedged) — not the registry lifecycle. */
+  /** What it is DOING (starting/working/quiet/idle/awaiting-operator/wedged) — not the lifecycle. */
   state: SessionState;
   line: string;
 }
