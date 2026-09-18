@@ -551,17 +551,16 @@ export async function dispatchToProject(
         // A dispatched worker's native AskUserQuestion is serviced the same way (gated on postDecision).
         onStructuredQuestion: deps.postDecision
           ? async (ask) => {
-              const question = questionSummary(ask);
-              // The worker check-points and stops after this: it is awaiting the OPERATOR, not
-              // hung. The block clears when a brief/answer is delivered back into the session.
-              noteRegistry(() => deps.registry.noteBlocked(session.id, { kind: "decision", label: question, since: now() }));
+              // raiseOperatorDecision marks the session awaiting-operator (it is the one path
+              // behind every blocking ask), so nothing to do here but raise it.
               await raiseOperatorDecision(deps, {
                 project: name,
                 folder,
                 orderId: order.id,
                 chatId: replyChat,
-                question,
+                question: questionSummary(ask),
                 spec: ask,
+                now,
               });
             }
           : undefined,
@@ -797,7 +796,7 @@ export async function sendProjectFile(
  *  When no `postDecision` is wired (customer/ingress path — the firewall), the decision is still
  *  queued (surfaced by /decisions + the secretary digest), just not posted to a channel. */
 export async function raiseOperatorDecision(
-  deps: Pick<DispatchDeps, "ledger" | "postDecision">,
+  deps: Pick<DispatchDeps, "ledger" | "postDecision"> & Partial<Pick<DispatchDeps, "registry">>,
   params: {
     project?: string;
     folder?: string;
@@ -806,6 +805,8 @@ export async function raiseOperatorDecision(
     question: string;
     options?: string[];
     spec?: StructuredAsk;
+    /** Injectable clock for the blocked-since stamp (tests). */
+    now?: () => number;
   },
 ): Promise<string> {
   const id = deps.ledger.openDecision({
@@ -825,6 +826,20 @@ export async function raiseOperatorDecision(
     folder: params.folder,
     data: { project: params.project, id, structured: !!params.spec, options: params.options?.length ?? 0, posted: !!posted },
   });
+  // The worker that raised this check-points and STOPS: it is awaiting the OPERATOR, not hung.
+  // Marked here — the one path behind every blocking-question gesture (`ask_operator` and the
+  // serviced native AskUserQuestion alike) — so no caller can raise a decision without the session
+  // reporting it. Cleared when a brief/answer is delivered back, or when the run ends.
+  if (deps.registry && params.folder) {
+    try {
+      const session = deps.registry.findByFolder(params.folder);
+      if (session) {
+        deps.registry.noteBlocked(session.id, { kind: "decision", label: params.question, since: (params.now ?? Date.now)() });
+      }
+    } catch {
+      // observer only — a registry hiccup must never break raising the decision
+    }
+  }
   return id;
 }
 

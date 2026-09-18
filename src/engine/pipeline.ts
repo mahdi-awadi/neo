@@ -407,16 +407,12 @@ function startSession(
       // postDecision (the operator surface wired it) — the same firewall gate as ask_operator.
       onStructuredQuestion: deps.postDecision
         ? async (ask) => {
-            const question = questionSummary(ask);
-            // The worker check-points and stops after raising this: awaiting the OPERATOR, not hung.
-            try {
-              registry.noteBlocked(registryId, { kind: "decision", label: question, since: now() });
-            } catch {
-              /* observer only */
-            }
+            // Passing the registry is what marks this session awaiting-operator (the worker
+            // check-points and STOPS after raising) — raiseOperatorDecision owns that, as the one
+            // path behind every blocking ask.
             await raiseOperatorDecision(
-              { ledger, postDecision: deps.postDecision },
-              { project, folder: order.folder, orderId: order.id, chatId, question, spec: ask },
+              { ledger, postDecision: deps.postDecision, registry },
+              { project, folder: order.folder, orderId: order.id, chatId, question: questionSummary(ask), spec: ask, now },
             );
           }
         : undefined,

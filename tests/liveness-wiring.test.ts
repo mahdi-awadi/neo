@@ -5,7 +5,8 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { dispatchToProject, type DispatchDeps } from "../src/engine/dispatch";
+import { dispatchToProject, raiseOperatorDecision, type DispatchDeps } from "../src/engine/dispatch";
+import { stateOf } from "../src/engine/session-status";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -143,3 +144,23 @@ test("a stall abort records the evidence it acted on BEFORE it fires", async () 
   const ev = d.ledger.listEvents({ kind: "dispatch_stall_evidence" })[0];
   expect(ev.data).toMatchObject({ limit: "stall", state: "wedged", activity: "Bash: cp -i src dst", stdinWait: true });
 }, 10_000);
+
+test("raising a decision marks that folder's session awaiting-operator", async () => {
+  const folder = "/p/acme";
+  const { d } = makeDeps({ postDecision: async () => ({ chatId: 9, messageId: 1 }) });
+  const s = d.registry.add({ id: "o-live", source: "neo", folder, task: "t", chatId: -2, createdAt: 0 }, 0);
+  d.registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true });
+
+  // raiseOperatorDecision is the ONE path behind every blocking ask — `ask_operator` and the
+  // serviced native AskUserQuestion both land here, so marking it here can't be forgotten.
+  await raiseOperatorDecision(d, { project: "acme", folder, chatId: 1, question: "Postgres or Mongo?", now: () => 0 });
+
+  expect(d.registry.get(s.id)!.blockedOn).toMatchObject({ kind: "decision", label: "Postgres or Mongo?", since: 0 });
+  expect(stateOf(d.registry, d.registry.get(s.id)!, 10 * 60 * 1000)).toBe("awaiting-operator");
+});
+
+test("raising a decision for a folder with no live session is harmless", async () => {
+  const { d } = makeDeps({ postDecision: async () => ({ chatId: 9, messageId: 1 }) });
+  const id = await raiseOperatorDecision(d, { folder: "/p/nothing-open", chatId: 1, question: "q?" });
+  expect(id).toBeTruthy();
+});
