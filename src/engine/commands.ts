@@ -15,7 +15,7 @@ import type { Inbox } from "./inbox";
 import { renderInboxList, type InboxListEntry } from "./inbox-actions";
 import type { SessionInfo } from "../types";
 import { sessionContext, type ContextSignals } from "./context-policy";
-import { humanAge } from "./session-status";
+import { describeSession } from "./session-status";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
 
 export interface CommandDeps {
@@ -227,7 +227,10 @@ export function telegramCommands(): TelegramCommand[] {
 export function handleCommand(text: string, chatId: number, deps: CommandDeps): CommandResult | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
-  const [word, ...rest] = trimmed.slice(1).split(/\s+/);
+  const [rawWord, ...rest] = trimmed.slice(1).split(/\s+/);
+  // Telegram addresses commands in group chats as `/command@bot_username`. The command is still
+  // ours, but without stripping the suffix it silently falls through into the work pipeline.
+  const word = rawWord.split("@", 1)[0].toLowerCase();
   const cmd = COMMANDS.find((c) => c.name === word || c.aliases?.includes(word));
   if (!cmd) return null; // /open + unknown -> let the pipeline handle it
   return cmd.run({ chatId, args: rest.join(" "), now: (deps.now ?? (() => Date.now()))(), deps });
@@ -349,9 +352,11 @@ function renderList(
       const star = s.id === activeId ? (focus!.mode === "pinned" ? "📌 " : "▶ ") : "";
       const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
-      const act = s.status === "running" && s.activity ? ` · ${s.activity.label} ${humanAge(now - s.activity.since)}` : "";
-      const q = registry.getControl(s.id)?.queued?.() ?? 0;
-      const queued = q > 0 ? ` · ${q} queued` : "";
+      // ONE vocabulary everywhere: the derived state + both clocks + the queue, exactly as the
+      // company's `sessions` tool and dispatch's busy replies render it. The registry `status` is
+      // lifecycle bookkeeping and is never shown — "running" for an idle session is the lie this
+      // whole surface was built on (ADR 0003).
+      const live = describeSession(registry, s, now);
       let ctx = "";
       if (s.sdkSessionId) {
         try {
@@ -361,7 +366,7 @@ function renderList(
           // skip on error
         }
       }
-      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${s.status}${act}${queued}${ctx} · ${humanAge(now - s.startedAt)} · "${task}"`;
+      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx} · "${task}"`;
     })
     .join("\n");
   return { text, select };

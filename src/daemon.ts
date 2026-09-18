@@ -166,6 +166,12 @@ async function main(): Promise<void> {
           console.log(`[watchdog] ${text}`);
           alertOperator(text); // ALERT → the Decisions channel (or the DM if unset)
         },
+        // The evidence goes to the log BEFORE the alert, so a wrong alert (or a missing one) can be
+        // diagnosed from the ledger alone — ages, label, turn state, stdin-wait suspicion.
+        record: (kind, data) => {
+          console.log(`[watchdog] ${kind} ${JSON.stringify(data)}`);
+          ledger.recordEvent(kind, { folder: typeof data.folder === "string" ? data.folder : undefined, data });
+        },
       });
       if (cfg.loopSchedulerEnabled) {
         tickScheduler({
