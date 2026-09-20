@@ -1,36 +1,52 @@
-# HANDOFF — neo
+# HANDOFF — 2026-09-20
 
-_Auto-written by Neo when this session was idle-closed (a deterministic engine note, not a
-worker turn). It records where the session left off so the next run can pick up; it is
-overwritten each time the session is closed._
+**Branch:** `fix/interactive-turns-bypass-budget-throttle` (off `fix/dispatch-stall-background-wait`,
+unpushed). **State: GREEN** — `bunx tsc --noEmit` clean, `bun test` 818 pass / 0 fail.
 
-- Folder: /home/neo
-- Opening brief: Before starting, read this project's rule and doc .md files so you work by its rules: AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.
+## Just landed — session liveness (`62068c1` → `5657988`)
 
-REQUIRED — use the `codebase-memory` MCP FIRST. The engine has already indexed this project for you, so the structural map is ready to query. Call `list_projects` FIRST and pass the EXACT project name it returns whose `root_path` matches (or contains) your working directory — do NOT guess or construct the project name. Guessing yields "project not found": this repo may be indexed under a path-derived name, and its code can live in a subfolder indexed as its own project. Then get_architecture for the module layout with that name, then search_code / query_graph to find the code that matters. Read source files directly ONLY for what the map doesn't cover — never as your default way in.
+One activity clock feeds one derived session state: `starting` / `working` / `quiet` / `idle` /
+`awaiting-operator` / `wedged`. Every operator surface renders that word — `/list`, the `sessions`
+tool, the web console, and dispatch's busy replies — so `running` is gone from operator text. The
+stall monitor and the watchdog now judge the state, not the age of a label. Detail:
+`docs/HISTORY.md` and `docs/adr/0003-one-activity-clock-one-derived-session-state.md`. Telegram's
+group command form (`/command@bot_username`) landed in the same batch (`82e42b1`).
 
-REQUIRED — use the superpowers skills for the shape of work at hand: brainstorming → writing-plans for design, systematic-debugging to root-cause any bug, and test-driven-development for implementation (write the failing test first).
+## Also landed — `4127ce2` feat(dispatch): the engineering baseline rides in the worker preamble
 
-Read-only investigation of the Neo ENGINE code — change NOTHING, no edits. Report findings with file:line citations.
+The operator's hard rule (non-standard code is a failure even when it works — the five items are
+listed once, in `CLAUDE.md`) is now carried by `briefWithProjectDocs` (`src/engine/dispatch.ts`),
+so every dispatched worker gets it and no brief can omit it.
 
-Context: A dispatched worker doing model-research tried to use web search, failed, misread it as "search blocked / permission denied", and concluded it should offload the search to Gemini. We are on the Claude Agent SDK and workers should have full WebSearch/WebFetch. I need to know whether the ENGINE actually routes/denies search in a way that pushes work toward Gemini, or whether this is purely a worker misreading a deferred-tool error.
+- **Root cause it fixes:** a dispatched worker loads the *target* folder's `CLAUDE.md`, never Neo's,
+  so the baseline reached a worker only when the brief author remembered to type it.
+- **Rejected:** per-project `CLAUDE.md` copies (N copies drift; new projects start without it) and a
+  governor check (it gates tool calls, not judgments about a finished change). ADR:
+  `docs/adr/0002-engineering-baseline-lives-in-the-dispatch-preamble.md`.
+- **Cost pinned:** preamble 3627 → 4311 chars (~1080 tokens per dispatch); a test caps the whole
+  preamble at 5000 chars, so a future rule must be phrased tightly, not appended as prose.
+- TDD: 2 tests in `tests/dispatch.test.ts` (one assertion per baseline item + the size ceiling).
+  Docs synced: `CONTEXT.md` (**dispatch preamble**, **engineering baseline**), `README.md`,
+  `docs/HISTORY.md`, `WIP.md`, `CLAUDE.md`.
 
-Answer these questions precisely, each with file:line evidence:
+## Blocker — RESTART PENDING (operator-gated; nothing was restarted or reloaded)
 
-1. GOVERNOR: In src/engine/governor.ts (and anything it imports), how are WebSearch and WebFetch handled? Specifically: for a dispatched/autonomous session (no interactive operator approval available), does the governor AUTO-DENY WebFetch and/or WebSearch? Quote the exact branch. Distinguish WebSearch vs WebFetch — are they treated the same? Is there a default-escalate → auto-deny path that catches them?
+The preamble is read at **worker launch**, so the running daemon keeps dispatching without the
+baseline until the operator restarts it. Everything else on this branch waits on the same restart:
+the liveness model (`62068c1` → `5657988`), work class follows the originating trigger (`36a454f`,
+`e39e0d9`), and the no-background-wait preamble contract (`7e4d0a1`).
 
-2. Does the governor's deny surface to the worker as a "permission denied"-type result that a worker could confuse with a tool-not-loaded error? Quote the denial message/shape.
+## In flight — uncommitted: the Agent SDK pin
 
-3. PROVIDER ROUTER: In src/engine/provider-router.ts, is there ANY code path that routes SEARCH or web work to Gemini for OWN-WORK (source != "customer")? Grep for gemini/Gemini across src/. List every place Gemini is invoked and what triggers it. Confirm whether Gemini is ONLY reachable for source:"customer" (customer-direct reads) and never for the operator's own search.
+`package.json` + `bun.lock` only. `@anthropic-ai/claude-agent-sdk` moves from `latest` to the exact
+`0.3.270`, so two installs of the same commit get the same worker binary. The docs that record the
+pin are committed: `docs/sdk-notes.md` (header), `docs/HISTORY.md`, `README.md`, `WIP.md`. `WIP.md`
+asks to leave the pin itself alone, so it stays uncommitted until the operator decides. The Telegram
+group-command work that used to sit beside it landed in `82e42b1`.
 
-4. DISPATCH PREAMBLE: In the dispatch brief/preamble the engine prepends to workers (search src/ for where the preamble/system text is built — likely dispatch.ts or session-runner.ts), is there anything that tells workers about WebSearch/WebFetch being deferred tools that must be loaded via ToolSearch first? Or anything that would mislead a worker into thinking search is unavailable / that Gemini is the fallback?
+## Next steps
 
-5. VERDICT: Based on the code, is the "worker went to Gemini for search" a REAL engine bug (governor auto-denies search on dispatched paths, OR router sends own-work search to Gemini), or purely a worker-side misdiagnosis with no engine cause? If it IS a real engine issue, name the exact file:line and the minimal fix — but do NOT apply it.
-
-Keep it tight: bullet answers with citations, then the verdict. Emit progress every ~2 minutes if the read is long.
-- Last activity: waiting
-- Idle-closed at: 2026-08-17T01:47:00.018Z
-
-## Outstanding
-The session went quiet and was closed to free the subscription pool. If work was mid-flight,
-re-read this and continue from the last activity above; otherwise treat the opening brief as done.
+1. Operator: restart the daemon to activate the preamble, the liveness model + the work-class gate.
+2. Decide the fate of the uncommitted SDK pin — commit it as its own piece or drop it.
+3. Then resume the plan of record in `MVP-PLAN.md`: harden the Codex SDK adapter (sandbox/approval
+   policy, not `canUseTool`), later context-efficiency phases, Phase 3b, Phase 4.

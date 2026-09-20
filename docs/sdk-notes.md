@@ -1,7 +1,8 @@
 # Claude Agent SDK — verified notes (Phase 0 spike)
 
-Verified against `@anthropic-ai/claude-agent-sdk@0.3.183` on 2026-06-19 by running
-`src/spike.ts` (now deleted). Phase 1 builds on this.
+The runtime dependency is pinned to `@anthropic-ai/claude-agent-sdk@0.3.270` in `package.json`.
+The Phase 0 observations below were originally verified against `0.3.183` on 2026-06-19 by running
+`src/spike.ts` (now deleted). Phase 1 builds on those observations.
 
 ## Entry point
 

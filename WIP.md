@@ -1,13 +1,22 @@
 # WIP — resume after engine reload (2026-09-13)
 
 **Branch:** `fix/interactive-turns-bypass-budget-throttle` (off `fix/dispatch-stall-background-wait`,
-unpushed, working tree clean apart from the unrelated `package.json`/`bun.lock` SDK-pin WIP — leave
-that alone).
+unpushed). The only uncommitted change is the Agent SDK pin in `package.json` + `bun.lock` — leave
+that alone until the operator decides (see the next section).
 
-## State: GREEN
+## State: GREEN (checked 2026-09-20)
 - `bunx tsc --noEmit` — clean
-- `bun test` — 772 pass, 0 fail.
-- Latest work: the engineering baseline now rides in the dispatch preamble (see below + HISTORY).
+- `bun test` — 818 pass, 0 fail.
+- Latest work: one activity clock and one derived session state (see HISTORY + `docs/adr/0003`).
+
+## Uncommitted — the Agent SDK is pinned, not floating
+- **What:** `@anthropic-ai/claude-agent-sdk` moves from `latest` to the exact `0.3.270` in
+  `package.json` + `bun.lock`, so two installs of the same commit get the same worker binary.
+- **Why it is still uncommitted:** it is a dependency change, not part of this branch's fix. Commit
+  it as its own piece, or drop it.
+- **After a bump:** restart the daemon. A worker reads its SDK binary at launch, so a pinned version
+  reaches no running worker.
+- Docs record it: `docs/sdk-notes.md` (header), `docs/HISTORY.md`, `README.md`.
 
 ## Latest fix — work class follows the ORIGINATING TRIGGER, so a conversational order is never held
 - **Why:** ADR 0001 put the budget gate on the right side (background work) but classified by

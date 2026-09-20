@@ -267,10 +267,14 @@ Stack: **Bun + TypeScript**, test-driven.
 
 ```bash
 bun install
-bun test              # run the suite (657 tests)
+bun test              # run the suite (818 tests)
 bunx tsc --noEmit     # typecheck
 bun run src/daemon.ts # run the engine
 ```
+
+`@anthropic-ai/claude-agent-sdk` is pinned to an exact version (`0.3.270`) in `package.json`, so
+every install of a given commit gets the same worker binary. Bump the pin deliberately, then restart
+the daemon: a worker reads its SDK at launch, so a new version reaches no running worker.
 
 Keep `bun test` and `bunx tsc --noEmit` green before anything is "done", and write the failing test
 first. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the workflow and commit style. The phased build
