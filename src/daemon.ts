@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { openLedger } from "./engine/ledger";
+import { openLedger, LEDGER_PATH } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
 import { createMeter } from "./engine/budget";
@@ -45,7 +45,7 @@ async function resolveBotUsername(token: string, configured: string): Promise<st
 async function main(): Promise<void> {
   const cfg = loadConfig();
   mkdirSync("data", { recursive: true });
-  const ledger = openLedger("data/ledger.db", { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep });
+  const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep });
   const admin = openAdminStore("data/admin.db");
   const registry = createRegistry();
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);
   console.log("  usage     -> measured from ~/.claude transcripts (/usage); throttling opt-in via caps later");
-  console.log(`  ledger    -> data/ledger.db (${ledger.listRecent().length} prior orders)`);
+  console.log(`  ledger    -> ${LEDGER_PATH} (${ledger.listRecent().length} prior orders)`);
   console.log(`  admin     -> ${admin.adminId() ?? "unclaimed (first Telegram message becomes admin)"}`);
 
   // Loop scheduler — fire due cron/interval loops through the governed runProjectLoop. AI-free:

@@ -105,6 +105,13 @@ _Avoid_: delegate, forward, handoff
 A trigger, a repeated action, and a goal that ends it. Always background work.
 _Avoid_: cron job, automation, schedule
 
+**Standing brief**:
+A loop's prompt. Unlike a dispatched brief it is never wrapped — the engine hands it to the worker
+verbatim — so everything the dispatch preamble would have carried, the loop's own prompt must carry:
+the project's rules, the engineering baseline, the governance envelope it runs under, and how to
+raise a blocking question. Written once, re-read by a fresh worker every iteration.
+_Avoid_: loop task, loop prompt, instructions
+
 **Dispatch preamble**:
 The fixed instruction block the engine prepends to every dispatched brief, before the brief's own
 text. It carries what a worker cannot be trusted to know or be told by hand: read the project's

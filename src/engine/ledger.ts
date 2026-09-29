@@ -162,6 +162,11 @@ export interface ConversationMessage {
   at: number;
 }
 
+/** The daemon's ledger DB, relative to its working directory. The ONE place this path is written:
+ *  anything that must read or write the SAME ledger the running daemon uses imports this rather
+ *  than repeating the literal (the daemon, the memory bootstrap, tools/create-loop). */
+export const LEDGER_PATH = "data/ledger.db";
+
 /** Retention caps default to the module constants (behavior-preserving); the daemon passes the
  *  operator-configured `routeKeep`/`eventsKeep` so these bounds are tuning, not baked-in. */
 export function openLedger(

@@ -82,19 +82,14 @@ export function bootstrapMemory(folder: string, ledger: Ledger, now: () => numbe
   return { imported, skipped: false };
 }
 
-// Production ledger DB path — mirrors the literal daemon.ts opens (`data/ledger.db`, relative to
-// the daemon's working directory). No shared constant exists yet to import; kept identical to
-// daemon.ts's own `openLedger("data/ledger.db")` call.
-const PRODUCTION_LEDGER_PATH = "data/ledger.db";
-
 if (import.meta.main) {
   const folder = process.argv[2];
   if (!folder) {
     console.log("usage: bun run src/engine/memory-bootstrap.ts <folder>");
     process.exit(1);
   }
-  const { openLedger } = await import("./ledger");
-  const ledger = openLedger(PRODUCTION_LEDGER_PATH);
+  const { openLedger, LEDGER_PATH } = await import("./ledger");
+  const ledger = openLedger(LEDGER_PATH);
   const result = bootstrapMemory(folder, ledger);
   console.log(
     result.skipped
