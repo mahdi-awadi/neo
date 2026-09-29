@@ -83,6 +83,31 @@ test("applyLoopFile refuses to clobber an existing loop unless --update is given
   expect(effectiveLoops(openLedger(ledgerPath)).find((l) => l.name === "tidy-up")?.summary).toBe("tidy harder");
 });
 
+test("applyLoopFile reads a sibling promptFile, so a standing brief stays reviewable", () => {
+  const dir = scratch();
+  const ledgerPath = join(dir, "ledger.db");
+  writeFileSync(join(dir, "brief.md"), "line one\nline two\n", "utf-8");
+  const { prompt: _drop, ...noPrompt } = input();
+  const file = fileWith(dir, { ...noPrompt, promptFile: "brief.md" });
+
+  expect(applyLoopFile({ file, ledgerPath, update: false })).toMatchObject({ ok: true });
+  expect(effectiveLoops(openLedger(ledgerPath)).find((l) => l.name === "tidy-up")?.prompt).toBe("line one\nline two");
+});
+
+test("applyLoopFile rejects a promptFile it cannot read, and a file that sets both", () => {
+  const dir = scratch();
+  const ledgerPath = join(dir, "ledger.db");
+  const { prompt: _drop, ...noPrompt } = input();
+  expect(applyLoopFile({ file: fileWith(dir, { ...noPrompt, promptFile: "nope.md" }), ledgerPath, update: false })).toEqual({
+    ok: false,
+    error: expect.stringContaining("nope.md"),
+  });
+  expect(applyLoopFile({ file: fileWith(dir, { ...input(), promptFile: "brief.md" }), ledgerPath, update: false })).toEqual({
+    ok: false,
+    error: expect.stringContaining("not both"),
+  });
+});
+
 test("applyLoopFile reports unreadable/unparseable input as an error, never a throw", () => {
   const dir = scratch();
   const ledgerPath = join(dir, "ledger.db");

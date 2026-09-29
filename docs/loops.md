@@ -54,6 +54,22 @@ the last section maps it onto Neo.
 > built-ins stay run/toggle-only. Spec/plan:
 > `docs/superpowers/specs/2026-06-27-loop-crud-design.md`, `docs/superpowers/plans/2026-06-28-loop-crud.md`.
 >
+> **Authoring a loop from the CLI — `tools/create-loop.ts` (2026-09-29).** The web CRUD is
+> admin-session-gated, so an agent working in this repo on the operator's behalf cannot use it.
+> `bun run tools/create-loop.ts <input.json> [--update] [--ledger <path>]` goes through the SAME
+> path — `validateLoopInput` → `createLoop` → `loop_defs` — never hand-written SQL, so the `/home`
+> folder fence and every validation rule apply identically. Because a loop's prompt is a **standing
+> brief** (ADR-0004) and therefore long, the input may set `promptFile` (relative to the input file)
+> instead of `prompt`, keeping the brief reviewable and diffable. Checked-in definitions live in
+> `docs/loops/`.
+>
+> **First operator-authored project loop: `waselni-store-readiness` (2026-09-29).** Daily
+> `0 6 * * *` (06:00 server-local/UTC ≈ 09:00 Asia/Baghdad), `/home/waselni`, judge goal, 30
+> iterations, $12 per fire, `freshSession: true`, enabled. It drives the parent and driver apps to
+> publishable state on both stores, keeping its state in `docs/store-readiness.md` in the waselni
+> repo — one row per requirement × target, so the FILE is the memory, not the session. Definition:
+> `docs/loops/waselni-store-readiness.json` + `.prompt.md`.
+>
 > **Scheduled-loop output → operator — live (2026-07-10).** A scheduled fire now streams **only** the
 > worker's real text to the operator's Telegram chat (the admin id, resolved at fire time so a late
 > TOFU admin still works), tagged with the loop's `#project` — the same streaming style as dispatch.

@@ -1,0 +1,14 @@
+{
+  "name": "waselni-store-readiness",
+  "summary": "Drive waselni's parent and driver apps to publishable state on the App Store and Google Play (never pushes or submits)",
+  "folder": "/home/waselni",
+  "promptFile": "waselni-store-readiness.prompt.md",
+  "goalKind": "judge",
+  "goalCriteria": "Every row in this repo's `docs/store-readiness.md` checklist is marked `done` and carries concrete, checkable evidence (a repo path, commit sha, build id, URL, screenshot path or named console screen — never a promise or a plan), for ALL FOUR targets: parent-iOS, parent-Android, driver-iOS, driver-Android. The checklist must cover each store's full submission gate: terms of service, privacy policy and in-app account deletion (including a public deletion URL); privacy nutrition labels and the Play Data Safety form; permission usage strings and their justifications; age rating and content rating; store listing assets and screenshots for every required device class; app icons; signing and provisioning; a background-location justification if background location is used; crash-free build validation; reviewer test accounts for parent and driver; and AR+EN correctness of everything user-facing. The goal is NOT met if the file is missing, if any row is `open`, `in-progress` or `operator-blocked`, if any row is waiting on a human, or if any row claims `done` without evidence you can actually check.",
+  "triggerKind": "cron",
+  "cronExpr": "0 6 * * *",
+  "maxIterations": 30,
+  "budgetUsd": 12,
+  "enabledByDefault": true,
+  "freshSession": true
+}

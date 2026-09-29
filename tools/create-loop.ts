@@ -15,7 +15,14 @@
 // <input.json> is one LoopInput object (see src/engine/loop-validate.ts). `--update` edits an
 // existing custom loop in place instead of refusing the name; `--ledger` points at a different DB
 // (tests) and defaults to the daemon's own.
+//
+// A loop's prompt is a STANDING BRIEF (docs/adr/0004): the engine never wraps it, so it carries the
+// project's rules, the engineering baseline and the governance envelope itself, and it is long. To
+// keep it reviewable and diffable rather than buried in one JSON string, the input may set
+// `promptFile` (a path relative to the input file) INSTEAD of `prompt` — one source of truth, not
+// two.
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { LEDGER_PATH, openLedger } from "../src/engine/ledger";
 import { createLoop, updateLoop, type LoopDef } from "../src/engine/loops";
 import type { LoopInput } from "../src/engine/loop-validate";
@@ -49,16 +56,34 @@ export function parseArgs(argv: string[]): ToolArgs | { error: string } {
 
 export type ApplyResult = { ok: true; def: LoopDef } | { ok: false; error: string };
 
+/** What the input file may hold: a LoopInput, with `prompt` optionally supplied out-of-line. */
+type LoopInputFile = Omit<LoopInput, "prompt"> & { prompt?: string; promptFile?: string };
+
 /** Read the LoopInput file and persist it through the engine's own create/update path. Every
- *  failure — unreadable file, bad JSON, or a validation refusal — comes back as `{ok:false}`;
- *  nothing here throws, so the CLI can report one clear line and exit non-zero. */
+ *  failure — unreadable file, bad JSON, an unreadable promptFile, or a validation refusal — comes
+ *  back as `{ok:false}`; nothing here throws, so the CLI reports one clear line and exits non-zero. */
 export function applyLoopFile(args: ToolArgs): ApplyResult {
-  let input: LoopInput;
+  let raw: LoopInputFile;
   try {
-    input = JSON.parse(readFileSync(args.file, "utf-8")) as LoopInput;
+    raw = JSON.parse(readFileSync(args.file, "utf-8")) as LoopInputFile;
   } catch (err) {
     return { ok: false, error: `cannot read ${args.file}: ${err instanceof Error ? err.message : String(err)}` };
   }
+
+  const { promptFile, ...rest } = raw;
+  let input = rest as LoopInput;
+  if (promptFile !== undefined) {
+    // Two sources of truth for the same field is the bug this option exists to avoid — refuse it
+    // rather than silently picking one.
+    if (rest.prompt !== undefined) return { ok: false, error: "set prompt or promptFile, not both" };
+    const path = resolve(dirname(args.file), promptFile);
+    try {
+      input = { ...rest, prompt: readFileSync(path, "utf-8").trim() };
+    } catch (err) {
+      return { ok: false, error: `cannot read promptFile ${promptFile}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
   const ledger = openLedger(args.ledgerPath);
   return args.update ? updateLoop(input.name, input, ledger) : createLoop(input, ledger);
 }
