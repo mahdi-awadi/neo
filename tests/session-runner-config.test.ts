@@ -114,3 +114,22 @@ test("resolveModelSelection: a caller's own effort always beats the tier-derived
 test("resolveModelSelection: a provider-native Codex id is never clobbered by a Claude tier", () => {
   expect(resolveModelSelection("codex", { model: "gpt-5.4" }).model).toBe("gpt-5.4");
 });
+
+test("resolveModelSelection: the [1m] tier spelling expands too, carrying the context tag over", () => {
+  // `opus[1m]` is an alias the SDK accepts and the operator's own settings use. Left unexpanded it
+  // is still a bare, release-dependent alias reaching the SDK.
+  expect(resolveModelSelection("subscription", { model: "opus[1m]" }).model).toBe("claude-opus-5-5[1m]");
+  expect(resolveModelSelection("subscription", { model: "sonnet[1m]" }).model).toBe("claude-sonnet-5-5[1m]");
+  expect(resolveModelSelection("subscription", { model: "fable[1m]" }).model).toBe("claude-fable-5-1[1m]");
+});
+
+test("resolveModelSelection: Codex never receives a Claude name as a literal model", () => {
+  // `best` and `opusplan` are MODE aliases — they depend on the release AND the settings, so no one
+  // id expresses them and Neo does not expand them on Claude. On Codex they must still not pass
+  // through as a model name: "best" is not an OpenAI model.
+  for (const model of ["best", "opusplan", "claude-mythos-5", "claude-opus-5-5[1m]"]) {
+    const r = resolveModelSelection("codex", { model });
+    expect(r.model).toBeUndefined();
+    expect(r.effort).toBeDefined(); // an explicit effort, never a silent provider default
+  }
+});

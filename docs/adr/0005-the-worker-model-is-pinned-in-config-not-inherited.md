@@ -38,6 +38,14 @@ depending on the release and settings. Name the model instead, for example `clau
    chain is `base.model ?? profile.model ?? models.default`, then alias expansion. No launch site
    names a model, so there is nothing to keep in sync.
 
+   The cost of that design is that every launch path must *hand it* the config. `DispatchDeps` is
+   assembled field by field rather than passed whole, so `models` has to be threaded explicitly
+   (`src/engine/dispatch.ts`, from `pipeline.ts` and `ingress.ts`) — and a first cut of this change
+   shipped without it, leaving dispatch, the path nearly all project work takes, still inheriting.
+   A unit test on `profileDeps` could not catch that, because it passes the config directly. The
+   guard is a test that drives a real dispatch and reads the `RunDeps` the worker is started with
+   (`tests/dispatch.test.ts`).
+
 4. **An unset or blank model lands on `models.default`; an unrecognised id passes through.** The
    bug being fixed is *absence*, so absence gets the default. A string the alias map does not know
    is forwarded untouched, because the SDK is the authority on whether an id is real and already
@@ -45,10 +53,18 @@ depending on the release and settings. Name the model instead, for example `clau
    `src/engine/session-runner.ts:211`). Clobbering it would break the Codex path, where
    provider-native ids like `gpt-5.4` are legitimate.
 
-5. **The SDK compatibility table keeps owning per-provider degradation.** Claude keeps tier aliases
-   as aliases; Codex maps a Claude tier to a reasoning effort and drops the foreign model id. `fable`
-   is added to both: it was in neither, so a pinned `claude-fable-5-1` fell through Codex's
-   `^claude-` catch-all and got **no effort at all** — the same invisible-default bug one layer down.
+5. **The SDK compatibility table keeps owning per-provider degradation.** On Claude it expands a
+   tier alias to its pinned id — both the bare word and the `[1m]` spelling, generated from the pins
+   so a new tier cannot be added and forgotten. On Codex, **no Claude name may pass through as a
+   literal model**, because none of them is an OpenAI model, and **every rule sets an effort**
+   including the catch-all: leaving it unset hands the run to Codex's own default silently, which is
+   this same defect one layer down. `fable` and the mode aliases were in neither table before, so
+   `best` reached Codex as the literal model `"best"` and `claude-fable-5-1` fell through the
+   `^claude-` catch-all with no effort.
+
+   `best` and `opusplan` are **not** pinned on Claude: they depend on the release *and* the settings,
+   so no single id expresses them, and substituting one would change what they mean rather than make
+   them stable. The invariant is therefore about **tier** aliases, not every Claude name.
 
 6. **The default is `claude-opus-5-5[1m]`.** Opus 5.5 is the newest Opus the bundle exposes, and
    `[1m]` preserves the 1M context workers already run on today, so this pins current capability
@@ -79,12 +95,23 @@ depending on the release and settings. Name the model instead, for example `clau
 - **Plain `claude-opus-5-5`, dropping `[1m]`.** Rejected: workers run 1M context today, so this
   would be a silent capability cut dressed up as a pin.
 
-- **Also add the new ids to `MODEL_WINDOW_TOKENS`** (`src/engine/context-policy.ts:18`) so occupancy
-  is measured against the real window. Rejected *here*, recorded as follow-up: a `[1m]` run reports
-  `message.model` as `claude-opus-5-5` with the tag stripped, so the facts map **cannot tell a 1M
-  run from a 200k one**. Keying 1M to that id would make a 200k worker look 5x emptier than it is
-  and never hand off — failing in the dangerous direction. The conservative 200k default hands off
-  early, which is today's behaviour and is unchanged by this ADR.
+- **Also derive the context window from the pinned model** (`MODEL_WINDOW_TOKENS`,
+  `src/engine/context-policy.ts:18`) so occupancy is measured against the real window. Rejected
+  *here*, recorded as follow-up, and worth being precise about the reason.
+
+  The facts map is keyed on the model a transcript reports, and a `[1m]` run reports
+  `message.model` as `claude-opus-5-5` with the tag stripped — so from the transcript alone the map
+  cannot tell a 1M run from a 200k one, and keying 1M to that id would make a 200k worker look 5x
+  emptier than it is and never hand off. But that is no longer the whole story: after this ADR the
+  **engine itself chooses the tag** at one resolution point, so the resolved `RunDeps.model` knows
+  the context size even though the transcript does not. The honest reason for deferring is therefore
+  not "it cannot be known" — it is that plumbing the resolved model into the occupancy calculation
+  changes when every session hands off, by about 5x. That is a behaviour change with its own risk
+  profile and deserves its own decision and its own measurement, not a ride-along.
+
+  Today's behaviour is unchanged by this ADR: workers already ran a 1M context against a 200k
+  assumption, so sessions already hand off at roughly 13% of real occupancy. Conservative, wasteful,
+  and now written down.
 
 ## Consequences
 

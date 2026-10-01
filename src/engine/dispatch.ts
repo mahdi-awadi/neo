@@ -100,6 +100,11 @@ export interface DispatchDeps {
    *  sub-run and its handoff turn through config.json's `workers.dispatch` / `workers.handoff`.
    *  Absent → every path inherits today's behavior (see worker-profile.ts). */
   workers?: Record<WorkerPathName, WorkerProfile>;
+  /** The pinned worker model (config `models`) — routes the dispatched sub-run and its handoff turn
+   *  through `models.default` / `models.aliases`. MUST be threaded: without it a dispatched worker
+   *  silently inherits the SDK's own default, which is the whole defect ADR-0005 fixes, and dispatch
+   *  is the path nearly all project work takes. */
+  models?: NeoConfig["models"];
   /** Own-work provider choice, threaded into dispatched worker launches when present. */
   providers?: NeoConfig["providers"];
   /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
@@ -299,9 +304,11 @@ export async function dispatchToProject(
     workers: deps.workers ?? ({} as Record<WorkerPathName, WorkerProfile>),
     workerEnv: deps.workerEnv ?? {},
   };
-  const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers">> = {
+  const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> &
+    Partial<Pick<NeoConfig, "providers" | "models">> = {
     ...workerCfg,
     providers: deps.providers,
+    models: deps.models,
   };
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.

@@ -2,7 +2,7 @@
 // place path→model/effort/skills/env routing happens, so no launch site hardcodes cost choices.
 import type { NeoConfig, ModelsCfg, WorkerPathName } from "../config";
 import type { RunDeps } from "./session-runner";
-import { filterSdkEnv, sdkProvider, supportsRunConfigField } from "./model-resolver";
+import { filterSdkEnv, sdkProvider, supportsRunConfigField, withLongContext } from "./model-resolver";
 
 type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> &
   Partial<Pick<NeoConfig, "providers" | "models">>;
@@ -18,7 +18,14 @@ type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> &
 function pinnedModel(models: ModelsCfg | undefined, chosen: string | undefined): string | undefined {
   const named = chosen?.trim() || models?.default?.trim();
   if (!named) return chosen;              // no pin configured at all → leave the launch as it was
-  return models?.aliases?.[named.toLowerCase()] ?? named;
+  const key = named.toLowerCase();
+  const direct = models?.aliases?.[key];
+  if (direct) return direct;
+  // A tier alias may carry the `[1m]` context-size tag (`opus[1m]`, which is what the operator's own
+  // Claude Code settings use). Expand the tier and keep the tag, so asking for 1M still gets 1M.
+  const tier = key.match(/^([a-z]+)\[1m\]$/)?.[1];
+  const tagged = tier ? models?.aliases?.[tier] : undefined;
+  return tagged ? withLongContext(tagged) : named;
 }
 
 export function profileDeps(

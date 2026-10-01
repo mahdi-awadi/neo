@@ -95,12 +95,19 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `models.default` | `claude-opus-5-5[1m]` | The model id every launch path gets unless its `workers.<path>` profile names one. Also settable with the `NEO_WORKER_MODEL` env var, which wins over `config.json`. |
 | `models.aliases` | the four tiers above | Tier word → pinned model id. Entries **merge** over the built-in pins, so overriding one tier leaves the others alone. |
 
-**Pin ids, not tier aliases.** A bare alias (`opus`, `sonnet`, `haiku`, `fable`) means "whatever that
-family points at now", so it changes under you on a release. The SDK's own allowlist validator says
-the same: *"it names a different model depending on the release and settings. Name the model instead,
-for example `claude-opus-5-5`."* Aliases stay supported as a **spelling** — a profile or a brief may
-write `opus` — but the engine expands every alias to a pinned id before the SDK sees it, so no bare
-alias ever reaches a worker.
+**Pin ids, not tier aliases.** A bare tier alias (`opus`, `sonnet`, `haiku`, `fable`) means "whatever
+that family points at now", so it changes under you on a release. The SDK's own allowlist validator
+says the same: *"it names a different model depending on the release and settings. Name the model
+instead, for example `claude-opus-5-5`."* Tier aliases stay supported as a **spelling** — a profile or
+a brief may write `opus`, or `opus[1m]` for the 1M form — and the engine expands them to a pinned id
+before the SDK sees it, so no bare **tier** alias reaches a worker. The `[1m]` tag is carried onto the
+pinned id, so `sonnet[1m]` becomes `claude-sonnet-5-5[1m]` and the requested context size survives.
+
+Two Claude names are **not** tiers and are deliberately left alone: `best` (pick the best model
+available) and `opusplan` (switch model by phase). They depend on the release *and* the settings, so
+no single id expresses them — pinning them would change what they mean rather than fix anything. Neo
+does not use them. On Codex they are still dropped rather than forwarded, because neither is an
+OpenAI model.
 
 **Resolution order**, in `profileDeps` (`src/engine/worker-profile.ts`) — the one place this happens:
 
@@ -112,6 +119,11 @@ then the winner is expanded through `models.aliases`. An unset or blank value fa
 `models.default`. An id the alias map does not recognise is sent **as written**: the SDK decides
 whether an id is real and reports an unknown one as `model_not_found`, whereas quietly substituting
 the default would hide a typo.
+
+This applies to all eight launch paths including **dispatch**, which reaches `profileDeps` through
+`DispatchDeps.models` (`src/engine/dispatch.ts`). A caller that builds `DispatchDeps` by hand and
+omits `models` gets an unpinned worker, so thread `models: cfg.models` alongside `workers` and
+`providers` — `tests/dispatch.test.ts` asserts the pin on a real dispatch launch to keep that honest.
 
 `[1m]` is the 1M-context tag. It is valid on any canonical id and the SDK strips it from the model it
 reports back. The default carries it because that is the context size operator workers already run

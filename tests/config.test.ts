@@ -299,3 +299,9 @@ test("memory: config.json can opt a scope in and override the ratio caps", () =>
   expect(cfg.memory.snapshotMaxPct).toBe(0.01);
   expect(cfg.memory.userMaxPct).toBe(0.0025); // unset field keeps the default
 });
+
+test("models: alias KEYS from config.json are normalised, so capitalisation cannot silently miss", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ models: { aliases: { Opus: "claude-opus-5" } } }));
+  expect(loadConfig(d).models.aliases.opus).toBe("claude-opus-5");
+});

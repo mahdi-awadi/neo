@@ -310,6 +310,11 @@ function loadDotEnv(dir: string): void {
   }
 }
 
+/** Lowercase every key of a record, so a case-insensitive lookup can never miss an operator's entry. */
+function lowercaseKeys(o: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k.toLowerCase(), v]));
+}
+
 export function loadConfig(dir: string = process.cwd()): NeoConfig {
   loadDotEnv(dir);
 
@@ -373,8 +378,13 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     models: {
       default:
         process.env.NEO_WORKER_MODEL?.trim() || fileCfg.models?.default?.trim() || DEFAULTS.models.default,
-      // Per-tier merge, not replace: overriding one tier must not drop the others.
-      aliases: { ...DEFAULTS.models.aliases, ...(fileCfg.models?.aliases ?? {}) },
+      // Per-tier merge, not replace: overriding one tier must not drop the others. Keys are
+      // lowercased because lookup is case-insensitive — `"Opus"` in config.json would otherwise
+      // parse, typecheck, load, and silently never match.
+      aliases: {
+        ...DEFAULTS.models.aliases,
+        ...lowercaseKeys(fileCfg.models?.aliases ?? {}),
+      },
     },
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,

@@ -110,10 +110,12 @@ project's CLAUDE.md, never this one. Don't re-type it into briefs.
 - **No AI in the engine.** Determinism by default; AI only inside SDK workers + Gemini reads.
 - Operator is addressed as **Neo** (not "Mahdi" — that's only the repo-author handle).
 - End commit messages with: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
-  This must name the model that actually did the work, so it tracks `models.default` in
-  `config.json` (`claude-opus-5-5[1m]` — see `docs/CONFIG.md` "Worker models" and ADR-0005). It said
-  Opus 4.8 long after workers had moved on, which signed commits across several repos with a model
-  that did not write them. Re-check this line whenever the pin changes.
+  **Name the model that actually wrote the commit** — if you are a different one, say so instead of
+  copying this line. It is a default for the current model, not a template to repeat blindly: this
+  line read "Opus 4.8" long after workers had moved on, so commits across several repos were signed
+  by a model that did not write them. (The worker pin lives in `config.models` — ADR-0005 — but that
+  governs *workers*, and a commit may be authored by an interactive session instead, so the two are
+  related, not the same. Don't update this line just because the pin moved.)
 
 ## Workflow patterns (field notes — only what fits Neo)
 

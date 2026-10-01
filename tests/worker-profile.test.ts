@@ -125,3 +125,13 @@ test("profileDeps applies the SDK table: Codex keeps model/effort but drops Clau
     OPENAI_API_KEY: "openai",
   });
 });
+
+test("profileDeps: a [1m] tier alias expands and keeps the 1M tag on the pinned id", () => {
+  const tagged = { ...pinned, workers: { ...pinned.workers, dispatch: { model: "sonnet[1m]" } } };
+  expect(profileDeps(tagged, "dispatch").model).toBe("claude-sonnet-5-5[1m]");
+});
+
+test("profileDeps: an alias key is matched case-insensitively", () => {
+  const upper = { ...pinned, workers: { ...pinned.workers, dispatch: { model: "Opus" } } };
+  expect(profileDeps(upper, "dispatch").model).toBe("claude-opus-5-5[1m]");
+});

@@ -11,6 +11,7 @@ import type { Order } from "../src/types";
 import type { StructuredAsk } from "../src/engine/structured-question";
 import { startOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
 import type { ContextPolicyCfg, ContextSignals } from "../src/engine/context-policy";
+import { DEFAULT_MODELS } from "../src/config";
 
 const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
   handoffPct: 0.65,
@@ -1480,4 +1481,50 @@ test("dispatch still starts the worker when ensureIndexed throws (best-effort)",
   });
   await new Promise((r) => setTimeout(r, 0));
   expect(started).toBe(true);
+});
+
+test("a dispatched worker runs the PINNED model, not whatever the SDK defaults to", async () => {
+  // Regression: DispatchDeps carried `workers`/`providers`/`workerEnv` but not `models`, so
+  // profileDeps got no pin and dispatch — the path nearly all project work goes through — kept
+  // inheriting the subscription default. Asserting profileDeps in isolation did not catch it, so
+  // this drives the real launch and reads the RunDeps the worker is actually started with.
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let runDeps: Record<string, unknown> | undefined;
+  const fakeStart = ((_o: Order, _h: RunHandlers, deps: Record<string, unknown>) => {
+    runDeps = deps;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  }) as unknown as typeof startOrder;
+
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, models: DEFAULT_MODELS },
+    1,
+    { start: fakeStart as never, now: () => 0, root },
+  );
+
+  expect(runDeps?.model).toBe(DEFAULT_MODELS.default);
+});
+
+test("a dispatch honours the operator's own models override, not the code-baked pin", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let runDeps: Record<string, unknown> | undefined;
+  const fakeStart = ((_o: Order, _h: RunHandlers, deps: Record<string, unknown>) => {
+    runDeps = deps;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  }) as unknown as typeof startOrder;
+
+  await dispatchToProject(
+    "eticket-v3",
+    "task",
+    { ...d, models: { default: "claude-opus-5", aliases: { opus: "claude-opus-5" } } },
+    1,
+    { start: fakeStart as never, now: () => 0, root },
+  );
+
+  expect(runDeps?.model).toBe("claude-opus-5"); // a rollback in config.json must actually take effect
 });
