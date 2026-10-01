@@ -15,6 +15,7 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import type { MemoryCfg, NeoConfig } from "../src/config";
+import { DEFAULT_MODELS } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
@@ -73,6 +74,7 @@ function cfg(): NeoConfig {
       cacheTtlFallbackMs: 3_600_000,
       cacheTtlMinObservations: 5,
     },
+    models: DEFAULT_MODELS,
     workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },

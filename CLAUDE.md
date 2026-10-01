@@ -109,7 +109,11 @@ project's CLAUDE.md, never this one. Don't re-type it into briefs.
   tool-generated instruction blocks in `CLAUDE.local.md`, never in tracked docs.
 - **No AI in the engine.** Determinism by default; AI only inside SDK workers + Gemini reads.
 - Operator is addressed as **Neo** (not "Mahdi" — that's only the repo-author handle).
-- End commit messages with: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- End commit messages with: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
+  This must name the model that actually did the work, so it tracks `models.default` in
+  `config.json` (`claude-opus-5-5[1m]` — see `docs/CONFIG.md` "Worker models" and ADR-0005). It said
+  Opus 4.8 long after workers had moved on, which signed commits across several repos with a model
+  that did not write them. Re-check this line whenever the pin changes.
 
 ## Workflow patterns (field notes — only what fits Neo)
 
@@ -159,5 +163,8 @@ Greptile) are noted but not adopted; these principles are:
 - `/home/operant` — the predecessor. Mine it for proven code to port.
 - `docs/loops.md` — loops & automations reference (trigger → action → goal); the autonomy model for
   the company-engine scheduler.
+- `tools/create-loop.ts` — author or edit a loop from the CLI through the engine's own validated path
+  (the web CRUD is admin-session-gated, so an agent in this repo cannot use it). Never write
+  `loop_defs` by hand. Checked-in definitions live in `docs/loops/`.
 - `docs/HISTORY.md` — the phase-by-phase build narrative (moved out of this file to stay lean).
 - `docs/CONFIG.md` — full config reference (env vars + `config.json` knobs).

@@ -131,6 +131,35 @@ _Avoid_: guidelines, best practices, coding standards
 The governor stopping a worker to ask the operator for permission to do something risky.
 _Avoid_: approval request, prompt, confirmation
 
+### Which model a worker runs
+
+**Model id**:
+The exact string that names one model to the SDK — `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-fable-5-1`. Release-stable: the same id always means the same model. Optionally carries a
+context-size tag (`claude-opus-5-5[1m]`), which the SDK strips when it reports the model back.
+_Avoid_: model, model name, version
+
+**Tier alias**:
+A family word — `opus`, `sonnet`, `haiku`, `fable` — that stands for "the current model of that
+family". Convenient to write and **release-dependent by design**, so it is a spelling the operator
+may use, never a value the engine sends. Every alias is expanded to a **model id** before it reaches
+a worker.
+_Avoid_: model, shorthand, tier
+
+**Pinned model**:
+The model id the engine actually sends, named in `config.models`. Pinned because the engine chose
+it, not because a release did: the operator can read it, diff it, and roll it back. The opposite of
+an **inherited model** — whatever the subscription happened to default to, which no config records
+and no reload makes visible.
+_Avoid_: default model, configured model
+
+**Worker profile**:
+The per-launch-path override of the pinned model and its run settings (`model`, `effort`, `skills`,
+`maxTurns`), one per path — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`, `handoff`,
+`secretary`. A path only names a model to *differ* from the pinned default; saying nothing means the
+default, not "whatever the SDK picks".
+_Avoid_: worker config, path settings
+
 ### Telling a working session from a wedged one
 
 **Activity**:

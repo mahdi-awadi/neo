@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Provider } from "./types";
 import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./engine/liveness";
+import { CLAUDE_TIER_MODELS } from "./engine/model-resolver";
 
 /** Reasoning-effort levels accepted by the SDK. */
 export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -17,6 +18,19 @@ export interface WorkerProfile {
   effort?: WorkerEffort;
   skills?: "all" | string[];
   maxTurns?: number;
+}
+
+/** Which model workers run. OPERATOR CHOICE, stated once: before this existed no key set a model
+ *  anywhere, so every worker silently took whatever the subscription defaulted to — a cost and
+ *  capability change with no config edit and no record. See ADR-0005. */
+export interface ModelsCfg {
+  /** The model id every launch path gets unless its `WorkerProfile` names one. A real id, never a
+   *  bare tier alias: an alias means "whatever that family points at now" and moves under us. */
+  default: string;
+  /** Tier word → pinned model id. Lets a profile or a brief keep writing `opus`, while the engine
+   *  still sends an id. Per-tier entries merge over the built-in pins, so overriding one tier
+   *  leaves the others alone. */
+  aliases: Record<string, string>;
 }
 
 /** Memory system config (Phase 2: store/inject/recall). See `src/engine/memory.ts`. */
@@ -172,8 +186,12 @@ export interface NeoConfig {
   drainWindowMs: number;
   /** Context policy: signals, verdicts, and safe boundaries for session lifecycle management. */
   contextPolicy: ContextPolicyCfg;
+  /** Which model workers run: one pinned default plus the tier→id alias map. From NEO_WORKER_MODEL
+   *  env (default only), then config.json, then the pins in `CLAUDE_TIER_MODELS`. See ADR-0005. */
+  models: ModelsCfg;
   /** Per-launch-path worker profiles (model/effort/skills/maxTurns). See the context-efficiency
-   *  design spec. Per-path objects REPLACE the default for that path when set in config.json. */
+   *  design spec. Per-path objects REPLACE the default for that path when set in config.json.
+   *  A path that names no `model` takes `models.default`. */
   workers: Record<WorkerPathName, WorkerProfile>;
   /** Extra env vars for every spawned worker, merged over process.env after provider filtering.
    *  Claude Code knobs (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, MAX_MCP_OUTPUT_TOKENS,
@@ -183,6 +201,13 @@ export interface NeoConfig {
    *  total no-op until the operator opts a folder in. */
   memory: MemoryCfg;
 }
+
+/** The shipped model pin (ADR-0005). Exported so anything building a `NeoConfig` — `DEFAULTS`
+ *  below, and test fixtures — states the pin once instead of copying the ids around. */
+export const DEFAULT_MODELS: ModelsCfg = {
+  default: CLAUDE_TIER_MODELS.opus,
+  aliases: { ...CLAUDE_TIER_MODELS },
+};
 
 const DEFAULTS = {
   providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider },
@@ -238,6 +263,9 @@ const DEFAULTS = {
     // constant so the default can never drift from the code's own fallback).
     cacheObsWindow: CACHE_OBS_WINDOW,
   },
+  // The pinned worker models (ADR-0005). The ids themselves live in model-resolver.ts so the SDK
+  // compatibility table and these defaults can never disagree about what a tier currently means.
+  models: DEFAULT_MODELS,
   // QUALITY INVARIANT: defaults reproduce today's behavior EXACTLY. The only non-empty entries
   // are the two effort:"low" cases that already live in code (pipeline.ts:250, ingress.ts:68/71),
   // relocated here. Economy overrides (cheaper models on handoff/judge/ingress ONLY) are opt-in
@@ -342,6 +370,12 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,
     drainWindowMs: fileCfg.drainWindowMs ?? DEFAULTS.drainWindowMs,
     contextPolicy: { ...DEFAULTS.contextPolicy, ...(fileCfg.contextPolicy ?? {}) },
+    models: {
+      default:
+        process.env.NEO_WORKER_MODEL?.trim() || fileCfg.models?.default?.trim() || DEFAULTS.models.default,
+      // Per-tier merge, not replace: overriding one tier must not drop the others.
+      aliases: { ...DEFAULTS.models.aliases, ...(fileCfg.models?.aliases ?? {}) },
+    },
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
     memory: { ...DEFAULTS.memory, ...(fileCfg.memory ?? {}) },

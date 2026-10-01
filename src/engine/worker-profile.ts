@@ -1,10 +1,25 @@
 // Fold a config worker profile into RunDeps for a launch path. Pure + deterministic: the ONLY
 // place path→model/effort/skills/env routing happens, so no launch site hardcodes cost choices.
-import type { NeoConfig, WorkerPathName } from "../config";
+import type { NeoConfig, ModelsCfg, WorkerPathName } from "../config";
 import type { RunDeps } from "./session-runner";
-import { filterSdkEnv, supportsRunConfigField } from "./model-resolver";
+import { filterSdkEnv, sdkProvider, supportsRunConfigField } from "./model-resolver";
 
-type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers">>;
+type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> &
+  Partial<Pick<NeoConfig, "providers" | "models">>;
+
+/** Which model this launch gets, in precedence order: the call site, then the path's profile, then
+ *  the pinned default — and whichever wins, a tier alias is expanded to its real id so no
+ *  release-dependent alias leaves the engine (ADR-0005).
+ *
+ *  Absence is the defect being fixed, so absence (unset, or blank/whitespace) lands on
+ *  `models.default`. Anything the alias map does not recognise is forwarded as written: the SDK is
+ *  the authority on whether an id is real and reports an unknown one precisely, whereas
+ *  substituting the default would mask a typo as a working config. */
+function pinnedModel(models: ModelsCfg | undefined, chosen: string | undefined): string | undefined {
+  const named = chosen?.trim() || models?.default?.trim();
+  if (!named) return chosen;              // no pin configured at all → leave the launch as it was
+  return models?.aliases?.[named.toLowerCase()] ?? named;
+}
 
 export function profileDeps(
   cfg: WorkerProfileConfig,
@@ -15,7 +30,15 @@ export function profileDeps(
   const d: RunDeps = { ...base };
   if (cfg.providers?.ownWork && d.provider === undefined) d.provider = cfg.providers.ownWork;
   delete d.env;
-  if (supportsRunConfigField(d.provider, "model") && p.model && d.model === undefined) d.model = p.model;
+  // `models.*` names Claude ids, so it is applied on the Claude SDK only. Pinning one onto a Codex
+  // run would just be dropped downstream as a foreign model, leaving the Codex default to apply
+  // invisibly — the same bug one layer down. The Codex adapter keeps owning its own model.
+  if (sdkProvider(d.provider) === "subscription") {
+    const model = pinnedModel(cfg.models, d.model ?? p.model);
+    if (model) d.model = model;
+  } else if (supportsRunConfigField(d.provider, "model") && p.model && d.model === undefined) {
+    d.model = p.model;
+  }
   if (supportsRunConfigField(d.provider, "effort") && p.effort && d.effort === undefined) d.effort = p.effort;
   if (supportsRunConfigField(d.provider, "skills") && p.skills !== undefined && d.skills === undefined) d.skills = p.skills;
   if (supportsRunConfigField(d.provider, "maxTurns") && p.maxTurns && d.maxTurns === undefined) d.maxTurns = p.maxTurns;

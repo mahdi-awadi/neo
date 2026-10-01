@@ -233,12 +233,50 @@ test("worker profiles: per-path overrides merge from config.json over inherit-ev
 test("worker profiles: QUALITY INVARIANT — absent config changes no worker's model/effort/skills", () => {
   const cfg = loadConfig(dir());
   // Only the two effort:"low" behaviors that already exist in code move into config; every
-  // other path (all code-writing paths included) inherits the CLI default model untouched.
+  // other path (all code-writing paths included) stays empty and so takes `models.default`
+  // (ADR-0005) — a path names a model only to DIFFER from the pinned default.
   expect(cfg.workers).toEqual({
     company: { effort: "low" }, project: {}, dispatch: {}, loop: {},
     judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {},
   });
   expect(cfg.workerEnv).toEqual({});
+});
+
+test("models: the default is PINNED to a real id — never an inherited SDK default, never a bare alias", () => {
+  const m = loadConfig(dir()).models;
+  // The defect this fixes: no model key anywhere meant every worker took whatever the
+  // subscription happened to default to, with no config change and no record (ADR-0005).
+  expect(m.default).toBe("claude-opus-5-5[1m]");
+  expect(m.aliases).toEqual({
+    opus: "claude-opus-5-5[1m]",
+    sonnet: "claude-sonnet-5-5",
+    haiku: "claude-haiku-4-5",
+    fable: "claude-fable-5-1",
+  });
+  // A bare alias is release-dependent, so it must never BE the pinned value.
+  expect(Object.values(m.aliases)).not.toContain("opus");
+  expect(m.default.startsWith("claude-")).toBe(true);
+});
+
+test("models: config.json overrides the pinned default and merges a single alias", () => {
+  const d = dir();
+  writeFileSync(
+    join(d, "config.json"),
+    JSON.stringify({ models: { default: "claude-sonnet-5-5", aliases: { opus: "claude-opus-5" } } }),
+  );
+  const m = loadConfig(d).models;
+  expect(m.default).toBe("claude-sonnet-5-5");
+  expect(m.aliases.opus).toBe("claude-opus-5");          // file override wins for that tier
+  expect(m.aliases.sonnet).toBe("claude-sonnet-5-5");    // untouched tiers keep the pinned default
+});
+
+test("models: NEO_WORKER_MODEL env beats config.json (env > file > defaults)", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ models: { default: "claude-sonnet-5-5" } }));
+  withEnv("NEO_WORKER_MODEL", "claude-fable-5-1", () => {
+    expect(loadConfig(d).models.default).toBe("claude-fable-5-1");
+  });
+  expect(loadConfig(d).models.default).toBe("claude-sonnet-5-5"); // env unset → file again
 });
 
 test("memory: QUALITY INVARIANT — scopes defaults to [] (total no-op) plus Hermes-measured fallbacks", () => {

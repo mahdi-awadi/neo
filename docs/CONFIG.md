@@ -23,6 +23,7 @@ ones in `.env` (`chmod 600`).
 | `GATEWAY_SEND_URL` | env or `config.json` | *(empty)* | Customer-reply gateway `/send` endpoint. Off when empty. |
 | `MEETING_LINK` | env or `config.json` | *(empty)* | Booking link for the customer-reply CTA. |
 | `BUSINESS_NAME` | env or `config.json` | *(empty)* | Name customer replies sign off as (never "Neo"). |
+| `NEO_WORKER_MODEL` | env or `config.json` (`models.default`) | `claude-opus-5-5[1m]` | The model id every worker runs unless its path profile names one. A deployment escape hatch — the normal home for this is `models.default` in `config.json`. See "Worker models". |
 | `CODEBASE_MEMORY_BIN` | env or `config.json` | *(empty)* | Path to the codebase-memory MCP binary (code intelligence). Off when empty. |
 | `WORK_ROOT` | env or `config.json` | `/home` | Root holding your project repos (picker / dispatch / loop fence). |
 | `COMPANY_FOLDER` | env or `config.json` | `<repo>/agent` | The always-on "company" workspace folder. |
@@ -65,12 +66,65 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `longTurnAlertMs` | `1200000` (20m) | Watchdog: an FYI when one activity label has run this long **while still pulsing** — explicitly not a "stuck" claim. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
 | `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
-| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. Set `secretary` to run the digest loop on the latest model. |
+| `models` | `{ default: "claude-opus-5-5[1m]", aliases: { opus: "claude-opus-5-5[1m]", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-4-5", fable: "claude-fable-5-1" } }` | Which model workers run. `default` applies to every launch path that does not name one itself; `aliases` maps a tier word to a pinned id. See "Worker models" below. |
+| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. A path that names no `model` takes `models.default`. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
 > (systemd's default stop timeout is 90s and would kill the process mid-drain).
+
+## Worker models (`models`)
+
+`models` is the one place Neo says which model a worker runs.
+
+```json
+"models": {
+  "default": "claude-opus-5-5[1m]",
+  "aliases": {
+    "opus": "claude-opus-5-5[1m]",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-4-5",
+    "fable": "claude-fable-5-1"
+  }
+}
+```
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `models.default` | `claude-opus-5-5[1m]` | The model id every launch path gets unless its `workers.<path>` profile names one. Also settable with the `NEO_WORKER_MODEL` env var, which wins over `config.json`. |
+| `models.aliases` | the four tiers above | Tier word → pinned model id. Entries **merge** over the built-in pins, so overriding one tier leaves the others alone. |
+
+**Pin ids, not tier aliases.** A bare alias (`opus`, `sonnet`, `haiku`, `fable`) means "whatever that
+family points at now", so it changes under you on a release. The SDK's own allowlist validator says
+the same: *"it names a different model depending on the release and settings. Name the model instead,
+for example `claude-opus-5-5`."* Aliases stay supported as a **spelling** — a profile or a brief may
+write `opus` — but the engine expands every alias to a pinned id before the SDK sees it, so no bare
+alias ever reaches a worker.
+
+**Resolution order**, in `profileDeps` (`src/engine/worker-profile.ts`) — the one place this happens:
+
+1. a model the call site set on its `RunDeps`, else
+2. the path's `workers.<path>.model`, else
+3. `models.default`,
+
+then the winner is expanded through `models.aliases`. An unset or blank value falls to
+`models.default`. An id the alias map does not recognise is sent **as written**: the SDK decides
+whether an id is real and reports an unknown one as `model_not_found`, whereas quietly substituting
+the default would hide a typo.
+
+`[1m]` is the 1M-context tag. It is valid on any canonical id and the SDK strips it from the model it
+reports back. The default carries it because that is the context size operator workers already run
+on; the cheap tiers stay plain, where 1M is cost with no benefit.
+
+**Codex (`providers.ownWork: "codex"`) gets no Claude pin.** These are Claude ids, so injecting one
+into a Codex run would only be dropped downstream as a foreign model, leaving the Codex default to
+apply invisibly. On Codex the model still comes from `workers.<path>.model`, and the SDK
+compatibility table maps a Claude tier to a reasoning effort — see the Codex table below.
+
+**Upgrading a tier** is a `config.json` edit plus a daemon reload. That is the point: before this
+existed, no key set a model anywhere, so every worker silently took whatever the subscription
+defaulted to — a cost and capability change with no config edit and no record (ADR-0005).
 
 ## Worker profiles (`workers`)
 
@@ -94,7 +148,8 @@ existed). Changing a path's profile in `config.json` is opt-in and the only way 
 ### Economy mode (opt-in, measured)
 
 Eligible paths only (their output is not project work product): `handoff`, `judge`, `ingress`.
-Example: `"workers": { "handoff": { "model": "haiku", "effort": "low" }, "judge": { "model": "haiku", "effort": "low" } }`.
+Example: `"workers": { "handoff": { "model": "claude-haiku-4-5", "effort": "low" }, "judge": { "model": "claude-haiku-4-5", "effort": "low" } }`.
+(The tier word `"haiku"` also works and resolves to the same pinned id — see "Worker models" above.)
 `CLAUDE_CODE_SUBAGENT_MODEL` is the same trade for subagents inside workers — set it only after
 reading the guardrail. Guardrail: watch ledger loop `goal-met` rate, iterations-to-green, and
 whether resumed sessions recover from handoff notes without re-asking, for two weeks; any
@@ -127,7 +182,7 @@ message/activity/event hooks. Compatibility is table-driven in `src/engine/model
 
 | Run/profile setting | `subscription` (Claude Agent SDK) | `codex` (OpenAI Codex SDK) |
 | --- | --- | --- |
-| `model` | Forwarded. `haiku`, `sonnet`, and `opus` remain Claude tier aliases. | Provider-native model IDs pass through. Claude tier aliases map to Codex default model plus effort (`haiku`→`low`, `sonnet`→`medium`, `opus`→`high`). |
+| `model` | A tier alias (`haiku`, `sonnet`, `opus`, `fable`) is expanded to its pinned id; a full model id is forwarded unchanged. No bare alias reaches the SDK. | Provider-native model IDs pass through. A Claude tier — alias **or** pinned id — maps to Codex default model plus effort (`haiku`→`low`, `sonnet`→`medium`, `fable`→`medium`, `opus`→`high`). |
 | `effort` | Forwarded to the Claude adapter. | Forwarded as Codex reasoning effort (`max` becomes Codex `xhigh`). |
 | `skills` / `maxTurns` | Forwarded to Claude Code. | Dropped from worker profiles and omitted from Codex launch config; direct `RunDeps` usage records `worker_compat_warning`. |
 | `agents` / dispatch team mode | Forwarded to Claude Code; team dispatch adds the lead-agent preamble. | Unsupported. Team dispatch falls back to a normal single-worker brief; direct `agents` usage records `worker_compat_warning`. |
@@ -136,9 +191,12 @@ message/activity/event hooks. Compatibility is table-driven in `src/engine/model
 | `workerEnv` | Merged over `process.env` unchanged. | `CLAUDE_*`, `ANTHROPIC_*`, and `MAX_MCP_OUTPUT_TOKENS` are filtered before launch; other keys such as `CODEX_API_KEY` stay available. |
 
 Worker profile `model` values are resolved at the SDK boundary. Provider-native model IDs pass
-through unchanged, but Claude tier aliases do not leak into Codex: `haiku` maps to Codex default
-model + `low` effort, `sonnet` to default model + `medium` effort, and `opus` to default model +
-`high` effort. An explicit `effort` in the worker profile wins over the alias-derived effort.
+through unchanged, but a Claude tier does not leak into Codex: `haiku` maps to Codex default model +
+`low` effort, `sonnet` and `fable` to default model + `medium` effort, and `opus` to default model +
+`high` effort. The tier is matched as a substring, so the pinned ids behave identically to the bare
+aliases (`claude-sonnet-5-5` → `medium`, `claude-opus-5-5[1m]` → `high`). A Claude id with no tier
+word in it is dropped with no effort set, because no effort can be inferred from it. An explicit
+`effort` in the worker profile wins over the tier-derived effort.
 
 Codex SDK auth is handled by Codex itself: use your local Codex login or provide `CODEX_API_KEY` in
 the process environment. Neo does not read or store that key directly.

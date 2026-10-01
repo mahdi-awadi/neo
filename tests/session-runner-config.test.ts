@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { runConfig } from "../src/engine/session-runner";
+import { resolveModelSelection, CLAUDE_TIER_MODELS } from "../src/engine/model-resolver";
 
 test("runConfig forwards disallowedTools when present", () => {
   expect(runConfig({ disallowedTools: ["Write", "Edit", "Bash"] })).toMatchObject({
@@ -62,4 +63,54 @@ test("runConfig omits Claude-only launch fields on Codex runs", () => {
   expect(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBeUndefined();
   expect(env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined();
   expect(env.MAX_MCP_OUTPUT_TOKENS).toBeUndefined();
+});
+
+// --- Model resolution at the SDK boundary (ADR-0005) -------------------------------------------
+
+test("resolveModelSelection: a pinned Claude id reaches the Claude SDK untouched", () => {
+  for (const model of ["claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-fable-5-1"]) {
+    const r = resolveModelSelection("subscription", { model });
+    expect(r.model).toBe(model);
+    expect(r.changed).toBe(false);
+  }
+});
+
+test("resolveModelSelection: a bare tier alias never reaches the SDK — the table expands it", () => {
+  // Second net below profileDeps: a caller that sets RunDeps.model by hand still cannot send a
+  // release-dependent alias. The SDK's own validator says to name the model instead.
+  expect(resolveModelSelection("subscription", { model: "opus" }).model).toBe(CLAUDE_TIER_MODELS.opus);
+  expect(resolveModelSelection("subscription", { model: "sonnet" }).model).toBe(CLAUDE_TIER_MODELS.sonnet);
+  expect(resolveModelSelection("subscription", { model: "haiku" }).model).toBe(CLAUDE_TIER_MODELS.haiku);
+  expect(resolveModelSelection("subscription", { model: "fable" }).model).toBe(CLAUDE_TIER_MODELS.fable);
+  expect(resolveModelSelection("subscription", { model: "opus" }).changed).toBe(true);
+});
+
+test("resolveModelSelection: Codex maps a PINNED 5.5 id to reasoning effort and drops the model", () => {
+  const opus = resolveModelSelection("codex", { model: "claude-opus-5-5[1m]" });
+  expect(opus.model).toBeUndefined();
+  expect(opus.effort).toBe("high");
+
+  const sonnet = resolveModelSelection("codex", { model: "claude-sonnet-5-5" });
+  expect(sonnet.model).toBeUndefined();
+  expect(sonnet.effort).toBe("medium");
+});
+
+test("resolveModelSelection: Codex maps the fable tier to an effort instead of dropping it bare", () => {
+  // Before ADR-0005 `fable` matched no Codex rule: the bare alias passed straight through as a
+  // nonsense Codex model, and `claude-fable-5-1` fell into the ^claude- catch-all with NO effort —
+  // so the Codex default effort applied invisibly. Both must now map.
+  for (const model of ["fable", "claude-fable-5-1"]) {
+    const r = resolveModelSelection("codex", { model });
+    expect(r.model).toBeUndefined();
+    expect(r.effort).toBe("medium");
+  }
+});
+
+test("resolveModelSelection: a caller's own effort always beats the tier-derived one", () => {
+  const r = resolveModelSelection("codex", { model: "claude-fable-5-1", effort: "max" });
+  expect(r.effort).toBe("max");
+});
+
+test("resolveModelSelection: a provider-native Codex id is never clobbered by a Claude tier", () => {
+  expect(resolveModelSelection("codex", { model: "gpt-5.4" }).model).toBe("gpt-5.4");
 });

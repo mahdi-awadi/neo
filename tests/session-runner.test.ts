@@ -625,7 +625,9 @@ test("onEvent fires session_interrupted when the SDK stream throws (interrupt/id
 
 test("runConfig forwards model/skills/maxTurns and merges env over process.env", () => {
   const c = runConfig({ model: "haiku", skills: [], maxTurns: 12, env: { NEO_TEST_FLAG: "1" } });
-  expect(c.model).toBe("haiku");
+  // The bare tier alias is pinned to its real id on the way out (ADR-0005): an alias means
+  // "whatever that family points at now", so the SDK must never be handed one.
+  expect(c.model).toBe("claude-haiku-4-5");
   expect(c.skills).toEqual([]);
   expect(c.maxTurns).toBe(12);
   const env = c.env as Record<string, string | undefined>;
