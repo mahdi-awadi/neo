@@ -602,3 +602,19 @@ read that names a `cp -i`-shaped hang. Thresholds are config (`liveness.wedgedAf
 gains the whole vocabulary. Built TDD (41 new assertions across liveness, registry, session-runner,
 session-status, watchdog, dashboard and the dispatch wiring). `tsc` clean; full suite green (813).
 Going live needs a daemon restart (operator-gated).
+
+**The governor runs before settings allow rules (2026-10-01).** Neo governed tools only through
+`canUseTool`. The SDK runs a project's `.claude/settings.json` allow rules *before* `canUseTool`, and
+workers load project settings. A live probe through the real `runOrder()` proved the bypass on SDK
+0.3.286: in a trusted folder that allows `Bash(git:*)` (as `/home/mirshad` does), `git push --dry-run`
+ran with zero governor calls. The probe also found that allow rules apply only in a *directly*
+trusted folder, which is why an untrusted `/tmp` scratch showed no bypass at first. The fix adds
+the governor as a `PreToolUse` hook (`buildGovernorHook`). Hooks run first. The hook shares
+`decide()` with `canUseTool`. It gives no opinion on an allowed call and returns `ask` on anything
+else, which sends the call to `canUseTool`, where escalation, trust, AskUserQuestion and the
+fail-safe deny live. It is synchronous and never throws, because a throwing hook fails open (also
+proven live). `permissionMode: "default"`, `canUseTool` and `hooks` now go last in `sdkOptions`, so
+no per-run field can replace them. One seam covers every Claude launch path. Re-run against the fix,
+the same probe saw `git push` escalated and denied, also inside a team subagent. See
+`docs/adr/0006-the-governor-runs-as-a-pretooluse-hook-first.md`. Built TDD (17 new tests). `tsc`
+clean; full suite green. Going live needs a daemon restart (operator-gated).

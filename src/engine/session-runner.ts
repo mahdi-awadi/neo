@@ -20,7 +20,7 @@
 // Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
 import { basename } from "node:path";
-import { query as realQuery, type AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
+import { query as realQuery, type AgentDefinition, type HookInput } from "@anthropic-ai/claude-agent-sdk";
 import {
   Codex,
   type ApprovalMode as CodexApprovalMode,
@@ -349,6 +349,35 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string) {
   };
 }
 
+/** The SDK hook result: no opinion, or force the call into the permission flow (= canUseTool). */
+type GovernorHookOutput = Record<string, never> | {
+  hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision: "ask"; permissionDecisionReason: string };
+};
+
+// The governor as an SDK PreToolUse hook. A settings allow rule (e.g. `Bash(git:*)` in a trusted
+// project's .claude/settings.json) approves a tool BEFORE canUseTool runs, so canUseTool alone let
+// `git push` skip the governor (proven live — spike/governor-bypass-probe.ts). Hooks run before the
+// allow rules. The hook runs the SAME `decide()` and never resolves an escalation itself: any
+// non-allow verdict becomes "ask", which forces the call into canUseTool (verified: "ask" reaches
+// canUseTool even when an allow rule matches), so trust, AskUserQuestion and the fail-safe deny stay
+// in one place. It is synchronous on purpose — the SDK FAILS OPEN when a hook throws (verified), and
+// presumably on a hook timeout, so it never awaits the operator and any error also returns "ask".
+// An allow verdict returns no opinion, so settings deny rules still apply.
+export function buildGovernorHook(folder: string) {
+  return async (input: HookInput, _toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    let reason: string;
+    try {
+      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder });
+      if ("allow" in verdict) return {};
+      reason = "deny" in verdict ? verdict.deny : verdict.escalate;
+    } catch (err) {
+      reason = `governor error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: reason } };
+  };
+}
+
 function sdkOptions(
   order: Order,
   handlers: RunHandlers,
@@ -363,13 +392,17 @@ function sdkOptions(
     // for the worker, in any project folder. (SDK: the single switch to turn skills on.)
     skills: "all",
     systemPrompt: { type: "preset", preset: "claude_code" },
-    permissionMode: "default",
     // Stream partial/streaming message events (SDKPartialAssistantMessage, type "stream_event")
     // during generation, so a single long turn keeps producing SDK events instead of going quiet
     // for minutes — that steady drip is what keeps the dispatch stall monitor alive (BUG 1).
     includePartialMessages: true,
-    canUseTool: buildCanUseTool(handlers, order.folder),
     ...extra,
+    // Governance goes LAST so no per-run field can replace it. permissionMode is explicit: from SDK
+    // 0.3.286 an unset mode can start the session in auto mode, which skips canUseTool.
+    permissionMode: "default",
+    canUseTool: buildCanUseTool(handlers, order.folder),
+    // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls.
+    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder)] }] },
   };
 }
 

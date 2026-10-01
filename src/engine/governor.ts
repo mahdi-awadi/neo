@@ -1,7 +1,8 @@
 // Deterministic tool policy: allow a known-safe set, path-fence writes, escalate everything
 // else to a human. Default-ESCALATE: a tool this file doesn't recognize asks the operator.
 // This is half of the "AI orders, engine governs" boundary (the other half is the provider
-// firewall). Wired into the SDK via the `canUseTool` callback. Autonomous paths (loops,
+// firewall). Wired into the SDK twice, through this ONE function: a PreToolUse hook (runs before a
+// project's settings allow rules; ADR-0006) and the `canUseTool` callback. Autonomous paths (loops,
 // customer-driven briefs) auto-deny escalations, so for them default-escalate = default-deny.
 import { resolve, sep } from "node:path";
 import type { Verdict } from "../types";

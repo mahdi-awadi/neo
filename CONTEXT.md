@@ -131,6 +131,12 @@ _Avoid_: guidelines, best practices, coding standards
 The governor stopping a worker to ask the operator for permission to do something risky.
 _Avoid_: approval request, prompt, confirmation
 
+**Governor hook**:
+The governor's `PreToolUse` hook. The SDK runs it before a project's settings allow rules. It runs
+the same `decide()` as `canUseTool` and sends every call the governor does not allow to
+`canUseTool`, so no allow rule can approve that call first (ADR-0006).
+_Avoid_: permission hook, pre-hook
+
 ### Which model a worker runs
 
 **Model id**:

@@ -62,7 +62,8 @@ terminal, no TTY, no tmux**. Confirmed headless.
   SDK message until it completes, so a worker writing a huge file goes quiet for minutes; with it the
   steady drip of stream events keeps Neo's dispatch stall monitor alive (it isn't mistaken for
   silence). Neo consumes these purely as a liveness heartbeat, not for content. Added 2026-07-17.
-- `canUseTool` — the governance hook (see below).
+- `canUseTool` — the governance callback (see below).
+- `hooks.PreToolUse` — the governor hook. It runs before settings allow rules (see below).
 - (for Phase 1) `mcpServers`, `resume`, `model`.
 
 ## canUseTool — the governance hook (KEY FINDING)
@@ -83,6 +84,32 @@ canUseTool: async (tool, input) => {
 
 → Engine impact: `session-runner` translates the governor's `Verdict` into a `PermissionResult` and
 **must echo `updatedInput` on allow**.
+
+## Settings allow rules skip canUseTool — the governor hook (verified 2026-10-01, SDK 0.3.286)
+
+Probes: `spike/governor-bypass-probe.ts` (Neo's real `runOrder()`), `spike/allow-rule-sanity.ts`,
+`spike/hook-ask-spike.ts`.
+
+- **A project allow rule approves a tool before `canUseTool` runs.** In a trusted folder with
+  `{"permissions":{"allow":["Bash(git:*)"]}}`, `git push --dry-run …` and `git log --format=force`
+  ran with **zero** `canUseTool` calls. This was the governor bypass. ADR-0006 has the fix.
+- **Allow rules need direct trust.** The SDK applies a project's allow rules only when the folder
+  itself has `hasTrustDialogAccepted` in `~/.claude.json`. In a folder trusted only through a parent
+  (for example `/home`), allow rules did nothing and deny rules still applied. An untrusted folder
+  applied neither. So run a probe in a directly trusted folder, or it gives a false negative.
+- **A `PreToolUse` hook that returns `permissionDecision: "ask"` sends the call to `canUseTool`, even
+  when an allow rule matches.** An empty return `{}` gives no opinion: the allow rule then approves
+  the call and `canUseTool` is not called.
+- **A hook that throws fails open:** the allow rule approved the call and `canUseTool` was not called.
+  So Neo's hook is synchronous, never waits, and returns `"ask"` on any error.
+- Hooks fire for subagent tool calls too. A team subagent's `git push` reached the governor.
+- **`ask` outranks another hook's `allow`.** A project settings `PreToolUse` command hook returned
+  `allow`, and Neo's hook returned `ask`: `canUseTool` was still called. (The same project hook
+  returning `deny` blocked the call, so the project hook was active.) So a project or plugin hook
+  cannot approve a call past the governor.
+
+Neo's wiring (`sdkOptions`): `hooks: { PreToolUse: [{ hooks: [buildGovernorHook(folder)] }] }`, no
+matcher, placed after the per-run fields together with `permissionMode: "default"` and `canUseTool`.
 
 ## Message stream (observed `msg.type` values)
 
