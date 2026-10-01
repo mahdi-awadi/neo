@@ -257,9 +257,13 @@ routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CON
 A **loop** is `trigger → repeated action → goal` — it runs until the goal is met (a verifiable
 command, or an LLM-judge). Triggers are manual / interval / cron. A few generic, deployment-neutral
 built-ins ship as examples (`green`, `error-sweep`, `docs-sweep`) that maintain the running repo;
-operators author their own project loops from the web console (persisted as data, no restart).
-`/loop` lists them, `/loop <name>` runs one, `/loop <name> on|off` toggles a schedule. See
-[docs/loops.md](docs/loops.md).
+operators author their own project loops from the web console (persisted as data, no restart), or
+from the CLI with `bun run tools/create-loop.ts <input.json> [--update]`, which goes through the same
+validated path and the same `/home` folder fence. A loop's prompt is a **standing brief** — the engine
+hands it to the worker verbatim, with no dispatch preamble — so it must carry the project's rules and
+the governance envelope itself; keep a long one in a sibling `promptFile`. Checked-in definitions live
+in [docs/loops/](docs/loops). `/loop` lists them, `/loop <name>` runs one, `/loop <name> on|off`
+toggles a schedule. See [docs/loops.md](docs/loops.md).
 
 ## Development
 
@@ -272,7 +276,7 @@ bunx tsc --noEmit     # typecheck
 bun run src/daemon.ts # run the engine
 ```
 
-`@anthropic-ai/claude-agent-sdk` is pinned to an exact version (`0.3.270`) in `package.json`, so
+`@anthropic-ai/claude-agent-sdk` is pinned to an exact version (`0.3.286`) in `package.json`, so
 every install of a given commit gets the same worker binary. Bump the pin deliberately, then restart
 the daemon: a worker reads its SDK at launch, so a new version reaches no running worker.
 

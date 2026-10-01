@@ -1,8 +1,34 @@
 # Claude Agent SDK — verified notes (Phase 0 spike)
 
-The runtime dependency is pinned to `@anthropic-ai/claude-agent-sdk@0.3.270` in `package.json`.
+The runtime dependency is pinned to `@anthropic-ai/claude-agent-sdk@0.3.286` in `package.json`.
 The Phase 0 observations below were originally verified against `0.3.183` on 2026-06-19 by running
 `src/spike.ts` (now deleted). Phase 1 builds on those observations.
+
+## Model ids exposed by the bundle (0.3.286, read 2026-10-01)
+
+The bundle carries the canonical list, so it can be read rather than guessed:
+`grep -rhoE 'claude-(opus|sonnet|haiku|fable)[a-z0-9._-]*' node_modules/@anthropic-ai/claude-agent-sdk/`.
+
+```
+claude-3-5-haiku     claude-fable-5      claude-opus-4-0   claude-opus-4-7   claude-sonnet-4-0
+claude-3-5-sonnet    claude-fable-5-1    claude-opus-4-1   claude-opus-4-8   claude-sonnet-4-5
+claude-3-7-sonnet    claude-haiku-4-5    claude-opus-4-5   claude-opus-5     claude-sonnet-4-6
+claude-mythos-5      claude-mythos-5-1   claude-opus-4-6   claude-opus-5-5   claude-sonnet-5
+                                                                             claude-sonnet-5-5
+```
+
+Aliases: `sonnet`, `opus`, `haiku`, `fable`, `best`, `opusplan`, and the 1M-context forms
+`sonnet[1m]`, `opus[1m]`, `fable[1m]`. `[1m]` is a context-size tag the bundle strips from any
+canonical id (`c.replace(/\[1m\]$/i,"")`), so `claude-opus-5-5[1m]` is a valid spelling.
+
+An alias is **release-dependent** and the SDK says so itself when one is used in an allowlist: *"it
+names a different model depending on the release and settings. Name the model instead, for example
+`claude-opus-5-5`."* That is why Neo pins ids — see ADR-0005 and `docs/CONFIG.md` "Worker models".
+
+`claude-opus-5-5`, `claude-opus-5-5[1m]`, `claude-sonnet-5-5` and `claude-fable-5-1` were each run
+against the live API on 2026-10-01 and accepted. The `[1m]` request reports `message.model` as
+`claude-opus-5-5` with the tag stripped, so a transcript **cannot** tell a 1M run from a 200k one —
+which is why `MODEL_WINDOW_TOKENS` (`src/engine/context-policy.ts`) still keys only `default`.
 
 ## Entry point
 
