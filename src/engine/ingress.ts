@@ -15,7 +15,7 @@ export const CUSTOMER_CHAT = -3;
  *  tools (firewall: "customer work never auto-approves"), regardless of operator trust. This
  *  inert store makes every dispatched sub-project escalate instead — and ingress denies. */
 export function denyAllTrust(): TrustStore {
-  return { isTrusted: () => false, setTrust: () => {}, list: () => [] };
+  return { isTrusted: () => false, setTrust: () => {}, list: () => [], noteProject: () => false };
 }
 
 /** Tools stripped from a TAINTED brief (one that embeds untrusted customer content, e.g. an

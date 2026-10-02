@@ -51,7 +51,12 @@ async function main(): Promise<void> {
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
   // operator conversation mirrors across both surfaces (engine/operator-bus.ts).
   const bus = createOperatorBus();
-  const trust = openTrustStore("data/trust.db");
+  // Per-project trust. `knownFolders` (every folder the ledger has an order for) is read once, by
+  // the trust schema migration, so the new-projects default never trusts an existing project.
+  const trust = openTrustStore("data/trust.db", {
+    trustNewProjects: cfg.trustNewProjects,
+    knownFolders: () => ledger.folders(),
+  });
   const inbox = openInbox("data/inbox.db"); // customer messages — plain data, shown in the web
   const meter = createMeter({
     windowBudgetUsd: cfg.budgetWindowUsd,

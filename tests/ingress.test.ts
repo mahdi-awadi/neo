@@ -13,6 +13,9 @@ test("denyAllTrust never trusts any folder (customer-path dispatch cannot auto-a
   expect(t.isTrusted("/home/neo/agent")).toBe(false);
   expect(t.isTrusted("/anything")).toBe(false);
   expect(t.list()).toEqual([]);
+  // Customer-driven work never seeds trust, even for a never-seen folder.
+  expect(t.noteProject("/home/new-project")).toBe(false);
+  expect(t.isTrusted("/home/new-project")).toBe(false);
 });
 
 test("runCompanyBrief runs the brief on the company and returns its result", async () => {

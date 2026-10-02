@@ -97,6 +97,11 @@ export interface NeoConfig {
   /** The always-on "company" / chief-of-staff workspace (its own gitignored folder with a CLAUDE.md).
    *  From COMPANY_FOLDER env. Default "<repo>/agent" (i.e. an `agent/` dir next to the daemon). */
   companyFolder: string;
+  /** OPERATOR CHOICE (2026-10-02): a project Neo sees for the first time starts trusted (full
+   *  auto-approve), as if the operator had sent `/trust on` for it. Projects seen before the
+   *  default existed keep their state, and `/trust off` is remembered — never re-trusted. Customer
+   *  work never carries trust regardless. Default true. */
+  trustNewProjects: boolean;
   /** Per-window USD budget for background SDK work (the budget guard). */
   budgetWindowUsd: number;
   /** Rolling budget window in ms (default 5h, matching the subscription's usage window). */
@@ -221,6 +226,8 @@ const DEFAULTS = {
   subscriptionInteractiveReservePct: 0.2,
   workRoot: "/home",
   companyFolder: join(process.cwd(), "agent"),
+  // Operator choice (2026-10-02): new projects start trusted. See NeoConfig.trustNewProjects.
+  trustNewProjects: true,
   webHost: "127.0.0.1",
   webPort: 3003,
   budgetWindowUsd: 20,
@@ -351,6 +358,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
       fileCfg.subscriptionInteractiveReservePct ?? DEFAULTS.subscriptionInteractiveReservePct,
     workRoot: process.env.WORK_ROOT ?? fileCfg.workRoot ?? DEFAULTS.workRoot,
     companyFolder: process.env.COMPANY_FOLDER ?? fileCfg.companyFolder ?? DEFAULTS.companyFolder,
+    trustNewProjects: fileCfg.trustNewProjects ?? DEFAULTS.trustNewProjects,
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",

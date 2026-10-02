@@ -305,3 +305,13 @@ test("models: alias KEYS from config.json are normalised, so capitalisation cann
   writeFileSync(join(d, "config.json"), JSON.stringify({ models: { aliases: { Opus: "claude-opus-5" } } }));
   expect(loadConfig(d).models.aliases.opus).toBe("claude-opus-5");
 });
+
+test("trustNewProjects defaults to true (operator choice, 2026-10-02)", () => {
+  expect(loadConfig(dir()).trustNewProjects).toBe(true);
+});
+
+test("config.json can turn trustNewProjects off", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ trustNewProjects: false }));
+  expect(loadConfig(d).trustNewProjects).toBe(false);
+});

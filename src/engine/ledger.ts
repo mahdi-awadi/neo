@@ -64,6 +64,8 @@ export interface Ledger {
    *  canResumeWith for why unknown ownership is tried rather than discarded. */
   lastSessionFor(folder: string, chatId: number, provider?: Provider): string | undefined;
   listRecent(limit?: number): Order[];
+  /** Every distinct folder an order was ever recorded for, sorted (the projects Neo has seen). */
+  folders(): string[];
   /** Audit: a risky action that trust auto-approved (the compensating control for the bypassed gate). */
   recordAutoApproval(orderId: string, reason: string): void;
   autoApprovalsFor(orderId: string): string[];
@@ -336,6 +338,11 @@ export function openLedger(
         )
         .get(folder, chatId, provider ?? null) as { sdk_session_id: string } | null;
       return row?.sdk_session_id ?? undefined;
+    },
+    folders() {
+      return (db.query(`SELECT DISTINCT folder FROM orders ORDER BY folder`).all() as Array<{ folder: string }>).map(
+        (r) => r.folder,
+      );
     },
     listRecent(limit = 20) {
       const rows = db
