@@ -102,14 +102,18 @@ let floodGate: FloodGate = createFloodGate({ maxWaitMs: 30_000 });
  *  Telegram rejects the markup. `project` tags which project the line came from. Returns the sent
  *  message id (so the caller can route a later reply back to the right session), or undefined if
  *  the send failed. Worker output is sent as plain messages — NOT quote-replies to the operator's
- *  order — so a streamed run doesn't show every line threaded under one old message. */
-async function sendFormatted(
-  bot: Bot,
+ *  order — so a streamed run doesn't show every line threaded under one old message.
+ *  This and sendOperatorLine are the only Telegram egress for worker output, so the tool-step
+ *  filter lives here once: a "🔧 Tool: …" / "↳ …" line is dropped unless `toolSteps` (config
+ *  `telegramToolSteps`) opts in. The web console and the ledger still get every line. */
+export async function sendFormatted(
+  bot: { api: Pick<Bot["api"], "sendMessage"> },
   chatId: number,
   text: string,
-  project?: string,
-  priority?: Priority,
+  opts: { project?: string; priority?: Priority; toolSteps?: boolean } = {},
 ): Promise<number | undefined> {
+  const { project, priority } = opts;
+  if (!opts.toolSteps && isToolStepLine(text)) return undefined;
   // Feature 2: the first chunk leads with the priority's single colored accent, then the #project
   // tag. progress (the default) is silent, so streamed worker output reads exactly as it did before.
   const tag = outboundTag(project, priority);
@@ -133,8 +137,17 @@ async function sendFormatted(
 /** Post a single line to the operator's chat over the raw Bot API (no grammy Bot instance needed),
  *  project-tagged + HTML-formatted with a plain-text fallback — the same #project style as streamed
  *  worker/dispatch output. Used by the daemon's loop scheduler so scheduled-loop worker output
- *  reaches the operator's Telegram channel, not just daemon stdout. A dropped line never throws. */
-export async function sendOperatorLine(token: string, chatId: number, text: string, project?: string): Promise<void> {
+ *  reaches the operator's Telegram channel, not just daemon stdout. A dropped line never throws.
+ *  Tool-step lines are dropped unless `toolSteps` opts in (see sendFormatted); the loop mirror
+ *  still sends them to the web console. */
+export async function sendOperatorLine(
+  token: string,
+  chatId: number,
+  text: string,
+  project?: string,
+  opts: { toolSteps?: boolean } = {},
+): Promise<void> {
+  if (!opts.toolSteps && isToolStepLine(text)) return;
   const tag = projectTagPrefix(project);
   const post = (body: string, html: boolean): Promise<Response> =>
     fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -210,14 +223,18 @@ export function startTelegram(
   // Ledger-backed so a mapping survives /reload — a lost route used to misroute the reply to the company.
   const routes = createMessageRoutes({ ledger, cacheCap: cfg.messageRoutesCacheCap });
 
+  // Every worker-output line this bot sends goes through here, so `telegramToolSteps` applies on
+  // every path (sessions, Telegram-started loops, company briefs, web mirrors) — not just send().
+  const sendWorkerLine = (chatId: number, text: string, opts: { project?: string; priority?: Priority } = {}) =>
+    sendFormatted(bot, chatId, text, { ...opts, toolSteps: cfg.telegramToolSteps });
+
   // Send a worker line and record which project it belongs to, so the operator can REPLY to that
   // specific message to route a follow-up into its project (see routeReply). The line itself is
   // a normal message, not a quote-reply. `chatId` is already the resolved TARGET surface (the
   // caller applied surfaceFor); the route is recorded on whichever chat the message actually
   // lands in, so a reply to it (in the DM or the Decisions chat) routes back to the right project.
   async function send(chatId: number, text: string, project?: string, priority?: Priority): Promise<void> {
-    if (!cfg.telegramToolSteps && isToolStepLine(text)) return; // ledger + web console still have it
-    const messageId = await sendFormatted(bot, chatId, text, project, priority);
+    const messageId = await sendWorkerLine(chatId, text, { project, priority });
     if (messageId !== undefined && project) {
       const session = registry.findByName(project);
       if (session) routes.remember(chatId, messageId, { sessionId: session.id, folder: session.order.folder, project });
@@ -271,7 +288,7 @@ export function startTelegram(
       adminId: () => admin.adminId(),
       decisionsChatId: () => cfg.decisionsChatId,
       reply: (cid, text, project, priority) => void send(cid, text, project, priority),
-      plain: (cid, text) => void sendFormatted(bot, cid, text),
+      plain: (cid, text) => void sendWorkerLine(cid, text),
     }),
   );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
@@ -434,7 +451,7 @@ export function startTelegram(
     trust,
     // runCompanyBrief replies on the internal CUSTOMER_CHAT id; ignore it and stream to the
     // operator's chat (the web path likewise ignores the cid and notifies its own channel).
-    reply: (_cid, text, project) => void sendFormatted(bot, chatId, text, project),
+    reply: (_cid, text, project) => void sendWorkerLine(chatId, text, { project }),
     askApproval: async () => "deny",
   });
 
@@ -513,7 +530,7 @@ export function startTelegram(
     }
     if (
       handleLoop(ctx.message.text, chatId, {
-        reply: (cid, t) => void bot.api.sendMessage(cid, t),
+        reply: (cid, t) => void sendWorkerLine(cid, t),
         store: ledger,
         shouldStop: () => meter.shouldThrottleBackground(),
         cfg,
@@ -697,7 +714,7 @@ export function startTelegram(
       await ctx.answerCallbackQuery(loop ? "running" : "unknown loop");
       if (loop)
         void startLoop(loop, ctx.chat?.id ?? 0, {
-          reply: (cid, t) => void bot.api.sendMessage(cid, t),
+          reply: (cid, t) => void sendWorkerLine(cid, t),
           store: ledger,
           shouldStop: () => meter.shouldThrottleBackground(),
           cfg,

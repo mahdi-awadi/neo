@@ -127,7 +127,8 @@ async function main(): Promise<void> {
   // console via the bus so a web-only operator also sees loop activity (loop-mirror.ts).
   const loopReply = makeLoopReply({
     toTelegram: cfg.telegramToken
-      ? (chatId, text, project) => void sendOperatorLine(cfg.telegramToken, chatId, text, project)
+      ? (chatId, text, project) =>
+          void sendOperatorLine(cfg.telegramToken, chatId, text, project, { toolSteps: cfg.telegramToolSteps })
       : undefined,
     toStdout: (text, project) => console.log(`[loop] ${projectTagPrefix(project)}${text}`),
     bus,

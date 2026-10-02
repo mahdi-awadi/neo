@@ -662,3 +662,14 @@ no per-run field can replace them. One seam covers every Claude launch path. Re-
 the same probe saw `git push` escalated and denied, also inside a team subagent. See
 `docs/adr/0006-the-governor-runs-as-a-pretooluse-hook-first.md`. Built TDD (17 new tests). `tsc`
 clean; full suite green. Going live needs a daemon restart (operator-gated).
+
+**Tool-step lines stay off Telegram on every path (2026-10-02).** The flood-control change put the
+`telegramToolSteps` filter inside the session `send()` only. Tool lines reach Telegram through every
+worker `onMessage`, and three paths skipped `send()`: scheduled loops (`sendOperatorLine`), loops
+started from Telegram (`/loop`, the ▶ button: raw `sendMessage`), and company briefs
+(`sendFormatted`). The filter now lives once at the worker-output egress: `sendFormatted` and
+`sendOperatorLine` each take `toolSteps` and default to dropping tool lines. Every call in
+`startTelegram` goes through one `sendWorkerLine` with `cfg.telegramToolSteps`. The scheduled-loop
+mirror still sends tool lines to the web console. The test fixtures also gained the two flood-control
+fields that the base commit left out, which had made `tsc` red. Built TDD (7 new tests). `tsc` clean;
+full suite green (881). Going live needs a daemon restart (operator-gated).
