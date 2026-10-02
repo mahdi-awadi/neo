@@ -70,9 +70,41 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. A path that names no `model` takes `models.default`. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
+| `trust` | `{ defaultForNewProjects: false }` | Per-project trust (`/trust`). See "Project trust" below. |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
 > (systemd's default stop timeout is 90s and would kill the process mid-drain).
+
+## Project trust (`trust`)
+
+`/trust [<project-or-folder>] [on|off]` sets trust for one folder. In a trusted folder, an escalation
+(risky Bash, WebFetch, a foreign MCP tool) is approved automatically instead of asking you. The
+choice is stored in `data/trust.db` as an explicit record: trusted or untrusted.
+
+`trust.defaultForNewProjects` is the trust a folder gets the **first time the engine sees it**. The
+engine records that value for the folder, so:
+
+- A project that already has a record keeps it. `/trust off` stays off when the default is on.
+- Changing the knob later changes nothing for projects already seen.
+- Only a real boolean counts. A string `"true"` keeps the default (`false`).
+
+On the first start of this version, a one-time migration records every folder the ledger already
+knows (orders, open sessions) with no trust record as **untrusted**. Existing projects keep their
+current setting. Older trusted folders stay trusted.
+
+Trust has hard limits that no setting changes (ADR-0007):
+
+- A Write/Edit/NotebookEdit **outside the project folder** always asks you. Trust never approves it.
+- Trust never applies to customer-sourced work. Customer routing is still refused, and inbox drafting
+  still runs with zero tools.
+
+Turn it on in `config.json`:
+
+```json
+{ "trust": { "defaultForNewProjects": true } }
+```
+
+A change needs a daemon restart.
 
 ## Worker models (`models`)
 

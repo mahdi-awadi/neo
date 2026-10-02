@@ -31,7 +31,7 @@ import {
   type ThreadOptions as CodexThreadOptions,
   type WebSearchMode as CodexWebSearchMode,
 } from "@openai/codex-sdk";
-import type { Order, Provider, SessionControl } from "../types";
+import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide } from "./governor";
 import { fromAskUserQuestionInput, type StructuredAsk } from "./structured-question";
@@ -109,7 +109,8 @@ export interface RunHandlers {
   onCost?: (usd: number) => void;
   /** Reported subscription rate-limit info from the SDK's rate_limit_event. */
   onRateLimit?: (info: RateLimitInfo) => void;
-  /** When true (read per escalation), risky tools auto-approve instead of escalating. */
+  /** When true (read per escalation), risky tools auto-approve instead of escalating. Never
+   *  consulted for a fence escalation or a customer-sourced order (ADR-0007). */
   autoApprove?: () => boolean;
   /** Called with the escalation reason when trust auto-approves it (for audit/FYI). */
   onAutoApprove?: (reason: string) => void;
@@ -292,7 +293,7 @@ export const STRUCTURED_QUESTION_RAISED =
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
 // Exported for direct unit testing of the fail-safe/self-heal contract (approval-resilience.test.ts).
-export function buildCanUseTool(handlers: RunHandlers, folder: string) {
+export function buildCanUseTool(handlers: RunHandlers, folder: string, source: OrderSource) {
   return async (tool: string, input: Record<string, unknown>) => {
     // The whole decision path is wrapped so this callback can NEVER reject. A rejected canUseTool is
     // turned by the SDK into an ungoverned permission failure with no recovery — the worker surfaces
@@ -327,8 +328,9 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string) {
       if ("deny" in verdict) {
         return { behavior: "deny", message: verdict.deny };
       }
-      // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start)
-      if (handlers.autoApprove?.()) {
+      // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start).
+      // Trust never lifts a fence escalation and never applies to customer work (ADR-0007).
+      if (!verdict.fenced && source !== "customer" && handlers.autoApprove?.()) {
         handlers.onAutoApprove?.(verdict.escalate);
         return { behavior: "allow", updatedInput: input };
       }
@@ -400,7 +402,7 @@ function sdkOptions(
     // Governance goes LAST so no per-run field can replace it. permissionMode is explicit: from SDK
     // 0.3.286 an unset mode can start the session in auto mode, which skips canUseTool.
     permissionMode: "default",
-    canUseTool: buildCanUseTool(handlers, order.folder),
+    canUseTool: buildCanUseTool(handlers, order.folder, order.source),
     // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls.
     hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder)] }] },
   };

@@ -49,6 +49,9 @@
 
   "memory": { "scopes": ["company"] },
 
+  "// trust": "defaultForNewProjects: the /trust value a folder gets the first time it is seen. Existing records are never changed; out-of-folder writes always ask. See docs/CONFIG.md 'Project trust'.",
+  "trust": { "defaultForNewProjects": false },
+
   "// workerEnv": "Claude Code env knobs apply only with providers.ownWork=\"subscription\". When ownWork=\"codex\", CLAUDE_*, ANTHROPIC_*, and MAX_MCP_OUTPUT_TOKENS are filtered before launch.",
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",

@@ -200,6 +200,13 @@ export interface NeoConfig {
   /** Memory system (Phase 2): scopes + ratio caps + dream-loop budgets. Default `scopes: []` — a
    *  total no-op until the operator opts a folder in. */
   memory: MemoryCfg;
+  /** Per-project trust (/trust). `defaultForNewProjects`: the trust a folder gets the first time it
+   *  is seen. Never changes an existing trust record. Default false. See ADR-0007. */
+  trust: TrustCfg;
+}
+
+export interface TrustCfg {
+  defaultForNewProjects: boolean;
 }
 
 /** The shipped model pin (ADR-0005). Exported so anything building a `NeoConfig` — `DEFAULTS`
@@ -245,6 +252,8 @@ const DEFAULTS = {
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
   drainWindowMs: 90 * 1000,
+  // Fail closed: a never-seen project is untrusted unless the operator's config.json opts in.
+  trust: { defaultForNewProjects: false } as TrustCfg,
   contextPolicy: {
     handoffPct: 0.65,
     emergencyPct: 0.85,
@@ -389,5 +398,12 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
     memory: { ...DEFAULTS.memory, ...(fileCfg.memory ?? {}) },
+    // Only a real boolean counts: a string "true" or a typo in config.json keeps the safe default.
+    trust: {
+      defaultForNewProjects:
+        typeof fileCfg.trust?.defaultForNewProjects === "boolean"
+          ? fileCfg.trust.defaultForNewProjects
+          : DEFAULTS.trust.defaultForNewProjects,
+    },
   };
 }

@@ -26,7 +26,7 @@ const NATIVE_INPUT = {
 
 test("AskUserQuestion is serviced when the hook is wired: raises the ask + denies with a STOP steer", async () => {
   let raised: StructuredAsk | undefined;
-  const canUse = buildCanUseTool(handlers({ onStructuredQuestion: (ask) => void (raised = ask) }), "/tmp");
+  const canUse = buildCanUseTool(handlers({ onStructuredQuestion: (ask) => void (raised = ask) }), "/tmp", "neo");
   const verdict = await canUse("AskUserQuestion", NATIVE_INPUT);
 
   // The worker gets a deny that steers it to check-point + STOP (the fire-and-suspend contract).
@@ -37,7 +37,7 @@ test("AskUserQuestion is serviced when the hook is wired: raises the ask + denie
 });
 
 test("without the hook, AskUserQuestion falls back to the plain 'ask in plain text' steer", async () => {
-  const canUse = buildCanUseTool(handlers(), "/tmp"); // no onStructuredQuestion
+  const canUse = buildCanUseTool(handlers(), "/tmp", "neo"); // no onStructuredQuestion
   const verdict = await canUse("AskUserQuestion", NATIVE_INPUT);
   expect(verdict.behavior).toBe("deny");
   expect(verdict.message?.toLowerCase()).toContain("plain text");
@@ -45,7 +45,7 @@ test("without the hook, AskUserQuestion falls back to the plain 'ask in plain te
 
 test("an unparseable AskUserQuestion input with the hook still fails safe to the plain steer", async () => {
   let called = false;
-  const canUse = buildCanUseTool(handlers({ onStructuredQuestion: () => void (called = true) }), "/tmp");
+  const canUse = buildCanUseTool(handlers({ onStructuredQuestion: () => void (called = true) }), "/tmp", "neo");
   const verdict = await canUse("AskUserQuestion", { questions: [] }); // nothing to raise
   expect(verdict.behavior).toBe("deny");
   expect(called).toBe(false); // never raised an empty ask
@@ -56,6 +56,7 @@ test("a throwing onStructuredQuestion hook never wedges the callback (fails safe
   const canUse = buildCanUseTool(
     handlers({ onStructuredQuestion: () => { throw new Error("channel down"); } }),
     "/tmp",
+    "neo",
   );
   const verdict = await canUse("AskUserQuestion", NATIVE_INPUT);
   expect(verdict.behavior).toBe("deny"); // still a governed deny, never a thrown/hung callback

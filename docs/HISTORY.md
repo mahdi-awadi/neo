@@ -618,3 +618,19 @@ no per-run field can replace them. One seam covers every Claude launch path. Re-
 the same probe saw `git push` escalated and denied, also inside a team subagent. See
 `docs/adr/0006-the-governor-runs-as-a-pretooluse-hook-first.md`. Built TDD (17 new tests). `tsc`
 clean; full suite green. Going live needs a daemon restart (operator-gated).
+
+**Trust can default on for new projects (2026-10-02).** The operator wanted `/trust` on by default
+for new projects, with existing projects unchanged. The trust store was presence-only: `/trust off`
+deleted the row, so "explicitly off" and "never seen" were the same state, and any default would
+have trusted projects the operator had turned off. The store now records "untrusted" in its own
+`trust_untrusted` table; `trust` keeps its old meaning, so a rollback to older code still fails
+closed. Folder keys are normalised. The first read for a folder records
+`trust.defaultForNewProjects` (config, off in code). A one-time migration (`user_version` 2) records
+every folder the ledger already knows with no trust row as untrusted, so existing projects keep
+their setting (dry run on a copy of the live data: 8 stay untrusted, 23 stay trusted). Trust also used to approve an out-of-folder
+Write/Edit. With the default on, that would have removed the path fence for almost every project.
+That escalation is now a **fence escalation** (`fenced: true`), which only the operator can approve.
+`canUseTool` also ignores trust for a `customer` order. See
+`docs/adr/0007-trust-defaults-on-for-new-projects-never-lifts-the-fence.md`; `CONTEXT.md` gains
+**trust**, **trust record**, **trust default** and **fence escalation**. Built TDD (17 new tests). `tsc`
+clean; full suite green (882). Going live needs a daemon restart (operator-gated).

@@ -137,6 +137,28 @@ the same `decide()` as `canUseTool` and sends every call the governor does not a
 `canUseTool`, so no allow rule can approve that call first (ADR-0006).
 _Avoid_: permission hook, pre-hook
 
+**Trust**:
+A per-folder operator setting. When a folder is trusted, an **escalation** in that folder is
+approved automatically instead of asking the operator. Trust never lifts a **fence escalation**,
+and it never applies to customer-sourced work (ADR-0007).
+_Avoid_: auto-approve mode, allowlist
+
+**Trust record**:
+The stored trust value for one folder: trusted or untrusted. A folder with no record has not been
+seen yet. The first time the engine reads trust for such a folder, it records the **trust default**
+for it. After that, only the operator (`/trust`) changes the record.
+_Avoid_: trust row, trust flag
+
+**Trust default**:
+The trust value a folder gets the first time it is seen (`trust.defaultForNewProjects`). It applies
+only to folders with no **trust record**, so changing it never changes a project that already exists.
+_Avoid_: global trust
+
+**Fence escalation**:
+An escalation that only the operator can approve: a file write outside the session's project
+folder. **Trust** never approves it automatically; autonomous paths deny it.
+_Avoid_: hard escalation, blocked write
+
 ### Which model a worker runs
 
 **Model id**:

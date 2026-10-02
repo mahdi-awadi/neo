@@ -280,7 +280,7 @@ function trustCommand(args: string, chatId: number, deps: CommandDeps): CommandR
     return {
       text:
         mode === "on"
-          ? `🔓 trusting ${target.name} (${folder}) — actions auto-approve, no prompts.`
+          ? `🔓 trusting ${target.name} (${folder}) — actions auto-approve; writes outside the folder still ask.`
           : `🔒 no longer trusting ${target.name} (${folder}) — actions will prompt again.`,
     };
   }
