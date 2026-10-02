@@ -170,9 +170,20 @@ plan (`docs/superpowers/plans/2026-06-26-loop-runtime.md`; design
   text to the operator's Telegram chat (`startScheduledLoop` → `sendOperatorLine`, `#project`-tagged;
   silent when a fire emits nothing; falls back to daemon stdout with no admin/token).
 
-**Next (spec'd, not built):** data-driven loop CRUD — loop *definitions* become data authored from the
-admin console (built-ins ∪ custom, read fresh each tick, no restart):
-`docs/superpowers/specs/2026-06-27-loop-crud-design.md`.
+- **`tools/create-loop.ts`** — author or edit a loop definition from the CLI through the same
+  validated path the console uses (`validateLoopInput` → `createLoop` → ledger `loop_defs`), because
+  `/api/loop/*` is admin-session-gated. `promptFile` keeps a long standing brief in reviewable
+  markdown. Checked-in definitions live in `docs/loops/`.
+
+**Data-driven loop CRUD — DONE ✅ (2026-06-28).** Loop *definitions* are data: `effectiveLoops()`
+reads built-ins ∪ custom fresh on every tick, so authoring or editing a loop needs **no restart**.
+Built-ins stay run/toggle-only. Design + plan:
+`docs/superpowers/specs/2026-06-27-loop-crud-design.md`,
+`docs/superpowers/plans/2026-06-28-loop-crud.md`.
+
+**A loop prompt is a standing brief (ADR 0004).** `runProjectLoop` puts `LoopDef.prompt` into
+`Order.task` verbatim, so a loop gets no dispatch preamble and no `ask_operator`. The prompt must
+carry the engineering baseline, the project's own rules and the governance envelope itself.
 
 ## Phase 3b — Customer path (Gemini)  *(deferred — own sub-plan)*
 One customer channel (email webhook or web form) → Gemini reads → `Order(source:"customer")` →
