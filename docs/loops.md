@@ -66,6 +66,17 @@ the last section maps it onto Neo.
 > daemon exit 1 → every in-memory session dropped). Tests: `tests/scheduler.test.ts` (sync-throw +
 > async-reject), `tests/goal.test.ts` (missing cwd).
 
+> **Heartbeat + morning brief + commitments — live (2026-10-04, Phase 5).** Two more built-ins,
+> `heartbeat` (interval, `heartbeat.everyMinutes`) and `morning-brief` (cron, `heartbeat.briefCron`),
+> both off by default and resolved onto the company folder at fire time (`resolveLoop`). They run a
+> fresh, read-only worker over an engine-built digest (open commitments, live projects, inbox
+> counts) under a **silence contract**: the worker answers `HEARTBEAT_OK` when nothing needs the
+> operator and the engine drops it. Due commitment check-ins are sent by the engine, not the worker.
+> The heartbeat skips the worker entirely outside active hours, when nothing is pending, or when the
+> situation hasn't changed since its last review — an idle day costs zero runs. Commitments come from
+> `/remind` or the `commitment_add` tool. See `src/engine/proactive.ts`, `src/engine/commitments.ts`,
+> and `docs/CONFIG.md` "Heartbeat, morning brief & commitments".
+
 ## What a loop is
 
 A way to let an AI agent work autonomously toward a goal, removing the human from the inner cycle.

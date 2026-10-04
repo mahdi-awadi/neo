@@ -54,7 +54,9 @@ rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing
 down the daemon), one-shot session focus, and context-efficiency Phase 1
 (per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
-default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.
+default off — `memory.scopes`), and the Phase 5 heartbeat + morning brief + commitment check-ins
+(silent unless something matters; default off — `/loop heartbeat on`). Full phase-by-phase
+narrative: `docs/HISTORY.md`.
 
 Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
 not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,

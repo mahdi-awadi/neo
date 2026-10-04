@@ -1098,3 +1098,12 @@ test("dispatch still starts the worker when ensureIndexed throws (best-effort)",
   await new Promise((r) => setTimeout(r, 0));
   expect(started).toBe(true);
 });
+
+test("neoMcpServers attaches the commitment tools only on operator paths that opt in", () => {
+  const { d } = makeDeps();
+  const operator = neoToolNames(neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent", commitments: { morningHour: 8 } }));
+  expect(operator).toEqual(expect.arrayContaining(["commitment_add", "commitment_list", "commitment_done"]));
+  // The customer/ingress path never passes `commitments` → no tools.
+  const ingress = neoToolNames(neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent" }));
+  expect(ingress.some((n) => n.startsWith("commitment_"))).toBe(false);
+});
