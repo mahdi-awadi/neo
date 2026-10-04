@@ -12,6 +12,7 @@ import { sessionContext, type ContextSignals } from "./context-policy";
 import { workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
+import { todoTitle } from "./todo-queue";
 
 export interface DashProject {
   id: string;
@@ -38,6 +39,21 @@ export interface DashState {
   loops: LoopInfo[];
   recent: Array<{ folder: string; task: string; status: string }>;
   repos: string[];
+  /** Running + queued todos across projects (ADR-0008): running first, then each queue in order.
+   *  `position` is the 1-based queue position, 0 for a running todo. */
+  todos: DashTodo[];
+}
+
+export interface DashTodo {
+  id: number;
+  project: string;
+  status: "running" | "queued";
+  position: number;
+  title: string;
+  createdAt: number;
+  startedAt?: number;
+  /** Why the project's queue is paused, when it is. */
+  paused?: string;
 }
 
 /** Folders directly under `root` that are git repos — the New-project picker's options. */
@@ -105,7 +121,23 @@ export function dashboardSnapshot(opts: {
     task: o.task,
     status: opts.ledger.getOutcome(o.id)?.status ?? "pending",
   }));
+  const nextPos = new Map<string, number>();
+  const todos: DashTodo[] = opts.ledger.listTodos({ statuses: ["running", "queued"] }).map((t) => {
+    const position = t.status === "queued" ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
+    if (t.status === "queued") nextPos.set(t.folder, position);
+    return {
+      id: t.id,
+      project: t.project,
+      status: t.status as DashTodo["status"],
+      position,
+      title: todoTitle(t.brief),
+      createdAt: t.createdAt,
+      startedAt: t.startedAt,
+      paused: opts.ledger.todoPaused(t.folder)?.reason,
+    };
+  });
   return {
+    todos,
     projects,
     sdk: workerSdkState(opts.sdkProvider ?? "subscription"),
     usage: opts.usage ? opts.usage.snapshot(now) : null,

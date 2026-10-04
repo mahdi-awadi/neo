@@ -41,6 +41,7 @@ function cfg(): NeoConfig {
     dispatchGraceMs: 75_000,
     dispatchProgressMs: 600_000,
     dispatchRecoverWindowMs: 86_400_000,
+    todoOnFailure: "continue",
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -396,4 +397,14 @@ test("sendFile emits a file event and registers a token getFile can resolve", ()
   expect(fileEvent.name).toBe("report.pdf");
   expect(fileEvent.url).toContain(encodeURIComponent(token));
   expect(ch.getFile(token)).toBe("/tmp/report.pdf");
+});
+
+test("todo(): the console's queue actions run the shared /todo command against the engine's queue", async () => {
+  const { createTodoQueue } = await import("../src/engine/todo-queue");
+  const eng = engine(fakeStart().start);
+  const todo = createTodoQueue({ ledger: eng.ledger, registry: eng.registry, onFailure: () => "continue" });
+  const ch = createWebChannel({ engine: { ...eng, todo }, chatId: 42 });
+  expect(ch.todo("").text).toContain("every project queue is empty");
+  expect(ch.todo("cancel 7").text).toContain("No todo #7");
+  expect(createWebChannel({ engine: eng, chatId: 42 }).todo("").text).toContain("unavailable");
 });

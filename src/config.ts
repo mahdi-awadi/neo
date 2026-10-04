@@ -7,6 +7,10 @@ import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./engine/liveness";
 import { CLAUDE_TIER_MODELS } from "./engine/model-resolver";
 
+/** What a bad end does to the rest of a project's todo queue (ADR-0008). */
+export type TodoFailurePolicy = "continue" | "pause";
+export const TODO_FAILURE_POLICIES: readonly TodoFailurePolicy[] = ["continue", "pause"];
+
 /** Reasoning-effort levels accepted by the SDK. */
 export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -140,6 +144,10 @@ export interface NeoConfig {
    *  by the restart/crash: its end is recorded and the dispatcher gets a report with its stop
    *  point. Default 24 h. */
   dispatchRecoverWindowMs: number;
+  /** What a project's todo queue does when a todo ends badly (failed, stall-aborted, killed, cut
+   *  short by a reload or restart): `continue` with the next todo and report the failure, or `pause`
+   *  the queue until it is resumed (ADR-0008). Default `continue`; any other value fails closed to it. */
+  todoOnFailure: TodoFailurePolicy;
   /** Second-tier API-throttle backoff ladder (ms per attempt) — the wait before re-sending a
    *  rate-limited brief when the API gave no real reset time. The number of automatic retries is
    *  DERIVED from this array's length (not a separate knob). Default [30s, 2m, 8m]. */
@@ -229,6 +237,7 @@ const DEFAULTS = {
   dispatchGraceMs: 75 * 1000,
   dispatchProgressMs: 10 * 60 * 1000,
   dispatchRecoverWindowMs: 24 * 60 * 60 * 1000,
+  todoOnFailure: "continue" as TodoFailurePolicy,
   // API-throttle recovery policy (see api-retry.ts). These reproduce the pre-config constants
   // exactly, so behavior is byte-identical until an operator overrides them.
   apiRetryLadderMs: [30_000, 120_000, 480_000],
@@ -363,6 +372,9 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     dispatchGraceMs: fileCfg.dispatchGraceMs ?? DEFAULTS.dispatchGraceMs,
     dispatchProgressMs: fileCfg.dispatchProgressMs ?? DEFAULTS.dispatchProgressMs,
     dispatchRecoverWindowMs: fileCfg.dispatchRecoverWindowMs ?? DEFAULTS.dispatchRecoverWindowMs,
+    todoOnFailure: TODO_FAILURE_POLICIES.includes(fileCfg.todoOnFailure as TodoFailurePolicy)
+      ? (fileCfg.todoOnFailure as TodoFailurePolicy)
+      : DEFAULTS.todoOnFailure,
     apiRetryLadderMs: fileCfg.apiRetryLadderMs ?? DEFAULTS.apiRetryLadderMs,
     apiRetryJitterFrac: fileCfg.apiRetryJitterFrac ?? DEFAULTS.apiRetryJitterFrac,
     apiCooldownMs: fileCfg.apiCooldownMs ?? DEFAULTS.apiCooldownMs,

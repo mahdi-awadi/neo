@@ -16,6 +16,7 @@ import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers, raiseOperatorDecision, type DispatchDeps } from "./dispatch";
+import type { TodoQueue } from "./todo-queue";
 import { flushDispatcherInbox, liveCompanyLink, takeDispatcherInbox, type DispatcherLink } from "./dispatch-report";
 import { questionSummary } from "./structured-question";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
@@ -100,6 +101,8 @@ export interface PipelineDeps {
   /** Engine-side codebase-memory index guarantee, spread into the company `dispatch` tool's deps so
    *  a dispatched folder is indexed before its worker starts. */
   codebaseMemory?: CodebaseMemoryIndexer;
+  /** The per-project todo queue (ADR-0008): the company's `dispatch` tool hands briefs to it. */
+  todo?: TodoQueue;
 }
 
 /** Apply the context policy to a persisted resume id. Returns the id to actually resume with
@@ -285,7 +288,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -373,6 +376,30 @@ export async function deliverToCompany(
   return true;
 }
 
+/** The DispatchDeps a worker's in-process tools (and the todo queue's releases) run with: the
+ *  pipeline deps plus the dispatch knobs from config. With `chatId`, dispatch results report to the
+ *  company through `companyLink` (it can wake an idle company); without it, dispatch falls back to
+ *  the live-only link. The ONE place this mapping lives. */
+export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchDeps {
+  return {
+    ...deps,
+    workRoot: deps.cfg.workRoot,
+    dispatchProgressMs: deps.cfg.dispatchProgressMs,
+    dispatchStallMs: deps.cfg.dispatchStallMs,
+    dispatchGraceMs: deps.cfg.dispatchGraceMs,
+    apiRetryLadderMs: deps.cfg.apiRetryLadderMs,
+    apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac,
+    contextPolicy: deps.cfg.contextPolicy,
+    workers: deps.cfg.workers,
+    models: deps.cfg.models,
+    providers: deps.cfg.providers,
+    workerEnv: deps.cfg.workerEnv,
+    memory: deps.cfg.memory,
+    companyFolder: deps.cfg.companyFolder,
+    ...(chatId !== undefined ? { dispatcher: companyLink(deps, chatId) } : {}),
+  };
+}
+
 /** The dispatcher link the company's own `dispatch` tool reports through (see dispatch-report.ts). */
 function companyLink(deps: PipelineDeps, chatId: number): DispatcherLink {
   return { deliver: (text, opts) => deliverToCompany(text, chatId, deps, opts) };
@@ -394,7 +421,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder, dispatcher: companyLink(deps, chatId) }, chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: info?.order.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: info?.order.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }

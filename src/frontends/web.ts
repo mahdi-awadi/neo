@@ -268,6 +268,15 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json(channel.deleteLoop(body.name));
     }
 
+    if (req.method === "POST" && path === "/api/todo") {
+      // Queue-tab actions: { action: "cancel"|"up"|"pause"|"resume", id?, project? } → the shared /todo command.
+      const body = (await req.json().catch(() => ({}))) as { action?: unknown; id?: unknown; project?: unknown };
+      const action = typeof body.action === "string" && ["cancel", "up", "pause", "resume"].includes(body.action) ? body.action : "";
+      const arg = typeof body.id === "number" ? String(body.id) : typeof body.project === "string" ? body.project.trim() : "";
+      if (!action || !arg) return Response.json({ ok: false, error: "action + id/project required" }, { status: 400 });
+      return Response.json(channel.todo(`${action} ${arg}`), { headers: { "cache-control": "no-store" } });
+    }
+
     if (req.method === "POST" && path === "/api/loop/enable") {
       const body = (await req.json().catch(() => ({}))) as { name?: unknown; on?: unknown };
       if (typeof body.name === "string") channel.setLoopEnabled(body.name, body.on === true);
@@ -471,6 +480,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
  <main>
   <div class="top">
    <button class="tab on" data-v="activity" onclick="tab('activity');clearFilter()">Activity</button>
+   <button class="tab" data-v="todos" onclick="tab('todos')">Queue<span id="tbadge" class="ibadge"></span></button>
    <button class="tab" data-v="loops" onclick="tab('loops')">Loops</button>
    <button class="tab" data-v="usage" onclick="tab('usage')">Usage</button>
    <button class="tab" data-v="recent" onclick="tab('recent')">Recent</button>
@@ -482,6 +492,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
    <div id="feed"><div class="fe" id="ph">Open a project, or select one on the left — its activity streams here.</div></div>
    <form class="compose" id="ff"><input id="msg" autocomplete="off" placeholder="message the active project — a follow-up for the AI…"><input type="file" id="file" style="display:none" onchange="uploadFile()"><button class="chip" type="button" onclick="document.getElementById('file').click()">📎</button><button type="submit">Send</button></form>
   </div>
+  <div class="view" id="vtodos"></div>
   <div class="view" id="vloops"></div>
   <div class="view" id="vusage"></div>
   <div class="view" id="vrecent"></div>
@@ -489,14 +500,14 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
  </main>
 </div>
 <script>
-var S={projects:[],sdk:{provider:'subscription',label:'Claude Agent SDK',choices:[]},usage:null,loops:[],recent:[],repos:[]};
+var S={projects:[],sdk:{provider:'subscription',label:'Claude Agent SDK',choices:[]},usage:null,loops:[],recent:[],repos:[],todos:[]};
 function esc(s){return (s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 function post(p,b){return fetch(p,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});}
 function fmt(n){n=n||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'k';return ''+Math.round(n);}
 function age(ms){var s=Math.floor((ms||0)/1000);if(s<60)return s+'s';var m=Math.floor(s/60);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h';return Math.floor(h/24)+'d';}
 
 function loadState(){return fetch('/api/state?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){S=d;renderAll();});}
-function renderAll(){renderRepos();renderSdk();renderProjects();renderLoops();renderUsage();renderRecent();}
+function renderAll(){renderRepos();renderSdk();renderProjects();renderTodos();renderLoops();renderUsage();renderRecent();}
 
 function renderRepos(){var sel=document.getElementById('repo');if(sel.dataset.n==String(S.repos.length))return;sel.dataset.n=String(S.repos.length);
  var cur=sel.value;sel.innerHTML='<option value="">— pick a repo —</option>';
@@ -583,6 +594,25 @@ function renderUsage(){var v=document.getElementById('vusage');var u=S.usage;
  h+='</div>';if(u.weeklyResetAt)h+='<div class="ls" style="margin-top:8px">weekly resets '+new Date(u.weeklyResetAt).toLocaleString()+'</div>';
  h+='</div>';v.innerHTML=h;
  var fr=document.getElementById('ftl');fr.textContent=(u.rateLimits&&u.rateLimits.length)?u.rateLimits.map(function(r){return (r.rateLimitType==='five_hour'?'5h':'7d')+' ✓';}).join(' · '):'live';}
+
+// Queue — per-project todo queues (ADR-0008): running first, then each queue in order.
+function todoAct(action,arg){var b={action:action};if(typeof arg==='number')b.id=arg;else b.project=arg;
+ post('/api/todo',b).then(function(r){return r.json();}).then(function(d){if(d&&d.text)feedMsg('⋯ '+esc(d.text),'me',null);loadState();});}
+function renderTodos(){var v=document.getElementById('vtodos');var T=S.todos||[];
+ var q=T.filter(function(t){return t.status==='queued';}).length;var bd=document.getElementById('tbadge');if(bd){bd.textContent=q?(' '+q):'';bd.className='ibadge'+(q?' on':'');}
+ if(!T.length){v.innerHTML='<div class="card"><h3>Todo queues</h3><div class="empty">Every project queue is empty.</div></div>';return;}
+ v.innerHTML='';var by={};var order=[];T.forEach(function(t){if(!by[t.project]){by[t.project]=[];order.push(t.project);}by[t.project].push(t);});
+ order.forEach(function(p){var card=document.createElement('div');card.className='card';var paused=by[p][0].paused;
+  var h=document.createElement('h3');h.textContent=p+(paused?' — paused ('+paused+')':'');card.appendChild(h);
+  var pr=document.createElement('button');pr.className='chip';pr.textContent=paused?'Resume':'Pause';pr.onclick=function(){todoAct(paused?'resume':'pause',p);};card.appendChild(pr);
+  by[p].forEach(function(t){var row=document.createElement('div');row.className='rrow';
+   var lead=t.status==='running'?'▶ running '+age(Date.now()-(t.startedAt||t.createdAt)):(t.position+'.');
+   row.innerHTML='<span>'+esc(lead)+'</span><div style="flex:1;min-width:0"><div>#'+t.id+' '+esc(t.title)+'</div></div>';
+   if(t.status==='queued'){
+    if(t.position>1){var up=document.createElement('button');up.className='chip';up.textContent='↑';up.title='move up';up.onclick=function(){todoAct('up',t.id);};row.appendChild(up);}
+    var x=document.createElement('button');x.className='chip no';x.textContent='Cancel';x.onclick=function(){if(confirm('Cancel #'+t.id+'?'))todoAct('cancel',t.id);};row.appendChild(x);}
+   card.appendChild(row);});
+  v.appendChild(card);});}
 
 function renderRecent(){var v=document.getElementById('vrecent');var h='<div class="card"><h3>Recent orders</h3>';
  if(!S.recent.length)h+='<div class="empty">Nothing run yet.</div>';

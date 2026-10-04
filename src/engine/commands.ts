@@ -17,6 +17,7 @@ import { sessionContext, type ContextSignals } from "./context-policy";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
+import type { TodoQueue } from "./todo-queue";
 
 export interface CommandDeps {
   registry: Registry;
@@ -43,6 +44,8 @@ export interface CommandDeps {
   requestReload?: () => void;
   /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. */
   cfg?: Pick<NeoConfig, "providers">;
+  /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
+  todo?: TodoQueue;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -126,6 +129,13 @@ const COMMANDS: Command[] = [
     usage: "/trust [<project-or-folder>] [on|off]",
     summary: "auto-approve all actions for a project (no Allow/Deny prompts)",
     run: ({ deps, args, chatId }) => trustCommand(args.trim(), chatId, deps),
+  },
+  {
+    name: "todo",
+    aliases: ["todos", "queue"],
+    usage: "/todo [<project>] · /todo cancel|up <id> · /todo pause|resume <project>",
+    summary: "per-project todo queues: list, cancel, move up, pause, resume",
+    run: ({ deps, args }) => ({ text: todoCommand(args.trim(), deps.todo) }),
   },
   {
     name: "inbox",
@@ -257,6 +267,29 @@ export function killProject(id: string, chatId: number, deps: CommandDeps): Comm
     deps.registry.remove(id);
   }
   return renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel);
+}
+
+const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo pause <project> · /todo resume <project>";
+
+/** /todo — read and steer the per-project todo queues. Thin: the queue owns every rule. */
+function todoCommand(args: string, todo: TodoQueue | undefined): string {
+  if (!todo) return "The todo queue is unavailable on this channel.";
+  const [verb, arg = ""] = args.split(/\s+/, 2);
+  const id = Number(arg.replace(/^#/, ""));
+  switch (verb) {
+    case "":
+      return todo.list();
+    case "cancel":
+    case "up":
+      if (!Number.isInteger(id) || id <= 0) return TODO_USAGE;
+      return verb === "cancel" ? todo.cancel(id) : todo.up(id);
+    case "pause":
+    case "resume":
+      if (!arg) return TODO_USAGE;
+      return verb === "pause" ? todo.pause(arg) : todo.resume(arg);
+    default:
+      return todo.list(verb);
+  }
 }
 
 function inboxCommand(deps: CommandDeps): CommandResult {

@@ -34,6 +34,7 @@ import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_O
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
+import type { TodoQueue } from "./todo-queue";
 import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
@@ -144,6 +145,10 @@ export interface DispatchDeps {
    *  evaluate the `"company"` scope keyword. Absent ⇒ fail-closed: no injection even if `memory`
    *  is set (mirrors `memoryScopeEnabled`'s folder-vs-companyFolder comparison). */
   companyFolder?: string;
+  /** The per-project todo queue (ADR-0008). When set, the company's `dispatch` tool hands every
+   *  brief to it (a busy project queues it) and the company gets the `todo` tool. Absent → the
+   *  legacy direct dispatch (tests, paths without the queue). */
+  todo?: TodoQueue;
 }
 
 type RunFn = typeof runOrder;
@@ -1147,18 +1152,62 @@ export function neoMcpServers(
             ),
         },
         async (args: { project: string; task: string; team?: "frontend-backend" }) => {
-          const out = await dispatchToProject(args.project, args.task, deps, replyChat, {
-            root: deps.workRoot,
-            team: args.team,
-            // The dispatch inherits the class of the worker calling the tool: the company session
-            // servicing an operator message dispatches as `interactive`, a scheduler-fired one as
-            // `background`. This is the whole of the "class follows the originating trigger" rule.
-            workClass: opts.workClass ?? DEFAULT_WORK_CLASS,
-          });
+          // The dispatch inherits the class of the worker calling the tool: the company session
+          // servicing an operator message dispatches as `interactive`, a scheduler-fired one as
+          // `background`. This is the whole of the "class follows the originating trigger" rule.
+          const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
+          const out = deps.todo
+            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass }, deps, replyChat)
+            : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass });
           return { content: [{ type: "text" as const, text: out }] };
         },
       ),
     );
+    const todo = deps.todo;
+    if (todo) {
+      tools.push(
+        tool(
+          "todo",
+          "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
+            "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued todos only — a running one is stopped by the operator with /kill), `pause` / `resume` (`project`). Returns text.",
+          {
+            action: z.enum(["list", "add", "reorder", "cancel", "pause", "resume"]),
+            project: z.string().optional().describe("project folder name, e.g. \"eticket-v3\""),
+            id: z.number().int().optional().describe("todo number (#N)"),
+            position: z.number().int().min(1).optional().describe("new 1-based queue position, for reorder"),
+            task: z.string().optional().describe("the brief, for add — a clear, self-contained prompt"),
+            team: z.enum(["frontend-backend"]).optional().describe("opt-in team mode, for add (as in dispatch)"),
+          },
+          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend" }) => {
+            const need = (what: string) => `todo ${args.action} needs ${what}.`;
+            const text = await (async () => {
+              switch (args.action) {
+                case "list":
+                  return todo.list(args.project);
+                case "add":
+                  if (!args.project || !args.task) return need("`project` and `task`");
+                  return todo.submit({ project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS }, deps, replyChat);
+                case "reorder":
+                  if (args.id === undefined || args.position === undefined) return need("`id` and `position`");
+                  return todo.move(args.id, args.position);
+                case "cancel":
+                  if (args.id === undefined) return need("`id`");
+                  return todo.cancel(args.id);
+                case "pause":
+                  if (!args.project) return need("`project`");
+                  return todo.pause(args.project);
+                case "resume":
+                  if (!args.project) return need("`project`");
+                  return todo.resume(args.project);
+                default:
+                  return `unknown todo action: ${args.action}`;
+              }
+            })();
+            return { content: [{ type: "text" as const, text }] };
+          },
+        ),
+      );
+    }
   }
   // Memory tools (`memory`, `memory_search`): attached ONLY through the same gate that guards the
   // frozen snapshot injection in dispatchToProject (memoryGate) — operator paths whose target

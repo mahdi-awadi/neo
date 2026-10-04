@@ -27,6 +27,7 @@ import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
 import { makeLoopReply } from "./engine/loop-mirror";
+import { createTodoQueue } from "./engine/todo-queue";
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
 // wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
@@ -55,6 +56,12 @@ async function main(): Promise<void> {
   console.log(`  dispatch  -> ${interrupted} interrupted dispatch(es) queued for the company; no wall-clock limit, digest every ${cfg.dispatchProgressMs / 60_000}m`);
   const admin = openAdminStore("data/admin.db");
   const registry = createRegistry();
+  // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
+  // above: fail it with its stop point (failure policy applies). Queued todos stay queued; the
+  // heartbeat tick releases them in order once the operator channel registers its launcher.
+  const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure });
+  const cutTodos = todo.recover({ now: Date.now() });
+  console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
   // operator conversation mirrors across both surfaces (engine/operator-bus.ts).
   const bus = createOperatorBus();
@@ -167,6 +174,9 @@ async function main(): Promise<void> {
       // Retry dispatch results a busy moment turned away (company reopening/closing) — into a LIVE
       // company only; an idle one gets them with the operator's next message (ADR-0007).
       void flushDispatcherInbox(ledger, liveCompanyLink(registry, lifecycle), Date.now());
+      // Release todo queues a hold, a resume or the restart left waiting (ADR-0008). Completions
+      // release their own project at once; this tick is the backstop.
+      void todo.pump();
       sweepStuck(registry, {
         now: Date.now(),
         stuckAfterMs: cfg.stuckAfterMs,
@@ -254,7 +264,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -266,7 +276,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
       cfg.webPort,
       cfg.webHost,
     );

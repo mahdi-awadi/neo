@@ -12,10 +12,11 @@ import type { AdminStore } from "../engine/admin";
 import type { UsageMeter } from "../engine/usage";
 import type { TrustStore } from "../engine/trust";
 import type { Inbox } from "../engine/inbox";
+import type { TodoQueue } from "../engine/todo-queue";
 import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { openTrustStore } from "../engine/trust";
-import { handleMessage } from "../engine/pipeline";
+import { handleMessage, dispatchDepsFrom } from "../engine/pipeline";
 import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply, answerDecision } from "../engine/reply-routing";
@@ -168,7 +169,7 @@ export function startTelegram(
   gatewaySendUrl?: string,
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
 ): Bot {
@@ -367,6 +368,7 @@ export function startTelegram(
     lifecycle: reload?.lifecycle,
     cooldown: reload?.cooldown,
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
+    todo: reload?.todo,
     reply: (cid, text, project, priority) => {
       void send(surfaceChat(cid, priority), text, project, priority); // local delivery, routed + styled by priority
       bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
@@ -392,6 +394,13 @@ export function startTelegram(
       }),
     sendFile: (cid, path, caption) =>
       void bot.api.sendDocument(cid, new InputFile(path), caption ? { caption } : {}),
+  });
+
+  // Todo-queue releases that no dispatch is driving (the daemon tick, a resume, the restart) start
+  // from the operator's own channel: the admin DM, with the same deps the company's dispatches use.
+  reload?.todo?.setLauncher(() => {
+    const chat = admin.adminId();
+    return chat === undefined ? undefined : { deps: dispatchDepsFrom(pipelineDeps(), chat), replyChat: chat };
   });
 
   // Deps for running the company to draft a customer reply — identical to the web path: stream
@@ -503,6 +512,7 @@ export function startTelegram(
       requestReload: reload?.requestReload,
       cfg,
       windowTokensByModel: cfg.contextPolicy.windowTokensByModel,
+      todo: reload?.todo,
     });
     if (command !== null) {
       if (command.select?.length) {

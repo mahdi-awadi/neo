@@ -71,8 +71,11 @@ export interface WebChannel {
   setLoopEnabled(name: string, on: boolean): void;
   /** Switch the worker SDK used for new own-work sessions. */
   setSdk(provider: string): { ok: boolean; error?: string; sdk: WorkerSdkState };
-  /** Structured snapshot for the dashboard (projects · usage · loops · recent · repos). */
+  /** Structured snapshot for the dashboard (projects · usage · loops · recent · repos · todos). */
   state(): DashState;
+  /** A Queue-tab action (`cancel 12`, `up 12`, `pause eticket-v3`, `resume eticket-v3`, or "" to
+   *  list) — runs the shared /todo command, so the console and Telegram share one set of rules. */
+  todo(args: string): { ok: boolean; text: string };
   /** Push a line into the operator feed (used to surface customer-driven company work). */
   notify(text: string, project?: string): void;
   /** Resolve a token issued by an outbound file event to its on-disk path (for GET /file). */
@@ -157,6 +160,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         requestReload: opts.requestReload,
         cfg: opts.engine.cfg,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
+        todo: opts.engine.todo,
       });
       if (command !== null) {
         if (command.sdk) emit({ type: "sdk", sdk: command.sdk });
@@ -248,6 +252,15 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         sdkProvider: opts.engine.cfg.providers.ownWork,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
+    },
+    todo(args) {
+      const r = handleCommand(`/todo ${args}`.trim(), opts.chatId, {
+        registry: opts.engine.registry,
+        ledger: opts.engine.ledger,
+        trust: opts.engine.trust,
+        todo: opts.engine.todo,
+      });
+      return { ok: !!opts.engine.todo, text: r?.text ?? "" };
     },
     notify(text: string, project?: string) {
       message(text, project); // reuse the existing markdown→HTML message emitter

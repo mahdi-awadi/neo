@@ -33,3 +33,12 @@ test("consolePage renders the derived session state, not the registry lifecycle 
   expect(html).toContain("p.state");
   expect(html).not.toContain("p.status==='running'");
 });
+
+test("consolePage has a Queue tab that renders the todo queues and posts its actions to /api/todo", () => {
+  const html = consolePage();
+  expect(html).toContain(`data-v="todos"`);
+  expect(html).toContain(`id="vtodos"`);
+  const body = html.match(/<script>([\s\S]*?)<\/script>/)![1];
+  expect(body).toContain("function renderTodos");
+  expect(body).toContain("/api/todo");
+});

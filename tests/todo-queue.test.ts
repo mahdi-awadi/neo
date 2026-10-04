@@ -310,3 +310,79 @@ test("todoTitle is the first non-empty line, bounded", () => {
   expect(todoTitle("\n  fare step UI \nmore")).toBe("fare step UI");
   expect(todoTitle("x".repeat(200)).length).toBeLessThanOrEqual(60);
 });
+
+// --- wiring: the company's tools, the /todo command, the dashboard, config ------------------------
+
+import { neoMcpServers } from "../src/engine/dispatch";
+import { handleCommand, telegramCommands } from "../src/engine/commands";
+import { dashboardSnapshot } from "../src/engine/dashboard";
+import { loadConfig } from "../src/config";
+import { writeFileSync } from "node:fs";
+
+function tool(servers: Record<string, unknown>, name: string) {
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { handler: (a: Record<string, unknown>, e: unknown) => Promise<{ content: Array<{ text?: string }> }> }> } };
+  const h = neo.instance._registeredTools[name]?.handler;
+  return h ? async (a: Record<string, unknown>) => (await h(a, {})).content[0]?.text ?? "" : undefined;
+}
+
+test("the company's dispatch tool goes through the queue; a todo tool lists and controls it", async () => {
+  const { queue, deps, runs } = setup();
+  const servers = neoMcpServers({ ...deps, todo: queue }, 1, { dispatch: true, workClass: "interactive", folder: "/tmp/agent" });
+  const dispatch = tool(servers, "dispatch")!;
+  const todo = tool(servers, "todo")!;
+  expect(await dispatch({ project: "eticket-v3", task: "first" })).toContain("dispatched to eticket-v3");
+  expect(await dispatch({ project: "eticket-v3", task: "second" })).toContain("queued as #2 for eticket-v3, position 1");
+  expect(await todo({ action: "add", project: "eticket-v3", task: "third" })).toContain("queued as #3");
+  expect(runs).toHaveLength(1);
+  expect(await todo({ action: "list" })).toContain("1. #2 second");
+  expect(await todo({ action: "reorder", id: 3, position: 1 })).toContain("position 1");
+  expect(await todo({ action: "cancel", id: 2 })).toContain("cancelled #2");
+  expect(await todo({ action: "pause", project: "eticket-v3" })).toContain("paused");
+  expect(await todo({ action: "resume", project: "eticket-v3" })).toContain("resumed");
+  expect(await todo({ action: "list", project: "eticket-v3" })).toContain("#3 third");
+  expect(await todo({ action: "cancel" })).toContain("needs");
+});
+
+test("only the company gets the todo tool", () => {
+  const { queue, deps } = setup();
+  const project = neoMcpServers({ ...deps, todo: queue }, 1, { dispatch: false, folder: "/tmp/x" });
+  expect(tool(project, "todo")).toBeUndefined();
+});
+
+test("/todo commands: list all, one project, cancel, up, pause, resume", async () => {
+  const { queue, deps, ledger, registry } = setup();
+  await queue.submit({ project: "eticket-v3", brief: "run", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "a", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "b", workClass: "interactive" }, deps, 1);
+  const cmd = (t: string) => handleCommand(t, 1, { registry, ledger, trust: deps.trust, todo: queue })!.text;
+  expect(cmd("/todo")).toContain("▶ #1 running");
+  expect(cmd("/todo eticket-v3")).toContain("2. #3 b");
+  expect(cmd("/todo up 3")).toContain("position 1");
+  expect(cmd("/todo cancel 2")).toContain("cancelled #2");
+  expect(cmd("/todo pause eticket-v3")).toContain("paused");
+  expect(cmd("/todo resume eticket-v3")).toContain("resumed");
+  expect(cmd("/todo up x")).toContain("Usage");
+  expect(handleCommand("/todo", 1, { registry, ledger, trust: deps.trust })!.text).toContain("unavailable");
+  expect(telegramCommands().some((c) => c.command === "todo")).toBe(true);
+});
+
+test("the dashboard snapshot carries the todo queues", async () => {
+  const { queue, deps, ledger, registry } = setup();
+  await queue.submit({ project: "eticket-v3", brief: "run", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "next", workClass: "interactive" }, deps, 1);
+  const snap = dashboardSnapshot({ registry, ledger, chatId: 1, reposRoot: "/nonexistent" });
+  expect(snap.todos.map((t) => [t.id, t.status, t.position])).toEqual([
+    [1, "running", 0],
+    [2, "queued", 1],
+  ]);
+  expect(snap.todos[1]).toMatchObject({ project: "eticket-v3", title: "next" });
+});
+
+test("config todoOnFailure defaults to continue, accepts pause, and fails closed to continue", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-cfg-"));
+  expect(loadConfig(dir).todoOnFailure).toBe("continue");
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ todoOnFailure: "pause" }));
+  expect(loadConfig(dir).todoOnFailure).toBe("pause");
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ todoOnFailure: "explode" }));
+  expect(loadConfig(dir).todoOnFailure).toBe("continue");
+});

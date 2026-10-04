@@ -11,9 +11,7 @@ import { heldByReserve, type WorkClass } from "./budget";
 import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts } from "./dispatch";
 import { lastCommitIn } from "./dispatch-report";
 
-/** What a bad end does to the rest of the project's queue (config `todoOnFailure`). */
-export type TodoFailurePolicy = "continue" | "pause";
-export const TODO_FAILURE_POLICIES: readonly TodoFailurePolicy[] = ["continue", "pause"];
+import type { TodoFailurePolicy } from "../config";
 
 /** Max chars of a brief's title in operator lines and lists. */
 const TITLE_MAX = 60;
