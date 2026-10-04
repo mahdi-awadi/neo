@@ -165,3 +165,21 @@ SDK 0.3.286 → 0.3.289 merged to master behind green tsc + tests · @playwright
 The run found and fixed two bugs (pretty JSON from `claude plugin list`; bun test summary on stderr).
 **Restart pending** (operator-gated): `bun install` in the live checkout, then restart — the daemon has no
 updater and workers still load SDK 0.3.286 until then.
+
+## DONE 2026-10-04 — engine error containment (ADR-0010, merged to master, restart pending)
+Wired: daemon (safety net, configured fault reporter → log + `engine_fault` + capped alert + company queue,
+isolated heartbeat steps with an always-re-armed tick, health timer, startup failure exits 1, busy_timeout
+on every store, alerts + loop lines through the 429-aware Api), Telegram (retry transformer, errorBoundary
++ bot.catch, every fire-and-forget send contained, failed approval post → deny, inbox send/draft detached:
+the approval deadlock fix), web (route throw → 500 + report; background sends contained), pipeline (run
+completion, api-retry follow-up, dispatcher flush contained), manual loop starts (`launchLoop`).
+Tests: `tests/fault-injection.test.ts` (10). docs/CONFIG.md section; ADR-0010 amended (deadlock, runner
+rejected). Not done: the unbounded web `events[]` the audit noted is out of this scope.
+**Restart pending** (operator-gated).
+
+## RESUME HERE (2026-10-04, time limit hit mid-rebase)
+- master = 6c3ad92 (flood-control + tool-lines + 207aed4 trust merged; 4b7848c fence ported; ADR-0011). 1001 tests green.
+- This branch (9bbfc04) is NOT yet rebased on 6c3ad92: rebase was aborted. Conflicts: CONTEXT.md, trust.ts (keep 207aed4 store + openSqlite busyTimeoutMs), config.test.ts (keep both), daemon.ts (trust opts + busyTimeoutMs; loopReply via operatorApi + toolSteps), telegram.ts (take master's, re-apply wiring; a draft of that is in untracked `.rebased-telegram.ts.wip`).
+- Unify 429: drop telegram-retry.ts + telegramMaxRetryAfterS; use master's flood gate (`installFloodGate(api)`, `createOperatorApi(token)`); fix telegram-tool-lines.test sendOperatorLine(api,...).
+- Review fixes to apply: cap + digit-normalise company handoff in fault.ts; polling reject → report + exit 1; inbox send in-flight set + re-read draft (in the wip file); tests via grammy `client.fetch` so the flood gate is exercised; contain `void handoff` pipeline.ts.
+- Then: tsc + bun test, ff master, switch /home/neo to master (HANDOFF.md there is an auto-written idle note — stash it), bun install, delete merged branches/worktrees (fix/telegram-flood-control, fix/telegram-tool-lines-all-paths, feat/trust-default-new-projects, integrate/flood-trust). No restart.

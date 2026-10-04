@@ -34,6 +34,7 @@ import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
 import { clearDecisionBlock, describeSession } from "./session-status";
 import type { Priority } from "./priority";
+import { faults } from "./fault";
 import {
   apiExhaustionWarning,
   apiFailureNotice,
@@ -337,7 +338,7 @@ async function resumeSession(
       gate.preLines,
     );
     // The company is live again: hand it any dispatch result turned away while it was reopening.
-    if (live.id === registry.getDefault()?.id) void flushDispatcherInbox(ledger, liveCompanyLink(registry, deps.lifecycle), now());
+    if (live.id === registry.getDefault()?.id) faults.contain("pipeline.flushDispatcherInbox", () => flushDispatcherInbox(ledger, liveCompanyLink(registry, deps.lifecycle), now()));
     return run;
   } finally {
     resuming.delete(live.id);
@@ -557,10 +558,14 @@ function startSession(
         });
         ledger.recordEvent("api_retry", { orderId: order.id, folder: order.folder, data: { scope: "interactive", project, kind, attempt, max: maxRetries, delayMs, source, resetsAt } });
         void deps.reply(chatId, apiRetryNotice(project, attempt, delayMs, resetsAt, maxRetries), project);
-        void (deps.sleep ?? realSleep)(delayMs).then(() => {
-          registry.touch(registryId, now());
-          runRef?.followUp(apiRetryFollowUp(order.task));
-        });
+        faults.contain(
+          "pipeline.apiRetry",
+          (deps.sleep ?? realSleep)(delayMs).then(() => {
+            registry.touch(registryId, now());
+            runRef?.followUp(apiRetryFollowUp(order.task));
+          }),
+          { project, orderId: order.id, folder: order.folder },
+        );
       },
     },
     runDeps,
@@ -568,7 +573,9 @@ function startSession(
   runRef = run;
   registry.attachControl(registryId, run);
 
-  void run.done.then((result) => {
+  // The run's completion bookkeeping is part of the run's unit of work (ADR-0010): a throw here (a
+  // locked ledger) is reported with the project + order, never an unhandled rejection.
+  faults.contain("pipeline.runDone", run.done.then((result) => {
     if (result.sessionId) {
       // Tag the id with the SDK that minted it — a later resume under a different worker SDK must
       // start fresh instead of feeding it an id it has never heard of.
@@ -628,7 +635,7 @@ function startSession(
     // spam the group). A failed one is an ALERT the operator must see (Decisions). The frontend
     // prepends the single priority accent (🟢/🔴) — no per-call-site glyph here (Feature 2).
     void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert");
-  });
+  }), { project, orderId: order.id, folder: order.folder });
 
   return run;
 }

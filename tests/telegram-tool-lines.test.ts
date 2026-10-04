@@ -1,8 +1,9 @@
 // Tool-step lines ("🔧 Bash: …", "↳ …") never reach Telegram by default — on EVERY worker-output
 // path, not just the session `send()`: scheduled loops (sendOperatorLine), loops started from
 // Telegram, and company briefs all leaked them. The web console keeps them.
-import { afterEach, expect, test } from "bun:test";
-import { sendFormatted, sendOperatorLine } from "../src/frontends/telegram";
+import { expect, test } from "bun:test";
+import { Api } from "grammy";
+import { installFloodGate, sendFormatted, sendOperatorLine } from "../src/frontends/telegram";
 import { makeLoopReply } from "../src/engine/loop-mirror";
 import type { OperatorBus } from "../src/engine/operator-bus";
 
@@ -43,30 +44,27 @@ test("sendFormatted: toolSteps opts back in", async () => {
   expect(sent.length).toBe(1);
 });
 
-// sendOperatorLine posts over the raw Bot API with fetch (the scheduled-loop path).
-const realFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = realFetch;
-});
-function captureFetch(): string[] {
+// sendOperatorLine posts through a Bot API client behind the flood gate (the scheduled-loop path);
+// the client's fetch is faked so the real grammy request path runs.
+function captureApi(): { api: Api; bodies: string[] } {
   const bodies: string[] = [];
-  globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+  const fetch = (async (_url: unknown, init?: { body?: unknown }) => {
     bodies.push(String(init?.body ?? ""));
     return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }));
-  }) as typeof fetch;
-  return bodies;
+  }) as unknown as typeof globalThis.fetch;
+  return { api: installFloodGate(new Api("TOKEN", { fetch })), bodies };
 }
 
 test("sendOperatorLine (scheduled loops): a tool_use line produces no Telegram send by default", async () => {
-  const bodies = captureFetch();
-  await sendOperatorLine("TOKEN", 1, TOOL_LINE, "waselni");
+  const { api, bodies } = captureApi();
+  await sendOperatorLine(api, 1, TOOL_LINE, "waselni");
   expect(bodies).toEqual([]);
 });
 
 test("sendOperatorLine: worker text still goes out, and toolSteps opts back in", async () => {
-  const bodies = captureFetch();
-  await sendOperatorLine("TOKEN", 1, "Checklist row 14 done; moving to 15.", "waselni");
-  await sendOperatorLine("TOKEN", 1, TOOL_LINE, "waselni", { toolSteps: true });
+  const { api, bodies } = captureApi();
+  await sendOperatorLine(api, 1, "Checklist row 14 done; moving to 15.", "waselni");
+  await sendOperatorLine(api, 1, TOOL_LINE, "waselni", { toolSteps: true });
   expect(bodies.length).toBe(2);
 });
 

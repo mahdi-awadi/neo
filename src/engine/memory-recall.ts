@@ -7,6 +7,7 @@
 // across machines/checkouts and doesn't leak the host filesystem layout back to a worker.
 
 import { Database } from "bun:sqlite";
+import { openSqlite } from "./sqlite";
 import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { memoryDir } from "./memory";
@@ -74,7 +75,7 @@ export function openMemoryIndex(folder: string): MemoryIndex {
 
   const dir = memoryDir(folder);
   mkdirSync(dir, { recursive: true });
-  const db = new Database(join(dir, "index.sqlite"));
+  const db = openSqlite(join(dir, "index.sqlite"));
   db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS mem USING fts5(content, file, day)`);
 
   const index: MemoryIndex = {

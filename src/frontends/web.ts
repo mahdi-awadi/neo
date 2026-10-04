@@ -16,6 +16,7 @@ import { saveInbound } from "../engine/files";
 import type { Inbox } from "../engine/inbox";
 import type { OperatorBus } from "../engine/operator-bus";
 import { basename } from "node:path";
+import { faults } from "../engine/fault";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
 const COOKIE = "neo_session";
@@ -56,7 +57,18 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     return m ? deps.sessions.verify(decodeURIComponent(m[1]), now()) : undefined;
   }
 
+  // The web request is a unit of work (ADR-0010): a throw in any route is reported and answered with
+  // a 500 — it never reaches Bun.serve's error page or the process.
   async function fetch(req: Request): Promise<Response> {
+    try {
+      return await route(req);
+    } catch (e) {
+      faults.report("web.request", e, { method: req.method, path: new URL(req.url).pathname });
+      return Response.json({ ok: false, error: "internal error" }, { status: 500, headers: { "cache-control": "no-store" } });
+    }
+  }
+
+  async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -179,7 +191,8 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 
     if (req.method === "POST" && path === "/msg") {
       const body = (await req.json().catch(() => ({}))) as { text?: unknown };
-      if (typeof body.text === "string" && body.text.trim()) void channel.send(body.text.trim());
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (text) faults.contain("web.send", () => channel.send(text));
       return Response.json({ ok: true });
     }
 
@@ -192,7 +205,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const bytes = new Uint8Array(await f.arrayBuffer());
       const saved = saveInbound(target.order.folder, f.name || "file", bytes);
       const cap = form?.get("caption"); const caption = typeof cap === "string" ? cap : "";
-      void channel.send(`📎 operator attached \`${basename(saved)}\` at \`${saved}\`\n${caption}`);
+      faults.contain("web.send", () => channel.send(`📎 operator attached \`${basename(saved)}\` at \`${saved}\`\n${caption}`), { project: target.name });
       return Response.json({ ok: true });
     }
 
@@ -243,7 +256,9 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     if (req.method === "POST" && path === "/api/open") {
       const body = (await req.json().catch(() => ({}))) as { folder?: unknown; task?: unknown };
       if (typeof body.folder === "string" && typeof body.task === "string" && body.folder.trim() && body.task.trim()) {
-        void channel.openProject(body.folder.trim(), body.task.trim());
+        const folder = body.folder.trim();
+        const task = body.task.trim();
+        faults.contain("web.openProject", () => channel.openProject(folder, task), { folder });
       }
       return Response.json({ ok: true });
     }

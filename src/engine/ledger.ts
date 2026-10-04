@@ -1,6 +1,7 @@
 // Durable record of orders and their outcomes. The deterministic bookkeeping layer —
 // the part of operant that already was an "engine" (ported to bun:sqlite, trimmed).
 import { Database } from "bun:sqlite";
+import { openSqlite } from "./sqlite";
 import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
 import type { StructuredAsk } from "./structured-question";
@@ -135,6 +136,8 @@ export interface Ledger {
   /** Dispatcher inbox (ADR-0007): queue one final dispatch result for the company. Returns its id.
    *  It stays pending until delivered, so a reload or a closed company session cannot lose it. */
   queueDispatcherReport(project: string, text: string, at?: number): number;
+  /** `SELECT 1` — throws when the database cannot be read (the health check, ADR-0010). */
+  ping(): void;
   /** Pending (undelivered) dispatcher reports, oldest first. */
   pendingDispatcherReports(): DispatcherReport[];
   /** Mark reports delivered (`at`), or back to pending (`null`) when a delivery failed. */
@@ -235,9 +238,9 @@ export const LEDGER_PATH = "data/ledger.db";
  *  operator-configured `routeKeep`/`eventsKeep` so these bounds are tuning, not baked-in. */
 export function openLedger(
   path: string,
-  opts: { routeKeep?: number; eventsKeep?: number; decisionsKeep?: number } = {},
+  opts: { routeKeep?: number; eventsKeep?: number; decisionsKeep?: number; busyTimeoutMs?: number } = {},
 ): Ledger {
-  const db = new Database(path);
+  const db = openSqlite(path, { busyTimeoutMs: opts.busyTimeoutMs });
   const routeKeep = opts.routeKeep ?? ROUTE_KEEP;
   const eventsKeep = opts.eventsKeep ?? EVENTS_KEEP;
   const decisionsKeep = opts.decisionsKeep ?? DECISIONS_KEEP;
@@ -752,6 +755,9 @@ export function openLedger(
         `UPDATE decisions SET last_reminded_at = ?, reminder_count = reminder_count + 1 WHERE id = ?`,
       );
       for (const id of ids) stmt.run(at, id);
+    },
+    ping() {
+      db.query("SELECT 1").get();
     },
     queueDispatcherReport(project, text, at = Date.now()) {
       const r = db

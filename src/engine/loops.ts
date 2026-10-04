@@ -19,6 +19,7 @@ import { memoryDir, memoryScopeEnabled } from "./memory";
 import { memoryTools } from "./memory-tool";
 import type { NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "./ledger";
+import { faults } from "./fault";
 
 /** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
 export interface LoopDefStore {
@@ -502,6 +503,21 @@ function loopRunExtras(
 }
 
 /** Run a loop end to end, streaming progress and a final outcome line to the channel. */
+/** Start an operator-requested loop in the background (Telegram `/loop <name>`, a run button, the web
+ *  console). The run is its own unit of work (ADR-0010): a crash is reported as an engine fault and the
+ *  operator's chat is told the loop failed — never an unhandled rejection, never silence. */
+export function launchLoop(loop: LoopDef, chatId: number, deps: LoopDeps): void {
+  faults.contain(
+    "loop.manual",
+    () =>
+      startLoop(loop, chatId, deps).catch((e) => {
+        faults.contain("loop.manual.reply", () => deps.reply(chatId, `🔁 ${loop.name}: ❌ failed — ${e instanceof Error ? e.message : String(e)}`));
+        throw e;
+      }),
+    { loop: loop.name, folder: loop.folder },
+  );
+}
+
 export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps): Promise<LoopOutcome> {
   const loop = resolveDreamLoop(loopIn, deps.cfg);
   const gated = dreamGateOutcome(loop, deps.cfg);
@@ -618,6 +634,6 @@ export function handleLoop(text: string, chatId: number, deps: LoopDeps): boolea
     void deps.reply(chatId, `No loop "${args}".\n\n${formatLoops(deps.store)}`);
     return true;
   }
-  void startLoop(loop, chatId, deps); // background; streams via deps.reply
+  launchLoop(loop, chatId, deps); // background; streams via deps.reply
   return true;
 }

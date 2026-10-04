@@ -341,3 +341,28 @@ _Avoid_: trust flag, known project
 An escalation that only the operator can approve: a file write outside the session's project
 folder. **Trust** never approves it automatically; autonomous paths deny it.
 _Avoid_: hard escalation, blocked write
+
+### Errors that must not stop the engine
+
+**Unit of work**:
+The smallest thing that can fail on its own: one session turn, one dispatch, one loop fire, one
+Telegram update, one web request, one tool call, one heartbeat step. A failure ends that unit only.
+Whoever waits on it (the operator, the company) gets a failure result, never silence.
+_Avoid_: job, task, request (when the general idea is meant)
+
+**Engine fault**:
+An error the engine caught that no unit's own handling dealt with — a throw in a heartbeat step, a
+rejected promise nobody awaited, an uncaught exception. It is logged with its stack and context,
+recorded (`engine_fault` event), sent to the operator, and queued for the company to investigate.
+The engine keeps running.
+_Avoid_: crash, panic, exception
+
+**Fault signature**:
+The component plus the first line of the error message. Faults with the same signature inside the
+dedupe window are counted, not re-sent, so one repeating error cannot flood a channel.
+_Avoid_: error hash, fingerprint
+
+**Unrecoverable state**:
+A state in which running on would be worse than exiting: the ledger cannot be opened, or the web
+port cannot be bound at startup. Only these exit the process (the supervisor restarts it).
+_Avoid_: fatal error

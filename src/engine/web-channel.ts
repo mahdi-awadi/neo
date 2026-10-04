@@ -17,7 +17,7 @@ import {
   handleLoop,
   listLoops,
   matchLoop,
-  startLoop,
+  launchLoop,
   createLoop as defCreateLoop,
   updateLoop as defUpdateLoop,
   deleteLoop as defDeleteLoop,
@@ -218,7 +218,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     runLoop(name) {
       const loop = matchLoop(name, opts.engine.ledger);
-      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg });
+      if (loop) launchLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg });
     },
     createLoop(input) {
       const r = defCreateLoop(input, opts.engine.ledger, opts.engine.cfg.workRoot);

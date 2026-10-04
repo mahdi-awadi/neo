@@ -21,8 +21,10 @@ import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
-import { heartbeatMs, nextTickDelayMs, type HeartbeatLoop } from "./engine/heartbeat";
-import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
+import { CRON_RESOLUTION_MS, heartbeatMs, nextTickDelayMs, runHeartbeatTick, type HeartbeatLoop } from "./engine/heartbeat";
+import { configureFaults, createFaultReporter, faults, installSafetyNet } from "./engine/fault";
+import { createHealthMonitor, startHealthTimer } from "./engine/health";
+import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
@@ -46,16 +48,20 @@ async function resolveBotUsername(token: string, configured: string): Promise<st
 }
 
 async function main(): Promise<void> {
+  // ADR-0010: an error nobody caught is reported and the engine keeps running. Installed first, so
+  // nothing that starts below can take the process down; until configureFaults it logs to stderr.
+  installSafetyNet(process);
   const cfg = loadConfig();
   mkdirSync("data", { recursive: true });
-  const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep });
+  const busyTimeoutMs = cfg.sqliteBusyTimeoutMs;
+  const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep, busyTimeoutMs });
   // A dispatch the previous daemon started but never finished (reload or crash) is reported to the
   // company with where it stopped. Runs FIRST — before any frontend or the scheduler can start a
   // new dispatch that would look unfinished. Queued in the dispatcher inbox, NOT delivered now: the
   // company is not woken at boot; the operator's next message to it carries them (ADR-0007).
   const interrupted = recoverInterruptedDispatches(ledger, { now: Date.now(), windowMs: cfg.dispatchRecoverWindowMs });
   console.log(`  dispatch  -> ${interrupted} interrupted dispatch(es) queued for the company; no wall-clock limit, digest every ${cfg.dispatchProgressMs / 60_000}m`);
-  const admin = openAdminStore("data/admin.db");
+  const admin = openAdminStore("data/admin.db", { busyTimeoutMs });
   const registry = createRegistry();
   // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
   // above: fail it with its stop point (failure policy applies). Queued todos stay queued; the
@@ -72,8 +78,9 @@ async function main(): Promise<void> {
   const trust = openTrustStore("data/trust.db", {
     trustNewProjects: cfg.trustNewProjects,
     knownFolders: () => ledger.folders(),
+    busyTimeoutMs,
   });
-  const inbox = openInbox("data/inbox.db"); // customer messages — plain data, shown in the web
+  const inbox = openInbox("data/inbox.db", { busyTimeoutMs }); // customer messages — plain data, shown in the web
   const meter = createMeter({
     windowBudgetUsd: cfg.budgetWindowUsd,
     reservePct: cfg.subscriptionInteractiveReservePct,
@@ -123,15 +130,29 @@ async function main(): Promise<void> {
   // the raw Bot API — these fire from the daemon tick, outside the pipeline/sink. Routes to the
   // unmuted Decisions chat when configured (so a stall/crash is never lost in the muted DM), else
   // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
+  // Every engine-side Bot API call goes through the same flood gate as the bot (installFloodGate).
+  const operatorApi = cfg.telegramToken ? createOperatorApi(cfg.telegramToken) : undefined;
   const alertOperator = (text: string): void => {
     const target = cfg.decisionsChatId ?? admin.adminId();
-    if (!cfg.telegramToken || target === undefined) return;
-    void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: target, text }),
-    }).catch(() => {});
+    if (!operatorApi || target === undefined) return;
+    // A failed alert is logged (the API logs a refused call; this logs a network error) — never a
+    // fault of its own, because the fault reporter alerts through here.
+    operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
   };
+
+  // The engine-wide fault reporter (ADR-0010): log with the stack, an `engine_fault` event, a
+  // deduplicated + capped operator alert, and a note queued for the company to investigate.
+  configureFaults(
+    createFaultReporter(
+      {
+        log: (line) => console.error(line),
+        record: (data) => ledger.recordEvent("engine_fault", { folder: typeof data.folder === "string" ? data.folder : undefined, orderId: typeof data.orderId === "string" ? data.orderId : undefined, data }),
+        alert: alertOperator,
+        toCompany: (text) => ledger.queueDispatcherReport("neo-engine", text),
+      },
+      cfg.faults,
+    ),
+  );
 
   // The toolchain updater (ADR-0009): a deterministic engine job, not a loop. It never restarts the
   // daemon — an SDK bump lands on master behind green tests and waits for the operator's restart.
@@ -148,11 +169,11 @@ async function main(): Promise<void> {
   });
   const runScheduledUpdate = (): void => {
     if (!updater.due(Date.now())) return;
-    void updater.run({ trigger: "schedule" }).catch((e) => {
+    faults.contain("updates.scheduled", () => updater.run({ trigger: "schedule" }).catch((e) => {
       const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
       console.error(`[updates] scheduled run failed: ${msg}`);
       alertOperator(`⚠️ toolchain update run failed: ${e instanceof Error ? e.message : msg}`);
-    });
+    }));
   };
 
   console.log("Neo engine");
@@ -169,9 +190,8 @@ async function main(): Promise<void> {
   // Scheduled-loop output → Telegram (or stdout before an admin claims), AND mirrored to the web
   // console via the bus so a web-only operator also sees loop activity (loop-mirror.ts).
   const loopReply = makeLoopReply({
-    toTelegram: cfg.telegramToken
-      ? (chatId, text, project) =>
-          void sendOperatorLine(cfg.telegramToken, chatId, text, project, { toolSteps: cfg.telegramToolSteps })
+    toTelegram: operatorApi
+      ? (chatId, text, project) => faults.contain("loop.reply", () => sendOperatorLine(operatorApi, chatId, text, project, { toolSteps: cfg.telegramToolSteps }), { project })
       : undefined,
     toStdout: (text, project) => console.log(`[loop] ${projectTagPrefix(project)}${text}`),
     bus,
@@ -191,92 +211,104 @@ async function main(): Promise<void> {
       enabled: ledger.isEnabled(l.name) ?? l.enabledByDefault ?? false, // same resolution as tickScheduler
       trigger: resolveLoop(l).trigger, // secretaryCron-aware so the derived heartbeat samples the real cadence
     }));
+  const tickLoops = (): void => {
+    tickScheduler({
+      // built-in ∪ custom, re-read each tick (no restart for new loops) — folder-resolved
+      // (resolveDreamLoop) BEFORE scheduling so the busy-guard below checks the memory-dream
+      // loop's REAL company folder, not its unresolved "company" sentinel (a no-op for every
+      // other loop). def.name is untouched by resolution, so lastRun/enabled bookkeeping and
+      // the `start` callback both still key off the loop's real identity.
+      loops: effectiveLoops(ledger).map(resolveLoop),
+      store: ledger, // Ledger implements LoopStateStore
+      // Company-folder aware: the always-on default project is registered IDLE forever, so a
+      // plain presence check would starve any loop scheduled against the company folder — see
+      // scheduler.ts's folderBusy for the full reasoning.
+      isFolderBusy: (folder) => folderBusy(registry, folder, cfg.companyFolder),
+      // Skip this tick when the budget meter OR a fresh API throttle says stop.
+      throttled: () => meter.shouldThrottleBackground() || cooldown.activeAt(Date.now()),
+      now: Date.now(),
+      // Return the promise (NOT `void ...`) so tickScheduler can catch a rejecting loop run;
+      // discarding it here is exactly what let a crashing loop take down the daemon (2026-07-24).
+      start: (def) => {
+        // The secretary digest: a quiet queue means a quiet secretary (no worker run), and its
+        // digest routes to the unmuted Decisions channel (falls back to the DM when unset). The
+        // full fire-time resolve reads the queue + stamps a reminder on each open decision — done
+        // ONCE here (only when the loop actually fires), never in the folder/trigger pre-resolve.
+        if (def.secretary) {
+          const gate = secretaryGateOutcome(def, ledger);
+          if (gate) return Promise.resolve(gate); // empty queue → silent, no worker, no stamping
+          return startScheduledLoop(resolveSecretaryLoop(def, cfg, ledger), {
+            chatId: cfg.decisionsChatId ?? admin.adminId() ?? -1, // digest → the Decisions channel
+            reply: loopReply,
+            shouldStop: () => meter.shouldThrottleBackground(),
+            cfg,
+            store: ledger,
+          });
+        }
+        return startScheduledLoop(def, {
+          chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
+          reply: loopReply,
+          shouldStop: () => meter.shouldThrottleBackground(),
+          cfg,
+          store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
+        });
+      },
+      // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
+      // engine — log it and alert the operator, but keep the daemon and other loops alive.
+      onError: (def, err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[loop] "${def.name}" failed: ${msg}`);
+        alertOperator(`⚠️ loop "${def.name}" failed and was skipped: ${msg}`); // ALERT → Decisions
+      },
+    });
+  };
   const scheduleHeartbeat = (): void => {
     // Align the timer to the NEXT tick boundary, not "now + hb" — the tick body below (sweeps +
     // tickScheduler) takes real time, and re-arming from "after the body ran" would drift the chain
     // by body-duration + timer lag each cycle. A drifted tick can sample the wrong minute and
     // silently skip a `30 3 * * *` cron's one matching minute for the day (heartbeat.ts
     // nextTickDelayMs).
-    const hb = heartbeatMs(currentHeartbeatLoops());
+    // Deriving the tick reads the ledger; if that read fails the chain must still re-arm, at cron's
+    // own resolution (ADR-0010) — a broken heartbeat would silently stop every sweep and loop.
+    const hb = faults.guard("heartbeat.derive", () => heartbeatMs(currentHeartbeatLoops())) ?? CRON_RESOLUTION_MS;
     const delay = nextTickDelayMs(Date.now(), hb);
     setTimeout(() => {
-      sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now(), memory: cfg.memory, companyFolder: cfg.companyFolder });
-      // Retry dispatch results a busy moment turned away (company reopening/closing) — into a LIVE
-      // company only; an idle one gets them with the operator's next message (ADR-0007).
-      void flushDispatcherInbox(ledger, liveCompanyLink(registry, lifecycle), Date.now());
-      // Release todo queues a hold, a resume or the restart left waiting (ADR-0008). Completions
-      // release their own project at once; this tick is the backstop.
-      void todo.pump();
-      // The daily toolchain check (and the retry of items a busy session deferred).
-      runScheduledUpdate();
-      sweepStuck(registry, {
-        now: Date.now(),
-        stuckAfterMs: cfg.stuckAfterMs,
-        longTurnAlertMs: cfg.longTurnAlertMs,
-        alertRepeatMs: cfg.alertRepeatMs,
-        alert: (_s, text) => {
-          console.log(`[watchdog] ${text}`);
-          alertOperator(text); // ALERT → the Decisions channel (or the DM if unset)
-        },
-        // The evidence goes to the log BEFORE the alert, so a wrong alert (or a missing one) can be
-        // diagnosed from the ledger alone — ages, label, turn state, stdin-wait suspicion.
-        record: (kind, data) => {
-          console.log(`[watchdog] ${kind} ${JSON.stringify(data)}`);
-          ledger.recordEvent(kind, { folder: typeof data.folder === "string" ? data.folder : undefined, data });
-        },
-      });
-      if (cfg.loopSchedulerEnabled) {
-        tickScheduler({
-          // built-in ∪ custom, re-read each tick (no restart for new loops) — folder-resolved
-          // (resolveDreamLoop) BEFORE scheduling so the busy-guard below checks the memory-dream
-          // loop's REAL company folder, not its unresolved "company" sentinel (a no-op for every
-          // other loop). def.name is untouched by resolution, so lastRun/enabled bookkeeping and
-          // the `start` callback both still key off the loop's real identity.
-          loops: effectiveLoops(ledger).map(resolveLoop),
-          store: ledger, // Ledger implements LoopStateStore
-          // Company-folder aware: the always-on default project is registered IDLE forever, so a
-          // plain presence check would starve any loop scheduled against the company folder — see
-          // scheduler.ts's folderBusy for the full reasoning.
-          isFolderBusy: (folder) => folderBusy(registry, folder, cfg.companyFolder),
-          // Skip this tick when the budget meter OR a fresh API throttle says stop.
-          throttled: () => meter.shouldThrottleBackground() || cooldown.activeAt(Date.now()),
-          now: Date.now(),
-          // Return the promise (NOT `void ...`) so tickScheduler can catch a rejecting loop run;
-          // discarding it here is exactly what let a crashing loop take down the daemon (2026-07-24).
-          start: (def) => {
-            // The secretary digest: a quiet queue means a quiet secretary (no worker run), and its
-            // digest routes to the unmuted Decisions channel (falls back to the DM when unset). The
-            // full fire-time resolve reads the queue + stamps a reminder on each open decision — done
-            // ONCE here (only when the loop actually fires), never in the folder/trigger pre-resolve.
-            if (def.secretary) {
-              const gate = secretaryGateOutcome(def, ledger);
-              if (gate) return Promise.resolve(gate); // empty queue → silent, no worker, no stamping
-              return startScheduledLoop(resolveSecretaryLoop(def, cfg, ledger), {
-                chatId: cfg.decisionsChatId ?? admin.adminId() ?? -1, // digest → the Decisions channel
-                reply: loopReply,
-                shouldStop: () => meter.shouldThrottleBackground(),
-                cfg,
-                store: ledger,
-              });
-            }
-            return startScheduledLoop(def, {
-              chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
-              reply: loopReply,
-              shouldStop: () => meter.shouldThrottleBackground(),
-              cfg,
-              store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
-            });
-          },
-          // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
-          // engine — log it and alert the operator, but keep the daemon and other loops alive.
-          onError: (def, err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error(`[loop] "${def.name}" failed: ${msg}`);
-            alertOperator(`⚠️ loop "${def.name}" failed and was skipped: ${msg}`); // ALERT → Decisions
-          },
-        });
-      }
-      scheduleHeartbeat(); // re-derive next tick's interval from the loops enabled right now
+      runHeartbeatTick(
+        [
+          ["idle", () => sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now(), memory: cfg.memory, companyFolder: cfg.companyFolder })],
+          // Retry dispatch results a busy moment turned away (company reopening/closing) — into a LIVE
+          // company only; an idle one gets them with the operator's next message (ADR-0007).
+          ["dispatcherInbox", () => flushDispatcherInbox(ledger, liveCompanyLink(registry, lifecycle), Date.now())],
+          // Release todo queues a hold, a resume or the restart left waiting (ADR-0008). Completions
+          // release their own project at once; this tick is the backstop.
+          ["todo", () => todo.pump()],
+          // The daily toolchain check (and the retry of items a busy session deferred).
+          ["updates", runScheduledUpdate],
+          [
+            "watchdog",
+            () =>
+              sweepStuck(registry, {
+                now: Date.now(),
+                stuckAfterMs: cfg.stuckAfterMs,
+                longTurnAlertMs: cfg.longTurnAlertMs,
+                alertRepeatMs: cfg.alertRepeatMs,
+                alert: (_s, text) => {
+                  console.log(`[watchdog] ${text}`);
+                  alertOperator(text); // ALERT → the Decisions channel (or the DM if unset)
+                },
+                // The evidence goes to the log BEFORE the alert, so a wrong alert (or a missing one) can be
+                // diagnosed from the ledger alone — ages, label, turn state, stdin-wait suspicion.
+                record: (kind, data) => {
+                  console.log(`[watchdog] ${kind} ${JSON.stringify(data)}`);
+                  ledger.recordEvent(kind, { folder: typeof data.folder === "string" ? data.folder : undefined, data });
+                },
+              }),
+          ],
+          ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
+        ],
+        scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed
+        faults,
+      );
     }, delay);
   };
   scheduleHeartbeat();
@@ -328,6 +360,28 @@ async function main(): Promise<void> {
   // entries — a follow-up or dispatch to their folder resumes them (fresh CLAUDE.md injection).
   const restored = restoreSessions(registry, ledger);
   console.log(`  sessions  -> restored ${restored.length} open session(s) from the last shutdown (idle, resumable)`);
+
+  // The self-health check (ADR-0010): event-loop lag, memory, ledger reachability — reported once on
+  // a change, never every minute.
+  startHealthTimer(
+    createHealthMonitor({
+      cfg: () => cfg.health,
+      rssBytes: () => process.memoryUsage.rss(),
+      dbPing: () => ledger.ping(),
+      report: (text) => {
+        console.error(`[health] ${text}`);
+        alertOperator(text);
+      },
+    }),
+    cfg.health.everyMs,
+  );
+  console.log(`  health    -> ${cfg.health.everyMs > 0 ? `every ${cfg.health.everyMs / 1000}s (lag ${cfg.health.lagWarnMs}ms · rss ${cfg.health.rssWarnMb}MB · ledger)` : "OFF"}; faults -> log + engine_fault + alert + company`);
 }
 
-void main();
+// Startup is the one place an error is an UNRECOVERABLE STATE (ADR-0010): the ledger cannot open or
+// the web port cannot bind. Running on half-started would be worse — log it and exit 1 so the
+// supervisor restarts us. After startup, every failure is contained and reported instead.
+main().catch((e) => {
+  console.error(`[startup] Neo could not start: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+  process.exit(1);
+});

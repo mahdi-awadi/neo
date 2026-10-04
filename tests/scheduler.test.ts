@@ -3,7 +3,7 @@ import { tickScheduler, folderBusy, type SchedulableLoop, type LoopStateStore } 
 import { createRegistry } from "../src/engine/registry";
 import { matchLoop, resolveDreamLoop } from "../src/engine/loops";
 import type { NeoConfig } from "../src/config";
-import { DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
+import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 
 function memStore(init: Record<string, { lastRun?: number; enabled?: boolean }> = {}): LoopStateStore {
   const s = new Map(Object.entries(init));
@@ -193,6 +193,9 @@ function fakeNeoConfig(companyFolder: string): NeoConfig {
     },
     models: DEFAULT_MODELS,
     updates: DEFAULT_UPDATES,
+    faults: DEFAULT_FAULTS,
+    health: DEFAULT_HEALTH,
+    sqliteBusyTimeoutMs: 5_000,
     workers: { company: {}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {}, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: ["company"], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },

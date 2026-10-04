@@ -2,7 +2,9 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
-import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
+import { Api, Bot, InlineKeyboard, InputFile, type Context } from "grammy";
+import type { ApiClientOptions } from "grammy";
+import type { UserFromGetMe } from "grammy/types";
 import { saveInbound } from "../engine/files";
 import type { NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "../engine/ledger";
@@ -21,15 +23,16 @@ import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply, answerDecision } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type SelectableProject, type TelegramCommand } from "../engine/commands";
-import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
+import { handleLoop, listLoops, matchLoop, launchLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
-import { createFloodGate, isToolStepLine, type ApiResult, type FloodGate } from "./telegram-flood";
+import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import { surfaceFor, routeChat, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
 import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
 import type { ApiCooldown } from "../engine/api-retry";
+import { faults } from "../engine/fault";
 import {
   keyboardRows,
   parseDecisionCallback,
@@ -99,6 +102,21 @@ async function downloadTelegramFile(token: string, filePath: string): Promise<Ui
 // startTelegram replaces it with one built from config that can post the "not delivered" notice.
 let floodGate: FloodGate = createFloodGate({ maxWaitMs: 30_000 });
 
+/** Put a Bot API client behind the shared flood gate (read at call time, so a client made before
+ *  startTelegram swaps the gate still shares it). The bot and the daemon's own operator lines (loop
+ *  output, alerts) both go through it, so no send bypasses Telegram's rate-limit state. */
+export function installFloodGate(api: Api): Api {
+  api.config.use((prev, method, payload, signal) =>
+    floodGate.run(method, (payload as { chat_id?: number | string } | undefined)?.chat_id, () => prev(method, payload, signal)),
+  );
+  return api;
+}
+
+/** A Bot API client for engine-side sends (alerts, scheduled-loop lines), behind the flood gate. */
+export function createOperatorApi(token: string): Api {
+  return installFloodGate(new Api(token));
+}
+
 /** Send worker output as formatted HTML (bold/code/bullets), falling back to plain text if
  *  Telegram rejects the markup. `project` tags which project the line came from. Returns the sent
  *  message id (so the caller can route a later reply back to the right session), or undefined if
@@ -142,7 +160,7 @@ export async function sendFormatted(
  *  Tool-step lines are dropped unless `toolSteps` opts in (see sendFormatted); the loop mirror
  *  still sends them to the web console. */
 export async function sendOperatorLine(
-  token: string,
+  api: Pick<Api, "sendMessage">,
   chatId: number,
   text: string,
   project?: string,
@@ -150,24 +168,15 @@ export async function sendOperatorLine(
 ): Promise<void> {
   if (!opts.toolSteps && isToolStepLine(text)) return;
   const tag = projectTagPrefix(project);
-  const post = (body: string, html: boolean): Promise<Response> =>
-    fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: body, ...(html ? { parse_mode: "HTML" } : {}) }),
-    });
   // Chunk long output so a >4096-char line/report is split into multiple messages instead of being
   // rejected+dropped by Telegram. deliverChunked handles rich-HTML-then-plain fallback per chunk.
   await deliverChunked(
     async (body, html) => {
       try {
-        const r = await floodGate.run("sendMessage", chatId, async (): Promise<ApiResult> => {
-          const res = await post(body, html);
-          return (await res.json().catch(() => ({ ok: res.ok, error_code: res.status }))) as ApiResult;
-        });
-        return { ok: r.ok };
+        await api.sendMessage(chatId, body, html ? { parse_mode: "HTML" } : {});
+        return { ok: true };
       } catch {
-        return { ok: false }; // a dropped loop line must never crash the daemon
+        return { ok: false }; // a dropped loop line must never crash the daemon (the flood gate logged it)
       }
     },
     text,
@@ -175,7 +184,9 @@ export async function sendOperatorLine(
   );
 }
 
-export function startTelegram(
+/** Build the bot with every handler wired, without polling (tests drive it through `handleUpdate`).
+ *  `startTelegram` is this plus the command menu and long polling. */
+export function createTelegramBot(
   cfg: NeoConfig,
   ledger: Ledger,
   admin: AdminStore,
@@ -194,27 +205,34 @@ export function startTelegram(
   reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"] },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
+  opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
 ): Bot {
-  const bot = new Bot(cfg.telegramToken);
+  const bot = new Bot(cfg.telegramToken, { botInfo: opts.botInfo, client: opts.client });
   // Every Bot API call goes through the flood gate: failed sends are logged (never silently
   // swallowed again), a long 429 holds that chat instead of extending the ban, and when it lifts
   // the operator is told how many messages they missed.
   floodGate = createFloodGate({
     maxWaitMs: cfg.telegramFloodMaxWaitMs,
     onRecovered: (chatId, dropped) =>
-      void bot.api
-        .sendMessage(
+      faults.contain("telegram.send", () =>
+        bot.api.sendMessage(
           chatId,
           `⚠️ Telegram rate-limited Neo in this chat — ${dropped} message(s) were not delivered.` +
             (cfg.publicUrl ? ` The full log is in the web console: ${cfg.publicUrl}` : " The full log is in the web console."),
-        )
-        .catch(() => {}),
+        ),
+      ),
   });
-  bot.api.config.use((prev, method, payload, signal) =>
-    floodGate.run(method, (payload as { chat_id?: number | string } | undefined)?.chat_id, () =>
-      prev(method, payload, signal),
-    ),
-  );
+  installFloodGate(bot.api);
+  // A failed update is one unit of work (ADR-0010): the error boundary reports it and polling goes
+  // on. bot.catch is the backstop for anything outside it — grammy's default handler stops polling.
+  const reportUpdate = (err: { error: unknown; ctx: Context }) =>
+    faults.report("telegram.update", err.error, { updateId: err.ctx.update.update_id, chatId: err.ctx.chat?.id });
+  bot.catch(reportUpdate);
+  const on = bot.errorBoundary(reportUpdate);
+  // A send nobody awaits: its failure (already logged by the flood gate) is reported, never an
+  // unhandled rejection.
+  const say = (chatId: number, text: string, extra?: Parameters<Bot["api"]["sendMessage"]>[2]): void =>
+    faults.contain("telegram.send", () => bot.api.sendMessage(chatId, text, extra), { chatId });
   const allow = new Set(cfg.telegramAllowFrom);
   // Pending approvals keyed by a per-request token: callback press -> resolver + the tracked
   // decision row the escalation opened (resolved when the button is pressed).
@@ -288,12 +306,14 @@ export function startTelegram(
     makeTelegramSink({
       adminId: () => admin.adminId(),
       decisionsChatId: () => cfg.decisionsChatId,
-      reply: (cid, text, project, priority) => void send(cid, text, project, priority),
-      plain: (cid, text) => void sendWorkerLine(cid, text),
+      reply: (cid, text, project, priority) => faults.contain("telegram.send", () => send(cid, text, project, priority), { project }),
+      plain: (cid, text) => faults.contain("telegram.send", () => sendWorkerLine(cid, text)),
     }),
   );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
+  // Inbox items whose send is waiting on its Allow/Deny press — one send per item at a time.
+  const sendingInbox = new Set<string>();
   // Decisions awaiting a typed "Other / type an answer", keyed by chat id -> decision id: the
   // operator tapped ✏️ on a raised decision, so their next message is the free-text answer.
   const pendingDecisionAnswer = new Map<number, string>();
@@ -416,7 +436,7 @@ export function startTelegram(
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
     todo: reload?.todo,
     reply: (cid, text, project, priority) => {
-      void send(surfaceChat(cid, priority), text, project, priority); // local delivery, routed + styled by priority
+      faults.contain("telegram.send", () => send(surfaceChat(cid, priority), text, project, priority), { project }); // routed + styled by priority
       bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
@@ -433,13 +453,20 @@ export function startTelegram(
         // Route the blocking approval to the unmuted Decisions channel (falls back to the DM when
         // decisionsChatId is unset — today's behavior). The Allow/Deny buttons stay actionable here;
         // the web console just SEES the gate is pending.
-        void bot.api.sendMessage(surfaceChat(cid, "decision"), `${priorityBadge("decision")} Approve this action?\n${reason}`, {
-          reply_markup: kb,
-        });
+        // An approval nobody can see can never be pressed: when the post fails, the gate fails CLOSED
+        // (deny) and the fault is reported — the worker is never left waiting forever.
+        bot.api
+          .sendMessage(surfaceChat(cid, "decision"), `${priorityBadge("decision")} Approve this action?\n${reason}`, { reply_markup: kb })
+          .catch((e) => {
+            if (!pending.delete(token)) return;
+            faults.guard("telegram.approval", () => resolveEscalationDecision(ledger, decisionId, "deny"));
+            resolve("deny");
+            faults.report("telegram.approval", e, { project: sess?.name, chatId: cid });
+          });
         bus?.mirror("telegram", { kind: "notice", text: `⏳ approval pending: ${reason}` });
       }),
     sendFile: (cid, path, caption) =>
-      void bot.api.sendDocument(cid, new InputFile(path), caption ? { caption } : {}),
+      faults.contain("telegram.sendFile", () => bot.api.sendDocument(cid, new InputFile(path), caption ? { caption } : {}), { chatId: cid }),
   });
 
   // Todo-queue releases that no dispatch is driving (the daemon tick, a resume, the restart) start
@@ -460,7 +487,7 @@ export function startTelegram(
     trust,
     // runCompanyBrief replies on the internal CUSTOMER_CHAT id; ignore it and stream to the
     // operator's chat (the web path likewise ignores the cid and notifies its own channel).
-    reply: (_cid, text, project) => void sendWorkerLine(chatId, text, { project }),
+    reply: (_cid, text, project) => faults.contain("telegram.send", () => sendWorkerLine(chatId, text, { project }), { project }),
     askApproval: async () => "deny",
   });
 
@@ -481,12 +508,12 @@ export function startTelegram(
       },
     );
     if ("clarify" in routing) {
-      void bot.api.sendMessage(chatId, routing.clarify);
+      say(chatId, routing.clarify);
       return;
     }
     const target = registry.findByChat(chatId) ?? registry.getDefault();
     if (!target) {
-      void bot.api.sendMessage(chatId, "No active project to receive the file.");
+      say(chatId, "No active project to receive the file.");
       return;
     }
     const file = await ctx.getFile();
@@ -499,7 +526,7 @@ export function startTelegram(
     );
   }
 
-  bot.on("message:text", async (ctx) => {
+  on.on("message:text", async (ctx) => {
     const userId = ctx.from?.id;
     if (!isOperator(userId)) return;
     const chatId = ctx.chat.id;
@@ -510,12 +537,12 @@ export function startTelegram(
       pendingInboxEdit.delete(chatId);
       const item = inbox.get(editId);
       if (!item) {
-        void bot.api.sendMessage(chatId, "That message is no longer in the inbox.");
+        say(chatId, "That message is no longer in the inbox.");
         return;
       }
       inbox.setDraft(editId, ctx.message.text); // stages the edited reply (status stays 'drafted')
       const view = renderInboxItem(inbox, editId)!;
-      void bot.api.sendMessage(chatId, view.text, { reply_markup: inboxItemKeyboard(editId, view.item.status)! });
+      say(chatId, view.text, { reply_markup: inboxItemKeyboard(editId, view.item.status)! });
       return;
     }
 
@@ -526,7 +553,7 @@ export function startTelegram(
       pendingDecisionAnswer.delete(chatId);
       const dec = ledger.decisionById(answerDecId);
       if (dec && dec.status === "open") await answerAndResume(dec, ctx.message.text, chatId);
-      else void bot.api.sendMessage(chatId, "That decision is no longer open.");
+      else say(chatId, "That decision is no longer open.");
       return;
     }
 
@@ -534,12 +561,12 @@ export function startTelegram(
     if (ctx.message.text.trim() === "/loop") {
       const kb = new InlineKeyboard();
       for (const l of listLoops(ledger)) kb.text(`▶ ${l.usage.replace("/loop ", "")}`, `runloop:${l.name}`).row();
-      void bot.api.sendMessage(chatId, "Run a loop:", { reply_markup: kb });
+      say(chatId, "Run a loop:", { reply_markup: kb });
       return;
     }
     if (
       handleLoop(ctx.message.text, chatId, {
-        reply: (cid, t) => void sendWorkerLine(cid, t),
+        reply: (cid, t) => faults.contain("telegram.send", () => sendWorkerLine(cid, t)),
         store: ledger,
         shouldStop: () => meter.shouldThrottleBackground(),
         cfg,
@@ -563,11 +590,11 @@ export function startTelegram(
     });
     if (command !== null) {
       if (command.select?.length) {
-        void bot.api.sendMessage(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
+        say(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
       } else if (command.inbox?.length) {
-        void bot.api.sendMessage(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
+        say(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
       } else {
-        void bot.api.sendMessage(chatId, command.text);
+        say(chatId, command.text);
       }
       return;
     }
@@ -596,7 +623,7 @@ export function startTelegram(
       },
     );
     if ("clarify" in routing) {
-      void bot.api.sendMessage(chatId, routing.clarify);
+      say(chatId, routing.clarify);
       return;
     }
     // Echo the operator's own message to the web console so both surfaces show the thread. Only
@@ -606,19 +633,19 @@ export function startTelegram(
     await handleMessage(routing.deliver, chatId, pipelineDeps());
   });
 
-  bot.on("message:document", (ctx) =>
+  on.on("message:document", (ctx) =>
     intakeFile(
       ctx,
       ctx.message.document.file_name ?? `file-${ctx.message.document.file_unique_id}`,
       ctx.message.caption ?? "",
     ),
   );
-  bot.on("message:photo", (ctx) => {
+  on.on("message:photo", (ctx) => {
     const photo = ctx.message.photo.at(-1)!; // largest size
     return intakeFile(ctx, `photo-${photo.file_unique_id}.jpg`, ctx.message.caption ?? "");
   });
 
-  bot.on("callback_query:data", async (ctx) => {
+  on.on("callback_query:data", async (ctx) => {
     if (!admin.isAdmin(ctx.from?.id ?? -1)) {
       await ctx.answerCallbackQuery();
       return;
@@ -665,17 +692,25 @@ export function startTelegram(
       await ctx.answerCallbackQuery("drafting…");
       if (!inbox) return;
       await ctx.editMessageReplyMarkup(); // drop the button while the company drafts
-      void bot.api.sendMessage(chatId, "⏳ the company is drafting a reply…");
-      const draft = await draftInboxReply(inbox, id, "", briefDeps(chatId));
-      if (draft === undefined) {
-        await bot.api.sendMessage(chatId, "That message is no longer in the inbox.");
-        return;
-      }
-      const view = renderInboxItem(inbox, id);
-      if (view) {
-        const kb = inboxItemKeyboard(view.item.id, view.item.status);
-        await bot.api.sendMessage(chatId, view.text, kb ? { reply_markup: kb } : undefined);
-      }
+      say(chatId, "⏳ the company is drafting a reply…");
+      // Drafting is a whole company run (minutes). Updates are handled one at a time, so it runs
+      // detached as its own unit — the bot keeps answering while the company drafts.
+      faults.contain(
+        "telegram.inboxDraft",
+        async () => {
+          const draft = await draftInboxReply(inbox, id, "", briefDeps(chatId));
+          if (draft === undefined) {
+            await bot.api.sendMessage(chatId, "That message is no longer in the inbox.");
+            return;
+          }
+          const view = renderInboxItem(inbox, id);
+          if (view) {
+            const kb = inboxItemKeyboard(view.item.id, view.item.status);
+            await bot.api.sendMessage(chatId, view.text, kb ? { reply_markup: kb } : undefined);
+          }
+        },
+        { item: id },
+      );
       return;
     }
 
@@ -700,22 +735,56 @@ export function startTelegram(
       const chatId = ctx.chat?.id ?? 0;
       await ctx.answerCallbackQuery();
       const view = inbox ? renderInboxItem(inbox, id) : undefined;
-      if (!view || !gatewaySendUrl || !cfg.agentIngressSecret) {
+      const url = gatewaySendUrl;
+      const secret = cfg.agentIngressSecret;
+      if (!inbox || !view || !url || !secret) {
         await bot.api.sendMessage(chatId, "Can't send — the gateway isn't configured or the item is gone.");
         return;
       }
-      const reply = view.item.draft;
-      if (!reply.trim()) {
+      if (view.item.status === "replied") {
+        await bot.api.sendMessage(chatId, `Already replied to ${view.item.from}.`);
+        return;
+      }
+      if (sendingInbox.has(id)) {
+        await bot.api.sendMessage(chatId, "A send for this message is already waiting for approval.");
+        return;
+      }
+      if (!view.item.draft.trim()) {
         await bot.api.sendMessage(chatId, "Nothing to send yet — draft a reply first.");
         return;
       }
-      const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${reply}`);
-      if (decision !== "allow") {
-        await bot.api.sendMessage(chatId, "Send cancelled.");
-        return;
+      try {
+        await ctx.editMessageReplyMarkup(); // drop the buttons while the send waits for approval
+      } catch {
+        // "message is not modified" — ignore
       }
-      const sent = await sendInboxReply(inbox!, id, reply, { url: gatewaySendUrl, secret: cfg.agentIngressSecret });
-      await bot.api.sendMessage(chatId, sent ? `✅ replied to ${view.item.from}.` : "⚠️ send failed — the reply was not delivered.");
+      // The approval is answered by a LATER update (the Allow/Deny press). Updates are handled one at a
+      // time, so awaiting it here would hold the very update queue that press must arrive through —
+      // a deadlock. The wait runs detached; this handler returns at once. One send per item at a time,
+      // and the draft is re-read after the approval, so an edit made meanwhile is what gets sent.
+      sendingInbox.add(id);
+      faults.contain(
+        "telegram.inboxSend",
+        async () => {
+          try {
+            const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${view.item.draft}`);
+            if (decision !== "allow") {
+              await bot.api.sendMessage(chatId, "Send cancelled.");
+              return;
+            }
+            const now = inbox.get(id);
+            if (!now || now.status === "replied" || now.draft !== view.item.draft) {
+              await bot.api.sendMessage(chatId, "Not sent — the draft changed or was already sent while it waited. Tap Send again.");
+              return;
+            }
+            const sent = await sendInboxReply(inbox, id, now.draft, { url, secret });
+            await bot.api.sendMessage(chatId, sent ? `✅ replied to ${view.item.from}.` : "⚠️ send failed — the reply was not delivered.");
+          } finally {
+            sendingInbox.delete(id);
+          }
+        },
+        { item: id },
+      );
       return;
     }
 
@@ -724,8 +793,8 @@ export function startTelegram(
       const loop = matchLoop(cb.slice("runloop:".length), ledger);
       await ctx.answerCallbackQuery(loop ? "running" : "unknown loop");
       if (loop)
-        void startLoop(loop, ctx.chat?.id ?? 0, {
-          reply: (cid, t) => void sendWorkerLine(cid, t),
+        launchLoop(loop, ctx.chat?.id ?? 0, {
+          reply: (cid, t) => faults.contain("telegram.send", () => sendWorkerLine(cid, t)),
           store: ledger,
           shouldStop: () => meter.shouldThrottleBackground(),
           cfg,
@@ -758,11 +827,23 @@ export function startTelegram(
     }
   });
 
+  return bot;
+}
+
+export function startTelegram(...args: Parameters<typeof createTelegramBot>): Bot {
+  const bot = createTelegramBot(...args);
   // Publish the "/" command menu so Telegram autocompletes the operator's commands (Telegram only
   // shows the list for commands the bot has registered). Best-effort + fire-and-forget so a Bot API
   // hiccup can't stop the bot from starting.
-  void registerTelegramCommands(bot);
-  void bot.start();
+  faults.contain("telegram.commands", () => registerTelegramCommands(bot));
+  // grammy retries network errors itself; bot.start() rejects only when polling cannot go on (a
+  // revoked token: 401, a second poller: 409). A daemon that cannot hear the operator is an
+  // UNRECOVERABLE STATE (ADR-0010): report it, then exit so the supervisor restarts us.
+  bot.start().catch((e) => {
+    faults.report("telegram.polling", e);
+    console.error("[telegram] long polling stopped — exiting so the supervisor restarts Neo");
+    setTimeout(() => process.exit(1), 1_000).unref();
+  });
   return bot;
 }
 

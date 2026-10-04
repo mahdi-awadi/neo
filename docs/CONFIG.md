@@ -277,6 +277,32 @@ A scheduled run reports to the Decisions channel only when something is new. The
 day stays quiet; `/updates` still shows it. Commands: `/updates` (status) · `/updates run` (check
 now) · `/updates apply <item>` (apply one item, held or not) · `/updates rollback <item>`.
 
+## Errors and engine health (`faults`, `health`) — ADR-0010
+
+One error never stops the engine. Each unit of work (a session turn, a Telegram update, a web
+request, a loop start, a heartbeat step) catches its own failure. An error that no unit handled is
+an **engine fault**. The engine logs it with its stack and context, records an `engine_fault` event
+(`/events engine_fault`), sends one alert to the Decisions channel, and queues a note for the
+company to investigate. Then the engine continues. Only a failure **at startup** exits the process
+(the ledger does not open, the web port does not bind). The supervisor then restarts it.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `faults.dedupeMs` | `900000` (15 min) | A fault with the same signature (component + first line of the message) in this window is counted, not sent again. The next alert says how many repeats there were. |
+| `faults.maxAlertsPerHour` | `6` | Distinct fault alerts per rolling hour. More faults are logged and recorded only. |
+| `faults.companyHandoff` | `true` | Queue each deduplicated fault for the company (as project `neo-engine`). The company gets it with its next delivery; a fault never wakes it. |
+| `health.everyMs` | `60000` | How often the daemon samples its health. `0` turns the check off. |
+| `health.lagWarnMs` | `2000` | Event-loop lag (how late the sample timer fired) above which the engine is degraded. |
+| `health.rssWarnMb` | `2048` | Resident memory (MB) above which the engine is degraded. |
+| `sqliteBusyTimeoutMs` | `5000` | How long a SQLite store waits on a locked database before the write fails. All stores open in WAL mode. |
+
+The health check reports a metric once when it crosses its limit and once when it recovers. It
+also does a `SELECT 1` on the ledger and reports when the ledger cannot be read.
+
+Telegram handles updates one at a time. A handler that must wait for a later update (the inbox
+send waits for an Allow/Deny press) runs that wait detached, so the press can arrive. An approval
+whose message cannot be posted is denied at once, so a worker never waits for a button nobody sees.
+
 ## Memory system (`memory`) — Phase 2: store / inject / recall
 
 Per-project long-term memory: a frozen ground-truth snapshot injected at worker start, a `memory`

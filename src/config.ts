@@ -7,6 +7,9 @@ import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./engine/liveness";
 import { CLAUDE_TIER_MODELS } from "./engine/model-resolver";
 import type { UpdatesCfg } from "./engine/updater";
+import type { FaultCfg } from "./engine/fault";
+import type { HealthCfg } from "./engine/health";
+import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
@@ -229,7 +232,20 @@ export interface NeoConfig {
   /** The toolchain updater (ADR-0009): schedule, per-category auto-apply, breaking-change hold, and
    *  where each managed item comes from. Per-key merge over `DEFAULT_UPDATES`. */
   updates: UpdatesCfg;
+  /** Engine faults (ADR-0010): how a caught error is deduplicated, capped and handed to the company. */
+  faults: FaultCfg;
+  /** The self-health check (ADR-0010): event-loop lag, memory, ledger reachability. */
+  health: HealthCfg;
+  /** How long a SQLite store waits on a locked database before the write fails (ms). Default 5 s. */
+  sqliteBusyTimeoutMs: number;
 }
+
+/** Shipped fault policy (ADR-0010): one alert per fault signature per 15 min, at most 6 distinct
+ *  fault alerts an hour, and every (deduplicated) fault queued for the company to investigate. */
+export const DEFAULT_FAULTS: FaultCfg = { dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: true };
+/** Shipped health thresholds (ADR-0010): sample each minute; 2 s of timer drift or 2 GB resident
+ *  memory is degraded. */
+export const DEFAULT_HEALTH: HealthCfg = { everyMs: 60_000, lagWarnMs: 2_000, rssWarnMb: 2_048 };
 
 /** The shipped updater policy (ADR-0009). OPERATOR CHOICES: check daily, apply what is safe, HOLD a
  *  release whose notes flag a breaking change until `/updates apply <item>`. The SDK bump only ever
@@ -454,5 +470,8 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
       npmGlobals: { ...DEFAULT_UPDATES.npmGlobals, ...(fileCfg.updates?.npmGlobals ?? {}) },
       codebaseMemory: { ...DEFAULT_UPDATES.codebaseMemory, ...(fileCfg.updates?.codebaseMemory ?? {}) },
     },
+    faults: { ...DEFAULT_FAULTS, ...(fileCfg.faults ?? {}) },
+    health: { ...DEFAULT_HEALTH, ...(fileCfg.health ?? {}) },
+    sqliteBusyTimeoutMs: fileCfg.sqliteBusyTimeoutMs ?? DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
   };
 }

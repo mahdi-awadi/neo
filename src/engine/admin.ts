@@ -3,6 +3,7 @@
 // — on both the Telegram bot and the web-console login. Durable (its own sqlite file) so the
 // claim survives restarts. No AI, no config to hand-edit; the first message wins.
 import { Database } from "bun:sqlite";
+import { openSqlite } from "./sqlite";
 
 export interface AdminStore {
   /** Claim admin for `telegramId` if unclaimed. Returns whether this id is the admin. */
@@ -12,8 +13,8 @@ export interface AdminStore {
   isAdmin(telegramId: number): boolean;
 }
 
-export function openAdminStore(path: string): AdminStore {
-  const db = new Database(path);
+export function openAdminStore(path: string, opts: { busyTimeoutMs?: number } = {}): AdminStore {
+  const db = openSqlite(path, opts);
   db.run(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
 
   function adminId(): number | undefined {

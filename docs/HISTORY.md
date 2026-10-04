@@ -744,3 +744,16 @@ started from Telegram (`/loop`, the ▶ button: raw `sendMessage`), and company 
 mirror still sends tool lines to the web console. The test fixtures also gained the two flood-control
 fields that the base commit left out, which had made `tsc` red. Built TDD (7 new tests). `tsc` clean;
 full suite green (881). Going live needs a daemon restart (operator-gated).
+
+### Engine error containment (ADR-0010, 2026-10-04)
+
+One error no longer takes the engine down. An audit found no process error handlers, no grammy
+`bot.catch`, about 15 Telegram sends with no `.catch`, and SQLite with no `busy_timeout`. The log
+showed three crashes from them. Now every unit of work contains its own failure, and an engine fault
+goes to the log (with the stack), an `engine_fault` event, one deduplicated alert, and the company's
+queue to investigate. Each heartbeat step is isolated and the tick always re-arms. Every Bot API call
+(the bot, loop output, alerts) goes through the one Telegram flood gate, which logs failures. All SQLite
+stores use WAL + `busy_timeout`. A health check reports event-loop lag, memory and ledger reach once
+on a change. Only a startup failure exits. Also fixed: the Telegram inbox send waited for an
+Allow/Deny press that grammy could not deliver while the handler waited (a deadlock). Fault-injection
+tests cover every wired path. Going live needs a daemon restart (operator-gated).

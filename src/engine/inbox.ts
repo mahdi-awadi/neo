@@ -3,6 +3,7 @@
 // storing, and displaying a message never involves Claude or Gemini; the agent is invoked only
 // when the operator explicitly sends an item to it. Backed by bun:sqlite, like the ledger.
 import { Database } from "bun:sqlite";
+import { openSqlite } from "./sqlite";
 
 export type InboxStatus = "new" | "with-agent" | "drafted" | "replied";
 
@@ -72,8 +73,8 @@ function rowToItem(r: Row): InboxItem {
   };
 }
 
-export function openInbox(path: string): Inbox {
-  const db = new Database(path);
+export function openInbox(path: string, opts: { busyTimeoutMs?: number } = {}): Inbox {
+  const db = openSqlite(path, opts);
   db.run(`CREATE TABLE IF NOT EXISTS inbox (
     id TEXT PRIMARY KEY,
     channel TEXT NOT NULL DEFAULT 'email',

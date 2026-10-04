@@ -8,9 +8,9 @@
 // a never-seen folder on, and only when `trustNewProjects` is set — so an existing project, or one
 // the operator turned off, is never silently re-trusted. Customer work never reaches this store:
 // the customer path runs on `denyAllTrust()` (ingress.ts).
-import { Database } from "bun:sqlite";
 import type { Ledger } from "./ledger";
 import type { Order } from "../types";
+import { openSqlite } from "./sqlite";
 
 export interface TrustStore {
   /** Whether `folder` is trusted (auto-approve all). Never seen ⇒ false. Never writes. */
@@ -34,6 +34,8 @@ export interface TrustStoreOptions {
    *  schema migration, and recorded as seen-untrusted, so turning the default on never trusts a
    *  project that predates it. */
   knownFolders?: () => Iterable<string>;
+  /** SQLite busy_timeout (ADR-0010). */
+  busyTimeoutMs?: number;
 }
 
 /** Schema version, kept in sqlite's `user_version`. 0 = the legacy `trust(folder)` table, where a
@@ -41,7 +43,7 @@ export interface TrustStoreOptions {
 const SCHEMA_VERSION = 1;
 
 export function openTrustStore(path: string, opts: TrustStoreOptions = {}): TrustStore {
-  const db = new Database(path);
+  const db = openSqlite(path, opts);
   db.run(`CREATE TABLE IF NOT EXISTS trust (folder TEXT PRIMARY KEY)`);
   const version = (db.query(`PRAGMA user_version`).get() as { user_version: number }).user_version;
   if (version < SCHEMA_VERSION) {

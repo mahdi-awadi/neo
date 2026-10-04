@@ -8,7 +8,7 @@ import { encodeCwd } from "../src/engine/context-policy";
 import type { LoopInput } from "../src/engine/loop-validate";
 import type { RunResult, RunDeps } from "../src/engine/session-runner";
 import type { NeoConfig } from "../src/config";
-import { DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
+import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 
 const okRun = (sid = "s"): RunResult => ({ ok: true, sessionId: sid, summary: "", costUsd: 0 });
 const defMethods = { listLoopDefs: () => [], saveLoopDef: () => {}, deleteLoopDef: () => {}, listCacheObservations: () => [] };
@@ -181,6 +181,9 @@ function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
     },
     models: DEFAULT_MODELS,
     updates: DEFAULT_UPDATES,
+    faults: DEFAULT_FAULTS,
+    health: DEFAULT_HEALTH,
+    sqliteBusyTimeoutMs: 5_000,
     workers: { company: {}, project: {}, dispatch: {}, loop: { model: "loop-test-model" }, judge: {}, ingress: {}, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
