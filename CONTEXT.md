@@ -371,7 +371,7 @@ _Avoid_: fatal error
 
 **Draft version**:
 A counter on an inbox item, bumped by every change to its draft reply. A Send names the version the
-operator approved. The send is refused (*stale*) when the draft changed since, or that version was
-already sent. A second Send while one is in flight is refused (*busy*). This is the send's
+operator approved. The send is refused (*stale*) when the draft changed since, or the item was
+already replied (from any channel). A second Send while one is in flight is refused (*busy*). This is the send's
 idempotency key: a customer never gets a reply twice or a reply the operator did not see.
 _Avoid_: revision, draft id

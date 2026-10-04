@@ -235,3 +235,13 @@ test("sendInboxReply: a second send for the same item while one is in flight is 
   expect(await again).toBe("failed"); // the in-flight claim was released after the failure
   expect(posts).toBe(2);
 });
+
+test("sendInboxReply never re-sends an item already replied, with or without a draftVersion (web path)", async () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", subject: "S", text: "?" });
+  let posts = 0;
+  const okFetch = async () => (posts++, { ok: true }) as Response;
+  expect(await sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, okFetch as any)).toBe("sent");
+  expect(await sendInboxReply(ib, item.id, "hi again", { url: "u", secret: "s" }, okFetch as any)).toBe("stale");
+  expect(posts).toBe(1);
+});

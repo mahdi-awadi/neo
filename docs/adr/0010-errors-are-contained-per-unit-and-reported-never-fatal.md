@@ -74,9 +74,9 @@ with no `busy_timeout` and no WAL.
 - **Telegram polling.** `bot.start()` rejects on 401/409 and also on a failed startup
   `getMe`/`deleteWebhook`. Only 401/409 is an unrecoverable state (exit 1, supervisor restarts).
   Any other stop is reported and polling restarts on a 5 s / 30 s / 120 s backoff
-  (`superviseTelegramPolling`).
+  (`superviseTelegramPolling`), never once a reload drain has begun.
 - **Inbox Send is idempotent on the draft version** (see CONTEXT.md). The guard is in
-  `sendInboxReply`, so web and Telegram share it. Rejected: a Telegram-only in-flight set (web
+  `sendInboxReply`, so web and Telegram share it; a replied item is never re-sent from either. Rejected: a Telegram-only in-flight set (web
   double posts stay open) and comparing draft text (an edit back to the same text is still an edit
   the operator did not approve).
 - The post-completion context handoff is contained (`pipeline.handoff`).

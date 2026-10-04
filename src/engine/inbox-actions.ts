@@ -158,8 +158,9 @@ const sendsInFlight = new Set<string>();
 /** Send the operator-approved (possibly edited) reply to the customer via the gateway, then mark
  *  the item 'replied'. On any failure or empty/unknown input, the status is left untouched. The
  *  caller is responsible for the approval gate before invoking this (external action).
- *  Idempotency: with `draftVersion` (the version the operator approved), a draft edited since — or
- *  already replied — is `stale`; and a second send for an item already in flight is `busy`. The
+ *  Idempotency: an item already replied is `stale` (never re-sent, from any channel); with
+ *  `draftVersion` (the version the operator approved), a draft edited since is `stale` too; and a
+ *  second send for an item already in flight is `busy`. The
  *  check and the claim are synchronous, so two presses cannot both pass. */
 export async function sendInboxReply(
   inbox: Inbox,
@@ -173,7 +174,7 @@ export async function sendInboxReply(
   const text = reply.trim();
   if (!item || !text) return "failed";
   if (sendsInFlight.has(item.id)) return "busy";
-  if (opts.draftVersion !== undefined && (item.draftVersion !== opts.draftVersion || item.status === "replied")) return "stale";
+  if (item.status === "replied" || (opts.draftVersion !== undefined && item.draftVersion !== opts.draftVersion)) return "stale";
   sendsInFlight.add(item.id);
   try {
     const sent = await sendViaGateway(

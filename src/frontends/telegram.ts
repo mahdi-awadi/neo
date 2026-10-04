@@ -770,12 +770,20 @@ export function createTelegramBot(
         async () => {
           try {
             const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${approved.draft}`);
+            // The Send tap removed the item's buttons, so an outcome that did not send re-shows the item
+            // (current draft + buttons) for the operator's next move.
+            const reshow = async () => {
+              const fresh = renderInboxItem(inbox, id);
+              if (fresh) await bot.api.sendMessage(chatId, fresh.text, { reply_markup: inboxItemKeyboard(id, fresh.item.status) });
+            };
             if (decision !== "allow") {
               await bot.api.sendMessage(chatId, "Send cancelled.");
+              await reshow();
               return;
             }
             const outcome = await sendInboxReply(inbox, id, approved.draft, { url, secret }, fetch, { draftVersion: approved.version });
             await bot.api.sendMessage(chatId, INBOX_SEND_RESULT[outcome](view.item.from));
+            if (outcome !== "sent") await reshow();
           } finally {
             sendingInbox.delete(id);
           }
@@ -831,7 +839,7 @@ export function createTelegramBot(
 const INBOX_SEND_RESULT: Record<InboxSendOutcome, (to: string) => string> = {
   sent: (to) => `✅ replied to ${to}.`,
   failed: () => "⚠️ send failed — the reply was not delivered.",
-  stale: () => "Not sent — the draft changed or was already sent while it waited. Tap Send again.",
+  stale: () => "Not sent — the draft changed or was already sent while it waited.",
   busy: () => "Not sent — a send for this message is already in progress.",
 };
 
@@ -841,8 +849,10 @@ export function startTelegram(...args: Parameters<typeof createTelegramBot>): Bo
   // shows the list for commands the bot has registered). Best-effort + fire-and-forget so a Bot API
   // hiccup can't stop the bot from starting.
   faults.contain("telegram.commands", () => registerTelegramCommands(bot));
+  const lifecycle = args[9]?.lifecycle; // the `reload` engine-control hooks
   superviseTelegramPolling(() => bot.start(), {
     report: (e) => faults.report("telegram.polling", e),
+    stopping: () => lifecycle?.draining() ?? false,
     exit: (code) => {
       console.error("[telegram] long polling stopped for good — exiting so the supervisor restarts Neo");
       setTimeout(() => process.exit(code), 1_000).unref();
@@ -936,7 +946,14 @@ export function pollingStopIsUnrecoverable(err: unknown): boolean {
  *  polling restarts after a backoff; the last `retryMs` step repeats. A clean stop does nothing. */
 export function superviseTelegramPolling(
   start: () => Promise<void>,
-  deps: { report: (e: unknown) => void; exit: (code: number) => void; sleep?: (ms: number) => Promise<void>; retryMs?: number[] },
+  deps: {
+    report: (e: unknown) => void;
+    exit: (code: number) => void;
+    sleep?: (ms: number) => Promise<void>;
+    retryMs?: number[];
+    /** True once the engine is shutting down (a reload drain): polling is never restarted then. */
+    stopping?: () => boolean;
+  },
 ): void {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const ladder = deps.retryMs ?? [5_000, 30_000, 120_000];
@@ -949,6 +966,7 @@ export function superviseTelegramPolling(
         deps.report(e);
         if (pollingStopIsUnrecoverable(e)) return deps.exit(1);
         await sleep(ladder[Math.min(attempt, ladder.length - 1)]);
+        if (deps.stopping?.()) return;
       }
     }
   };

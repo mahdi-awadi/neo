@@ -410,4 +410,7 @@ test("telegram inbox: a draft edited while the approval waited is not sent on Al
   await tick(30);
   expect(t.sent().some((x) => x.startsWith("Not sent — the draft changed"))).toBe(true);
   expect(t.inbox.get(item.id)?.status).toBe("drafted");
+  // The Send button is gone from the old message, so the item comes back with its buttons.
+  const reshown = t.calls.filter((c) => c.method === "sendMessage" && String(c.payload.text).includes("Version two."));
+  expect(reshown.at(-1)?.payload.reply_markup).toBeDefined();
 });

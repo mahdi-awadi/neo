@@ -70,3 +70,18 @@ test("a clean stop (bot.stop at shutdown) neither restarts nor exits", async () 
   expect(calls.exit).toEqual([]);
   expect(calls.reports).toEqual([]);
 });
+
+test("no restart once the engine is stopping (a reload drain): the backoff ends without starting polling again", async () => {
+  let starts = 0;
+  let stopping = false;
+  superviseTelegramPolling(
+    async () => {
+      starts++;
+      stopping = true; // the drain begins while the supervisor waits out the backoff
+      throw new Error("fetch failed");
+    },
+    { report: () => {}, exit: () => {}, sleep: async () => {}, stopping: () => stopping },
+  );
+  await settle();
+  expect(starts).toBe(1);
+});
