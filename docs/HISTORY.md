@@ -637,3 +637,18 @@ operator's next message to the company. An abnormal end says where it stopped (l
 note, last activity). At boot, dispatches the previous daemon never finished are reported the same
 way. See `docs/adr/0007-a-dispatch-has-no-wall-clock-and-always-reports-to-its-dispatcher.md`.
 Built TDD. `tsc` clean; full suite green. Going live needs a daemon restart (operator-gated).
+
+**Per-project todo queue (2026-10-04, ADR-0008).** The operator asked for a todo list per project:
+when a project is busy, more tasks wait and run one by one after the current task completes.
+Before, a dispatch to a busy project pushed the brief into the running session's input channel. That
+queue was invisible, in memory only, lost on reload, and released at a turn boundary, not at task
+end. Now every brief the company dispatches is a durable todo in the ledger (`project_todos`). A
+brief for a busy project, or one whose queue is non-empty or paused, waits in order, and the company
+gets "queued as #N for <project>, position P" at once. The next todo starts when the current dispatch
+run ends (the SDK-settled end from ADR-0007), after its result reached the operator and the
+dispatcher. The dispatcher's result says what the queue does next. A bad end applies `todoOnFailure`
+(`continue` by default, or `pause`). At boot, a todo still marked running is failed with its stop
+point; queued todos resume in order from the heartbeat tick. Control: the company's `todo` tool,
+`/todo` for the operator (Telegram and the web compose box share it), and a Queue tab in the web
+console. Each release sends one line ("eticket-v3: done #12, starting #13 'fare step UI'").
+Built TDD. `tsc` clean; full suite green. Going live needs a daemon restart (operator-gated).

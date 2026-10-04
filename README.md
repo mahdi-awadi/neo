@@ -191,6 +191,7 @@ that form too (for example, `/sdk@neo_bot codex`).
 | `/kill <name>` | Stop a project session. |
 | `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). |
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
+| `/todo [<project>]` (`/queue`) | The per-project todo queues: what runs and what waits. `/todo cancel <id>` and `/todo up <id>` change one todo; `/todo pause\|resume <project>` holds or releases a queue. |
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |
 | `/usage` | Subscription token usage + rate-limit status. |

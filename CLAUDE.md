@@ -51,7 +51,7 @@ prompt:
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
 customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
 rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
-down the daemon), one-shot session focus, and context-efficiency Phase 1
+down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), and context-efficiency Phase 1
 (per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
 default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.

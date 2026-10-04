@@ -117,3 +117,10 @@ that alone until the operator decides (see the next section).
    point (`raiseOperatorDecision`) that sharpens a shallow ask; the engine still only validates +
    routes (AI stays out of the engine). See memory `workers-challenge-self-before-raising-decision.md`.
 3. Consider merging this branch → `master` once the operator confirms it behaves live.
+
+## WIP 2026-10-04 — per-project todo queue (branch feat/project-todo-queue, worktree /home/neo-wt-todo-queue)
+Done + green (tsc clean, 925 tests): ledger store, todo-queue.ts, dispatch hooks, company dispatch+todo tools,
+/todo command, web Queue tab + /api/todo, daemon recover+tick pump, Telegram launcher, config todoOnFailure,
+CONTEXT.md terms, ADR-0008, CONFIG/README/HISTORY.
+LEFT: (1) code review pass; (2) update /home/neo/agent/CLAUDE.md (gitignored) with the queue rule;
+(3) merge feat/project-todo-queue → master (fast-forward from fa9286f). Do NOT restart the daemon.
