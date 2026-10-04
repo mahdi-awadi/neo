@@ -180,3 +180,20 @@ hooks, queues follow-ups as sequential turns on the same thread, and aborts with
 kept explicit: Codex SDK does not expose Claude's `canUseTool` hook or Anthropic in-process MCP
 shape, so Codex runs use Codex sandbox/approval policy and emit `worker_compat_warning` for
 Claude-only run options; read-only judge runs translate to Codex `sandboxMode:"read-only"`.
+
+**Telegram reliability (2026-07-25 issues 1, 3, 4, 5, 6) — fixed:** the five HIGH issues from
+`docs/investigations/2026-07-25-post-update-issues.md`.
+(1) Operator follow-ups are sent with SDK priority `"next"`, so the CLI attaches them at the running
+turn's next tool boundary instead of after the turn; company briefs queued into a busy session use
+`"later"` so they never steer it (`session-runner.ts`, `FollowUpTiming` in `types.ts`).
+(3) Telegram output goes through a per-chat FIFO outbox, every Bot API call waits out 429
+`retry_after` and retries network failures, and an undeliverable line is logged with its text
+(`frontends/telegram-delivery.ts`).
+(4) A typed yes/no answers a pending Allow/Deny; with several pending, a quote-reply picks one
+(`engine/approval-reply.ts`).
+(5) New `"conversation"` focus mode: set by a quote-reply into a project or by a project ending its
+turn with a question, held while the operator keeps talking, lapses after 15 min quiet or `/company`
+(`registry.ts`, `reply-routing.ts`, `pipeline.ts`).
+(6) Reset-based backoff only counts windows with status `"rejected"` and caps one wait at 5h
+(`api-retry.ts`). Issues 2 and 7 (MEDIUM) remain open.
+

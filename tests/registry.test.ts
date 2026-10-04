@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { createRegistry } from "../src/engine/registry";
+import { createRegistry, CONVERSATION_FOCUS_IDLE_MS } from "../src/engine/registry";
 import type { Order } from "../src/types";
 
 function order(over: Partial<Order> = {}): Order {
@@ -147,4 +147,21 @@ test("noteAlert stamps alertedAt", () => {
   const s = r.add({ id: "a2", source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: 0 }, 0);
   r.noteAlert(s.id, 42);
   expect(r.get(s.id)?.alertedAt).toBe(42);
+});
+
+test("conversation focus holds across messages until it goes quiet, then reverts to the company", () => {
+  const reg = createRegistry();
+  const a = reg.add({ id: "a", source: "neo", folder: "/p/a", task: "t", chatId: 5, createdAt: 0 }, 0);
+  reg.setFocus(5, a.id, "conversation", 0);
+  expect(reg.getFocus(5, 1000)?.mode).toBe("conversation");
+  reg.touchFocus(5, CONVERSATION_FOCUS_IDLE_MS - 1); // the operator kept talking to it
+  expect(reg.getFocus(5, 2 * CONVERSATION_FOCUS_IDLE_MS - 2)?.session.id).toBe(a.id);
+  expect(reg.getFocus(5, 2 * CONVERSATION_FOCUS_IDLE_MS)).toBeUndefined(); // quiet too long
+});
+
+test("pinned focus never expires on its own", () => {
+  const reg = createRegistry();
+  const a = reg.add({ id: "a", source: "neo", folder: "/p/a", task: "t", chatId: 5, createdAt: 0 }, 0);
+  reg.setFocus(5, a.id, "pinned", 0);
+  expect(reg.getFocus(5, 365 * 24 * 3600_000)?.mode).toBe("pinned");
 });

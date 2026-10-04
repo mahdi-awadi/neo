@@ -121,19 +121,25 @@ else. To reset admin, delete `data/admin.db`. You can pre-restrict who may claim
   Telegram". The console binds localhost by default and is meant to sit behind your proxy — don't
   expose the raw port publicly.
 
-### Talking to projects — one-shot focus
+### Talking to projects — focus
 
 The default target for a plain message is always **the company** (the main/chief-of-staff agent).
-Addressing a specific project is **explicit and one-shot**: you direct *one* message to a project,
-then focus reverts to the company — so a stray next message never sticks to a project.
+Addressing a specific project is **explicit**, so a stray message never sticks to a project for long.
 
-- **Address a project for one message:** `/use <name>` (then send your message), tap a project in
-  `/list`, or reply to one of its streamed messages. After that one message, you're back on the company.
-- **Have a back-and-forth with a project:** `/pin <name>` holds focus on it across messages; `/unpin`
-  (alias `/company`, `/main`) returns to the company. `/list` marks the focused project `▶` (one-shot)
-  or `📌` (pinned).
+- **Address a project for one message:** `/use <name>` (then send your message) or tap a project in
+  `/list`. After that one message, you're back on the company.
+- **Answer a project:** reply to one of its streamed messages, or just type your answer when a project
+  ends its turn with a question. Either starts a **conversation**: your next typed messages stay with
+  that project until you send `/company` or go quiet for 15 minutes. Its "queued" line says so.
+- **Have a long back-and-forth with a project:** `/pin <name>` holds focus on it across messages; `/unpin`
+  (alias `/company`, `/main`) returns to the company. `/list` marks the focused project `▶` (one-shot),
+  `💬` (conversation) or `📌` (pinned).
 - **`/open <folder> <task>`** delivers its task to the project (that's the one message) and reverts to
   the company; `/pin` it if you want to keep working there.
+- **Approvals:** answer an Allow/Deny prompt with the buttons, or type `yes` / `no`. With several
+  pending, reply to the one you mean.
+- **Follow-ups to a busy project** reach a Claude worker at its next step, mid-turn. A Codex worker
+  runs them after its current turn; the "queued" line says which.
 
 When a message or a company **dispatch** can't run because a project is occupied, the reply reports the
 **real status** — which project, what it's doing, how long, and how many follow-ups are queued — not a

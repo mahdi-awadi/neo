@@ -881,3 +881,74 @@ test("a follow-up to a worker that can't steer says honestly it waits for the cu
   const line = h.replies.find((r) => r.startsWith("↩︎"))!;
   expect(line).toContain("after its current turn");
 });
+
+// --- 2026-07-25 issue 5: a typed answer to a project's question must not land on the company ----
+
+// Like routingStart, but exposes each session's handlers so a test can end a turn.
+function turnStart(followed: string[], handlers: Map<string, RunHandlers>) {
+  return (o: Order, h: RunHandlers): SessionRun => {
+    handlers.set(o.folder, h);
+    return routingStart(followed)(o, h);
+  };
+}
+
+test("a project that ends its turn with a question keeps the operator's next plain message", async () => {
+  const dirA = scratch();
+  const followed: string[] = [];
+  const handlers = new Map<string, RunHandlers>();
+  const h = harness({ start: turnStart(followed, handlers) });
+  const companyDir = withCompany(h, followed);
+  await handleMessage(`/open ${dirA} migrate the db`, 5, h.base);
+
+  handlers.get(dirA)!.onTurnComplete!({ ok: true, sessionId: "s", summary: "Should I drop the legacy table too?", costUsd: 0 });
+  await handleMessage("yes, drop it", 5, h.base); // typed, no quote-reply
+  await handleMessage("and keep the backup", 5, h.base); // still the same conversation
+
+  expect(followed).toContain(`${dirA}:yes, drop it`);
+  expect(followed).toContain(`${dirA}:and keep the backup`);
+  expect(followed.some((f) => f.startsWith(`${companyDir}:`))).toBe(false);
+  expect(h.replies.some((r) => r.includes("/company"))).toBe(true); // the operator is told how to switch back
+});
+
+test("a turn that ends with a statement does NOT pull the operator's next message", async () => {
+  const dirA = scratch();
+  const followed: string[] = [];
+  const handlers = new Map<string, RunHandlers>();
+  const h = harness({ start: turnStart(followed, handlers) });
+  const companyDir = withCompany(h, followed);
+  await handleMessage(`/open ${dirA} migrate the db`, 5, h.base);
+
+  handlers.get(dirA)!.onTurnComplete!({ ok: true, sessionId: "s", summary: "Done — migrated 3 tables.", costUsd: 0 });
+  await handleMessage("what's next on the board?", 5, h.base);
+
+  expect(followed).toContain(`${companyDir}:what's next on the board?`);
+});
+
+test("a project's question doesn't override an explicit pin on another project", async () => {
+  const dirA = scratch();
+  const dirB = scratch();
+  const followed: string[] = [];
+  const handlers = new Map<string, RunHandlers>();
+  const h = harness({ start: turnStart(followed, handlers) });
+  withCompany(h, followed);
+  await handleMessage(`/open ${dirA} a`, 5, h.base);
+  await handleMessage(`/open ${dirB} b`, 5, h.base);
+  const bId = h.registry.list().find((s) => s.order.folder === dirB)!.id;
+  h.registry.setFocus(5, bId, "pinned");
+
+  handlers.get(dirA)!.onTurnComplete!({ ok: true, sessionId: "s", summary: "Which branch?", costUsd: 0 });
+  await handleMessage("main", 5, h.base);
+
+  expect(followed).toContain(`${dirB}:main`);
+});
+
+test("the company asking a question doesn't take conversation focus (it already gets plain messages)", async () => {
+  const dir = scratch();
+  const followed: string[] = [];
+  const handlers = new Map<string, RunHandlers>();
+  const h = harness({ start: turnStart(followed, handlers) });
+  await handleMessage(`/open ${dir} hq`, 5, h.base);
+  h.registry.setDefault(h.registry.list()[0]!.id);
+  handlers.get(dir)!.onTurnComplete!({ ok: true, sessionId: "s", summary: "Want me to dispatch it?", costUsd: 0 });
+  expect(h.registry.getFocus(5)).toBeUndefined();
+});

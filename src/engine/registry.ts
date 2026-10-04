@@ -11,8 +11,14 @@ const OPEN: ReadonlySet<SessionInfo["status"]> = new Set(["running", "idle"]);
 
 /** How long a chat's focus on a project lasts. `once` reverts to the company after ONE delivered
  *  message (the operator's default — stops stray messages sticking to a project); `pinned` holds
- *  until it's cleared (an explicit multi-turn conversation). See docs/superpowers/specs/…focus…. */
-export type FocusMode = "once" | "pinned";
+ *  until it's cleared (an explicit multi-turn conversation); `conversation` holds while the operator
+ *  keeps talking to the project and lapses after CONVERSATION_FOCUS_IDLE_MS of quiet. It is set when
+ *  the operator quote-replies into a project or a project ends its turn asking them something, so
+ *  typed answers stay with that project (2026-07-25 issue 5). See docs/superpowers/specs/…focus…. */
+export type FocusMode = "once" | "pinned" | "conversation";
+
+/** A conversation focus lapses (back to the company) after this long without an operator message. */
+export const CONVERSATION_FOCUS_IDLE_MS = 15 * 60_000;
 
 export interface Registry {
   /** Register a freshly-started session. Returns the created entry (name may be uniquified). */
@@ -25,11 +31,13 @@ export interface Registry {
   findByChat(chatId: number): SessionInfo | undefined;
   /** Focus the project a chat's next follow-up(s) route to. `once` = revert to the company after
    * one delivered message; `pinned` = stay until clearFocus. Replaces the old sticky `setActive`. */
-  setFocus(chatId: number, id: string, mode: FocusMode): void;
+  setFocus(chatId: number, id: string, mode: FocusMode, now?: number): void;
+  /** Note an operator message delivered through the chat's focus (keeps a conversation focus alive). */
+  touchFocus(chatId: number, now?: number): void;
   /** Drop a chat's focus, reverting it to the company/default target. */
   clearFocus(chatId: number): void;
   /** A chat's current focus (session + mode) while the focused session is still OPEN, else undefined. */
-  getFocus(chatId: number): { session: SessionInfo; mode: FocusMode } | undefined;
+  getFocus(chatId: number, now?: number): { session: SessionInfo; mode: FocusMode } | undefined;
   findByName(name: string): SessionInfo | undefined;
   /** The most-recently-active OPEN session for a folder (so dispatch reuses it, not a duplicate). */
   findByFolder(folder: string): SessionInfo | undefined;
@@ -54,7 +62,7 @@ export interface Registry {
 export function createRegistry(): Registry {
   const sessions = new Map<string, SessionInfo>();
   const controls = new Map<string, SessionControl>();
-  const focus = new Map<number, { id: string; mode: FocusMode }>(); // chatId -> focused project
+  const focus = new Map<number, { id: string; mode: FocusMode; at: number }>(); // chatId -> focused project
   let defaultId: string | undefined; // the always-on default project (fallback target)
 
   function uniqueName(base: string): string {
@@ -67,9 +75,13 @@ export function createRegistry(): Registry {
   }
 
   /** Resolve a chat's focus to its live session (+ mode), or undefined once it closes / isn't set. */
-  function resolveFocus(chatId: number): { session: SessionInfo; mode: FocusMode } | undefined {
+  function resolveFocus(chatId: number, now = Date.now()): { session: SessionInfo; mode: FocusMode } | undefined {
     const f = focus.get(chatId);
     if (!f) return undefined;
+    if (f.mode === "conversation" && now - f.at >= CONVERSATION_FOCUS_IDLE_MS) {
+      focus.delete(chatId); // the conversation went quiet — plain messages go to the company again
+      return undefined;
+    }
     const session = sessions.get(f.id);
     if (!session || !OPEN.has(session.status)) return undefined; // closed → no focus
     return { session, mode: f.mode };
@@ -110,9 +122,13 @@ export function createRegistry(): Registry {
     setDefault: (id) => void (defaultId = id),
     getDefault: () => (defaultId ? sessions.get(defaultId) : undefined),
     findByChat: (chatId) => resolveFocus(chatId)?.session,
-    setFocus: (chatId, id, mode) => void focus.set(chatId, { id, mode }),
+    setFocus: (chatId, id, mode, now = Date.now()) => void focus.set(chatId, { id, mode, at: now }),
+    touchFocus(chatId, now = Date.now()) {
+      const f = focus.get(chatId);
+      if (f) f.at = now;
+    },
     clearFocus: (chatId) => void focus.delete(chatId),
-    getFocus: (chatId) => resolveFocus(chatId),
+    getFocus: (chatId, now) => resolveFocus(chatId, now),
     findByName: (name) => [...sessions.values()].find((s) => s.name === name),
     findByFolder: (folder) =>
       [...sessions.values()]
