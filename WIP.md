@@ -125,3 +125,20 @@ Code-review pass fixed: a run that throws before it has a result left its todo +
 reads idle first) → the queue tracks its own live runs; `/todo` accepted `0x2`/`2e0` and ignored extra
 words → strict parsing. `agent/CLAUDE.md` already carries the queue rule. tsc clean; 929 tests green.
 **Restart pending** (operator-gated): the running daemon has no queue until it restarts.
+
+## WIP 2026-10-04 — toolchain auto-updater (branch feat/auto-update, worktree /home/neo-wt-auto-update)
+Built + tested (28 tests green: tests/updater.test.ts, tests/update-sys.test.ts): ADR-0009, CONTEXT.md terms,
+src/engine/updater.ts (orchestrator: due/run/rollback/status, ledger `update_*` events, one report per run),
+update-sdk.ts (branch+worktree bump, tsc+test gate, ff master, model ids), update-plugins.ts (claude plugin
+update + validate/details verify + registry-entry rollback), update-mcp.ts (classify every server; npm-global,
+docker, codebase-memory apply + MCP probe + rollback), update-sys.ts (real port + MCP stdio probe).
+LEFT: (1) `updates` config block in src/config.ts + docs/CONFIG.md; (2) `/updates` command (status · run ·
+apply <item> · rollback <item>) in commands.ts, wired via CommandDeps like `todo`; (3) daemon: createUpdater
+with realUpdateSys, builtins (playwright-mcp, cfg.codebaseMemoryBin), busy = any registry session running,
+report = alertOperator, tick: `if (updater.due(now)) void updater.run({trigger:"schedule"})`;
+(4) docs/loops.md note (deterministic job, not a loop — ADR-0009); (5) tsc + full bun test, merge to master;
+(6) first run, report results. Do NOT restart the daemon.
+Inventory found 2026-10-04: SDK 0.3.286 → 0.3.289 (no breaking notes); codebase-memory 0.8.1 → v0.11.0
+(BREAKING: index rebuild — will be held); @playwright/mcp global 0.0.80 → 0.0.83; context7 pin 3.2.4 → 4.1.1
+in /home/waselni/.mcp.json (report-only); agent-orchestration plugin already moved 1.2.1 → 1.2.2 by a probe.
+`@openai/codex-sdk` floats on "latest" in package.json (not pinned).

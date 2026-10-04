@@ -293,3 +293,32 @@ Dispatch ending a sub-run that has shown no **activity** for the stall window. I
 and never output, it is paused while the session is awaiting the operator, and it records the
 evidence it acted on before it fires.
 _Avoid_: timeout, kill, watchdog
+
+### Keeping the toolchain current
+
+**Update item**:
+One thing outside the engine's own code that a newer release can replace: the worker Agent SDK, a
+Claude Code plugin, or an MCP server. Each item has a **category** (`sdk`, `plugins`, `mcp`), a
+current version, and — once checked — the latest version.
+_Avoid_: package, dependency, component
+
+**Floating item**:
+An update item that names no version (`npx some-mcp`, `pkg@latest`, a docker image with no tag, a
+remote HTTP MCP server). It resolves when it is launched, so the updater has nothing to apply and
+only reports it.
+_Avoid_: unpinned, auto-updating
+
+**Auto-apply**:
+The updater replacing an item with its latest version, then verifying it, with no operator step.
+Switched per category in config. A failed verification rolls the item back at once.
+_Avoid_: auto-upgrade, self-update
+
+**Held update**:
+A newer version the updater found but did not apply because its release notes flag a breaking
+change. It waits for the operator (`/updates apply <item>`).
+_Avoid_: blocked, skipped, pending
+
+**Restart-gated update**:
+An applied update that running code cannot see until the daemon restarts — the Agent SDK always.
+The updater reports it and waits; it never restarts the daemon.
+_Avoid_: pending restart, needs reload
