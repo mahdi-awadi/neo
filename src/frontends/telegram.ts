@@ -2,7 +2,7 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
-import { Api, Bot, InlineKeyboard, InputFile, type Context } from "grammy";
+import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ApiClientOptions } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
 import { saveInbound } from "../engine/files";
@@ -836,13 +836,12 @@ export function startTelegram(...args: Parameters<typeof createTelegramBot>): Bo
   // shows the list for commands the bot has registered). Best-effort + fire-and-forget so a Bot API
   // hiccup can't stop the bot from starting.
   faults.contain("telegram.commands", () => registerTelegramCommands(bot));
-  // grammy retries network errors itself; bot.start() rejects only when polling cannot go on (a
-  // revoked token: 401, a second poller: 409). A daemon that cannot hear the operator is an
-  // UNRECOVERABLE STATE (ADR-0010): report it, then exit so the supervisor restarts us.
-  bot.start().catch((e) => {
-    faults.report("telegram.polling", e);
-    console.error("[telegram] long polling stopped — exiting so the supervisor restarts Neo");
-    setTimeout(() => process.exit(1), 1_000).unref();
+  superviseTelegramPolling(() => bot.start(), {
+    report: (e) => faults.report("telegram.polling", e),
+    exit: (code) => {
+      console.error("[telegram] long polling stopped for good — exiting so the supervisor restarts Neo");
+      setTimeout(() => process.exit(code), 1_000).unref();
+    },
   });
   return bot;
 }
@@ -919,3 +918,35 @@ function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefin
       .text("↩ Re-draft", `inbox-draft:${id}`);
   return undefined;
 }
+
+/** A stop of long polling that no retry can fix: a revoked token (401) or another poller on the same
+ *  token (409). grammy retries everything else inside getUpdates itself. */
+export function pollingStopIsUnrecoverable(err: unknown): boolean {
+  return err instanceof GrammyError && (err.error_code === 401 || err.error_code === 409);
+}
+
+/** Keep long polling alive (ADR-0010). `start` rejects when polling stops: an unrecoverable stop is
+ *  an UNRECOVERABLE STATE — a daemon that cannot hear the operator — so it is reported and the process
+ *  exits for the supervisor. Any other stop (a network error on the startup getMe) is reported and
+ *  polling restarts after a backoff; the last `retryMs` step repeats. A clean stop does nothing. */
+export function superviseTelegramPolling(
+  start: () => Promise<void>,
+  deps: { report: (e: unknown) => void; exit: (code: number) => void; sleep?: (ms: number) => Promise<void>; retryMs?: number[] },
+): void {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const ladder = deps.retryMs ?? [5_000, 30_000, 120_000];
+  const run = async (): Promise<void> => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await start();
+        return;
+      } catch (e) {
+        deps.report(e);
+        if (pollingStopIsUnrecoverable(e)) return deps.exit(1);
+        await sleep(ladder[Math.min(attempt, ladder.length - 1)]);
+      }
+    }
+  };
+  void run().catch((e) => deps.report(e)); // report/exit/sleep throwing must not become a rejection
+}
+
