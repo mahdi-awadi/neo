@@ -32,6 +32,8 @@ ADR-0007). It also started the brief when the current **turn** yielded, not when
 4. **Failure policy, in config.** A todo that ends badly (failed, stall-aborted, killed, cut short
    by a reload) applies `todoOnFailure`: `continue` (default — report the failure, start the next)
    or `pause` (pause the project's queue until it is resumed). The next todo never starts silently.
+   A run that throws before it has a result (the worker failed to launch) is a bad end too:
+   dispatch closes it through the same exits, so a project's queue never stays stuck behind it.
 5. **A tick also releases.** The daemon tick pumps every queue whose project is free. This covers
    a queue left waiting by a cooldown, the interactive reserve, a reload drain, a resume, or a
    restart. The pump checks the same holds as dispatch first, so a held queue does not write a

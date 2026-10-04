@@ -84,6 +84,10 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   let launcherFn: () => TodoLauncher | undefined = () => undefined;
   let lastSeen: TodoLauncher | undefined;
   const launcher = (): TodoLauncher | undefined => launcherFn() ?? lastSeen;
+  /** Orders of todo runs started by THIS process and not yet ended. The one true "its run is still
+   *  live" signal: the registry reads the session idle a moment before the run's end reaches the
+   *  queue, and a row left `running` by a crash is never in here. */
+  const live = new Set<string>();
 
   const queued = (folder: string) => ledger.listTodos({ folder, statuses: ["queued"] });
   const runningTodo = (folder: string) => ledger.listTodos({ folder, statuses: ["running"], limit: 1 })[0];
@@ -125,6 +129,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         quietStart: quiet,
         onLaunched: (orderId, mode) => {
           outcome = mode;
+          if (mode === "run") live.add(orderId);
           ledger.updateTodo(
             t.id,
             mode === "run"
@@ -173,6 +178,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   /** A dispatch run of a todo ended: record it, apply the failure policy, release the next one,
    *  and send the operator ONE line about the transition (none when the queue is empty). */
   const finish = async (end: { orderId: string; ok: boolean; summary: string }, l: TodoLauncher): Promise<void> => {
+    live.delete(end.orderId);
     const t = ledger.todoByOrder(end.orderId);
     if (!t || t.status !== "running") return;
     ledger.updateTodo(t.id, { status: end.ok ? "done" : "failed", result: end.summary, endedAt: now() });
@@ -299,9 +305,13 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const t = ledger.todoById(id);
       if (!t) return `No todo #${id}.`;
       if (t.status === "running") {
-        // A running todo is stopped with /kill. Only a stale one (its project is no longer busy) is cleared here.
-        if (projectBusy(registry, t.folder)) return `#${id} is running — stop it with /kill ${t.project}; cancel only removes queued todos.`;
+        // A running todo is stopped with /kill. Only a stale one (no live run, project not busy) is
+        // cleared here — and clearing it frees the project, so release the next todo now.
+        if ((t.orderId && live.has(t.orderId)) || projectBusy(registry, t.folder)) {
+          return `#${id} is running — stop it with /kill ${t.project}; cancel only removes queued todos.`;
+        }
         ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cleared: no live run" });
+        void this.pump();
         return `cancelled #${id} (it was marked running but ${t.project} has no live run).`;
       }
       if (t.status !== "queued") return `#${id} is already ${t.status}.`;

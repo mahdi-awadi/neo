@@ -652,3 +652,11 @@ point; queued todos resume in order from the heartbeat tick. Control: the compan
 `/todo` for the operator (Telegram and the web compose box share it), and a Queue tab in the web
 console. Each release sends one line ("eticket-v3: done #12, starting #13 'fare step UI'").
 Built TDD. `tsc` clean; full suite green. Going live needs a daemon restart (operator-gated).
+Code-review pass fixed three things. (1) A dispatch run that threw before it had a result (for
+example, the worker failed to launch) left its session and its todo `running`, so that project's
+queue stopped until a restart. Dispatch now closes such a run as failed through the normal exits,
+and the next todo starts. (2) `cancel` of a running todo trusted the registry, which reads the
+session idle a moment before the run's end reaches the queue. The queue now tracks its own live
+runs, and clearing a really stale todo releases the next one at once. (3) `/todo` refuses loose
+input: ids must be plain digits (`0x2` and `2e0` were accepted), extra words give the usage line,
+and verbs ignore case.

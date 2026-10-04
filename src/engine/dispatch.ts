@@ -904,7 +904,37 @@ export async function dispatchToProject(
     } catch {
       // observer only
     }
-  })();
+  })().catch(async (e) => {
+    // A throw BEFORE the run produced a result (start() failing to launch the worker, a ledger write
+    // before the supervised wait). Every step after the result is guarded, so this runs at most once
+    // and never after onEnd. Without it the session stays "running" with no handle and the todo stays
+    // "running", so the project — and its whole queue — is wedged until a restart. Close it out as a
+    // failed run through the same exits a normal end uses.
+    const summary = `failed to start: ${e instanceof Error ? e.message : String(e)}`;
+    try {
+      deps.ledger.recordOutcome(order.id, "error", summary);
+      deps.ledger.recordEvent("dispatch_end", { orderId: order.id, folder, data: { project: name, workClass, ok: false, timedOut: false, costUsd: 0 } });
+      deps.ledger.queueDispatcherReport(name, dispatchResultText({ project: name, ok: false, summary }), now());
+    } catch {
+      // observer only
+    }
+    try {
+      deps.registry.remove(session.id);
+    } catch {
+      // observer only
+    }
+    try {
+      await deps.reply(replyChat, `${name}: ${summary}`, name, "alert");
+      await flushDispatcherInbox(deps.ledger, dispatcher, now());
+    } catch {
+      // observer only
+    }
+    try {
+      await hooks.onEnd?.({ orderId: order.id, ok: false, summary });
+    } catch {
+      // observer only
+    }
+  });
 
   return `dispatched to ${name} — running in the background with no time limit; its output streams to the operator, you get a progress digest every few minutes, and you will receive its result as a follow-up message when it ends.`;
 }

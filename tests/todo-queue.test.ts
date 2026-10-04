@@ -386,3 +386,78 @@ test("config todoOnFailure defaults to continue, accepts pause, and fails closed
   writeFileSync(join(dir, "config.json"), JSON.stringify({ todoOnFailure: "explode" }));
   expect(loadConfig(dir).todoOnFailure).toBe("continue");
 });
+
+// --- code-review pass (2026-10-04) --------------------------------------------------------------
+
+test("a run that throws while starting fails its todo, frees the project and starts the next", async () => {
+  const { queue, ledger, deps, registry } = setup();
+  let calls = 0;
+  const started: string[] = [];
+  queue.setLauncher(() => ({ deps, replyChat: 1 }));
+  const q2 = createTodoQueue({
+    ledger,
+    registry,
+    onFailure: () => "continue",
+    dispatchOpts: {
+      now: () => 1_000,
+      start: ((order: { task: string }) => {
+        calls++;
+        if (calls === 1) throw new Error("worker failed to launch");
+        started.push(order.task);
+        return { followUp: () => {}, queued: () => 0, active: () => true, closed: () => false, close: () => {}, interrupt: async () => {}, done: new Promise(() => {}) };
+      }) as never,
+    },
+  });
+  q2.setLauncher(() => ({ deps, replyChat: 1 }));
+  await q2.submit({ project: "eticket-v3", brief: "first", workClass: "interactive" }, deps, 1);
+  await q2.submit({ project: "eticket-v3", brief: "second", workClass: "interactive" }, deps, 1);
+  await settle();
+  expect(ledger.todoById(1)).toMatchObject({ status: "failed" });
+  expect(ledger.todoById(1)?.result).toContain("worker failed to launch");
+  expect(ledger.todoById(2)?.status).toBe("running");
+  expect(started).toHaveLength(1);
+  expect(started[0]).toContain("second");
+});
+
+test("cancel refuses a running todo whose run is still live, even in the gap after the session went idle", async () => {
+  const { queue, ledger, registry, deps, runs } = setup();
+  await queue.submit({ project: "eticket-v3", brief: "first", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "second", workClass: "interactive" }, deps, 1);
+  // The run's session reads idle (dispatch marks it idle before the result goes out) but its end
+  // has not reached the queue yet.
+  const s = registry.findByFolder(join(deps.workRoot!, "eticket-v3"))!;
+  registry.setStatus(s.id, "idle");
+  expect(queue.cancel(1)).toContain("running");
+  expect(ledger.todoById(1)?.status).toBe("running");
+  runs[0].finish(ok());
+  await settle();
+  expect(ledger.todoById(1)?.status).toBe("done");
+  expect(runs).toHaveLength(2); // the next one still started on settle
+});
+
+test("cancelling a stale running todo (no live run) releases the next one at once", async () => {
+  const { queue, ledger, deps, runs } = setup();
+  const folder = join(deps.workRoot!, "eticket-v3");
+  const a = ledger.addTodo({ project: "eticket-v3", folder, brief: "stale", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(a.id, { status: "running", orderId: "gone", startedAt: 2 });
+  ledger.addTodo({ project: "eticket-v3", folder, brief: "next", workClass: "interactive", createdBy: "operator" }, 3);
+  expect(queue.cancel(a.id)).toContain("cancelled");
+  await settle();
+  expect(runs).toHaveLength(1);
+  expect(runs[0].task).toContain("next");
+});
+
+test("/todo parsing: verbs ignore case, ids are plain digits (optional #), extra words are refused", async () => {
+  const { queue, deps, ledger, registry } = setup();
+  await queue.submit({ project: "eticket-v3", brief: "run", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "a", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "b", workClass: "interactive" }, deps, 1);
+  const cmd = (t: string) => handleCommand(t, 1, { registry, ledger, trust: deps.trust, todo: queue })!.text;
+  expect(cmd("/todo cancel 0x2")).toContain("Usage");
+  expect(cmd("/todo cancel 2e0")).toContain("Usage");
+  expect(cmd("/todo cancel 2 3")).toContain("Usage");
+  expect(cmd("/todo pause eticket-v3 now")).toContain("Usage");
+  expect(ledger.todoById(2)?.status).toBe("queued");
+  expect(cmd("/todo UP #3")).toContain("position 1");
+  expect(cmd("/todo Cancel #2")).toContain("cancelled #2");
+});

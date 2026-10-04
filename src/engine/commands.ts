@@ -274,21 +274,25 @@ const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /tod
 /** /todo — read and steer the per-project todo queues. Thin: the queue owns every rule. */
 function todoCommand(args: string, todo: TodoQueue | undefined): string {
   if (!todo) return "The todo queue is unavailable on this channel.";
-  const [verb, arg = ""] = args.split(/\s+/, 2);
-  const id = Number(arg.replace(/^#/, ""));
+  const words = args.split(/\s+/).filter(Boolean);
+  if (words.length > 2) return TODO_USAGE; // never act on half of what was typed
+  const [first = "", arg = ""] = words;
+  const verb = first.toLowerCase();
+  const id = /^#?\d+$/.test(arg) ? Number(arg.replace(/^#/, "")) : NaN; // plain digits only: no 0x2, 2e0
   switch (verb) {
     case "":
       return todo.list();
     case "cancel":
     case "up":
-      if (!Number.isInteger(id) || id <= 0) return TODO_USAGE;
+      if (!(id > 0)) return TODO_USAGE;
       return verb === "cancel" ? todo.cancel(id) : todo.up(id);
     case "pause":
     case "resume":
       if (!arg) return TODO_USAGE;
       return verb === "pause" ? todo.pause(arg) : todo.resume(arg);
     default:
-      return todo.list(verb);
+      if (arg) return TODO_USAGE;
+      return todo.list(first);
   }
 }
 
