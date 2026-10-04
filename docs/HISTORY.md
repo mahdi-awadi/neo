@@ -660,3 +660,16 @@ session idle a moment before the run's end reaches the queue. The queue now trac
 runs, and clearing a really stale todo releases the next one at once. (3) `/todo` refuses loose
 input: ids must be plain digits (`0x2` and `2e0` were accepted), extra words give the usage line,
 and verbs ignore case.
+
+### Toolchain auto-updater (ADR-0009, 2026-10-04)
+
+Neo keeps its own toolchain current: the worker Agent SDK pin, the Claude Code plugins, and the MCP
+servers workers launch. It is a deterministic engine job on the heartbeat (`updates.everyMs`,
+default 24 h), not an AI loop. The SDK bump runs on its own branch and worktree and fast-forwards
+`master` only when `tsc` and the tests are green. Plugin and MCP changes wait until no session runs,
+are verified after the change (plugin validate; MCP `initialize` + `tools/list`), and roll back on a
+failed check. A release whose notes flag a breaking change is held for `/updates apply <item>`. A
+pin in another project's `.mcp.json` is reported, never edited. Nothing restarts the daemon. A
+scheduled run reports only what is new. `/updates` steers it from Telegram and the web console.
+Also: `@openai/codex-sdk` is now pinned to the exact `0.145.0` it was already resolving to, not
+`latest`. Built TDD; `tsc` clean, full suite green. Going live needs a daemon restart (operator-gated).

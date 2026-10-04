@@ -495,3 +495,44 @@ test("/list's icon follows the derived state — a wedged project is not a green
   expect(alpha).not.toContain("🟢"); // idle between turns — free, not busy
   expect(beta).toContain("🔴"); // wedged — the only row worth acting on
 });
+
+function fakeUpdater(running = false) {
+  const calls: unknown[] = [];
+  return {
+    calls,
+    updater: {
+      status: () => "STATUS",
+      running: () => running,
+      run: async (o: unknown) => (calls.push(["run", o]), "report"),
+      rollback: async (id: string) => (calls.push(["rollback", id]), "rolled"),
+    },
+  };
+}
+
+test("/updates shows the updater status; unavailable without one", () => {
+  const f = fakeUpdater();
+  expect(handleCommand("/updates", 1, { ...deps(), updates: f.updater })!.text).toBe("STATUS");
+  expect(handleCommand("/updates", 1, deps())!.text).toContain("unavailable");
+});
+
+test("/updates run starts a manual run; a run in progress is not doubled", () => {
+  const f = fakeUpdater();
+  expect(handleCommand("/updates run", 1, { ...deps(), updates: f.updater })!.text).toContain("started");
+  expect(f.calls).toEqual([["run", { trigger: "manual" }]]);
+  const busy = fakeUpdater(true);
+  expect(handleCommand("/updates run", 1, { ...deps(), updates: busy.updater })!.text).toContain("in progress");
+  expect(busy.calls).toEqual([]);
+});
+
+test("/updates apply <item> forces that one item; rollback <item> rolls it back; bad input shows usage", () => {
+  const f = fakeUpdater();
+  handleCommand("/updates apply codebase-memory-mcp", 1, { ...deps(), updates: f.updater });
+  handleCommand("/updates rollback npm:@playwright/mcp", 1, { ...deps(), updates: f.updater });
+  expect(f.calls).toEqual([
+    ["run", { trigger: "manual", only: "codebase-memory-mcp", force: true }],
+    ["rollback", "npm:@playwright/mcp"],
+  ]);
+  expect(handleCommand("/updates apply", 1, { ...deps(), updates: f.updater })!.text).toContain("Usage");
+  expect(handleCommand("/updates nonsense x", 1, { ...deps(), updates: f.updater })!.text).toContain("Usage");
+  expect(f.calls.length).toBe(2);
+});

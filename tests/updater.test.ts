@@ -14,8 +14,10 @@ import {
   type McpLaunch,
 } from "../src/engine/updater";
 import { sdkSource } from "../src/engine/update-sdk";
+import { DEFAULT_UPDATES } from "../src/config";
 
 const CFG: UpdatesCfg = {
+  ...DEFAULT_UPDATES,
   enabled: true,
   everyMs: 24 * 3_600_000,
   autoApply: { sdk: true, plugins: true, mcp: true },
@@ -534,4 +536,82 @@ test("mcp: a session mid-task defers what would be applied; nothing is pulled or
   expect(byId(rs, "npm:@playwright/mcp")?.outcome).toBe("deferred");
   expect(byId(rs, "docker:mcp/redis")?.outcome).toBe("deferred");
   expect(env.calls.some((c) => c.cmd.startsWith("docker pull") || c.cmd.startsWith("npm i -g"))).toBe(false);
+});
+
+// --- the engine wiring (update-engine.ts): what the daemon and a direct run both build -----------
+
+import { createEngineUpdater, registryBusy } from "../src/engine/update-engine";
+import { createRegistry } from "../src/engine/registry";
+import { DEFAULT_UPDATES as DEFAULTS } from "../src/config";
+
+const PW_LS = JSON.stringify({ dependencies: { "@playwright/mcp": { version: "0.0.80" } } });
+const PW_LATEST = "https://registry.npmjs.org/@playwright/mcp/latest";
+
+test("engine updater: Neo's own MCP servers are always checked — playwright from its global, codebase-memory from its bin", async () => {
+  const s = fakeSys({
+    exec: [[/npm ls -g @playwright\/mcp/, () => ({ out: PW_LS })], [/--version/, () => ({ out: "codebase-memory-mcp 0.8.1" })]],
+    urls: { [PW_LATEST]: JSON.stringify({ version: "0.0.80" }) },
+  });
+  const reports: string[] = [];
+  const u = createEngineUpdater({
+    cfg: () => ({ updates: DEFAULTS, workRoot: "/work", codebaseMemoryBin: "/bin/cbm" }),
+    ledger: openLedger(":memory:"),
+    busy: () => false,
+    report: (t) => void reports.push(t),
+    repo: "/repo",
+    home: "/root",
+    sys: s.sys,
+  });
+  await u.run({ trigger: "manual", only: "mcp" });
+  expect(u.status()).toContain("npm:@playwright/mcp 0.0.80 [up_to_date]");
+  expect(u.status()).toContain("codebase-memory-mcp");
+  expect(reports.length).toBe(1);
+});
+
+test("engine updater: a running session defers what would replace files; the busy flag comes from the registry", async () => {
+  const s = fakeSys({
+    exec: [[/npm ls -g @playwright\/mcp/, () => ({ out: PW_LS })]],
+    urls: { [PW_LATEST]: JSON.stringify({ version: "0.0.83" }) },
+  });
+  const reg = createRegistry();
+  expect(registryBusy(reg)).toBe(false);
+  const sess = reg.add({ id: "o1", source: "neo", folder: "/work/app", task: "t", chatId: 1, createdAt: 1 });
+  expect(registryBusy(reg)).toBe(true);
+  reg.setStatus(sess.id, "idle");
+  expect(registryBusy(reg)).toBe(false);
+  const u = createEngineUpdater({
+    cfg: () => ({ updates: DEFAULTS, workRoot: "/work", codebaseMemoryBin: "" }),
+    ledger: openLedger(":memory:"),
+    busy: () => true,
+    report: () => {},
+    repo: "/repo",
+    home: "/root",
+    sys: s.sys,
+  });
+  await u.run({ trigger: "schedule", only: "npm:@playwright/mcp" });
+  expect(u.status()).toContain("[deferred]");
+  expect(s.calls.some((c) => c.cmd.startsWith("npm i -g"))).toBe(false);
+});
+
+test("a scheduled run stays silent when nothing is new since the last run; a manual run always reports", async () => {
+  const ledger = openLedger(":memory:");
+  const reports: string[] = [];
+  const held: ItemResult = { category: "mcp", id: "codebase-memory-mcp", outcome: "held", from: "0.8.1", to: "0.11.0" };
+  let results: ItemResult[] = [held, { category: "sdk", id: "sdk", outcome: "up_to_date", from: "1" }];
+  const u = createUpdater({
+    ledger,
+    sources: [source("mcp", () => results)],
+    cfg: () => CFG,
+    busy: () => false,
+    report: (t) => void reports.push(t),
+  });
+  await u.run({ trigger: "schedule" });
+  expect(reports).toHaveLength(1); // first sighting of the hold is news
+  await u.run({ trigger: "schedule" });
+  expect(reports).toHaveLength(1); // the same hold again is not
+  await u.run({ trigger: "manual" });
+  expect(reports).toHaveLength(2); // the operator asked
+  results = [{ ...held, to: "0.12.0" }];
+  await u.run({ trigger: "schedule" });
+  expect(reports).toHaveLength(3); // a newer held version is news again
 });

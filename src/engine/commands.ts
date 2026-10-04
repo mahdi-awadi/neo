@@ -18,6 +18,7 @@ import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import type { TodoQueue } from "./todo-queue";
+import type { Updater } from "./updater";
 
 export interface CommandDeps {
   registry: Registry;
@@ -46,6 +47,8 @@ export interface CommandDeps {
   cfg?: Pick<NeoConfig, "providers">;
   /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
   todo?: TodoQueue;
+  /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
+  updates?: Pick<Updater, "status" | "run" | "rollback" | "running">;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -136,6 +139,13 @@ const COMMANDS: Command[] = [
     usage: "/todo [<project>] · /todo cancel|up <id> · /todo pause|resume <project>",
     summary: "per-project todo queues: list, cancel, move up, pause, resume",
     run: ({ deps, args }) => ({ text: todoCommand(args.trim(), deps.todo) }),
+  },
+  {
+    name: "updates",
+    aliases: ["update"],
+    usage: "/updates · /updates run · /updates apply|rollback <item>",
+    summary: "toolchain updates (SDK, plugins, MCP): status, check now, apply a held one, roll back",
+    run: ({ deps, args }) => ({ text: updatesCommand(args.trim(), deps.updates) }),
   },
   {
     name: "inbox",
@@ -294,6 +304,34 @@ function todoCommand(args: string, todo: TodoQueue | undefined): string {
       if (arg) return TODO_USAGE;
       return todo.list(first);
   }
+}
+
+const UPDATES_USAGE = "Usage: /updates · /updates run · /updates apply <item> · /updates rollback <item>";
+
+/** /updates — read and steer the toolchain updater. Thin: the updater owns every rule. A run or a
+ *  rollback takes minutes, so it starts in the background; the updater sends its own report. */
+function updatesCommand(args: string, updater: CommandDeps["updates"]): string {
+  if (!updater) return "The updater is unavailable on this channel.";
+  const words = args.split(/\s+/).filter(Boolean);
+  const [verb = "", item = ""] = [words[0]?.toLowerCase(), words[1]];
+  const background = (p: Promise<unknown>, what: string) =>
+    void p.catch((e) => console.error(`[updates] ${what} failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`));
+  if (verb === "" && words.length === 0) return updater.status();
+  if (verb === "run" && words.length === 1) {
+    if (updater.running()) return "An update run is already in progress — its report follows when it ends.";
+    background(updater.run({ trigger: "manual" }), "run");
+    return "🔄 Update check started — the report follows when it ends.";
+  }
+  if ((verb === "apply" || verb === "rollback") && item && words.length === 2) {
+    if (verb === "rollback") {
+      background(updater.rollback(item), `rollback ${item}`);
+      return `↩ Rolling back ${item} — the result follows.`;
+    }
+    if (updater.running()) return "An update run is already in progress — try again when its report arrives.";
+    background(updater.run({ trigger: "manual", only: item, force: true }), `apply ${item}`);
+    return `⬆ Applying ${item} (held or not) — the result follows.`;
+  }
+  return UPDATES_USAGE;
 }
 
 function inboxCommand(deps: CommandDeps): CommandResult {

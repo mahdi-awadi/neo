@@ -8,7 +8,7 @@ import { encodeCwd } from "../src/engine/context-policy";
 import type { LoopInput } from "../src/engine/loop-validate";
 import type { RunResult, RunDeps } from "../src/engine/session-runner";
 import type { NeoConfig } from "../src/config";
-import { DEFAULT_MODELS } from "../src/config";
+import { DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 
 const okRun = (sid = "s"): RunResult => ({ ok: true, sessionId: sid, summary: "", costUsd: 0 });
 const defMethods = { listLoopDefs: () => [], saveLoopDef: () => {}, deleteLoopDef: () => {}, listCacheObservations: () => [] };
@@ -179,6 +179,7 @@ function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
       cacheTtlMinObservations: 5,
     },
     models: DEFAULT_MODELS,
+    updates: DEFAULT_UPDATES,
     workers: { company: {}, project: {}, dispatch: {}, loop: { model: "loop-test-model" }, judge: {}, ingress: {}, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },

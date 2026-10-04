@@ -144,7 +144,7 @@ export function mcpSource(d: McpSourceDeps): UpdateSource {
 
   // --- npm-global ---------------------------------------------------------------------------------
   const npmGlobal = async (f: Found, pkg: string, ctx: RunContext): Promise<ItemResult> => {
-    const base: ItemResult = { category: "mcp", id: f.cls.id };
+    const base: Omit<ItemResult, "outcome"> = { category: "mcp", id: f.cls.id };
     const ls = json<{ dependencies?: Record<string, { version?: string }> }>((await exec(["npm", "ls", "-g", pkg, "--json"])).out);
     const from = ls?.dependencies?.[pkg]?.version;
     const to = await npmLatest(pkg);
@@ -169,7 +169,7 @@ export function mcpSource(d: McpSourceDeps): UpdateSource {
   };
   const short = (id: string) => id.replace(/^sha256:/, "").slice(0, 12);
   const docker = async (f: Found, image: string, ctx: RunContext): Promise<ItemResult> => {
-    const base: ItemResult = { category: "mcp", id: f.cls.id };
+    const base: Omit<ItemResult, "outcome"> = { category: "mcp", id: f.cls.id };
     const old = await imageId(image);
     if (!old) return { ...base, outcome: "floating", detail: "image not pulled on this host — docker pulls it at first launch" };
     if (ctx.busy) return { ...base, from: short(old), outcome: "deferred", detail: "a session is running — pulled when the engine is idle" };
@@ -190,7 +190,7 @@ export function mcpSource(d: McpSourceDeps): UpdateSource {
   const cbm = d.codebaseMemory;
   const cbmVersion = async () => /(\d+\.\d+\.\d+)/.exec((await exec([cbm.bin, "--version"])).out)?.[1];
   const codebaseMemory = async (f: Found, ctx: RunContext): Promise<ItemResult> => {
-    const base: ItemResult = { category: "mcp", id: f.cls.id };
+    const base: Omit<ItemResult, "outcome"> = { category: "mcp", id: f.cls.id };
     const from = await cbmVersion();
     const releases = json<Array<{ tag_name: string; body?: string; draft?: boolean; prerelease?: boolean }>>(await sys.fetchText(`https://api.github.com/repos/${cbm.repo}/releases?per_page=30`)) ?? [];
     const stable = releases.filter((r) => !r.draft && !r.prerelease).map((r) => ({ v: r.tag_name.replace(/^v/, ""), tag: r.tag_name, body: r.body ?? "" }));
@@ -244,7 +244,7 @@ export function mcpSource(d: McpSourceDeps): UpdateSource {
   };
 
   const one = async (f: Found, ctx: RunContext): Promise<ItemResult> => {
-    const base: ItemResult = { category: "mcp", id: f.cls.id };
+    const base: Omit<ItemResult, "outcome"> = { category: "mcp", id: f.cls.id };
     switch (f.cls.kind) {
       case "remote":
         return { ...base, outcome: "floating", detail: "remote server — nothing to update here" };
@@ -286,7 +286,7 @@ export function mcpSource(d: McpSourceDeps): UpdateSource {
     },
     async rollback(last) {
       const u = (last.undo ?? {}) as { kind?: string; pkg?: string; version?: string; image?: string; oldId?: string; bak?: string; launch?: McpLaunch };
-      const base: ItemResult = { category: "mcp", id: last.id, from: last.to, to: last.from };
+      const base: Omit<ItemResult, "outcome"> = { category: "mcp", id: last.id, from: last.to, to: last.from };
       if (u.kind === "npm-global" && u.pkg && u.version) {
         const r = await exec(["npm", "i", "-g", `${u.pkg}@${u.version}`], TIMEOUTS.install);
         return r.code === 0 ? { ...base, outcome: "rolled_back", detail: `${u.version} reinstalled` } : { ...base, outcome: "failed", detail: (r.err || r.out).trim().slice(-300) };

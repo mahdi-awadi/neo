@@ -20,7 +20,7 @@ import { handleMessage, dispatchDepsFrom } from "../engine/pipeline";
 import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply, answerDecision } from "../engine/reply-routing";
-import { handleCommand, selectProject, killProject, telegramCommands, type SelectableProject, type TelegramCommand } from "../engine/commands";
+import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
@@ -169,7 +169,7 @@ export function startTelegram(
   gatewaySendUrl?: string,
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"] },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
 ): Bot {
@@ -513,6 +513,7 @@ export function startTelegram(
       cfg,
       windowTokensByModel: cfg.contextPolicy.windowTokensByModel,
       todo: reload?.todo,
+      updates: reload?.updates,
     });
     if (command !== null) {
       if (command.select?.length) {

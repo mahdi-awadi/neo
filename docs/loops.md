@@ -158,3 +158,12 @@ nightly **docs-sweep** per active project · **error-sweep** over a project's lo
 loop that runs until green before a board task is marked done.
 
 This is the design backbone for the scheduler when we build the company engine.
+
+## Not everything scheduled is a loop
+
+A loop's action is an AI worker. A **fixed procedure** with no judgment in it must not depend on
+one, so it is an engine job on the same trigger code instead. The first one is the **toolchain
+updater** (ADR-0009, `src/engine/updater.ts`): an `interval` trigger (`updates.everyMs`, default
+24 h) checked on the daemon heartbeat with the loop runtime's own `isDue`. It uses no worker and
+no budget. Its last run is read from the ledger. It is steered with `/updates`, not `/loop`. See
+`docs/CONFIG.md` → "Toolchain updates".

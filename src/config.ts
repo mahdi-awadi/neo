@@ -6,6 +6,7 @@ import type { Provider } from "./types";
 import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./engine/liveness";
 import { CLAUDE_TIER_MODELS } from "./engine/model-resolver";
+import type { UpdatesCfg } from "./engine/updater";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
@@ -213,7 +214,27 @@ export interface NeoConfig {
   /** Memory system (Phase 2): scopes + ratio caps + dream-loop budgets. Default `scopes: []` — a
    *  total no-op until the operator opts a folder in. */
   memory: MemoryCfg;
+  /** The toolchain updater (ADR-0009): schedule, per-category auto-apply, breaking-change hold, and
+   *  where each managed item comes from. Per-key merge over `DEFAULT_UPDATES`. */
+  updates: UpdatesCfg;
 }
+
+/** The shipped updater policy (ADR-0009). OPERATOR CHOICES: check daily, apply what is safe, HOLD a
+ *  release whose notes flag a breaking change until `/updates apply <item>`. The SDK bump only ever
+ *  lands on `baseBranch` after tsc + tests are green; nothing restarts the daemon. */
+export const DEFAULT_UPDATES: UpdatesCfg = {
+  enabled: true,
+  everyMs: 24 * 60 * 60 * 1000,
+  autoApply: { sdk: true, plugins: true, mcp: true },
+  holdBreaking: true,
+  // A deferred item (a session was running) is retried this soon once the engine is idle.
+  retryDeferredMs: 30 * 60 * 1000,
+  baseBranch: "master",
+  verifyTimeoutMs: 60_000,
+  // The one npm-global MCP server Neo launches (dispatch.ts PLAYWRIGHT_MCP).
+  npmGlobals: { "playwright-mcp": "@playwright/mcp" },
+  codebaseMemory: { repo: "DeusData/codebase-memory-mcp", asset: "codebase-memory-mcp-linux-amd64.tar.gz" },
+};
 
 /** The shipped model pin (ADR-0005). Exported so anything building a `NeoConfig` — `DEFAULTS`
  *  below, and test fixtures — states the pin once instead of copying the ids around. */
@@ -406,5 +427,13 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
     memory: { ...DEFAULTS.memory, ...(fileCfg.memory ?? {}) },
+    updates: {
+      ...DEFAULT_UPDATES,
+      ...(fileCfg.updates ?? {}),
+      // Nested objects merge per key too: turning one category off must not drop the others.
+      autoApply: { ...DEFAULT_UPDATES.autoApply, ...(fileCfg.updates?.autoApply ?? {}) },
+      npmGlobals: { ...DEFAULT_UPDATES.npmGlobals, ...(fileCfg.updates?.npmGlobals ?? {}) },
+      codebaseMemory: { ...DEFAULT_UPDATES.codebaseMemory, ...(fileCfg.updates?.codebaseMemory ?? {}) },
+    },
   };
 }

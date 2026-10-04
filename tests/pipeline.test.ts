@@ -11,7 +11,7 @@ import { createUsageMeter } from "../src/engine/usage";
 import { openTrustStore } from "../src/engine/trust";
 import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter } from "../src/engine/context-policy";
 import type { NeoConfig } from "../src/config";
-import { DEFAULT_MODELS } from "../src/config";
+import { DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
@@ -70,6 +70,7 @@ function cfg(): NeoConfig {
       cacheTtlMinObservations: 5,
     },
     models: DEFAULT_MODELS,
+    updates: DEFAULT_UPDATES,
     workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },

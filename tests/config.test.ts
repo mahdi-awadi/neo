@@ -308,3 +308,23 @@ test("models: alias KEYS from config.json are normalised, so capitalisation cann
   writeFileSync(join(d, "config.json"), JSON.stringify({ models: { aliases: { Opus: "claude-opus-5" } } }));
   expect(loadConfig(d).models.aliases.opus).toBe("claude-opus-5");
 });
+
+test("updates: defaults — daily, auto-apply on for every category, breaking updates held (ADR-0009)", () => {
+  const u = loadConfig(dir()).updates;
+  expect(u.enabled).toBe(true);
+  expect(u.everyMs).toBe(24 * 60 * 60 * 1000);
+  expect(u.autoApply).toEqual({ sdk: true, plugins: true, mcp: true });
+  expect(u.holdBreaking).toBe(true);
+  expect(u.baseBranch).toBe("master");
+  expect(u.npmGlobals["playwright-mcp"]).toBe("@playwright/mcp");
+  expect(u.codebaseMemory.repo).toBe("DeusData/codebase-memory-mcp");
+});
+
+test("updates: config.json merges per key — one autoApply category off keeps the others", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ updates: { everyMs: 1000, autoApply: { mcp: false } } }));
+  const u = loadConfig(d).updates;
+  expect(u.everyMs).toBe(1000);
+  expect(u.autoApply).toEqual({ sdk: true, plugins: true, mcp: false });
+  expect(u.holdBreaking).toBe(true);
+});

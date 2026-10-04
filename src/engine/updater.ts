@@ -99,6 +99,14 @@ export interface UpdatesCfg {
   holdBreaking: boolean;
   /** How soon a run that deferred items (a session was busy) is retried. */
   retryDeferredMs: number;
+  /** The branch a green SDK bump fast-forwards (the repo convention: local `master`). */
+  baseBranch: string;
+  /** How long an MCP server gets to answer `initialize` + `tools/list` after an update. */
+  verifyTimeoutMs: number;
+  /** MCP launch command → the npm package that installs it globally. */
+  npmGlobals: Record<string, string>;
+  /** Where the `codebase-memory-mcp` binary is released: GitHub `owner/name` + this host's asset. */
+  codebaseMemory: { repo: string; asset: string };
 }
 
 export interface Updater {
@@ -153,7 +161,7 @@ export function resultLine(r: ItemResult): string {
 
 /** The operator report for one run: changes and problems first, quiet items counted, not listed. */
 export function renderReport(results: ItemResult[], trigger: string): string {
-  const loud = results.filter((r) => !["up_to_date", "floating", "report_only"].includes(r.outcome));
+  const loud = results.filter((r) => !QUIET.includes(r.outcome));
   const quiet = results.length - loud.length;
   const lines = [`🔄 Update check (${trigger}): ${loud.length ? `${loud.length} to note` : "nothing changed"}, ${quiet} current/unmanaged`];
   for (const r of loud) {
@@ -216,6 +224,13 @@ export function breakingLines(notes: string[]): string[] {
 
 // --- the orchestrator ------------------------------------------------------------------------------
 
+/** Quiet outcomes never need a word; anything else is news unless the item already ended the same way. */
+const QUIET: readonly UpdateOutcome[] = ["up_to_date", "floating", "report_only"];
+function isNews(r: ItemResult, prev: ItemResult | undefined): boolean {
+  if (QUIET.includes(r.outcome)) return false;
+  return !prev || prev.outcome !== r.outcome || prev.to !== r.to;
+}
+
 export function createUpdater(d: UpdaterDeps): Updater {
   const now = d.now ?? (() => Date.now());
   let inFlight = false;
@@ -248,6 +263,8 @@ export function createUpdater(d: UpdaterDeps): Updater {
         }
       }
       const at = now();
+      // Read BEFORE this run's results are recorded: what the operator was last told per item.
+      const before = new Map(all.map((r) => [r.id, lastResult(r.id)]));
       for (const r of all) d.ledger.recordEvent(RESULT_EVENT, { at, data: { ...r } });
       d.ledger.recordEvent(RUN_EVENT, {
         at,
@@ -259,7 +276,9 @@ export function createUpdater(d: UpdaterDeps): Updater {
         return text;
       }
       const text = renderReport(all, opts.only ? `apply ${opts.only}` : opts.trigger);
-      d.report(text);
+      // A scheduled run speaks only when something is NEW: the same hold or the same failure every
+      // day is noise in the unmuted channel. `/updates` still shows it; a manual run always reports.
+      if (opts.trigger === "manual" || all.some((r) => isNews(r, before.get(r.id)))) d.report(text);
       return text;
     } finally {
       inFlight = false;

@@ -9,6 +9,7 @@ import type { SessionStore } from "../engine/web-session";
 import type { UsageMeter } from "../engine/usage";
 import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
+import type { CommandDeps } from "../engine/commands";
 import { runCompanyBrief } from "../engine/ingress";
 import { draftInboxReply, sendInboxReply } from "../engine/inbox-actions";
 import { saveInbound } from "../engine/files";
@@ -36,6 +37,8 @@ export interface WebAppDeps {
   gatewaySendUrl?: string;
   /** Graceful reload trigger (daemon-injected drain-then-exit) — enables /reload on the web too. */
   requestReload?: () => void;
+  /** The toolchain updater (for /updates, ADR-0009). */
+  updates?: CommandDeps["updates"];
   /** Operator-channel broadcast bus — mirror this surface to/from Telegram (see operator-bus.ts). */
   bus?: OperatorBus;
 }
@@ -46,7 +49,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates });
 
   function sessionUser(req: Request): number | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));

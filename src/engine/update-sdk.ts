@@ -68,7 +68,7 @@ export function sdkSource(d: SdkSourceDeps): UpdateSource {
 
   /** Bump the pin from → to on a branch, gate on tsc + tests, fast-forward the base branch. */
   const bump = async (from: string, to: string, why: string): Promise<ItemResult> => {
-    const base: ItemResult = { category: "sdk", id: SDK_PACKAGE, from, to };
+    const base: Omit<ItemResult, "outcome"> = { category: "sdk", id: SDK_PACKAGE, from, to };
     const branch = `chore/agent-sdk-${to}`;
     const wt = `${repo}-wt-sdk-${to}`;
     // A crash may have left either behind; start clean (errors here just mean "nothing to clean").
@@ -127,7 +127,7 @@ export function sdkSource(d: SdkSourceDeps): UpdateSource {
       if (ctx.only && ctx.only !== SDK_PACKAGE && ctx.only !== "sdk") return [];
       const from = await currentPin();
       const to = await latestVersion();
-      const base: ItemResult = { category: "sdk", id: SDK_PACKAGE, from, to };
+      const base: Omit<ItemResult, "outcome"> = { category: "sdk", id: SDK_PACKAGE, from, to };
       if (!from || !to) return [{ ...base, outcome: "failed", detail: !from ? `no exact pin for ${SDK_PACKAGE} on ${baseBranch}` : "npm registry unreachable" }];
       if (compareVersions(to, from) <= 0) return [{ ...base, to: undefined, outcome: "up_to_date" }];
       const last = ctx.lastResult(SDK_PACKAGE);

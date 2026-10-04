@@ -28,6 +28,7 @@ import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
 import { makeLoopReply } from "./engine/loop-mirror";
 import { createTodoQueue } from "./engine/todo-queue";
+import { createEngineUpdater, registryBusy } from "./engine/update-engine";
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
 // wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
@@ -61,6 +62,7 @@ async function main(): Promise<void> {
   // heartbeat tick releases them in order once the operator channel registers its launcher.
   const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure });
   const cutTodos = todo.recover({ now: Date.now() });
+  console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
   console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
   // operator conversation mirrors across both surfaces (engine/operator-bus.ts).
@@ -126,6 +128,28 @@ async function main(): Promise<void> {
     }).catch(() => {});
   };
 
+  // The toolchain updater (ADR-0009): a deterministic engine job, not a loop. It never restarts the
+  // daemon — an SDK bump lands on master behind green tests and waits for the operator's restart.
+  // Plugin/MCP changes wait until no session is running (they replace files a session may read).
+  const updater = createEngineUpdater({
+    cfg: () => cfg,
+    ledger,
+    busy: () => registryBusy(registry),
+    report: (text) => {
+      console.log(`[updates] ${text}`);
+      alertOperator(text); // job outcome → the Decisions channel (or the DM if unset)
+    },
+    repo: process.cwd(),
+  });
+  const runScheduledUpdate = (): void => {
+    if (!updater.due(Date.now())) return;
+    void updater.run({ trigger: "schedule" }).catch((e) => {
+      const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      console.error(`[updates] scheduled run failed: ${msg}`);
+      alertOperator(`⚠️ toolchain update run failed: ${e instanceof Error ? e.message : msg}`);
+    });
+  };
+
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);
   console.log("  usage     -> measured from ~/.claude transcripts (/usage); throttling opt-in via caps later");
@@ -177,6 +201,8 @@ async function main(): Promise<void> {
       // Release todo queues a hold, a resume or the restart left waiting (ADR-0008). Completions
       // release their own project at once; this tick is the backstop.
       void todo.pump();
+      // The daily toolchain check (and the retry of items a busy session deferred).
+      runScheduledUpdate();
       sweepStuck(registry, {
         now: Date.now(),
         stuckAfterMs: cfg.stuckAfterMs,
@@ -264,7 +290,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -276,7 +302,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo }, requestReload, updates: updater, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
       cfg.webPort,
       cfg.webHost,
     );

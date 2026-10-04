@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { route } from "../src/engine/provider-router";
 import type { NeoConfig } from "../src/config";
-import { DEFAULT_MODELS } from "../src/config";
+import { DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { Order, Provider } from "../src/types";
 
 function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}): NeoConfig {
@@ -50,6 +50,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     drainWindowMs: 90_000,
     contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
     models: DEFAULT_MODELS,
+    updates: DEFAULT_UPDATES,
     workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },

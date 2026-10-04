@@ -239,6 +239,41 @@ doesn't know yet). It is threaded into every gate that measures context: `dispat
 re-measurement — so a configured override changes gate verdicts, not just the number shown for
 `/status` ctx%.
 
+## Toolchain updates (`updates`) — ADR-0009
+
+Neo keeps its own toolchain current: the worker Agent SDK pin, the Claude Code plugins, and the MCP
+servers workers launch. It is a deterministic engine job, not a loop (no AI worker, no budget). The
+daemon checks on its heartbeat whether a run is due. **It never restarts the daemon.** The ledger
+holds every result (`update_result`, `update_run` events), so a restart neither skips nor repeats a
+day.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `updates.enabled` | `true` | Run the scheduled check. `/updates run` works either way. |
+| `updates.everyMs` | `86400000` (24 h) | Interval between scheduled checks. |
+| `updates.autoApply` | `{ "sdk": true, "plugins": true, "mcp": true }` | Per category: apply what is newer, or only report it as `available`. Merged per key. |
+| `updates.holdBreaking` | `true` | A release whose notes say breaking / incompatible / migration / rebuild / removed is **held** until `/updates apply <item>`. |
+| `updates.retryDeferredMs` | `1800000` (30 min) | Plugin and MCP changes wait while a session is running (`deferred`). The retry runs this soon after, once no session runs. |
+| `updates.baseBranch` | `"master"` | The branch a green SDK bump fast-forwards (local only, never pushed). |
+| `updates.verifyTimeoutMs` | `60000` | Time an updated MCP server gets to answer `initialize` + `tools/list`. A failed probe rolls it back. |
+| `updates.npmGlobals` | `{ "playwright-mcp": "@playwright/mcp" }` | MCP launch command → the global npm package that installs it. Merged per key. |
+| `updates.codebaseMemory` | `{ "repo": "DeusData/codebase-memory-mcp", "asset": "codebase-memory-mcp-linux-amd64.tar.gz" }` | Where the `codebase-memory-mcp` binary (`CODEBASE_MEMORY_BIN`) is released. The download is checked against the release `checksums.txt`; the old binary is kept as `<bin>.bak`. |
+
+What each category does:
+
+- **sdk** — bumps the exact `@anthropic-ai/claude-agent-sdk` pin on a branch in its own git worktree,
+  runs `bunx tsc --noEmit` and `bun test`, and fast-forwards `baseBranch` only when both are green.
+  The live checkout and its `node_modules` are not touched: run `bun install` at the restart.
+- **plugins** — `claude plugin update` for each enabled user-scope plugin, then validates it. A
+  failed check restores the old entry in `installed_plugins.json`.
+- **mcp** — applies only what Neo owns: npm-global servers, the codebase-memory binary, and untagged
+  docker images. A floating `npx` server or a remote server resolves at launch. A version pinned in
+  another project's tracked `.mcp.json` is **report only** (change it in that project).
+
+A scheduled run reports to the Decisions channel only when something is new. The same hold every
+day stays quiet; `/updates` still shows it. Commands: `/updates` (status) · `/updates run` (check
+now) · `/updates apply <item>` (apply one item, held or not) · `/updates rollback <item>`.
+
 ## Memory system (`memory`) — Phase 2: store / inject / recall
 
 Per-project long-term memory: a frozen ground-truth snapshot injected at worker start, a `memory`

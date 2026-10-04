@@ -11,6 +11,7 @@ import {
   selectProject as engineSelectProject,
   killProject as engineKillProject,
   type SelectableProject,
+  type CommandDeps,
 } from "./commands";
 import {
   handleLoop,
@@ -84,7 +85,7 @@ export interface WebChannel {
   _testSendFile(path: string, caption?: string): string;
 }
 
-export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus }): WebChannel {
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"] }): WebChannel {
   const events: WebEvent[] = [];
   const listeners = new Set<(e: WebEvent) => void>();
   const pending = new Map<string, (d: "allow" | "deny") => void>();
@@ -158,6 +159,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         trust: opts.engine.trust,
         requestReload: opts.requestReload,
+        updates: opts.updates,
         cfg: opts.engine.cfg,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
         todo: opts.engine.todo,

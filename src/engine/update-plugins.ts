@@ -91,7 +91,7 @@ export function pluginsSource(d: PluginsSourceDeps): UpdateSource {
   };
 
   const updateOne = async (p: ListedPlugin, ctx: RunContext): Promise<ItemResult> => {
-    const base: ItemResult = { category: "plugins", id: p.id, from: p.version };
+    const base: Omit<ItemResult, "outcome"> = { category: "plugins", id: p.id, from: p.version };
     const old = entryOf(p.id);
     const r = await claude(["update", p.id, "--json"], TIMEOUTS.update);
     const res = lastJson<{ outcome?: string; updateOutcome?: string; newVersion?: string; message?: string }>(r.out);
@@ -145,7 +145,7 @@ export function pluginsSource(d: PluginsSourceDeps): UpdateSource {
     },
     async rollback(last) {
       const undo = last.undo as { entry?: PluginEntry } | undefined;
-      const base: ItemResult = { category: "plugins", id: last.id, from: last.to, to: last.from };
+      const base: Omit<ItemResult, "outcome"> = { category: "plugins", id: last.id, from: last.to, to: last.from };
       if (!undo?.entry) return { ...base, outcome: "failed", detail: "no rollback point recorded" };
       const why = restore(last.id, undo.entry);
       if (why) return { ...base, outcome: "failed", detail: why };

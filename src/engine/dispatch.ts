@@ -1027,6 +1027,10 @@ export async function raiseOperatorDecision(
 /** Google Stitch MCP server (HTTP transport) — design generation for operator workers. */
 export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
 
+/** The Playwright MCP launch every operator worker gets — one definition, also read by the toolchain
+ *  updater (ADR-0009) so the server it verifies after an update is the one workers start. */
+export const PLAYWRIGHT_MCP = { command: "playwright-mcp", args: ["--headless", "--isolated"] };
+
 /** Build the project's in-process MCP tools: `send_file` always; `dispatch` only for the company.
  *  When `opts.stitch` is set AND a `opts.stitchKey` is configured, the operator's Stitch HTTP MCP
  *  server is attached too. Stitch is OFF by default so the customer/ingress path never gets it. */
@@ -1272,12 +1276,7 @@ export function neoMcpServers(
   // all operator projects. Lazy — the browser only launches when a tool is actually called, so the
   // per-worker cost is just a lightweight stdio process. Never attached on the customer/ingress path.
   if (opts.playwright) {
-    servers.playwright = {
-      type: "stdio",
-      command: "playwright-mcp",
-      args: ["--headless", "--isolated"],
-      env: {},
-    };
+    servers.playwright = { type: "stdio", ...PLAYWRIGHT_MCP, env: {} };
   }
   return servers;
 }
