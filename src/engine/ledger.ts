@@ -140,7 +140,49 @@ export interface Ledger {
   /** Dispatches that recorded `dispatch_start` at or after `since` but never `dispatch_end` — the
    *  daemon died or was reloaded during them. Oldest first. */
   unfinishedDispatches(since: number): Array<{ orderId: string; folder?: string; project?: string; at: number }>;
+  /** Todo queue (ADR-0008): add one todo at the END of its project's queue. */
+  addTodo(rec: NewTodo, at?: number): TodoRow;
+  todoById(id: number): TodoRow | undefined;
+  /** The todo a dispatch order belongs to (its run's end releases the queue). */
+  todoByOrder(orderId: string): TodoRow | undefined;
+  /** Todos filtered by folder and/or status. Queued ones come in queue order; others newest first.
+   *  `limit` caps the result. */
+  listTodos(opts: { folder?: string; statuses?: TodoStatus[]; limit?: number }): TodoRow[];
+  updateTodo(id: number, patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt">>): void;
+  /** Move a queued todo to a 1-based position among its project's queued todos (clamped). */
+  moveTodo(id: number, position: number): void;
+  /** Folders that have at least one queued todo, oldest queue head first. */
+  queuedTodoFolders(): string[];
+  /** Pause (`reason`) or resume (`null`) a project's queue. */
+  setTodoPaused(folder: string, reason: string | null, at?: number): void;
+  todoPaused(folder: string): { reason: string; at: number } | undefined;
 }
+
+export type TodoStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/** A brief handed to the todo queue. `createdBy` follows the work class: an operator turn → operator. */
+export interface NewTodo {
+  project: string;
+  folder: string;
+  brief: string;
+  team?: "frontend-backend";
+  workClass: "interactive" | "background";
+  createdBy: "operator" | "company";
+}
+
+export interface TodoRow extends NewTodo {
+  id: number;
+  status: TodoStatus;
+  position: number;
+  createdAt: number;
+  orderId?: string;
+  result?: string;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/** Finished (done/failed/cancelled) todos kept as history; queued and running ones are never pruned. */
+export const TODOS_KEEP = 1_000;
 
 /** One queued final dispatch result for the dispatcher (the company). */
 export interface DispatcherReport {
@@ -333,6 +375,34 @@ export function openLedger(
      )`,
   );
   db.run(`CREATE INDEX IF NOT EXISTS idx_dispatcher_inbox_pending ON dispatcher_inbox (delivered_at, id)`);
+
+  // Todo queue (ADR-0008): one row per dispatched brief, per project (keyed by folder). `position`
+  // orders the queued rows of one folder; it is renumbered on every move.
+  db.run(
+    `CREATE TABLE IF NOT EXISTS project_todos (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       project TEXT NOT NULL,
+       folder TEXT NOT NULL,
+       brief TEXT NOT NULL,
+       team TEXT,
+       work_class TEXT NOT NULL,
+       created_by TEXT NOT NULL,
+       created_at INTEGER NOT NULL,
+       status TEXT NOT NULL,
+       position INTEGER NOT NULL,
+       order_id TEXT,
+       result TEXT,
+       started_at INTEGER,
+       ended_at INTEGER
+     )`,
+  );
+  db.run(`CREATE INDEX IF NOT EXISTS idx_project_todos_folder ON project_todos (folder, status, position)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_project_todos_order ON project_todos (order_id)`);
+  db.run(`CREATE TABLE IF NOT EXISTS todo_paused (folder TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL)`);
+  const todoById = (id: number): TodoRow | undefined => {
+    const r = db.query(`SELECT * FROM project_todos WHERE id = ?`).get(id) as TodoDbRow | null;
+    return r ? mapTodoRow(r) : undefined;
+  };
 
   return {
     recordOrder(o) {
@@ -716,6 +786,91 @@ export function openLedger(
         return { orderId: r.order_id, folder: r.folder ?? undefined, project, at: r.at };
       });
     },
+    addTodo(rec, at = Date.now()) {
+      const { next } = db
+        .query(`SELECT COALESCE(MAX(position), 0) + 1 AS next FROM project_todos WHERE folder = ? AND status = 'queued'`)
+        .get(rec.folder) as { next: number };
+      const r = db
+        .query(
+          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?) RETURNING id`,
+        )
+        .get(rec.project, rec.folder, rec.brief, rec.team ?? null, rec.workClass, rec.createdBy, at, next) as { id: number };
+      return todoById(r.id)!;
+    },
+    todoById,
+    todoByOrder(orderId) {
+      const r = db.query(`SELECT * FROM project_todos WHERE order_id = ? ORDER BY id DESC LIMIT 1`).get(orderId) as TodoDbRow | null;
+      return r ? mapTodoRow(r) : undefined;
+    },
+    listTodos(opts) {
+      const where: string[] = [];
+      const params: Array<string | number> = [];
+      if (opts.folder) {
+        where.push("folder = ?");
+        params.push(opts.folder);
+      }
+      if (opts.statuses?.length) {
+        where.push(`status IN (${opts.statuses.map(() => "?").join(", ")})`);
+        params.push(...opts.statuses);
+      }
+      params.push(opts.limit ?? -1);
+      const rows = db
+        .query(
+          `SELECT * FROM project_todos ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+           ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+                    CASE WHEN status = 'queued' THEN position END ASC,
+                    COALESCE(ended_at, created_at) DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(...params) as TodoDbRow[];
+      return rows.map(mapTodoRow);
+    },
+    updateTodo(id, patch) {
+      const cols: Record<string, string> = { status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at" };
+      const sets = Object.entries(patch).filter(([k, v]) => k in cols && v !== undefined);
+      if (sets.length === 0) return;
+      db.query(`UPDATE project_todos SET ${sets.map(([k]) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`).run(
+        ...sets.map(([, v]) => v as string | number),
+        id,
+      );
+      if (patch.status === "done" || patch.status === "failed" || patch.status === "cancelled") {
+        db.query(
+          `DELETE FROM project_todos WHERE status IN ('done','failed','cancelled') AND id NOT IN
+             (SELECT id FROM project_todos WHERE status IN ('done','failed','cancelled') ORDER BY id DESC LIMIT ?)`,
+        ).run(TODOS_KEEP);
+      }
+    },
+    moveTodo(id, position) {
+      const t = todoById(id);
+      if (!t || t.status !== "queued") return;
+      const ids = (
+        db.query(`SELECT id FROM project_todos WHERE folder = ? AND status = 'queued' ORDER BY position, id`).all(t.folder) as Array<{ id: number }>
+      )
+        .map((r) => r.id)
+        .filter((x) => x !== id);
+      ids.splice(Math.max(0, Math.min(ids.length, position - 1)), 0, id);
+      const q = db.query(`UPDATE project_todos SET position = ? WHERE id = ?`);
+      db.transaction(() => ids.forEach((x, i) => q.run(i + 1, x)))();
+    },
+    queuedTodoFolders() {
+      return (
+        db
+          .query(`SELECT folder, MIN(id) AS first FROM project_todos WHERE status = 'queued' GROUP BY folder ORDER BY first`)
+          .all() as Array<{ folder: string }>
+      ).map((r) => r.folder);
+    },
+    setTodoPaused(folder, reason, at = Date.now()) {
+      if (reason === null) db.query(`DELETE FROM todo_paused WHERE folder = ?`).run(folder);
+      else
+        db.query(
+          `INSERT INTO todo_paused (folder, reason, at) VALUES (?, ?, ?)
+           ON CONFLICT(folder) DO UPDATE SET reason = excluded.reason, at = excluded.at`,
+        ).run(folder, reason, at);
+    },
+    todoPaused(folder) {
+      return (db.query(`SELECT reason, at FROM todo_paused WHERE folder = ?`).get(folder) as { reason: string; at: number } | null) ?? undefined;
+    },
   };
 
   /** Amortised retention for the low-volume decisions queue: only ever drop CLOSED
@@ -729,6 +884,43 @@ export function openLedger(
        )`,
     ).run(decisionsKeep);
   }
+}
+
+/** The raw project_todos row shape as stored in SQLite. */
+interface TodoDbRow {
+  id: number;
+  project: string;
+  folder: string;
+  brief: string;
+  team: string | null;
+  work_class: string;
+  created_by: string;
+  created_at: number;
+  status: string;
+  position: number;
+  order_id: string | null;
+  result: string | null;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+function mapTodoRow(r: TodoDbRow): TodoRow {
+  return {
+    id: r.id,
+    project: r.project,
+    folder: r.folder,
+    brief: r.brief,
+    team: r.team === "frontend-backend" ? "frontend-backend" : undefined,
+    workClass: r.work_class === "interactive" ? "interactive" : "background",
+    createdBy: r.created_by === "operator" ? "operator" : "company",
+    createdAt: r.created_at,
+    status: r.status as TodoStatus,
+    position: r.position,
+    orderId: r.order_id ?? undefined,
+    result: r.result ?? undefined,
+    startedAt: r.started_at ?? undefined,
+    endedAt: r.ended_at ?? undefined,
+  };
 }
 
 /** The raw decisions row shape as stored in SQLite (snake_case, nullable columns). */

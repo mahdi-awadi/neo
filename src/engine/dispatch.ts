@@ -277,6 +277,26 @@ export function briefWithProjectDocs(task: string): string {
   );
 }
 
+/** How the todo queue (ADR-0008) follows one dispatch. All optional; absent → today's behaviour. */
+export interface DispatchHooks {
+  /** The brief was accepted: `run` = a fresh dispatch run started (its end calls `onEnd`), `delivered`
+   *  = pushed into an already-live session (no end the engine can observe). Called synchronously,
+   *  before dispatchToProject's first await, so the project reads busy at once. */
+  onLaunched?: (orderId: string, mode: "run" | "delivered") => void;
+  /** The brief was NOT accepted (the same reason recorded on `dispatch_refused`). */
+  onRefused?: (reason: string) => void;
+  /** Extra line for the dispatcher's final result (e.g. what the queue does next). `ok` is false
+   *  for any bad end: failure, stall abort, or a reload cut. */
+  resultNote?: (ok: boolean) => string | undefined;
+  /** The run is over and its result has reached the operator and the dispatcher inbox. */
+  onEnd?: (end: { orderId: string; ok: boolean; summary: string }) => void | Promise<void>;
+  /** Skip the "→ dispatching to …" line (the queue sends its own start line). */
+  quietStart?: boolean;
+}
+
+/** dispatchToProject's options (test seams + per-call choices). */
+export type DispatchOpts = NonNullable<Parameters<typeof dispatchToProject>[4]>;
+
 /**
  * Open `project` as a tracked Neo sub-project, run `task` to completion (single-shot), streaming
  * its output to the operator tagged with the project name and escalating risky tools to them, then
@@ -311,9 +331,12 @@ export async function dispatchToProject(
      *  dispatch the company makes while servicing an operator message inherits `interactive` and is
      *  never held by the interactive reserve. Omitted ⇒ DEFAULT_WORK_CLASS (background). */
     workClass?: WorkClass;
+    /** The todo queue's view of this dispatch (ADR-0008). */
+    hooks?: DispatchHooks;
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
+  const hooks = opts.hooks ?? {};
   const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
   // Worker-profile view (model/effort/skills/env by path) — absent deps.workers/workerEnv means
   // every profileDeps() call below is a no-op (empty profile ?? {}), preserving today's behavior.
@@ -335,16 +358,19 @@ export async function dispatchToProject(
       : undefined;
   if (deps.lifecycle?.draining()) {
     deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "draining" } });
+    hooks.onRefused?.("draining");
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
   }
   // The API is throttling us — starting another worker now just earns another 429.
   if (deps.cooldown?.activeAt(now())) {
     deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "cooldown" } });
+    hooks.onRefused?.("cooldown");
     return apiHoldMessage(deps.cooldown.remainingMs(now()));
   }
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) {
     deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "not_found" } });
+    hooks.onRefused?.("not_found");
     return `No project or desk named "${project}" was found — check the name.`;
   }
   // The interactive reserve caps BACKGROUND work only, and a dispatch's class follows the trigger
@@ -354,6 +380,7 @@ export async function dispatchToProject(
   // "not found" while over budget, not a hold that hides the real error.
   if (heldByReserve(workClass, deps.meter, now())) {
     deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "budget" } });
+    hooks.onRefused?.("budget");
     return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
   }
 
@@ -401,6 +428,7 @@ export async function dispatchToProject(
     // the brief without a word — the 2026-10-04 lost-brief bug. Refuse it out loud instead.
     if (control?.followUp && control.closed?.() === true) {
       deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "closing", state } });
+      hooks.onRefused?.("closing");
       return (
         `${name} is finishing its current run (its session is closing) — I did NOT queue this brief, so ` +
         `nothing was lost. Retry in a moment; it will start a fresh run once the current one has ended.`
@@ -415,6 +443,7 @@ export async function dispatchToProject(
         : `its output streams to the operator as ${name}. It is a session the operator opened, so its result is NOT ` +
           `sent back to you automatically — check it with \`sessions\` or ask the operator.`;
       control.followUp(order.task);
+      hooks.onLaunched?.(order.id, "delivered");
       deps.registry.touch(existing.id, now());
       // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
       // alone, since that one is still suspending the worker mid-tool.
@@ -440,6 +469,7 @@ export async function dispatchToProject(
     // still preparing it (ensureIndexed on a big repo takes minutes) — `stateOf` calls that
     // `starting`. Say which it is instead of implying the project is broken.
     deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control", state } });
+    hooks.onRefused?.("stale_running_no_control");
     return (
       `${name} is ${state} — ${status} — and has no live handle to queue behind yet` +
       (state === "starting"
@@ -458,7 +488,8 @@ export async function dispatchToProject(
   // continuation below, after ensureIndexed + the context gate. Label that gap so the gap explains
   // itself in `sessions`/`/list` instead of showing as an unexplained handle-less "running".
   deps.registry.noteActivity(session.id, PREPARING_LABEL, now());
-  await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
+  hooks.onLaunched?.(order.id, "run");
+  if (!hooks.quietStart) await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
 
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
   // versa) is rejected outright, and before the ownership check that read as an API failure.
@@ -820,7 +851,14 @@ export async function dispatchToProject(
         // workClass + costUsd together are what lets the meter report interactive vs background spend.
         data: { project: name, workClass, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
       });
-      deps.ledger.queueDispatcherReport(name, dispatchResultText({ project: name, ok: result.ok, summary, stop }), now());
+      let note: string | undefined;
+      try {
+        note = hooks.resultNote?.(result.ok && !timedOut && !reloading);
+      } catch {
+        note = undefined; // the queue's note is extra — the result itself must still be queued
+      }
+      const report = dispatchResultText({ project: name, ok: result.ok, summary, stop });
+      deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now());
     } catch {
       // observer only — never surfaces into the worker path
     }
@@ -852,6 +890,12 @@ export async function dispatchToProject(
     // whatever cannot be delivered yet stays queued for the next flush.
     try {
       await flushDispatcherInbox(deps.ledger, dispatcher, now());
+    } catch {
+      // observer only
+    }
+    // Last: the result is out, so the todo queue may release the project's next brief (ADR-0008).
+    try {
+      await hooks.onEnd?.({ orderId: order.id, ok: result.ok && !timedOut && !reloading, summary });
     } catch {
       // observer only
     }

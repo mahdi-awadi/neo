@@ -134,6 +134,42 @@ Where an interrupted dispatch stopped: the folder's last commit, the worker's la
 last activity. Every abnormal final result carries one, so the dispatcher can resume.
 _Avoid_: checkpoint
 
+**Todo**:
+One dispatched brief the engine tracks from hand-over to end: its project, brief, who it came from,
+and its status — `queued`, `running`, then `done`, `failed` or `cancelled`. Every brief the company
+dispatches is a todo, whether it starts at once or waits. Known by its number (`#12`).
+_Avoid_: task, job, ticket, item
+
+**Todo queue**:
+A project's ordered list of todos waiting to run. Durable: it survives a reload. A project runs one
+todo at a time; the rest wait in order and are never merged or dropped. The operator and the company
+can reorder, cancel, pause and resume it.
+_Avoid_: backlog, task list, session queue
+
+**Busy project**:
+A project that cannot take a new brief now: a todo of its is running, its session is preparing or
+closing, or its session is in a turn or has a follow-up waiting. A brief for a busy project is
+queued, never pushed into the running session.
+_Avoid_: active, running (unqualified)
+
+**Release**:
+The engine starting a project's next queued todo. It happens when the current todo ends — after its
+result has reached the operator and the dispatcher — and on the engine's regular tick, for queues a
+hold or a restart left waiting. Never while the engine is draining, cooling down, or held by the
+interactive reserve.
+_Avoid_: dequeue, pop, next
+
+**Failure policy**:
+What a project's todo queue does when a todo ends badly (failed, stall-aborted, killed, cut short by
+a reload or restart): `continue` with the next todo and report the failure, or `pause` the queue
+until someone resumes it. Never a silent start of the next todo.
+_Avoid_: retry policy, on-error
+
+**Paused queue**:
+A todo queue that is not released. Its todos stay queued, and new briefs for the project join the
+end of it, even when the project is free.
+_Avoid_: stopped, frozen, disabled
+
 **Loop**:
 A trigger, a repeated action, and a goal that ends it. Always background work.
 _Avoid_: cron job, automation, schedule
@@ -220,8 +256,10 @@ worker look dead.
 _Avoid_: last activity, last reply
 
 **Turn**:
-One brief handed to a session and worked to its conclusion. A session works one turn at a time;
-further briefs queue behind the one in flight.
+One brief handed to a session and worked to its conclusion. A session works one turn at a time.
+An operator's follow-up waits inside the session behind the turn in flight. A dispatched brief for
+a busy project does not: it waits in the project's **todo queue** until the current task is
+**settled**.
 _Avoid_: request, job, run
 
 **In-turn / between-turns**:
