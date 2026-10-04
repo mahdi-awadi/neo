@@ -5,6 +5,7 @@ import { test, expect } from "bun:test";
 import {
   API_RETRY_DELAYS_MS,
   MAX_API_RETRIES,
+  MAX_RESET_WAIT_MS,
   apiFailureNotice,
   apiHoldMessage,
   apiRetryDelayMs,
@@ -169,4 +170,32 @@ test("only server-side throttles arm the gate — a billing error must not freez
 
 test("the hold message tells the operator how long the engine is pausing", () => {
   expect(apiHoldMessage(45_000)).toContain("45s");
+});
+
+// --- 2026-07-25 issue 6: a near-limit (still allowed) window must never park the worker ------------
+
+test("an allowed_warning long-horizon window is NOT a throttle — a recovered burst falls back to the ladder", () => {
+  const now = 1_700_000_000_000;
+  const rateLimits = [
+    { rateLimitType: "five_hour", status: "allowed_warning", resetsAt: now / 1000 + 5 * 3600 },
+    { rateLimitType: "per_minute", status: "allowed", resetsAt: now / 1000 + 30 },
+  ];
+  const r = resolveApiRetryDelayMs({ attempt: 1, rateLimits, now, rand: () => 0.5 });
+  expect(r.source).toBe("ladder");
+  expect(r.delayMs).toBe(30_000);
+});
+
+test("a window with no status is not treated as rejecting us", () => {
+  const now = 1_700_000_000_000;
+  const rateLimits = [{ resetsAt: now / 1000 + 7 * 24 * 3600 }];
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits, now, rand: () => 0.5 }).source).toBe("ladder");
+});
+
+test("even a genuine rejection never waits longer than the reset-wait cap", () => {
+  const now = 1_700_000_000_000;
+  const rateLimits = [{ rateLimitType: "seven_day", status: "rejected", resetsAt: now / 1000 + 3 * 24 * 3600 }];
+  const r = resolveApiRetryDelayMs({ attempt: 1, rateLimits, now, rand: () => 1 });
+  expect(r.source).toBe("reset");
+  expect(r.delayMs).toBe(MAX_RESET_WAIT_MS);
+  expect(r.resetsAt).toBeUndefined(); // the notice must not promise a resume time days away
 });

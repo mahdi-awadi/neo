@@ -309,7 +309,8 @@ function renderList(
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
   // The chat's focused project (if any) is the one messages currently address; mark it ▶ (one-shot,
-  // reverts after the next message) or 📌 (pinned). With none focused, the company is the target.
+  // reverts after the next message), 💬 (a conversation, lapses when quiet) or 📌 (pinned). With none
+  // focused, the company is the target.
   const focus = registry.getFocus(chatId);
   const activeId = focus?.session.id;
   const select: SelectableProject[] = sessions.map((s) => ({
@@ -321,7 +322,7 @@ function renderList(
   }));
   const text = sessions
     .map((s) => {
-      const star = s.id === activeId ? (focus!.mode === "pinned" ? "📌 " : "▶ ") : "";
+      const star = s.id === activeId ? (focus!.mode === "pinned" ? "📌 " : focus!.mode === "conversation" ? "💬 " : "▶ ") : "";
       const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
       const act = s.status === "running" && s.activity ? ` · ${s.activity.label} ${humanAge(now - s.activity.since)}` : "";
@@ -456,7 +457,7 @@ function renderHelp(): string {
   const lines = [
     "Commands:",
     "/open <folder> <task> — start or resume a project",
-    "(plain chat goes to the company; address a project with /use, then it reverts to the company)",
+    "(plain chat goes to the company; /use a project for one message, or reply to it to keep talking until /company)",
     ...COMMANDS.map((c) => `${c.usage} — ${c.summary}`),
     "/loop [<project> <goal>] — run a verifiable loop (e.g. /loop green)",
   ];

@@ -186,19 +186,26 @@ export async function handleMessage(
   //    decides what to do with the order. A project is addressed EXPLICITLY and ONE-SHOT: a chat's
   //    focus (mode "once") reverts to the company after this one message, so a stray next message
   //    never sticks to a project. An explicit `/pin` (mode "pinned") holds focus across messages.
-  const focus = registry.getFocus(chatId);
+  //    A "conversation" focus (the operator replied into a project, or a project asked them
+  //    something) holds while they keep talking to it, then lapses back to the company.
+  const focus = registry.getFocus(chatId, now());
   const live = focus?.session ?? registry.getDefault();
   if (live && !text.trim().startsWith("/")) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
+    const inConversation = focus?.mode === "conversation";
+    if (inConversation) registry.touchFocus(chatId, now());
+    const switchHint = inConversation ? " · /company to talk to the main agent" : "";
     const control = registry.getControl(live.id);
     if (control && live.status === "running") {
-      // Live worker — the follow-up queues behind the in-flight turn. Report the REAL status, not a
-      // bare "busy": what it's doing, for how long, and how deep the queue is.
+      // Live worker. A Claude worker sees the follow-up at its next step mid-turn; one that can't
+      // steer (Codex) runs it after the in-flight turn. Say which, plus the REAL status, not a bare
+      // "busy": what it's doing, for how long, and how deep the queue is.
       control.followUp(text.trim());
       registry.touch(live.id, now());
       if (oneShot) registry.clearFocus(chatId);
       const queued = control.queued?.() ?? 0;
-      await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSessionStatus(live, now(), { queued })}`);
+      const when = control.steersMidTurn ? "it'll see this at its next step" : "runs after its current turn";
+      await deps.reply(chatId, `↩︎ queued for ${live.name} (${when}) — ${describeSessionStatus(live, now(), { queued })}${switchHint}`);
       return null;
     }
     // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
@@ -212,7 +219,7 @@ export async function handleMessage(
     registry.setStatus(live.id, "running");
     registry.touch(live.id, now());
     if (oneShot) registry.clearFocus(chatId);
-    await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
+    await deps.reply(chatId, `↩︎ resuming ${live.name}…${switchHint}`);
     resuming.add(live.id);
     try {
       const gate = live.sdkSessionId
@@ -338,6 +345,16 @@ function startSession(
     const snap = memorySnapshot(order.folder, deps.cfg.memory);
     if (snap) order = { ...order, task: `${snap}\n\n${order.task}` };
   }
+  // A project that ends its turn asking the operator something holds the chat's next typed messages,
+  // so the answer reaches it instead of the company (2026-07-25 issue 5). Never overrides a /pin,
+  // and the company needs no focus: plain messages already go to it.
+  const noteQuestion = (finalText: string): void => {
+    if (!finalText.trim().endsWith("?")) return;
+    if (registry.getDefault()?.id === registryId) return;
+    const current = registry.getFocus(chatId, now());
+    if (current?.mode === "pinned" && current.session.id !== registryId) return;
+    registry.setFocus(chatId, registryId, "conversation", now());
+  };
   const run = start(
     order,
     {
@@ -365,7 +382,10 @@ function startSession(
       // and push the same brief back into the (still live) session instead of dropping the work.
       onTurnComplete: (result) => {
         const kind = result.apiError;
-        if (!kind) return;
+        if (!kind) {
+          noteQuestion(result.summary);
+          return;
+        }
         deps.cooldown?.note(kind, now()); // hold sibling background work while the storm lasts
         const attempt = apiRetries + 1;
         if (!shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: meter.shouldThrottle() })) {

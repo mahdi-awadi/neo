@@ -44,7 +44,8 @@ export interface ReplyInput {
 export type ReplyResult = { deliver: string } | { clarify: string };
 
 /**
- * Decide (and enact, via one-shot focus) where a reply routes. Side effects are confined to the
+ * Decide (and enact, via conversation focus) where a reply routes. Replying into a project starts a
+ * conversation with it: the operator's next typed messages stay with it until /company or quiet. Side effects are confined to the
  * registry (setFocus, and — for a closed project — re-registering a focused, resume-seeded entry).
  */
 export function routeReply(deps: ReplyRoutingDeps, input: ReplyInput): ReplyResult {
@@ -63,7 +64,7 @@ export function routeReply(deps: ReplyRoutingDeps, input: ReplyInput): ReplyResu
   const open = registry.findByFolder(target.folder);
   if (open && open.status === "running") {
     // Still mid-flight → it remembers what it sent; just focus it, no re-grounding needed.
-    registry.setFocus(input.chatId, open.id, "once");
+    registry.setFocus(input.chatId, open.id, "conversation", now());
     return { deliver: input.text };
   }
 
@@ -87,7 +88,7 @@ export function routeReply(deps: ReplyRoutingDeps, input: ReplyInput): ReplyResu
     if (resumeId) registry.setSdkSessionId(session.id, resumeId);
     id = session.id;
   }
-  registry.setFocus(input.chatId, id, "once");
+  registry.setFocus(input.chatId, id, "conversation", now());
   const deliver = input.replyToText ? repliedContextBrief(input.replyToText, input.text) : input.text;
   return { deliver };
 }

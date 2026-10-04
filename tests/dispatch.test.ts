@@ -143,9 +143,10 @@ test("dispatch to a running folder WITH a live control QUEUES the brief (like an
   );
   d.registry.setStatus(first.id, "running");
   const followUps: string[] = [];
+  const timings: Array<string | undefined> = [];
   // A live worker means a control is attached — dispatch must queue behind its turn, not refuse.
   d.registry.attachControl(first.id, {
-    followUp: (t: string) => void followUps.push(t),
+    followUp: (t: string, timing?: string) => void (followUps.push(t), timings.push(timing)),
     queued: () => 0,
     interrupt: async () => {},
   });
@@ -158,6 +159,7 @@ test("dispatch to a running folder WITH a live control QUEUES the brief (like an
   });
   expect(followUps.length).toBe(1); // the brief was queued into the live session
   expect(followUps[0]).toContain("run docker ps and report");
+  expect(timings[0]).toBe("after-turn"); // a company brief must not steer the operator's in-flight turn
   expect(out.toLowerCase()).toContain("queued");
 });
 

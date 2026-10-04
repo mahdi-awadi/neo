@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-25
 **Scope:** live operator↔adminli Telegram session; "real issues after the last 2–3 updates."
+**Status (2026-10-04):** issues 1, 3, 4, 5 and 6 are fixed (see `docs/HISTORY.md`, "Telegram reliability"). Issues 2 and 7 remain open.
 **Method:** codebase-memory map → targeted source read → systematic-debugging (hypothesis → file:line evidence → confirm/refute). Investigation only; nothing changed, no reload.
 **Commits scrutinised:** `4d90b9e` (apiError-across-turns), `7795049` (api-retry real reset), `08a4267` (reload deadline), `5c4712b` (dispatch queues instead of refusing).
 

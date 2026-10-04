@@ -19,20 +19,17 @@ import { handleMessage } from "../engine/pipeline";
 import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply } from "../engine/reply-routing";
+import { answerTypedApproval, createPendingApprovals } from "../engine/approval-reply";
 import { handleCommand, selectProject, killProject, telegramCommands, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
-import { mdToHtml, projectHashtag } from "../engine/format";
+import { mdToHtml } from "../engine/format";
+import { createChatQueue, logDropped, projectTagPrefix, telegramRetryTransformer } from "./telegram-delivery";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import type { ApiCooldown } from "../engine/api-retry";
 
-/** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
- *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
- *  text — never wrapped in <code>/<pre> — so Telegram auto-links it under parse_mode HTML too. */
-export function projectTagPrefix(project?: string): string {
-  return project ? `${projectHashtag(project)} ` : "";
-}
+export { projectTagPrefix, sendOperatorLine } from "./telegram-delivery";
 
 /** Build the Telegram operator sink (pure — no Bot instance, so it's unit-testable). Lines mirrored
  *  from the OTHER surface (the web console) render in the admin's DM: a `reply` as project-tagged
@@ -80,30 +77,12 @@ async function sendFormatted(
     try {
       const m = await bot.api.sendMessage(chatId, tag + text);
       return m.message_id;
-    } catch {
-      // give up silently — a dropped progress line shouldn't crash the bot
+    } catch (err) {
+      // Flood control and network errors were already retried (telegramRetryTransformer). Never
+      // crash the bot over one line — but never drop it silently either.
+      logDropped((m) => console.error(m), chatId, tag + text, err);
       return undefined;
     }
-  }
-}
-
-/** Post a single line to the operator's chat over the raw Bot API (no grammy Bot instance needed),
- *  project-tagged + HTML-formatted with a plain-text fallback — the same #project style as streamed
- *  worker/dispatch output. Used by the daemon's loop scheduler so scheduled-loop worker output
- *  reaches the operator's Telegram channel, not just daemon stdout. A dropped line never throws. */
-export async function sendOperatorLine(token: string, chatId: number, text: string, project?: string): Promise<void> {
-  const tag = projectTagPrefix(project);
-  const post = (body: string, html: boolean): Promise<Response> =>
-    fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: body, ...(html ? { parse_mode: "HTML" } : {}) }),
-    });
-  try {
-    const r = await post(tag + mdToHtml(text, { tables: "pre" }), true);
-    if (!r.ok) await post(tag + text, false); // Telegram rejected the markup — resend as plain text
-  } catch {
-    // a dropped loop line must never crash the daemon
   }
 }
 
@@ -128,9 +107,13 @@ export function startTelegram(
   bus?: OperatorBus,
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
+  // Every Bot API call waits out flood control (429 retry_after) and retries network failures.
+  bot.api.config.use(telegramRetryTransformer());
+  // Outbound lines to a chat go one at a time, in the order they were produced.
+  const outbox = createChatQueue();
   const allow = new Set(cfg.telegramAllowFrom);
-  // Pending approvals keyed by a per-request token: callback press -> resolver.
-  const pending = new Map<string, (decision: "allow" | "deny") => void>();
+  // Pending approvals keyed by a per-request token, answerable by a button press OR a typed yes/no.
+  const approvals = createPendingApprovals();
   // Remembers which project each sent worker message came from, so replying to a specific
   // message routes the follow-up back to that project (see send() + the reply handling below).
   // Ledger-backed so a mapping survives /reload — a lost route used to misroute the reply to the company.
@@ -140,7 +123,7 @@ export function startTelegram(
   // specific message to route a follow-up into its project (see routeReply). The line itself is
   // a normal message, not a quote-reply.
   async function send(chatId: number, text: string, project?: string): Promise<void> {
-    const messageId = await sendFormatted(bot, chatId, text, project);
+    const messageId = await outbox.run(chatId, () => sendFormatted(bot, chatId, text, project));
     if (messageId !== undefined && project) {
       const session = registry.findByName(project);
       if (session) routes.remember(chatId, messageId, { sessionId: session.id, folder: session.order.folder, project });
@@ -153,7 +136,7 @@ export function startTelegram(
     makeTelegramSink({
       adminId: () => admin.adminId(),
       reply: (cid, text, project) => void send(cid, text, project),
-      plain: (cid, text) => void sendFormatted(bot, cid, text),
+      plain: (cid, text) => void outbox.run(cid, () => sendFormatted(bot, cid, text)),
     }),
   );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
@@ -182,10 +165,13 @@ export function startTelegram(
     },
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
-        const token = crypto.randomUUID();
-        pending.set(token, resolve);
+        const token = approvals.add(cid, reason, resolve);
         const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
-        void bot.api.sendMessage(cid, `⚠️ Approve this action?\n${reason}`, { reply_markup: kb });
+        // Queued behind the worker's earlier lines, so the prompt never lands before its context.
+        void outbox
+          .run(cid, () => bot.api.sendMessage(cid, `⚠️ Approve this action? (tap, or reply yes/no)\n${reason}`, { reply_markup: kb }))
+          .then((m) => approvals.setMessageId(token, m.message_id))
+          .catch((err) => logDropped((m) => console.error(m), cid, `approval prompt: ${reason}`, err));
         // The actionable buttons stay here; the web console just SEES the gate is pending.
         bus?.mirror("telegram", { kind: "notice", text: `⏳ approval pending on Telegram: ${reason}` });
       }),
@@ -204,7 +190,7 @@ export function startTelegram(
     trust,
     // runCompanyBrief replies on the internal CUSTOMER_CHAT id; ignore it and stream to the
     // operator's chat (the web path likewise ignores the cid and notifies its own channel).
-    reply: (_cid, text, project) => void sendFormatted(bot, chatId, text, project),
+    reply: (_cid, text, project) => void outbox.run(chatId, () => sendFormatted(bot, chatId, text, project)),
     askApproval: async () => "deny",
   });
 
@@ -261,6 +247,31 @@ export function startTelegram(
       const view = renderInboxItem(inbox, editId)!;
       void bot.api.sendMessage(chatId, view.text, { reply_markup: inboxItemKeyboard(editId, view.item.status)! });
       return;
+    }
+
+    // A typed yes/no answers a pending Allow/Deny: the worker is parked inside the approval and
+    // can't read follow-ups, so this must not be queued as one. Commands still go through.
+    let approvalReminder: string | undefined;
+    if (!ctx.message.text.trim().startsWith("/")) {
+      const typed = answerTypedApproval(approvals, {
+        chatId,
+        text: ctx.message.text,
+        replyToMessageId: ctx.message.reply_to_message?.message_id,
+      });
+      if (typed.kind === "answered") {
+        const allowed = typed.decision === "allow";
+        bus?.mirror("telegram", { kind: "notice", text: `approval ${typed.decision} on Telegram` });
+        if (typed.approval.messageId !== undefined) {
+          void bot.api.editMessageReplyMarkup(chatId, typed.approval.messageId).catch(() => {}); // drop the buttons
+        }
+        void outbox.run(chatId, () => bot.api.sendMessage(chatId, allowed ? "✅ Allowed." : "⛔ Denied.")).catch(() => {});
+        return;
+      }
+      if (typed.kind === "remind") {
+        void outbox.run(chatId, () => bot.api.sendMessage(chatId, typed.text)).catch(() => {});
+        return;
+      }
+      approvalReminder = typed.reminder;
     }
 
     // Bare /loop → tappable run buttons; /loop <name> starts a background loop (streams progress).
@@ -322,6 +333,7 @@ export function startTelegram(
     // real conversation/orders reach here — commands returned above. Telegram already shows the
     // sent message, so origin "telegram" is excluded from the fan-out.
     bus?.mirror("telegram", { kind: "echo", text: ctx.message.text });
+    if (approvalReminder) void outbox.run(chatId, () => bot.api.sendMessage(chatId, approvalReminder!)).catch(() => {});
     await handleMessage(routing.deliver, chatId, pipelineDeps());
   });
 
@@ -453,10 +465,9 @@ export function startTelegram(
     }
 
     const [kind, token] = ctx.callbackQuery.data.split(":");
-    const resolve = token ? pending.get(token) : undefined;
-    if (resolve) {
-      pending.delete(token);
-      resolve(kind === "a" ? "allow" : "deny");
+    const approval = token ? approvals.take(token) : undefined;
+    if (approval) {
+      approval.resolve(kind === "a" ? "allow" : "deny");
       bus?.mirror("telegram", { kind: "notice", text: `approval ${kind === "a" ? "allow" : "deny"} on Telegram` });
       await ctx.answerCallbackQuery(kind === "a" ? "Allowed" : "Denied");
       await ctx.editMessageReplyMarkup(); // drop the buttons

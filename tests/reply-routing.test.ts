@@ -25,25 +25,25 @@ test("a non-reply message is delivered unchanged and sets no focus (company rout
   const { registry, deps } = fixture();
   const res = routeReply(deps, { chatId: CHAT, text: "just a normal message" });
   expect(res).toEqual({ deliver: "just a normal message" });
-  expect(registry.getFocus(CHAT)).toBeUndefined();
+  expect(registry.getFocus(CHAT, 1000)).toBeUndefined();
 });
 
 test("a reply we can't attribute asks the operator to name it — it does NOT hit the company", () => {
   const { registry, deps } = fixture();
   const res = routeReply(deps, { chatId: CHAT, replyToMessageId: 500, replyToText: "hi", text: "do it" });
   expect(res).toEqual({ clarify: UNRESOLVED_REPLY_MESSAGE });
-  expect(registry.getFocus(CHAT)).toBeUndefined(); // no silent focus/misroute
+  expect(registry.getFocus(CHAT, 1000)).toBeUndefined(); // no silent focus/misroute
 });
 
-test("a reply to a LIVE project's message focuses it once, delivered unchanged (no re-grounding)", () => {
+test("a reply to a LIVE project's message starts a conversation with it, delivered unchanged (no re-grounding)", () => {
   const { registry, routes, deps } = fixture();
   const s = addSession(registry, "/home/acme", "running");
   routes.remember(CHAT, 10, { sessionId: s.id, folder: "/home/acme", project: "acme" });
   const res = routeReply(deps, { chatId: CHAT, replyToMessageId: 10, replyToText: "building X", text: "yes ship it" });
   expect(res).toEqual({ deliver: "yes ship it" });
-  const focus = registry.getFocus(CHAT);
+  const focus = registry.getFocus(CHAT, 1000);
   expect(focus?.session.id).toBe(s.id);
-  expect(focus?.mode).toBe("once");
+  expect(focus?.mode).toBe("conversation"); // later typed answers stay with it (2026-07-25 issue 5)
 });
 
 test("a reply to an IDLE (resumable) project focuses it and prepends the replied-to original", () => {
@@ -52,7 +52,7 @@ test("a reply to an IDLE (resumable) project focuses it and prepends the replied
   routes.remember(CHAT, 11, { sessionId: s.id, folder: "/home/acme", project: "acme" });
   const res = routeReply(deps, { chatId: CHAT, replyToMessageId: 11, replyToText: "I proposed plan A", text: "go with it" });
   expect(res).toEqual({ deliver: repliedContextBrief("I proposed plan A", "go with it") });
-  expect(registry.getFocus(CHAT)?.session.id).toBe(s.id);
+  expect(registry.getFocus(CHAT, 1000)?.session.id).toBe(s.id);
 });
 
 test("a reply to an idle-CLOSED project (gone from the registry) resumes it: registers a focused, seeded entry", () => {
@@ -66,7 +66,7 @@ test("a reply to an idle-CLOSED project (gone from the registry) resumes it: reg
   const res = routeReply(deps, { chatId: CHAT, replyToMessageId: 12, replyToText: "sent the draft", text: "tweak it" });
 
   expect(res).toEqual({ deliver: repliedContextBrief("sent the draft", "tweak it") });
-  const focused = registry.getFocus(CHAT)?.session;
+  const focused = registry.getFocus(CHAT, 1000)?.session;
   expect(focused).toBeTruthy();
   expect(focused!.order.folder).toBe("/home/acme");
   expect(focused!.status).toBe("idle"); // the pipeline's resume branch will pick it up

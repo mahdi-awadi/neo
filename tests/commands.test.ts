@@ -396,3 +396,14 @@ test("/status shows ctx% via the default sessionContext (no signals injected)", 
   const out = handleCommand("/status", 1, d)!; // no `signals` override — must fall back to sessionContext
   expect(out.text).toContain("ctx 0%");
 });
+
+test("/list marks a conversation focus with 💬 and /company ends it", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ folder: "/p/alpha", chatId: 1 }), 1);
+  const d = deps({ registry });
+  registry.setFocus(1, a.id, "conversation");
+  const line = handleCommand("/list", 1, d)!.text.split("\n").find((l) => l.includes("alpha"))!;
+  expect(line).toContain("💬");
+  handleCommand("/company", 1, d);
+  expect(registry.getFocus(1)).toBeUndefined();
+});
