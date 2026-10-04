@@ -733,3 +733,14 @@ path's `denyAllTrust()` has a `noteProject` that never trusts. See the 2026-10-0
 `docs/superpowers/specs/2026-06-20-trust-idle-and-files-design.md` and `trustNewProjects` in
 `docs/CONFIG.md`. Built TDD (new cases in `trust`, `pipeline`, `dispatch`, `ledger` and `config`
 tests). The trust store opens at daemon start, so going live needs a restart (operator-gated).
+
+**Tool-step lines stay off Telegram on every path (2026-10-02).** The flood-control change put the
+`telegramToolSteps` filter inside the session `send()` only. Tool lines reach Telegram through every
+worker `onMessage`, and three paths skipped `send()`: scheduled loops (`sendOperatorLine`), loops
+started from Telegram (`/loop`, the ▶ button: raw `sendMessage`), and company briefs
+(`sendFormatted`). The filter now lives once at the worker-output egress: `sendFormatted` and
+`sendOperatorLine` each take `toolSteps` and default to dropping tool lines. Every call in
+`startTelegram` goes through one `sendWorkerLine` with `cfg.telegramToolSteps`. The scheduled-loop
+mirror still sends tool lines to the web console. The test fixtures also gained the two flood-control
+fields that the base commit left out, which had made `tsc` red. Built TDD (7 new tests). `tsc` clean;
+full suite green (881). Going live needs a daemon restart (operator-gated).
