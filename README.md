@@ -187,7 +187,7 @@ that form too (for example, `/sdk@neo_bot codex`).
 | `/pin <name>` | Keep talking to a project across messages (until `/unpin`). |
 | `/unpin` (`/company`, `/main`) | Return focus to the company / main agent. |
 | `/kill <name>` | Stop a project session. |
-| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). |
+| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). New projects start trusted by default (`trustNewProjects`); `/trust off` is remembered. |
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |

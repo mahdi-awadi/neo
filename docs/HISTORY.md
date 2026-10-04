@@ -662,3 +662,19 @@ no per-run field can replace them. One seam covers every Claude launch path. Re-
 the same probe saw `git push` escalated and denied, also inside a team subagent. See
 `docs/adr/0006-the-governor-runs-as-a-pretooluse-hook-first.md`. Built TDD (17 new tests). `tsc`
 clean; full suite green. Going live needs a daemon restart (operator-gated).
+
+**New projects start trusted (2026-10-02, operator choice).** The operator asked for `/trust` to be
+on by default for new projects. "No row" still means *not trusted*, because changing that would have
+given full auto-approve to every existing project at once. Instead each row in `data/trust.db` is a
+folder Neo has **seen**, with `state` `on` or `off` (schema `user_version` 1). The migration keeps
+legacy rows `on` and, once, records every folder in the ledger's order history (`ledger.folders()`)
+as `off`, so no existing project gains auto-approve. `/trust off` now writes an `off` row instead of
+deleting one, so the choice is remembered. The new `noteProject(folder)` gives a never-seen folder a
+row (`on` when the new `trustNewProjects` config key is set, default `true`) and leaves a seen folder
+alone. `noteProjectStart` calls it at every operator session start (`pipeline.ts` `startSession`,
+`dispatch.ts` `dispatchToProject`) and records a `trust_default_on` ledger event when it trusts a
+folder. The firewall does not move: a `source:"customer"` order never seeds trust, and the customer
+path's `denyAllTrust()` has a `noteProject` that never trusts. See the 2026-10-02 amendment in
+`docs/superpowers/specs/2026-06-20-trust-idle-and-files-design.md` and `trustNewProjects` in
+`docs/CONFIG.md`. Built TDD (new cases in `trust`, `pipeline`, `dispatch`, `ledger` and `config`
+tests). The trust store opens at daemon start, so going live needs a restart (operator-gated).
