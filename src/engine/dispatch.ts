@@ -78,6 +78,8 @@ export interface DispatchDeps {
   providers?: NeoConfig["providers"];
   /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
   workerEnv?: Record<string, string>;
+  /** Connector scopes for dispatched workers (cfg.connectors). Unset = escalate foreign MCP. */
+  connectors?: NeoConfig["connectors"];
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
   lifecycle?: { draining(): boolean };
   /** Shared API-throttle gate (engine/api-retry.ts): while a throttle is fresh, a NEW sub-run is
@@ -214,9 +216,10 @@ export async function dispatchToProject(
     workers: deps.workers ?? ({} as Record<WorkerPathName, WorkerProfile>),
     workerEnv: deps.workerEnv ?? {},
   };
-  const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers">> = {
+  const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers" | "connectors">> = {
     ...workerCfg,
     providers: deps.providers,
+    connectors: deps.connectors,
   };
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.

@@ -33,7 +33,7 @@ import {
 } from "@openai/codex-sdk";
 import type { Order, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
-import { decide } from "./governor";
+import { decide, type ConnectorPolicies } from "./governor";
 import {
   filterSdkEnv,
   readOnlySandboxRequested,
@@ -136,6 +136,9 @@ export interface RunDeps {
   agents?: Record<string, AgentDefinition>;
   /** Extra env for the spawned worker, merged over process.env after SDK-specific filtering. */
   env?: Record<string, string>;
+  /** Operator connector scopes (config `connectors`) the governor applies to foreign MCP tools.
+   *  Engine-side policy, never sent to the SDK. Unset = escalate every foreign MCP tool. */
+  connectors?: ConnectorPolicies;
   /** Codex SDK controls. These are ignored by the Claude adapter. */
   codexSandboxMode?: CodexSandboxMode;
   codexApprovalPolicy?: CodexApprovalMode;
@@ -221,7 +224,7 @@ function userMessage(text: string): SdkUserMessage {
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
 // Exported for direct unit testing of the fail-safe/self-heal contract (approval-resilience.test.ts).
-export function buildCanUseTool(handlers: RunHandlers, folder: string) {
+export function buildCanUseTool(handlers: RunHandlers, folder: string, connectors?: ConnectorPolicies) {
   return async (tool: string, input: Record<string, unknown>) => {
     // The whole decision path is wrapped so this callback can NEVER reject. A rejected canUseTool is
     // turned by the SDK into an ungoverned permission failure with no recovery — the worker surfaces
@@ -234,7 +237,7 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string) {
     // calls, so the moment the channel is healthy again the next tool call escalates normally
     // (self-heal — a transient break can't permanently wedge tool approvals).
     try {
-      const verdict = decide(tool, input, { folder });
+      const verdict = decide(tool, input, { folder, connectors });
       if ("allow" in verdict) {
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
       }
@@ -269,6 +272,7 @@ function sdkOptions(
   order: Order,
   handlers: RunHandlers,
   extra: Record<string, unknown> = {},
+  connectors?: ConnectorPolicies,
 ): Record<string, unknown> {
   return {
     cwd: order.folder,
@@ -284,7 +288,7 @@ function sdkOptions(
     // during generation, so a single long turn keeps producing SDK events instead of going quiet
     // for minutes — that steady drip is what keeps the dispatch stall monitor alive (BUG 1).
     includePartialMessages: true,
-    canUseTool: buildCanUseTool(handlers, order.folder),
+    canUseTool: buildCanUseTool(handlers, order.folder, connectors),
     ...extra,
   };
 }
@@ -629,7 +633,7 @@ async function runClaudeOrder(
 ): Promise<RunResult> {
   deps = resolvedRunDeps(deps, "subscription", handlers);
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
-  const options = sdkOptions(order, handlers, runConfig(deps));
+  const options = sdkOptions(order, handlers, runConfig(deps), deps.connectors);
   handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
   return consumeStream(query({ prompt: order.task, options }), handlers);
 }
@@ -668,7 +672,7 @@ function startClaudeOrder(
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const channel = createInputChannel(userMessage(order.task));
   handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume });
-  const queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers, runConfig(deps)) });
+  const queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, handlers, runConfig(deps), deps.connectors) });
   const done = consumeStream(queryObj, handlers);
 
   return {
