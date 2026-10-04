@@ -40,6 +40,10 @@ export function apiRetryDelayMs(attempt: number, rand: () => number = Math.rando
  *  just earn another 429), same 20% magnitude as the ladder's jitter so the two behave alike. */
 export const RESET_JITTER_FRAC = 0.2;
 
+/** Upper bound on one reset-based wait. A genuinely rejected 5-hour window is waited out; a 7-day
+ *  window is not held open for days — the retry fires, and the bounded retry count gives up loudly. */
+export const MAX_RESET_WAIT_MS = 5 * 3600_000;
+
 /** Smart backoff. The subscription's rate_limit_event tells us the *actual* epoch-second `resetsAt`
  *  for each window; when a window is throttling us, wait until its real reset (jittered up only)
  *  instead of a blind 30s→2m→8m ladder that will just keep failing for the whole window. The ladder
@@ -51,14 +55,19 @@ export function resolveApiRetryDelayMs(opts: {
   rand?: () => number;
 }): { delayMs: number; source: "reset" | "ladder"; resetsAt?: number } {
   const rand = opts.rand ?? Math.random;
-  // A window is "governing" if it rejected us (or, lacking a status, simply carries a future reset).
+  // A window is "governing" only if it actually REJECTED us. "allowed_warning" (near the limit but
+  // still allowed) and status-less windows are not throttles: treating them as such let a recovered
+  // per-minute burst park the worker until a 5-hour or 7-day window reset (2026-07-25 issue 6).
   const future = (opts.rateLimits ?? []).filter(
-    (r) => typeof r.resetsAt === "number" && r.resetsAt * 1000 > opts.now && r.status !== "allowed",
+    (r) => typeof r.resetsAt === "number" && r.resetsAt * 1000 > opts.now && r.status === "rejected",
   );
   if (future.length > 0) {
     const soonest = future.reduce((a, b) => (a.resetsAt! <= b.resetsAt! ? a : b));
     const base = soonest.resetsAt! * 1000 - opts.now;
-    return { delayMs: Math.round(base * (1 + RESET_JITTER_FRAC * rand())), source: "reset", resetsAt: soonest.resetsAt };
+    const delayMs = Math.round(base * (1 + RESET_JITTER_FRAC * rand()));
+    // Capped: the wall-clock reset no longer describes when we resume, so don't report it.
+    if (delayMs > MAX_RESET_WAIT_MS) return { delayMs: MAX_RESET_WAIT_MS, source: "reset" };
+    return { delayMs, source: "reset", resetsAt: soonest.resetsAt };
   }
   return { delayMs: apiRetryDelayMs(opts.attempt, rand), source: "ladder" };
 }
