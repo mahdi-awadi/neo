@@ -176,8 +176,9 @@ export function createWebApp(deps: WebAppDeps): WebApp {
         return Response.json({ ok: false }, { status: 400, headers: { "cache-control": "no-store" } });
       }
       // Shared with the Telegram /inbox loop — single source of truth for the gateway send path.
-      const sent = await sendInboxReply(deps.inbox, item.id, reply, { url: deps.gatewaySendUrl, secret: deps.ingressSecret });
-      if (!sent) return Response.json({ ok: false, error: "send failed" }, { status: 502, headers: { "cache-control": "no-store" } });
+      const outcome = await sendInboxReply(deps.inbox, item.id, reply, { url: deps.gatewaySendUrl, secret: deps.ingressSecret });
+      if (outcome === "busy") return Response.json({ ok: false, error: "send in progress" }, { status: 409, headers: { "cache-control": "no-store" } });
+      if (outcome !== "sent") return Response.json({ ok: false, error: "send failed" }, { status: 502, headers: { "cache-control": "no-store" } });
       return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
     }
 

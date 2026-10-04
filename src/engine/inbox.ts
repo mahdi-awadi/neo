@@ -25,6 +25,9 @@ export interface InboxItem extends Required<Omit<InboxInput, "channel">> {
   receivedAt: number;
   status: InboxStatus;
   draft: string; // the agent's draft reply (empty until drafted)
+  /** Bumped by every `setDraft`. A send names the version the operator approved, so an edit made
+   *  meanwhile — or a repeat send of a version already sent — is refused (send idempotency key). */
+  draftVersion: number;
 }
 
 export interface Inbox {
@@ -35,7 +38,8 @@ export interface Inbox {
   get(id: string): InboxItem | undefined;
   /** Update status (e.g. "with-agent" while drafting, "replied" after the operator sends). */
   setStatus(id: string, status: InboxStatus): void;
-  /** Store the agent's draft reply and mark the item "drafted" (awaiting operator approval). */
+  /** Store the agent's draft reply, bump its `draftVersion`, and mark the item "drafted" (awaiting
+   *  operator approval). */
   setDraft(id: string, draft: string): void;
   /** Permanently remove an item (operator dismisses a customer message). No-op if unknown. */
   delete(id: string): void;
@@ -54,6 +58,7 @@ type Row = {
   received_at: number;
   status: string;
   draft: string;
+  draft_version: number;
 };
 
 function rowToItem(r: Row): InboxItem {
@@ -70,6 +75,7 @@ function rowToItem(r: Row): InboxItem {
     receivedAt: r.received_at,
     status: r.status as InboxStatus,
     draft: r.draft,
+    draftVersion: r.draft_version ?? 0,
   };
 }
 
@@ -87,8 +93,12 @@ export function openInbox(path: string, opts: { busyTimeoutMs?: number } = {}): 
     message_id TEXT NOT NULL DEFAULT '',
     received_at INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'new',
-    draft TEXT NOT NULL DEFAULT ''
+    draft TEXT NOT NULL DEFAULT '',
+    draft_version INTEGER NOT NULL DEFAULT 0
   )`);
+  // An inbox created before draft_version existed gains it (existing rows start at 0).
+  const cols = db.query(`PRAGMA table_info(inbox)`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === "draft_version")) db.run(`ALTER TABLE inbox ADD COLUMN draft_version INTEGER NOT NULL DEFAULT 0`);
 
   return {
     record(input, now = Date.now()) {
@@ -105,6 +115,7 @@ export function openInbox(path: string, opts: { busyTimeoutMs?: number } = {}): 
         receivedAt: now,
         status: "new",
         draft: "",
+        draftVersion: 0,
       };
       db.run(
         `INSERT INTO inbox (id,channel,from_addr,from_name,to_addr,subject,body_text,body_html,message_id,received_at,status,draft)
@@ -124,7 +135,7 @@ export function openInbox(path: string, opts: { busyTimeoutMs?: number } = {}): 
       db.run(`UPDATE inbox SET status = ? WHERE id = ?`, [status, id]);
     },
     setDraft(id, draft) {
-      db.run(`UPDATE inbox SET draft = ?, status = 'drafted' WHERE id = ?`, [draft, id]);
+      db.run(`UPDATE inbox SET draft = ?, draft_version = draft_version + 1, status = 'drafted' WHERE id = ?`, [draft, id]);
     },
     delete(id) {
       db.run(`DELETE FROM inbox WHERE id = ?`, [id]);

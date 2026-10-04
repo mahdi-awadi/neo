@@ -24,7 +24,7 @@ import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply, answerDecision } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, launchLoop } from "../engine/loops";
-import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
+import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry, type InboxSendOutcome } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
@@ -760,25 +760,22 @@ export function createTelegramBot(
       }
       // The approval is answered by a LATER update (the Allow/Deny press). Updates are handled one at a
       // time, so awaiting it here would hold the very update queue that press must arrive through —
-      // a deadlock. The wait runs detached; this handler returns at once. One send per item at a time,
-      // and the draft is re-read after the approval, so an edit made meanwhile is what gets sent.
+      // a deadlock. The wait runs detached; this handler returns at once. One approval per item at a
+      // time; the send names the draft version the operator approved, so an edit made meanwhile (or a
+      // send that already went out) is refused, never sent unseen.
+      const approved = { draft: view.item.draft, version: view.item.draftVersion };
       sendingInbox.add(id);
       faults.contain(
         "telegram.inboxSend",
         async () => {
           try {
-            const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${view.item.draft}`);
+            const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${approved.draft}`);
             if (decision !== "allow") {
               await bot.api.sendMessage(chatId, "Send cancelled.");
               return;
             }
-            const now = inbox.get(id);
-            if (!now || now.status === "replied" || now.draft !== view.item.draft) {
-              await bot.api.sendMessage(chatId, "Not sent — the draft changed or was already sent while it waited. Tap Send again.");
-              return;
-            }
-            const sent = await sendInboxReply(inbox, id, now.draft, { url, secret });
-            await bot.api.sendMessage(chatId, sent ? `✅ replied to ${view.item.from}.` : "⚠️ send failed — the reply was not delivered.");
+            const outcome = await sendInboxReply(inbox, id, approved.draft, { url, secret }, fetch, { draftVersion: approved.version });
+            await bot.api.sendMessage(chatId, INBOX_SEND_RESULT[outcome](view.item.from));
           } finally {
             sendingInbox.delete(id);
           }
@@ -829,6 +826,14 @@ export function createTelegramBot(
 
   return bot;
 }
+
+/** What the operator is told after a Send, per outcome (inbox-actions `InboxSendOutcome`). */
+const INBOX_SEND_RESULT: Record<InboxSendOutcome, (to: string) => string> = {
+  sent: (to) => `✅ replied to ${to}.`,
+  failed: () => "⚠️ send failed — the reply was not delivered.",
+  stale: () => "Not sent — the draft changed or was already sent while it waited. Tap Send again.",
+  busy: () => "Not sent — a send for this message is already in progress.",
+};
 
 export function startTelegram(...args: Parameters<typeof createTelegramBot>): Bot {
   const bot = createTelegramBot(...args);

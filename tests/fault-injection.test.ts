@@ -213,14 +213,35 @@ test("manual loop: a crashing run is reported and the operator's chat is told it
 
 const botInfo = { id: 1, is_bot: true, first_name: "Neo", username: "neo_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } as never;
 
-/** A bot with every handler wired and a stubbed Bot API (no network). `fail` decides which calls fail. */
-function telegramRig(o: { fail?: (method: string, payload: any) => boolean; admin?: ReturnType<typeof openAdminStore> } = {}) {
+/** A bot with every handler wired and a stubbed Bot API (no network). The stub is grammy's
+ *  `client.fetch`, BELOW every API transformer, so the real request path — the flood gate included —
+ *  runs. `fail` decides which calls fail with a 400; `respond` can answer a call with any result. */
+function telegramRig(
+  o: {
+    fail?: (method: string, payload: any) => boolean;
+    respond?: (method: string, payload: any) => Record<string, unknown> | undefined;
+    admin?: ReturnType<typeof openAdminStore>;
+    config?: Partial<NeoConfig>;
+  } = {},
+) {
   const calls: Array<{ method: string; payload: any }> = [];
   const admin = o.admin ?? openAdminStore(":memory:");
   admin.claimAdmin(ADMIN);
   const inbox = openInbox(":memory:");
   const ledger = openLedger(":memory:");
-  const config = cfg({ agentIngressSecret: "secret" });
+  const config = cfg({ agentIngressSecret: "secret", ...o.config });
+  let nextId = 100;
+  const fetch = (async (url: string | URL, init?: { body?: unknown }) => {
+    const method = String(url).split("/").pop()!;
+    const payload = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+    calls.push({ method, payload });
+    const body =
+      o.respond?.(method, payload) ??
+      (o.fail?.(method, payload)
+        ? { ok: false, error_code: 400, description: "Bad Request: injected" }
+        : { ok: true, result: method === "sendMessage" ? { message_id: nextId++, date: 0, chat: { id: payload.chat_id, type: "private" }, text: payload.text } : true });
+    return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+  }) as unknown as typeof globalThis.fetch;
   const bot = createTelegramBot(
     config,
     ledger,
@@ -233,14 +254,8 @@ function telegramRig(o: { fail?: (method: string, payload: any) => boolean; admi
     "http://gateway.invalid/send",
     undefined,
     undefined,
-    { botInfo },
+    { botInfo, client: { fetch } },
   );
-  let nextId = 100;
-  bot.api.config.use(async (_prev, method, payload: any) => {
-    calls.push({ method, payload });
-    if (o.fail?.(method, payload)) return { ok: false, error_code: 400, description: "Bad Request: injected" } as never;
-    return { ok: true, result: method === "sendMessage" ? { message_id: nextId++, date: 0, chat: { id: payload.chat_id, type: "private" }, text: payload.text } : true } as never;
-  });
   let updateId = 1;
   const from = { id: ADMIN, is_bot: false, first_name: "Neo" };
   const chat = { id: ADMIN, type: "private" as const, first_name: "Neo" };
@@ -313,4 +328,60 @@ test("telegram: a handler that throws is reported by the error boundary and the 
   await within(t.text("/help"), 500, "the next update");
   await tick();
   expect(t.sent().length).toBeGreaterThan(0);
+});
+
+// ── telegram 429 (through the flood gate) ────────────────────────────────────────────────────
+
+test("telegram 429: a short retry_after is waited out and the send retried once — delivered, no fault", async () => {
+  let limited = 1;
+  const t = telegramRig({
+    config: { telegramFloodMaxWaitMs: 1_000 },
+    respond: (m) => (m === "sendMessage" && limited-- > 0 ? { ok: false, error_code: 429, description: "Too Many Requests: retry after 0", parameters: { retry_after: 0 } } : undefined),
+  });
+  await within(t.text("/help"), 500, "the /help handler");
+  await tick(30);
+  expect(t.calls.filter((c) => c.method === "sendMessage")).toHaveLength(2); // the 429, then the retry
+  expect(faults).toEqual([]);
+});
+
+test("telegram 429: a long ban holds later sends to that chat (never re-sent into the ban) and each failure is contained", async () => {
+  const t = telegramRig({
+    config: { telegramFloodMaxWaitMs: 0 },
+    respond: (m) => (m === "sendMessage" ? { ok: false, error_code: 429, description: "Too Many Requests: retry after 3600", parameters: { retry_after: 3600 } } : undefined),
+  });
+  await within(t.text("/help"), 500, "the first /help");
+  await within(t.text("/help"), 500, "the second /help");
+  await tick(30);
+  expect(t.calls.filter((c) => c.method === "sendMessage")).toHaveLength(1); // the second was held by the gate
+  expect(reported("telegram.send")).toHaveLength(2); // both failures contained and reported, none thrown
+});
+
+// ── telegram inbox Send idempotency ──────────────────────────────────────────────────────────
+
+const approvalButtons = (t: ReturnType<typeof telegramRig>) =>
+  t.calls.filter((c) => c.method === "sendMessage" && String(c.payload.text).includes("Approve this action?"));
+
+test("telegram inbox: a double tap on Send posts ONE approval; the second tap is told a send is already waiting", async () => {
+  const t = telegramRig();
+  const item = t.inbox.record({ from: "customer@example.com", text: "hi" });
+  t.inbox.setDraft(item.id, "Thanks for writing.");
+  await within(t.press(`inbox-send:${item.id}`), 500, "first tap");
+  await within(t.press(`inbox-send:${item.id}`), 500, "second tap");
+  await tick();
+  expect(approvalButtons(t)).toHaveLength(1);
+  expect(t.sent()).toContain("A send for this message is already waiting for approval.");
+});
+
+test("telegram inbox: a draft edited while the approval waited is not sent on Allow (stale draft version)", async () => {
+  const t = telegramRig();
+  const item = t.inbox.record({ from: "customer@example.com", text: "hi" });
+  t.inbox.setDraft(item.id, "Version one.");
+  await within(t.press(`inbox-send:${item.id}`), 500, "the Send tap");
+  await tick();
+  t.inbox.setDraft(item.id, "Version two."); // the operator edits meanwhile
+  const allow = approvalButtons(t)[0]!.payload.reply_markup.inline_keyboard[0][0].callback_data as string;
+  await within(t.press(allow), 500, "the Allow press");
+  await tick(30);
+  expect(t.sent().some((x) => x.startsWith("Not sent — the draft changed"))).toBe(true);
+  expect(t.inbox.get(item.id)?.status).toBe("drafted");
 });
