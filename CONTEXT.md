@@ -322,3 +322,22 @@ _Avoid_: blocked, skipped, pending
 An applied update that running code cannot see until the daemon restarts — the Agent SDK always.
 The updater reports it and waits; it never restarts the daemon.
 _Avoid_: pending restart, needs reload
+
+### Trust
+
+**Trust**:
+A per-folder operator setting. When a folder is trusted, an **escalation** in that folder is
+approved automatically instead of asking the operator. Trust never lifts a **fence escalation**,
+and it never applies to customer-sourced work (ADR-0011).
+_Avoid_: auto-approve mode, allowlist
+
+**Seen folder**:
+A folder with a row in the trust store, `on` or `off`. A folder with no row has never been seen and
+is not trusted. Its first sight at an operator session start records it — `on` when
+`trustNewProjects` is set. After that, only the operator (`/trust`) changes it.
+_Avoid_: trust flag, known project
+
+**Fence escalation**:
+An escalation that only the operator can approve: a file write outside the session's project
+folder. **Trust** never approves it automatically; autonomous paths deny it.
+_Avoid_: hard escalation, blocked write

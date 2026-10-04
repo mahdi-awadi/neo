@@ -47,7 +47,8 @@ export interface RouteTarget {
  */
 export type Verdict =
   | { allow: true; updatedInput?: Record<string, unknown> }
-  | { escalate: string }
+  /** `fenced`: a fence escalation — only the operator may approve it, never trust (ADR-0007). */
+  | { escalate: string; fenced?: true }
   | { deny: string };
 
 /**
