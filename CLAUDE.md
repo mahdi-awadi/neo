@@ -138,7 +138,9 @@ Greptile) are noted but not adopted; these principles are:
   reports progress, too.
 - **Parallelism needs isolation.** Many agents on one repo conflict → git worktrees per agent (Neo's
   concurrent sessions already isolate by folder). Agent-scale merge/deploy is genuinely unsolved —
-  batch and be patient.
+  batch and be patient. **Worktree folders are temporary** (operator, 2026-10-05): make one only when
+  it is needed or clearly the best option, and `git worktree remove` it as soon as the task is done.
+  The branch stays; the folder goes. `/home/neo` is the only permanent Neo folder.
 
 ## Why these decisions (so you don't relitigate them)
 
