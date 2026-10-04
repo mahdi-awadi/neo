@@ -618,12 +618,18 @@ function startSession(
           const handoff = deps.handoff ?? runHandoff;
           const info = registry.get(registryId);
           if (info) {
-            void handoff(info, deps.cfg.contextPolicy, {
-              registry,
-              ledger,
-              runDeps: profileDeps(deps.cfg, "handoff"),
-              memoryFlush: memoryEnabledFor(deps.cfg.memory, order.folder, deps.cfg.companyFolder),
-            });
+            // The handoff is its own detached unit (ADR-0010): a rejection is reported, never thrown.
+            faults.contain(
+              "pipeline.handoff",
+              () =>
+                handoff(info, deps.cfg.contextPolicy, {
+                  registry,
+                  ledger,
+                  runDeps: profileDeps(deps.cfg, "handoff"),
+                  memoryFlush: memoryEnabledFor(deps.cfg.memory, order.folder, deps.cfg.companyFolder),
+                }),
+              { project, orderId: order.id, folder: order.folder },
+            );
           }
         }
       }

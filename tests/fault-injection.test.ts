@@ -182,6 +182,32 @@ test("pipeline: a throw in the run's completion bookkeeping is reported with the
   expect(typeof f?.orderId).toBe("string");
 });
 
+test("pipeline: a post-completion handoff that rejects is reported with the project, never an unhandled rejection", async () => {
+  let finish!: (r: RunResult) => void;
+  const done = new Promise<RunResult>((res) => (finish = res));
+  const start = (_o: Order, _h: RunHandlers): SessionRun => ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done });
+  const dir = scratch();
+  await handleMessage(`/open ${dir} do it`, 9, {
+    cfg: cfg(),
+    ledger: openLedger(":memory:"),
+    registry: createRegistry(),
+    meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
+    reply: () => {},
+    askApproval: async () => "allow",
+    start,
+    signals: () => ({ occupancy: 0.9, turns: 10, ageMs: 0, idleMs: 0 }), // a fat session → handoff
+    handoff: async () => {
+      throw new Error("handoff worker crashed");
+    },
+  });
+  finish({ ok: true, sessionId: "s1", summary: "ok", costUsd: 0 });
+  await tick();
+  const f = reported("pipeline.handoff")[0];
+  expect(f?.message).toBe("handoff worker crashed");
+  expect(f?.folder).toBe(dir);
+});
+
 // ── manual loop start ────────────────────────────────────────────────────────────────────────
 
 test("manual loop: a crashing run is reported and the operator's chat is told it failed", async () => {
