@@ -40,7 +40,8 @@ prompt:
 - **Budget guard:** background SDK work shares your subscription pool, so reserve interactive
   headroom — never drain the plan you use yourself (`subscriptionInteractiveReservePct`).
 - **Approval gate (hardened):** the governor is default-ESCALATE — unknown tools, foreign MCP
-  tools, WebFetch, and out-of-folder Write/Edit all ask Neo (autonomous paths auto-deny). File
+  tools, WebFetch, and out-of-folder Write/Edit all ask Neo (autonomous paths auto-deny); config
+  `connectors` scopes each MCP server to read/send/deny so reads needn't ask. File
   writes are path-fenced to the session's project folder. Customer-tainted briefs (inbox
   drafting) run with **zero tools** (`TAINTED_DISALLOWED_TOOLS` + no MCP): customer email text
   never reaches a worker that can act. Operator-mediated drafting on Claude is own-work
@@ -56,8 +57,7 @@ down the daemon), one-shot session focus, and context-efficiency Phase 1
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
 default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.
 
-Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
-not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,
+Codex runs are governed too (`codex-governor.ts`: sandbox mapping + per-item stop). Next: later context-efficiency phases per the 2026-07-23 design spec,
 then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board). Keep building
 **phase by phase, TDD**, per `MVP-PLAN.md`.
 

@@ -23,7 +23,6 @@ import { basename } from "node:path";
 import { query as realQuery, type AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 import {
   Codex,
-  type ApprovalMode as CodexApprovalMode,
   type CodexOptions,
   type ModelReasoningEffort as CodexReasoningEffort,
   type SandboxMode as CodexSandboxMode,
@@ -34,9 +33,9 @@ import {
 import type { Order, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide, type ConnectorPolicies } from "./governor";
+import { codexPolicyOptions, judgeCodexItem, type CodexGovernorCtx } from "./codex-governor";
 import {
   filterSdkEnv,
-  readOnlySandboxRequested,
   resolveModelSelection,
   supportedRunConfigFields,
   unsupportedRunFields,
@@ -139,9 +138,10 @@ export interface RunDeps {
   /** Operator connector scopes (config `connectors`) the governor applies to foreign MCP tools.
    *  Engine-side policy, never sent to the SDK. Unset = escalate every foreign MCP tool. */
   connectors?: ConnectorPolicies;
-  /** Codex SDK controls. These are ignored by the Claude adapter. */
+  /** Codex SDK controls. These are ignored by the Claude adapter. Neo's governor clamps them:
+   *  `danger-full-access` is refused, approval is always "never" (headless), and network stays off
+   *  unless `codexNetworkAccessEnabled` is explicitly true (codex-governor.ts). */
   codexSandboxMode?: CodexSandboxMode;
-  codexApprovalPolicy?: CodexApprovalMode;
   codexSkipGitRepoCheck?: boolean;
   codexNetworkAccessEnabled?: boolean;
   codexWebSearchMode?: CodexWebSearchMode;
@@ -180,6 +180,9 @@ export interface RunResult {
    *  this as subtype:"success" WITH is_error:true, so reading the subtype alone recorded a
    *  throttled turn as done and silently dropped the brief. */
   apiError?: ApiErrorKind;
+  /** Codex only: the governor stopped this turn (an escalation Codex can't pause for, or a deny).
+   *  The reason, as the operator saw it. The live session stays open for a follow-up. */
+  governorBlock?: string;
 }
 
 /** A live, long-running session: push follow-ups, interrupt, await the final result. */
@@ -411,20 +414,27 @@ function codexEffort(effort: EffortLevel | undefined): CodexReasoningEffort | un
   return effort;
 }
 
-function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
+function codexThreadOptions(order: Order, deps: RunDeps, handlers?: RunHandlers): CodexThreadOptions {
   const model = resolveModelSelection("codex", deps);
-  const c: CodexThreadOptions = {
-    workingDirectory: order.folder,
-    sandboxMode: deps.codexSandboxMode ?? (readOnlySandboxRequested(deps.disallowedTools) ? "read-only" : "workspace-write"),
-    approvalPolicy: deps.codexApprovalPolicy ?? "on-request",
-    skipGitRepoCheck: deps.codexSkipGitRepoCheck ?? true,
-  };
+  const policy = codexPolicyOptions({
+    folder: order.folder,
+    disallowedTools: deps.disallowedTools,
+    sandboxMode: deps.codexSandboxMode,
+    networkAccessEnabled: deps.codexNetworkAccessEnabled,
+    webSearchMode: deps.codexWebSearchMode,
+  });
+  if (policy.clamped) {
+    handlers?.onEvent?.("governor_clamp", { provider: "codex", sandboxMode: policy.clamped, applied: policy.options.sandboxMode });
+  }
+  const c: CodexThreadOptions = { ...policy.options, skipGitRepoCheck: deps.codexSkipGitRepoCheck ?? true };
   if (model.model) c.model = model.model;
   const effort = codexEffort(model.effort);
   if (effort) c.modelReasoningEffort = effort;
-  if (deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
-  if (deps.codexWebSearchMode) c.webSearchMode = deps.codexWebSearchMode;
   return c;
+}
+
+function codexGovernorCtx(order: Order, deps: RunDeps): CodexGovernorCtx {
+  return { folder: order.folder, connectors: deps.connectors, disallowedTools: deps.disallowedTools };
 }
 
 function mergedSdkEnv(provider: Provider, env: Record<string, string>): Record<string, string> {
@@ -486,25 +496,57 @@ function codexItemActivity(item: { type?: string; [k: string]: unknown }): strin
   return undefined;
 }
 
+/** Judge one streamed Codex item. Returns the block reason when the turn must stop, else
+ *  undefined (allowed, or an escalation a trusted project auto-approves). */
+function codexGate(item: { type?: string; [k: string]: unknown }, gate: CodexGovernorCtx, handlers: RunHandlers): string | undefined {
+  const verdict = judgeCodexItem(item, gate);
+  if ("allow" in verdict) return undefined;
+  if ("deny" in verdict) return verdict.deny;
+  if (handlers.autoApprove?.()) {
+    handlers.onAutoApprove?.(verdict.escalate);
+    return undefined;
+  }
+  return verdict.escalate;
+}
+
 async function consumeCodexTurn(
   thread: CodexThreadLike,
   input: string,
   handlers: RunHandlers,
+  gate: CodexGovernorCtx,
   signal?: AbortSignal,
 ): Promise<RunResult> {
   let ok = false;
   let sessionId = thread.id ?? "";
   let summary = "";
   let apiError: ApiErrorKind | undefined;
+  let governorBlock: string | undefined;
+  // One controller per turn: the caller's interrupt and the governor's stop both abort it.
+  const turnAbort = new AbortController();
+  const onOuterAbort = () => turnAbort.abort();
+  if (signal?.aborted) turnAbort.abort();
+  else signal?.addEventListener("abort", onOuterAbort, { once: true });
+  const judged = new Set<string>();
 
   try {
-    const { events } = await thread.runStreamed(input, signal ? { signal } : undefined);
+    const { events } = await thread.runStreamed(input, { signal: turnAbort.signal });
     for await (const event of events) {
       handlers.onHeartbeat?.();
       if (event.type === "thread.started") {
         sessionId = event.thread_id;
       } else if (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") {
-        const item = event.item as { type?: string; text?: string; message?: string; [k: string]: unknown };
+        const item = event.item as { id?: string; type?: string; text?: string; message?: string; [k: string]: unknown };
+        // Judge each item once, as early as it appears (file changes only arrive completed).
+        const key = typeof item.id === "string" ? item.id : "";
+        if (!key || !judged.has(key)) {
+          if (key) judged.add(key);
+          const block = codexGate(item, gate, handlers);
+          if (block) {
+            governorBlock = block;
+            turnAbort.abort();
+            break;
+          }
+        }
         if (event.type === "item.completed" && item.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
           summary = item.text.trim();
           handlers.onActivity?.("replying");
@@ -539,10 +581,32 @@ async function consumeCodexTurn(
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    summary = summary || reason || "interrupted";
-    apiError = apiErrorFromCodexMessage(summary);
-    if (signal?.aborted) handlers.onEvent?.("session_interrupted");
-    else handlers.onEvent?.("worker_error", { provider: "codex", error: reason });
+    if (!governorBlock) {
+      summary = summary || reason || "interrupted";
+      apiError = apiErrorFromCodexMessage(summary);
+      if (signal?.aborted) handlers.onEvent?.("session_interrupted");
+      else handlers.onEvent?.("worker_error", { provider: "codex", error: reason });
+    }
+  } finally {
+    signal?.removeEventListener("abort", onOuterAbort);
+  }
+
+  if (governorBlock) {
+    handlers.onEvent?.("governor_block", { provider: "codex", reason: governorBlock });
+    handlers.onMessage(
+      `⛔ Neo stopped this Codex turn: ${governorBlock}. Codex can't pause for approval, so this is denied. ` +
+        "Trust the project, widen its connector scope, or switch to /sdk claude to approve it step by step.",
+    );
+    const result: RunResult = {
+      ok: false,
+      sessionId: sessionId || thread.id || "",
+      summary: `blocked by Neo: ${governorBlock}`,
+      costUsd: 0,
+      governorBlock,
+    };
+    handlers.onActivity?.("waiting");
+    handlers.onTurnComplete?.(result);
+    return result;
   }
 
   return { ok, sessionId: sessionId || thread.id || "", summary, costUsd: 0, apiError };
@@ -648,9 +712,9 @@ async function runCodexOrder(
   const unsupported = unsupportedRunFields("codex", deps);
   if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
   const client = await makeCodexClient(deps);
-  const options = codexThreadOptions(order, deps);
+  const options = codexThreadOptions(order, deps, handlers);
   const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
-  return consumeCodexTurn(thread, order.task, handlers);
+  return consumeCodexTurn(thread, order.task, handlers, codexGovernorCtx(order, deps));
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
@@ -708,15 +772,18 @@ function startCodexOrder(
     let final: RunResult = { ok: false, sessionId: deps.resume ?? "", summary: "", costUsd: 0 };
     try {
       const client = await makeCodexClient(deps);
-      const options = codexThreadOptions(order, deps);
+      const options = codexThreadOptions(order, deps, handlers);
       const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
+      const gate = codexGovernorCtx(order, deps);
       for (;;) {
         const next = await queue.next();
         if (next === undefined) break;
         currentAbort = new AbortController();
-        final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
+        final = await consumeCodexTurn(thread, next, handlers, gate, currentAbort.signal);
         currentAbort = undefined;
-        if (!final.ok) break;
+        // A governor stop ends the turn, not the session: the operator can answer with a follow-up.
+        if (!final.ok && !final.governorBlock) break;
+        if (interruptRequested) break;
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);

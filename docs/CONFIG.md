@@ -53,6 +53,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
+| `connectors` | `{}` | Per-connector access for foreign MCP tools: `"read"`, `"send"` or `"deny"` per MCP server, with optional per-tool overrides. Unlisted servers ask before every tool. See "Connector scopes" below. |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
 > (systemd's default stop timeout is 90s and would kill the process mid-drain).
@@ -108,7 +109,24 @@ The runner wrapper keeps the engine-facing API the same (`runOrder` / `startOrde
 follow-ups and resume. The Claude adapter keeps Neo's existing `canUseTool` governor and in-process
 MCP servers. The Codex adapter uses Codex SDK threads with `workingDirectory`, `sandboxMode`,
 `approvalPolicy`, model, and reasoning-effort controls; it streams Codex JSON events into Neo's
-message/activity/event hooks. Compatibility is table-driven in `src/engine/model-resolver.ts`:
+message/activity/event hooks.
+
+Codex has no `canUseTool` hook, so Neo governs it in two layers (`src/engine/codex-governor.ts`):
+
+- **Prevent.** Neo's policy becomes Codex thread options: `workspace-write` fenced to the project
+  folder (`danger-full-access` is refused and logged as `governor_clamp`), `approvalPolicy: "never"`
+  (nobody can answer Codex's own prompts headlessly, so leaving the sandbox fails closed), network
+  off unless `codexNetworkAccessEnabled` is explicitly true, and web search off when the run
+  disallows `WebSearch`.
+- **Stop.** Every streamed command, file change, MCP call and web search goes through the same
+  `decide()` as Claude, with the run's `disallowedTools` and `connectors`. Codex can't pause for an
+  answer, so a deny, or an escalation on an untrusted project, aborts the turn, logs
+  `governor_block`, and tells the operator. The live session stays open for a follow-up. A trusted
+  project auto-approves escalations as it does on Claude; denies always stop.
+
+The stop layer sees an item when Codex reports it, which for commands is as they start and for file
+changes after they apply. The sandbox is what prevents; the stop layer ends the turn before more
+happens. Compatibility is table-driven in `src/engine/model-resolver.ts`:
 
 | Run/profile setting | `subscription` (Claude Agent SDK) | `codex` (OpenAI Codex SDK) |
 | --- | --- | --- |
@@ -117,7 +135,7 @@ message/activity/event hooks. Compatibility is table-driven in `src/engine/model
 | `skills` / `maxTurns` | Forwarded to Claude Code. | Dropped from worker profiles and omitted from Codex launch config; direct `RunDeps` usage records `worker_compat_warning`. |
 | `agents` / dispatch team mode | Forwarded to Claude Code; team dispatch adds the lead-agent preamble. | Unsupported. Team dispatch falls back to a normal single-worker brief; direct `agents` usage records `worker_compat_warning`. |
 | `mcpServers` | In-process MCP servers attach to the Claude SDK. | Unsupported by the current Codex wrapper shape; records `worker_compat_warning`. |
-| `disallowedTools` | Forwarded to Claude Code/governor. | The standard read-only deny-list (`Write`, `Edit`, `NotebookEdit`, `Bash`) becomes Codex `sandboxMode: "read-only"`. Other tool deny-lists record `worker_compat_warning`. |
+| `disallowedTools` | Forwarded to Claude Code/governor. | The standard read-only deny-list (`Write`, `Edit`, `NotebookEdit`, `Bash`) becomes Codex `sandboxMode: "read-only"`. Every listed tool is also enforced by the stop layer. Other deny-lists still record `worker_compat_warning`, because they stop rather than prevent. |
 | `workerEnv` | Merged over `process.env` unchanged. | `CLAUDE_*`, `ANTHROPIC_*`, and `MAX_MCP_OUTPUT_TOKENS` are filtered before launch; other keys such as `CODEX_API_KEY` stay available. |
 
 Worker profile `model` values are resolved at the SDK boundary. Provider-native model IDs pass
@@ -127,6 +145,36 @@ model + `low` effort, `sonnet` to default model + `medium` effort, and `opus` to
 
 Codex SDK auth is handled by Codex itself: use your local Codex login or provide `CODEX_API_KEY` in
 the process environment. Neo does not read or store that key directly.
+
+## Connector scopes (`connectors`)
+
+By default the governor asks Neo before every tool from a foreign MCP server. `connectors` lets
+reads flow and keeps the ask for outbound actions (`src/engine/governor.ts`):
+
+```json
+{
+  "connectors": {
+    "gmail": "read",
+    "linear": "send",
+    "stripe": "deny",
+    "github": { "access": "read", "tools": { "create_issue": "allow", "merge_pull_request": "deny" } }
+  }
+}
+```
+
+| Access | Effect |
+| --- | --- |
+| `read` | Tools whose name starts with a read verb (`get`, `list`, `search`, `read`, `fetch`, `query`, `find`, `describe`, `view`, `show`, `lookup`, `count`, `retrieve`, `browse`, `inspect`, `preview`) run without asking. Everything else asks. |
+| `send` | Every tool on that server runs without asking. |
+| `deny` | Every tool on that server is refused, even on a trusted project. |
+| *(unlisted)* | Every tool asks (the default-escalate rule). |
+
+Per-tool `tools` rules (`allow` / `ask` / `deny`) win over the server's access level. The key is
+the MCP server name as it appears in the tool name `mcp__<server>__<tool>`. Neo's own `neo` server
+is always allowed and can't be scoped. The read/outbound split is a deterministic name match, not an
+AI judgement: name a tool explicitly under `tools` when its name misleads. Malformed entries are
+dropped at load, so a typo falls back to asking. Autonomous paths still auto-deny anything that asks.
+The same scopes apply to Codex workers (below).
 
 ## Context policy: learned cache TTL + per-model window
 
