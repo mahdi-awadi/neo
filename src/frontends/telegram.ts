@@ -19,6 +19,7 @@ import { handleMessage } from "../engine/pipeline";
 import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply } from "../engine/reply-routing";
+import { answerTypedApproval, createPendingApprovals } from "../engine/approval-reply";
 import { handleCommand, selectProject, killProject, telegramCommands, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
@@ -111,8 +112,8 @@ export function startTelegram(
   // Outbound lines to a chat go one at a time, in the order they were produced.
   const outbox = createChatQueue();
   const allow = new Set(cfg.telegramAllowFrom);
-  // Pending approvals keyed by a per-request token: callback press -> resolver.
-  const pending = new Map<string, (decision: "allow" | "deny") => void>();
+  // Pending approvals keyed by a per-request token, answerable by a button press OR a typed yes/no.
+  const approvals = createPendingApprovals();
   // Remembers which project each sent worker message came from, so replying to a specific
   // message routes the follow-up back to that project (see send() + the reply handling below).
   // Ledger-backed so a mapping survives /reload — a lost route used to misroute the reply to the company.
@@ -164,10 +165,13 @@ export function startTelegram(
     },
     askApproval: (cid, reason) =>
       new Promise<"allow" | "deny">((resolve) => {
-        const token = crypto.randomUUID();
-        pending.set(token, resolve);
+        const token = approvals.add(cid, reason, resolve);
         const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
-        void bot.api.sendMessage(cid, `⚠️ Approve this action?\n${reason}`, { reply_markup: kb });
+        // Queued behind the worker's earlier lines, so the prompt never lands before its context.
+        void outbox
+          .run(cid, () => bot.api.sendMessage(cid, `⚠️ Approve this action? (tap, or reply yes/no)\n${reason}`, { reply_markup: kb }))
+          .then((m) => approvals.setMessageId(token, m.message_id))
+          .catch((err) => logDropped((m) => console.error(m), cid, `approval prompt: ${reason}`, err));
         // The actionable buttons stay here; the web console just SEES the gate is pending.
         bus?.mirror("telegram", { kind: "notice", text: `⏳ approval pending on Telegram: ${reason}` });
       }),
@@ -245,6 +249,31 @@ export function startTelegram(
       return;
     }
 
+    // A typed yes/no answers a pending Allow/Deny: the worker is parked inside the approval and
+    // can't read follow-ups, so this must not be queued as one. Commands still go through.
+    let approvalReminder: string | undefined;
+    if (!ctx.message.text.trim().startsWith("/")) {
+      const typed = answerTypedApproval(approvals, {
+        chatId,
+        text: ctx.message.text,
+        replyToMessageId: ctx.message.reply_to_message?.message_id,
+      });
+      if (typed.kind === "answered") {
+        const allowed = typed.decision === "allow";
+        bus?.mirror("telegram", { kind: "notice", text: `approval ${typed.decision} on Telegram` });
+        if (typed.approval.messageId !== undefined) {
+          void bot.api.editMessageReplyMarkup(chatId, typed.approval.messageId).catch(() => {}); // drop the buttons
+        }
+        void outbox.run(chatId, () => bot.api.sendMessage(chatId, allowed ? "✅ Allowed." : "⛔ Denied.")).catch(() => {});
+        return;
+      }
+      if (typed.kind === "remind") {
+        void outbox.run(chatId, () => bot.api.sendMessage(chatId, typed.text)).catch(() => {});
+        return;
+      }
+      approvalReminder = typed.reminder;
+    }
+
     // Bare /loop → tappable run buttons; /loop <name> starts a background loop (streams progress).
     if (ctx.message.text.trim() === "/loop") {
       const kb = new InlineKeyboard();
@@ -304,6 +333,7 @@ export function startTelegram(
     // real conversation/orders reach here — commands returned above. Telegram already shows the
     // sent message, so origin "telegram" is excluded from the fan-out.
     bus?.mirror("telegram", { kind: "echo", text: ctx.message.text });
+    if (approvalReminder) void outbox.run(chatId, () => bot.api.sendMessage(chatId, approvalReminder!)).catch(() => {});
     await handleMessage(routing.deliver, chatId, pipelineDeps());
   });
 
@@ -435,10 +465,9 @@ export function startTelegram(
     }
 
     const [kind, token] = ctx.callbackQuery.data.split(":");
-    const resolve = token ? pending.get(token) : undefined;
-    if (resolve) {
-      pending.delete(token);
-      resolve(kind === "a" ? "allow" : "deny");
+    const approval = token ? approvals.take(token) : undefined;
+    if (approval) {
+      approval.resolve(kind === "a" ? "allow" : "deny");
       bus?.mirror("telegram", { kind: "notice", text: `approval ${kind === "a" ? "allow" : "deny"} on Telegram` });
       await ctx.answerCallbackQuery(kind === "a" ? "Allowed" : "Denied");
       await ctx.editMessageReplyMarkup(); // drop the buttons
