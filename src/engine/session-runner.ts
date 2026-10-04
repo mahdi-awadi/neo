@@ -101,8 +101,10 @@ function toolMilestone(name: string, input: unknown): string | undefined {
 }
 
 export interface RunHandlers {
-  /** Stream a human-readable line from the worker back to the channel. */
-  onMessage: (text: string) => void;
+  /** Stream a human-readable line from the worker back to the channel. `kind` says whether it is
+   *  the worker's own prose (`text`) or an engine-rendered tool line (`tool`: a milestone or a
+   *  result preview), so a caller can keep "the latest note" free of tool noise. */
+  onMessage: (text: string, kind?: "text" | "tool") => void;
   /** Ask the human to approve a risky tool; resolves with their decision. */
   onEscalation: (reason: string) => Promise<"allow" | "deny">;
   /** Reported the SDK's running cost (`total_cost_usd`) as each turn completes. */
@@ -123,6 +125,15 @@ export interface RunHandlers {
   /** Fires at each SDK "result" message (turn boundary) with that turn's result. A single-brief
    *  caller (dispatch) uses this to detect completion — the stream itself stays open. */
   onTurnComplete?: (result: RunResult) => void;
+  /** Fires when the session is SETTLED — at rest with no background agent or task still running
+   *  (ADR-0007). With the CLI's session-state events this is `session_state_changed: idle`, which
+   *  the SDK sends only after its background-agent loop exits; a `result` while background work runs
+   *  is a turn boundary, not the end of the brief. A CLI without those events (and Codex) is settled
+   *  at every turn boundary. A single-brief caller (dispatch) closes the run here. */
+  onSettled?: () => void;
+  /** The CLI's session state (`session_state_changed`): running / idle / requires_action. Internal
+   *  plumbing for `active()` + `onSettled`; callers normally want `onSettled`. */
+  onSessionState?: (state: string) => void;
   /** Structured diagnostic events (session lifecycle). The engine wires this to ledger.recordEvent;
    *  a bare worker leaves it unset. NEVER carries message bodies — kinds + small metadata only. */
   onEvent?: (kind: string, data?: Record<string, unknown>) => void;
@@ -253,7 +264,13 @@ export interface SessionRun extends SessionControl {
   /** Graceful close: end the input channel WITHOUT interrupting the SDK — the stream drains and
    *  `done` resolves with the last turn's result. The session stays resumable. */
   close(): void;
+  /** True once close() or interrupt() ended the input channel — a follow-up now would be dropped. */
+  closed(): boolean;
 }
+
+/** Env switch that makes the CLI emit `session_state_changed` (it is off by default). Its `idle` is
+ *  the SDK's documented "authoritative turn-over signal" — see RunHandlers.onSettled. */
+export const SESSION_STATE_EVENTS_ENV = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS";
 
 // Loosely-typed view of the SDK so the runner is testable with an injected fake.
 type SdkMessage = { type: string; [k: string]: unknown };
@@ -434,14 +451,14 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
           for (const b of content as Array<{ type?: string; text?: string; name?: string; input?: unknown; id?: string }>) {
             if (b?.type === "text" && b.text?.trim()) {
               handlers.onActivity?.("replying");
-              handlers.onMessage(b.text.trim());
+              handlers.onMessage(b.text.trim(), "text");
             } else if (b?.type === "tool_use" && typeof b.name === "string") {
               const short = b.name.startsWith("mcp__") ? b.name.split("__").pop() ?? b.name : b.name;
               if (typeof b.id === "string") toolShortById.set(b.id, short);
               const detail = toolDetail(b.input);
               handlers.onActivity?.(`${short}${detail ? `: ${detail}` : ""}`);
               const line = toolMilestone(b.name, b.input);
-              if (line) handlers.onMessage(line);
+              if (line) handlers.onMessage(line, "tool");
             }
           }
         }
@@ -456,7 +473,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
             const short = b.tool_use_id ? toolShortById.get(b.tool_use_id) : undefined;
             if (!short || RESULT_SILENT_TOOLS.has(short)) continue; // unknown or low-signal → stay quiet
             const preview = toolResultPreview(b.content);
-            if (preview) handlers.onMessage(`${b.is_error ? "⚠️ ↳" : "↳"} ${preview}`);
+            if (preview) handlers.onMessage(`${b.is_error ? "⚠️ ↳" : "↳"} ${preview}`, "tool");
           }
         }
       } else if (msg.type === "system" && msg.subtype === "api_retry") {
@@ -464,6 +481,8 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // surface it as activity so the watchdog counts it as liveness and /status shows the wait.
         handlers.onActivity?.(`api retry ${msg.attempt ?? "?"}/${msg.max_retries ?? "?"}`);
         handlers.onEvent?.("sdk_api_retry", { attempt: msg.attempt ?? null, max: msg.max_retries ?? null });
+      } else if (msg.type === "system" && msg.subtype === "session_state_changed" && typeof msg.state === "string") {
+        handlers.onSessionState?.(msg.state);
       } else if (msg.type === "rate_limit_event") {
         const info = msg.rate_limit_info as RateLimitInfo | undefined;
         if (info) handlers.onRateLimit?.(info);
@@ -673,7 +692,7 @@ async function consumeCodexTurn(
         if (event.type === "item.completed" && item.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
           summary = item.text.trim();
           handlers.onActivity?.("replying");
-          handlers.onMessage(summary);
+          handlers.onMessage(summary, "text");
         } else if (event.type === "item.completed" && item.type === "error" && typeof item.message === "string") {
           summary = item.message;
           apiError = apiErrorFromCodexMessage(summary);
@@ -682,7 +701,7 @@ async function consumeCodexTurn(
           if (label) handlers.onActivity?.(label);
           if (event.type === "item.completed") {
             const line = codexItemMilestone(item);
-            if (line) handlers.onMessage(line);
+            if (line) handlers.onMessage(line, "tool");
           }
         }
       } else if (event.type === "turn.completed") {
@@ -690,12 +709,14 @@ async function consumeCodexTurn(
         handlers.onActivity?.("waiting");
         const result = { ok, sessionId: sessionId || thread.id || "", summary, costUsd: 0, apiError };
         handlers.onTurnComplete?.(result);
+        handlers.onSettled?.(); // a Codex turn has no background work after it — settled here
       } else if (event.type === "turn.failed") {
         ok = false;
         summary = event.error.message;
         apiError = apiErrorFromCodexMessage(summary) ?? "unknown";
         const result = { ok, sessionId: sessionId || thread.id || "", summary, costUsd: 0, apiError };
         handlers.onTurnComplete?.(result);
+        handlers.onSettled?.();
       } else if (event.type === "error") {
         ok = false;
         summary = event.message;
@@ -860,14 +881,31 @@ function startClaudeOrder(
   // FOREVER, which is how dispatch came to refuse healthy projects with "busy — queued". The flag
   // is cleared at every turn boundary AND when the run ends, so it cannot drift. It lives in this
   // scope so it survives the restart, which recreates the channel.
+  //
+  // With the CLI's session-state events (SESSION_STATE_EVENTS_ENV, ADR-0007) the flag follows the
+  // CLI's own state instead: a `result` while background agents still work is only a turn boundary,
+  // and the session stays busy until `session_state_changed: idle`. A CLI that never sends those
+  // events keeps the per-`result` rule — `stateEvents` stays false.
   let inTurn = false;
+  let stateEvents = false;
   const onDeliver = () => void (inTurn = true);
-  // Clear at every turn boundary, wrapping (not replacing) the caller's own onTurnComplete.
+  // Wraps (never replaces) the caller's own handlers.
   const tracked: RunHandlers = {
     ...handlers,
     onTurnComplete: (result) => {
-      inTurn = false;
+      if (!stateEvents) inTurn = false;
       handlers.onTurnComplete?.(result);
+      if (!stateEvents) handlers.onSettled?.();
+    },
+    onSessionState: (state) => {
+      stateEvents = true;
+      handlers.onSessionState?.(state);
+      if (state === "idle") {
+        inTurn = false;
+        handlers.onSettled?.();
+      } else {
+        inTurn = true; // running, or requires_action (mid-turn, waiting on a permission)
+      }
     },
   };
   // The live handle stays valid across a restart (below), so it must always address the CURRENT
@@ -878,7 +916,9 @@ function startClaudeOrder(
 
   const open = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(d)) });
+    // Long-running sessions need the CLI's settled signal (see tracked.onSessionState above).
+    const withState: RunDeps = { ...d, env: { ...(d.env ?? {}), [SESSION_STATE_EVENTS_ENV]: "1" } };
+    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState)) });
     return consumeStream(queryObj, tracked);
   };
 
@@ -920,6 +960,7 @@ function startClaudeOrder(
       closeRequested = true;
       channel.close();
     },
+    closed: () => closeRequested,
     done,
   };
 }
@@ -933,6 +974,7 @@ function startCodexOrder(
   const queue = createTextTurnQueue(order.task);
   let currentAbort: AbortController | undefined;
   let interruptRequested = false;
+  let closeRequested = false;
   // A turn is in flight only while consumeCodexTurn runs (Codex processes one turn at a time); idle
   // otherwise. Same `active()` contract as the Claude path so dispatch's busy/idle decision is
   // provider-neutral.
@@ -973,12 +1015,17 @@ function startCodexOrder(
     followUp: (text) => queue.push(text),
     interrupt: async () => {
       interruptRequested = true;
+      closeRequested = true;
       queue.close();
       currentAbort?.abort();
     },
     queued: () => queue.queued(),
     active: () => turnActive,
-    close: () => queue.close(),
+    close: () => {
+      closeRequested = true;
+      queue.close();
+    },
+    closed: () => closeRequested,
     done,
   };
 }

@@ -898,3 +898,104 @@ test("active() clears when the run is interrupted mid-turn", async () => {
   await tick();
   expect(run.active()).toBe(false);
 });
+
+// --- Settled vs turn boundary (ADR-0007, 2026-10-04): a worker that runs BACKGROUND subagents ends
+// its first turn (`result`) while the CLI keeps working on task notifications. That first `result`
+// is not the end of the brief. The SDK's `session_state_changed: idle` is (it fires only after the
+// background-agent loop exits), so `active()` and `onSettled` follow it. ---
+
+/** A fake SDK that replays a scripted list of messages for the first user message, then waits. */
+function scriptedQuery(script: Array<Record<string, unknown> | "pause">, gate: Promise<void>) {
+  const seenOptions: unknown[] = [];
+  const q = (args: { prompt: AsyncIterable<unknown>; options: unknown }) => {
+    seenOptions.push(args.options);
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "s-bg" };
+      for await (const _m of args.prompt) {
+        for (const step of script) {
+          if (step === "pause") await gate;
+          else yield { session_id: "s-bg", ...step };
+        }
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  return { q, seenOptions };
+}
+
+test("with SDK session-state events, a result while background work runs is NOT settled; idle is", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const { q } = scriptedQuery(
+    [
+      { type: "system", subtype: "session_state_changed", state: "running" },
+      { type: "result", subtype: "success", result: "launched task 1 in the background", total_cost_usd: 0 },
+      "pause", // background subagent still working — the CLI has not gone idle
+      { type: "result", subtype: "success", result: "all tasks done", total_cost_usd: 0 },
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ],
+    gate,
+  );
+  const turns: string[] = [];
+  let settled = 0;
+  const run = startOrder(
+    order("run the plan"),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnComplete: (r) => void turns.push(r.summary), onSettled: () => void settled++ },
+    { query: q as never },
+  );
+  while (turns.length === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(turns).toEqual(["launched task 1 in the background"]);
+  expect(settled).toBe(0); // a turn boundary, not the end of the brief
+  expect(run.active()).toBe(true); // still busy — a new brief must queue, not be "delivered idle"
+  release();
+  while (settled === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(turns).toEqual(["launched task 1 in the background", "all tasks done"]);
+  expect(run.active()).toBe(false);
+  run.close();
+  expect((await run.done).summary).toBe("all tasks done");
+});
+
+test("without session-state events (older CLI), each result is settled — the previous behaviour", async () => {
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  let settled = 0;
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onSettled: () => void settled++ }, { query: q as never });
+  while (settled === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(run.active()).toBe(false);
+  run.close();
+  await run.done;
+});
+
+test("closed() reports a graceful close, so a caller never pushes a brief into a dead channel", async () => {
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(run.closed()).toBe(false);
+  run.close();
+  expect(run.closed()).toBe(true);
+  await run.done;
+});
+
+test("a long-running Claude session asks the CLI for session-state events", async () => {
+  const { q, seenOptions } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  while (seenOptions.length === 0) await new Promise((r) => setTimeout(r, 1));
+  const env = (seenOptions[0] as { env?: Record<string, string> }).env;
+  expect(env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe("1");
+  run.close();
+  await run.done;
+});
+
+test("onMessage tags worker prose as text and tool milestones as tool", async () => {
+  const { q } = scriptedQuery(
+    [
+      { type: "assistant", message: { content: [{ type: "text", text: "Task 4 committed." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "git log -1" } }] } },
+      { type: "result", subtype: "success", result: "done", total_cost_usd: 0 },
+    ],
+    Promise.resolve(),
+  );
+  const got: Array<[string, string | undefined]> = [];
+  const run = startOrder(order("x"), { onMessage: (t, kind) => void got.push([t, kind]), onEscalation: async () => "deny" }, { query: q as never });
+  while (!got.some(([, k]) => k === "tool")) await new Promise((r) => setTimeout(r, 1));
+  expect(got.find(([t]) => t === "Task 4 committed.")?.[1]).toBe("text");
+  run.close();
+  await run.done;
+});

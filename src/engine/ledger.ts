@@ -17,6 +17,8 @@ export const EVENTS_PRUNE_INTERVAL = 1000;
  *  (answered/dismissed) rows; OPEN rows are never pruned. Pruned in amortised batches. */
 export const DECISIONS_KEEP = 5_000;
 export const DECISIONS_PRUNE_INTERVAL = 200;
+/** Delivered dispatcher-inbox rows kept as history (pending rows are never pruned). */
+export const DISPATCHER_INBOX_KEEP = 500;
 
 /** A blocking question / alert the operator must act on — the durable pending-decisions queue.
  *  `kind:"decision"` needs an answer (a worker question or a governor escalation); `kind:"alert"`
@@ -128,6 +130,24 @@ export interface Ledger {
   dismissDecision(id: string): void;
   /** Stamp the reminder fields (lastRemindedAt + reminderCount++) after a secretary digest. */
   noteDecisionsReminded(ids: string[], at?: number): void;
+  /** Dispatcher inbox (ADR-0007): queue one final dispatch result for the company. Returns its id.
+   *  It stays pending until delivered, so a reload or a closed company session cannot lose it. */
+  queueDispatcherReport(project: string, text: string, at?: number): number;
+  /** Pending (undelivered) dispatcher reports, oldest first. */
+  pendingDispatcherReports(): DispatcherReport[];
+  /** Mark reports delivered (`at`), or back to pending (`null`) when a delivery failed. */
+  setDispatcherReportsDelivered(ids: number[], at: number | null): void;
+  /** Dispatches that recorded `dispatch_start` at or after `since` but never `dispatch_end` — the
+   *  daemon died or was reloaded during them. Oldest first. */
+  unfinishedDispatches(since: number): Array<{ orderId: string; folder?: string; project?: string; at: number }>;
+}
+
+/** One queued final dispatch result for the dispatcher (the company). */
+export interface DispatcherReport {
+  id: number;
+  project: string;
+  text: string;
+  at: number;
 }
 
 /** One structured engine event (diagnostic trail). `data` is small structured metadata —
@@ -300,6 +320,19 @@ export function openLedger(
   db.run(`CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions (status, created_at)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_decisions_msg ON decisions (decision_chat_id, decision_message_id)`);
   let decisionCloses = 0;
+
+  // Dispatcher inbox (ADR-0007): final dispatch results waiting for the company. A row leaves the
+  // pending set only once delivered; delivered rows are kept short (pruned on each queue).
+  db.run(
+    `CREATE TABLE IF NOT EXISTS dispatcher_inbox (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       project TEXT NOT NULL,
+       text TEXT NOT NULL,
+       at INTEGER NOT NULL,
+       delivered_at INTEGER
+     )`,
+  );
+  db.run(`CREATE INDEX IF NOT EXISTS idx_dispatcher_inbox_pending ON dispatcher_inbox (delivered_at, id)`);
 
   return {
     recordOrder(o) {
@@ -642,6 +675,46 @@ export function openLedger(
         `UPDATE decisions SET last_reminded_at = ?, reminder_count = reminder_count + 1 WHERE id = ?`,
       );
       for (const id of ids) stmt.run(at, id);
+    },
+    queueDispatcherReport(project, text, at = Date.now()) {
+      const r = db
+        .query(`INSERT INTO dispatcher_inbox (project, text, at) VALUES (?, ?, ?) RETURNING id`)
+        .get(project, text, at) as { id: number };
+      // Delivered rows are history only — keep the newest DISPATCHER_INBOX_KEEP of them.
+      db.query(
+        `DELETE FROM dispatcher_inbox WHERE delivered_at IS NOT NULL AND id NOT IN
+           (SELECT id FROM dispatcher_inbox WHERE delivered_at IS NOT NULL ORDER BY id DESC LIMIT ?)`,
+      ).run(DISPATCHER_INBOX_KEEP);
+      return r.id;
+    },
+    pendingDispatcherReports() {
+      return db
+        .query(`SELECT id, project, text, at FROM dispatcher_inbox WHERE delivered_at IS NULL ORDER BY id`)
+        .all() as DispatcherReport[];
+    },
+    setDispatcherReportsDelivered(ids, at) {
+      const q = db.query(`UPDATE dispatcher_inbox SET delivered_at = ? WHERE id = ?`);
+      for (const id of ids) q.run(at, id);
+    },
+    unfinishedDispatches(since) {
+      const rows = db
+        .query(
+          `SELECT s.order_id AS order_id, s.folder AS folder, s.data AS data, s.at AS at FROM events s
+           WHERE s.kind = 'dispatch_start' AND s.at >= ? AND s.order_id IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM events e WHERE e.kind = 'dispatch_end' AND e.order_id = s.order_id)
+           ORDER BY s.at, s.rowid`,
+        )
+        .all(since) as Array<{ order_id: string; folder: string | null; data: string | null; at: number }>;
+      return rows.map((r) => {
+        let project: string | undefined;
+        try {
+          const d = r.data ? (JSON.parse(r.data) as { project?: unknown }) : undefined;
+          if (typeof d?.project === "string") project = d.project;
+        } catch {
+          // tolerate a corrupt blob — the folder still identifies the run
+        }
+        return { orderId: r.order_id, folder: r.folder ?? undefined, project, at: r.at };
+      });
     },
   };
 

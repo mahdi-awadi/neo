@@ -32,6 +32,7 @@ function fakeWorker() {
       queued: () => 0,
       active: () => false,
       close: () => void (closed = true),
+      closed: () => closed,
       done: new Promise<RunResult>(() => {}),
     };
   };

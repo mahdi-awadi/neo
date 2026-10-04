@@ -101,6 +101,39 @@ back and returning its result. Its work class is inherited, not fixed: a dispatc
 servicing an operator message is an interactive turn; a scheduler-fired one is background work.
 _Avoid_: delegate, forward, handoff
 
+**Dispatcher**:
+The session that made a dispatch: the company. It gets a progress digest while the dispatch runs,
+and the dispatch's final result when it ends (ADR-0007).
+_Avoid_: main agent, parent, caller
+
+**Settled**:
+A worker session at rest. The SDK reports `idle`, and no background agent or task is still
+running. A `result` only ends a turn. While background agents work, the session is not settled,
+so the brief is not done.
+_Avoid_: finished, done (for a single turn)
+
+**Stall limit**:
+The only automatic abort of a dispatch: true silence (no streamed SDK event) for
+`dispatchStallMs`, not counting time spent waiting on the operator or in an API backoff. A
+dispatch has no wall-clock limit (ADR-0007).
+_Avoid_: timeout, ceiling
+
+**Progress digest**:
+A short line about a running dispatch, built by the engine: elapsed time, current activity, the
+latest note and the last commit. It goes to the operator and the live dispatcher every
+`dispatchProgressMs`, and only when there was new activity. It never wakes the dispatcher.
+_Avoid_: status update, heartbeat
+
+**Dispatcher inbox**:
+The ledger's durable queue of final dispatch results for the dispatcher. A result stays there
+until it is delivered, so a reload or a closed company session cannot lose it.
+_Avoid_: mailbox, outbox
+
+**Stop point**:
+Where an interrupted dispatch stopped: the folder's last commit, the worker's latest note and its
+last activity. Every abnormal final result carries one, so the dispatcher can resume.
+_Avoid_: checkpoint
+
 **Loop**:
 A trigger, a repeated action, and a goal that ends it. Always background work.
 _Avoid_: cron job, automation, schedule

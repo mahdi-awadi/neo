@@ -37,10 +37,10 @@ function cfg(): NeoConfig {
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,
-    dispatchTimeoutMs: 900_000,
-    dispatchTimeoutMaxMs: 7_200_000,
     dispatchStallMs: 300_000,
     dispatchGraceMs: 75_000,
+    dispatchProgressMs: 600_000,
+    dispatchRecoverWindowMs: 86_400_000,
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -70,7 +70,7 @@ function fakeStart(onStart?: (h: RunHandlers) => void) {
   const done = new Promise<RunResult>((r) => (resolveDone = r));
   const start = (_o: Order, h: RunHandlers): SessionRun => {
     onStart?.(h);
-    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, done };
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
   };
   return { start, finish: (r: RunResult) => resolveDone(r) };
 }

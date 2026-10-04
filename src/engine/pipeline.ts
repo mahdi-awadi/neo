@@ -16,6 +16,7 @@ import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
 import { neoMcpServers, raiseOperatorDecision, type DispatchDeps } from "./dispatch";
+import { flushDispatcherInbox, liveCompanyLink, takeDispatcherInbox, type DispatcherLink } from "./dispatch-report";
 import { questionSummary } from "./structured-question";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
@@ -209,10 +210,18 @@ export async function handleMessage(
   if (live && !text.trim().startsWith("/")) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
     const control = registry.getControl(live.id);
+    // A message to the company carries any dispatch results still waiting in the dispatcher inbox
+    // (e.g. runs cut short by a reload), so the dispatcher sees them before it acts (ADR-0007).
+    // Taken only on the two delivering paths below, never when the message is turned away.
+    const body = (): string => {
+      if (live.id !== registry.getDefault()?.id || control?.closed?.() === true) return text.trim();
+      const pending = takeDispatcherInbox(ledger, now());
+      return pending ? `${pending}\n\n${text.trim()}` : text.trim();
+    };
     if (control && live.status === "running") {
       // Live worker — the follow-up queues behind the in-flight turn. Report the REAL status, not a
       // bare "busy": what it's doing, for how long, and how deep the queue is.
-      control.followUp(text.trim());
+      control.followUp(body());
       registry.touch(live.id, now());
       // The operator's message answers (or replaces) a raised DECISION. A pending approval is
       // left alone — it is still suspending the worker mid-tool and clears on their verdict.
@@ -227,34 +236,10 @@ export async function handleMessage(
       await deps.reply(chatId, `⏳ ${live.name} is reopening — send that again in a moment`);
       return null;
     }
-    const resumed: Order = { ...live.order, id: crypto.randomUUID(), task: text.trim(), createdAt: now() };
-    ledger.recordOrder(resumed);
-    registry.setStatus(live.id, "running");
-    registry.touch(live.id, now());
-    if (oneShot) registry.clearFocus(chatId);
-    await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
-    resuming.add(live.id);
-    try {
-      // Resume only under the SDK that minted the id — after `/sdk claude` a Codex thread id (or
-      // vice versa) is not a resume target, it is a dead session that kills the run.
-      const resumable = live.sdkSessionId && canResumeWith(live.sdkProvider, deps.cfg.providers?.ownWork);
-      const gate = resumable
-        ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps)
-        : { resumeId: "", idleMs: 0 };
-      return startSession(
-        resumed,
-        live.id,
-        chatId,
-        deps,
-        now,
-        start,
-        runConfigFor(live.id, registry, deps, chatId, gate.resumeId),
-        gate.idleMs,
-        gate.preLines,
-      );
-    } finally {
-      resuming.delete(live.id);
-    }
+    return resumeSession(live, body(), chatId, deps, now, start, async () => {
+      if (oneShot) registry.clearFocus(chatId);
+      await deps.reply(chatId, `↩︎ resuming ${live.name}…`);
+    });
   }
 
   // 2. Parse a new order.
@@ -300,11 +285,97 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
   );
+}
+
+/** Resume an idle/ended session's SAME registry entry with `task`, carrying its sdk session id
+ *  through the context-policy gate. The one resume path behind an operator follow-up and a
+ *  dispatcher wake (deliverToCompany). The caller has already checked `resuming`. */
+async function resumeSession(
+  live: SessionInfo,
+  task: string,
+  chatId: number,
+  deps: PipelineDeps,
+  now: () => number,
+  start: StartFn,
+  /** Runs once the entry is marked running, before the (possibly slow) context gate — e.g. the
+   *  operator's "resuming…" line. */
+  announce?: () => Promise<void>,
+): Promise<SessionRun> {
+  const { registry, ledger } = deps;
+  const resumed: Order = { ...live.order, id: crypto.randomUUID(), task, createdAt: now() };
+  ledger.recordOrder(resumed);
+  registry.setStatus(live.id, "running");
+  registry.touch(live.id, now());
+  // Guard BEFORE the first await: anything arriving meanwhile (a second operator message, a
+  // dispatcher wake) must see this entry as reopening, never resume it a second time.
+  resuming.add(live.id);
+  try {
+    await announce?.();
+    // Resume only under the SDK that minted the id — after `/sdk claude` a Codex thread id (or
+    // vice versa) is not a resume target, it is a dead session that kills the run.
+    const resumable = live.sdkSessionId && canResumeWith(live.sdkProvider, deps.cfg.providers?.ownWork);
+    const gate = resumable
+      ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps)
+      : { resumeId: "", idleMs: 0 };
+    const run = startSession(
+      resumed,
+      live.id,
+      chatId,
+      deps,
+      now,
+      start,
+      runConfigFor(live.id, registry, deps, chatId, gate.resumeId),
+      gate.idleMs,
+      gate.preLines,
+    );
+    // The company is live again: hand it any dispatch result turned away while it was reopening.
+    if (live.id === registry.getDefault()?.id) void flushDispatcherInbox(ledger, liveCompanyLink(registry, deps.lifecycle), now());
+    return run;
+  } finally {
+    resuming.delete(live.id);
+  }
+}
+
+/**
+ * Deliver a dispatch report to the company (the dispatcher, ADR-0007). A live company gets it as a
+ * follow-up; an idle one is resumed with it only when `wake` is set (final results — never progress
+ * digests). Quiet: no "queued/resuming" line per report. Returns false when it could not deliver —
+ * no company, the engine is draining, the company is mid-reopen, its channel is closing, or no
+ * wake was asked — and the caller keeps the report.
+ */
+export async function deliverToCompany(
+  text: string,
+  chatId: number,
+  deps: PipelineDeps,
+  opts: { wake: boolean },
+): Promise<boolean> {
+  const { registry } = deps;
+  const now = deps.now ?? (() => Date.now());
+  const company = registry.getDefault();
+  if (!company || deps.lifecycle?.draining()) return false;
+  const control = registry.getControl(company.id);
+  if (control) {
+    if (control.closed?.() === true) return false;
+    control.followUp(text);
+    registry.touch(company.id, now());
+    return true;
+  }
+  // Wake ONLY a company that is truly at rest. "running" with no control means something else owns
+  // it right now — a resume in progress, an ingress brief's one-shot run — and a second resume of
+  // the same SDK session would race it. The report stays in the inbox for a later flush.
+  if (!opts.wake || company.status === "running" || resuming.has(company.id)) return false;
+  await resumeSession(company, text, chatId, deps, now, deps.start ?? startOrder);
+  return true;
+}
+
+/** The dispatcher link the company's own `dispatch` tool reports through (see dispatch-report.ts). */
+function companyLink(deps: PipelineDeps, chatId: number): DispatcherLink {
+  return { deliver: (text, opts) => deliverToCompany(text, chatId, deps, opts) };
 }
 
 /**
@@ -323,7 +394,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchTimeoutMs: deps.cfg.dispatchTimeoutMs, dispatchTimeoutMaxMs: deps.cfg.dispatchTimeoutMaxMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder }, chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: info?.order.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers({ ...deps, workRoot: deps.cfg.workRoot, dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv, memory: deps.cfg.memory, companyFolder: deps.cfg.companyFolder, dispatcher: companyLink(deps, chatId) }, chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: info?.order.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }

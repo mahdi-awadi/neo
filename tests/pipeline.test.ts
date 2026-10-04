@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { handleMessage } from "../src/engine/pipeline";
+import { handleMessage, deliverToCompany } from "../src/engine/pipeline";
 import { applyMemoryOp } from "../src/engine/memory";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
@@ -39,10 +39,10 @@ function cfg(): NeoConfig {
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,
-    dispatchTimeoutMs: 900_000,
-    dispatchTimeoutMaxMs: 7_200_000,
     dispatchStallMs: 300_000,
     dispatchGraceMs: 75_000,
+    dispatchProgressMs: 600_000,
+    dispatchRecoverWindowMs: 86_400_000,
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -89,7 +89,7 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, done };
+    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
   };
   return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
 }
@@ -409,6 +409,7 @@ function routingStart(followed: string[]) {
     queued: () => 0,
     active: () => false,
     close: () => {},
+    closed: () => false,
     done: new Promise<RunResult>(() => {}),
   });
 }
@@ -998,4 +999,103 @@ test("startSession wires onActivity into registry.noteActivity", async () => {
   const session = h.registry.list()[0];
   captured?.onActivity?.("Bash: bun test");
   expect(h.registry.get(session.id)?.activity?.label).toBe("Bash: bun test");
+});
+
+// --- ADR-0007: dispatch results always reach the company (the dispatcher). ---
+
+function idleCompany(h: ReturnType<typeof harness>) {
+  const def = h.registry.add({ id: "def", source: "neo", folder: "/home/neo/agent", task: "init", chatId: -1, createdAt: 1 }, 1);
+  h.registry.setDefault(def.id);
+  h.registry.setStatus(def.id, "idle");
+  h.registry.setSdkSessionId(def.id, "sdk-def");
+  return def;
+}
+
+test("deliverToCompany with wake resumes an idle company with the report, quietly", async () => {
+  const seen: string[] = [];
+  const f = fakeStart();
+  const start = (o: Order, hh: RunHandlers, d?: { resume?: string }) => (seen.push(o.task), f.start(o, hh, d));
+  const h = harness({ start: start as never });
+  idleCompany(h);
+  const ok = await deliverToCompany("[dispatch result] eticket-v3: done", 9, h.base, { wake: true });
+  expect(ok).toBe(true);
+  expect(f.resumeSeen()).toBe("sdk-def");
+  expect(seen).toEqual(["[dispatch result] eticket-v3: done"]);
+  expect(h.replies).toHaveLength(0); // no "resuming…" chatter per report
+});
+
+test("deliverToCompany without wake does not start an idle company", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  idleCompany(h);
+  expect(await deliverToCompany("[dispatch progress] p", 9, h.base, { wake: false })).toBe(false);
+  expect(f.resumeSeen()).toBeUndefined();
+});
+
+test("deliverToCompany follows up into a live company, and refuses while draining", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const def = idleCompany(h);
+  const got: string[] = [];
+  h.registry.setStatus(def.id, "running");
+  h.registry.attachControl(def.id, { followUp: (t) => void got.push(t), interrupt: async () => {} });
+  expect(await deliverToCompany("r1", 9, h.base, { wake: true })).toBe(true);
+  expect(got).toEqual(["r1"]);
+  expect(await deliverToCompany("r2", 9, { ...h.base, lifecycle: { draining: () => true } }, { wake: true })).toBe(false);
+  expect(got).toEqual(["r1"]);
+});
+
+test("pending dispatch results are prepended to the operator's next message to the company, once", async () => {
+  const seen: string[] = [];
+  const f = fakeStart();
+  const start = (o: Order, hh: RunHandlers, d?: { resume?: string }) => (seen.push(o.task), f.start(o, hh, d));
+  const h = harness({ start: start as never });
+  idleCompany(h);
+  h.ledger.queueDispatcherReport("eticket-v3", "[dispatch result] eticket-v3: interrupted by engine restart", 1);
+  await handleMessage("what's the status?", 9, h.base);
+  expect(seen[0]).toContain("interrupted by engine restart");
+  expect(seen[0]).toContain("what's the status?");
+  expect(h.ledger.pendingDispatcherReports()).toHaveLength(0);
+});
+
+test("a message to a focused project never carries the company's pending reports", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  idleCompany(h);
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  const proj = h.registry.list().find((s) => s.order.folder === dir)!;
+  h.registry.setFocus(5, proj.id, "pinned");
+  h.ledger.queueDispatcherReport("x", "[dispatch result] x: done", 1);
+  await handleMessage("also write a README", 5, h.base);
+  expect(f.followUps()).toContain("also write a README");
+  expect(h.ledger.pendingDispatcherReports()).toHaveLength(1);
+});
+
+test("deliverToCompany never wakes a company something else is running (resume in flight, ingress brief)", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const def = idleCompany(h);
+  h.registry.setStatus(def.id, "running"); // running with no control: another path owns it right now
+  expect(await deliverToCompany("[dispatch result] p: done", 9, h.base, { wake: true })).toBe(false);
+  expect(f.resumeSeen()).toBeUndefined(); // no second resume of the same SDK session
+});
+
+test("a dispatcher wake during the operator's resume announcement does not resume the company twice", async () => {
+  let starts = 0;
+  const f = fakeStart();
+  const start = (o: Order, hh: RunHandlers, d?: { resume?: string }) => (starts++, f.start(o, hh, d));
+  const h = harness({ start: start as never });
+  idleCompany(h);
+  let woke: boolean | undefined;
+  // The operator's "resuming…" reply is where the old code yielded with no guard set.
+  const base = {
+    ...h.base,
+    reply: async (_c: number, t: string) => {
+      if (t.includes("resuming") && woke === undefined) woke = await deliverToCompany("[dispatch result] p: done", 9, h.base, { wake: true });
+    },
+  };
+  await handleMessage("status?", 9, base);
+  expect(woke).toBe(false);
+  expect(starts).toBe(1);
 });

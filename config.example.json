@@ -35,10 +35,10 @@
   "// secretaryStaleHours": "A decision waiting longer than this many hours is flagged STALE (an escalation) in the digest. Default 24.",
   "// workers.secretary": "Run the secretary digest on a specific model, e.g. \"workers\": { \"secretary\": { \"model\": \"claude-opus-5-5[1m]\" } }. Omit it to take models.default.",
 
-  "dispatchTimeoutMs": 900000,
-  "dispatchTimeoutMaxMs": 7200000,
   "dispatchStallMs": 300000,
   "dispatchGraceMs": 75000,
+  "dispatchProgressMs": 600000,
+  "dispatchRecoverWindowMs": 86400000,
   "drainWindowMs": 90000,
 
   "stuckAfterMs": 600000,

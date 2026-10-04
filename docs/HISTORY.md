@@ -618,3 +618,22 @@ no per-run field can replace them. One seam covers every Claude launch path. Re-
 the same probe saw `git push` escalated and denied, also inside a team subagent. See
 `docs/adr/0006-the-governor-runs-as-a-pretooluse-hook-first.md`. Built TDD (17 new tests). `tsc`
 clean; full suite green. Going live needs a daemon restart (operator-gated).
+
+**Dispatches have no time limit and always report to the company (2026-10-04).** A dispatch had a
+15-minute default ceiling, a per-call `timeoutMinutes`, and a 2-hour hard cap. The operator asked
+for no limits, because some tasks take hours. An eticket-v3 plan run also "stopped silently". The
+ledger and transcript showed the real cause. The worker ran its plan with background subagents.
+Dispatch read the first turn's `result` as the end of the brief and closed the worker's input
+channel. The company's next brief was then "delivered" into the closed channel and dropped without
+a word. The fix removes the wall clock (`dispatchTimeoutMs`, `dispatchTimeoutMaxMs`,
+`timeoutMinutes`). The only automatic abort is now the stall limit, which fires on true silence.
+"Done" now means settled: long-running Claude sessions set
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`, and the runner follows `session_state_changed: idle`, so
+`active()` stays true while background agents work. A closing session refuses a brief out loud. A
+progress digest (`dispatchProgressMs`, default 10m, engine-built, no AI) goes to the operator and
+the live company. Final results go through a durable dispatcher inbox (a ledger table). They are
+delivered to a live company, or wake an idle one. Undelivered results are prepended to the
+operator's next message to the company. An abnormal end says where it stopped (last commit, latest
+note, last activity). At boot, dispatches the previous daemon never finished are reported the same
+way. See `docs/adr/0007-a-dispatch-has-no-wall-clock-and-always-reports-to-its-dispatcher.md`.
+Built TDD. `tsc` clean; full suite green. Going live needs a daemon restart (operator-gated).

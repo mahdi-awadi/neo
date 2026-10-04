@@ -18,6 +18,16 @@ import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type 
 import type { UsageMeter } from "./usage";
 import type { TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
+import {
+  dispatchResultText,
+  formatStopPoint,
+  lastCommitIn,
+  liveCompanyLink,
+  flushDispatcherInbox,
+  progressDigest,
+  type DispatcherLink,
+  type StopPoint,
+} from "./dispatch-report";
 import { frontendBackend, teamLeadPreamble } from "./agent-teams";
 import { DEFAULT_PROJECT } from "./default-project";
 import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
@@ -73,13 +83,17 @@ export interface DispatchDeps {
      *  richer tappable keyboard from it instead of the flat `options`. */
     spec?: StructuredAsk,
   ) => Promise<{ chatId: number; messageId: number } | undefined>;
-  /** Default per-dispatch ceiling (ms) when the caller doesn't request one. Default DISPATCH_TIMEOUT_MS_DEFAULT. */
-  dispatchTimeoutMs?: number;
-  /** Hard cap (ms) on any caller-requested ceiling. Default DISPATCH_TIMEOUT_MAX_MS_DEFAULT (2h). */
-  dispatchTimeoutMaxMs?: number;
-  /** Abort a sub-run with NO activity for this long (ms) — a busy worker stays alive up to the
-   *  ceiling. Default DISPATCH_STALL_MS_DEFAULT (5m). */
+  /** Abort a sub-run with NO activity for this long (ms) — the only automatic abort: a dispatch has
+   *  no wall-clock limit, so a busy worker runs until it finishes (ADR-0007). Default
+   *  DISPATCH_STALL_MS_DEFAULT (5m). */
   dispatchStallMs?: number;
+  /** Progress-digest interval (ms) for a running dispatch, to the operator and the live dispatcher;
+   *  sent only when there was activity since the last one. 0 turns digests off. Default
+   *  DISPATCH_PROGRESS_MS_DEFAULT (10m). */
+  dispatchProgressMs?: number;
+  /** How a dispatch reaches its dispatcher (the company). The pipeline wires one that can also wake
+   *  an idle company; absent → `liveCompanyLink` (follow-up into a live company only). */
+  dispatcher?: DispatcherLink;
   /** Thresholds behind the derived session state reported to the operator (wedged/quiet).
    *  Absent → DEFAULT_LIVENESS_THRESHOLDS. */
   liveness?: LivenessThresholds;
@@ -134,14 +148,17 @@ export interface DispatchDeps {
 
 type RunFn = typeof runOrder;
 
-/** Default per-dispatch ceiling (ms) — 15 minutes. */
-export const DISPATCH_TIMEOUT_MS_DEFAULT = 900_000;
-/** Hard cap on any caller-requested ceiling (ms) — 2 hours. */
-export const DISPATCH_TIMEOUT_MAX_MS_DEFAULT = 7_200_000;
+/** The runs THIS module started (dispatch-owned). Only a brief delivered into one of them is
+ *  covered by that run's progress digests and final report; a brief pushed into an operator-opened
+ *  session is not, and the reply to the dispatcher must say so instead of promising a result. */
+const dispatchRuns = new WeakSet<object>();
+
 /** Liveness stall limit (ms) — 5 minutes of NO activity aborts a sub-run. */
 export const DISPATCH_STALL_MS_DEFAULT = 300_000;
 /** Wrap-up grace window (ms) — 75 seconds between the limit firing and the hard abort. */
 export const DISPATCH_GRACE_MS_DEFAULT = 75_000;
+/** Progress-digest interval (ms) — 10 minutes. */
+export const DISPATCH_PROGRESS_MS_DEFAULT = 600_000;
 /** Activity label for the window between "session registered" and "worker attached" (indexing +
  *  context gate). Makes the `starting` state self-explaining wherever it is rendered. */
 export const PREPARING_LABEL = "preparing: indexing + context gate";
@@ -280,8 +297,8 @@ export async function dispatchToProject(
     /** Test seams for the context policy (default: real transcript measurement + handoff run). */
     signals?: typeof sessionContext;
     handoff?: typeof runHandoff;
-    /** Caller-requested per-dispatch ceiling (ms) — clamped to dispatchTimeoutMaxMs. */
-    timeoutMs?: number;
+    /** Test seam: read the folder's last commit for digests and stop points (default: git). */
+    lastCommit?: (folder: string) => string | undefined;
     /** Injectable wait for the API-retry backoff (tests pass a no-op). Defaults to a real timer. */
     sleep?: (ms: number) => Promise<void>;
     /** Injectable jitter source for the API-retry backoff. Defaults to Math.random. */
@@ -380,8 +397,23 @@ export async function dispatchToProject(
     // so a busy/queued reply can never disagree with what `sessions` says about the same project.
     const status = describeSession(deps.registry, existing, now(), deps.liveness);
     const state = stateOf(deps.registry, existing, now(), deps.liveness);
+    // A control whose channel was already closed (the run is settling and about to end) would drop
+    // the brief without a word — the 2026-10-04 lost-brief bug. Refuse it out loud instead.
+    if (control?.followUp && control.closed?.() === true) {
+      deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "closing", state } });
+      return (
+        `${name} is finishing its current run (its session is closing) — I did NOT queue this brief, so ` +
+        `nothing was lost. Retry in a moment; it will start a fresh run once the current one has ended.`
+      );
+    }
     if (control?.followUp) {
       const turnActive = control.active?.() === true; // the REAL "a turn is being processed" signal
+      // What the dispatcher will hear back: a dispatch-owned run reports progress + its result; an
+      // operator-opened session streams to the operator only.
+      const reportBack = dispatchRuns.has(control)
+        ? `its output streams to the operator as ${name}, and you get progress digests and the result when that run ends.`
+        : `its output streams to the operator as ${name}. It is a session the operator opened, so its result is NOT ` +
+          `sent back to you automatically — check it with \`sessions\` or ask the operator.`;
       control.followUp(order.task);
       deps.registry.touch(existing.id, now());
       // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
@@ -392,7 +424,7 @@ export async function dispatchToProject(
         await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
         return (
           `${name} is ${state} — I queued this brief behind its current turn (${status}). It runs when the ` +
-          `current work yields; its output streams to the operator as ${name}. Unless that state is ` +
+          `current work yields; ${reportBack} Unless that state is ` +
           `"wedged" this is NORMAL and needs nothing from you` +
           (state === "awaiting-operator" ? " EXCEPT the operator's answer to the question it raised." : ".")
         );
@@ -401,7 +433,7 @@ export async function dispatchToProject(
       deps.ledger.recordEvent("dispatch_delivered", { orderId: order.id, folder, data: { project: name, workClass, reuse: "idle" } });
       await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
       return (
-        `dispatched to ${name} — it was idle, so this runs now; its output streams to the operator as ${name}.`
+        `dispatched to ${name} — it was idle, so this runs now; ${reportBack}`
       );
     }
     // No live handle. Usually NOT a fault: the previous dispatch marked the session running and is
@@ -436,16 +468,16 @@ export async function dispatchToProject(
     deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
     undefined;
   const start = opts.start ?? startOrder;
-  // Per-dispatch ceiling: the caller (the company knows if this is a 2-minute lookup or a
-  // 2-hour build) may request one, hard-capped so a dispatch can never run unbounded.
-  const maxMs = deps.dispatchTimeoutMaxMs ?? DISPATCH_TIMEOUT_MAX_MS_DEFAULT;
-  const ceilingMs = Math.min(opts.timeoutMs ?? deps.dispatchTimeoutMs ?? DISPATCH_TIMEOUT_MS_DEFAULT, maxMs);
+  // No wall-clock limit (ADR-0007): some tasks take hours. Only true silence (the stall limit) aborts.
   const stallMs = deps.dispatchStallMs ?? DISPATCH_STALL_MS_DEFAULT;
+  const progressMs = deps.dispatchProgressMs ?? DISPATCH_PROGRESS_MS_DEFAULT;
+  const readCommit = opts.lastCommit ?? lastCommitIn;
+  const dispatcher = deps.dispatcher ?? liveCompanyLink(deps.registry, deps.lifecycle);
   const graceMs = deps.dispatchGraceMs ?? DISPATCH_GRACE_MS_DEFAULT;
   const retryLadder = deps.apiRetryLadderMs && deps.apiRetryLadderMs.length > 0 ? deps.apiRetryLadderMs : [...API_RETRY_DELAYS_MS];
   const maxRetries = retryLadder.length;
 
-  // Background continuation: bounded await, then bookkeeping + report-back. NEVER awaited here —
+  // Background continuation: supervised await, then bookkeeping + report-back. NEVER awaited here —
   // the company's turn ends immediately (operator requirement: the main agent is always free).
   // The context-policy gate + start(...) + attachControl also live in here (not before it) so
   // the gate's occasional real await (the "handoff" verdict runs a bounded worker turn) never
@@ -498,7 +530,7 @@ export async function dispatchToProject(
     // Guarantee the structural map the brief now REQUIRES: the worker can't self-index (the governor
     // denies subagents the codebase-memory index tools), so the engine does it here before the worker
     // starts. Best-effort — a failure never blocks the dispatch; the worker falls back to file reads.
-    // Placed before startedAt so a first-time index doesn't eat the dispatch stall/ceiling budget.
+    // Placed before startedAt so a first-time index doesn't eat the dispatch stall budget.
     if (deps.codebaseMemory) {
       try {
         await deps.codebaseMemory.ensureIndexed(folder, () =>
@@ -510,7 +542,7 @@ export async function dispatchToProject(
     }
 
     const startedAt = now();
-    deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, ceilingMs, stallMs } });
+    deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, stallMs, progressMs } });
     // Every registry write below is pure observation: a failure in it must never surface into the
     // worker's own path (the same contract the activity tracker has always had).
     const noteRegistry = (fn: () => void) => {
@@ -523,18 +555,26 @@ export async function dispatchToProject(
     let lastActivityAt = startedAt;
     let apiRetries = 0;
     let retryingUntil = 0; // while set in the future, the sub-run is waiting out an API throttle
-    let pausedMs = 0; // total backoff time — not the worker's time, so it doesn't eat the ceiling
-    // A dispatch is single-brief: a turn boundary with no queued follow-ups means the sub-run IS
+    let pausedMs = 0; // total backoff time — reported, never counted as the worker's silence
+    let retryPending = false; // an API retry will re-send the brief into this run — keep it open
+    // What the dispatcher needs to follow (digests) or resume (stop point) this run.
+    let lastNote: string | undefined; // the worker's latest prose line — never a tool line
+    let lastActivity: string | undefined; // the worker's latest activity label
+    let lastDigestAt = startedAt;
+    const stopPoint = (): StopPoint => ({ lastCommit: readCommit(folder), lastNote, lastActivity });
+    // A dispatch is single-brief: once the session is SETTLED with nothing queued, the sub-run IS
     // complete (the real SDK stream stays open waiting for input that will never come — awaiting
     // run.done alone would falsely "stall" out minutes after the worker already finished). Close
     // the channel gracefully so done resolves with the worker's own final result; the session
-    // stays resumable (idle bookkeeping below is unchanged).
+    // stays resumable (idle bookkeeping below is unchanged). Settled, not merely a turn boundary:
+    // a worker running background agents emits a `result` and keeps working (ADR-0007).
     let runRef: ReturnType<typeof startOrder> | undefined;
     const run = start(
       order,
       {
-        onMessage: (t) => {
+        onMessage: (t, kind) => {
           lastActivityAt = now();
+          if (kind !== "tool") lastNote = t;
           noteRegistry(() => deps.registry.noteOutput(session.id, now()));
           void deps.reply(replyChat, t, name);
         },
@@ -605,13 +645,15 @@ export async function dispatchToProject(
                 folder,
                 data: { scope: "dispatch", project: name, kind, attempt, max: maxRetries, delayMs, source, resetsAt },
               });
-              // The wait is engine-driven, not the worker hanging: hold off the stall/ceiling
-              // clocks for exactly that long, then re-send the brief into the still-open run.
+              // The wait is engine-driven, not the worker hanging: hold off the stall clock for
+              // exactly that long, then re-send the brief into the still-open run.
               retryingUntil = now() + delayMs;
               pausedMs += delayMs;
+              retryPending = true;
               void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs, resetsAt, maxRetries), name);
               void (opts.sleep ?? realSleep)(delayMs).then(() => {
                 lastActivityAt = now();
+                retryPending = false;
                 runRef?.followUp(apiRetryFollowUp(task));
               });
               return; // keep the sub-run open — it hasn't done the work yet
@@ -619,10 +661,16 @@ export async function dispatchToProject(
             deps.ledger.recordEvent("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
             void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name, "alert");
           }
-          if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
+        },
+        // The brief is done only when the session is settled (no background work left) and nothing
+        // is queued — and not while an API retry is about to re-send it.
+        onSettled: () => {
+          lastActivityAt = now();
+          if (!retryPending && (runRef?.queued() ?? 1) === 0) runRef?.close?.();
         },
         onActivity: (label) => {
           lastActivityAt = now();
+          if (label !== "waiting" && label !== "replying") lastActivity = label;
           noteRegistry(() => deps.registry.noteActivity(session.id, label, now()));
         },
       },
@@ -641,18 +689,21 @@ export async function dispatchToProject(
       }),
     );
     runRef = run;
+    dispatchRuns.add(run);
     deps.registry.attachControl(session.id, run);
 
-    // Liveness monitor: the timeout protects against a HUNG worker, not a busy one. A dispatch
-    // is aborted when the sub-run has produced no activity for stallMs, OR when the per-dispatch
-    // ceiling is hit — a worker streaming output for 90 minutes stays alive (up to the ceiling).
+    // Liveness monitor: it protects against a HUNG worker, never a busy one. There is no wall-clock
+    // limit (ADR-0007): a dispatch is aborted only when the sub-run has produced no activity for
+    // stallMs. Every streamed SDK event counts — partial deltas, subagent messages, task progress,
+    // the CLI's tool_progress heartbeat during a long tool — so a worker busy for hours stays alive.
+    // The same tick sends the progress digest.
     const sleep = (ms: number) => new Promise<"tick">((res) => setTimeout(() => res("tick"), ms));
     const doneOrTick = (ms: number) => Promise.race([run.done.then((r) => ({ done: r })), sleep(ms)]);
-    const checkMs = Math.max(1, Math.floor(Math.min(stallMs, ceilingMs) / 4));
+    const checkMs = Math.max(1, Math.floor(Math.min(stallMs, progressMs > 0 ? progressMs : stallMs) / 4));
     let result: RunResult;
     let timedOut = false;
     try {
-      let limit: "stall" | "ceiling" | undefined;
+      let limit: "stall" | undefined;
       for (;;) {
         const settled = await doneOrTick(checkMs);
         if (settled !== "tick") {
@@ -660,18 +711,32 @@ export async function dispatchToProject(
           break;
         }
         const t = now();
+        // Progress digest: to the operator's project chat (default priority — the muted DM, never
+        // the Decisions group) and into the LIVE dispatcher (never waking it). Only when the worker
+        // did something since the last one, so a quiet run sends nothing.
+        if (progressMs > 0 && t - lastDigestAt >= progressMs) {
+          if (lastActivityAt > lastDigestAt) {
+            const digest = progressDigest({ project: name, elapsedMs: t - startedAt, activity: lastActivity, lastNote, lastCommit: readCommit(folder) });
+            void deps.reply(replyChat, digest, name);
+            try {
+              await dispatcher.deliver(digest, { wake: false });
+            } catch {
+              // best-effort: a digest that can't be delivered is simply skipped
+            }
+          }
+          lastDigestAt = t;
+        }
         // Waiting out an API throttle is a deliberate engine pause, not a hung worker — keep the
-        // stall clock fresh through it, and don't charge the wait against the dispatch ceiling.
+        // stall clock fresh through it.
         if (t < retryingUntil) {
           lastActivityAt = t;
           continue;
         }
         // Waiting for the OPERATOR (a permission escalation, a raised decision) is not the worker
         // being hung — it is the worker doing what it was told. Its clock is the operator's, so the
-        // stall window never runs while the block is set. The per-dispatch ceiling still bounds it.
+        // stall window never runs while the block is set.
         if (deps.registry.get(session.id)?.blockedOn) lastActivityAt = t;
-        if (t - startedAt - pausedMs >= ceilingMs) limit = "ceiling";
-        else if (t - lastActivityAt >= stallMs) limit = "stall";
+        if (t - lastActivityAt >= stallMs) limit = "stall";
         if (!limit) continue;
         // State the evidence BEFORE acting on it, so a wrong abort is diagnosable from the log
         // alone — including the cheap "this looks like a command sitting on an interactive prompt"
@@ -699,13 +764,12 @@ export async function dispatchToProject(
             elapsedMs: t - startedAt,
             pausedMs,
             stallMs,
-            ceilingMs,
           },
         });
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave
         // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
         run.followUp(
-          `⏱ Neo dispatch ${limit === "stall" ? "stall" : "time"} limit reached — stop working now. ` +
+          `⏱ Neo dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m) — stop working now. ` +
             `Commit any green work and write a brief WIP note (plan doc or WIP.md) so a follow-up run can resume. ` +
             `You have ~${Math.round(graceMs / 1000)}s before this session is aborted.`,
         );
@@ -717,16 +781,27 @@ export async function dispatchToProject(
         timedOut = true;
         await run.interrupt();
         deps.ledger.recordEvent("dispatch_abort", { orderId: order.id, folder, data: { project: name, workClass, limit } });
-        const detail =
-          limit === "stall"
-            ? `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`
-            : `hit the ${Math.round(ceilingMs / 60000)}m dispatch ceiling`;
+        const detail = `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`;
         result = { ok: false, sessionId: "", summary: `timed out: ${detail} — asked to wrap up, then aborted`, costUsd: 0 };
         break;
       }
     } catch (e) {
       result = { ok: false, sessionId: "", summary: e instanceof Error ? e.message : String(e), costUsd: 0 };
     }
+    // The final report is built FIRST and queued in the dispatcher inbox in the same synchronous step
+    // as `dispatch_end` — no await between them — so no crash or reload can leave a run that is
+    // marked ended but never reported (boot recovery only covers runs with no `dispatch_end`).
+    // An abnormal end (stall abort, error, crash, API give-up, interrupt) — or a run wrapped up early
+    // for an engine reload — says where it stopped, so the dispatcher can resume.
+    const reloading = deps.lifecycle?.draining() === true;
+    const stop = timedOut || !result.ok || reloading ? stopPoint() : undefined;
+    const summary = reloading
+      ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — resume it after the restart)`
+      : result.summary;
+    const stopLine = stop ? formatStopPoint(stop) : "";
+    const line =
+      (result.ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
+      (stopLine ? `\n${stopLine}` : "");
     try {
       if (result.sessionId) {
         deps.registry.setSdkSessionId(session.id, result.sessionId, worker);
@@ -734,6 +809,10 @@ export async function dispatchToProject(
       }
       deps.meter.note({ costUsd: result.costUsd }, now());
       deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
+    } catch {
+      // observer/bookkeeping errors must not surface into the worker path
+    }
+    try {
       deps.ledger.recordEvent("dispatch_end", {
         orderId: order.id,
         sessionId: result.sessionId || undefined,
@@ -741,6 +820,11 @@ export async function dispatchToProject(
         // workClass + costUsd together are what lets the meter report interactive vs background spend.
         data: { project: name, workClass, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
       });
+      deps.ledger.queueDispatcherReport(name, dispatchResultText({ project: name, ok: result.ok, summary, stop }), now());
+    } catch {
+      // observer only — never surfaces into the worker path
+    }
+    try {
       if (timedOut || !result.ok) {
         // A dead run must not linger: an "error" session is invisible to findByFolder (never
         // reused) and to sweepIdle (never reaped), so it would sit as a zombie and force the next
@@ -753,21 +837,27 @@ export async function dispatchToProject(
         deps.registry.noteBlocked(session.id, undefined); // the run is over — nothing is blocked
         deps.registry.detachControl(session.id);
       }
-      const line = result.ok ? `${name} finished: ${result.summary || "done"}` : `${name}: ${result.summary || "failed"}`;
+    } catch {
+      // observer/bookkeeping errors must not surface into the worker path
+    }
+    try {
       // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure
       // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
       // The frontend prepends the single priority accent (✅/🔴) — no per-call-site glyph (Feature 2).
       await deps.reply(replyChat, line, name, result.ok ? "result" : "alert");
-      // Feed the result back into the live company session so it can act on it next turn.
-      const company = deps.registry.getDefault();
-      const control = company && company.id !== session.id ? deps.registry.getControl(company.id) : undefined;
-      control?.followUp(`[dispatch result] ${name}: ${result.summary || (result.ok ? "done" : "failed")}`);
     } catch {
-      // observer/bookkeeping errors must not surface into the worker path
+      // the operator line is best-effort; the dispatcher report below must still go out
+    }
+    // The dispatcher ALWAYS gets the final result: deliver the inbox now (waking an idle company);
+    // whatever cannot be delivered yet stays queued for the next flush.
+    try {
+      await flushDispatcherInbox(deps.ledger, dispatcher, now());
+    } catch {
+      // observer only
     }
   })();
 
-  return `dispatched to ${name} — running in the background; its output streams to the operator and you will receive its result as a follow-up message when it finishes.`;
+  return `dispatched to ${name} — running in the background with no time limit; its output streams to the operator, you get a progress digest every few minutes, and you will receive its result as a follow-up message when it ends.`;
 }
 
 /** Send a file the worker produced, but only if `path` is inside `folder`. Returns a status string. */
@@ -999,17 +1089,12 @@ export function neoMcpServers(
       ),
       tool(
         "dispatch",
-        "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt. Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run.",
+        "Open one of the operator's projects and run a self-contained task in it. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt. " +
+          "The run has NO time limit — it works until it is done, even for hours; only a worker that goes completely silent (hung) is stopped. While it runs you get a `[dispatch progress]` line every few minutes (FYI — no reply needed), and you ALWAYS get a `[dispatch result]` message when it ends — including when it was cut short, in which case the result says where it stopped (last commit / latest note) so you can dispatch a follow-up that resumes from there. " +
+          "Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run.",
         {
           project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
-          timeoutMinutes: z
-            .number()
-            .positive()
-            .optional()
-            .describe(
-              "expected ceiling for this task in minutes — size it to the task (2 for a quick lookup, 60–120 for a real build). Capped by the engine; a hung (silent) worker is still aborted early regardless.",
-            ),
           team: z
             .enum(["frontend-backend"])
             .optional()
@@ -1017,10 +1102,9 @@ export function neoMcpServers(
               "opt-in: run the brief with a lead-orchestrated backend + frontend subagent team (the lead delegates by domain, enforces file-ownership boundaries, and coordinates via a shared contract file). Omit for a normal single-worker dispatch.",
             ),
         },
-        async (args: { project: string; task: string; timeoutMinutes?: number; team?: "frontend-backend" }) => {
+        async (args: { project: string; task: string; team?: "frontend-backend" }) => {
           const out = await dispatchToProject(args.project, args.task, deps, replyChat, {
             root: deps.workRoot,
-            timeoutMs: args.timeoutMinutes ? Math.round(args.timeoutMinutes * 60_000) : undefined,
             team: args.team,
             // The dispatch inherits the class of the worker calling the tool: the company session
             // servicing an operator message dispatches as `interactive`, a scheduler-fired one as

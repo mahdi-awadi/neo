@@ -16,6 +16,7 @@ import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
+import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } from "./engine/dispatch-report";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
@@ -46,6 +47,12 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   mkdirSync("data", { recursive: true });
   const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep });
+  // A dispatch the previous daemon started but never finished (reload or crash) is reported to the
+  // company with where it stopped. Runs FIRST — before any frontend or the scheduler can start a
+  // new dispatch that would look unfinished. Queued in the dispatcher inbox, NOT delivered now: the
+  // company is not woken at boot; the operator's next message to it carries them (ADR-0007).
+  const interrupted = recoverInterruptedDispatches(ledger, { now: Date.now(), windowMs: cfg.dispatchRecoverWindowMs });
+  console.log(`  dispatch  -> ${interrupted} interrupted dispatch(es) queued for the company; no wall-clock limit, digest every ${cfg.dispatchProgressMs / 60_000}m`);
   const admin = openAdminStore("data/admin.db");
   const registry = createRegistry();
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
@@ -157,6 +164,9 @@ async function main(): Promise<void> {
     const delay = nextTickDelayMs(Date.now(), hb);
     setTimeout(() => {
       sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now(), memory: cfg.memory, companyFolder: cfg.companyFolder });
+      // Retry dispatch results a busy moment turned away (company reopening/closing) — into a LIVE
+      // company only; an idle one gets them with the operator's next message (ADR-0007).
+      void flushDispatcherInbox(ledger, liveCompanyLink(registry, lifecycle), Date.now());
       sweepStuck(registry, {
         now: Date.now(),
         stuckAfterMs: cfg.stuckAfterMs,

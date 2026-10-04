@@ -400,32 +400,6 @@ test("background completion books the result and reports back to operator + comp
   expect(companyFollowUps.some((t) => t.includes("[dispatch result]") && t.includes("built the thing"))).toBe(true);
 });
 
-test("background ceiling timeout interrupts the sub-run, names the ceiling, and records an error outcome", async () => {
-  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
-  mkdirSync(join(root, "eticket-v3"));
-  const { d } = makeDeps();
-  let interrupted = false;
-  const fakeStart = () => ({
-    followUp: () => {},
-    queued: () => 0,
-    interrupt: async () => {
-      interrupted = true;
-    },
-    done: new Promise<RunResult>(() => {}),
-  });
-  const replies: string[] = [];
-  await dispatchToProject(
-    "eticket-v3",
-    "task",
-    { ...d, dispatchTimeoutMs: 5, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
-    1,
-    { start: fakeStart as never, root },
-  );
-  await new Promise((r) => setTimeout(r, 60));
-  expect(interrupted).toBe(true);
-  expect(replies.some((t) => t.includes("timed out") && t.includes("ceiling"))).toBe(true);
-});
-
 // --- Liveness-based dispatch timeout (2026-07-08: 18 long builds in a row were killed by the
 // fixed 15m wall clock; the timeout must protect against a HUNG worker, not a busy one). ---
 
@@ -443,11 +417,10 @@ test("a silent sub-run is aborted by the STALL limit and the result names the st
     done: new Promise<RunResult>(() => {}),
   });
   const replies: string[] = [];
-  // huge ceiling, tiny stall → only the stall limit can fire
   await dispatchToProject(
     "eticket-v3",
     "task",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 10, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
+    { ...d, dispatchStallMs: 10, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
     1,
     { start: fakeStart as never, root },
   );
@@ -476,7 +449,7 @@ test("a BUSY sub-run (streaming activity) is NOT stall-aborted even long past th
   await dispatchToProject(
     "eticket-v3",
     "long build",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 200, dispatchGraceMs: 20 },
+    { ...d, dispatchStallMs: 200, dispatchGraceMs: 20 },
     1,
     { start: fakeStart as never, root },
   );
@@ -522,7 +495,7 @@ test("a sub-run emitting a steady drip of partial stream_events (one long genera
   await dispatchToProject(
     "eticket-v3",
     "write a huge plan file",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 200, dispatchGraceMs: 20 },
+    { ...d, dispatchStallMs: 200, dispatchGraceMs: 20 },
     1,
     { start: start as never, root },
   );
@@ -553,7 +526,7 @@ test("a sub-run that goes truly silent after init IS stall-aborted after the gra
   await dispatchToProject(
     "eticket-v3",
     "task",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 20, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
+    { ...d, dispatchStallMs: 20, dispatchGraceMs: 5, reply: (_c, t) => void replies.push(t) },
     1,
     { start: start as never, root },
   );
@@ -587,7 +560,7 @@ test("on timeout the worker first gets a wrap-up follow-up, and finishing within
   await dispatchToProject(
     "eticket-v3",
     "task",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 10, dispatchGraceMs: 200, reply: (_c, t) => void replies.push(t) },
+    { ...d, dispatchStallMs: 10, dispatchGraceMs: 200, reply: (_c, t) => void replies.push(t) },
     1,
     { start: fakeStart as never, root },
   );
@@ -595,31 +568,6 @@ test("on timeout the worker first gets a wrap-up follow-up, and finishing within
   expect(followUps.some((t) => t.toLowerCase().includes("commit") && t.toLowerCase().includes("wip"))).toBe(true);
   expect(interrupted).toBe(false); // wrapped up gracefully — never hard-aborted
   expect(replies.some((t) => t.includes("finished") && t.includes("committed green work"))).toBe(true);
-});
-
-test("a caller-requested timeoutMs is honoured but clamped to dispatchTimeoutMaxMs", async () => {
-  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
-  mkdirSync(join(root, "eticket-v3"));
-  const { d } = makeDeps();
-  let interrupted = false;
-  const fakeStart = () => ({
-    followUp: () => {},
-    queued: () => 0,
-    interrupt: async () => {
-      interrupted = true;
-    },
-    done: new Promise<RunResult>(() => {}),
-  });
-  // caller asks for a huge ceiling, but the hard max is 5ms → the ceiling still fires
-  await dispatchToProject(
-    "eticket-v3",
-    "task",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchTimeoutMaxMs: 5, dispatchGraceMs: 5 },
-    1,
-    { start: fakeStart as never, root, timeoutMs: 3_600_000 },
-  );
-  await new Promise((r) => setTimeout(r, 60));
-  expect(interrupted).toBe(true);
 });
 
 test("dispatching twice to the same folder reuses one registry entry (no '<name>-2' duplicate)", async () => {
@@ -642,7 +590,7 @@ test("dispatching twice to the same folder reuses one registry entry (no '<name>
 });
 
 test("a timed-out dispatch is removed from the registry, and the next dispatch reuses the base name (no zombie accumulation)", async () => {
-  // Regression (2026-07-08): 18 sequential dispatches to one project each hit dispatchTimeoutMs,
+  // Regression (2026-07-08): 18 sequential dispatches to one project each hit the dispatch limit,
   // were left as status:"error" zombies, and every retry registered "<name>-N".
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "waselni"));
@@ -653,7 +601,7 @@ test("a timed-out dispatch is removed from the registry, and the next dispatch r
     interrupt: async () => {},
     done: new Promise<RunResult>(() => {}),
   });
-  const fast = { ...d, dispatchTimeoutMs: 5, dispatchGraceMs: 5 };
+  const fast = { ...d, dispatchStallMs: 5, dispatchGraceMs: 5 };
   await dispatchToProject("waselni", "task 1", fast, 1, { start: hangingStart as never, root });
   await new Promise((r) => setTimeout(r, 60)); // let the timeout + grace fire and bookkeeping settle
 
@@ -1170,7 +1118,7 @@ test("dispatch detects sub-run completion at the turn boundary (open stream) ins
   await dispatchToProject(
     "eticket-v3",
     "single brief",
-    { ...d, dispatchTimeoutMs: 60_000, dispatchStallMs: 40, dispatchGraceMs: 10 },
+    { ...d, dispatchStallMs: 40, dispatchGraceMs: 10 },
     1,
     { start: start as never, root },
   );
@@ -1527,4 +1475,269 @@ test("a dispatch honours the operator's own models override, not the code-baked 
   );
 
   expect(runDeps?.model).toBe("claude-opus-5"); // a rollback in config.json must actually take effect
+});
+
+// --- ADR-0007 (2026-10-04): no wall clock; progress + final result always reach the dispatcher. ---
+
+/** A fake run whose handlers the test drives by hand. */
+function drivenStart() {
+  const ctl: { h?: RunHandlers; closes: number; followUps: string[]; resolve?: (r: RunResult) => void; reject?: (e: unknown) => void } = {
+    closes: 0,
+    followUps: [],
+  };
+  const start = (_o: Order, h: RunHandlers) => {
+    ctl.h = h;
+    return {
+      followUp: (t: string) => void ctl.followUps.push(t),
+      queued: () => 0,
+      active: () => false,
+      interrupt: async () => {},
+      close: () => void ctl.closes++,
+      done: new Promise<RunResult>((res, rej) => {
+        ctl.resolve = res;
+        ctl.reject = rej;
+      }),
+    };
+  };
+  return { ctl, start };
+}
+
+const settle = (ms = 10) => new Promise((r) => setTimeout(r, ms));
+
+test("the dispatch tool takes no timeout argument and dispatch_start records no ceiling", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const { start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root });
+  await settle();
+  const ev = d.ledger.listEvents({ kind: "dispatch_start" })[0];
+  expect(ev?.data).not.toHaveProperty("ceilingMs");
+  const src = await Bun.file(join(import.meta.dir, "../src/engine/dispatch.ts")).text();
+  expect(src).not.toContain("timeoutMinutes");
+});
+
+test("a turn boundary does not close the brief; the SDK's settled signal does", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "run the plan", d, 1, { start: start as never, root });
+  await settle();
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "launched task 1 in the background", costUsd: 0 });
+  expect(ctl.closes).toBe(0); // background agents may still be working
+  ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(1);
+});
+
+test("a pending API retry keeps the channel open across a settle", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const { ctl, start } = drivenStart();
+  let wake!: () => void;
+  const sleep = () => new Promise<void>((r) => (wake = r));
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root, sleep, rand: () => 0.5 });
+  await settle();
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+  ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(0); // the retry will re-send the brief into this run
+  wake();
+  await settle();
+  expect(ctl.followUps.length).toBe(1);
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+  ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(1);
+});
+
+test("a brief for a session that is closing is refused out loud, never pushed into the dead channel", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const pushed: string[] = [];
+  const s = d.registry.add({ id: "o1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: SUB_CHAT, createdAt: 0 }, 0);
+  d.registry.setStatus(s.id, "running");
+  d.registry.attachControl(s.id, { followUp: (t) => void pushed.push(t), interrupt: async () => {}, active: () => false, closed: () => true });
+  const out = await dispatchToProject("eticket-v3", "second brief", d, 1, { root, now: () => 0 });
+  expect(pushed).toHaveLength(0);
+  expect(out.toLowerCase()).toContain("retry");
+  expect(d.ledger.listEvents({ kind: "dispatch_refused" })[0]?.data).toMatchObject({ reason: "closing" });
+});
+
+test("a progress digest reaches the operator and the live company while the worker is active", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const sent: Array<{ text: string; wake: boolean }> = [];
+  d.dispatcher = { deliver: (text, opts) => (sent.push({ text, wake: opts.wake }), true) };
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 40, dispatchStallMs: 60_000 }, 1, {
+    start: start as never,
+    root,
+    lastCommit: () => "8694a46 feat: task 5",
+  });
+  const beat = setInterval(() => {
+    ctl.h!.onMessage("Task 5 is approved. Next, Task 6.", "text");
+    ctl.h!.onActivity!("Agent: Implement Task 6");
+  }, 10);
+  await settle(150);
+  clearInterval(beat);
+  const toOperator = replies.filter((r) => r.text.startsWith("[dispatch progress]"));
+  expect(toOperator.length).toBeGreaterThan(0);
+  expect(toOperator[0]!.priority).toBeUndefined(); // the muted project chat, never the Decisions group
+  expect(toOperator[0]!.text).toContain("Task 5 is approved");
+  expect(toOperator[0]!.text).toContain("8694a46");
+  const toCompany = sent.filter((s) => s.text.startsWith("[dispatch progress]"));
+  expect(toCompany.length).toBe(toOperator.length);
+  expect(toCompany.every((s) => s.wake === false)).toBe(true); // progress never wakes the company
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
+test("no digest is sent when the worker has shown no activity since the last one", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 20, dispatchStallMs: 60_000 }, 1, { start: start as never, root });
+  await settle(120);
+  expect(replies.filter((r) => r.text.startsWith("[dispatch progress]"))).toHaveLength(0);
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
+test("dispatchProgressMs 0 turns digests off", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 0, dispatchStallMs: 60_000 }, 1, { start: start as never, root });
+  const beat = setInterval(() => ctl.h!.onActivity!("Bash"), 5);
+  await settle(80);
+  clearInterval(beat);
+  expect(replies.filter((r) => r.text.startsWith("[dispatch progress]"))).toHaveLength(0);
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
+test("the final result goes to the dispatcher with wake, and is kept in the inbox until delivered", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const sent: Array<{ text: string; wake: boolean }> = [];
+  let up = false;
+  d.dispatcher = { deliver: (text, opts) => (up ? (sent.push({ text, wake: opts.wake }), true) : false) };
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root });
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "built the thing", costUsd: 0 });
+  await settle();
+  expect(sent).toHaveLength(0);
+  expect(d.ledger.pendingDispatcherReports().map((r) => r.text)).toEqual(["[dispatch result] eticket-v3: built the thing"]);
+  up = true; // the next dispatch's result flushes the backlog too
+  const second = drivenStart();
+  await dispatchToProject("eticket-v3", "t2", d, 1, { start: second.start as never, root });
+  second.ctl.resolve!({ ok: true, sessionId: "s", summary: "second", costUsd: 0 });
+  await settle();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.wake).toBe(true);
+  expect(sent[0]!.text).toContain("built the thing");
+  expect(sent[0]!.text).toContain("second");
+  expect(d.ledger.pendingDispatcherReports()).toHaveLength(0);
+});
+
+test("a stall-aborted dispatch reports where it stopped: last commit, latest note, last activity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const sent: string[] = [];
+  d.dispatcher = { deliver: (text) => (sent.push(text), true) };
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchStallMs: 30, dispatchGraceMs: 5 }, 1, {
+    start: start as never,
+    root,
+    lastCommit: () => "2f51a025 feat: task 4",
+  });
+  ctl.h!.onMessage("Task 4 complete, starting Task 5.", "text");
+  ctl.h!.onActivity!("Agent: Implement Task 5");
+  ctl.h!.onMessage("🔧 Bash: go test", "tool"); // a tool line is never the "latest note"
+  await settle(150);
+  const report = sent.find((t) => t.startsWith("[dispatch result]"));
+  expect(report).toBeDefined();
+  expect(report).toContain("stall");
+  expect(report).toContain("2f51a025 feat: task 4");
+  expect(report).toContain("Task 4 complete, starting Task 5.");
+  expect(report).toContain("Agent: Implement Task 5");
+  expect(report).not.toContain("go test");
+  // the operator's alert line carries the same stop point
+  expect(replies.some((r) => r.priority === "alert" && r.text.includes("2f51a025"))).toBe(true);
+});
+
+test("a crashed run (done rejects) still reports to the dispatcher, with its stop point", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const sent: string[] = [];
+  d.dispatcher = { deliver: (text) => (sent.push(text), true) };
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root, lastCommit: () => "abc1234 wip" });
+  ctl.reject!(new Error("worker process exited"));
+  await settle();
+  const report = sent.find((t) => t.startsWith("[dispatch result]"));
+  expect(report).toContain("worker process exited");
+  expect(report).toContain("abc1234 wip");
+});
+
+test("without a wired dispatcher the result still reaches a live company control", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const got: string[] = [];
+  const co = d.registry.add({ id: "co", source: "neo", folder: "/home/neo/agent", task: "hq", chatId: 1, createdAt: 0 }, 0);
+  d.registry.setDefault(co.id);
+  d.registry.attachControl(co.id, { followUp: (t) => void got.push(t), interrupt: async () => {} });
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root });
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "ok", costUsd: 0 });
+  await settle();
+  expect(got).toEqual(["[dispatch result] eticket-v3: ok"]);
+});
+
+test("a brief pushed into an operator-opened session does not promise a result back to the dispatcher", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const s = d.registry.add({ id: "op", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: 7, createdAt: 0 }, 0);
+  d.registry.setStatus(s.id, "running");
+  d.registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, active: () => true });
+  const out = await dispatchToProject("eticket-v3", "also do y", d, 1, { root, now: () => 0 });
+  expect(out).toContain("NOT");
+  expect(out).not.toContain("you get progress digests");
+});
+
+test("a brief queued behind a dispatch-owned run is covered by that run's digests and result", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "first", d, 1, { start: start as never, root });
+  await settle();
+  const out = await dispatchToProject("eticket-v3", "second", d, 1, { root });
+  expect(out).toContain("you get progress digests and the result");
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
+test("a run that ends during a reload drain says it was cut short for the reload, with its stop point, and stays queued", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  let draining = false;
+  d.lifecycle = { draining: () => draining };
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root, lastCommit: () => "9f9f9f9 wip: task 3" });
+  draining = true; // the reload begins; the worker wraps up and its run ends
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "committed task 3", costUsd: 0 });
+  await settle();
+  const pending = d.ledger.pendingDispatcherReports(); // the link refuses while draining → kept for after the restart
+  expect(pending).toHaveLength(1);
+  expect(pending[0]!.text).toContain("engine reload");
+  expect(pending[0]!.text).toContain("9f9f9f9 wip: task 3");
+  // and the run is not mistaken for an unfinished one at the next boot
+  expect(d.ledger.unfinishedDispatches(0)).toHaveLength(0);
 });

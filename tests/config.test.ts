@@ -53,15 +53,18 @@ test("loopSchedulerEnabled defaults to true; NEO_LOOP_SCHEDULER=0 disables it", 
   }
 });
 
-test("dispatchTimeoutMs defaults to 900000 and reads config.json", () => {
-  expect(loadConfig("/nonexistent-dir").dispatchTimeoutMs).toBe(900_000);
+test("dispatch has no wall-clock ceiling knob (ADR-0007)", () => {
+  const c = loadConfig("/nonexistent-dir") as unknown as Record<string, unknown>;
+  expect(c.dispatchTimeoutMs).toBeUndefined();
+  expect(c.dispatchTimeoutMaxMs).toBeUndefined();
 });
 
-test("dispatch liveness knobs default per spec (ceiling 2h, stall 5m, grace 75s)", () => {
+test("dispatch liveness + reporting knobs default per spec (stall 5m, grace 75s, digest 10m, recovery 24h)", () => {
   const c = loadConfig("/nonexistent-dir");
-  expect(c.dispatchTimeoutMaxMs).toBe(7_200_000);
   expect(c.dispatchStallMs).toBe(300_000);
   expect(c.dispatchGraceMs).toBe(75_000);
+  expect(c.dispatchProgressMs).toBe(600_000);
+  expect(c.dispatchRecoverWindowMs).toBe(86_400_000);
 });
 
 test("watchdog thresholds default per spec", () => {

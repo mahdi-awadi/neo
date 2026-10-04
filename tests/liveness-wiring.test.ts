@@ -112,7 +112,6 @@ test("a dispatch is NEVER stall-aborted while its worker waits on the operator",
   const { d } = makeDeps({ askApproval: () => new Promise<"allow" | "deny">(() => {}) });
   d.dispatchStallMs = 40;
   d.dispatchGraceMs = 20;
-  d.dispatchTimeoutMs = 60_000;
   const cap = capturingStart();
   // real clock: the stall monitor measures elapsed time
   await dispatchToProject("acme", "task", d, 1, { start: cap.start as never, root });
@@ -130,7 +129,6 @@ test("a stall abort records the evidence it acted on BEFORE it fires", async () 
   const { d } = makeDeps();
   d.dispatchStallMs = 40;
   d.dispatchGraceMs = 20;
-  d.dispatchTimeoutMs = 60_000;
   const cap = capturingStart();
   await dispatchToProject("acme", "task", d, 1, { start: cap.start as never, root });
   await settle();

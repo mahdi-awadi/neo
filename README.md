@@ -64,8 +64,10 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   explicit and reverts after a single message (`/pin` to hold it), so stray messages never stick to a
   project. When a project is busy, the reply reports its **real status** — not an opaque "busy".
 - **The "company" — an always-on default project** that answers free-text orders when nothing else
-  is active, and can **dispatch** project work to governed sub-workers, bounded by a stall/liveness
-  monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window). A `sessions`
+  is active, and can **dispatch** project work to governed sub-workers. A dispatch has no time limit;
+  only a stall/liveness monitor aborts a truly silent (hung) worker, after a graceful wrap-up window.
+  The company gets a progress digest while a dispatch runs and always gets its final result,
+  including where an interrupted run stopped (ADR-0007). A `sessions`
   tool gives it live awareness of every project's state. Every dispatched brief steers the worker
   through a two-phase **design → build** flow: DESIGN — sharpen the domain model into a `CONTEXT.md`
   glossary + ADRs and a spec (one clean seam) — then BUILD with TDD → verify → code-review. The same

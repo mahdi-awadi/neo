@@ -125,16 +125,21 @@ export interface NeoConfig {
   businessName: string;
   /** When true (default), the daemon runs the loop scheduler. Disable with NEO_LOOP_SCHEDULER=0. */
   loopSchedulerEnabled: boolean;
-  /** Default per-dispatch ceiling (ms) when the caller doesn't request one. Default 15 min. */
-  dispatchTimeoutMs: number;
-  /** Hard cap (ms) on any per-dispatch ceiling a caller may request. Default 2 h. */
-  dispatchTimeoutMaxMs: number;
   /** Abort a dispatched sub-run that has produced NO activity for this long (ms). Default 5 min.
-   *  A busy worker streaming output stays alive regardless of wall clock (up to the ceiling). */
+   *  The only automatic abort: a dispatch has no wall-clock limit, so a busy worker streaming
+   *  activity runs until it is done, however long that takes (ADR-0007). */
   dispatchStallMs: number;
-  /** Grace window (ms) after a limit fires: the worker is told to commit green work + write a
-   *  WIP note before the hard abort. Default 75 s. */
+  /** Grace window (ms) after the stall limit fires: the worker is told to commit green work + write
+   *  a WIP note before the hard abort. Default 75 s. */
   dispatchGraceMs: number;
+  /** Progress-digest interval (ms) for a running dispatch — one line to the operator and to the live
+   *  dispatcher (the company), only when there was activity since the last one. 0 turns digests
+   *  off. Default 10 min. */
+  dispatchProgressMs: number;
+  /** At boot, a dispatch started within this window (ms) that never recorded its end was cut short
+   *  by the restart/crash: its end is recorded and the dispatcher gets a report with its stop
+   *  point. Default 24 h. */
+  dispatchRecoverWindowMs: number;
   /** Second-tier API-throttle backoff ladder (ms per attempt) — the wait before re-sending a
    *  rate-limited brief when the API gave no real reset time. The number of automatic retries is
    *  DERIVED from this array's length (not a separate knob). Default [30s, 2m, 8m]. */
@@ -220,10 +225,10 @@ const DEFAULTS = {
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
   codebaseMemoryIndexTimeoutMs: 5 * 60 * 1000,
-  dispatchTimeoutMs: 15 * 60 * 1000,
-  dispatchTimeoutMaxMs: 2 * 60 * 60 * 1000,
   dispatchStallMs: 5 * 60 * 1000,
   dispatchGraceMs: 75 * 1000,
+  dispatchProgressMs: 10 * 60 * 1000,
+  dispatchRecoverWindowMs: 24 * 60 * 60 * 1000,
   // API-throttle recovery policy (see api-retry.ts). These reproduce the pre-config constants
   // exactly, so behavior is byte-identical until an operator overrides them.
   apiRetryLadderMs: [30_000, 120_000, 480_000],
@@ -354,10 +359,10 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
     loopSchedulerEnabled:
       process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
-    dispatchTimeoutMs: fileCfg.dispatchTimeoutMs ?? DEFAULTS.dispatchTimeoutMs,
-    dispatchTimeoutMaxMs: fileCfg.dispatchTimeoutMaxMs ?? DEFAULTS.dispatchTimeoutMaxMs,
     dispatchStallMs: fileCfg.dispatchStallMs ?? DEFAULTS.dispatchStallMs,
     dispatchGraceMs: fileCfg.dispatchGraceMs ?? DEFAULTS.dispatchGraceMs,
+    dispatchProgressMs: fileCfg.dispatchProgressMs ?? DEFAULTS.dispatchProgressMs,
+    dispatchRecoverWindowMs: fileCfg.dispatchRecoverWindowMs ?? DEFAULTS.dispatchRecoverWindowMs,
     apiRetryLadderMs: fileCfg.apiRetryLadderMs ?? DEFAULTS.apiRetryLadderMs,
     apiRetryJitterFrac: fileCfg.apiRetryJitterFrac ?? DEFAULTS.apiRetryJitterFrac,
     apiCooldownMs: fileCfg.apiCooldownMs ?? DEFAULTS.apiCooldownMs,

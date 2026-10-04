@@ -66,6 +66,9 @@ export interface SessionControl {
    *  mid-turn from one waiting for the next brief — this is the signal that can. Optional for old
    *  fakes (absent → treated as not-active, i.e. idle). */
   active?(): boolean;
+  /** True once the input channel was closed (graceful close or interrupt): a follow-up pushed now
+   *  is dropped, so a caller must refuse to deliver instead. Optional for old fakes (absent → open). */
+  closed?(): boolean;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */
