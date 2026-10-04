@@ -26,6 +26,7 @@ import type { IngressDeps } from "../engine/ingress";
 import { mdToHtml, projectHashtag } from "../engine/format";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import type { ApiCooldown } from "../engine/api-retry";
+import { makeProactiveSources } from "../engine/proactive";
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
  *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
@@ -276,6 +277,7 @@ export function startTelegram(
         store: ledger,
         shouldStop: () => meter.shouldThrottle(),
         cfg,
+        proactive: makeProactiveSources(ledger, registry, inbox),
       })
     )
       return;
@@ -448,6 +450,7 @@ export function startTelegram(
           store: ledger,
           shouldStop: () => meter.shouldThrottle(),
           cfg,
+          proactive: makeProactiveSources(ledger, registry, inbox),
         });
       return;
     }

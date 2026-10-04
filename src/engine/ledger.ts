@@ -68,6 +68,33 @@ export interface Ledger {
   ): void;
   /** Recent events, newest-first. Filter by kind and/or orderId; capped by `limit` (default 50). */
   listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): EngineEvent[];
+  /** Commitments (Phase 5 heartbeat): a follow-up someone promised ("I'll check the deploy
+   *  tomorrow"), with a due time the heartbeat checks in on deterministically (commitments.ts). */
+  addCommitment(input: { text: string; project: string; dueAt: number; source: CommitmentSource; at?: number }): Commitment;
+  /** Commitments in `status` (default "open"), soonest-due first. */
+  listCommitments(status?: CommitmentStatus): Commitment[];
+  getCommitment(id: number): Commitment | undefined;
+  /** Close (done) or drop a commitment. Returns false when the id is unknown. */
+  setCommitmentStatus(id: number, status: CommitmentStatus): boolean;
+  /** Record that a check-in for this commitment reached the operator (re-ping spacing). */
+  markCommitmentCheckin(id: number, at: number): void;
+}
+
+export type CommitmentStatus = "open" | "done" | "dropped";
+/** Who recorded it: the operator (/remind) or a worker (the `commitment_add` tool). */
+export type CommitmentSource = "operator" | "worker";
+
+export interface Commitment {
+  id: number;
+  text: string;
+  /** Project tag it belongs to (folder basename, e.g. "agent" for the company). */
+  project: string;
+  dueAt: number;
+  createdAt: number;
+  status: CommitmentStatus;
+  source: CommitmentSource;
+  /** When the last check-in was delivered; undefined until the first one. */
+  lastCheckinAt?: number;
 }
 
 /** One structured engine event (diagnostic trail). `data` is small structured metadata —
@@ -180,6 +207,35 @@ export function openLedger(path: string): Ledger {
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_order_at ON events (order_id, at)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_events_at ON events (at)`);
   let eventInserts = 0;
+  // Commitments: follow-ups with a due time; the heartbeat delivers due check-ins (commitments.ts).
+  db.run(
+    `CREATE TABLE IF NOT EXISTS commitments (
+       id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, project TEXT NOT NULL,
+       due_at INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL,
+       source TEXT NOT NULL, last_checkin_at INTEGER
+     )`,
+  );
+  db.run(`CREATE INDEX IF NOT EXISTS idx_commitments_status_due ON commitments (status, due_at)`);
+  type CommitmentRow = {
+    id: number;
+    text: string;
+    project: string;
+    due_at: number;
+    created_at: number;
+    status: string;
+    source: string;
+    last_checkin_at: number | null;
+  };
+  const toCommitment = (r: CommitmentRow): Commitment => ({
+    id: r.id,
+    text: r.text,
+    project: r.project,
+    dueAt: r.due_at,
+    createdAt: r.created_at,
+    status: r.status as CommitmentStatus,
+    source: r.source as CommitmentSource,
+    ...(r.last_checkin_at !== null ? { lastCheckinAt: r.last_checkin_at } : {}),
+  });
 
   return {
     recordOrder(o) {
@@ -444,6 +500,31 @@ export function openLedger(path: string): Ledger {
         .query(`SELECT session_id, folder, project FROM message_routes WHERE chat_id = ? AND message_id = ?`)
         .get(chatId, messageId) as { session_id: string; folder: string; project: string } | null;
       return row ? { sessionId: row.session_id, folder: row.folder, project: row.project } : undefined;
+    },
+    addCommitment(input) {
+      const at = input.at ?? Date.now();
+      const row = db
+        .query(
+          `INSERT INTO commitments (text, project, due_at, created_at, status, source)
+           VALUES (?, ?, ?, ?, 'open', ?) RETURNING *`,
+        )
+        .get(input.text, input.project, input.dueAt, at, input.source) as CommitmentRow;
+      return toCommitment(row);
+    },
+    listCommitments(status = "open") {
+      return (
+        db.query(`SELECT * FROM commitments WHERE status = ? ORDER BY due_at ASC, id ASC`).all(status) as CommitmentRow[]
+      ).map(toCommitment);
+    },
+    getCommitment(id) {
+      const row = db.query(`SELECT * FROM commitments WHERE id = ?`).get(id) as CommitmentRow | null;
+      return row ? toCommitment(row) : undefined;
+    },
+    setCommitmentStatus(id, status) {
+      return db.query(`UPDATE commitments SET status = ? WHERE id = ?`).run(status, id).changes > 0;
+    },
+    markCommitmentCheckin(id, at) {
+      db.query(`UPDATE commitments SET last_checkin_at = ? WHERE id = ?`).run(at, id);
     },
     outcomesForFolder(folder) {
       const rows = db

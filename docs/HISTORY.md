@@ -180,3 +180,18 @@ hooks, queues follow-ups as sequential turns on the same thread, and aborts with
 kept explicit: Codex SDK does not expose Claude's `canUseTool` hook or Anthropic in-process MCP
 shape, so Codex runs use Codex sandbox/approval policy and emit `worker_compat_warning` for
 Claude-only run options; read-only judge runs translate to Codex `sandboxMode:"read-only"`.
+
+**Heartbeat, morning brief & commitments — implemented (Phase 5, spec items 12-13):** two built-in
+loops on the company workspace, both off by default (`/loop heartbeat on`, `/loop morning-brief on`).
+`src/engine/proactive.ts` builds a deterministic digest (open commitments, live projects via
+`sessionStatuses`, customer-inbox counts only — never customer text) and runs one fresh, read-only
+worker (`READONLY_DENY`) under a silence contract: a reply starting with `HEARTBEAT_OK` is dropped,
+and only the worker's final message is delivered. The heartbeat is gated by `heartbeat.activeHours`
+and skips the worker entirely when nothing is pending or the situation's fingerprint matches the last
+review (recorded as a `heartbeat.digest` event), so an idle day costs nothing. Commitments
+(`src/engine/commitments.ts`, ledger `commitments` table) come from `/remind <when> <what>` or the
+`commitment_add`/`commitment_list`/`commitment_done` tools on operator sessions; the engine delivers
+due check-ins itself and re-pings after `heartbeat.checkinRepeatHours`. `/commitments` lists and
+closes them. Cadence and window live in `config.json`'s `heartbeat` block (`docs/CONFIG.md`).
+Tests: `tests/proactive.test.ts`, `tests/commitments.test.ts`, plus a dispatch test that the
+customer/ingress path never gets the commitment tools.

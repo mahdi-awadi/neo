@@ -106,10 +106,15 @@ What OpenClaw users love most, rebuilt on Neo's governed primitives:
     reaches the operator. Cost-bounded by design: `freshSession`, light context, active-hours
     window, and the rate-limit governor gate. This generalizes Neo's per-loop quiet rule to
     *everything*, on the loop runtime that already exists.
+    **Implemented 2026-10-04** (`src/engine/proactive.ts`): plus a morning-brief variant, and an
+    engine-side "situation unchanged" skip so the worker only runs when something moved.
 13. **Commitment inference**: at natural boundaries (handoff/idle-close capture — the same
     cheap-model pass Phase 2 adds), extract explicit commitments ("I'll check the deploy
     tomorrow") into a ledger `commitments` table; the heartbeat delivers due check-ins
     deterministically. AI extracts (in a worker); the engine schedules and delivers.
+    **Implemented 2026-10-04** (`src/engine/commitments.ts`) as a ledger table fed by `/remind` and a
+    worker `commitment_add` tool on operator sessions. Not yet done: the automatic extraction pass
+    at handoff/idle-close; workers file commitments when they make them instead.
 14. **Trigger vocabulary**: extend the `Trigger` union with `at` (one-shot, self-disabling),
     `on-exit` (a watched command/process ends), and `stream-command` (line-driven from a watched
     command's output) — plus per-loop delivery modes (`announce` / `webhook` / `none`).

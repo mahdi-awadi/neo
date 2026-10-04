@@ -28,6 +28,7 @@ import { mdToHtml } from "./format";
 import type { UsageMeter } from "./usage";
 import type { OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
+import { makeProactiveSources } from "./proactive";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -142,7 +143,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg })) return;
+      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, proactive: makeProactiveSources(opts.engine.ledger, opts.engine.registry) })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
@@ -209,7 +210,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     runLoop(name) {
       const loop = matchLoop(name, opts.engine.ledger);
-      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg });
+      if (loop) void startLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, proactive: makeProactiveSources(opts.engine.ledger, opts.engine.registry) });
     },
     createLoop(input) {
       const r = defCreateLoop(input, opts.engine.ledger, opts.engine.cfg.workRoot);

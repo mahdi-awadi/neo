@@ -17,6 +17,7 @@ import { profileDeps } from "./worker-profile";
 import { sessionContext, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor } from "./context-policy";
 import { memoryDir, memoryScopeEnabled } from "./memory";
 import { memoryTools } from "./memory-tool";
+import { runProactive, type ProactiveKind, type ProactiveSources } from "./proactive";
 import type { NeoConfig } from "../config";
 import type { Ledger } from "./ledger";
 
@@ -50,6 +51,11 @@ export interface LoopDef extends SchedulableLoop {
    *  the fire path pre-checks `memoryScopeEnabled` so a company folder that isn't in
    *  `cfg.memory.scopes` no-ops instead of burning a worker run (dreamGateOutcome). */
   dreamMemory?: boolean;
+  /** Marks the heartbeat / morning-brief loops (proactive.ts). Like the dream loop, `folder` is the
+   *  "company" sentinel and `trigger` a placeholder: resolveLoop rewrites both from cfg at fire time
+   *  (cfg.companyFolder, cfg.heartbeat.everyMinutes / briefCron). The fire path builds the prompt
+   *  from live engine state, so `prompt` here is documentation only. */
+  proactive?: ProactiveKind;
 }
 
 export interface LoopDeps {
@@ -66,6 +72,8 @@ export interface LoopDeps {
   /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
    *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */
   cfg?: NeoConfig;
+  /** Live engine state for the heartbeat / morning-brief loops. Absent ⇒ those loops refuse to run. */
+  proactive?: ProactiveSources;
 }
 
 // The built-in loops are generic, deployment-neutral examples of the trigger → action → goal model.
@@ -198,7 +206,44 @@ const MEMORY_DREAM: LoopDef = {
   dreamMemory: true,
 };
 
-export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN, MEMORY_DREAM];
+// The heartbeat: a periodic, READ-ONLY review of everything pending (open commitments, live
+// projects, customer-inbox counts) on the company workspace, under a silence contract — the worker
+// answers HEARTBEAT_OK when nothing needs the operator and the engine drops it. Due commitment
+// check-ins are delivered by the engine itself. Engine-side gates keep it cheap: active hours,
+// "nothing pending", and "same situation as the last review" all skip the worker run entirely.
+// Fire-once per tick (never-met goal + maxIterations 1), fresh session every time. See proactive.ts.
+const HEARTBEAT: LoopDef = {
+  name: "heartbeat",
+  usage: "/loop heartbeat",
+  summary: "check pending work + commitments; silent unless something needs you (read-only)",
+  folder: "company", // sentinel — resolveLoop rewrites to cfg.companyFolder
+  prompt: "Built at fire time from live engine state (proactive.ts proactivePrompt).",
+  goal: { kind: "command", command: ["sh", "-c", "false"] }, // never met → fire-once with maxIterations 1
+  trigger: { kind: "interval", everyMs: 60 * 60_000 }, // placeholder — resolveLoop uses cfg.heartbeat.everyMinutes
+  bounds: { maxIterations: 1, budgetUsd: 1 },
+  enabledByDefault: false,
+  freshSession: true,
+  proactive: "heartbeat",
+};
+
+// The morning brief: once a day, the same read-only review written up as a short brief (what's due,
+// what's running or waiting, what carries over from yesterday's memory log, the one next step).
+// Same silence contract — a genuinely empty day sends nothing.
+const MORNING_BRIEF: LoopDef = {
+  name: "morning-brief",
+  usage: "/loop morning-brief",
+  summary: "daily brief: commitments, running work, yesterday's carry-overs (read-only)",
+  folder: "company", // sentinel — resolveLoop rewrites to cfg.companyFolder
+  prompt: "Built at fire time from live engine state (proactive.ts proactivePrompt).",
+  goal: { kind: "command", command: ["sh", "-c", "false"] }, // never met → fire-once with maxIterations 1
+  trigger: { kind: "cron", expr: "0 8 * * *" }, // placeholder — resolveLoop uses cfg.heartbeat.briefCron
+  bounds: { maxIterations: 1, budgetUsd: 2 },
+  enabledByDefault: false,
+  freshSession: true,
+  proactive: "brief",
+};
+
+export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN, MEMORY_DREAM, HEARTBEAT, MORNING_BRIEF];
 
 export function isBuiltin(name: string): boolean {
   return LOOPS.some((l) => l.name === name);
@@ -312,6 +357,56 @@ export function resolveDreamLoop(loop: LoopDef, cfg?: NeoConfig): LoopDef {
   };
 }
 
+/** Resolves every cfg-dependent field of a built-in loop: the dream loop (resolveDreamLoop) and the
+ *  heartbeat / morning-brief loops (company folder + cfg.heartbeat cadence). The ONE step the
+ *  daemon's tick and every fire path run first, so scheduling, the busy-guard and the run all see
+ *  real values. A no-op for every other loop, and for a proactive loop with no cfg. */
+export function resolveLoop(loop: LoopDef, cfg?: NeoConfig): LoopDef {
+  if (loop.dreamMemory) return resolveDreamLoop(loop, cfg);
+  if (!loop.proactive || !cfg) return loop;
+  const trigger: Trigger =
+    loop.proactive === "heartbeat"
+      ? { kind: "interval", everyMs: cfg.heartbeat.everyMinutes * 60_000 }
+      : { kind: "cron", expr: cfg.heartbeat.briefCron };
+  return { ...loop, folder: cfg.companyFolder, trigger };
+}
+
+/** Run a heartbeat / morning-brief fire (proactive.ts) on the governed loop runtime: one fresh,
+ *  READ-ONLY worker run (READONLY_DENY on top of the loop profile), escalations auto-denied. `say`
+ *  delivers each line to the operator. Refuses (0 iterations) without cfg or live sources. */
+async function runProactiveLoop(
+  loop: LoopDef,
+  deps: { run?: typeof runOrder; check?: GoalCheck; cfg?: NeoConfig; store?: LoopStore; shouldStop?: () => boolean; proactive?: ProactiveSources },
+  say: (text: string) => void | Promise<void>,
+  force: boolean,
+): Promise<LoopOutcome> {
+  const cfg = deps.cfg;
+  if (!cfg || !deps.proactive || !loop.proactive) {
+    return { met: false, iterations: 0, reason: "stopped", lastDetail: "heartbeat sources unavailable", spentUsd: 0 };
+  }
+  const { check } = loopRunExtras(loop, deps);
+  return runProactive(loop.proactive, {
+    sources: deps.proactive,
+    cfg: cfg.heartbeat,
+    reply: say,
+    force,
+    execute: (prompt, onMessage) =>
+      runProjectLoop(
+        {
+          folder: loop.folder,
+          prompt,
+          goal: loop.goal,
+          bounds: loop.bounds,
+          onMessage,
+          shouldStop: deps.shouldStop,
+          runDeps: profileDeps(cfg, "loop", { disallowedTools: READONLY_DENY }),
+          freshSession: true,
+        },
+        { run: deps.run, check },
+      ),
+  });
+}
+
 /** Deterministic pre-check for a dream-memory loop (already folder-resolved via
  *  resolveDreamLoop): refuses to start a worker at all when there's no cfg, or the resolved
  *  company folder isn't in `cfg.memory.scopes` — the memory system is opt-in (default `scopes: []`
@@ -396,7 +491,14 @@ function loopRunExtras(
 
 /** Run a loop end to end, streaming progress and a final outcome line to the channel. */
 export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps): Promise<LoopOutcome> {
-  const loop = resolveDreamLoop(loopIn, deps.cfg);
+  const loop = resolveLoop(loopIn, deps.cfg);
+  if (loop.proactive) {
+    // An explicit run is "check now": forced past active hours and the unchanged-digest skip, and
+    // it always says something, so a silent verdict reads as "all clear" rather than nothing.
+    const out = await runProactiveLoop(loop, deps, (t) => deps.reply(chatId, t), true);
+    if (out.lastDetail !== "reported") await deps.reply(chatId, `🔁 ${loop.name}: ✅ nothing needs you (${out.lastDetail})`);
+    return out;
+  }
   const gated = dreamGateOutcome(loop, deps.cfg);
   if (gated) {
     await deps.reply(chatId, `🔁 ${loop.name}: ⚠️ ${gated.lastDetail}`);
@@ -441,6 +543,8 @@ export interface ScheduledLoopDeps {
   /** Loop store — only `listCacheObservations` is used here, to derive the LEARNED cache TTL for
    *  the resume gate. Omitted ⇒ the gate falls back to cacheTtlFallbackMs (no observations). */
   store?: LoopStore;
+  /** Live engine state for the heartbeat / morning-brief loops. Absent ⇒ those loops refuse to run. */
+  proactive?: ProactiveSources;
 }
 
 /** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/acme →
@@ -458,8 +562,10 @@ export function loopProjectTag(loop: LoopDef): string {
  * daemon's loop scheduler so scheduled-loop output reaches Telegram/web, not just daemon stdout.
  */
 export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDeps): Promise<LoopOutcome> {
-  const loop = resolveDreamLoop(loopIn, deps.cfg);
+  const loop = resolveLoop(loopIn, deps.cfg);
   const project = loopProjectTag(loop);
+  // Heartbeat / brief: silent by contract — only check-ins and a non-HEARTBEAT_OK verdict speak.
+  if (loop.proactive) return runProactiveLoop(loop, deps, (t) => deps.reply(deps.chatId, t, project), false);
   const gated = dreamGateOutcome(loop, deps.cfg);
   if (gated) {
     await deps.reply(deps.chatId, gated.lastDetail, project);

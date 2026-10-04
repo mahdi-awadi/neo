@@ -4,7 +4,7 @@
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
@@ -22,6 +22,7 @@ import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_O
 import { describeSessionStatus, sessionsReport } from "./session-status";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memoryTools } from "./memory-tool";
+import { commitmentTools } from "./commitments";
 import { profileDeps } from "./worker-profile";
 import { supportsRunConfigField } from "./model-resolver";
 import {
@@ -585,6 +586,9 @@ export function neoMcpServers(
     stitchKey?: string;
     /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
     codebaseMemoryBin?: string;
+    /** Operator-only: attach the commitment tools (commitments.ts) so a worker can record a
+     *  follow-up the heartbeat checks in on. The customer/ingress path never passes this. */
+    commitments?: { morningHour: number };
   },
 ): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -655,6 +659,9 @@ export function neoMcpServers(
     // Same reasoning context-policy.ts's other "no model yet" call sites document.
     const windowTokens = windowTokensFor(undefined, deps.contextPolicy?.windowTokensByModel);
     tools.push(...memoryTools(opts.folder, memCfg, windowTokens));
+  }
+  if (opts.commitments) {
+    tools.push(...commitmentTools(deps.ledger, { project: basename(opts.folder), morningHour: opts.commitments.morningHour }));
   }
   const server = createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
   const servers: Record<string, unknown> = { neo: server };

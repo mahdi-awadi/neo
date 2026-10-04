@@ -44,6 +44,25 @@ export interface MemoryCfg {
   dreamLookbackDays: number;
 }
 
+/** Heartbeat + morning brief + commitment check-ins (Phase 5). See `src/engine/proactive.ts`.
+ *  The two loops (`heartbeat`, `morning-brief`) are built-ins that stay OFF until the operator turns
+ *  them on (`/loop heartbeat on`); these fields only shape them once they are on. */
+export interface HeartbeatCfg {
+  /** OPERATOR CHOICE — minutes between heartbeat fires. Fallback 60 (OpenClaw's default cadence
+   *  is 30; hourly halves the worker runs, and an unchanged digest skips the worker anyway). */
+  everyMinutes: number;
+  /** OPERATOR CHOICE — 5-field cron (server-local time) for the morning brief. Fallback
+   *  "0 8 * * *". */
+  briefCron: string;
+  /** OPERATOR CHOICE — local hours [start, end) the heartbeat may run in. start === end means
+   *  always; start > end wraps midnight (e.g. 22→6). Fallback 8→22. Due commitment check-ins also
+   *  wait for this window, so nothing pings at night. */
+  activeHours: { start: number; end: number };
+  /** OPERATOR CHOICE — re-ping an overdue, still-open commitment after this many hours. Fallback
+   *  24 (one reminder a day until it's closed with `/commitments done <id>`). */
+  checkinRepeatHours: number;
+}
+
 export type WorkerPathName =
   | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff";
 
@@ -135,6 +154,8 @@ export interface NeoConfig {
   /** Memory system (Phase 2): scopes + ratio caps + dream-loop budgets. Default `scopes: []` — a
    *  total no-op until the operator opts a folder in. */
   memory: MemoryCfg;
+  /** Heartbeat / morning brief / commitment check-ins. Inert until the loops are turned on. */
+  heartbeat: HeartbeatCfg;
 }
 
 const DEFAULTS = {
@@ -197,6 +218,12 @@ const DEFAULTS = {
     dreamMaxNetChars: 250,
     dreamLookbackDays: 14,
   } satisfies MemoryCfg,
+  heartbeat: {
+    everyMinutes: 60,
+    briefCron: "0 8 * * *",
+    activeHours: { start: 8, end: 22 },
+    checkinRepeatHours: 24,
+  } satisfies HeartbeatCfg,
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
@@ -262,5 +289,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
     memory: { ...DEFAULTS.memory, ...(fileCfg.memory ?? {}) },
+    heartbeat: { ...DEFAULTS.heartbeat, ...(fileCfg.heartbeat ?? {}) },
   };
 }

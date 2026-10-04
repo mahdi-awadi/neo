@@ -18,7 +18,8 @@ import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
-import { effectiveLoops, startScheduledLoop, resolveDreamLoop } from "./engine/loops";
+import { effectiveLoops, startScheduledLoop, resolveLoop } from "./engine/loops";
+import { makeProactiveSources } from "./engine/proactive";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
 import { heartbeatMs, nextTickDelayMs, type HeartbeatLoop } from "./engine/heartbeat";
 import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
@@ -124,10 +125,12 @@ async function main(): Promise<void> {
   // self-rescheduling setTimeout, not setInterval) from the loops enabled *right now*, so toggling
   // on a fast interval loop from the web console speeds the tick up with no daemon restart.
   const currentHeartbeatLoops = (): HeartbeatLoop[] =>
-    effectiveLoops(ledger).map((l) => ({
+    effectiveLoops(ledger).map((l) => resolveLoop(l, cfg)).map((l) => ({
       enabled: ledger.isEnabled(l.name) ?? l.enabledByDefault ?? false, // same resolution as tickScheduler
       trigger: l.trigger,
     }));
+  // Live engine state for the heartbeat / morning-brief loops (proactive.ts) — read at fire time.
+  const proactive = makeProactiveSources(ledger, registry, inbox);
   const scheduleHeartbeat = (): void => {
     // Align the timer to the NEXT tick boundary, not "now + hb" — the tick body below (sweeps +
     // tickScheduler) takes real time, and re-arming from "after the body ran" would drift the chain
@@ -158,11 +161,11 @@ async function main(): Promise<void> {
       if (cfg.loopSchedulerEnabled) {
         tickScheduler({
           // built-in ∪ custom, re-read each tick (no restart for new loops) — folder-resolved
-          // (resolveDreamLoop) BEFORE scheduling so the busy-guard below checks the memory-dream
+          // (resolveLoop) BEFORE scheduling so the busy-guard below checks the memory-dream/heartbeat
           // loop's REAL company folder, not its unresolved "company" sentinel (a no-op for every
           // other loop). def.name is untouched by resolution, so lastRun/enabled bookkeeping and
           // the `start` callback both still key off the loop's real identity.
-          loops: effectiveLoops(ledger).map((l) => resolveDreamLoop(l, cfg)),
+          loops: effectiveLoops(ledger).map((l) => resolveLoop(l, cfg)),
           store: ledger, // Ledger implements LoopStateStore
           // Company-folder aware: the always-on default project is registered IDLE forever, so a
           // plain presence check would starve any loop scheduled against the company folder — see
@@ -180,6 +183,7 @@ async function main(): Promise<void> {
               shouldStop: () => meter.shouldThrottle(),
               cfg,
               store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
+              proactive, // heartbeat / morning-brief: live commitments, sessions, inbox counts
             }),
           // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
           // engine — log it and alert the operator, but keep the daemon and other loops alive.

@@ -33,6 +33,8 @@
 
   "memory": { "scopes": ["company"] },
 
+  "heartbeat": { "everyMinutes": 60, "briefCron": "0 8 * * *", "activeHours": { "start": 8, "end": 22 }, "checkinRepeatHours": 24 },
+
   "// workerEnv": "Claude Code env knobs apply only with providers.ownWork=\"subscription\". When ownWork=\"codex\", CLAUDE_*, ANTHROPIC_*, and MAX_MCP_OUTPUT_TOKENS are filtered before launch.",
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",

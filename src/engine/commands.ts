@@ -15,6 +15,7 @@ import type { SessionInfo } from "../types";
 import { sessionContext, type ContextSignals } from "./context-policy";
 import { humanAge } from "./session-status";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
+import { formatCommitments, recordCommitment, dueLabel } from "./commitments";
 
 export interface CommandDeps {
   registry: Registry;
@@ -39,8 +40,9 @@ export interface CommandDeps {
   windowTokensByModel?: Record<string, number>;
   /** Graceful reload (/reload): the daemon injects drain-then-exit; channels without it can't reload. */
   requestReload?: () => void;
-  /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. */
-  cfg?: Pick<NeoConfig, "providers">;
+  /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. `heartbeat` (when
+   *  present) sets the morning hour a date-only `/remind` lands on. */
+  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "heartbeat">>;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -127,6 +129,19 @@ const COMMANDS: Command[] = [
     run: ({ deps }) => inboxCommand(deps),
   },
   {
+    name: "remind",
+    usage: "/remind <when> <what>",
+    summary: "record a commitment; the heartbeat checks in when it's due (when: 2h · 3d · tomorrow · 2026-10-07)",
+    run: ({ deps, args, now }) => remindCommand(args.trim(), now, deps),
+  },
+  {
+    name: "commitments",
+    aliases: ["promises"],
+    usage: "/commitments [done|drop <id>]",
+    summary: "open commitments the heartbeat will check in on; close one with done/drop",
+    run: ({ deps, args, now }) => commitmentsCommand(args.trim(), now, deps),
+  },
+  {
     name: "recent",
     aliases: ["history"],
     usage: "/recent",
@@ -170,6 +185,33 @@ const COMMANDS: Command[] = [
     run: () => ({ text: renderHelp() }),
   },
 ];
+
+/** Morning hour for date-only due specs: the heartbeat's active-hours start (8 when unconfigured). */
+function morningHour(deps: CommandDeps): number {
+  return deps.cfg?.heartbeat?.activeHours.start ?? 8;
+}
+
+/** /remind <when> <what> — the operator records a commitment directly (no AI involved). */
+function remindCommand(args: string, now: number, deps: CommandDeps): CommandResult {
+  const m = args.match(/^(in\s+\S+|\S+)\s+(.+)$/i);
+  if (!m) return { text: "Usage: /remind <when> <what> — e.g. /remind 2h check the deploy · /remind tomorrow call the bank" };
+  const r = recordCommitment(deps.ledger, { text: m[2], due: m[1], project: "operator", source: "operator", now, morningHour: morningHour(deps) });
+  if (!r.ok) return { text: `Not recorded: ${r.error}` };
+  return { text: `⏰ #${r.commitment.id} recorded — ${dueLabel(r.commitment, now)}. The heartbeat checks in when it's due (turn it on with /loop heartbeat on).` };
+}
+
+/** /commitments — list open ones; /commitments done|drop <id> closes one. */
+function commitmentsCommand(args: string, now: number, deps: CommandDeps): CommandResult {
+  if (!args) return { text: formatCommitments(deps.ledger.listCommitments("open"), now) };
+  const m = args.match(/^(done|drop)\s+#?(\d+)$/i);
+  if (!m) return { text: "Usage: /commitments · /commitments done <id> · /commitments drop <id>" };
+  const id = Number(m[2]);
+  const c = deps.ledger.getCommitment(id);
+  if (!c || c.status !== "open") return { text: `No open commitment #${id}.` };
+  const status = m[1].toLowerCase() === "done" ? "done" : "dropped";
+  deps.ledger.setCommitmentStatus(id, status);
+  return { text: `${status === "done" ? "✅" : "🗑"} #${id} ${status}: ${c.text}` };
+}
 
 /** A Telegram bot command in the Bot API's setMyCommands shape. */
 export interface TelegramCommand {

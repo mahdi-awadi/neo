@@ -260,6 +260,53 @@ the line isn't already there — **never** the tracked `.gitignore` (machine-loc
 per-machine/per-checkout state, not something to commit). Fail-open and a no-op outside a git repo;
 runs at most once per process per folder.
 
+## Heartbeat, morning brief & commitments (`heartbeat`) — Phase 5
+
+Two built-in loops on the company workspace that make Neo speak up on its own, but only when
+something matters (`src/engine/proactive.ts`). Both are **off by default**; turn them on with
+`/loop heartbeat on` and `/loop morning-brief on` (or the web console's Loops tab). Run either now
+with `/loop heartbeat` — an explicit run ignores active hours and always answers.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `everyMinutes` | `60` | Heartbeat cadence (an interval trigger). |
+| `briefCron` | `"0 8 * * *"` | Morning-brief schedule, 5-field cron in server-local time. |
+| `activeHours` | `{ "start": 8, "end": 22 }` | Local hours `[start, end)` the heartbeat may run in; `start === end` = always, `start > end` wraps midnight. Also the hour a date-only `/remind` lands on. |
+| `checkinRepeatHours` | `24` | Re-ping an overdue, still-open commitment after this long. |
+
+```json
+"heartbeat": { "everyMinutes": 30, "briefCron": "30 7 * * 1-5", "activeHours": { "start": 7, "end": 23 } }
+```
+
+**What a heartbeat fire does** (engine first, AI last):
+
+1. Outside `activeHours` → nothing at all (due check-ins wait for the window too).
+2. Every **due commitment** gets a check-in line from the engine itself (`⏰ Check-in #4: …`), then
+   is stamped so it re-pings only after `checkinRepeatHours`.
+3. Nothing pending (no open commitments, no open projects, nothing waiting in the inbox), or the
+   **same situation** as the last review (a fingerprint of commitment ids/overdue flags, project
+   states and the inbox count, kept in the event log as `heartbeat.digest`) → **no worker run**.
+4. Otherwise one fresh, **read-only** worker (`READONLY_DENY`, escalations auto-denied) reviews the
+   digest and may read `memory/` files. It must answer `HEARTBEAT_OK` when nothing needs you; a reply
+   that starts with `HEARTBEAT_OK` is dropped. Only its final message is delivered, never narration.
+
+The **morning brief** runs on `briefCron` with the same digest, always runs the worker (it also looks
+at yesterday's memory log), and follows the same silence contract. Memory makes both more useful:
+put `"company"` in `memory.scopes` so the worker has MEMORY.md and daily logs to read.
+
+**Customer firewall:** the inbox contributes counts and ages only. Customer-authored text (subject,
+sender, body) never reaches the heartbeat worker.
+
+**Commitments** live in the ledger's `commitments` table. They are recorded two ways:
+
+- `/remind <when> <what>` — e.g. `/remind 2h check the deploy`, `/remind tomorrow call the bank`.
+  `when` is `30m`/`2h`/`3d`/`1w` (optionally `in 2h`), `tomorrow`, `YYYY-MM-DD`, or an ISO datetime.
+- Operator worker sessions get `commitment_add` / `commitment_list` / `commitment_done` tools on the
+  `neo` MCP server, so the company or a project can file a promise it just made. The text passes the
+  same write-time scan as memory. The customer/ingress path never gets these tools.
+
+`/commitments` lists open ones; `/commitments done <id>` or `/commitments drop <id>` closes one.
+
 ## There is no `idlePollMs` / `loopTickMs`
 
 The daemon's scheduler tick is **derived**, not a fixed config knob. `heartbeatMs()`
