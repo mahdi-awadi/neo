@@ -36,12 +36,12 @@ beforeEach(() => {
   configureFaults(
     createFaultReporter(
       { log: () => {}, record: (d) => void faults.push(d as (typeof faults)[number]) },
-      { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false },
+      { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false, maxHandoffsPerHour: 0 },
     ),
   );
 });
 afterEach(() => {
-  configureFaults(createFaultReporter({ log: (l) => console.error(l) }, { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false }));
+  configureFaults(createFaultReporter({ log: (l) => console.error(l) }, { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false, maxHandoffsPerHour: 0 }));
 });
 const reported = (component: string) => faults.filter((f) => f.component === component);
 

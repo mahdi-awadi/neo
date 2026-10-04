@@ -341,13 +341,13 @@ test("config.json can turn trustNewProjects off", () => {
 
 test("error containment knobs: defaults, and config.json merges per key (ADR-0010)", () => {
   const c = loadConfig(dir());
-  expect(c.faults).toEqual({ dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: true });
+  expect(c.faults).toEqual({ dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: true, maxHandoffsPerHour: 3 });
   expect(c.health).toEqual({ everyMs: 60_000, lagWarnMs: 2_000, rssWarnMb: 2_048 });
   expect(c.sqliteBusyTimeoutMs).toBe(5_000);
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ faults: { companyHandoff: false }, health: { everyMs: 0 }, sqliteBusyTimeoutMs: 100 }));
   const o = loadConfig(d);
-  expect(o.faults).toEqual({ dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: false });
+  expect(o.faults).toEqual({ dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: false, maxHandoffsPerHour: 3 });
   expect(o.health.everyMs).toBe(0);
   expect(o.health.lagWarnMs).toBe(2_000);
   expect(o.sqliteBusyTimeoutMs).toBe(100);

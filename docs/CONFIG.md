@@ -291,6 +291,7 @@ company to investigate. Then the engine continues. Only a failure **at startup**
 | `faults.dedupeMs` | `900000` (15 min) | A fault with the same signature (component + first line of the message) in this window is counted, not sent again. The next alert says how many repeats there were. |
 | `faults.maxAlertsPerHour` | `6` | Distinct fault alerts per rolling hour. More faults are logged and recorded only. |
 | `faults.companyHandoff` | `true` | Queue each deduplicated fault for the company (as project `neo-engine`). The company gets it with its next delivery; a fault never wakes it. |
+| `faults.maxHandoffsPerHour` | `3` | Company handoffs per rolling hour. More are logged and recorded only. Fault signatures ignore digits, so one cause with a changing number (a 429's `retry_after`) is one fault. Together these stop a loop where the company's own reply fails and becomes the next fault. |
 | `health.everyMs` | `60000` | How often the daemon samples its health. `0` turns the check off. |
 | `health.lagWarnMs` | `2000` | Event-loop lag (how late the sample timer fired) above which the engine is degraded. |
 | `health.rssWarnMb` | `2048` | Resident memory (MB) above which the engine is degraded. |

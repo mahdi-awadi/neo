@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { EventEmitter } from "node:events";
 import { createFaultReporter, installSafetyNet, type FaultCfg } from "../src/engine/fault";
 
-const CFG: FaultCfg = { dedupeMs: 15 * 60_000, maxAlertsPerHour: 3, companyHandoff: true };
+const CFG: FaultCfg = { dedupeMs: 15 * 60_000, maxAlertsPerHour: 3, companyHandoff: true, maxHandoffsPerHour: 3 };
 
 function rig(cfg: Partial<FaultCfg> = {}, over: Partial<Record<"record" | "alert" | "toCompany", (...a: any[]) => void>> = {}) {
   let t = 1_000_000;
@@ -52,7 +52,7 @@ test("the same signature inside the dedupe window is logged and recorded but not
 
 test("distinct faults past the hourly alert cap are logged and recorded, not alerted", () => {
   const x = rig();
-  for (let i = 0; i < 6; i++) x.r.report("c", new Error(`distinct ${i}`));
+  for (const m of "abcdef") x.r.report("c", new Error(`distinct ${m}`));
   expect(x.records).toHaveLength(6);
   expect(x.alerts).toHaveLength(3);
   x.advance(60 * 60_000 + 1);
@@ -102,4 +102,27 @@ test("the safety net reports uncaught exceptions and unhandled rejections and ke
   proc.emit("unhandledRejection", new Error("nobody awaited me"), Promise.resolve());
   proc.emit("uncaughtException", new Error("thrown in a timer"));
   expect(x.records.map((r) => r.component)).toEqual(["process.unhandledRejection", "process.uncaughtException"]);
+});
+
+// Review fix: a flood ban made every failed send a "new" fault (retry_after differs each time), and
+// each one woke the company, whose reply failed again — a loop. Two bounds break it.
+test("faults whose messages differ only in numbers share one signature (retry_after, ids, counts)", () => {
+  const x = rig();
+  x.r.report("telegram.send", new Error("429: Too Many Requests: retry after 3412"));
+  x.r.report("telegram.send", new Error("429: Too Many Requests: retry after 3398"));
+  x.r.report("telegram.send", new Error("429: Too Many Requests: retry after 17"));
+  expect(x.records).toHaveLength(3);
+  expect(x.alerts).toHaveLength(1);
+  expect(x.company).toHaveLength(1);
+});
+
+test("company handoffs are capped per rolling hour, separately from alerts; past the cap they are logged only", () => {
+  const x = rig({ maxAlertsPerHour: 100, maxHandoffsPerHour: 2 });
+  for (const m of ["a", "b", "c", "d"]) x.r.report("web.route", new Error(`distinct fault ${m}`));
+  expect(x.alerts).toHaveLength(4);
+  expect(x.company).toHaveLength(2);
+  expect(x.logs.some((l) => l.includes("handoff cap"))).toBe(true);
+  x.advance(60 * 60_000 + 1);
+  x.r.report("web.route", new Error("distinct fault e"));
+  expect(x.company).toHaveLength(3);
 });

@@ -21,6 +21,9 @@ export interface FaultCfg {
   maxAlertsPerHour: number;
   /** Queue each (deduplicated) fault for the company session to investigate. */
   companyHandoff: boolean;
+  /** Company handoffs per rolling hour; more are logged and recorded only. Bounds the loop where the
+   *  company's own reply fails (a flood ban) and becomes the next fault. */
+  maxHandoffsPerHour: number;
 }
 
 /** Where a fault goes. Every sink is optional except the log, and a throwing sink is ignored. */
@@ -66,6 +69,7 @@ export function createFaultReporter(sink: FaultSink, cfg: FaultCfg, now: () => n
   /** signature → when it was last sent, and how many times it was suppressed since. */
   const seen = new Map<string, { sentAt: number; suppressed: number }>();
   let alertTimes: number[] = [];
+  let handoffTimes: number[] = [];
   const safe = (fn: (() => void) | undefined) => {
     try {
       fn?.();
@@ -82,7 +86,8 @@ export function createFaultReporter(sink: FaultSink, cfg: FaultCfg, now: () => n
       safe(() => sink.record?.({ component, message, stack, ...ctx }));
 
       const t = now();
-      const sig = `${component}|${message.split("\n")[0].slice(0, 200)}`;
+      // Digits are normalised so one cause with a changing number (retry_after, an id) is one signature.
+      const sig = `${component}|${message.split("\n")[0].slice(0, 200).replace(/\d+/g, "#")}`;
       const prev = seen.get(sig);
       if (prev && t - prev.sentAt < cfg.dedupeMs) {
         prev.suppressed++;
@@ -100,7 +105,11 @@ export function createFaultReporter(sink: FaultSink, cfg: FaultCfg, now: () => n
         alertTimes.push(t);
         safe(() => sink.alert?.(`⚠️ engine fault in ${component}${where ? ` (${where})` : ""}: ${message}${again} — the engine keeps running.`));
       }
-      if (cfg.companyHandoff) {
+      handoffTimes = handoffTimes.filter((h) => t - h < HOUR);
+      if (cfg.companyHandoff && handoffTimes.length >= cfg.maxHandoffsPerHour) {
+        safe(() => sink.log(`[fault] ${component}: not handed to the company (handoff cap ${cfg.maxHandoffsPerHour}/h reached)`));
+      } else if (cfg.companyHandoff) {
+        handoffTimes.push(t);
         safe(() =>
           sink.toCompany?.(
             `🛠 Engine fault in ${component}${where ? ` (${where})` : ""}${again}: ${message}\n` +
@@ -148,7 +157,7 @@ export function installSafetyNet(proc: { on(event: string, fn: (...a: any[]) => 
 
 const STDERR_ONLY: FaultReporter = createFaultReporter(
   { log: (l) => console.error(l) },
-  { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false },
+  { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false, maxHandoffsPerHour: 0 },
 );
 let current: FaultReporter = STDERR_ONLY;
 
