@@ -363,6 +363,15 @@ dedupe window are counted, not re-sent, so one repeating error cannot flood a ch
 _Avoid_: error hash, fingerprint
 
 **Unrecoverable state**:
-A state in which running on would be worse than exiting: the ledger cannot be opened, or the web
-port cannot be bound at startup. Only these exit the process (the supervisor restarts it).
+A state in which running on would be worse than exiting: the ledger cannot be opened, the web
+port cannot be bound at startup, or Telegram long polling has stopped for good (a revoked token,
+401, or a second poller on the same token, 409). Only these exit the process (the supervisor
+restarts it). Any other polling stop is reported and polling restarts.
 _Avoid_: fatal error
+
+**Draft version**:
+A counter on an inbox item, bumped by every change to its draft reply. A Send names the version the
+operator approved. The send is refused (*stale*) when the draft changed since, or that version was
+already sent. A second Send while one is in flight is refused (*busy*). This is the send's
+idempotency key: a customer never gets a reply twice or a reply the operator did not see.
+_Avoid_: revision, draft id

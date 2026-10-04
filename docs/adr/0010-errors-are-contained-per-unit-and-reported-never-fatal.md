@@ -65,3 +65,19 @@ with no `busy_timeout` and no WAL.
 - **Wake the company for every fault.** Rejected. A repeating fault would spend budget on the same
   investigation many times. Faults are deduplicated by signature, then queued, and the company gets
   them on its next delivery.
+
+## Amendment (2026-10-04, code review)
+
+- **Company handoff is capped** (`faults.maxHandoffsPerHour`, default 3), separately from alerts,
+  and a fault signature ignores digits. Before, a flood ban made every failed send a new signature
+  (`retry_after` changes), each one woke the company, and the company's reply failed again: a loop.
+- **Telegram polling.** `bot.start()` rejects on 401/409 and also on a failed startup
+  `getMe`/`deleteWebhook`. Only 401/409 is an unrecoverable state (exit 1, supervisor restarts).
+  Any other stop is reported and polling restarts on a 5 s / 30 s / 120 s backoff
+  (`superviseTelegramPolling`).
+- **Inbox Send is idempotent on the draft version** (see CONTEXT.md). The guard is in
+  `sendInboxReply`, so web and Telegram share it. Rejected: a Telegram-only in-flight set (web
+  double posts stay open) and comparing draft text (an edit back to the same text is still an edit
+  the operator did not approve).
+- The post-completion context handoff is contained (`pipeline.handoff`).
+

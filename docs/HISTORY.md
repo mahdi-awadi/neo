@@ -757,3 +757,10 @@ stores use WAL + `busy_timeout`. A health check reports event-loop lag, memory a
 on a change. Only a startup failure exits. Also fixed: the Telegram inbox send waited for an
 Allow/Deny press that grammy could not deliver while the handler waited (a deadlock). Fault-injection
 tests cover every wired path. Going live needs a daemon restart (operator-gated).
+
+Code-review fixes (same day): the company handoff is capped at 3 an hour and fault signatures ignore
+digits, so a flood ban cannot loop through the company. Telegram polling exits only on 401/409; any
+other stop restarts polling. Inbox Send is idempotent on a new `draft_version` (double tap → busy,
+edited or already-sent draft → stale), for web and Telegram. The context handoff is contained. The
+branch's own 429 retry was dropped for the existing flood gate, and the Telegram tests now run
+through it (grammy `client.fetch`).

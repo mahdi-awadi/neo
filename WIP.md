@@ -177,9 +177,8 @@ Tests: `tests/fault-injection.test.ts` (10). docs/CONFIG.md section; ADR-0010 am
 rejected). Not done: the unbounded web `events[]` the audit noted is out of this scope.
 **Restart pending** (operator-gated).
 
-## RESUME HERE (2026-10-04, time limit hit mid-rebase)
-- master = 6c3ad92 (flood-control + tool-lines + 207aed4 trust merged; 4b7848c fence ported; ADR-0011). 1001 tests green.
-- This branch (9bbfc04) is NOT yet rebased on 6c3ad92: rebase was aborted. Conflicts: CONTEXT.md, trust.ts (keep 207aed4 store + openSqlite busyTimeoutMs), config.test.ts (keep both), daemon.ts (trust opts + busyTimeoutMs; loopReply via operatorApi + toolSteps), telegram.ts (take master's, re-apply wiring; a draft of that is in untracked `.rebased-telegram.ts.wip`).
-- Unify 429: drop telegram-retry.ts + telegramMaxRetryAfterS; use master's flood gate (`installFloodGate(api)`, `createOperatorApi(token)`); fix telegram-tool-lines.test sendOperatorLine(api,...).
-- Review fixes to apply: cap + digit-normalise company handoff in fault.ts; polling reject → report + exit 1; inbox send in-flight set + re-read draft (in the wip file); tests via grammy `client.fetch` so the flood gate is exercised; contain `void handoff` pipeline.ts.
-- Then: tsc + bun test, ff master, switch /home/neo to master (HANDOFF.md there is an auto-written idle note — stash it), bun install, delete merged branches/worktrees (fix/telegram-flood-control, fix/telegram-tool-lines-all-paths, feat/trust-default-new-projects, integrate/flood-trust). No restart.
+## DONE 2026-10-04 — hardening rebased onto 6c3ad92 + review fixes (merged to master, restart pending)
+Squash-rebased (7fdc2c8..bc5a677 → one commit), own 429 retry dropped for the flood gate. Review fixes:
+handoff cap + digit-normalised signatures, polling exit only on 401/409, inbox Send idempotent on
+`draft_version`, Telegram tests through the flood gate (client.fetch), `pipeline.handoff` contained.
+**Restart pending** (operator-gated).
