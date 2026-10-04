@@ -197,6 +197,9 @@ type SdkUserMessage = {
   type: "user";
   message: { role: "user"; content: string };
   parent_tool_use_id: string | null;
+  /** CLI command-queue priority. "next" = attach at the next tool boundary of the running turn
+   *  (steer mid-turn); "later" = wait for the turn to end; "now" = interrupt. */
+  priority?: "now" | "next" | "later";
 };
 type QueryObject = AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void> };
 type QueryFn = (args: {
@@ -214,8 +217,8 @@ type CodexClientLike = {
 };
 export type CodexFactory = (options: CodexOptions) => CodexClientLike | Promise<CodexClientLike>;
 
-function userMessage(text: string): SdkUserMessage {
-  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+function userMessage(text: string, priority?: SdkUserMessage["priority"]): SdkUserMessage {
+  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, ...(priority ? { priority } : {}) };
 }
 
 // The governance hook: governor decides; risky tools escalate to the human. The allow
@@ -672,7 +675,11 @@ function startClaudeOrder(
   const done = consumeStream(queryObj, handlers);
 
   return {
-    followUp: (text) => channel.push(userMessage(text)),
+    // The SDK drains this channel eagerly, so a follow-up reaches the CLI as soon as it's pushed.
+    // Priority "next" makes the CLI attach it at the running turn's next tool boundary instead of
+    // holding it until the turn ends (2026-07-25 issue 1: answers used to wait out 15-minute turns).
+    followUp: (text, timing = "steer") => channel.push(userMessage(text, timing === "steer" ? "next" : "later")),
+    steersMidTurn: true,
     interrupt: async () => {
       channel.close();
       try {

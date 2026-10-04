@@ -52,11 +52,18 @@ export type Verdict =
  * follow-up routing, `/kill`, and idle-close can all reach the same handle.
  * `SessionRun` (session-runner) is the concrete implementation.
  */
+/** When a follow-up reaches a busy worker: "steer" = at its next step mid-turn (the operator's own
+ *  replies), "after-turn" = only once the in-flight turn ends (briefs that must not hijack it). */
+export type FollowUpTiming = "steer" | "after-turn";
+
 export interface SessionControl {
-  followUp(text: string): void;
+  followUp(text: string, timing?: FollowUpTiming): void;
   interrupt(): Promise<void>;
   /** Follow-ups waiting behind the in-flight turn (observability; optional for old fakes). */
   queued?(): number;
+  /** True when a follow-up reaches the worker at its next step mid-turn (Claude); absent/false
+   *  when it waits for the current turn to finish (Codex runs one turn per input). */
+  steersMidTurn?: boolean;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */

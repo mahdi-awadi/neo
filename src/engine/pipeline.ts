@@ -192,13 +192,15 @@ export async function handleMessage(
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
     const control = registry.getControl(live.id);
     if (control && live.status === "running") {
-      // Live worker — the follow-up queues behind the in-flight turn. Report the REAL status, not a
-      // bare "busy": what it's doing, for how long, and how deep the queue is.
+      // Live worker. A Claude worker sees the follow-up at its next step mid-turn; one that can't
+      // steer (Codex) runs it after the in-flight turn. Say which, plus the REAL status, not a bare
+      // "busy": what it's doing, for how long, and how deep the queue is.
       control.followUp(text.trim());
       registry.touch(live.id, now());
       if (oneShot) registry.clearFocus(chatId);
       const queued = control.queued?.() ?? 0;
-      await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSessionStatus(live, now(), { queued })}`);
+      const when = control.steersMidTurn ? "it'll see this at its next step" : "runs after its current turn";
+      await deps.reply(chatId, `↩︎ queued for ${live.name} (${when}) — ${describeSessionStatus(live, now(), { queued })}`);
       return null;
     }
     // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.

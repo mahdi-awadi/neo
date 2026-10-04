@@ -273,7 +273,8 @@ export async function dispatchToProject(
     const queued = control?.queued?.() ?? 0;
     const status = describeSessionStatus(existing, now(), { queued });
     if (control?.followUp) {
-      control.followUp(order.task);
+      // After the turn, never mid-turn: a company brief must not steer the operator's in-flight work.
+      control.followUp(order.task, "after-turn");
       deps.registry.touch(existing.id, now());
       deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name } });
       await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);

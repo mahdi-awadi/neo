@@ -742,3 +742,59 @@ test("startOrder queues follow-ups as sequential Codex SDK turns on the same thr
   expect(messages).toEqual(["ack:first", "ack:second"]);
   expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "ack:second" });
 });
+
+// --- 2026-07-25 issue 1: a follow-up must reach the worker MID-turn, not at the turn boundary ----
+
+// Models the real SDK: Query.streamInput drains the prompt iterable eagerly (for-await, writing each
+// message to the CLI as it arrives) while the turn is still running. The CLI then attaches queued
+// "next"-priority user messages between tool calls instead of waiting for the turn to end.
+function fakeEagerSdk() {
+  const received: Array<{ content: string; priority?: string; duringTurn: boolean }> = [];
+  let turnOpen = false;
+  let finishTurn!: () => void;
+  const turnGate = new Promise<void>((r) => (finishTurn = r));
+  const q = (args: { prompt: any; options: any }) => {
+    void (async () => {
+      for await (const m of args.prompt as AsyncIterable<any>) {
+        received.push({ content: m.message.content, priority: m.priority, duringTurn: turnOpen });
+      }
+    })();
+    return (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-1" };
+      turnOpen = true;
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "make" } }] } };
+      await turnGate; // a long tool run
+      turnOpen = false;
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "sess-1" };
+    })();
+  };
+  return { q, received, finishTurn };
+}
+
+test("a follow-up pushed during a running turn reaches the SDK mid-turn, flagged to steer at the next step", async () => {
+  const sdk = fakeEagerSdk();
+  const run = startOrder(order("build it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: sdk.q as any });
+  await new Promise((r) => setTimeout(r, 5));
+  run.followUp("also update the README");
+  await new Promise((r) => setTimeout(r, 5));
+  const fu = sdk.received.find((m) => m.content === "also update the README");
+  expect(fu).toBeDefined();
+  expect(fu!.duringTurn).toBe(true); // delivered while the turn was still open
+  expect(fu!.priority).toBe("next"); // the CLI injects "next" between tool calls (not "later")
+  expect(run.steersMidTurn).toBe(true);
+  sdk.finishTurn();
+  run.close();
+  await run.done;
+});
+
+test("an after-turn follow-up is sent with priority 'later' so it can't steer the running turn", async () => {
+  const sdk = fakeEagerSdk();
+  const run = startOrder(order("build it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: sdk.q as any });
+  await new Promise((r) => setTimeout(r, 5));
+  run.followUp("company brief", "after-turn");
+  await new Promise((r) => setTimeout(r, 5));
+  expect(sdk.received.find((m) => m.content === "company brief")!.priority).toBe("later");
+  sdk.finishTurn();
+  run.close();
+  await run.done;
+});

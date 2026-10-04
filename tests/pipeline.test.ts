@@ -63,7 +63,7 @@ function cfg(): NeoConfig {
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));
 
 // A controllable fake live session: completes only when finish() is called.
-function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
+function fakeStart(opts: { onStart?: (h: RunHandlers) => void; steersMidTurn?: boolean } = {}) {
   let resolveDone!: (r: RunResult) => void;
   const done = new Promise<RunResult>((res) => {
     resolveDone = res;
@@ -75,7 +75,7 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, close: () => {}, done };
+    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, close: () => {}, done, steersMidTurn: opts.steersMidTurn };
   };
   return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
 }
@@ -857,4 +857,27 @@ test("startSession wires onActivity into registry.noteActivity", async () => {
   const session = h.registry.list()[0];
   captured?.onActivity?.("Bash: bun test");
   expect(h.registry.get(session.id)?.activity?.label).toBe("Bash: bun test");
+});
+
+test("a follow-up to a worker that steers mid-turn says it lands at the next step, not after the turn", async () => {
+  const dir = scratch();
+  const f = fakeStart({ steersMidTurn: true });
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("next step");
+  expect(f.followUps()).toContain("also write a README");
+});
+
+test("a follow-up to a worker that can't steer says honestly it waits for the current turn", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("after its current turn");
 });
