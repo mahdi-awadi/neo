@@ -242,7 +242,7 @@ function sdkSys(o: { latest: string; testsPass?: boolean; changelog?: string; ma
     exec: [
       [/^git show master:package.json/, () => ({ out: pkgJson("0.3.286") })],
       [/^git worktree list --porcelain/, () => ({ out: `worktree ${REPO}\nHEAD abc\nbranch refs/heads/fix/x\n` + (o.masterWorktree ? `\nworktree ${o.masterWorktree}\nHEAD def\nbranch refs/heads/master\n` : "") })],
-      [/^bun test/, () => (o.testsPass === false ? { code: 1, out: "(fail) a test\n 900 pass\n 1 fail" } : { out: " 930 pass\n 0 fail" })],
+      [/^bun test/, () => (o.testsPass === false ? { code: 1, out: "(fail) a test\n 900 pass\n 1 fail" } : { err: " 930 pass\n 0 fail" })],
       [/^grep -rhoE/, (_c, cwd) => ({ out: cwd === wt ? "claude-opus-5-5\nclaude-opus-6\nclaude-opus-5-5\n" : "claude-opus-5-5\n" })],
       [/^git status --porcelain/, () => ({ out: "" })],
     ],
@@ -262,6 +262,7 @@ test("sdk: newer + green → bumped on a branch in its own worktree, fast-forwar
   const wt = `${REPO}-wt-sdk-0.3.289`;
   expect(r).toMatchObject({ outcome: "merged", from: "0.3.286", to: "0.3.289", restartNeeded: true });
   expect(r.detail).toContain("claude-opus-6"); // the new model ids the bundle names
+  expect(r.detail).toContain("930 pass"); // bun test prints its summary on stderr
   const cmds = calls.map((c) => `${c.cwd ?? ""}$ ${c.cmd}`);
   expect(cmds).toContain(`${REPO}$ git worktree add -b chore/agent-sdk-0.3.289 ${wt} master`);
   expect(cmds).toContain(`${wt}$ bun add --exact ${PKG}@0.3.289`);

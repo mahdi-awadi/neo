@@ -91,7 +91,8 @@ export function sdkSource(d: SdkSourceDeps): UpdateSource {
     if (tsc.code !== 0) return fail("bunx tsc --noEmit", tsc);
     const tests = await sys.exec(["bun", "test"], { cwd: wt, timeoutMs: TIMEOUTS.test });
     if (tests.code !== 0) return fail("bun test", tests);
-    const passLine = tests.out.split("\n").find((l) => /^\s*\d+ pass/.test(l))?.trim();
+    // `bun test` prints its summary on stderr.
+    const passLine = `${tests.out}\n${tests.err}`.split("\n").find((l) => /^\s*\d+ pass/.test(l))?.trim();
 
     const [oldIds, newIds] = [await modelIds(repo), await modelIds(wt)];
     const added = newIds.filter((m) => !oldIds.includes(m));
