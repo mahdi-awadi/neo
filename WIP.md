@@ -1,4 +1,4 @@
-# WIP — resume after engine reload (2026-09-13)
+# WIP — resume after engine reload (2026-09-30)
 
 **Branch:** `fix/interactive-turns-bypass-budget-throttle` (off `fix/dispatch-stall-background-wait`,
 unpushed). The only uncommitted change is the Agent SDK pin in `package.json` + `bun.lock` — leave
@@ -7,7 +7,9 @@ that alone until the operator decides (see the next section).
 ## State: GREEN (checked 2026-09-20)
 - `bunx tsc --noEmit` — clean
 - `bun test` — 818 pass, 0 fail.
-- Latest work: one activity clock and one derived session state (see HISTORY + `docs/adr/0003`).
+- Latest work: a loop can be authored from the CLI, and `waselni-store-readiness` is live (see
+  HISTORY + `docs/adr/0004`). Before that: one activity clock and one derived session state
+  (`docs/adr/0003`).
 
 ## Uncommitted — the Agent SDK is pinned, not floating
 - **What:** `@anthropic-ai/claude-agent-sdk` moves from `latest` to the exact `0.3.270` in
@@ -17,6 +19,29 @@ that alone until the operator decides (see the next section).
 - **After a bump:** restart the daemon. A worker reads its SDK binary at launch, so a pinned version
   reaches no running worker.
 - Docs record it: `docs/sdk-notes.md` (header), `docs/HISTORY.md`, `README.md`.
+
+## Latest change — a loop can be authored from the CLI, and the first project loop is live
+- **Why:** loop definitions are data, but the only door was `/api/loop/*`, which is
+  admin-session-gated — an agent in this repo could not author a loop without hand-written SQL.
+- **Seam:** `tools/create-loop.ts` — `validateLoopInput` → `createLoop` → ledger `loop_defs`, the same
+  path the web console uses, so the `/home` folder fence and every validation rule apply identically.
+  `promptFile` keeps a long brief in reviewable markdown. Also: `LEDGER_PATH` now lives in
+  `ledger.ts`; `tools/` is in `tsconfig.json`'s `include`.
+- **No restart needed** for a loop written this way — `effectiveLoops()` re-reads `loop_defs` each
+  scheduler tick. `waselni-store-readiness` (daily `0 6 * * *`, `/home/waselni`, judge goal, 30
+  iterations, $12 per fire, `freshSession`) is live in `data/ledger.db` and enabled.
+- **A loop prompt is a standing brief** (ADR `docs/adr/0004`): `runProjectLoop` hands
+  `LoopDef.prompt` to the worker verbatim, so there is no preamble and no `ask_operator`. The prompt
+  carries the engineering baseline, the project's rules and the governance envelope itself. Rejected:
+  wiring `neoMcpServers` + `briefWithProjectDocs` into the loop path — better long-term, but an engine
+  change that also re-prices every built-in loop.
+- **Two engine gaps this leaves open, both restart-gated and neither fixed:** loop workers have no
+  `ask_operator` (a blocked item leaves only as reply text), and `runLoop` sums only `iterate()`'s
+  `costUsd` (`loop-runner.ts:54`), never the judge run between iterations — so real spend is
+  ≈ `budgetUsd` plus one judge run per iteration, and `Bounds.budgetUsd`'s "incl. judge runs" comment
+  (`project-loop.ts:16`) is wrong. Minor: `judgeGoal` accepts `timeoutMs` and never reads it.
+- TDD: 8 in `tests/create-loop-tool.test.ts` (validated path · folder fence writes nothing ·
+  `--update` · `promptFile` · unreadable input reported, never thrown).
 
 ## Latest fix — work class follows the ORIGINATING TRIGGER, so a conversational order is never held
 - **Why:** ADR 0001 put the budget gate on the right side (background work) but classified by
@@ -109,6 +134,9 @@ that alone until the operator decides (see the next section).
   shapeless or bundled question at the tool boundary. Enriches the existing decisions machinery
   (`spec` column), does not fork it. Design: `docs/superpowers/specs/2026-09-09-matured-decisions-design.md`.
 - `decisionsChatId` config knob (env `DECISIONS_CHAT_ID` wins).
+- **A loop can be authored from the CLI** (`tools/create-loop.ts`, through the validated path), and
+  the first operator-authored project loop — `waselni-store-readiness` — is live and enabled. This
+  one item needs **no restart**: `effectiveLoops()` re-reads `loop_defs` every tick.
 
 ## Next steps on resume
 1. Confirm the daemon came back healthy after the reload (systemctl status / logs).

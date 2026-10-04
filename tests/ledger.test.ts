@@ -174,3 +174,12 @@ test("events retention prunes to bound the table (never unbounded growth)", () =
   // Newest rows are the ones kept (oldest pruned): the most recent event survives.
   expect(l.listEvents({ limit: 1 })[0].at).toBe(total - 1);
 });
+
+test("folders lists every distinct folder an order was ever recorded for", () => {
+  const led = openLedger(":memory:");
+  expect(led.folders()).toEqual([]);
+  led.recordOrder(order({ id: "a", folder: "/p/b" }));
+  led.recordOrder(order({ id: "b", folder: "/p/a" }));
+  led.recordOrder(order({ id: "c", folder: "/p/b" }));
+  expect(led.folders()).toEqual(["/p/a", "/p/b"]);
+});

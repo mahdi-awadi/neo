@@ -59,6 +59,7 @@ function cfg(): NeoConfig {
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
+    trustNewProjects: false,
     contextPolicy: {
       handoffPct: 0.65,
       emergencyPct: 0.85,
@@ -1100,4 +1101,32 @@ test("a dispatcher wake during the operator's resume announcement does not resum
   await handleMessage("status?", 9, base);
   expect(woke).toBe(false);
   expect(starts).toBe(1);
+});
+
+test("trustNewProjects: opening a never-seen project trusts it and records the default in the ledger", async () => {
+  let handlers: RunHandlers | undefined;
+  const fs = fakeStart({ onStart: (h) => (handlers = h) });
+  const folder = scratch();
+  const trust = openTrustStore(":memory:", { trustNewProjects: true });
+  const h = harness({ start: fs.start });
+
+  await handleMessage("/open " + folder + " do it", 7, { ...h.base, trust });
+
+  expect(trust.isTrusted(folder)).toBe(true);
+  expect(handlers!.autoApprove?.()).toBe(true);
+  expect(h.ledger.listEvents({ kind: "trust_default_on" })[0]?.folder).toBe(folder);
+});
+
+test("trustNewProjects: a project the operator turned off stays off when opened again", async () => {
+  let handlers: RunHandlers | undefined;
+  const fs = fakeStart({ onStart: (h) => (handlers = h) });
+  const folder = scratch();
+  const trust = openTrustStore(":memory:", { trustNewProjects: true });
+  trust.setTrust(folder, false);
+  const h = harness({ start: fs.start });
+
+  await handleMessage("/open " + folder + " do it", 7, { ...h.base, trust });
+
+  expect(handlers!.autoApprove?.()).toBe(false);
+  expect(h.ledger.listEvents({ kind: "trust_default_on" })).toEqual([]);
 });

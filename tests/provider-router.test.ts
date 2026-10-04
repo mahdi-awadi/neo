@@ -48,6 +48,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
+    trustNewProjects: false,
     contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
     models: DEFAULT_MODELS,
     updates: DEFAULT_UPDATES,

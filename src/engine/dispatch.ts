@@ -16,7 +16,7 @@ import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type WorkClass } from "./budget";
 import type { UsageMeter } from "./usage";
-import type { TrustStore } from "./trust";
+import { noteProjectStart, type TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
 import {
   dispatchResultText,
@@ -405,6 +405,9 @@ export async function dispatchToProject(
     createdAt: now(),
   };
   deps.ledger.recordOrder(order);
+  // A project's first sight: trusted by default when `trustNewProjects` is on (the customer path
+  // passes denyAllTrust, whose noteProject never trusts).
+  noteProjectStart(deps, order);
   // Reuse an already-open session for this folder (resume it) instead of duplicating it as
   // "<name>-2"; only register a fresh entry when nothing is open for the folder.
   const existing = deps.registry.findByFolder(folder);

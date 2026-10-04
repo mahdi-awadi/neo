@@ -102,6 +102,11 @@ export interface NeoConfig {
   /** The always-on "company" / chief-of-staff workspace (its own gitignored folder with a CLAUDE.md).
    *  From COMPANY_FOLDER env. Default "<repo>/agent" (i.e. an `agent/` dir next to the daemon). */
   companyFolder: string;
+  /** OPERATOR CHOICE (2026-10-02): a project Neo sees for the first time starts trusted (full
+   *  auto-approve), as if the operator had sent `/trust on` for it. Projects seen before the
+   *  default existed keep their state, and `/trust off` is remembered — never re-trusted. Customer
+   *  work never carries trust regardless. Default true. */
+  trustNewProjects: boolean;
   /** Per-window USD budget for background SDK work (the budget guard). */
   budgetWindowUsd: number;
   /** Rolling budget window in ms (default 5h, matching the subscription's usage window). */
@@ -185,6 +190,13 @@ export interface NeoConfig {
   /** In-memory reply-route cache bound (oldest evicted first). The ledger is the durable source of
    *  truth behind it, so this only sizes the fast front cache. Default 2000. */
   messageRoutesCacheCap: number;
+  /** Send each worker tool step ("🔧 Tool: …", "↳ result", "🔓 auto-approved: …") to Telegram.
+   *  Default false: those lines were ~86% of outbound volume and got the bot a ~9h 429 ban
+   *  (2026-10-01). The ledger and the web console always get them. */
+  telegramToolSteps: boolean;
+  /** Longest Telegram 429 `retry_after` (ms) the flood gate waits out and retries; a longer one
+   *  holds sends to that chat until it lifts (frontends/telegram-flood.ts). Default 30 s. */
+  telegramFloodMaxWaitMs: number;
   /** Thresholds behind the DERIVED session state (working/quiet/idle/awaiting-operator/wedged) the
    *  operator and the company session are shown. See engine/liveness.ts + ADR 0003. Optional:
    *  absent ⇒ DEFAULT_LIVENESS_THRESHOLDS at the point of use, so no caller has to thread it. */
@@ -248,6 +260,8 @@ const DEFAULTS = {
   subscriptionInteractiveReservePct: 0.2,
   workRoot: "/home",
   companyFolder: join(process.cwd(), "agent"),
+  // Operator choice (2026-10-02): new projects start trusted. See NeoConfig.trustNewProjects.
+  trustNewProjects: true,
   webHost: "127.0.0.1",
   webPort: 3003,
   budgetWindowUsd: 20,
@@ -275,6 +289,8 @@ const DEFAULTS = {
   codebaseMemoryListTimeoutMs: 15_000,
   inboxListDefault: 100,
   messageRoutesCacheCap: 2_000,
+  telegramToolSteps: false,
+  telegramFloodMaxWaitMs: 30_000,
   liveness: DEFAULT_LIVENESS_THRESHOLDS,
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
@@ -377,6 +393,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
       fileCfg.subscriptionInteractiveReservePct ?? DEFAULTS.subscriptionInteractiveReservePct,
     workRoot: process.env.WORK_ROOT ?? fileCfg.workRoot ?? DEFAULTS.workRoot,
     companyFolder: process.env.COMPANY_FOLDER ?? fileCfg.companyFolder ?? DEFAULTS.companyFolder,
+    trustNewProjects: fileCfg.trustNewProjects ?? DEFAULTS.trustNewProjects,
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
@@ -407,6 +424,8 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,
     inboxListDefault: fileCfg.inboxListDefault ?? DEFAULTS.inboxListDefault,
     messageRoutesCacheCap: fileCfg.messageRoutesCacheCap ?? DEFAULTS.messageRoutesCacheCap,
+    telegramToolSteps: fileCfg.telegramToolSteps ?? DEFAULTS.telegramToolSteps,
+    telegramFloodMaxWaitMs: fileCfg.telegramFloodMaxWaitMs ?? DEFAULTS.telegramFloodMaxWaitMs,
     liveness: { ...DEFAULTS.liveness, ...(fileCfg.liveness ?? {}) },
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,

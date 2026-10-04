@@ -1741,3 +1741,24 @@ test("a run that ends during a reload drain says it was cut short for the reload
   // and the run is not mistaken for an unfinished one at the next boot
   expect(d.ledger.unfinishedDispatches(0)).toHaveLength(0);
 });
+
+test("trustNewProjects: dispatching into a never-seen project trusts it; an explicit off stays off", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "fresh"));
+  mkdirSync(join(root, "kept-off"));
+  const { d } = makeDeps();
+  d.trust = openTrustStore(":memory:", { trustNewProjects: true });
+  d.trust.setTrust(join(root, "kept-off"), false);
+  const seen: Array<boolean | undefined> = [];
+  const never = new Promise<RunResult>(() => {});
+  const fakeStart = (_o: unknown, h: RunHandlers) => {
+    seen.push(h.autoApprove?.());
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: never };
+  };
+  await dispatchToProject("fresh", "t", d, 1, { start: fakeStart as never, now: () => 0, root });
+  await dispatchToProject("kept-off", "t", d, 1, { start: fakeStart as never, now: () => 0, root });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(d.trust.isTrusted(join(root, "fresh"))).toBe(true);
+  expect(d.trust.isTrusted(join(root, "kept-off"))).toBe(false);
+  expect(d.ledger.listEvents({ kind: "trust_default_on" }).map((e) => e.folder)).toEqual([join(root, "fresh")]);
+});

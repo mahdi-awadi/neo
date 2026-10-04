@@ -328,3 +328,13 @@ test("updates: config.json merges per key — one autoApply category off keeps t
   expect(u.autoApply).toEqual({ sdk: true, plugins: true, mcp: false });
   expect(u.holdBreaking).toBe(true);
 });
+
+test("trustNewProjects defaults to true (operator choice, 2026-10-02)", () => {
+  expect(loadConfig(dir()).trustNewProjects).toBe(true);
+});
+
+test("config.json can turn trustNewProjects off", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ trustNewProjects: false }));
+  expect(loadConfig(d).trustNewProjects).toBe(false);
+});

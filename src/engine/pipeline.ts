@@ -11,7 +11,7 @@ import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
-import type { TrustStore } from "./trust";
+import { noteProjectStart, type TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
@@ -454,6 +454,9 @@ function startSession(
   let runRef: SessionRun | undefined; // set below — the retry pushes the brief back into this run
   let apiRetries = 0;
   let order = initialOrder;
+  // A project's first sight: trusted by default when `trustNewProjects` is on (never re-trusts a
+  // folder the operator turned off). Before the worker starts, so its first escalation sees it.
+  noteProjectStart(deps, order);
   if (!runDeps.resume && existsSync(join(order.folder, "HANDOFF.md"))) {
     order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
   }

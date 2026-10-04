@@ -180,6 +180,7 @@ function fakeNeoConfig(companyFolder: string): NeoConfig {
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
+    trustNewProjects: false,
     contextPolicy: {
       handoffPct: 0.65,
       emergencyPct: 0.85,

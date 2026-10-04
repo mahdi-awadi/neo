@@ -25,6 +25,7 @@ import { handleLoop, listLoops, matchLoop, startLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
+import { createFloodGate, isToolStepLine, type ApiResult, type FloodGate } from "./telegram-flood";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import { surfaceFor, routeChat, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
 import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
@@ -93,6 +94,11 @@ async function downloadTelegramFile(token: string, filePath: string): Promise<Ui
   return new Uint8Array(await r.arrayBuffer());
 }
 
+// One flood gate per process: the bot (startTelegram) and the loop scheduler's raw sends
+// (sendOperatorLine) share a token, so they must share Telegram's rate-limit state too.
+// startTelegram replaces it with one built from config that can post the "not delivered" notice.
+let floodGate: FloodGate = createFloodGate({ maxWaitMs: 30_000 });
+
 /** Send worker output as formatted HTML (bold/code/bullets), falling back to plain text if
  *  Telegram rejects the markup. `project` tags which project the line came from. Returns the sent
  *  message id (so the caller can route a later reply back to the right session), or undefined if
@@ -142,7 +148,10 @@ export async function sendOperatorLine(token: string, chatId: number, text: stri
   await deliverChunked(
     async (body, html) => {
       try {
-        const r = await post(body, html);
+        const r = await floodGate.run("sendMessage", chatId, async (): Promise<ApiResult> => {
+          const res = await post(body, html);
+          return (await res.json().catch(() => ({ ok: res.ok, error_code: res.status }))) as ApiResult;
+        });
         return { ok: r.ok };
       } catch {
         return { ok: false }; // a dropped loop line must never crash the daemon
@@ -174,6 +183,25 @@ export function startTelegram(
   bus?: OperatorBus,
 ): Bot {
   const bot = new Bot(cfg.telegramToken);
+  // Every Bot API call goes through the flood gate: failed sends are logged (never silently
+  // swallowed again), a long 429 holds that chat instead of extending the ban, and when it lifts
+  // the operator is told how many messages they missed.
+  floodGate = createFloodGate({
+    maxWaitMs: cfg.telegramFloodMaxWaitMs,
+    onRecovered: (chatId, dropped) =>
+      void bot.api
+        .sendMessage(
+          chatId,
+          `⚠️ Telegram rate-limited Neo in this chat — ${dropped} message(s) were not delivered.` +
+            (cfg.publicUrl ? ` The full log is in the web console: ${cfg.publicUrl}` : " The full log is in the web console."),
+        )
+        .catch(() => {}),
+  });
+  bot.api.config.use((prev, method, payload, signal) =>
+    floodGate.run(method, (payload as { chat_id?: number | string } | undefined)?.chat_id, () =>
+      prev(method, payload, signal),
+    ),
+  );
   const allow = new Set(cfg.telegramAllowFrom);
   // Pending approvals keyed by a per-request token: callback press -> resolver + the tracked
   // decision row the escalation opened (resolved when the button is pressed).
@@ -189,6 +217,7 @@ export function startTelegram(
   // caller applied surfaceFor); the route is recorded on whichever chat the message actually
   // lands in, so a reply to it (in the DM or the Decisions chat) routes back to the right project.
   async function send(chatId: number, text: string, project?: string, priority?: Priority): Promise<void> {
+    if (!cfg.telegramToolSteps && isToolStepLine(text)) return; // ledger + web console still have it
     const messageId = await sendFormatted(bot, chatId, text, project, priority);
     if (messageId !== undefined && project) {
       const session = registry.findByName(project);

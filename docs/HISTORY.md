@@ -603,6 +603,50 @@ gains the whole vocabulary. Built TDD (41 new assertions across liveness, regist
 session-status, watchdog, dashboard and the dispatch wiring). `tsc` clean; full suite green (813).
 Going live needs a daemon restart (operator-gated).
 
+**A loop can be authored from the CLI, and the first operator-authored project loop is live
+(2026-09-29).** Loop definitions have been data since 2026-06-28, but the only door was
+`/api/loop/*`, which is admin-session-gated. An agent working in this repo on the operator's behalf
+therefore could not author a loop, and the tempting shortcut was hand-written SQL into `loop_defs`.
+`tools/create-loop.ts` is the same engine one door down: `validateLoopInput` → `createLoop` → the
+ledger, so the `/home` folder fence and every validation rule apply exactly as they do from the
+console. `effectiveLoops()` re-reads `loop_defs` on every scheduler tick, so a loop written this way
+needs **no restart**. The input file may carry `promptFile` (resolved beside the input file) instead
+of `prompt`, because a loop prompt is long (see below) and a long brief belongs in reviewable
+markdown, not in one JSON string — one source of truth, not two. Two cleanups rode along:
+`LEDGER_PATH` moved into `ledger.ts` (the literal was repeated three times in `daemon.ts`, and
+`memory-bootstrap.ts` carried a "no shared constant exists yet" note), and `tools/` joined
+`tsconfig.json`'s `include`, so a tool without a test is still typechecked. Built TDD (8 assertions
+in `tests/create-loop-tool.test.ts`: the validated path the scheduler then sees, the folder fence
+writing nothing, `--update` refusing to clobber an existing loop, `promptFile`, and unreadable input
+reported rather than thrown).
+
+The first real project loop exposed what the loop path does **not** do. `waselni-store-readiness`
+fires daily `0 6 * * *` (06:00 server-local/UTC ≈ 09:00 Asia/Baghdad) on `/home/waselni` with a judge
+goal, 30 iterations, $12 per fire and `freshSession: true`; its state lives in
+`docs/store-readiness.md` in the waselni repo, so the FILE is the memory, not the session (definition
+checked in at `docs/loops/waselni-store-readiness.json` + `.prompt.md`). A loop's prompt is a
+**standing brief**: `runProjectLoop` puts `LoopDef.prompt` into `Order.task` verbatim
+(`project-loop.ts:60`), so there is no dispatch preamble — no engineering baseline, no
+read-the-project's-docs instruction — `loopRunExtras` attaches `mcpServers` only for the dream loop,
+so there is no `ask_operator`, and escalations are auto-denied rather than asked. Everything a
+dispatched brief gets for free, a loop prompt has to carry itself: the engineering baseline, the
+project's own rules, the reuse-the-existing-pipeline rule, the never-push/deploy/submit rule, an
+ask-once protocol for operator-blocked items, and the governance envelope the worker runs under. See
+`docs/adr/0004-a-loop-prompt-is-a-standing-brief.md`; `CONTEXT.md` gains **standing brief**.
+Rejected: wiring `neoMcpServers` + `briefWithProjectDocs` into the loop path. It is the better
+long-term answer, but it is an engine change needing a restart, and it silently re-prices every
+existing built-in loop.
+
+Two gaps stay open, each needing an engine change and therefore a restart. **Loop workers have no
+`ask_operator`**, so a blocked item can only leave as the worker's reply text — which does reach the
+operator's chat, tagged with the loop's `#project`, but is not a decision the engine tracks. **The
+declared budget is not the whole cost:** `runLoop` sums only `iterate()`'s `costUsd`
+(`loop-runner.ts:54`) and never the judge run between iterations, so real spend is roughly
+`budgetUsd` plus one judge run per iteration, and `Bounds.budgetUsd`'s "incl. judge runs" comment
+(`project-loop.ts:16`) is wrong today. Related and minor: `judgeGoal` accepts `timeoutMs` and never
+reads it (`goal.ts:73`), so a judge run is effectively unbounded. `tsc` clean; full suite green
+(826).
+
 **The governor runs before settings allow rules (2026-10-01).** Neo governed tools only through
 `canUseTool`. The SDK runs a project's `.claude/settings.json` allow rules *before* `canUseTool`, and
 workers load project settings. A live probe through the real `runOrder()` proved the bypass on SDK
@@ -673,3 +717,19 @@ pin in another project's `.mcp.json` is reported, never edited. Nothing restarts
 scheduled run reports only what is new. `/updates` steers it from Telegram and the web console.
 Also: `@openai/codex-sdk` is now pinned to the exact `0.145.0` it was already resolving to, not
 `latest`. Built TDD; `tsc` clean, full suite green. Going live needs a daemon restart (operator-gated).
+
+**New projects start trusted (2026-10-02, operator choice).** The operator asked for `/trust` to be
+on by default for new projects. "No row" still means *not trusted*, because changing that would have
+given full auto-approve to every existing project at once. Instead each row in `data/trust.db` is a
+folder Neo has **seen**, with `state` `on` or `off` (schema `user_version` 1). The migration keeps
+legacy rows `on` and, once, records every folder in the ledger's order history (`ledger.folders()`)
+as `off`, so no existing project gains auto-approve. `/trust off` now writes an `off` row instead of
+deleting one, so the choice is remembered. The new `noteProject(folder)` gives a never-seen folder a
+row (`on` when the new `trustNewProjects` config key is set, default `true`) and leaves a seen folder
+alone. `noteProjectStart` calls it at every operator session start (`pipeline.ts` `startSession`,
+`dispatch.ts` `dispatchToProject`) and records a `trust_default_on` ledger event when it trusts a
+folder. The firewall does not move: a `source:"customer"` order never seeds trust, and the customer
+path's `denyAllTrust()` has a `noteProject` that never trusts. See the 2026-10-02 amendment in
+`docs/superpowers/specs/2026-06-20-trust-idle-and-files-design.md` and `trustNewProjects` in
+`docs/CONFIG.md`. Built TDD (new cases in `trust`, `pipeline`, `dispatch`, `ledger` and `config`
+tests). The trust store opens at daemon start, so going live needs a restart (operator-gated).
