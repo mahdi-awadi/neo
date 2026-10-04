@@ -246,7 +246,9 @@ export function createUpdater(d: UpdaterDeps): Updater {
     try {
       const cfg = d.cfg();
       const all: ItemResult[] = [];
-      for (const source of d.sources) {
+      // `only` naming a category runs just that category; an item id is looked for by every source.
+      const sources = UPDATE_CATEGORIES.includes(opts.only as UpdateCategory) ? d.sources.filter((s) => s.category === opts.only) : d.sources;
+      for (const source of sources) {
         const ctx: RunContext = {
           autoApply: cfg.autoApply[source.category] || !!opts.force,
           holdBreaking: cfg.holdBreaking && !opts.force,

@@ -324,7 +324,7 @@ const PFILE = "/root/.claude/plugins/installed_plugins.json";
 const CACHE = "/root/.claude/plugins/cache/mkt/superpowers";
 const entry = (v: string) => ({ scope: "user", installPath: `${CACHE}/${v}`, version: v, installedAt: "t0", lastUpdated: "t0", gitCommitSha: `sha${v}` });
 
-function pluginSys(o: { updateTo?: string; validateOk?: boolean; notes?: string; enabled?: boolean } = {}) {
+function pluginSys(o: { updateTo?: string; validateOk?: boolean; notes?: string; enabled?: boolean; pretty?: boolean } = {}) {
   const installed = () => ({ version: 2, plugins: { "superpowers@mkt": [entry("6.4.1")] } });
   const env = fakeSys({
     files: {
@@ -333,9 +333,9 @@ function pluginSys(o: { updateTo?: string; validateOk?: boolean; notes?: string;
     },
     exec: [
       [/^claude plugin list --json/, () => ({ out: JSON.stringify([
-        { id: "superpowers@mkt", version: "6.4.1", scope: "user", enabled: o.enabled ?? true, installPath: `${CACHE}/6.4.1` },
+        { id: "superpowers@mkt", version: "6.4.1", scope: "user", enabled: o.enabled ?? true, installPath: `${CACHE}/6.4.1`, hooks: ["start"] },
         { id: "off@mkt", version: "1.0.0", scope: "user", enabled: false, installPath: "/x" },
-      ]) })],
+      ], null, o.pretty ? 2 : undefined) })],
       [/^claude plugin marketplace update/, () => ({ out: "ok" })],
       [/^claude plugin update superpowers@mkt --json/, () => {
         if (!o.updateTo) return { out: JSON.stringify({ outcome: "ok", updateOutcome: "up_to_date", oldVersion: "6.4.1", newVersion: "6.4.1" }) };
@@ -366,6 +366,12 @@ test("plugins: only enabled plugins are updated; up to date stays quiet", async 
   expect(rs).toEqual([{ category: "plugins", id: "superpowers@mkt", outcome: "up_to_date", from: "6.4.1" }]);
   expect(calls.some((c) => c.cmd.includes("off@mkt"))).toBe(false);
   expect(calls[1].cmd).toBe("claude plugin marketplace update"); // catalogs refreshed first
+});
+
+test("plugins: the CLI's pretty-printed list parses whole — a lone JSON scalar line inside it is not the answer", async () => {
+  const { sys } = pluginSys({ pretty: true });
+  const rs = await pluginsSource({ sys, pluginsFile: PFILE }).run(ctx());
+  expect(rs).toEqual([{ category: "plugins", id: "superpowers@mkt", outcome: "up_to_date", from: "6.4.1" }]);
 });
 
 test("plugins: an update that verifies is applied, with what a rollback needs", async () => {
@@ -614,4 +620,14 @@ test("a scheduled run stays silent when nothing is new since the last run; a man
   results = [{ ...held, to: "0.12.0" }];
   await u.run({ trigger: "schedule" });
   expect(reports).toHaveLength(3); // a newer held version is news again
+});
+
+test("only=<category> runs just that category's source", async () => {
+  const ran: string[] = [];
+  const mk = (c: ItemResult["category"]) => source(c, () => (ran.push(c), []));
+  const u = createUpdater({ ledger: openLedger(":memory:"), sources: [mk("sdk"), mk("plugins"), mk("mcp")], cfg: () => CFG, busy: () => false, report: () => {} });
+  await u.run({ trigger: "manual", only: "mcp" });
+  expect(ran).toEqual(["mcp"]);
+  await u.run({ trigger: "manual", only: "npm:@playwright/mcp" }); // an item id: every source looks for it
+  expect(ran).toEqual(["mcp", "sdk", "plugins", "mcp"]);
 });

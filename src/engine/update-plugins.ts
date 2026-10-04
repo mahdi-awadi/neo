@@ -32,20 +32,24 @@ interface PluginEntry {
   [k: string]: unknown;
 }
 
-/** The last JSON object line of a CLI's stdout (progress text may come before it). */
+/** The JSON a CLI printed: the whole stdout, else its last JSON object/array line (after progress text). */
 function lastJson<T>(out: string): T | undefined {
+  // The whole output first: `--json` output may be pretty-printed across many lines.
+  try {
+    return JSON.parse(out) as T;
+  } catch {
+    // progress lines before the JSON — take the last line that is a JSON object or array
+  }
   for (const line of out.trim().split("\n").reverse()) {
     try {
-      return JSON.parse(line) as T;
+      const v: unknown = JSON.parse(line);
+      // A bare scalar line ("start", 3, true) is a fragment of pretty JSON, never the answer.
+      if (v !== null && typeof v === "object") return v as T;
     } catch {
       // not the JSON line
     }
   }
-  try {
-    return JSON.parse(out) as T;
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 export function pluginsSource(d: PluginsSourceDeps): UpdateSource {
