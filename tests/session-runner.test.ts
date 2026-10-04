@@ -621,7 +621,8 @@ test("runOrder can execute through the Codex SDK adapter", async () => {
   expect(f.starts[0]).toMatchObject({
     workingDirectory: "/tmp",
     sandboxMode: "workspace-write",
-    approvalPolicy: "on-request",
+    approvalPolicy: "never",
+    networkAccessEnabled: false,
     skipGitRepoCheck: true,
     model: "gpt-5.4",
     modelReasoningEffort: "high",

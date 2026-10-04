@@ -180,3 +180,11 @@ hooks, queues follow-ups as sequential turns on the same thread, and aborts with
 kept explicit: Codex SDK does not expose Claude's `canUseTool` hook or Anthropic in-process MCP
 shape, so Codex runs use Codex sandbox/approval policy and emit `worker_compat_warning` for
 Claude-only run options; read-only judge runs translate to Codex `sandboxMode:"read-only"`.
+
+**Connector scopes + Codex governance — implemented (2026-10-04):** config `connectors` gives each
+foreign MCP server `read` / `send` / `deny`, with per-tool `allow` / `ask` / `deny` overrides, so
+reads flow and only outbound actions ask (`governor.ts`, after Muse's per-app scopes). Codex runs
+now go through the governor too (`codex-governor.ts`): Neo's policy is mapped onto Codex's sandbox
+(folder-fenced writes, no `danger-full-access`, approval `never`, network off by default), and each
+streamed item is judged by `decide()`; a deny or untrusted escalation stops the turn with
+`governor_block`. Research behind it: the 2026-10-04 comparison with Dots, Grok Bot and Muse.

@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Provider } from "./types";
 import type { ContextPolicyCfg } from "./engine/context-policy";
+import { normalizeConnectors, type ConnectorPolicies } from "./engine/governor";
 
 /** Reasoning-effort levels accepted by the SDK. */
 export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -135,6 +136,10 @@ export interface NeoConfig {
   /** Memory system (Phase 2): scopes + ratio caps + dream-loop budgets. Default `scopes: []` — a
    *  total no-op until the operator opts a folder in. */
   memory: MemoryCfg;
+  /** Per-connector access for foreign MCP tools: server name → "read" | "send" | "deny", or
+   *  `{ access, tools: { <tool>: "allow" | "ask" | "deny" } }`. Unlisted servers escalate every
+   *  tool (default). Malformed entries are dropped at load. See governor.ts. */
+  connectors: ConnectorPolicies;
 }
 
 const DEFAULTS = {
@@ -262,5 +267,6 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
     memory: { ...DEFAULTS.memory, ...(fileCfg.memory ?? {}) },
+    connectors: normalizeConnectors(fileCfg.connectors),
   };
 }

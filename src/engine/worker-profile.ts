@@ -4,7 +4,7 @@ import type { NeoConfig, WorkerPathName } from "../config";
 import type { RunDeps } from "./session-runner";
 import { filterSdkEnv, supportsRunConfigField } from "./model-resolver";
 
-type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers">>;
+type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers" | "connectors">>;
 
 export function profileDeps(
   cfg: WorkerProfileConfig,
@@ -15,6 +15,7 @@ export function profileDeps(
   const d: RunDeps = { ...base };
   if (cfg.providers?.ownWork && d.provider === undefined) d.provider = cfg.providers.ownWork;
   delete d.env;
+  if (cfg.connectors && Object.keys(cfg.connectors).length && d.connectors === undefined) d.connectors = cfg.connectors;
   if (supportsRunConfigField(d.provider, "model") && p.model && d.model === undefined) d.model = p.model;
   if (supportsRunConfigField(d.provider, "effort") && p.effort && d.effort === undefined) d.effort = p.effort;
   if (supportsRunConfigField(d.provider, "skills") && p.skills !== undefined && d.skills === undefined) d.skills = p.skills;
