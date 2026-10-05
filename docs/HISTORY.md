@@ -745,6 +745,15 @@ mirror still sends tool lines to the web console. The test fixtures also gained 
 fields that the base commit left out, which had made `tsc` red. Built TDD (7 new tests). `tsc` clean;
 full suite green (881). Going live needs a daemon restart (operator-gated).
 
+**Trust never lifts the fence (2026-10-04, ADR-0011).** Two branches built "new projects start
+trusted". `master` now has both, with one trust store: the store from `207aed4` (the schema the live
+`data/trust.db` uses) and the governor part of `4b7848c`. `decide` marks an out-of-folder
+Write/Edit as `fenced`. `buildCanUseTool` auto-approves only when the verdict is not fenced and the
+order source is not `customer`, so only the operator can approve a fence escalation. `/trust on` now
+says that writes outside the folder still ask. The store from `4b7848c` was rejected: it reads any
+row as trusted, so the eight live `off` rows would become trusted. Tests: `tests/trust-fence.test.ts`.
+Going live needs a daemon restart (operator-gated).
+
 ### Engine error containment (ADR-0010, 2026-10-04)
 
 One error no longer takes the engine down. An audit found no process error handlers, no grammy

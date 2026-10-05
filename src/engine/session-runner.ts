@@ -112,7 +112,7 @@ export interface RunHandlers {
   /** Reported subscription rate-limit info from the SDK's rate_limit_event. */
   onRateLimit?: (info: RateLimitInfo) => void;
   /** When true (read per escalation), risky tools auto-approve instead of escalating. Never
-   *  consulted for a fence escalation or a customer-sourced order (ADR-0007). */
+   *  consulted for a fence escalation or a customer-sourced order (ADR-0011). */
   autoApprove?: () => boolean;
   /** Called with the escalation reason when trust auto-approves it (for audit/FYI). */
   onAutoApprove?: (reason: string) => void;
@@ -346,7 +346,7 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string, source: O
         return { behavior: "deny", message: verdict.deny };
       }
       // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start).
-      // Trust never lifts a fence escalation and never applies to customer work (ADR-0007).
+      // Trust never lifts a fence escalation and never applies to customer work (ADR-0011).
       if (!verdict.fenced && source !== "customer" && handlers.autoApprove?.()) {
         handlers.onAutoApprove?.(verdict.escalate);
         return { behavior: "allow", updatedInput: input };

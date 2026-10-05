@@ -65,7 +65,7 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
     const raw = tool === "NotebookEdit" ? input.notebook_path : input.file_path;
     const path = typeof raw === "string" ? raw : "";
     if (insideFolder(path, ctx.folder)) return { allow: true };
-    // A fence escalation: the operator may approve it, but trust never does (ADR-0007).
+    // A fence escalation: the operator may approve it, but trust never does (ADR-0011).
     return {
       escalate: `file write outside the project folder: ${path || "(no path)"} (folder: ${ctx.folder || "(unset)"})`,
       fenced: true,

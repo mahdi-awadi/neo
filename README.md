@@ -74,6 +74,9 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   engine-owned preamble carries the **engineering baseline** (see `CLAUDE.md`), so the rule reaches
   every worker whatever the brief says — a worker sent into another folder never loads this repo's
   `CLAUDE.md`.
+- **Per-project todo queue.** A brief for a busy project waits as a durable todo in the ledger and
+  starts when the current dispatch settles, one by one (ADR-0008). `/todo` and the web Queue tab
+  show and steer it.
 - **Priority routing + a decisions queue — nothing blocking is lost.** Every outbound line gets a
   deterministic priority (`decision`/`alert`/`result`/`progress`/`done`, AI-free), rendered with a
   consistent colored accent (decision 🔵, alert 🔴, result ✅, done 🟢; progress is the silent
@@ -97,6 +100,12 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
 - **Customer inbox.** Inbound customer mail queues as plain data (no auto-reply) for operator
   review — view, draft-with-agent, edit, approval-gated send, delete — from Telegram `/inbox` or the
   web console. The optional Go **gateway** (`gateway/`) bridges email/WhatsApp/voice into it.
+- **Toolchain auto-updater.** A deterministic heartbeat job (default every 24 h) keeps the Agent SDK
+  pin, Claude Code plugins and MCP servers current, verifies each change and rolls back on failure.
+  It holds breaking releases for `/updates apply` and never restarts the daemon (ADR-0009).
+- **Error containment.** Every unit of work contains its own failure. An engine fault goes to the
+  log, an `engine_fault` event, one deduplicated alert and the company's queue. Only a startup
+  failure or a final Telegram polling stop (401/409) exits (ADR-0010).
 - **Graceful reload.** `/reload` (or `SIGTERM`, e.g. `systemctl restart neo`) drains running
   sessions (commit green work + WIP note), snapshots them, and exits for the supervisor to restart —
   open projects reappear as idle + resumable.
@@ -189,7 +198,7 @@ that form too (for example, `/sdk@neo_bot codex`).
 | `/pin <name>` | Keep talking to a project across messages (until `/unpin`). |
 | `/unpin` (`/company`, `/main`) | Return focus to the company / main agent. |
 | `/kill <name>` | Stop a project session. |
-| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). New projects start trusted by default (`trustNewProjects`); `/trust off` is remembered. |
+| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). New projects start trusted by default (`trustNewProjects`); `/trust off` is remembered. Trust never approves a write outside the project folder and never applies to customer work (ADR-0011). |
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
 | `/todo [<project>]` (`/queue`) | The per-project todo queues: what runs and what waits. `/todo cancel <id>` and `/todo up <id>` change one todo; `/todo pause\|resume <project>` holds or releases a queue. |
 | `/updates` | Toolchain updates (Agent SDK, plugins, MCP servers): the last run and each item's state. `/updates run` checks now; `/updates apply <item>` applies one item, held or not; `/updates rollback <item>` restores the previous version. See `docs/CONFIG.md` → "Toolchain updates". |
