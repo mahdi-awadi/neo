@@ -291,8 +291,8 @@
     "sect": {
       "now": "الآن",
       "queue": "الطابور",
-      "git": "جِت",
-      "github": "جِت‌هَب",
+      "git": "Git",
+      "github": "GitHub",
       "decide": "قرارات",
       "plans": "الخطط",
       "attention": "الانتباه ({{n}})",

@@ -26,6 +26,7 @@ import { renderTrace, type Trace } from "./trace";
 import { renderPlans } from "./plans";
 import { humanAge } from "./liveness";
 import { faults } from "./fault";
+import type { GitRead } from "./git-read";
 import { todoTitle } from "./todo-title";
 import { projectDeps, projectSummary, projectSummaries, projectUrl, projectView, recentThreads, renderProject, summaryLine } from "./project-view";
 
@@ -70,6 +71,8 @@ export interface CommandDeps {
   replyTo?: { chatId: number; channelMsgId: number };
   /** Neo's own repo (for `/project`). Absent → the daemon's working folder. */
   neoFolder?: string;
+  /** The git reader `/project` uses. Absent → the bounded default (`github.callTimeoutMs`). */
+  gitRead?: GitRead;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -377,7 +380,7 @@ async function projectCommand(args: string, deps: CommandDeps, now: number): Pro
   try {
     const maxLines = (deps.cfg?.attention ?? DEFAULT_ATTENTION_CFG).listLines;
     const consoleUrl = deps.cfg?.publicUrl || undefined;
-    const d = projectDeps({ ledger: deps.ledger, registry: deps.registry, cfg: deps.cfg ?? {}, neoFolder: deps.neoFolder });
+    const d = projectDeps({ ledger: deps.ledger, registry: deps.registry, cfg: deps.cfg ?? {}, neoFolder: deps.neoFolder, read: deps.gitRead });
     const [name, sub] = args.split(/\s+/).filter(Boolean);
     if (!name) {
       const r = projectSummaries(d, now, Math.max(1, maxLines - 1));

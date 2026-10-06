@@ -59,7 +59,7 @@ import {
 import { faults } from "./fault";
 import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./context-checkpoint";
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
-import { projectSummaries, summaryLine } from "./project-view";
+import { knownProjects, projectSummaries, summaryLine } from "./project-view";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import type { TodoQueue } from "./todo-queue";
@@ -1657,9 +1657,13 @@ export function neoMcpServers(
  *  Contained (ADR-0010): a failed read leaves the block out, the session lines stay. */
 function companyProjectLines(deps: DispatchDeps, now: number): { lines: string[]; total: number } | undefined {
   return faults.guard("sessions.projects", () => {
-    const company = deps.registry.getDefault()?.order.folder;
-    const r = projectSummaries({ ledger: deps.ledger, registry: deps.registry, projects: deps.projects ?? {}, neoFolder: deps.neoFolder ?? process.cwd() }, now, PAGE_MAX);
-    const rows = r.rows.filter((x) => x.folder !== company);
-    return { lines: rows.map(summaryLine), total: r.total - (r.rows.length - rows.length) };
+    const folder = deps.registry.getDefault()?.order.folder;
+    const company = folder ? basename(folder) : undefined;
+    const d = { ledger: deps.ledger, registry: deps.registry, projects: deps.projects ?? {}, neoFolder: deps.neoFolder ?? process.cwd() };
+    // One row past the page, so leaving the company out still fills it; the company is never counted.
+    const r = projectSummaries(d, now, PAGE_MAX + 1);
+    const rows = r.rows.filter((x) => x.name !== company).slice(0, PAGE_MAX);
+    const hidden = company !== undefined && knownProjects(d).includes(company) ? 1 : 0;
+    return { lines: rows.map(summaryLine), total: r.total - hidden };
   });
 }

@@ -231,7 +231,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan; neoFolder?: string },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan; neoFolder?: string; gitRead?: CommandDeps["gitRead"] },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -606,12 +606,18 @@ export function createTelegramBot(
     gated: reload?.gated,
     trace,
     neoFolder: reload?.neoFolder,
+    gitRead: reload?.gitRead,
     ...(replyTo ? { replyTo } : {}),
   });
   // One command answer with the buttons its result carries. An async command (/project) is sent when
-  // its reads settle; its promise never rejects.
-  const sendCommand = async (chatId: number, command: CommandResult): Promise<void> => {
-    if (command.later) command = await command.later;
+  // its reads settle, never awaited here: grammY runs updates one at a time, so a slow git read must
+  // not hold back the next update (an approval tap). Contained (ADR-0010): a failure is reported.
+  const sendCommand = (chatId: number, command: CommandResult): void => {
+    if (command.later) {
+      const later = command.later;
+      faults.contain("telegram.command", () => later.then((r) => sendCommand(chatId, { ...r, later: undefined })), { chatId });
+      return;
+    }
     if (command.select?.length) {
       say(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
     } else if (command.inbox?.length) {
@@ -686,7 +692,7 @@ export function createTelegramBot(
     );
     // Engine commands open no thread (spec §4.1 rule 3): they are answered here, never traced as work.
     if (command !== null) {
-      await sendCommand(chatId, command);
+      sendCommand(chatId, command);
       return;
     }
 
@@ -930,7 +936,7 @@ export function createTelegramBot(
       if (chatId === undefined) return;
       const text = pjTap[1] === "a" ? `/attention ${pjTap[2]}` : `/project ${pjTap[2]} threads`;
       const command = handleCommand(text, chatId, commandDeps());
-      if (command) await sendCommand(chatId, command);
+      if (command) sendCommand(chatId, command);
       return;
     }
 

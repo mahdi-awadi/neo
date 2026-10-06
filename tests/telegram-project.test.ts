@@ -17,7 +17,7 @@ const made: string[] = [];
 afterAll(() => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
 const botInfo = { id: 1, is_bot: true, first_name: "Neo", username: "neo_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } as never;
 
-function rig(publicUrl = "https://neo.example") {
+function rig(publicUrl = "https://neo.example", gitRead?: import("../src/engine/git-read").GitRead) {
   const root = mkdtempSync(join(tmpdir(), "neo-tg-pj-"));
   made.push(root);
   const gold = join(root, "gold");
@@ -39,7 +39,7 @@ function rig(publicUrl = "https://neo.example") {
     const result = method === "sendMessage" ? { message_id: nextId++, date: 0, chat: { id: payload.chat_id, type: "private" }, text: payload.text } : true;
     return new Response(JSON.stringify({ ok: true, result }), { headers: { "content-type": "application/json" } });
   }) as unknown as typeof globalThis.fetch;
-  const bot = createTelegramBot(cfg, ledger, admin, createRegistry(), createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), openTrustStore(":memory:"), undefined, undefined, undefined, { neoFolder: neo }, undefined, { botInfo, client: { fetch } });
+  const bot = createTelegramBot(cfg, ledger, admin, createRegistry(), createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), openTrustStore(":memory:"), undefined, undefined, undefined, { neoFolder: neo, gitRead }, undefined, { botInfo, client: { fetch } });
   let updateId = 1;
   const chat = { id: ADMIN, type: "private" as const, first_name: "Neo" };
   const from = { id: ADMIN, is_bot: false, first_name: "Neo" };
@@ -97,4 +97,16 @@ test("tapping [threads] sends the project's threads", async () => {
   const r = rig();
   await r.press("pj:t:gold");
   expect(r.sent().some((c) => String(c.payload.text).includes("gold has no threads yet"))).toBe(true);
+});
+
+test("the update handler returns at once; a slow /project answer is sent when its git reads settle", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const slow = { git: async () => (await gate, { ok: false, out: "", err: "slow" }), gh: async () => ({ ok: false, out: "", err: "x" }) };
+  const r = rig("https://neo.example", slow);
+  await r.say("/project gold"); // returns while the git reads are still pending
+  expect(r.sent().some((c) => String(c.payload.text).startsWith("gold ·"))).toBe(false);
+  release();
+  await Bun.sleep(30);
+  expect(r.sent().some((c) => String(c.payload.text).startsWith("gold · 🟠 attention"))).toBe(true);
 });

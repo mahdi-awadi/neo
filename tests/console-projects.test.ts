@@ -60,10 +60,23 @@ test("every pj.* key and enum family is in both catalogues (real Arabic, not Eng
   for (const k of [...families, ...used]) {
     expect(has(en, k), `en ${k}`).toBe(true);
     expect(has(ar, k), `ar ${k}`).toBe(true);
-    if (!/^pj\.(health|sev)\./.test(k)) expect(/[؀-ۿ]/.test(String(k.split(".").reduce((o: any, p) => o[p], ar))), `ar ${k} is Arabic`).toBe(true);
+    if (!/^pj\.(health|sev)\./.test(k) && !["pj.sect.git", "pj.sect.github"].includes(k))
+      // brand names (Git, GitHub) stay Latin
+      expect(/[؀-ۿ]/.test(String(k.split(".").reduce((o: any, p) => o[p], ar))), `ar ${k} is Arabic`).toBe(true);
   }
 });
 
 test("a console link #project=<name> opens that project's dashboard", () => {
   expect(APP).toContain("#project=");
+});
+
+test("review fixes: a bad #project= hash is ignored; Latin values are bidi-isolated in Arabic; the attention heading follows its rows", () => {
+  const hash = fn("openFromHash");
+  expect(hash).toContain("try {");
+  expect(hash).toContain("decodeURIComponent");
+  expect(APP).toContain('tx("pj.unknown", { name: iso(name) })');
+  expect(APP).toContain("steps: ltr(p.steps)");
+  expect(fn("renderProjectPane")).toContain('$("pjatth").textContent');
+  expect(String((ar as any).pj.sect.github)).toBe("GitHub");
+  expect(JSON.stringify(ar)).not.toContain("\u200c"); // no zero-width non-joiner
 });

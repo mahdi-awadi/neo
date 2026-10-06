@@ -905,7 +905,7 @@ function showProject(name: string): void {
     .then((r) => (r.ok ? r.json() : null))
     .then((v) => {
       if (PJ.open !== name) return;
-      if (!v) $("pjbody").innerHTML = `<div class="empty">${t("pj.unknown", { name })}</div>`;
+      if (!v) $("pjbody").innerHTML = `<div class="empty">${tx("pj.unknown", { name: iso(name) })}</div>`;
       else renderProjectPane(v);
     })
     .catch(() => ($("pjbody").innerHTML = `<div class="empty">${t("pj.loadFailed")}</div>`));
@@ -968,12 +968,12 @@ function renderProjectPane(v: Any): void {
     "pj.sect.plans",
     (v.plans as Any[]).map(
       (p) =>
-        `<div class="tart"><b>${iso(p.title)}</b><span class="rfo">${t("pj.planLine", { status: tx(`threads.planStatus.${p.status}`), steps: p.steps })}</span>` +
+        `<div class="tart"><b>${iso(p.title)}</b><span class="rfo">${tx("pj.planLine", { status: esc(tx(`threads.planStatus.${p.status}`)), steps: ltr(p.steps) })}</span>` +
         `${p.fileMissing ? `<span class="tchip st-failed">${t("pj.fileMissing")}</span>` : ""}${p.ref ? ltr(p.ref) : ""}</div>`,
     ),
   );
   // ATTENTION — each item with the shared one-tap buttons (filled in below).
-  h += `<div class="tsect"><h4>${t("pj.sect.attention", { n: v.attention.length })}</h4><div class="rfo pjnote" id="pjnote"></div><div id="pjatt"></div></div>`;
+  h += `<div class="tsect"><h4 id="pjatth">${t("pj.sect.attention", { n: v.attention.length })}</h4><div class="rfo pjnote" id="pjnote"></div><div id="pjatt"></div></div>`;
   // THREADS — each opens in the Threads tab.
   h += pjSect(
     "pj.sect.threads",
@@ -989,8 +989,12 @@ function renderProjectPane(v: Any): void {
   (v.attention as Any[]).forEach((it) => {
     const row = document.createElement("div");
     row.className = "tart";
+    row.dataset.att = String(it.id);
     row.innerHTML = `<span>${SEV_ICON[it.severity] ?? ""}</span>${ltr("#" + it.id)}<span dir="auto">${esc(it.title)}</span><span class="rfo">${esc(age(it.ageMs))}</span>`;
-    attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), loadProjects);
+    attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), () => {
+      $("pjatth").textContent = tx("pj.sect.attention", { n: box.querySelectorAll(".tart[data-att]").length });
+      loadProjects();
+    });
     box.appendChild(row);
   });
 }
@@ -998,8 +1002,14 @@ function renderProjectPane(v: Any): void {
 function openFromHash(): void {
   const m = /^#project=(.+)$/.exec(location.hash);
   if (!m) return;
+  let name: string;
+  try {
+    name = decodeURIComponent(m[1]!);
+  } catch {
+    return; // a malformed link (`#project=%E0`) is ignored — it must never stop the console starting
+  }
   tab("projects");
-  showProject(decodeURIComponent(m[1]!));
+  showProject(name);
 }
 function planAction(id: number, action: string, version: number): void {
   void post("/api/plan", { id, action, version })

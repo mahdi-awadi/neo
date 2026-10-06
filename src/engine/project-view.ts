@@ -430,11 +430,13 @@ export function projectDeps(o: {
   registry: Registry;
   cfg: { github?: GithubCfg; projects?: Record<string, ProjectCfg> };
   neoFolder?: string;
+  /** A git reader to use instead of the bounded default (tests). */
+  read?: GitRead;
 }): ProjectViewDeps {
   return {
     ledger: o.ledger,
     registry: o.registry,
-    read: createGitRead({ timeoutMs: (o.cfg.github ?? DEFAULT_GITHUB_CFG).callTimeoutMs }),
+    read: o.read ?? createGitRead({ timeoutMs: (o.cfg.github ?? DEFAULT_GITHUB_CFG).callTimeoutMs }),
     projects: o.cfg.projects ?? {},
     neoFolder: o.neoFolder ?? process.cwd(),
   };

@@ -239,3 +239,35 @@ test("the company's sessions tool carries the project block (no new tool); the c
   expect(text).toContain("gold · 🟠 attention · no session · queue 0 · attention 1 high");
   expect(text).not.toMatch(/^agent ·/m);
 });
+
+test("/project: a fault while building the answer is contained — reported, a plain answer, no rejection", async () => {
+  const w = world();
+  w.ledger.recordOrder(order(w.dir("gold")));
+  const cfg = { providers: { ownWork: "subscription" as const, customerWork: "gemini" as const }, get attention(): never { throw new Error("boom"); } };
+  const r = await handleCommand("/project gold", 1, cmdDeps(w, { cfg: cfg as never }))!.later!;
+  expect(r.text).toBe("The project dashboard failed — the fault is reported.");
+});
+
+test("sessions tool: '+N more' counts right when the company is not on the first page", async () => {
+  const { neoMcpServers } = await import("../src/engine/dispatch");
+  const { createMeter } = await import("../src/engine/budget");
+  const w = world();
+  for (let i = 0; i < 101; i++) {
+    const n = `p${String(i).padStart(3, "0")}`;
+    const f = w.dir(n);
+    w.ledger.recordOrder(order(f));
+    reconcile(w.ledger, "git", n, [high(n, f, "a")], NOW);
+  }
+  const company = w.registry.add(order(w.dir("zzz-agent")), NOW); // sorts after every attention project
+  w.registry.setDefault(company.id);
+  const servers = neoMcpServers(
+    { ledger: w.ledger, registry: w.registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), reply: () => {}, askApproval: async () => "deny", neoFolder: w.neo },
+    7,
+    { dispatch: true, workClass: "interactive", folder: w.dir("zzz-agent") },
+  );
+  const neo = servers!.neo as unknown as { instance: { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<{ content: Array<{ text: string }> }> }> } };
+  const text = (await neo.instance._registeredTools.sessions!.handler({}, {})).content[0]!.text;
+  // 101 projects + neo = 102 shown-or-counted (the company is never counted); 100 lines → +2.
+  expect(text).toContain("… +2 more");
+  expect(text).not.toContain("zzz-agent ·");
+});
