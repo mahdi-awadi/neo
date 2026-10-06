@@ -28,7 +28,13 @@ always presume its already approved, always for all project its always accepted"
    goes through `patientApproval`. It reminds the operator on the Decisions surface every
    `governor.approvalRemindMs` (default 30 min). After `governor.approvalTimeoutMs` (default 2 h) it
    fails closed: deny, an alert, an `approval_timeout` event, and an abort signal so Telegram/web
-   drop the prompt and close the decision row. `0` turns either off.
+   drop the prompt and close the decision row. `0` turns either off. The inbox Send approval uses
+   the same wait. When the run itself ends (`/kill`, stall-abort), the SDK's per-call signal ends
+   the wait quietly with deny: no reminder or alert for a dead run. A late tap on a timed-out
+   prompt is told "No longer pending" and the buttons are removed.
+5. **Ingress strips the knob explicitly.** Its dispatches run as source `neo`, so `runCompanyBrief`
+   sets `governor: undefined` on the deps it hands to `neoMcpServers`. The fence for customer work
+   then does not depend on a field being absent by accident.
 
 ## Considered options
 

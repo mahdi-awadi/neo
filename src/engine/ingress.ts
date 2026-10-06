@@ -73,7 +73,10 @@ export async function runCompanyBrief(
             resume:
               (canResumeWith(company.sdkProvider, deps.cfg.providers?.ownWork) ? company.sdkSessionId : "") || undefined,
             mcpServers: neoMcpServers(
-              { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv },
+              { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv,
+                // Customer-driven: dispatches run as source "neo", so strip the operator's standing
+                // write approval here explicitly — they keep the fence (ADR-0012).
+                governor: undefined },
               CUSTOMER_CHAT,
               // BACKGROUND: a customer brief is not the operator's turn — nobody is waiting at the
               // keyboard — so dispatches this run makes stay under the interactive reserve.

@@ -85,3 +85,39 @@ test("a rejecting prompt still rejects (the canUseTool fail-safe handles it) and
   await sleep(40);
   expect(said).toEqual([]);
 });
+
+test("an aborted run (killed / stall-aborted) ends the wait quietly: deny, no reminder, no alert", async () => {
+  const said: Said[] = [];
+  const events: string[] = [];
+  const run = new AbortController();
+  let promptAborted = false;
+  const p = patientApproval(
+    (signal) => new Promise(() => signal.addEventListener("abort", () => (promptAborted = true))),
+    "x",
+    {
+      patience: { approvalRemindMs: 15, approvalTimeoutMs: 30 },
+      say: (text, priority) => said.push({ text, priority }),
+      record: (kind) => events.push(kind),
+      signal: run.signal,
+    },
+  );
+  run.abort();
+  expect(await p).toBe("deny");
+  expect(promptAborted).toBe(true);
+  await sleep(50);
+  expect(said).toEqual([]);
+  expect(events).toEqual([]);
+});
+
+test("an already-aborted run never raises the prompt", async () => {
+  const run = new AbortController();
+  run.abort();
+  let asked = 0;
+  const d = await patientApproval(async () => (asked++, "allow"), "x", {
+    patience: { approvalRemindMs: 0, approvalTimeoutMs: 0 },
+    say: () => {},
+    signal: run.signal,
+  });
+  expect(d).toBe("deny");
+  expect(asked).toBe(0);
+});

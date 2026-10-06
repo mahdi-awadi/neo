@@ -106,7 +106,8 @@ export interface RunHandlers {
    *  result preview), so a caller can keep "the latest note" free of tool noise. */
   onMessage: (text: string, kind?: "text" | "tool") => void;
   /** Ask the human to approve a risky tool; resolves with their decision. */
-  onEscalation: (reason: string) => Promise<"allow" | "deny">;
+  /** `signal` is the SDK's per-call abort (the run was killed/aborted): stop waiting on it. */
+  onEscalation: (reason: string, signal?: AbortSignal) => Promise<"allow" | "deny">;
   /** Reported the SDK's running cost (`total_cost_usd`) as each turn completes. */
   onCost?: (usd: number) => void;
   /** Reported subscription rate-limit info from the SDK's rate_limit_event. */
@@ -321,7 +322,7 @@ export function buildCanUseTool(
 ) {
   // Customer work never gets the operator's standing write approval (ADR-0012).
   const writes: OutOfFolderWrites = source === "customer" ? "ask" : outOfFolderWrites;
-  return async (tool: string, input: Record<string, unknown>) => {
+  return async (tool: string, input: Record<string, unknown>, sdk?: { signal?: AbortSignal }) => {
     // The whole decision path is wrapped so this callback can NEVER reject. A rejected canUseTool is
     // turned by the SDK into an ungoverned permission failure with no recovery — the worker surfaces
     // it as `Tool permission request failed: Error: …` and, because the callback keeps rejecting,
@@ -361,7 +362,7 @@ export function buildCanUseTool(
         handlers.onAutoApprove?.(verdict.escalate);
         return { behavior: "allow", updatedInput: input };
       }
-      const decision = await handlers.onEscalation(verdict.escalate);
+      const decision = await handlers.onEscalation(verdict.escalate, sdk?.signal);
       if (decision === "allow") return { behavior: "allow", updatedInput: input };
       return { behavior: "deny", message: `denied by Neo: ${verdict.escalate}` };
     } catch (err) {

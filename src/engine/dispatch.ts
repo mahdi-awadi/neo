@@ -637,13 +637,14 @@ export async function dispatchToProject(
         },
         // An escalation SUSPENDS the worker mid-tool with no SDK events at all, so without marking
         // it the stall monitor would abort a worker that is doing exactly what it was told to do.
-        onEscalation: async (reason) => {
+        onEscalation: async (reason, signal) => {
           noteRegistry(() => deps.registry.noteBlocked(session.id, { kind: "approval", label: reason, since: now() }));
           try {
             return await patientApproval((signal) => deps.askApproval(replyChat, reason, signal), reason, {
               patience: deps.governor ?? DEFAULT_GOVERNOR_CFG,
               say: (text, priority) => void deps.reply(replyChat, text, name, priority),
               record: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data: { project: name, ...data } }),
+              signal,
             });
           } finally {
             lastActivityAt = now(); // the wait was the operator's, not the worker's

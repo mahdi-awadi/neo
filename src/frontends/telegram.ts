@@ -30,7 +30,8 @@ import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import { surfaceFor, routeChat, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
-import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
+import { openEscalationDecision, patientApproval, resolveEscalationDecision } from "../engine/escalation";
+import { DEFAULT_GOVERNOR_CFG } from "../engine/governor";
 import type { ApiCooldown } from "../engine/api-retry";
 import { faults } from "../engine/fault";
 import {
@@ -776,7 +777,15 @@ export function createTelegramBot(
         "telegram.inboxSend",
         async () => {
           try {
-            const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${approved.draft}`);
+            const deps = pipelineDeps();
+            const question = `Send this reply to ${view.item.from}?\n\n${approved.draft}`;
+            // Same patience as every approval (ADR-0012): reminders, then a deny, so an untapped
+            // Send never holds this item "busy" until a restart.
+            const decision = await patientApproval((signal) => deps.askApproval(chatId, question, signal), question, {
+              patience: cfg.governor ?? DEFAULT_GOVERNOR_CFG,
+              say: (text, priority) => void deps.reply(chatId, text, undefined, priority),
+              record: (kind, data) => ledger.recordEvent(kind, { data: { inboxItem: id, ...data } }),
+            });
             // The Send tap removed the item's buttons, so an outcome that did not send re-shows the item
             // (current draft + buttons) for the operator's next move.
             const reshow = async () => {
@@ -835,7 +844,10 @@ export function createTelegramBot(
       await ctx.answerCallbackQuery(verdict === "allow" ? "Allowed" : "Denied");
       await ctx.editMessageReplyMarkup(); // drop the buttons
     } else {
-      await ctx.answerCallbackQuery();
+      // No waiting resolver: it timed out (ADR-0012) or a restart dropped it. Say so and drop the
+      // stale buttons, so a late Allow never looks like it worked.
+      await ctx.answerCallbackQuery("No longer pending — this approval timed out or expired.");
+      await ctx.editMessageReplyMarkup().catch(() => {});
     }
   });
 

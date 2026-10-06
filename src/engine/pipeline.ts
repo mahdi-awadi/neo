@@ -491,7 +491,7 @@ function startSession(
       },
       // An escalation suspends the worker mid-tool with no SDK events: mark it so it reads as
       // awaiting-operator rather than silent, and clear it the moment the operator answers.
-      onEscalation: async (reason) => {
+      onEscalation: async (reason, signal) => {
         try {
           registry.noteBlocked(registryId, { kind: "approval", label: reason, since: now() });
         } catch {
@@ -502,6 +502,7 @@ function startSession(
             patience: deps.cfg.governor ?? DEFAULT_GOVERNOR_CFG,
             say: (text, priority) => void deps.reply(chatId, text, project, priority),
             record: (kind, data) => ledger.recordEvent(kind, { orderId: order.id, folder: order.folder, data: { project, ...data } }),
+            signal,
           });
         } finally {
           try {

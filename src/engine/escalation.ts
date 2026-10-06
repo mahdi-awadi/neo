@@ -61,17 +61,15 @@ export function patientApproval(
     patience: ApprovalPatience;
     say: (text: string, priority: Priority) => void;
     record?: (kind: string, data: Record<string, unknown>) => void;
+    /** The run's own abort (the SDK's canUseTool signal: /kill, stall-abort). Ends the wait
+     *  quietly with deny — the run is gone, so no reminder, no alert. */
+    signal?: AbortSignal;
   },
 ): Promise<"allow" | "deny"> {
   const { approvalRemindMs, approvalTimeoutMs } = opts.patience;
+  if (opts.signal?.aborted) return Promise.resolve("deny");
   const started = Date.now();
-  const abort = new AbortController();
-  let remind: ReturnType<typeof setInterval> | undefined;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const stop = () => {
-    if (remind !== undefined) clearInterval(remind);
-    if (timeout !== undefined) clearTimeout(timeout);
-  };
+  const prompt = new AbortController();
   // Observer only: a failing channel must never break the wait itself.
   const say = (text: string, priority: Priority) => {
     try {
@@ -81,13 +79,24 @@ export function patientApproval(
     }
   };
   return new Promise<"allow" | "deny">((resolve, reject) => {
+    let remind: ReturnType<typeof setInterval> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      stop();
+      if (remind !== undefined) clearInterval(remind);
+      if (timeout !== undefined) clearTimeout(timeout);
+      opts.signal?.removeEventListener("abort", onRunAbort);
       fn();
     };
+    // The run is gone (killed / stall-aborted): drop the prompt, deny, and say nothing.
+    const onRunAbort = () =>
+      finish(() => {
+        prompt.abort();
+        resolve("deny");
+      });
+    opts.signal?.addEventListener("abort", onRunAbort, { once: true });
     if (approvalRemindMs > 0) {
       remind = setInterval(() => {
         say(`⏳ still waiting for your approval (${humanAge(Date.now() - started)}): ${reason}`, "decision");
@@ -102,12 +111,12 @@ export function patientApproval(
             /* observer only */
           }
           say(`⌛ no answer in ${humanAge(Date.now() - started)} — denied: ${reason}`, "alert");
-          abort.abort();
+          prompt.abort();
           resolve("deny");
         });
       }, approvalTimeoutMs);
     }
-    ask(abort.signal).then(
+    ask(prompt.signal).then(
       (d) => finish(() => resolve(d)),
       (e) => finish(() => reject(e)),
     );
