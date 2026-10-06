@@ -352,14 +352,18 @@ export async function onRunEndPlans(deps: PlanDeps, run: PlanRun): Promise<void>
     }
   }
   // Post until `cap` cards have landed; the one that would be the last carries the count still
-  // waiting, so a post that fails passes the note on to the next plan.
+  // waiting (those after it, and those whose post failed), so a failed post passes the note on.
   const cap = deps.cfg.maxPerRun;
   let landed = 0;
+  let missed = 0;
   for (let i = 0; i < toSend.length && landed < cap; i++) {
     const plan = toSend[i]!;
     try {
-      if ((await sendPlan(deps, plan, run, landed === cap - 1 ? toSend.length - i - 1 : 0)) === "sent") landed++;
+      const out = await sendPlan(deps, plan, run, landed === cap - 1 ? toSend.length - i - 1 + missed : 0);
+      if (out === "sent") landed++;
+      else if (out === "failed") missed++;
     } catch (e) {
+      missed++;
       faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path: plan.path });
     }
   }
@@ -403,7 +407,8 @@ export async function applyPlanAction(deps: PlanDeps, planId: number, action: Pl
   if (version !== undefined && version !== plan.version) return { ok: false, text: `this card is v${version} — the newest is v${plan.version}; use that card` };
   // Approve and Execute act on the text the operator read: refused when the file changed after the
   // newest card and that version has not reached them yet (held back by the cap, or its post failed).
-  if ((action === "approve" || action === "execute") && plan.sentSha256 !== undefined && plan.sentSha256 !== plan.sha256) {
+  // Only while a new card can still come: with sending off, there is nothing to wait for.
+  if ((action === "approve" || action === "execute") && deps.postPlan && deps.cfg.send && plan.sentSha256 !== undefined && plan.sentSha256 !== plan.sha256) {
     return { ok: false, text: `the plan changed after its newest card (v${plan.version}) — wait for the new card, or see /plans` };
   }
   if (plan.status === "done" || plan.status === "abandoned") return { ok: false, text: `this plan is already ${plan.status === "done" ? "done" : "dropped"}` };

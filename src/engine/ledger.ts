@@ -261,7 +261,8 @@ export interface Ledger {
   recordToolAction(a: NewToolAction): void;
   planByPath(folder: string, path: string): PlanRow | undefined;
   planById(id: number): PlanRow | undefined;
-  /** Insert, or update the row for (folder, path); returns the stored row. An omitted `version` keeps the stored one. */
+  /** Insert, or update the row for (folder, path); returns the stored row. An omitted `version` keeps the
+   *  stored one; `updatedAt` is always now (a caller that spreads a read row cannot freeze it). */
   upsertPlan(p: PlanDraft): PlanRow;
   /** The newest todo an Execute made for this plan. */
   todoForPlan(planId: number): TodoRow | undefined;
@@ -781,7 +782,7 @@ export function openLedger(
       ).run(
         p.project, p.folder, p.path, p.title, p.sha256, p.status, p.stepsTotal, p.stepsDone,
         p.threadId ?? null, p.orderId ?? null, p.todoId ?? null, p.decisionId ?? null,
-        p.createdAt ?? now, p.updatedAt ?? now, p.sentAt ?? null, p.sentSha256 ?? null, p.version ?? 0, p.version ?? null,
+        p.createdAt ?? now, now, p.sentAt ?? null, p.sentSha256 ?? null, p.version ?? 0, p.version ?? null,
       );
       return mapPlanRow(db.query(`SELECT * FROM plans WHERE folder = ? AND path = ?`).get(p.folder, p.path) as PlanDbRow);
     },

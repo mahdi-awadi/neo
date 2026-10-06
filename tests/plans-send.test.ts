@@ -506,9 +506,55 @@ test("the '+N more' note rides on the last card that really lands", async () => 
   });
   for (const n of ["a", "b", "c", "d"]) put(dir, `plans/${n}.md`, `# ${n.toUpperCase()}`);
   await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
-  expect(landed).toEqual(["📄 plan · gold · A", "📄 plan · gold · C · +1 more: /plans"]);
+  // B's post failed, so B and D both still wait.
+  expect(landed).toEqual(["📄 plan · gold · A", "📄 plan · gold · C · +2 more: /plans"]);
 });
 
 test("readPlansCfg refuses brace globs (git pathspecs cannot read them)", () => {
   expect(readPlansCfg({ paths: ["docs/{plans,specs}/**/*.md"] }).paths).toEqual(DEFAULT_PLANS_CFG.paths);
+});
+
+// ── P2 final-check follow-ups ──────────────────────────────────────────────────────────────
+
+test("the '+N more' count includes plans whose post failed earlier in the same run end", async () => {
+  const dir = repo();
+  const landed: string[] = [];
+  const { deps } = rig({
+    trace: undefined,
+    cfg: { ...DEFAULT_PLANS_CFG, maxPerRun: 3 },
+    postPlan: async (_rec, _path, caption) => {
+      if (caption.includes("· C")) return undefined;
+      landed.push(caption);
+      return { chatId: 1, messageId: landed.length };
+    },
+  });
+  for (const n of ["a", "b", "c", "d", "e"]) put(dir, `plans/${n}.md`, `# ${n.toUpperCase()}`);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(landed).toEqual(["📄 plan · gold · A", "📄 plan · gold · B", "📄 plan · gold · D · +2 more: /plans"]);
+});
+
+test("with sending turned off after a card, approve and execute are not blocked by an unsent edit", async () => {
+  const dir = repo();
+  const { ledger, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  const off = { ...deps, cfg: { ...DEFAULT_PLANS_CFG, send: false } };
+  put(dir, PLAN, BODY + "- [ ] more\n");
+  await onRunEndPlans(off, { project: "gold", folder: dir, chatId: 42 });
+  expect(await applyPlanAction(off, ledger.planByPath(dir, PLAN)!.id, "approve")).toEqual({ ok: true, text: "Approved" });
+});
+
+test("every plan write moves updatedAt, so /plans stays newest first", async () => {
+  const dir = repo();
+  const { ledger, deps } = rig();
+  put(dir, PLAN, BODY);
+  put(dir, "plans/b.md", "# B");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  const a = ledger.planByPath(dir, PLAN)!;
+  const old = ledger.upsertPlan({ ...a, updatedAt: 1 }).updatedAt;
+  expect(old).toBeGreaterThan(1);
+  await Bun.sleep(5);
+  await applyPlanAction(deps, a.id, "approve");
+  expect(ledger.planById(a.id)!.updatedAt).toBeGreaterThan(old);
+  expect(ledger.listPlans()[0]!.id).toBe(a.id);
 });
