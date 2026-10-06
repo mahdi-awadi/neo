@@ -349,6 +349,7 @@ export interface Ledger {
   /** Small per-key engine state as JSON (`gh:<project>` → the last scan). */
   getMeta(key: string): { value: unknown; updatedAt: number } | undefined;
   setMeta(key: string, value: unknown, at: number): void;
+  deleteMeta(key: string): void;
   /** Record this daemon's start; only the newest 100 boots are kept. */
   recordBoot(b: BootRow): void;
   /** The newest boot record (the running build). */
@@ -974,6 +975,9 @@ export function openLedger(
     },
     setMeta(key, value, at) {
       db.query(`INSERT INTO meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(key, JSON.stringify(value), at);
+    },
+    deleteMeta(key) {
+      db.query(`DELETE FROM meta WHERE key = ?`).run(key);
     },
     recordBoot(b) {
       db.transaction(() => {

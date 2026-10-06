@@ -53,6 +53,9 @@ import {
   type DecisionTap,
 } from "../engine/structured-question";
 
+/** Telegram's limit for the toast that answers a button tap (answerCallbackQuery text). */
+const TAP_TOAST_MAX = 200;
+
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
  *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
  *  text — never wrapped in <code>/<pre> — so Telegram auto-links it under parse_mode HTML too. */
@@ -909,10 +912,14 @@ export function createTelegramBot(
       const id = Number(attTap[1]);
       const action = attTap[2];
       const r = await applyAttentionAction(attentionDeps(), id, action, Date.now());
-      await ctx.answerCallbackQuery(r.text.slice(0, 200));
-      // Snoozed, dismissed or removed: the row has nothing left to do. A refusal keeps it (its answer
-      // may point at → todo).
-      if (r.ok && action !== "todo") {
+      // The toast holds TAP_TOAST_MAX characters: a longer answer (the ignored files a remove deletes)
+      // is also posted in full, so the operator never consents to a list they could not read.
+      const long = r.text.length > TAP_TOAST_MAX;
+      await ctx.answerCallbackQuery(long ? `${r.text.slice(0, TAP_TOAST_MAX - 1)}…` : r.text);
+      if (long) await ctx.reply(r.text);
+      // Snoozed, dismissed, removed or already resolved: the row has nothing left to do. A refusal
+      // keeps it (its answer may point at → todo).
+      if (r.drop) {
         const rows = (ctx.callbackQuery.message?.reply_markup?.inline_keyboard ?? []).filter(
           (row) => !row.some((b) => "callback_data" in b && b.callback_data.startsWith(`att:${id}:`)),
         );

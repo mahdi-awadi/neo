@@ -18,6 +18,8 @@ import type { Registry } from "./registry";
 const REMOVE_TIMEOUT_MS = 30_000;
 /** A remove that deletes ignored files needs a second tap within this window. */
 const REMOVE_CONFIRM_MS = 5 * 60_000;
+/** Ignored files named by name in the warning (git collapses an ignored folder to one line). */
+const REMOVE_NAMED_MAX = 20;
 
 export type AttentionAction = "remove" | "todo" | "snooze" | "dismiss";
 const ACTIONS: AttentionAction[] = ["remove", "todo", "snooze", "dismiss"];
@@ -68,11 +70,24 @@ export interface AttentionActionDeps {
 /** Items whose `→ todo` is being queued right now: a second tap meanwhile is refused, not doubled. */
 const queueing = new Set<number>();
 
-export async function applyAttentionAction(deps: AttentionActionDeps, id: number, action: AttentionAction, now: number): Promise<{ ok: boolean; text: string }> {
+/** A tap's answer. `drop`: the item's row has nothing left to do (snoozed, dismissed, removed, or
+ *  already resolved elsewhere) — the frontend takes its buttons away. A refusal keeps them. */
+export interface AttentionActionResult {
+  ok: boolean;
+  text: string;
+  drop?: boolean;
+}
+
+export async function applyAttentionAction(deps: AttentionActionDeps, id: number, action: AttentionAction, now: number): Promise<AttentionActionResult> {
+  const r = await apply(deps, id, action, now);
+  return r.ok && action !== "todo" ? { ...r, drop: true } : r;
+}
+
+async function apply(deps: AttentionActionDeps, id: number, action: AttentionAction, now: number): Promise<AttentionActionResult> {
   const { ledger } = deps;
   const row = ledger.attentionById(id);
-  if (!row) return { ok: false, text: `no attention item #${id}` };
-  if (row.resolvedAt !== undefined) return { ok: false, text: `#${id} is already resolved` };
+  if (!row) return { ok: false, text: `no attention item #${id}`, drop: true };
+  if (row.resolvedAt !== undefined) return { ok: false, text: `#${id} is already resolved`, drop: true };
   switch (action) {
     case "snooze":
       snooze(ledger, id, now + deps.snoozeMs);
@@ -101,7 +116,7 @@ export async function applyAttentionAction(deps: AttentionActionDeps, id: number
 /** Remove a leftover worktree (AC5.4): only a clean one (checked live, not from the scan) whose
  *  branch is pushed or merged, and never one a session runs in. `git worktree remove` without
  *  --force, so git itself refuses anything it would lose. The item resolves. */
-async function removeWorktree(deps: AttentionActionDeps, row: AttentionRow, now: number): Promise<{ ok: boolean; text: string }> {
+async function removeWorktree(deps: AttentionActionDeps, row: AttentionRow, now: number): Promise<AttentionActionResult> {
   const f = worktreeFacts(row);
   if (!f) return { ok: false, text: `#${row.id} is not a leftover worktree` };
   if (!attentionActions(row).includes("remove")) return { ok: false, text: `${f.path}: not pushed or merged, or not clean — → todo instead` };
@@ -115,23 +130,26 @@ async function removeWorktree(deps: AttentionActionDeps, row: AttentionRow, now:
   if (lines.some((l) => !l.startsWith("!! "))) return { ok: false, text: `${f.path} has uncommitted changes now — → todo instead` };
   // git deletes ignored files (a .env, local data) without asking: name them, and remove only on a
   // second tap within REMOVE_CONFIRM_MS — consent to exactly what is lost.
-  const ignored = lines.map((l) => l.slice(3));
+  const ignored = lines.map((l) => l.slice(3)).sort();
+  const key = `rmconfirm:${row.id}`;
   if (ignored.length) {
-    const key = `rmconfirm:${row.id}`;
-    const asked = deps.ledger.getMeta(key)?.value as { at: number } | undefined;
-    if (!asked || now - asked.at > REMOVE_CONFIRM_MS) {
-      deps.ledger.setMeta(key, { at: now }, now);
-      const shown = ignored.slice(0, 5).join(", ") + (ignored.length > 5 ? ` (+${ignored.length - 5} more)` : "");
-      return { ok: false, text: `${f.path} also holds ignored files that remove deletes: ${shown} — tap remove again within ${REMOVE_CONFIRM_MS / 60_000} min to delete them` };
+    const asked = deps.ledger.getMeta(key)?.value as { at: number; files?: string[] } | undefined;
+    // The consent covers exactly the files named: one that appeared since asks again.
+    const same = asked?.files !== undefined && asked.files.join("\0") === ignored.join("\0");
+    if (!asked || !same || now - asked.at > REMOVE_CONFIRM_MS) {
+      deps.ledger.setMeta(key, { at: now, files: ignored }, now);
+      const shown = ignored.slice(0, REMOVE_NAMED_MAX).join(", ") + (ignored.length > REMOVE_NAMED_MAX ? ` (+${ignored.length - REMOVE_NAMED_MAX} more)` : "");
+      return { ok: false, text: `tap remove again within ${REMOVE_CONFIRM_MS / 60_000} min to also delete the ignored files in ${f.path}: ${shown}` };
     }
   }
   const r = await run(["git", "-C", row.folder, "worktree", "remove", f.path], { timeoutMs: REMOVE_TIMEOUT_MS });
   if (r.code !== 0) return { ok: false, text: `git refused: ${r.err.trim()}` };
+  deps.ledger.deleteMeta(key);
   deps.ledger.updateAttention(row.id, { resolvedAt: now });
   return { ok: true, text: `removed worktree ${f.path}` };
 }
 
-async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<{ ok: boolean; text: string }> {
+async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<AttentionActionResult> {
   const { ledger } = deps;
   // The linked todo is THE todo unless it failed or was cancelled — even "done": a brief delivered into
   // an open session is done at once while the item is still open. A returning item has no link (reopen).

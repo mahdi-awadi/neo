@@ -3,7 +3,7 @@
 // worker output + escalations as events an HTTP/SSE layer can fan out, and resolves
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
-import { applyAttentionAction, type AttentionAction } from "./attention-actions";
+import { applyAttentionAction, type AttentionAction, type AttentionActionResult } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
 import { basename } from "node:path";
 import { handleMessage, type PipelineDeps } from "./pipeline";
@@ -119,7 +119,7 @@ export interface WebChannel {
    *  operator's text, which the console does not carry yet, so it is refused here. */
   planAction(id: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }>;
   /** An attention item's one-tap action (ADR-0018) — the same engine rules as a Telegram tap. */
-  attentionAction(id: number, action: AttentionAction): Promise<{ ok: boolean; text: string }>;
+  attentionAction(id: number, action: AttentionAction): Promise<AttentionActionResult>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
   notify(text: string, project?: string): void;
   /** Resolve a token issued by an outbound file event to its on-disk path (for GET /file). */

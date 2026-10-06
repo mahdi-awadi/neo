@@ -39,7 +39,7 @@ test("Remove on a clean, merged worktree runs git worktree remove once and resol
   const s = setup();
   expect(attentionActions(s.ledger.attentionById(s.id)!)).toEqual(["remove", "todo", "snooze", "dismiss"]);
   const r = await applyAttentionAction(s.deps, s.id, "remove", 200);
-  expect(r).toEqual({ ok: true, text: `removed worktree ${s.wt}` });
+  expect(r).toEqual({ ok: true, text: `removed worktree ${s.wt}`, drop: true });
   expect(existsSync(s.wt)).toBe(false);
   expect(s.ledger.attentionById(s.id)!.resolvedAt).toBe(200);
   expect((await applyAttentionAction(s.deps, s.id, "remove", 300)).ok).toBe(false); // already resolved
@@ -91,4 +91,41 @@ test("any session for the worktree (idle too) refuses remove — a resume would 
   const sess = s.registry.add({ id: "o2", source: "neo", folder: s.wt, task: "t", chatId: 1, createdAt: 0 }, 0);
   s.registry.setStatus(sess.id, "idle");
   expect((await applyAttentionAction(s.deps, s.id, "remove", 200)).text).toBe(`in use by ${sess.name}`);
+});
+
+test("the second tap removes only the ignored files it named: a new one asks again; the consent is then cleared", async () => {
+  const s = setup();
+  writeFileSync(join(s.wt, ".gitignore"), ".env*\n");
+  git(s.wt, "add", ".gitignore");
+  git(s.wt, "commit", "-q", "-m", "ignore env");
+  git(s.dir, "merge", "-q", "--ff-only", "feat/ota");
+  writeFileSync(join(s.wt, ".env"), "SECRET=1");
+  expect((await applyAttentionAction(s.deps, s.id, "remove", 1_000)).ok).toBe(false);
+  writeFileSync(join(s.wt, ".env.local"), "SECRET=2"); // appeared after the operator saw the list
+  const again = await applyAttentionAction(s.deps, s.id, "remove", 2_000);
+  expect(again.ok).toBe(false);
+  expect(again.text).toContain(".env.local");
+  expect(existsSync(s.wt)).toBe(true);
+  expect((await applyAttentionAction(s.deps, s.id, "remove", 3_000)).ok).toBe(true);
+  expect(s.ledger.getMeta(`rmconfirm:${s.id}`)).toBeUndefined();
+});
+
+test("the warning leads with what to do and names every ignored file up to the cap", async () => {
+  const s = setup();
+  writeFileSync(join(s.wt, ".gitignore"), "*.local\n");
+  git(s.wt, "add", ".gitignore");
+  git(s.wt, "commit", "-q", "-m", "ignore");
+  git(s.dir, "merge", "-q", "--ff-only", "feat/ota");
+  for (const n of ["a", "b", "c", "d", "e", "f", "g"]) writeFileSync(join(s.wt, `${n}.local`), n);
+  const r = await applyAttentionAction(s.deps, s.id, "remove", 1_000);
+  expect(r.text.startsWith("tap remove again")).toBe(true);
+  for (const n of ["a", "b", "c", "d", "e", "f", "g"]) expect(r.text).toContain(`${n}.local`);
+});
+
+test("an item already resolved elsewhere tells the frontend to drop its row", async () => {
+  const s = setup();
+  s.ledger.updateAttention(s.id, { resolvedAt: 150 });
+  const r = await applyAttentionAction(s.deps, s.id, "snooze", 200);
+  expect(r.ok).toBe(false);
+  expect(r.drop).toBe(true);
 });

@@ -87,3 +87,21 @@ test("a refused action keeps the item's row (its answer may point at → todo)",
   await r.press("att:1:remove"); // not a worktree: refused
   expect(r.calls.some((c) => c.method === "editMessageReplyMarkup")).toBe(false);
 });
+
+test("an answer too long for a tap toast is also posted in the chat in full", async () => {
+  const r = rig();
+  const wt = "/tmp/" + "x".repeat(220);
+  reconcile(r.ledger, "git", "gold", [{ project: "gold", folder: "/tmp/gold", source: "git", kind: "worktree", key: wt, title: "worktree idle", detail: JSON.stringify({ path: wt, branch: "b", dirty: false, merged: false, pushed: false }), severity: "normal" }], 100);
+  await r.press("att:1:remove");
+  const full = r.calls.find((c) => c.method === "sendMessage" && String(c.payload.text).includes(wt));
+  expect(full).toBeDefined();
+  expect(String(r.calls.find((c) => c.method === "answerCallbackQuery")?.payload.text).length).toBeLessThanOrEqual(200);
+});
+
+test("a tap on an item already resolved elsewhere drops its row", async () => {
+  const r = rig();
+  reconcile(r.ledger, "engine", "gold", [item], 100);
+  r.ledger.updateAttention(1, { resolvedAt: 150 });
+  await r.press("att:1:snooze");
+  expect(r.calls.some((c) => c.method === "editMessageReplyMarkup")).toBe(true);
+});
