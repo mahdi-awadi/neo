@@ -19,6 +19,10 @@ import { listOpen } from "./attention";
 import { attentionActions, type AttentionAction } from "./attention-actions";
 import { msgRef } from "./trace";
 import { faults } from "./fault";
+import { createGitRead } from "./git-read";
+import { DEFAULT_GITHUB_CFG, type GithubCfg } from "./producers/github";
+import { humanAge } from "./liveness";
+import { todoTitle } from "./todo-title";
 
 /** Recent threads a project view lists (spec §9). */
 const THREADS_SHOWN = 10;
@@ -175,12 +179,17 @@ function threadSummary(t: { id: number; title: string; state: ThreadState; updat
   return { id: t.id, ref: msgRef(t.id), title: t.title, state: t.state, updatedAt: t.updatedAt };
 }
 
+/** A project's newest threads (spec §9) — the view's THREADS part and `/project <name> threads`. */
+export function recentThreads(ledger: Ledger, name: string): ThreadSummary[] {
+  return ledger.listThreads({ project: name }, { limit: THREADS_SHOWN }).rows.map(threadSummary);
+}
+
 /** The facts both forms share. */
 function common(d: Omit<ProjectViewDeps, "read">, name: string, folder: string, now: number) {
   const session = part("session", name, () => d.registry.findByFolder(folder), undefined);
   const queue = part("queue", name, () => activeTodos(d.ledger, folder), []);
   const open = part("attention", name, () => listOpen(d.ledger, { project: name, now }), []);
-  const threads = part("threads", name, () => d.ledger.listThreads({ project: name }, { limit: THREADS_SHOWN }).rows.map(threadSummary), []);
+  const threads = part("threads", name, () => recentThreads(d.ledger, name), []);
   const scan = part("scanMeta", name, () => d.ledger.getMeta(`gh:${name}`)?.value as ScanMeta | undefined, undefined);
   const health = part(
     "health",
@@ -412,4 +421,110 @@ export async function gitFacts(read: GitRead, folder: string, cfg: ProjectCfg): 
 
   if (failed.length) out.error = `could not read: ${failed.join(", ")}${firstErr ? ` (${firstErr})` : ""}`;
   return out;
+}
+
+/** The deps every surface builds the same way: the bounded git reader from `github.callTimeoutMs`,
+ *  config `projects`, and Neo's own folder (the daemon's working folder, unless named). */
+export function projectDeps(o: {
+  ledger: Ledger;
+  registry: Registry;
+  cfg: { github?: GithubCfg; projects?: Record<string, ProjectCfg> };
+  neoFolder?: string;
+}): ProjectViewDeps {
+  return {
+    ledger: o.ledger,
+    registry: o.registry,
+    read: createGitRead({ timeoutMs: (o.cfg.github ?? DEFAULT_GITHUB_CFG).callTimeoutMs }),
+    projects: o.cfg.projects ?? {},
+    neoFolder: o.neoFolder ?? process.cwd(),
+  };
+}
+
+/** Every project the engine knows, by name, sorted: Neo itself, the open sessions, the folders the
+ *  ledger has orders for (still on disk) and the folders of running or queued todos. */
+export function knownProjects(d: Pick<ProjectViewDeps, "ledger" | "registry" | "neoFolder">): string[] {
+  const names =
+    faults.guard("projectView.known", () => {
+      const out = new Set<string>([basename(d.neoFolder)]);
+      for (const s of d.registry.list()) out.add(basename(s.order.folder));
+      for (const f of d.ledger.folders()) if (existsSync(f)) out.add(basename(f));
+      for (const t of d.ledger.listTodos({ statuses: ["running", "queued"] })) out.add(basename(t.folder));
+      return out;
+    }) ?? new Set<string>();
+  return [...names].filter(Boolean).sort();
+}
+
+/** What needs the operator comes first. */
+const HEALTH_RANK: Record<ProjectHealth, number> = { down: 0, attention: 1, ok: 2, unknown: 3 };
+export const HEALTH_ICON: Record<ProjectHealth, string> = { ok: "🟢", attention: "🟠", down: "🔴", unknown: "⚪" };
+
+/** The project list: one summary per known project, health first then name, at most `limit` rows;
+ *  `total` counts them all. */
+export function projectSummaries(d: Omit<ProjectViewDeps, "read">, now: number, limit: number): { rows: ProjectSummary[]; total: number } {
+  const all = knownProjects(d)
+    .map((n) => projectSummary(d, n, now))
+    .filter((s): s is ProjectSummary => s !== undefined)
+    .sort((a, b) => HEALTH_RANK[a.health] - HEALTH_RANK[b.health] || a.name.localeCompare(b.name));
+  return { rows: all.slice(0, Math.max(0, limit)), total: all.length };
+}
+
+const SEVERITIES = ["high", "normal", "low"] as const;
+
+/** One line per project — `/project` with no name and the company's `sessions` tool. */
+export function summaryLine(s: ProjectSummary): string {
+  const att = SEVERITIES.filter((k) => s.attention[k]).map((k) => `${s.attention[k]} ${k}`).join(", ");
+  return [`${s.name} · ${HEALTH_ICON[s.health]} ${s.health}`, s.state ?? "no session", `queue ${s.queue}`, att ? `attention ${att}` : "no attention"].join(" · ");
+}
+
+/** The console link that opens one project's dashboard (the Projects tab reads `#project=`). */
+export function projectUrl(consoleUrl: string, name: string): string {
+  return `${consoleUrl.replace(/\/+$/, "")}/#project=${encodeURIComponent(name)}`;
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** The Telegram dashboard (`/project <name>`, the P6 sketch): English engine lines, each variable part
+ *  cut to a title's length, at most `maxLines` lines — one message, well under Telegram's limit. */
+export function renderProject(v: ProjectView, now: number, o: { maxLines: number }): string {
+  const L: string[] = [`${v.name} · ${HEALTH_ICON[v.health]} ${v.health}`];
+  const th = v.now?.thread;
+  L.push(v.now ? `now: ${v.now.line}${th ? ` — ${todoTitle(th.title)} · ${th.ref}` : ""}` : "now: no session open");
+
+  const running = v.queue.filter((q) => q.status === "running");
+  const queued = v.queue.length - running.length;
+  L.push(v.queue.length ? `queue: ${[...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : [])].join(", ")}` : "queue: empty");
+
+  const g = v.git;
+  const head = [g.branch, g.lastCommit ? todoTitle(g.lastCommit) : undefined].filter(Boolean).join(" ");
+  const gitParts = [
+    `${head}${g.lastCommitAt !== undefined ? ` (${humanAge(now - g.lastCommitAt)})` : ""}`,
+    g.noUpstream ? "no upstream" : g.unpushed ? `${g.unpushed} unpushed` : undefined,
+    g.dirty ? `${g.dirty} uncommitted` : undefined,
+    g.drift ? `${g.drift.from}→${g.drift.to} +${g.drift.ahead}` : undefined,
+    g.worktrees ? plural(g.worktrees, "worktree") : undefined,
+  ].filter((x): x is string => !!x && !!x.trim());
+  if (gitParts.length) L.push(`git: ${gitParts.join(" · ")}`);
+  if (g.error) L.push(`git error: ${todoTitle(g.error)}`);
+  if (g.undeployed !== undefined) L.push(`deploy: ${plural(g.undeployed, "commit")} not deployed`);
+
+  const gh = v.github;
+  const ghParts =
+    gh.scannedAt === undefined
+      ? ["never scanned"]
+      : [plural(gh.prs, "PR"), `CI ${gh.ciFailed ? `❌ ${gh.ciFailed}` : "✓"}`, plural(gh.issues, "issue"), plural(gh.alerts, "alert"), `scanned ${humanAge(now - gh.scannedAt)} ago`];
+  L.push(`github: ${ghParts.join(" · ")}${gh.error ? ` · error: ${todoTitle(gh.error)}` : ""}`);
+
+  for (const d of v.decisions) L.push(`decide: ${todoTitle(d.question)} (${humanAge(d.ageMs)})${d.ref ? ` · ${d.ref}` : ""}`);
+  for (const p of v.plans) {
+    const line = `${todoTitle(p.title)} — ${p.status} ${p.steps}${p.fileMissing ? " · file missing" : ""}`;
+    L.push(`plans: ${line}${p.ref ? ` · ${p.ref}` : ""}`);
+  }
+
+  const counts = SEVERITIES.map((k) => [k, v.attention.filter((a) => a.severity === k).length] as const).filter(([, n]) => n);
+  L.push(v.attention.length ? `attention: ${v.attention.length} open — ${counts.map(([k, n]) => `${n} ${k}`).join(" · ")}` : "attention: nothing open");
+  for (const r of v.restartGated ?? []) L.push(`restart-gated: ${todoTitle(r.title)}`);
+
+  if (L.length <= o.maxLines) return L.join("\n");
+  const keep = Math.max(1, o.maxLines - 1);
+  return [...L.slice(0, keep), `… +${L.length - keep} more lines — open the console`].join("\n");
 }

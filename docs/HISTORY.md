@@ -851,3 +851,12 @@ built but not running from git and the boot record (`engine_boots`). The repo sc
 all with one-tap → todo / snooze / dismiss (and remove for a clean leftover worktree), on Telegram
 and in the console; a daily digest goes out at `attention.digestAt`. Migrations v6 (console
 indexes), v7 (attention, boots) and v8 (`meta`). Going live needs a daemon restart (operator-gated).
+
+### Project dashboard (2026-10-06, P6)
+
+One read model, `project-view.ts`, gives each project its view: now, queue, live git facts, GitHub
+scan counts, open decisions, plans, attention, threads, Neo's restart-gated work and a health rule.
+Three surfaces read it: the console's Projects tab (`GET /api/projects`, `GET /api/projects/:name`;
+its attention buttons use the same action path as the feed), `/project <name>` (alias `/p`) on
+Telegram with attention, threads and console buttons, and the company's `sessions` tool, which ends
+with one summary line per project. No new knob. Going live needs a daemon restart (operator-gated).

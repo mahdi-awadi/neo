@@ -49,7 +49,7 @@ test("the Queue tab renders the todo queues, posts its actions to /api/todo, and
   expect(APP).toContain("/api/todo");
   // Every view a tab names is one the tab switch toggles (the Queue view used to be missing).
   const views = [...html.matchAll(/class="tab[^"]*" data-v="([a-z]+)"/g)].map((m) => m[1]);
-  expect(views.length).toBe(7);
+  expect(views.length).toBe(8);
   for (const v of views) expect(APP).toMatch(new RegExp(`const VIEWS = \\[[^\\]]*"${v}"`));
 });
 

@@ -295,3 +295,36 @@ test("POST /api/attention applies an attention action; a bad body is a 400", asy
   expect((await post({ id, action: "explode" })).status).toBe(400);
   expect((await post({ action: "dismiss" })).status).toBe(400);
 });
+
+// P6 Task 6.2: the project dashboard on the web — the list and one project's view.
+test("GET /api/projects lists the known projects (bounded); GET /api/projects/:name is the view, 404 when unknown", async () => {
+  const a = app();
+  const root = mkdtempSync(join(tmpdir(), "neo-webpj-"));
+  const { mkdirSync } = await import("node:fs");
+  for (let i = 0; i < 105; i++) {
+    const f = join(root, `p${String(i).padStart(3, "0")}`);
+    mkdirSync(f);
+    a.ledger.recordOrder({ id: crypto.randomUUID(), source: "neo", folder: f, task: "t", chatId: 0, createdAt: 1 });
+  }
+  reconcile(a.ledger, "git", "p050", [{ project: "p050", folder: join(root, "p050"), source: "git", kind: "dirty", key: "k", title: "dirty", severity: "high" }], Date.now());
+  const get = (path: string, cookie?: string) => a.instance.fetch(new Request(`http://neo.test${path}`, cookie ? { headers: { cookie } } : {}));
+  expect((await get("/api/projects")).status).toBe(401);
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const list = await get("/api/projects", cookie);
+  expect(list.status).toBe(200);
+  expect(list.headers.get("cache-control")).toContain("no-store");
+  const body = (await list.json()) as { rows: Array<{ name: string; health: string; queue: number; attention: Record<string, number> }>; total: number };
+  expect(body.rows.length).toBe(100);
+  expect(body.total).toBeGreaterThan(100);
+  expect(body.rows[0]).toMatchObject({ name: "p050", health: "attention", queue: 0, attention: { high: 1, normal: 0, low: 0 } });
+  const one = await get("/api/projects/p050", cookie);
+  expect(one.status).toBe(200);
+  expect(one.headers.get("cache-control")).toContain("no-store");
+  const v = (await one.json()) as Record<string, unknown>;
+  expect(v).toMatchObject({ name: "p050", health: "attention", now: null, queue: [], decisions: [], plans: [], threads: [] });
+  expect((v.attention as unknown[]).length).toBe(1);
+  expect(typeof v.snoozeHours).toBe("number"); // the console's snooze button names its hours
+  expect((v.git as { error?: string }).error).toBeDefined(); // not a repo: named, never a 500
+  expect((await get("/api/projects/ghost", cookie)).status).toBe(404);
+  expect((await get("/api/projects/%2Fetc", cookie)).status).toBe(404);
+});

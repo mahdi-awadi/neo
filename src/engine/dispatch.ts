@@ -12,7 +12,7 @@ import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../con
 import type { Priority } from "./priority";
 import { maturedAsk, questionSummary, MAX_OPTIONS, type StructuredAsk, type MaturedDecisionInput } from "./structured-question";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
-import type { Cause, Ledger, MessageKind } from "./ledger";
+import { PAGE_MAX, type Cause, type Ledger, type MessageKind } from "./ledger";
 import type { Trace } from "./trace";
 import type { Registry } from "./registry";
 import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type WorkClass } from "./budget";
@@ -59,6 +59,7 @@ import {
 import { faults } from "./fault";
 import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./context-checkpoint";
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
+import { projectSummaries, summaryLine } from "./project-view";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import type { TodoQueue } from "./todo-queue";
@@ -200,6 +201,10 @@ export interface DispatchDeps {
   cooldown?: ApiCooldown;
   /** Root under which the company `dispatch` tool resolves project names (config workRoot). Default "/home". */
   workRoot?: string;
+  /** Config `projects` (healthUrl etc.) — the `sessions` tool's project summaries read it (P6). */
+  projects?: NeoConfig["projects"];
+  /** Neo's own repo, for the project summaries. Absent → the daemon's working folder. */
+  neoFolder?: string;
   /** Ensure the target folder is indexed in codebase-memory BEFORE the worker starts (engine side;
    *  the governor denies subagents the index tools, so the worker can't self-index). Best-effort —
    *  a failure here never blocks the dispatch. Absent → the step is skipped. */
@@ -1528,7 +1533,7 @@ export function neoMcpServers(
         "sessions",
         "List the operator's live project sessions and what each is doing RIGHT NOW. Each line gives a STATE plus two ages — `last activity` (any sign of life) and `last output` (what the operator can read). Read the state, not the ages: `idle` means healthy and free NO MATTER how old its ages are (a project can sit idle for days and still answer instantly), `working`/`quiet` mean it is busy, `starting` means the engine is still preparing it, `awaiting-operator` means it needs the OPERATOR's answer, and ONLY `wedged` means genuinely stuck. Never tell the operator a project is stuck, hung or in need of a restart unless its state is `wedged`. Use this to answer the operator about a project's status, or — when a dispatch reports a project busy — to decide whether to wait for it or report back. Returns text.",
         {},
-        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now(), deps.liveness) }] }),
+        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now(), deps.liveness, companyProjectLines(deps, Date.now())) }] }),
       ),
       tool(
         "dispatch",
@@ -1645,4 +1650,16 @@ export function neoMcpServers(
     servers.playwright = { type: "stdio", ...PLAYWRIGHT_MCP, env: {} };
   }
   return servers;
+}
+
+/** The `sessions` tool's project block (P6, spec §9): one summary line per known project — health,
+ *  session state, queue, open attention — without the company itself (it knows its own state).
+ *  Contained (ADR-0010): a failed read leaves the block out, the session lines stay. */
+function companyProjectLines(deps: DispatchDeps, now: number): { lines: string[]; total: number } | undefined {
+  return faults.guard("sessions.projects", () => {
+    const company = deps.registry.getDefault()?.order.folder;
+    const r = projectSummaries({ ledger: deps.ledger, registry: deps.registry, projects: deps.projects ?? {}, neoFolder: deps.neoFolder ?? process.cwd() }, now, PAGE_MAX);
+    const rows = r.rows.filter((x) => x.folder !== company);
+    return { lines: rows.map(summaryLine), total: r.total - (r.rows.length - rows.length) };
+  });
 }

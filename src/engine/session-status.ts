@@ -138,8 +138,13 @@ export function sessionsReport(
   registry: Registry,
   now: number,
   th: LivenessThresholds = DEFAULT_LIVENESS_THRESHOLDS,
+  /** The project dashboard's one-line summaries (P6, spec §9) — open or not — appended as one block;
+   *  `total` counts every project, so a cut list says how many it left out. */
+  projects?: { lines: string[]; total: number },
 ): string {
   const views = sessionStatuses(registry, now, th);
-  if (views.length === 0) return "No projects are open right now — nothing running or idle.";
-  return [...views.map((v) => `${v.name} · ${v.folder} — ${v.line}`), LEGEND].join("\n");
+  const sessions = views.length === 0 ? ["No projects are open right now — nothing running or idle."] : [...views.map((v) => `${v.name} · ${v.folder} — ${v.line}`), LEGEND];
+  if (!projects?.lines.length) return sessions.join("\n");
+  const more = projects.total - projects.lines.length;
+  return [...sessions, "", "Projects (health · session · queue · open attention):", ...projects.lines, ...(more > 0 ? [`… +${more} more`] : [])].join("\n");
 }

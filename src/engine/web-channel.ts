@@ -37,6 +37,7 @@ import type { Cause, ThreadChange } from "./trace";
 import { faults } from "./fault";
 import { applyPlanAction, planActions, planDepsFrom, type PlanAction } from "./plans";
 import { routeThreadMessage } from "./reply-routing";
+import { projectDeps, projectSummaries, projectView, type ProjectSummary, type ProjectView } from "./project-view";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -120,6 +121,10 @@ export interface WebChannel {
   planAction(id: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }>;
   /** An attention item's one-tap action (ADR-0018) — the same engine rules as a Telegram tap. */
   attentionAction(id: number, action: AttentionAction): Promise<AttentionActionResult>;
+  /** The project list (P6, spec §9): one summary per known project, health first, at most PAGE_MAX. */
+  projects(): { rows: ProjectSummary[]; total: number };
+  /** One project's dashboard, with the snooze hours its attention buttons name. Undefined: no such project. */
+  project(name: string): Promise<(ProjectView & { snoozeHours: number }) | undefined>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
   notify(text: string, project?: string): void;
   /** Resolve a token issued by an outbound file event to its on-disk path (for GET /file). */
@@ -128,7 +133,7 @@ export interface WebChannel {
   _testSendFile(path: string, caption?: string): string;
 }
 
-export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"] }): WebChannel {
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; neoFolder?: string }): WebChannel {
   // The replay window (ADR-0014): only the newest cfg.webFeedWindow feed events are kept. The
   // feed is a live view — the ledger and Telegram keep the record — so older events just drop out.
   const replay: Array<{ id: number; e: WebEvent }> = [];
@@ -249,8 +254,13 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
         todo: opts.engine.todo,
         trace: opts.engine.trace,
+        neoFolder: opts.neoFolder,
       });
       if (command !== null) {
+        if (command.later) {
+          message((await command.later).text); // /project: the console's own tab has its buttons
+          return;
+        }
         if (command.sdk) emit({ type: "sdk", sdk: command.sdk });
         if (command.attention?.length) {
           emit({ type: "attention", text: command.text, items: command.attention, snoozeHours: (opts.engine.cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours });
@@ -426,6 +436,15 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const r = await applyAttentionAction({ ledger, registry, todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 }, id, action, Date.now());
       opts.bus?.mirror("web", { kind: "notice", text: `attention #${id}: ${r.text} (web console)` });
       return r;
+    },
+    projects() {
+      const { ledger, registry, cfg } = opts.engine;
+      return projectSummaries(projectDeps({ ledger, registry, cfg, neoFolder: opts.neoFolder }), Date.now(), PAGE_MAX);
+    },
+    async project(name) {
+      const { ledger, registry, cfg } = opts.engine;
+      const v = await projectView(projectDeps({ ledger, registry, cfg, neoFolder: opts.neoFolder }), name, Date.now());
+      return v ? { ...v, snoozeHours: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours } : undefined;
     },
     todo(args) {
       const r = handleCommand(`/todo ${args}`.trim(), opts.chatId, {

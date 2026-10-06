@@ -139,6 +139,12 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .tsect h4{margin:0 0 6px;font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);font-weight:500}
 .tart{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;font-size:13px}
 .tart .rfo{margin:0}
+/* Projects (P6): the project list · one project's dashboard — the Threads layout and chips. */
+#vprojects{padding:0;flex-direction:row}
+#pjrows{flex:1;overflow-y:auto}
+#pjbody{flex:1;overflow-y:auto;padding:16px 20px}
+.pjerr{color:var(--danger)}
+.pjnote{min-height:1.4em}
 bdi.ref{font-family:var(--code);font-size:.92em}
 /* Arabic script joins its letters: no tracking or forced capitals on Arabic labels. */
 :lang(ar) .sec,:lang(ar) .sub,:lang(ar) .tab,:lang(ar) .card h3,:lang(ar) .btn,:lang(ar) .compose button,:lang(ar) .ist,:lang(ar) .tchip,:lang(ar) .tsect h4,:lang(ar) table.md th{letter-spacing:normal;text-transform:none}
@@ -166,6 +172,7 @@ bdi.ref{font-family:var(--code);font-size:.92em}
   <div class="top">
    <button class="tab on" data-v="activity" data-i18n="tabs.activity"></button>
    <button class="tab" data-v="threads" data-i18n="tabs.threads"></button>
+   <button class="tab" data-v="projects" data-i18n="tabs.projects"></button>
    <button class="tab" data-v="todos"><span data-i18n="tabs.queue"></span><span id="tbadge" class="ibadge"></span></button>
    <button class="tab" data-v="loops" data-i18n="tabs.loops"></button>
    <button class="tab" data-v="usage" data-i18n="tabs.usage"></button>
@@ -193,6 +200,10 @@ bdi.ref{font-family:var(--code);font-size:.92em}
     <div id="tbody"><div class="fe" data-i18n="threads.pick"></div></div>
     <form class="compose" id="tform" hidden><input id="tmsg" autocomplete="off" data-i18n-placeholder="threads.reply"><button type="submit" data-i18n="feed.send"></button></form>
    </div>
+  </div>
+  <div class="view" id="vprojects">
+   <div class="tlist"><div id="pjrows"></div></div>
+   <div class="tpane"><div id="pjbody"><div class="fe" data-i18n="pj.pick"></div></div></div>
   </div>
   <div class="view" id="vtodos"></div>
   <div class="view" id="vloops"></div>

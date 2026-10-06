@@ -53,6 +53,7 @@
   "tabs": {
     "activity": "Activity",
     "threads": "Threads",
+    "projects": "Projects",
     "queue": "Queue",
     "loops": "Loops",
     "usage": "Usage",
@@ -251,5 +252,67 @@
     "snooze": "snooze {{hours}}h",
     "dismiss": "dismiss",
     "failed": "That action did not reach Neo — try again."
+  },
+  "pj": {
+    "pick": "Pick a project to see its dashboard.",
+    "empty": "The engine knows no projects yet.",
+    "more": "+{{n}} more projects",
+    "loadFailed": "Could not load the projects — try again.",
+    "loading": "Loading…",
+    "unknown": "No project named {{name}}.",
+    "noSession": "no session open",
+    "queueCount": "queue {{n}}",
+    "noAttention": "nothing needs you",
+    "none": "nothing here",
+    "ago": "{{age}} ago",
+    "running": "running",
+    "queued": "queued {{pos}}",
+    "planLine": "{{status}} · {{steps}} steps",
+    "fileMissing": "file missing",
+    "health": {
+      "ok": "ok",
+      "attention": "attention",
+      "down": "down",
+      "unknown": "unknown"
+    },
+    "state": {
+      "starting": "starting",
+      "working": "working",
+      "quiet": "quiet",
+      "idle": "idle",
+      "awaiting-operator": "waiting for you",
+      "wedged": "stuck"
+    },
+    "sev": {
+      "high": "{{n}} high",
+      "normal": "{{n}} normal",
+      "low": "{{n}} low"
+    },
+    "sect": {
+      "now": "Now",
+      "queue": "Queue",
+      "git": "Git",
+      "github": "GitHub",
+      "decide": "Decide",
+      "plans": "Plans",
+      "attention": "Attention ({{n}})",
+      "threads": "Threads",
+      "restart": "Restart-gated"
+    },
+    "git": {
+      "unpushed": "{{n}} unpushed",
+      "noUpstream": "no upstream — nothing says what is pushed",
+      "dirty": "{{n}} uncommitted",
+      "worktrees": "{{n}} other worktrees",
+      "ahead": "{{n}} ahead",
+      "undeployed": "{{n}} commits not deployed",
+      "error": "git could not be read:"
+    },
+    "gh": {
+      "counts": "PRs {{prs}} · CI failed {{ci}} · issues {{issues}} · alerts {{alerts}}",
+      "scanned": "last good scan {{age}} ago",
+      "never": "not scanned yet",
+      "error": "the last scan failed:"
+    }
   }
 }

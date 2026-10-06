@@ -24,6 +24,10 @@ import type { TodoQueue } from "./todo-queue";
 import type { Updater } from "./updater";
 import { renderTrace, type Trace } from "./trace";
 import { renderPlans } from "./plans";
+import { humanAge } from "./liveness";
+import { faults } from "./fault";
+import { todoTitle } from "./todo-title";
+import { projectDeps, projectSummary, projectSummaries, projectUrl, projectView, recentThreads, renderProject, summaryLine } from "./project-view";
 
 export interface CommandDeps {
   registry: Registry;
@@ -53,7 +57,7 @@ export interface CommandDeps {
   requestReload?: () => void;
   /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. `publicUrl` is the
    *  console base the /trace link points at. */
-  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention">>;
+  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention" | "github" | "projects">>;
   /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
   todo?: TodoQueue;
   /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
@@ -64,6 +68,8 @@ export interface CommandDeps {
   trace?: Trace;
   /** The Telegram message this command replied to: a bare `/trace` traces that message's thread. */
   replyTo?: { chatId: number; channelMsgId: number };
+  /** Neo's own repo (for `/project`). Absent → the daemon's working folder. */
+  neoFolder?: string;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -85,6 +91,12 @@ export interface CommandResult {
   sdk?: WorkerSdkState;
   /** One-tap attention items (for /attention) — frontends render → todo / snooze / dismiss per item. */
   attention?: Array<Pick<AttentionRow, "id" | "project" | "title" | "severity"> & { actions: AttentionAction[] }>;
+  /** A command whose answer needs async reads (`/project` reads git live): the frontend sends THIS
+   *  result when it settles, instead of `text`. It never rejects. */
+  later?: Promise<CommandResult>;
+  /** One project's dashboard (`/project <name>`) — frontends add its buttons: attention (N), threads,
+   *  open console. */
+  project?: { name: string; attention: number; consoleUrl?: string };
 }
 
 interface CommandContext {
@@ -185,6 +197,13 @@ const COMMANDS: Command[] = [
       const r = renderAttention(deps.ledger, { project: args.trim() || undefined, now, maxLines: c.listLines, maxButtons: c.listButtons, consoleUrl: deps.cfg?.publicUrl || undefined });
       return { text: r.text, attention: r.buttons.map((b) => ({ id: b.id, project: b.project, title: b.title, severity: b.severity, actions: attentionActions(b) })) };
     },
+  },
+  {
+    name: "project",
+    aliases: ["p"],
+    usage: "/project [<name>] · /project <name> threads",
+    summary: "a project's dashboard: now, queue, git, GitHub, decisions, plans, attention (no name: every project)",
+    run: ({ deps, args, now }) => ({ text: "", later: projectCommand(args.trim(), deps, now) }),
   },
   {
     name: "gated",
@@ -348,6 +367,37 @@ function todoCommand(args: string, todo: TodoQueue | undefined): string {
     default:
       if (arg) return TODO_USAGE;
       return todo.list(first);
+  }
+}
+
+/** /project — the project dashboard (spec §9): no name → every project's one-line summary; a name →
+ *  its dashboard (the P6 sketch) with the attention count and console link the frontends turn into
+ *  buttons; `<name> threads` → its newest threads. One bounded message, `attention.listLines` lines. */
+async function projectCommand(args: string, deps: CommandDeps, now: number): Promise<CommandResult> {
+  try {
+    const maxLines = (deps.cfg?.attention ?? DEFAULT_ATTENTION_CFG).listLines;
+    const consoleUrl = deps.cfg?.publicUrl || undefined;
+    const d = projectDeps({ ledger: deps.ledger, registry: deps.registry, cfg: deps.cfg ?? {}, neoFolder: deps.neoFolder });
+    const [name, sub] = args.split(/\s+/).filter(Boolean);
+    if (!name) {
+      const r = projectSummaries(d, now, Math.max(1, maxLines - 1));
+      const more = r.total - r.rows.length;
+      return { text: [`projects: ${r.total}`, ...r.rows.map(summaryLine), ...(more > 0 ? [`… +${more} more`] : [])].join("\n") };
+    }
+    const unknown = { text: `No project "${name}" — /project lists the projects the engine knows.` };
+    if (sub === "threads") {
+      if (!projectSummary(d, name, now)) return unknown;
+      const rows = recentThreads(deps.ledger, name);
+      if (!rows.length) return { text: `${name} has no threads yet.` };
+      const lines = rows.map((t) => `${t.ref} ${t.state} ${todoTitle(t.title)} (${humanAge(now - t.updatedAt)})`);
+      return { text: [`threads of ${name} (newest ${rows.length}):`, ...lines, "/trace <ref> shows one", ...(consoleUrl ? [consoleUrl] : [])].join("\n") };
+    }
+    const v = await projectView(d, name, now);
+    if (!v) return unknown;
+    return { text: renderProject(v, now, { maxLines }), project: { name, attention: v.attention.length, ...(consoleUrl ? { consoleUrl: projectUrl(consoleUrl, name) } : {}) } };
+  } catch (e) {
+    faults.report("command.project", e, { project: args });
+    return { text: "The project dashboard failed — the fault is reported." };
   }
 }
 

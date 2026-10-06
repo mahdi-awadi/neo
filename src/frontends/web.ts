@@ -50,6 +50,8 @@ export interface WebAppDeps {
   gated?: CommandDeps["gated"];
   /** Operator-channel broadcast bus — mirror this surface to/from Telegram (see operator-bus.ts). */
   bus?: OperatorBus;
+  /** Neo's own repo (the project dashboard's Neo card). Absent → the daemon's working folder. */
+  neoFolder?: string;
 }
 
 export interface WebApp {
@@ -58,7 +60,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated, neoFolder: deps.neoFolder });
 
   function sessionUser(req: Request): number | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
@@ -226,6 +228,16 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const p = url.searchParams;
       const r = channel.search(p.get("q") ?? "", { ...(p.get("project") ? { project: p.get("project")! } : {}), before: intParam(p, "before"), limit: intParam(p, "limit") ?? PAGE_DEFAULT });
       return Response.json(r, NO_STORE);
+    }
+
+    // The project dashboard (P6, spec §9): the list (bounded, PAGE_MAX) and one project's view.
+    if (req.method === "GET" && path === "/api/projects") {
+      return Response.json(channel.projects(), NO_STORE);
+    }
+    if (req.method === "GET" && path.startsWith("/api/projects/")) {
+      const name = decodeURIComponent(path.slice("/api/projects/".length));
+      const view = name && !name.includes("/") ? await channel.project(name) : undefined;
+      return view ? Response.json(view, NO_STORE) : Response.json({ ok: false, error: "no such project" }, { status: 404, ...NO_STORE });
     }
 
     // The thread tree behind a message ref (spec §4.4) — the same tree /trace renders, as JSON.

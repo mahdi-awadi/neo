@@ -519,7 +519,7 @@ function deleteInbox(id: string): void {
   void fetch("/api/inbox/" + encodeURIComponent(id), { method: "DELETE" }).then(loadInbox).catch(loadInbox);
 }
 
-const VIEWS = ["activity", "threads", "todos", "loops", "usage", "recent", "inbox"];
+const VIEWS = ["activity", "threads", "projects", "todos", "loops", "usage", "recent", "inbox"];
 function tab(name: string): void {
   VIEWS.forEach((n) => {
     $("v" + n).classList.toggle("on", n === name);
@@ -528,6 +528,7 @@ function tab(name: string): void {
   });
   if (name === "inbox") void loadInbox();
   if (name === "threads") openThreads();
+  if (name === "projects") loadProjects();
 }
 
 // ── Activity feed (ADR-0014: a bounded live window) ─────────────────────────────────────────────
@@ -827,6 +828,30 @@ function onThreadEvent(e: Any): void {
   // New lines already append live (appendThreadLine); only a new state needs the pane re-read.
   if (TH.open === e.id && stateChanged) openThread(e.id);
 }
+/** One attention item's buttons (ADR-0018) — remove, → todo, snooze, dismiss — through the one engine
+ *  path, POST /api/attention. The feed's `/attention` list and the project dashboard both use it.
+ *  `answer` shows the engine's reply; a snoozed, dismissed or removed item's `row` goes (`drop`), and
+ *  `dropped` runs after; a refusal keeps the row (its answer may point at → todo). */
+function attentionButtons(it: Any, snoozeHours: number, box: HTMLElement, row: HTMLElement, answer: (text: string) => void, dropped?: () => void): void {
+  ((it.actions as string[] | undefined) ?? ["todo", "snooze", "dismiss"]).forEach((action) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = tx(`attention.${action}`, { id: it.id, hours: snoozeHours });
+    b.onclick = () => {
+      void post("/api/attention", { id: it.id, action })
+        .then((r) => r.json())
+        .then((x) => {
+          answer(x.text || x.error || "");
+          if (x.drop) {
+            row.remove();
+            dropped?.();
+          }
+        })
+        .catch(() => answer(tx("attention.failed")));
+    };
+    box.appendChild(b);
+  });
+}
 /** `/attention` (ADR-0018): the list, then one row of buttons per item — → todo, snooze, dismiss. A
  *  snoozed or dismissed item's row goes; → todo stays (a second tap shows the todo). */
 function renderAttention(e: Any): void {
@@ -834,23 +859,147 @@ function renderAttention(e: Any): void {
   for (const it of e.items as Any[]) {
     const row = document.createElement("div");
     row.className = "acts";
-    ((it.actions as string[] | undefined) ?? ["todo", "snooze", "dismiss"]).forEach((action) => {
-      const b = document.createElement("button");
-      b.className = "chip";
-      b.textContent = tx(`attention.${action}`, { id: it.id, hours: e.snoozeHours });
-      b.onclick = () => {
-        void post("/api/attention", { id: it.id, action })
-          .then((r) => r.json())
-          .then((x) => {
-            feedMsg("⋯ " + esc(x.text || x.error || ""), "me", null);
-            if (x.drop) row.remove(); // a refusal keeps the row (it may point at → todo)
-          })
-          .catch(() => feedMsg("⋯ " + esc(tx("attention.failed")), "me", null));
-      };
-      row.appendChild(b);
-    });
+    attentionButtons(it, e.snoozeHours, row, row, (text) => feedMsg("⋯ " + esc(text), "me", null));
     d.appendChild(row);
   }
+}
+
+// ── Projects (P6, spec §9): one card per project · one project's dashboard ──────────────────────
+const PJ = { open: undefined as string | undefined, seq: 0 };
+/** Health reuses the thread-state chip colours: ok green, attention amber, down red, unknown plain. */
+const HEALTH_CLASS: Record<string, string> = { ok: "st-done", attention: "st-waiting", down: "st-failed", unknown: "" };
+const SEV_ICON: Record<string, string> = { high: "🔴", normal: "🟡", low: "⚪" };
+function healthChip(h: string): string {
+  return `<span class="tchip ${HEALTH_CLASS[h] ?? ""}">${t(`pj.health.${h}`)}</span>`;
+}
+function attentionCounts(a: Any): string {
+  const parts = ["high", "normal", "low"].filter((k) => a && a[k]).map((k) => t(`pj.sev.${k}`, { n: a[k] }));
+  return parts.length ? parts.join(" · ") : t("pj.noAttention");
+}
+function projectCard(s: Any): string {
+  const state = s.state ? t(`pj.state.${s.state}`) : t("pj.noSession");
+  return (
+    `<div class="trow${PJ.open === s.name ? " on" : ""}" data-act="project-open" data-project="${esc(s.name)}">` +
+    `<div class="tt">${healthChip(s.health)}<span class="ttl">${iso(s.name)}</span></div>` +
+    `<div class="tm">${state} · ${t("pj.queueCount", { n: s.queue })} · ${attentionCounts(s.attention)}</div></div>`
+  );
+}
+function loadProjects(): void {
+  const seq = ++PJ.seq; // a slower older answer never overwrites a newer list
+  void fetch("/api/projects", { cache: "no-store" })
+    .then((r) => r.json())
+    .then((d) => {
+      if (seq !== PJ.seq) return;
+      const rows: Any[] = d.rows || [];
+      const box = $("pjrows");
+      box.innerHTML = rows.length ? rows.map(projectCard).join("") : `<div class="empty">${t("pj.empty")}</div>`;
+      if (d.total > rows.length) box.insertAdjacentHTML("beforeend", `<div class="empty">${t("pj.more", { n: d.total - rows.length })}</div>`);
+    })
+    .catch(() => ($("pjrows").innerHTML = `<div class="empty">${t("pj.loadFailed")}</div>`));
+}
+function showProject(name: string): void {
+  PJ.open = name;
+  document.querySelectorAll<HTMLElement>("#pjrows .trow").forEach((el) => el.classList.toggle("on", el.dataset.project === name));
+  $("pjbody").innerHTML = `<div class="fe">${t("pj.loading")}</div>`;
+  void fetch(`/api/projects/${encodeURIComponent(name)}`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((v) => {
+      if (PJ.open !== name) return;
+      if (!v) $("pjbody").innerHTML = `<div class="empty">${t("pj.unknown", { name })}</div>`;
+      else renderProjectPane(v);
+    })
+    .catch(() => ($("pjbody").innerHTML = `<div class="empty">${t("pj.loadFailed")}</div>`));
+}
+/** A section of the dashboard: its heading and its rows, or "nothing here". */
+function pjSect(key: string, rows: string[], vars?: Vars): string {
+  return `<div class="tsect"><h4>${t(key, vars)}</h4>${rows.length ? rows.join("") : `<div class="tart rfo">${t("pj.none")}</div>`}</div>`;
+}
+function threadChip(th: Any): string {
+  return `<button class="chip" data-act="project-thread" data-id="${th.id}">${ltr(th.ref)}</button>`;
+}
+function renderProjectPane(v: Any): void {
+  const now = Date.now();
+  let h = `<div class="thead">${healthChip(v.health)}${ltr(v.folder)}</div><div class="ttitle">${iso(v.name)}</div>`;
+  // NOW — what runs, and the thread it works.
+  const n = v.now;
+  h += pjSect("pj.sect.now", [
+    n
+      ? `<div class="tart"><span class="tchip">${t(`pj.state.${n.state}`)}</span><span dir="auto">${esc(n.line)}</span>${n.thread ? threadChip(n.thread) + `<span dir="auto">${esc(n.thread.title)}</span>` : ""}</div>`
+      : `<div class="tart rfo">${t("pj.noSession")}</div>`,
+  ]);
+  // QUEUE — running first, then the queue in order.
+  h += pjSect(
+    "pj.sect.queue",
+    (v.queue as Any[]).map(
+      (x) => `<div class="tart">${ltr("#" + x.id)}<span class="tchip">${x.status === "running" ? t("pj.running") : t("pj.queued", { pos: x.position })}</span><span dir="auto">${esc(x.title)}</span></div>`,
+    ),
+  );
+  // GIT — read live; a failed read is named, never hidden.
+  const g = v.git || {};
+  const git: string[] = [];
+  if (g.branch || g.lastCommit) {
+    const [sha, ...subject] = String(g.lastCommit || "").split(" ");
+    const when = g.lastCommitAt ? `<span class="rfo">${t("pj.ago", { age: age(now - g.lastCommitAt) })}</span>` : "";
+    git.push(`<div class="tart">${g.branch ? ltr(g.branch) : ""}${sha ? ltr(sha) : ""}<span dir="auto">${esc(subject.join(" "))}</span>${when}</div>`);
+  }
+  const facts: string[] = [];
+  if (g.noUpstream) facts.push(t("pj.git.noUpstream"));
+  else if (g.unpushed !== undefined) facts.push(t("pj.git.unpushed", { n: g.unpushed }));
+  if (g.dirty !== undefined) facts.push(t("pj.git.dirty", { n: g.dirty }));
+  if (g.worktrees !== undefined) facts.push(t("pj.git.worktrees", { n: g.worktrees }));
+  if (facts.length) git.push(`<div class="tart rfo">${facts.join(" · ")}</div>`);
+  if (g.drift) git.push(`<div class="tart">${ltr(`${g.drift.from} → ${g.drift.to}`)}<span class="rfo">${t("pj.git.ahead", { n: g.drift.ahead })}</span></div>`);
+  if (g.undeployed !== undefined) git.push(`<div class="tart">${t("pj.git.undeployed", { n: g.undeployed })}</div>`);
+  if (g.error) git.push(`<div class="tart pjerr">${t("pj.git.error")}${ltr(g.error)}</div>`);
+  h += pjSect("pj.sect.git", git);
+  // GITHUB — the last scan's counts, when it last worked, and its error.
+  const gh = v.github || {};
+  const ghRows = [`<div class="tart">${t("pj.gh.counts", { prs: gh.prs || 0, ci: gh.ciFailed || 0, issues: gh.issues || 0, alerts: gh.alerts || 0 })}</div>`];
+  ghRows.push(`<div class="tart rfo">${gh.scannedAt ? t("pj.gh.scanned", { age: age(now - gh.scannedAt) }) : t("pj.gh.never")}</div>`);
+  if (gh.error) ghRows.push(`<div class="tart pjerr">${t("pj.gh.error")}${ltr(gh.error)}</div>`);
+  h += pjSect("pj.sect.github", ghRows);
+  // DECIDE — open decisions, oldest first.
+  h += pjSect(
+    "pj.sect.decide",
+    (v.decisions as Any[]).map((d) => `<div class="tart"><span dir="auto">${esc(d.question)}</span><span class="rfo">${esc(age(d.ageMs))}</span>${d.ref ? ltr(d.ref) : ""}</div>`),
+  );
+  // PLANS — status and steps; a plan whose file is gone says so (spec §11.7).
+  h += pjSect(
+    "pj.sect.plans",
+    (v.plans as Any[]).map(
+      (p) =>
+        `<div class="tart"><b>${iso(p.title)}</b><span class="rfo">${t("pj.planLine", { status: tx(`threads.planStatus.${p.status}`), steps: p.steps })}</span>` +
+        `${p.fileMissing ? `<span class="tchip st-failed">${t("pj.fileMissing")}</span>` : ""}${p.ref ? ltr(p.ref) : ""}</div>`,
+    ),
+  );
+  // ATTENTION — each item with the shared one-tap buttons (filled in below).
+  h += `<div class="tsect"><h4>${t("pj.sect.attention", { n: v.attention.length })}</h4><div class="rfo pjnote" id="pjnote"></div><div id="pjatt"></div></div>`;
+  // THREADS — each opens in the Threads tab.
+  h += pjSect(
+    "pj.sect.threads",
+    (v.threads as Any[]).map(
+      (th) => `<div class="tart">${threadChip(th)}<span class="tchip st-${esc(th.state)}">${t(`threads.state.${th.state}`)}</span><span dir="auto">${esc(th.title)}</span><span class="rfo">${esc(age(now - th.updatedAt))}</span></div>`,
+    ),
+  );
+  // RESTART-GATED — Neo only: built but not running.
+  if (v.restartGated) h += pjSect("pj.sect.restart", (v.restartGated as Any[]).map((r) => `<div class="tart"><span dir="auto">${esc(r.title)}</span></div>`));
+  $("pjbody").innerHTML = h;
+  const box = $("pjatt");
+  if (!v.attention.length) box.innerHTML = `<div class="tart rfo">${t("pj.none")}</div>`;
+  (v.attention as Any[]).forEach((it) => {
+    const row = document.createElement("div");
+    row.className = "tart";
+    row.innerHTML = `<span>${SEV_ICON[it.severity] ?? ""}</span>${ltr("#" + it.id)}<span dir="auto">${esc(it.title)}</span><span class="rfo">${esc(age(it.ageMs))}</span>`;
+    attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), loadProjects);
+    box.appendChild(row);
+  });
+}
+/** A console link `#project=<name>` (the Telegram dashboard's "open console") opens that project. */
+function openFromHash(): void {
+  const m = /^#project=(.+)$/.exec(location.hash);
+  if (!m) return;
+  tab("projects");
+  showProject(decodeURIComponent(m[1]!));
 }
 function planAction(id: number, action: string, version: number): void {
   void post("/api/plan", { id, action, version })
@@ -896,6 +1045,11 @@ document.addEventListener("click", (ev) => {
       return olderMessages();
     case "plan":
       return planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version));
+    case "project-open":
+      return showProject(el.dataset.project ?? "");
+    case "project-thread":
+      tab("threads");
+      return openThread(Number(id));
   }
 });
 $("open-project").onclick = openProject;
@@ -981,7 +1135,10 @@ renderSdk();
 $("who").textContent = tx("projects.noneActive");
 void loadState();
 void loadInbox();
+openFromHash();
+window.addEventListener("hashchange", openFromHash);
 setInterval(() => {
   void loadState();
   void loadInbox();
+  if ($("vprojects").classList.contains("on")) loadProjects(); // the list only: a project's view reads git
 }, POLL_MS);

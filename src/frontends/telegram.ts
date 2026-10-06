@@ -24,7 +24,7 @@ import { handleMessage, dispatchDepsFrom } from "../engine/pipeline";
 import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply, answerDecision } from "../engine/reply-routing";
-import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type SelectableProject, type TelegramCommand } from "../engine/commands";
+import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type CommandResult, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, launchLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry, type InboxSendOutcome } from "../engine/inbox-actions";
 import type { IngressDeps } from "../engine/ingress";
@@ -231,7 +231,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan; neoFolder?: string },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -590,6 +590,42 @@ export function createTelegramBot(
     await handleMessage(text, chatId, pipelineDeps(), "neo", inbound(chatId, text, ctx.message));
   }
 
+  // The deps every engine command runs with on this bot (typed commands and the /project buttons).
+  const commandDeps = (replyTo?: { chatId: number; channelMsgId: number }): CommandDeps => ({
+    registry,
+    ledger,
+    usage,
+    trust,
+    inbox,
+    requestReload: reload?.requestReload,
+    cfg,
+    windowTokensByModel: cfg.contextPolicy.windowTokensByModel,
+    contextPolicy: cfg.contextPolicy,
+    todo: reload?.todo,
+    updates: reload?.updates,
+    gated: reload?.gated,
+    trace,
+    neoFolder: reload?.neoFolder,
+    ...(replyTo ? { replyTo } : {}),
+  });
+  // One command answer with the buttons its result carries. An async command (/project) is sent when
+  // its reads settle; its promise never rejects.
+  const sendCommand = async (chatId: number, command: CommandResult): Promise<void> => {
+    if (command.later) command = await command.later;
+    if (command.select?.length) {
+      say(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
+    } else if (command.inbox?.length) {
+      say(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
+    } else if (command.attention?.length) {
+      say(chatId, command.text, { reply_markup: attentionKeyboard(command.attention, (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours) });
+    } else if (command.project) {
+      const kb = projectDashKeyboard(command.project);
+      say(chatId, command.text, kb.inline_keyboard.flat().length ? { reply_markup: kb } : undefined);
+    } else {
+      say(chatId, command.text);
+    }
+  };
+
   on.on("message:text", async (ctx) => {
     const userId = ctx.from?.id;
     if (!isOperator(userId)) return;
@@ -640,36 +676,17 @@ export function createTelegramBot(
     )
       return;
 
-    // Engine commands (/list, /kill, /help, …) resolve synchronously; everything else is an
-    // order or a follow-up handled by the pipeline.
-    const command = handleCommand(ctx.message.text, chatId, {
-      registry,
-      ledger,
-      usage,
-      trust,
-      inbox,
-      requestReload: reload?.requestReload,
-      cfg,
-      windowTokensByModel: cfg.contextPolicy.windowTokensByModel,
-      contextPolicy: cfg.contextPolicy,
-      todo: reload?.todo,
-      updates: reload?.updates,
-      gated: reload?.gated,
-      trace,
+    // Engine commands (/list, /kill, /help, …) resolve here (an async one, /project, when its reads
+    // settle); everything else is an order or a follow-up handled by the pipeline.
+    const command = handleCommand(
+      ctx.message.text,
+      chatId,
       // A bare /trace replied to a Neo line traces that line's thread (spec §4.4).
-      ...(ctx.message.reply_to_message ? { replyTo: { chatId: ctx.message.reply_to_message.chat?.id ?? chatId, channelMsgId: ctx.message.reply_to_message.message_id } } : {}),
-    });
+      commandDeps(ctx.message.reply_to_message ? { chatId: ctx.message.reply_to_message.chat?.id ?? chatId, channelMsgId: ctx.message.reply_to_message.message_id } : undefined),
+    );
     // Engine commands open no thread (spec §4.1 rule 3): they are answered here, never traced as work.
     if (command !== null) {
-      if (command.select?.length) {
-        say(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
-      } else if (command.inbox?.length) {
-        say(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
-      } else if (command.attention?.length) {
-        say(chatId, command.text, { reply_markup: attentionKeyboard(command.attention, (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours) });
-      } else {
-        say(chatId, command.text);
-      }
+      await sendCommand(chatId, command);
       return;
     }
 
@@ -905,6 +922,18 @@ export function createTelegramBot(
       return;
     }
 
+    // Tap on a /project button (P6): `a` sends what `/attention <name>` sends, `t` the project's threads.
+    const pjTap = /^pj:([at]):(.+)$/.exec(cb);
+    if (pjTap) {
+      await ctx.answerCallbackQuery();
+      const chatId = ctx.chat?.id ?? admin.adminId();
+      if (chatId === undefined) return;
+      const text = pjTap[1] === "a" ? `/attention ${pjTap[2]}` : `/project ${pjTap[2]} threads`;
+      const command = handleCommand(text, chatId, commandDeps());
+      if (command) await sendCommand(chatId, command);
+      return;
+    }
+
     // Tap on an attention item (ADR-0018): → todo, snooze, dismiss — the engine owns the rules. A
     // snoozed or dismissed item's row leaves the message; → todo keeps it (a second tap shows the todo).
     const attTap = /^att:(\d+):([a-z]+)$/.exec(cb);
@@ -1106,6 +1135,19 @@ export function attentionKeyboard(items: Array<{ id: number; actions?: Attention
     if (i > 0) kb.row();
     for (const a of it.actions ?? ["todo", "snooze", "dismiss"]) kb.text(a === "todo" ? `#${it.id} ${attentionLabel(a, snoozeHours)}` : attentionLabel(a, snoozeHours), `att:${it.id}:${a}`);
   });
+  return kb;
+}
+
+/** Telegram's limit on a button's callback data, in bytes (Bot API). */
+const CALLBACK_DATA_MAX = 64;
+
+/** A project dashboard's buttons (`/project <name>`, P6): `attention (N)` (what `/attention <name>`
+ *  sends) and `threads` as `pj:a:<name>` / `pj:t:<name>` taps, and `open console` as a URL button
+ *  when the console URL is set. A name too long for the callback data keeps only the link. */
+export function projectDashKeyboard(p: { name: string; attention: number; consoleUrl?: string }): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  if (Buffer.byteLength(`pj:a:${p.name}`) <= CALLBACK_DATA_MAX) kb.text(`attention (${p.attention})`, `pj:a:${p.name}`).text("threads", `pj:t:${p.name}`);
+  if (p.consoleUrl && /^https?:\/\//.test(p.consoleUrl)) kb.url("open console", p.consoleUrl);
   return kb;
 }
 
