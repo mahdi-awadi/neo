@@ -199,23 +199,23 @@ test("EXPLAIN QUERY PLAN for messagesInThread uses idx_messages_thread", () => {
   expect(plan).toContain("idx_messages_thread");
 });
 
-test("migration reaches user_version 6 with the new tables", () => {
+test("migration reaches user_version 7 with the new tables", () => {
   const path = legacyDb([[7, "user", "hi", 1]]);
   openLedger(path);
   const db = new Database(path, { readonly: true });
-  expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(6);
+  expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(7);
   const names = (db.query(`SELECT name FROM sqlite_master`).all() as Array<{ name: string }>).map((r) => r.name);
-  for (const n of ["threads", "messages_fts", "tool_actions", "plans", "idx_messages_thread", "idx_messages_channel", "idx_threads_project", "idx_threads_state", "idx_tool_actions_thread", "idx_orders_thread", "idx_project_todos_thread", "idx_decisions_thread", "idx_events_msg", "idx_threads_updated", "idx_plans_thread"])
+  for (const n of ["threads", "messages_fts", "tool_actions", "plans", "idx_messages_thread", "idx_messages_channel", "idx_threads_project", "idx_threads_state", "idx_tool_actions_thread", "idx_orders_thread", "idx_project_todos_thread", "idx_decisions_thread", "idx_events_msg", "idx_threads_updated", "idx_plans_thread", "attention_items", "idx_attention_open", "engine_boots"])
     expect(names).toContain(n);
   db.close();
 });
 
-test("a ledger already at version 5 (P2 shipped) gets only version 6", () => {
+test("a ledger already at version 5 (P2 shipped) gets only the later versions", () => {
   const path = join(mkdtempSync(join(tmpdir(), "neo-v5-")), "ledger.db");
   const db = new Database(path);
   migrate(db, { path, migrations: MIGRATIONS.filter((m) => m.version <= 5) });
   expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(5);
-  expect(migrate(db, { path })).toMatchObject({ from: 5, to: 6 });
+  expect(migrate(db, { path })).toMatchObject({ from: 5, to: 7 });
   const names = (db.query(`SELECT name FROM sqlite_master`).all() as Array<{ name: string }>).map((r) => r.name);
   expect(names).toContain("idx_threads_updated");
   db.close();

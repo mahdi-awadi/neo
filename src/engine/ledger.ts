@@ -113,6 +113,47 @@ export interface SearchHit {
   snippet: string;
 }
 
+/** Where an attention item comes from (spec §7): one producer per source. */
+export type AttentionSource = "github" | "git" | "engine" | "plan" | "restart";
+export type AttentionSeverity = "high" | "normal" | "low";
+
+/** What a producer reports: one finding, identified by (project, kind, key). */
+export interface AttentionDraft {
+  project: string;
+  folder: string;
+  source: AttentionSource;
+  kind: string;
+  key: string;
+  title: string;
+  detail?: string;
+  url?: string;
+  severity: AttentionSeverity;
+}
+
+export interface AttentionRow extends AttentionDraft {
+  id: number;
+  firstSeen: number;
+  lastSeen: number;
+  resolvedAt?: number;
+  snoozedUntil?: number;
+  todoId?: number;
+  dismissed: boolean;
+}
+
+/** The fields reconcile, snooze, dismiss and toTodo change. `null` clears a field. */
+export interface AttentionPatch {
+  folder?: string;
+  title?: string;
+  detail?: string | null;
+  url?: string | null;
+  severity?: AttentionSeverity;
+  lastSeen?: number;
+  resolvedAt?: number | null;
+  snoozedUntil?: number | null;
+  todoId?: number | null;
+  dismissed?: boolean;
+}
+
 /** The most rows one console read returns (spec §6). */
 export const PAGE_MAX = 100;
 
@@ -277,6 +318,14 @@ export interface Ledger {
   listThreads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: ThreadListRow[]; next?: string };
   /** One thread as a list row (with its counts) — the console's live row update. */
   threadListRow(id: number): ThreadListRow | undefined;
+  /** Every attention row (open or resolved) one producer has for one project. */
+  attentionRows(project: string, source: AttentionSource): AttentionRow[];
+  attentionById(id: number): AttentionRow | undefined;
+  /** A new open item; returns its id. */
+  insertAttention(d: AttentionDraft, at: number): number;
+  updateAttention(id: number, patch: AttentionPatch): void;
+  /** Open, not snoozed at `now`: severity first (high, normal, low), then newest seen; ≤ PAGE_MAX. */
+  listOpenAttention(f: { project?: string; now: number; limit?: number }): AttentionRow[];
   /** The projects that have threads and how many, most recently active first (bounded). */
   threadProjects(limit: number): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
@@ -826,6 +875,49 @@ export function openLedger(
       const q = threadListQuery({}, undefined, 1, id);
       const row = db.query(q.sql).get(...q.params) as ThreadListDbRow | null;
       return row ? mapThreadListRow(row) : undefined;
+    },
+    attentionRows(project, source) {
+      return (db.query(`SELECT * FROM attention_items WHERE project = ? AND source = ?`).all(project, source) as AttentionDbRow[]).map(mapAttentionRow);
+    },
+    attentionById(id) {
+      const r = db.query(`SELECT * FROM attention_items WHERE id = ?`).get(id) as AttentionDbRow | null;
+      return r ? mapAttentionRow(r) : undefined;
+    },
+    insertAttention(d, at) {
+      const r = db
+        .query(
+          `INSERT INTO attention_items (project, folder, source, kind, key, title, detail, url, severity, first_seen, last_seen)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        )
+        .get(d.project, d.folder, d.source, d.kind, d.key, d.title, d.detail ?? null, d.url ?? null, d.severity, at, at) as { id: number };
+      return r.id;
+    },
+    updateAttention(id, patch) {
+      const cols: Record<keyof AttentionPatch, string> = {
+        folder: "folder", title: "title", detail: "detail", url: "url", severity: "severity", lastSeen: "last_seen",
+        resolvedAt: "resolved_at", snoozedUntil: "snoozed_until", todoId: "todo_id", dismissed: "dismissed",
+      };
+      const sets: string[] = [];
+      const params: Array<string | number | null> = [];
+      for (const [k, v] of Object.entries(patch) as Array<[keyof AttentionPatch, AttentionPatch[keyof AttentionPatch]]>) {
+        if (v === undefined) continue;
+        sets.push(`${cols[k]} = ?`);
+        params.push(typeof v === "boolean" ? (v ? 1 : 0) : v);
+      }
+      if (sets.length) db.query(`UPDATE attention_items SET ${sets.join(", ")} WHERE id = ?`).run(...params, id);
+    },
+    listOpenAttention(f) {
+      const where = ["resolved_at IS NULL", "(snoozed_until IS NULL OR snoozed_until <= ?)"];
+      const params: Array<string | number> = [f.now];
+      if (f.project !== undefined) (where.push("project = ?"), params.push(f.project));
+      params.push(clampPage(f.limit ?? PAGE_MAX));
+      const rows = db
+        .query(
+          `SELECT * FROM attention_items WHERE ${where.join(" AND ")}
+           ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, last_seen DESC, id DESC LIMIT ?`,
+        )
+        .all(...params) as AttentionDbRow[];
+      return rows.map(mapAttentionRow);
     },
     threadProjects(limit) {
       return db
@@ -1454,6 +1546,26 @@ function mapThreadRow(r: ThreadDbRow): ThreadRow {
   if (r.folder !== null) row.folder = r.folder;
   if (r.last_msg_id !== null) row.lastMsgId = r.last_msg_id;
   return row;
+}
+
+interface AttentionDbRow {
+  id: number; project: string; folder: string; source: string; kind: string; key: string;
+  title: string; detail: string | null; url: string | null; severity: string;
+  first_seen: number; last_seen: number; resolved_at: number | null; snoozed_until: number | null;
+  todo_id: number | null; dismissed: number;
+}
+
+function mapAttentionRow(r: AttentionDbRow): AttentionRow {
+  return {
+    id: r.id, project: r.project, folder: r.folder, source: r.source as AttentionSource, kind: r.kind, key: r.key,
+    title: r.title, severity: r.severity as AttentionSeverity, firstSeen: r.first_seen, lastSeen: r.last_seen,
+    dismissed: r.dismissed === 1,
+    ...(r.detail !== null ? { detail: r.detail } : {}),
+    ...(r.url !== null ? { url: r.url } : {}),
+    ...(r.resolved_at !== null ? { resolvedAt: r.resolved_at } : {}),
+    ...(r.snoozed_until !== null ? { snoozedUntil: r.snoozed_until } : {}),
+    ...(r.todo_id !== null ? { todoId: r.todo_id } : {}),
+  };
 }
 
 interface ThreadListDbRow extends ThreadDbRow {

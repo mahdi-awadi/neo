@@ -326,12 +326,39 @@ function plans(db: Database): void {
   );
 }
 
-/** Version 6 — the console's history reads (ADR-0017): the newest-first thread list and a thread's
- *  plans. attention_items / engine_boots come later (version 7). */
+/** Version 6 — the console's history reads (ADR-0017): the newest-first thread list and a thread's plans. */
 function consoleIndexes(db: Database): void {
   // IF NOT EXISTS: a ledger opened by an earlier branch build may already have them.
   db.run(`CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads (updated_at DESC, id DESC)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_plans_thread ON plans (thread_id)`);
+}
+
+/** Version 7 — what needs the operator (spec §3.5, ADR-0018): one row per (project, kind, key) that
+ *  producers reconcile, and the boot record the restart producer compares against. `dismissed`: the
+ *  operator closed it; it stays closed until its key disappears and comes back. Both tables are
+ *  naturally small (one row per live finding; one row per boot, pruned to the newest 100). */
+function attention(db: Database): void {
+  db.run(
+    `CREATE TABLE attention_items (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       project TEXT NOT NULL, folder TEXT NOT NULL,
+       source TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
+       title TEXT NOT NULL, detail TEXT, url TEXT,
+       severity TEXT NOT NULL,
+       first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+       resolved_at INTEGER, snoozed_until INTEGER, todo_id INTEGER,
+       dismissed INTEGER NOT NULL DEFAULT 0,
+       UNIQUE (project, kind, key)
+     )`,
+  );
+  db.run(`CREATE INDEX idx_attention_open ON attention_items (resolved_at, project, severity)`);
+  db.run(`CREATE INDEX idx_attention_source ON attention_items (project, source)`);
+  db.run(
+    `CREATE TABLE engine_boots (
+       at INTEGER PRIMARY KEY, head_sha TEXT NOT NULL, branch TEXT NOT NULL,
+       sdk_version TEXT, config_hash TEXT
+     )`,
+  );
 }
 
 export const MIGRATIONS: Migration[] = [
@@ -341,6 +368,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 4, name: "tool actions", up: toolActions },
   { version: 5, name: "plans", up: plans },
   { version: 6, name: "console indexes", up: consoleIndexes },
+  { version: 7, name: "attention items and engine boots", up: attention },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good
