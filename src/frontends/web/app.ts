@@ -5,6 +5,7 @@
 // Live data: /api/state (polled), /stream (SSE, the bounded feed window — ADR-0014), and the paged
 // history endpoints (/api/threads, /api/threads/:id, /api/search — ADR-0017).
 import { createConsoleI18n, isLang } from "./i18n";
+import { pastedImages } from "./paste";
 
 const root = document.documentElement;
 const i18n = createConsoleI18n(isLang(root.lang) ? root.lang : "en");
@@ -605,14 +606,18 @@ function say(text: string): void {
   feedMsg("› " + esc(v), "me", filterProject);
   void post("/msg", { text: v });
 }
-function uploadFile(): void {
-  const i = $("file") as HTMLInputElement;
-  if (!i.files || !i.files.length) return;
+/** The one upload path: the 📎 picker and a pasted image both land in the project's inbox/. */
+function sendFile(f: File): void {
   const fd = new FormData();
-  fd.append("file", i.files[0]!);
+  fd.append("file", f);
   void fetch("/upload", { method: "POST", body: fd }).then((r) => {
     if (!r.ok) alert(tx("feed.uploadFailed", { status: r.status }));
   });
+}
+function uploadFile(): void {
+  const i = $("file") as HTMLInputElement;
+  if (!i.files || !i.files.length) return;
+  sendFile(i.files[0]!);
   i.value = "";
 }
 
@@ -1072,6 +1077,10 @@ $("lang").onclick = () => {
   document.cookie = `neo_lang=${root.lang === "ar" ? "en" : "ar"}; path=/; max-age=31536000; samesite=lax`;
   location.reload();
 };
+// Paste-to-attach: images go through sendFile; the default paste is NOT cancelled, so text still lands.
+$("msg").addEventListener("paste", (e) => {
+  pastedImages((e as ClipboardEvent).clipboardData?.items, Date.now()).forEach(sendFile);
+});
 ($("ff") as HTMLFormElement).onsubmit = (ev) => {
   ev.preventDefault();
   const m = $("msg") as HTMLInputElement;
