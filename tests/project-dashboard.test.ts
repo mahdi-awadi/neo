@@ -271,3 +271,24 @@ test("sessions tool: '+N more' counts right when the company is not on the first
   expect(text).toContain("… +2 more");
   expect(text).not.toContain("zzz-agent ·");
 });
+
+test("sessions tool: a health probe is judged stale against the configured github.scanEveryMs", async () => {
+  const { neoMcpServers } = await import("../src/engine/dispatch");
+  const { createMeter } = await import("../src/engine/budget");
+  const w = world();
+  const gold = w.dir("gold");
+  w.ledger.recordOrder(order(gold));
+  const at = Date.now() - 3 * 3_600_000; // 3h ago: stale at the 30-min default, current at a 2h scan
+  w.ledger.setMeta("probe:gold", { at, ok: false, error: "HTTP 500" }, at);
+  const text = async (github?: { scanEveryMs: number; callTimeoutMs: number }) => {
+    const servers = neoMcpServers(
+      { ledger: w.ledger, registry: w.registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), reply: () => {}, askApproval: async () => "deny", neoFolder: w.neo, projects: { gold: { healthUrl: "http://127.0.0.1:1/health" } }, ...(github ? { github } : {}) },
+      7,
+      { dispatch: true, workClass: "interactive", folder: w.dir("agent") },
+    );
+    const neo = servers!.neo as unknown as { instance: { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<{ content: Array<{ text: string }> }> }> } };
+    return (await neo.instance._registeredTools.sessions!.handler({}, {})).content[0]!.text;
+  };
+  expect(await text({ scanEveryMs: 7_200_000, callTimeoutMs: 20_000 })).toMatch(/^gold · .*down/m);
+  expect(await text()).not.toMatch(/^gold · .*down/m);
+});

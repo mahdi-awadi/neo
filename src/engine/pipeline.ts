@@ -576,6 +576,7 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     ...deps,
     workRoot: deps.cfg.workRoot,
     projects: deps.cfg.projects,
+    github: deps.cfg.github,
     dispatchProgressMs: deps.cfg.dispatchProgressMs,
     dispatchStallMs: deps.cfg.dispatchStallMs,
     dispatchGraceMs: deps.cfg.dispatchGraceMs,

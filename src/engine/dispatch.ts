@@ -59,7 +59,7 @@ import {
 import { faults } from "./fault";
 import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./context-checkpoint";
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
-import { knownProjects, projectSummaries, summaryLine } from "./project-view";
+import { knownProjects, projectDeps, projectSummaries, summaryLine } from "./project-view";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import type { TodoQueue } from "./todo-queue";
@@ -203,6 +203,8 @@ export interface DispatchDeps {
   workRoot?: string;
   /** Config `projects` (healthUrl etc.) — the `sessions` tool's project summaries read it (P6). */
   projects?: NeoConfig["projects"];
+  /** Config `github` — the summaries judge a health probe stale against its scanEveryMs (P6). */
+  github?: NeoConfig["github"];
   /** Neo's own repo, for the project summaries. Absent → the daemon's working folder. */
   neoFolder?: string;
   /** Ensure the target folder is indexed in codebase-memory BEFORE the worker starts (engine side;
@@ -1659,7 +1661,7 @@ function companyProjectLines(deps: DispatchDeps, now: number): { lines: string[]
   return faults.guard("sessions.projects", () => {
     const folder = deps.registry.getDefault()?.order.folder;
     const company = folder ? basename(folder) : undefined;
-    const d = { ledger: deps.ledger, registry: deps.registry, projects: deps.projects ?? {}, neoFolder: deps.neoFolder ?? process.cwd() };
+    const d = projectDeps({ ledger: deps.ledger, registry: deps.registry, cfg: { github: deps.github, projects: deps.projects }, neoFolder: deps.neoFolder });
     // One row past the page, so leaving the company out still fills it; the company is never counted.
     const r = projectSummaries(d, now, PAGE_MAX + 1);
     const rows = r.rows.filter((x) => x.name !== company).slice(0, PAGE_MAX);
