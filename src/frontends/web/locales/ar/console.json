@@ -35,7 +35,8 @@
     "noneActive": "لا يوجد مشروع نشط",
     "active": "النشط · {{name}}",
     "openNoneActive": "{{count}} مفتوح · لا يوجد نشط",
-    "kill": "إيقاف"
+    "kill": "إيقاف",
+    "killConfirm": "إيقاف؟"
   },
   "ctx": {
     "chip": "السياق {{pct}}%",

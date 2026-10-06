@@ -35,7 +35,8 @@
     "noneActive": "no active project",
     "active": "active · {{name}}",
     "openNoneActive": "{{count}} open · none active",
-    "kill": "kill"
+    "kill": "kill",
+    "killConfirm": "kill?"
   },
   "ctx": {
     "chip": "ctx {{pct}}%",

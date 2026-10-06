@@ -134,3 +134,14 @@ test("the new labels are in both catalogues", () => {
   expect(SHELL).toContain('data-i18n-aria="nav.menu"');
   expect(APP).toContain("data-i18n-aria");
 });
+
+test("narrow top bar: two rows — the tabs get their own full-width scroller; the active project stays visible", () => {
+  const narrow = media("(max-width:768px)");
+  expect(narrow).toMatch(/\.top\{[^}]*flex-wrap:wrap/);
+  expect(narrow).toMatch(/\.tabs\{order:10;flex:0 0 calc\(100% \+ 2 \* /);
+  expect(narrow).toMatch(/\.who\{display:block;flex:1;min-width:0/);
+});
+
+test("the attach button is a secondary button, not a second primary Send", () => {
+  expect(CSS).toMatch(/\.compose button\.chip\{[^}]*background:var\(--panel2\)/);
+});

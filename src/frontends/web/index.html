@@ -47,6 +47,7 @@ aside{width:300px;min-width:300px;background:linear-gradient(180deg,var(--panel)
 .ctx.heavy{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}.ctx.emergency{color:var(--ink);background:var(--danger);border-color:var(--danger)}
 .kbtn{opacity:0;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:0;color:var(--faint);cursor:pointer;font-size:13px;padding:3px 5px;border-radius:6px;transition:opacity .12s,color .12s}
 .proj:hover .kbtn{opacity:1}.kbtn:hover{color:var(--danger)}
+.kbtn.arm{opacity:1;color:var(--danger);border:1px solid color-mix(in srgb,var(--danger) 50%,var(--border));font-family:var(--mono);font-size:11px;padding-inline:9px}
 .empty{padding:14px 18px;color:var(--muted);font-size:12px;line-height:1.6}
 .foot{padding:10px 18px;border-top:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--muted);display:flex;justify-content:space-between}
 main{flex:1;display:flex;flex-direction:column;min-width:0;animation:fade .5s .08s both}
@@ -80,6 +81,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .compose input:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
 .compose input::placeholder{color:var(--faint);font-family:var(--mono);font-size:12px}
 .compose button{padding:0 18px;border-radius:10px;border:0;background:var(--accent-fill);color:var(--on-accent);font-weight:700;font-family:var(--mono);font-size:11px;letter-spacing:.06em;cursor:pointer}
+.compose button.chip{padding:0 12px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-weight:400}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:14px}
 .card h3{margin:0 0 13px;font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:500}
 .lrow{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border)}.lrow:first-of-type{border-top:0}
@@ -183,8 +185,11 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 #vprojects .tlist{width:clamp(260px,38%,400px);min-width:0}
 }
 @media (max-width:768px){
-.who{display:none}
-.top{gap:4px}
+/* Two rows: menu · active project · install · language, then every tab on its own full-width scroller. */
+.top{height:auto;flex-wrap:wrap;gap:4px;padding-block-end:0}
+.top>#menu,.top>.chip{margin-block:4px}
+.who{display:block;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-inline:4px}
+.tabs{order:10;flex:0 0 calc(100% + 2 * max(14px,env(safe-area-inset-left),env(safe-area-inset-right)));margin-inline:calc(-1 * max(14px,env(safe-area-inset-left),env(safe-area-inset-right)));padding-inline:max(8px,env(safe-area-inset-left),env(safe-area-inset-right));border-top:1px solid var(--border)}
 .top .chip{padding-inline:10px}
 .view{padding:14px}
 #feed,#tbody,#pjbody{padding:14px}

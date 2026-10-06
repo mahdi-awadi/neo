@@ -7,6 +7,10 @@
 import { createConsoleI18n, isLang } from "./i18n";
 import { pastedImages } from "./paste";
 import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
+import { CONFIRM_WINDOW_MS, confirmTap } from "./confirm";
+
+/** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
+const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
 const root = document.documentElement;
 const i18n = createConsoleI18n(isLang(root.lang) ? root.lang : "en");
@@ -206,10 +210,28 @@ function renderProjects(): void {
     };
     const k = document.createElement("button");
     k.className = "kbtn";
-    k.textContent = "✕";
+    k.innerHTML = KILL_ICON;
     k.title = tx("projects.kill");
+    k.setAttribute("aria-label", tx("projects.kill"));
+    let armedAt: number | undefined;
     k.onclick = (ev) => {
       ev.stopPropagation();
+      // Two taps: on a phone the button is always visible next to the row's own tap target.
+      if (confirmTap(armedAt, Date.now()) === "arm") {
+        const at = (armedAt = Date.now());
+        k.classList.add("arm");
+        k.textContent = tx("projects.killConfirm");
+        k.setAttribute("aria-label", tx("projects.killConfirm"));
+        setTimeout(() => {
+          if (armedAt !== at) return; // fired or re-armed since
+          armedAt = undefined;
+          k.classList.remove("arm");
+          k.innerHTML = KILL_ICON;
+          k.setAttribute("aria-label", tx("projects.kill"));
+        }, CONFIRM_WINDOW_MS);
+        return;
+      }
+      armedAt = undefined;
       void post("/kill", { id: p.id }).then(loadState);
     };
     d.appendChild(k);
