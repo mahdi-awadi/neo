@@ -1116,11 +1116,11 @@ export async function dispatchToProject(
         // observer only — the report below must still go out
       }
     }
-    // Plans the run wrote reach the operator before its result line (ADR-0019); their own unit.
+    // Plans the run wrote go to the operator (ADR-0019) — their own detached unit, so a slow card
+    // post never holds up the result below.
     if (deps.postPlan) {
-      await onRunEndPlans(planDepsFrom(deps, deps.plans), { project: name, folder, startSha: planStart, cause, orderId: order.id, chatId: replyChat }).catch((e) =>
-        faults.report("dispatch.plans", e, { project: name, orderId: order.id, folder }),
-      );
+      const run = { project: name, folder, startSha: planStart, cause, orderId: order.id, chatId: replyChat };
+      faults.contain("dispatch.plans", () => onRunEndPlans(planDepsFrom(deps, deps.plans), run), { project: name, orderId: order.id, folder });
     }
     try {
       // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure

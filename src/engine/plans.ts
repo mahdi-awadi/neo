@@ -236,19 +236,41 @@ function register(deps: PlanDeps, run: PlanRun, path: string, content: string): 
   return plan;
 }
 
+/** Content versions being posted right now, `<folder>\0<path>\0<sha256>`. Run ends overlap (a turn
+ *  end, the runner's final turn end and the run end fire together) and a worker's `send_file` can
+ *  land meanwhile: the first claims the version, the others see it as sent. One daemon, one set. */
+const posting = new Set<string>();
+
+/** What became of one send: `sent`; `already` (this version reached the operator, or is being
+ *  posted now); `failed` (the post did not land — the next run end retries); `off` (nothing to post
+ *  to, sending is off, or the plan is finished). */
+type SendOutcome = "sent" | "already" | "failed" | "off";
+
 /** Send this content version unless it already went out. The card is posted first; only a posted
  *  card opens its tracked decision (so a failed post leaves nothing open, and the next run end
- *  tries again), closes the previous version's decision and becomes a `plan` line of its thread. */
-async function sendPlan(deps: PlanDeps, plan: PlanRow, run: PlanRun): Promise<boolean> {
-  if (!deps.postPlan || !deps.cfg.send || plan.sentSha256 === plan.sha256) return false;
+ *  tries again), closes the previous version's decision and becomes a `plan` line of its thread.
+ *  A done or dropped plan is never sent again. */
+async function sendPlan(deps: PlanDeps, plan: PlanRow, run: PlanRun): Promise<SendOutcome> {
+  if (!deps.postPlan || !deps.cfg.send || plan.status === "done" || plan.status === "abandoned") return "off";
+  const key = `${plan.folder}\0${plan.path}\0${plan.sha256}`;
+  if (plan.sentSha256 === plan.sha256 || posting.has(key)) return "already";
+  posting.add(key);
+  try {
+    return await postVersion(deps, plan, run, deps.postPlan);
+  } finally {
+    posting.delete(key);
+  }
+}
+
+async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan: PostPlan): Promise<SendOutcome> {
   const { ledger, trace } = deps;
   const cause = run.cause;
   const ref = cause && trace ? trace.ref(cause.threadId) : undefined;
   const version = plan.version + 1;
   const status = plan.status === "draft" ? "sent" : plan.status;
   const caption = planCaption(plan, version, ref);
-  const posted = await deps.postPlan({ planId: plan.id, project: plan.project, folder: plan.folder, status }, join(plan.folder, plan.path), caption);
-  if (!posted) return false;
+  const posted = await postPlan({ planId: plan.id, project: plan.project, folder: plan.folder, status }, join(plan.folder, plan.path), caption);
+  if (!posted) return "failed";
   const decisionId = ledger.openDecision({
     kind: "decision",
     project: plan.project,
@@ -260,9 +282,11 @@ async function sendPlan(deps: PlanDeps, plan: PlanRow, run: PlanRun): Promise<bo
     cause,
   });
   ledger.setDecisionMessage(decisionId, posted.chatId, posted.messageId);
-  const previous = plan.decisionId ? ledger.decisionById(plan.decisionId) : undefined;
+  // Re-read after the post: only the send's own fields change (a tap may have moved the plan meanwhile).
+  const now = ledger.planById(plan.id) ?? plan;
+  const previous = now.decisionId ? ledger.decisionById(now.decisionId) : undefined;
   if (previous?.status === "open") ledger.dismissDecision(previous.id);
-  ledger.upsertPlan({ ...plan, status, decisionId, sentAt: Date.now(), sentSha256: plan.sha256, version });
+  ledger.upsertPlan({ ...now, status: now.status === "draft" ? "sent" : now.status, decisionId, sentAt: Date.now(), sentSha256: plan.sha256, version });
   ledger.recordEvent("plan_sent", { folder: plan.folder, orderId: run.orderId, cause, data: { project: plan.project, planId: plan.id, path: plan.path, version } });
   if (trace && cause) {
     faults.guard("plans.line", () => {
@@ -271,7 +295,7 @@ async function sendPlan(deps: PlanDeps, plan: PlanRow, run: PlanRun): Promise<bo
       trace.refreshThread(cause.threadId);
     });
   }
-  return true;
+  return "sent";
 }
 
 /** At a run's end (company, project, dispatch, loop): register every plan file the run changed and
@@ -290,16 +314,24 @@ export async function onRunEndPlans(deps: PlanDeps, run: PlanRun): Promise<void>
 }
 
 /** A worker's own `send_file` (`path` relative to the folder). A plan path is sent through the
- *  registry, so the operator gets each version once; anything else (or nowhere to post it) is not
- *  handled here and the caller sends it as a plain file. */
+ *  registry, so the operator gets each version once — a card that cannot be posted now is left to
+ *  the run end, never sent twice as a plain file. Anything else (not a plan path, nowhere to post,
+ *  a finished plan) is not handled here and the caller sends it as a plain file. */
 export async function offerPlanFile(deps: PlanDeps, p: PlanRun & { path: string }): Promise<{ handled: false } | { handled: true; text: string }> {
   if (!deps.postPlan || !deps.cfg.send) return { handled: false };
   if (!deps.cfg.paths.some((g) => new Bun.Glob(g).match(p.path))) return { handled: false };
   const content = readPlan(p.folder, p.path, deps.cfg.maxBytes);
   if (content === undefined) return { handled: false };
-  const plan = register(deps, p, p.path, content);
-  if (plan.sentSha256 === plan.sha256) return { handled: true, text: `already sent: ${p.path} — this version reached the operator` };
-  return (await sendPlan(deps, plan, p)) ? { handled: true, text: `sent plan ${p.path}` } : { handled: false };
+  switch (await sendPlan(deps, register(deps, p, p.path, content), p)) {
+    case "sent":
+      return { handled: true, text: `sent plan ${p.path}` };
+    case "already":
+      return { handled: true, text: `already sent: ${p.path} — this version reached the operator` };
+    case "failed":
+      return { handled: true, text: `could not post the plan card for ${p.path} now — the engine sends it at the end of this run` };
+    case "off":
+      return { handled: false };
+  }
 }
 
 /** Close the plan's open decision with the action taken, and re-derive its thread. */
@@ -316,11 +348,16 @@ export async function applyPlanAction(deps: PlanDeps, planId: number, action: Pl
   const plan = ledger.planById(planId);
   if (!plan) return { ok: false, text: `no plan #${planId}` };
   if (plan.status === "done" || plan.status === "abandoned") return { ok: false, text: `this plan is already ${plan.status === "done" ? "done" : "dropped"}` };
+  // The card's buttons are the rule on every surface: an action its status does not offer is refused.
+  if (!planActions(plan.status).includes(action)) {
+    if (action === "approve") return { ok: false, text: `already ${plan.status}` };
+    if (action === "execute") return { ok: false, text: `already executing${plan.todoId !== undefined ? ` as #${plan.todoId}` : ""}` };
+    return { ok: false, text: `a plan that is ${plan.status} cannot be ${action === "done" ? "marked done" : "changed here"}` };
+  }
   switch (action) {
     case "changes":
       return { ok: true, text: "Reply to the plan with your changes — they go to the worker that wrote it." };
     case "approve":
-      if (plan.status === "approved" || plan.status === "executing") return { ok: false, text: `already ${plan.status}` };
       ledger.upsertPlan({ ...plan, status: "approved" });
       answerCard(deps, plan, action);
       return { ok: true, text: "Approved" };
@@ -333,26 +370,31 @@ export async function applyPlanAction(deps: PlanDeps, planId: number, action: Pl
       answerCard(deps, plan, action);
       return { ok: true, text: "Dropped" };
     case "execute": {
-      if (plan.status === "executing") return { ok: false, text: `already executing${plan.todoId !== undefined ? ` as #${plan.todoId}` : ""}` };
       const launcher = deps.todo?.launcher();
       if (!deps.todo || !launcher) return { ok: false, text: "the todo queue is unavailable — Execute needs it" };
       const cause = plan.decisionId ? ledger.decisionById(plan.decisionId)?.cause : undefined;
-      // Marked before the await, so a second tap meanwhile is refused instead of queueing twice.
+      // Marked before the await, so a second tap meanwhile is refused instead of queueing twice. After
+      // it, only status and todo are written over a fresh read (a run end may have moved the plan).
       ledger.upsertPlan({ ...plan, status: "executing" });
+      const setStatus = (patch: Pick<PlanRow, "status"> & Partial<Pick<PlanRow, "todoId">>) => {
+        const now = ledger.planById(plan.id);
+        if (now) ledger.upsertPlan({ ...now, ...patch });
+      };
       const brief = deps.cfg.executeBrief.replaceAll("{path}", plan.path);
       let text: string;
       try {
+        // Returns once the todo is queued or its run has started — never after the run (dispatch runs in the background).
         text = await deps.todo.submit({ project: plan.folder, brief, workClass: "interactive", cause, planId: plan.id }, launcher.deps, launcher.replyChat);
       } catch (e) {
-        ledger.upsertPlan({ ...plan });
+        setStatus({ status: plan.status });
         throw e;
       }
       const todo = ledger.todoForPlan(plan.id);
       if (!todo || todo.status === "cancelled") {
-        ledger.upsertPlan({ ...plan }); // refused or held: nothing runs, the plan stays where it was
+        setStatus({ status: plan.status }); // refused or held: nothing runs, the plan stays where it was
         return { ok: false, text };
       }
-      ledger.upsertPlan({ ...plan, status: "executing", todoId: todo.id });
+      setStatus({ status: "executing", todoId: todo.id });
       answerCard(deps, plan, action);
       return { ok: true, text: `Executing as todo #${todo.id}` };
     }

@@ -241,6 +241,9 @@ test("Approve, Done and Drop move the status; finished plans refuse more actions
   expect(ledger.planById(a.id)!.status).toBe("approved");
   expect(ledger.decisionById(a.decisionId!)).toMatchObject({ status: "answered", answer: "Approve" });
   expect(await applyPlanAction(deps, a.id, "approve")).toEqual({ ok: false, text: "already approved" });
+  // Done is for a plan being executed; the API cannot skip the buttons' rules.
+  expect(await applyPlanAction(deps, a.id, "done")).toEqual({ ok: false, text: "a plan that is approved cannot be marked done" });
+  ledger.upsertPlan({ ...ledger.planById(a.id)!, status: "executing" });
   expect(await applyPlanAction(deps, a.id, "done")).toEqual({ ok: true, text: "Marked done" });
   expect(ledger.planById(a.id)!.status).toBe("done");
   expect(await applyPlanAction(deps, a.id, "drop")).toEqual({ ok: false, text: "this plan is already done" });
@@ -307,4 +310,71 @@ test("a loop fire is a run: manual and scheduled loops send the plans they wrote
     else await startScheduledLoop(loop, { reply: () => {}, chatId: 42, run, check, plans: deps });
     expect(posts.map((p) => p.caption)).toEqual([`📄 plan · ${basename(dir)} · Fare list port`]);
   }
+});
+
+test("run ends that overlap (turn end, the runner's final turn end, run end) post one card and open one decision", async () => {
+  const dir = repo();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const posts: string[] = [];
+  const { ledger, deps } = rig({
+    postPlan: async (_rec, _path, caption) => {
+      posts.push(caption);
+      await gate;
+      return { chatId: 1, messageId: posts.length };
+    },
+  });
+  put(dir, PLAN, BODY);
+  const run = { project: "gold", folder: dir, cause, chatId: 42 };
+  const all = Promise.all([onRunEndPlans(deps, run), onRunEndPlans(deps, run), offerPlanFile(deps, { ...run, path: PLAN }), onRunEndPlans(deps, run)]);
+  await Bun.sleep(10);
+  release();
+  const [, , offered] = await all;
+  expect(posts).toHaveLength(1);
+  expect(ledger.listOpenDecisions()).toHaveLength(1);
+  expect(ledger.planByPath(dir, PLAN)).toMatchObject({ version: 1, status: "sent" });
+  // The worker's send_file during the in-flight post is told so — not sent again as a plain file.
+  expect(offered).toEqual({ handled: true, text: `already sent: ${PLAN} — this version reached the operator` });
+});
+
+test("send_file of a plan whose card cannot be posted now is not sent as a plain file (the run end retries)", async () => {
+  const dir = repo();
+  const { deps } = rig({ postPlan: async () => undefined });
+  put(dir, PLAN, BODY);
+  expect(await offerPlanFile(deps, { project: "gold", folder: dir, path: PLAN, chatId: 42 })).toEqual({
+    handled: true,
+    text: `could not post the plan card for ${PLAN} now — the engine sends it at the end of this run`,
+  });
+});
+
+test("a done or dropped plan is never sent again when its file changes; send_file then sends a plain file", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  await applyPlanAction(deps, ledger.planByPath(dir, PLAN)!.id, "drop");
+  put(dir, PLAN, BODY + "- [ ] more\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toHaveLength(1);
+  expect(ledger.listOpenDecisions()).toEqual([]);
+  expect(await offerPlanFile(deps, { project: "gold", folder: dir, path: PLAN, chatId: 42 })).toEqual({ handled: false });
+});
+
+test("Execute writes only status and todo: changes made while submit ran are kept", async () => {
+  const dir = repo();
+  const { ledger, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  const plan = ledger.planByPath(dir, PLAN)!;
+  const todo = {
+    submit: async (p: Parameters<TodoQueue["submit"]>[0]) => {
+      const t = ledger.addTodo({ project: p.project, folder: p.project, brief: p.brief, workClass: p.workClass, createdBy: "operator", planId: p.planId });
+      // Something else moved the plan meanwhile (a run end registered a new version).
+      ledger.upsertPlan({ ...ledger.planById(plan.id)!, sha256: "newer", stepsDone: 1, version: 2 });
+      return `→ (todo #${t.id})`;
+    },
+    launcher: () => ({ deps: {} as DispatchDeps, replyChat: 42 }),
+  } as unknown as TodoQueue;
+  await applyPlanAction({ ...deps, todo }, plan.id, "execute");
+  expect(ledger.planById(plan.id)).toMatchObject({ status: "executing", todoId: 1, sha256: "newer", stepsDone: 1, version: 2 });
 });
