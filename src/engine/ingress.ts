@@ -7,6 +7,11 @@ import { neoMcpServers, type DispatchDeps } from "./dispatch";
 import type { TrustStore } from "./trust";
 import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
+import { faults } from "./fault";
+import type { Cause } from "./ledger";
+
+/** The title of an ingress brief's thread — fixed, so no customer text reaches the operator's thread list. */
+export const INGRESS_TITLE = "ingress brief";
 
 /** Reserved chat id for company runs driven by a customer brief (never a real operator chat). */
 export const CUSTOMER_CHAT = -3;
@@ -51,7 +56,15 @@ export async function runCompanyBrief(
   if (!company) return "The company is not online right now.";
 
   const order: Order = { id: crypto.randomUUID(), source: "neo", folder: company.order.folder, task: brief, chatId: CUSTOMER_CHAT, createdAt: now() };
-  deps.ledger.recordOrder(order);
+  // Engine-started work gets its own root (spec §4.2) — but only an untainted brief, and only with a
+  // neutral title: customer text never becomes an operator thread title. A tainted brief is an
+  // isolated one-shot with no tools, so it produces nothing to file and stays unrooted.
+  const trace = deps.trace;
+  const cause: Cause | undefined =
+    trace && !opts.tainted
+      ? faults.guard("ingress.root", () => trace.root({ origin: "ingress", title: INGRESS_TITLE, project: company.name, folder: company.order.folder }))
+      : undefined;
+  deps.ledger.recordOrder(order, cause ? { cause } : undefined);
   deps.registry.setStatus(company.id, "running");
   deps.registry.touch(company.id, now());
 
@@ -80,7 +93,7 @@ export async function runCompanyBrief(
               CUSTOMER_CHAT,
               // BACKGROUND: a customer brief is not the operator's turn — nobody is waiting at the
               // keyboard — so dispatches this run makes stay under the interactive reserve.
-              { dispatch: true, workClass: "background", folder: company.order.folder },
+              { dispatch: true, workClass: "background", folder: company.order.folder, orderId: order.id, cause: () => cause },
             ),
           }),
     );

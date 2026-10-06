@@ -279,7 +279,7 @@ export interface Ledger {
   setDispatcherReportsDelivered(ids: number[], at: number | null): void;
   /** Dispatches that recorded `dispatch_start` at or after `since` but never `dispatch_end` — the
    *  daemon died or was reloaded during them. Oldest first. */
-  unfinishedDispatches(since: number): Array<{ orderId: string; folder?: string; project?: string; at: number }>;
+  unfinishedDispatches(since: number): Array<{ orderId: string; folder?: string; project?: string; at: number; cause?: Cause }>;
   /** Todo queue (ADR-0008): add one todo at the END of its project's queue. */
   addTodo(rec: NewTodo, at?: number): TodoRow;
   todoById(id: number): TodoRow | undefined;
@@ -998,12 +998,14 @@ export function openLedger(
     unfinishedDispatches(since) {
       const rows = db
         .query(
-          `SELECT s.order_id AS order_id, s.folder AS folder, s.data AS data, s.at AS at FROM events s
+          `SELECT s.order_id AS order_id, s.folder AS folder, s.data AS data, s.at AS at,
+                  o.cause_msg_id AS cause_msg_id, o.thread_id AS thread_id
+           FROM events s LEFT JOIN orders o ON o.id = s.order_id
            WHERE s.kind = 'dispatch_start' AND s.at >= ? AND s.order_id IS NOT NULL
              AND NOT EXISTS (SELECT 1 FROM events e WHERE e.kind = 'dispatch_end' AND e.order_id = s.order_id)
            ORDER BY s.at, s.rowid`,
         )
-        .all(since) as Array<{ order_id: string; folder: string | null; data: string | null; at: number }>;
+        .all(since) as Array<{ order_id: string; folder: string | null; data: string | null; at: number; cause_msg_id: number | null; thread_id: number | null }>;
       return rows.map((r) => {
         let project: string | undefined;
         try {
@@ -1012,7 +1014,8 @@ export function openLedger(
         } catch {
           // tolerate a corrupt blob — the folder still identifies the run
         }
-        return { orderId: r.order_id, folder: r.folder ?? undefined, project, at: r.at };
+        const cause = causeOf(r.cause_msg_id, r.thread_id);
+        return { orderId: r.order_id, folder: r.folder ?? undefined, project, at: r.at, ...(cause ? { cause } : {}) };
       });
     },
     addTodo(rec, at = Date.now()) {

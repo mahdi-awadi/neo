@@ -16,9 +16,21 @@ import { createTodoQueue } from "../src/engine/todo-queue";
 import { buildCanUseTool, type RunDeps, type RunHandlers, type RunResult, type SessionRun } from "../src/engine/session-runner";
 import { startLoop, startScheduledLoop, type LoopDef } from "../src/engine/loops";
 import { loadConfig } from "../src/config";
+import { runCompanyBrief } from "../src/engine/ingress";
+import { recoverInterruptedDispatches, type DispatcherLink } from "../src/engine/dispatch-report";
 import type { Order } from "../src/types";
 
 const settle = (ms = 25) => new Promise((r) => setTimeout(r, ms));
+
+/** Poll until `ok()` holds, with a bounded deadline (no fixed sleep that load can outrun). */
+async function until(ok: () => boolean, beat: () => void = () => {}, deadlineMs = 3_000): Promise<void> {
+  const end = Date.now() + deadlineMs;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error("condition not met before the deadline");
+    beat();
+    await settle(5);
+  }
+}
 const base = existsSync("/dev/shm") ? "/dev/shm" : tmpdir();
 
 /** Fake worker runs: each keeps its handlers and run deps, and ends when the test says so. */
@@ -111,15 +123,18 @@ test("a dispatch made in a later company turn carries that turn's cause, not the
 test("the todo, dispatch_start/dispatch_end events, progress digest and final result share the cause", async () => {
   const s = setup({ progressMs: 8 });
   const c = s.inbound("ship the seat map");
-  const servers = neoMcpServers({ ...s.deps }, 7, { dispatch: true, workClass: "interactive", folder: join(s.root, "agent"), orderId: "co-1", cause: () => c });
+  // The company link: what the dispatcher (the company) is handed, and under which cause.
+  const toCompany: Array<{ text: string; cause?: Cause }> = [];
+  const dispatcher: DispatcherLink = { deliver: (text, o) => (toCompany.push({ text, cause: o.cause }), true) };
+  const servers = neoMcpServers({ ...s.deps, dispatcher }, 7, { dispatch: true, workClass: "interactive", folder: join(s.root, "agent"), orderId: "co-1", cause: () => c });
   await tool(servers, "dispatch")({ project: "eticket-v3", task: "ship the seat map" });
   const run = s.runs[0]!;
   const todo = s.ledger.listTodos({})[0]!;
   expect(todo.cause).toEqual(c);
   expect(s.ledger.threadById(c.threadId)?.state).toBe("open"); // work is running in this thread
 
-  run.h.onMessage("working on it");
-  await settle(60); // a digest tick fires with activity since the last one
+  // Activity keeps coming until a digest tick has fired (bounded poll, not a timed sleep).
+  await until(() => toCompany.some((m) => m.text.startsWith("[dispatch progress]")), () => run.h.onMessage("working on it"));
   run.finish({ ok: true, sessionId: "s1", summary: "seat map shipped", costUsd: 0 });
   await settle();
 
@@ -140,6 +155,11 @@ test("the todo, dispatch_start/dispatch_end events, progress digest and final re
   expect(result).toMatchObject({ kind: "result", causeId: c.msgId });
   // The channel copy of the result carries the thread ref; the digest (progress) carries none.
   expect(s.sent.find((l) => l.text.includes("finished"))!.text).toContain(s.trace.ref(c.threadId));
+  // The company gets the digest AND the result under the dispatch's cause, never its own last one.
+  const digests = toCompany.filter((m) => m.text.startsWith("[dispatch progress]"));
+  expect(digests.length).toBeGreaterThan(0);
+  expect(digests.every((m) => m.cause?.msgId === c.msgId)).toBe(true);
+  expect(toCompany.find((m) => m.text.startsWith("[dispatch result"))?.cause).toEqual(c);
   // The run ended ok, and its todo is done: the thread is done.
   expect(s.ledger.todoById(todo.id)?.status).toBe("done");
   expect(s.ledger.threadById(c.threadId)?.state).toBe("done");
@@ -266,4 +286,79 @@ test("a loop fire roots its own thread with origin 'loop'", async () => {
   const out = await startScheduledLoop(loop, { reply: () => {}, chatId: 7, run, check });
   expect(out.met).toBe(true);
   expect(s.db().query(`SELECT count(*) AS n FROM threads WHERE origin = 'loop'`).get()).toEqual({ n: 2 });
+});
+
+test("an untainted ingress brief is rooted with a neutral title and its cause travels down; a tainted one is not", async () => {
+  const s = setup();
+  const company = s.registry.add({ id: "co-0", source: "neo", folder: join(s.root, "agent"), task: "company", chatId: 7, createdAt: 0 });
+  s.registry.setDefault(company.id);
+  s.registry.setStatus(company.id, "idle");
+  const seen: Array<{ order: Order; runDeps: RunDeps }> = [];
+  let dispatched = "";
+  const run = (async (order: Order, _h: RunHandlers, runDeps: RunDeps = {}) => {
+    seen.push({ order, runDeps });
+    // The company dispatches from inside the brief (untainted runs have the tools).
+    if (runDeps.mcpServers) dispatched = await tool(runDeps.mcpServers, "dispatch")({ project: "eticket-v3", task: "look up order 7" });
+    return { ok: true, sessionId: "", summary: "answered", costUsd: 0 };
+  }) as never;
+  const customerText = "Customer Ahmed asks: where is my order #7?";
+  await runCompanyBrief(customerText, { ...s.deps, cfg: s.cfg, run });
+  expect(dispatched).toContain("dispatched to eticket-v3");
+
+  const threads = s.db().query(`SELECT id, origin, title FROM threads WHERE origin = 'ingress'`).all() as Array<{ id: number; origin: string; title: string }>;
+  expect(threads).toHaveLength(1);
+  expect(threads[0]!.title).toBe("ingress brief"); // never the customer's text
+  const root = threads[0]!.id;
+  const rows = s.db().query(`SELECT id, cause_msg_id, thread_id, parent_order_id FROM orders`).all() as Array<{ id: string; cause_msg_id: number | null; thread_id: number | null; parent_order_id: string | null }>;
+  const brief = rows.find((r) => r.id === seen[0]!.order.id)!;
+  const sub = rows.find((r) => r.id === s.runs[0]!.order.id)!;
+  expect(brief).toMatchObject({ cause_msg_id: root, thread_id: root });
+  expect(sub).toMatchObject({ cause_msg_id: root, thread_id: root, parent_order_id: brief.id });
+  s.runs[0]!.finish({ ok: true, sessionId: "s1", summary: "order 7 ships tomorrow", costUsd: 0 });
+  await settle();
+  const inbox = s.db().query(`SELECT cause_msg_id, thread_id FROM dispatcher_inbox`).all();
+  expect(inbox).toEqual([{ cause_msg_id: root, thread_id: root }]);
+  const start = s.db().query(`SELECT msg_id FROM events WHERE kind = 'dispatch_start'`).get();
+  expect(start).toEqual({ msg_id: root });
+  // No thread title or line anywhere carries the customer's text.
+  expect(s.db().query(`SELECT count(*) AS n FROM threads WHERE title LIKE '%Ahmed%'`).get()).toEqual({ n: 0 });
+
+  // Tainted: an isolated one-shot — no root, no cause.
+  await runCompanyBrief("draft a reply to: " + customerText, { ...s.deps, cfg: s.cfg, run }, { tainted: true });
+  expect(s.db().query(`SELECT count(*) AS n FROM threads WHERE origin = 'ingress'`).get()).toEqual({ n: 1 });
+  expect(orderRow(s, seen[1]!.order.id)).toEqual({ cause_msg_id: null, thread_id: null, parent_order_id: null });
+});
+
+test("boot recovery files an interrupted dispatch's end and result under its order's cause", () => {
+  const s = setup();
+  const c = s.inbound("deploy the fares");
+  s.ledger.recordOrder({ id: "o-cut", source: "neo", folder: join(s.root, "eticket-v3"), task: "t", chatId: -2, createdAt: 1 }, { cause: c });
+  s.ledger.recordEvent("dispatch_start", { orderId: "o-cut", folder: join(s.root, "eticket-v3"), data: { project: "eticket-v3" }, at: 1_000, cause: c });
+  s.ledger.recordOrder({ id: "o-old", source: "neo", folder: join(s.root, "eticket-v3"), task: "t", chatId: -2, createdAt: 1 });
+  s.ledger.recordEvent("dispatch_start", { orderId: "o-old", folder: join(s.root, "eticket-v3"), data: { project: "eticket-v3" }, at: 1_001 });
+  expect(recoverInterruptedDispatches(s.ledger, { now: 2_000, windowMs: 60_000, lastCommit: () => undefined })).toBe(2);
+  const ends = s.db().query(`SELECT order_id, msg_id FROM events WHERE kind = 'dispatch_end' ORDER BY order_id`).all();
+  expect(ends).toEqual([{ order_id: "o-cut", msg_id: c.msgId }, { order_id: "o-old", msg_id: null }]);
+  const inbox = s.db().query(`SELECT cause_msg_id, thread_id FROM dispatcher_inbox ORDER BY id`).all();
+  expect(inbox).toEqual([{ cause_msg_id: c.msgId, thread_id: c.threadId }, { cause_msg_id: null, thread_id: null }]);
+});
+
+test("a todo that never runs (cancelled, or its folder gone at release) drops its parent link", async () => {
+  const s = setup();
+  const c = s.inbound("two briefs");
+  const servers = neoMcpServers({ ...s.deps }, 7, { dispatch: true, workClass: "interactive", folder: join(s.root, "agent"), orderId: "co-1", cause: () => c });
+  const dispatch = tool(servers, "dispatch");
+  await dispatch({ project: "eticket-v3", task: "first" }); // runs
+  await dispatch({ project: "eticket-v3", task: "second" }); // queued (#2)
+  await dispatch({ project: "eticket-v3", task: "third" }); // queued (#3)
+  expect(s.queue._pendingParents()).toBe(2);
+  s.queue.cancel(2);
+  expect(s.queue._pendingParents()).toBe(1);
+  // #3's folder vanishes before it is released: it fails at release, and its parent goes too.
+  const { rmSync } = await import("node:fs");
+  rmSync(join(s.root, "eticket-v3"), { recursive: true });
+  s.runs[0]!.finish({ ok: true, sessionId: "s1", summary: "done", costUsd: 0 });
+  await settle();
+  expect(s.ledger.todoById(3)?.status).toBe("failed");
+  expect(s.queue._pendingParents()).toBe(0);
 });

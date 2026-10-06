@@ -919,7 +919,8 @@ export async function dispatchToProject(
             const digest = progressDigest({ project: name, elapsedMs: t - startedAt, activity: lastActivity, lastNote, lastCommit: readCommit(folder) });
             void say(digest, undefined, { kind: "progress", cause });
             try {
-              await dispatcher.deliver(digest, { wake: false });
+              // Under the dispatch's cause: the company turn reading it is filed in this thread.
+              await dispatcher.deliver(digest, cause ? { wake: false, cause } : { wake: false });
             } catch {
               // best-effort: a digest that can't be delivered is simply skipped
             }

@@ -57,6 +57,8 @@ export interface TodoQueue {
   /** Register how releases outside a dispatch (tick, resume) reach the operator channel. */
   setLauncher(fn: () => TodoLauncher | undefined): void;
   launcher(): TodoLauncher | undefined;
+  /** TEST-ONLY seam: how many todos still hold an in-memory parent order link (it must not leak). */
+  _pendingParents(): number;
 }
 
 /** The title rule lives in todo-title.ts (the ledger migrations use it too); re-exported for callers. */
@@ -183,6 +185,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (r.kind === "delivered") return { delivered: ledger.todoById(next.id) };
       if (r.reason === "not_found") {
         ledger.updateTodo(next.id, { status: "failed", endedAt: now(), result: "the project folder was not found at release" });
+        parents.delete(next.id);
         refresh(l.deps, next.cause);
         continue;
       }
@@ -343,12 +346,14 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           return `#${id} is running — stop it with /kill ${t.project}; cancel only removes queued todos.`;
         }
         ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cleared: no live run" });
+        parents.delete(id);
         refresh(launcher()?.deps, t.cause);
         void this.pump();
         return `cancelled #${id} (it was marked running but ${t.project} has no live run).`;
       }
       if (t.status !== "queued") return `#${id} is already ${t.status}.`;
       ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cancelled" });
+      parents.delete(id);
       ledger.recordEvent("todo_cancelled", { folder: t.folder, data: { project: t.project, id }, cause: t.cause });
       refresh(launcher()?.deps, t.cause);
       return `cancelled #${id} for ${t.project}: ${todoTitle(t.brief)}`;
@@ -387,5 +392,6 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       launcherFn = fn;
     },
     launcher,
+    _pendingParents: () => parents.size,
   };
 }

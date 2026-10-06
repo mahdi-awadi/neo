@@ -198,6 +198,7 @@ export function recoverInterruptedDispatches(
       folder: run.folder,
       data: { project, ok: false, timedOut: false, interrupted: "engine restart" },
       at: opts.now,
+      cause: run.cause, // the order's cause: the result goes back to its thread
     });
     // Read at boot, so it is the folder's HEAD NOW — a later run may have moved it past this one.
     const head = run.folder ? readCommit(run.folder) : undefined;
@@ -207,7 +208,7 @@ export function recoverInterruptedDispatches(
         ok: false,
         summary: "interrupted by an engine restart before it finished — resume it from where it stopped",
       }) + (head ? `\nstopped at — folder HEAD now: ${head}` : "");
-    ledger.queueDispatcherReport(project, text, opts.now);
+    ledger.queueDispatcherReport(project, text, opts.now, run.cause);
   }
   return runs.length;
 }
