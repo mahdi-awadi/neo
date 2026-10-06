@@ -206,6 +206,31 @@ the same `decide()` as `canUseTool` and sends every call the governor does not a
 `canUseTool`, so no allow rule can approve that call first (ADR-0006).
 _Avoid_: permission hook, pre-hook
 
+### What a worker remembers
+
+**Auto-memory**:
+Claude Code's own per-repository notes: a `MEMORY.md` index plus one topic file per note, at
+`~/.claude/projects/<repo root, path chars as "-">/memory/`. The CLI writes it and loads the index
+(first 200 lines or 25KB) into every session in that repo. All worktrees of a repo share one dir,
+and the operator's own interactive Claude Code sessions use the same dir as Neo workers. It is the
+project memory (ADR-0020). Tainted briefs run with it off.
+_Avoid_: Claude memory, the memory folder, ~/.claude memory
+
+**Neo memory**:
+The engine's Phase 2 memory: capped `§`-entry files in `<folder>/memory/`, a frozen snapshot, FTS
+recall and the dream loop. Off by default (`memory.scopes: []`). It overlaps auto-memory (ADR-0020).
+_Avoid_: curated memory (as a synonym), memory (bare)
+
+**Project docs**:
+A repo's tracked instructions and status files: CLAUDE.md/AGENTS.md (rules), HANDOFF.md/WIP.md (where
+the work stands for the next session). Shared through git, so they hold no machine-local facts.
+_Avoid_: memory
+
+**Tainted brief**:
+A brief that embeds untrusted customer text (an inbox draft). It runs as an isolated one-shot: no
+mutating tools, no MCP, no resume, no auto-memory.
+_Avoid_: customer brief (that is any customer-driven brief, tainted or not)
+
 ### Which model a worker runs
 
 **Model id**:

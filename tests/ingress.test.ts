@@ -94,6 +94,29 @@ test("tainted brief is a fully isolated one-shot: no resume, and it never persis
   expect(registry.getDefault()?.sdkSessionId).toBe("prior-company-session");
 });
 
+test("tainted brief never loads the operator's Claude auto-memory (and keeps worker env)", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  registerDefaultProject(registry, ledger, undefined, () => 1);
+  let seenDeps: { env?: Record<string, string> } | undefined;
+  const fakeRun = async (_o: Order, _h: RunHandlers, d?: { env?: Record<string, string> }): Promise<RunResult> => {
+    seenDeps = d;
+    return { ok: true, sessionId: "co-2", summary: "draft text", costUsd: 0 };
+  };
+
+  await runCompanyBrief("draft a reply", {
+    cfg: { workers: {}, workerEnv: { SOME_KNOB: "x" } } as never, ledger, registry,
+    meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
+    reply: () => {},
+    askApproval: async () => "deny",
+    run: fakeRun as never, now: () => 2,
+  }, { tainted: true });
+
+  expect(seenDeps?.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+  expect(seenDeps?.env?.SOME_KNOB).toBe("x");
+});
+
 test("untainted brief keeps MCP servers and no disallowedTools (unchanged path)", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
@@ -115,4 +138,5 @@ test("untainted brief keeps MCP servers and no disallowedTools (unchanged path)"
 
   expect(seenDeps?.mcpServers).toBeDefined();
   expect(seenDeps?.disallowedTools).toBeUndefined();
+  expect((seenDeps as { env?: Record<string, string> } | undefined)?.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
 });

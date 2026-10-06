@@ -39,6 +39,11 @@ export const TAINTED_DISALLOWED_TOOLS = [
   "KillShell",
 ];
 
+/** Env for a TAINTED brief: Claude Code auto-memory OFF (ADR-0020). The company folder sits in
+ *  the /home/neo repo, so auto-memory would load the operator's own MEMORY.md (prod hosts, open
+ *  bugs, deals) into a run whose prompt is customer text. Isolation means no history AND no memory. */
+export const TAINTED_ENV = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+
 export type IngressDeps = DispatchDeps & {
   cfg: NeoConfig;
   run?: typeof runOrder;
@@ -80,7 +85,7 @@ export async function runCompanyBrief(
       opts.tainted
         // Tainted runs are fully isolated one-shots: no resume (must not see prior company/
         // operator conversation history) and no persisted session id (see below).
-        ? profileDeps(deps.cfg, "ingress", { disallowedTools: TAINTED_DISALLOWED_TOOLS })
+        ? profileDeps(deps.cfg, "ingress", { disallowedTools: TAINTED_DISALLOWED_TOOLS, env: TAINTED_ENV })
         : profileDeps(deps.cfg, "ingress", {
             // Same-SDK ids only: an id minted by the other worker SDK is a dead resume target.
             resume:
