@@ -226,7 +226,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; trace?: Trace; postPlan?: PostPlan },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -648,6 +648,7 @@ export function createTelegramBot(
       contextPolicy: cfg.contextPolicy,
       todo: reload?.todo,
       updates: reload?.updates,
+      gated: reload?.gated,
       trace,
       // A bare /trace replied to a Neo line traces that line's thread (spec §4.4).
       ...(ctx.message.reply_to_message ? { replyTo: { chatId: ctx.message.reply_to_message.chat?.id ?? chatId, channelMsgId: ctx.message.reply_to_message.message_id } } : {}),

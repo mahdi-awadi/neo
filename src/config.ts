@@ -13,6 +13,7 @@ import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
+import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
 import { DISPATCH_SPIN_DIGESTS_DEFAULT, TOOL_LOOP_EXEMPT_DEFAULT, TOOL_LOOP_LIMIT_DEFAULT } from "./engine/dispatch-report";
 import { isLang, type Lang } from "./frontends/web/langs";
 
@@ -240,6 +241,9 @@ export interface NeoConfig {
   /** Attention items (ADR-0018): how long a paused queue, a waiting thread or an open decision may
    *  last before it needs the operator. Optional like `plans`; `loadConfig` always fills it. */
   attention?: AttentionCfg;
+  /** Restart-gated work (spec §8.4, `/gated`): the branch prefixes that count as work waiting to
+   *  merge. Optional like `plans`; `loadConfig` always fills it. */
+  restart?: RestartCfg;
   /** The web console's language when the operator has not picked one (its EN | ع switch sets a
    *  cookie): "en" or "ar". Optional like `trace`; `loadConfig` always fills it. */
   consoleLang?: Lang;
@@ -525,6 +529,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
     plans: readPlansCfg(fileCfg.plans),
     attention: readAttentionCfg(fileCfg.attention),
+    restart: readRestartCfg(fileCfg.restart),
     consoleLang: isLang(fileCfg.consoleLang) ? fileCfg.consoleLang : "en",
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,

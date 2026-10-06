@@ -113,6 +113,15 @@ export interface SearchHit {
   snippet: string;
 }
 
+/** One daemon start (spec §8.4): what the running build is — the restart producer compares with it. */
+export interface BootRow {
+  at: number;
+  headSha: string;
+  branch: string;
+  sdkVersion?: string;
+  configHash?: string;
+}
+
 /** Where an attention item comes from (spec §7): one producer per source. */
 export type AttentionSource = "github" | "git" | "engine" | "plan" | "restart";
 export type AttentionSeverity = "high" | "normal" | "low";
@@ -332,6 +341,10 @@ export interface Ledger {
   /** The projects where one producer still has a live row (open, or dismissed and still seen) — the
    *  ones its next reconcile must visit even when it reports nothing there. */
   attentionProjects(source: AttentionSource): string[];
+  /** Record this daemon's start; only the newest 100 boots are kept. */
+  recordBoot(b: BootRow): void;
+  /** The newest boot record (the running build). */
+  lastBoot(): BootRow | undefined;
   /** Delete one source's rows resolved before `before` (not dismissed: those remember the operator). */
   pruneAttention(source: AttentionSource, before: number): void;
   /** The projects that have threads and how many, most recently active first (bounded). */
@@ -928,6 +941,20 @@ export function openLedger(
       return (
         db.query(`SELECT DISTINCT project FROM attention_items WHERE source = ? AND (resolved_at IS NULL OR dismissed = 1)`).all(source) as Array<{ project: string }>
       ).map((r) => r.project);
+    },
+    recordBoot(b) {
+      db.transaction(() => {
+        db.query(`INSERT OR REPLACE INTO engine_boots (at, head_sha, branch, sdk_version, config_hash) VALUES (?, ?, ?, ?, ?)`).run(
+          b.at, b.headSha, b.branch, b.sdkVersion ?? null, b.configHash ?? null,
+        );
+        db.query(`DELETE FROM engine_boots WHERE at NOT IN (SELECT at FROM engine_boots ORDER BY at DESC LIMIT 100)`).run();
+      })();
+    },
+    lastBoot() {
+      const r = db.query(`SELECT * FROM engine_boots ORDER BY at DESC LIMIT 1`).get() as
+        | { at: number; head_sha: string; branch: string; sdk_version: string | null; config_hash: string | null }
+        | null;
+      return r ? { at: r.at, headSha: r.head_sha, branch: r.branch, ...(r.sdk_version ? { sdkVersion: r.sdk_version } : {}), ...(r.config_hash ? { configHash: r.config_hash } : {}) } : undefined;
     },
     pruneAttention(source, before) {
       db.query(`DELETE FROM attention_items WHERE source = ? AND resolved_at < ? AND dismissed = 0`).run(source, before);

@@ -1,13 +1,17 @@
 // Neo engine — entry point. Loads config, opens the ledger, owns the shared live-session
 // registry + budget meter + idle watchdog + admin store, and starts the operator frontends:
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
 import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
+import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
+import { reconcileAll } from "./engine/attention";
+import { restartNeededSince } from "./engine/updater";
+import type { BootRow } from "./engine/ledger";
 import { openLedger, LEDGER_PATH } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
@@ -89,6 +93,38 @@ async function main(): Promise<void> {
     const windowTokensByModel = contextWindows(ledger, cfg.contextPolicy.windowTokensByModel);
     runEngineProducer({ ...engineProducerDeps, measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }) }, Date.now());
   };
+  // The running build (spec §8.4): recorded once at boot, so the restart producer and /gated can say
+  // what is built but not running. The Neo repo is the daemon's working folder.
+  const neoFolder = process.cwd();
+  const configHashNow = (): string | undefined => {
+    try {
+      return createHash("sha256").update(readFileSync(join(neoFolder, "config.json"))).digest("hex");
+    } catch {
+      return undefined; // no config.json: nothing to compare
+    }
+  };
+  const thisBoot = faults.guard("boot.record", () => {
+    const facts = bootFacts(neoFolder);
+    if (!facts) return undefined;
+    let sdkVersion: string | undefined;
+    try {
+      sdkVersion = (JSON.parse(readFileSync(join(neoFolder, "node_modules/@anthropic-ai/claude-agent-sdk/package.json"), "utf8")) as { version?: string }).version;
+    } catch {
+      // not installed here: the boot record just has no SDK version
+    }
+    const boot: BootRow = { at: Date.now(), ...facts, ...(sdkVersion ? { sdkVersion } : {}), ...(configHashNow() ? { configHash: configHashNow() } : {}) };
+    ledger.recordBoot(boot);
+    return boot;
+  });
+  const restartDeps = (): RestartDeps => ({
+    folder: neoFolder,
+    boot: thisBoot,
+    branchPrefixes: (cfg.restart ?? DEFAULT_RESTART_CFG).branchPrefixes,
+    updates: thisBoot ? restartNeededSince(ledger, thisBoot.at) : [],
+    configHash: configHashNow(),
+  });
+  const gated = (): string => gatedText(restartDeps());
+  console.log(`  boot      -> ${thisBoot ? `${thisBoot.headSha.slice(0, 7)} on ${thisBoot.branch}` : "not recorded (git unreadable)"} (/gated)`);
   console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
   console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
@@ -334,6 +370,8 @@ async function main(): Promise<void> {
           // What the engine itself sees needs the operator (ADR-0018): stuck approvals, paused queues,
           // failed/waiting threads, stale decisions, an impossible ctx%. Ledger + registry only.
           ["attention.engine", attentionEngineTick],
+          // What is built but not running (spec §8.4): git + the boot record + the updater.
+          ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed
@@ -358,7 +396,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, trace, postPlan }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -370,7 +408,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan }, requestReload, updates: updater, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
       cfg.webPort,
       cfg.webHost,
     );

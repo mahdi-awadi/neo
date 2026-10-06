@@ -231,6 +231,18 @@ function isNews(r: ItemResult, prev: ItemResult | undefined): boolean {
   return !prev || prev.outcome !== r.outcome || prev.to !== r.to;
 }
 
+/** The items whose newest result since `since` needs a daemon restart (spec §8.4, the restart
+ *  producer) — read from the updater's own events. */
+export function restartNeededSince(ledger: Pick<Ledger, "listEvents">, since: number, limit = STATUS_SCAN): Array<{ id: string; from?: string; to?: string }> {
+  const newest = new Map<string, ItemResult>();
+  for (const e of ledger.listEvents({ kind: RESULT_EVENT, limit })) {
+    if (e.at < since) continue;
+    const r = e.data as unknown as ItemResult;
+    if (!newest.has(r.id)) newest.set(r.id, r); // newest first
+  }
+  return [...newest.values()].filter((r) => r.restartNeeded).map((r) => ({ id: r.id, ...(r.from ? { from: r.from } : {}), ...(r.to ? { to: r.to } : {}) }));
+}
+
 export function createUpdater(d: UpdaterDeps): Updater {
   const now = d.now ?? (() => Date.now());
   let inFlight = false;

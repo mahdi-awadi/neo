@@ -397,3 +397,10 @@ test("spin guards default (3 digests, policy alert, tool loop 8); a bad value ke
   writeFileSync(join(d, "config.json"), JSON.stringify({ dispatchSpinDigests: 4, dispatchSpinPolicy: "wrapup", toolLoopLimit: 0 }));
   expect(loadConfig(d)).toMatchObject({ dispatchSpinDigests: 4, dispatchSpinPolicy: "wrapup", toolLoopLimit: 8 });
 });
+
+test("restart.branchPrefixes defaults to fix/ feat/ chore/; a bad list keeps the default", () => {
+  expect(loadConfig(dir()).restart).toEqual({ branchPrefixes: ["fix/", "feat/", "chore/"] });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ restart: { branchPrefixes: [""] } }));
+  expect(loadConfig(d).restart?.branchPrefixes).toEqual(["fix/", "feat/", "chore/"]);
+});

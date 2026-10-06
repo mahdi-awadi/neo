@@ -562,3 +562,8 @@ test("/status shows the project's last context reset with its reason", () => {
   const out = handleCommand("/status", 1, { ...d, contextPolicy: BANDS, signals: () => ({ occupancy: 0.1, turns: 3, ageMs: 0, idleMs: 0 }) })!.text;
   expect(out).toContain("↻ handoff 2h ago (above-sweet-spot)");
 });
+
+test("/gated shows the restart-gated list the engine computes; unavailable without it (P4, spec §8.4)", () => {
+  expect(handleCommand("/gated", 1, { ...deps(), gated: () => "✓ running build = HEAD (abc1234 on master)" })!.text).toContain("running build = HEAD");
+  expect(handleCommand("/gated", 1, deps())!.text).toContain("unavailable");
+});

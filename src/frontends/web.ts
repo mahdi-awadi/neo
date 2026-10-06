@@ -45,6 +45,8 @@ export interface WebAppDeps {
   requestReload?: () => void;
   /** The toolchain updater (for /updates, ADR-0009). */
   updates?: CommandDeps["updates"];
+  /** The restart-gated list for /gated (spec §8.4). */
+  gated?: CommandDeps["gated"];
   /** Operator-channel broadcast bus — mirror this surface to/from Telegram (see operator-bus.ts). */
   bus?: OperatorBus;
 }
@@ -55,7 +57,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated });
 
   function sessionUser(req: Request): number | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));

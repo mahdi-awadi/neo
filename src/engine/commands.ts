@@ -55,6 +55,8 @@ export interface CommandDeps {
   todo?: TodoQueue;
   /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
   updates?: Pick<Updater, "status" | "run" | "rollback" | "running">;
+  /** The restart-gated list (spec §8.4, `/gated`): what is built but not running. Absent → unavailable. */
+  gated?: () => string;
   /** The cause seam (for /trace, ADR-0015). Absent → /trace says it is unavailable. */
   trace?: Trace;
   /** The Telegram message this command replied to: a bare `/trace` traces that message's thread. */
@@ -168,6 +170,12 @@ const COMMANDS: Command[] = [
     usage: "/updates · /updates run · /updates apply|rollback <item>",
     summary: "toolchain updates (SDK, plugins, MCP): status, check now, apply a held one, roll back",
     run: ({ deps, args }) => ({ text: updatesCommand(args.trim(), deps.updates) }),
+  },
+  {
+    name: "gated",
+    usage: "/gated",
+    summary: "what is built but not running yet (commits after boot, branches to merge, updates)",
+    run: ({ deps }) => ({ text: deps.gated ? deps.gated() : "/gated is unavailable here" }),
   },
   {
     name: "inbox",
