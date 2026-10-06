@@ -50,8 +50,10 @@ export type WebEvent =
 export interface WebChannel {
   /** Operator sent a message — drive the pipeline; streamed output arrives as events. */
   send(text: string): Promise<void>;
-  /** Subscribe an SSE listener; past events are replayed first (reconnect-safe). */
-  subscribe(listener: (e: WebEvent) => void): () => void;
+  /** Subscribe an SSE listener. The replay window is replayed first, then events go live; each
+   *  event carries an increasing id. With `after` (a resume point), only later events replay. A
+   *  pending escalation older than the window is replayed too (ADR-0014). */
+  subscribe(listener: (e: WebEvent, id: number) => void, opts?: { after?: number }): () => void;
   /** Resolve a pending escalation (POST /approve). Returns false if the id is unknown. */
   resolveApproval(id: string, decision: "allow" | "deny"): boolean;
   /** Make a project active from a clicked /list chip (the shared engine selectProject). */
@@ -86,17 +88,26 @@ export interface WebChannel {
 }
 
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"] }): WebChannel {
-  const events: WebEvent[] = [];
-  const listeners = new Set<(e: WebEvent) => void>();
+  // The replay window (ADR-0014): only the newest cfg.webFeedWindow feed events are kept. The
+  // feed is a live view — the ledger and Telegram keep the record — so older events just drop out.
+  const replay: Array<{ id: number; e: WebEvent }> = [];
+  // Ids start from the boot time (µs), so they keep increasing across daemon restarts: a console left
+  // open resumes with its old Last-Event-ID and still gets everything the new daemon emitted.
+  let lastId = Date.now() * 1000;
+  const listeners = new Set<(e: WebEvent, id: number) => void>();
   const pending = new Map<string, (d: "allow" | "deny") => void>();
+  const pendingEvents = new Map<string, { id: number; e: WebEvent }>(); // escalation id -> its feed event
 
-  function emit(e: WebEvent): void {
-    events.push(e);
-    for (const l of listeners) l(e);
+  function emit(e: WebEvent): number {
+    const id = ++lastId;
+    replay.push({ id, e });
+    if (replay.length > opts.engine.cfg.webFeedWindow) replay.splice(0, replay.length - opts.engine.cfg.webFeedWindow);
+    for (const l of listeners) l(e, id);
+    return id;
   }
   // Worker/engine lines are Markdown — render to safe HTML once, here, so the feed shows
   // formatting (bold, code, bullets) instead of raw ** and #.
-  const message = (text: string, project?: string) => emit({ type: "message", text: mdToHtml(text), project });
+  const message = (text: string, project?: string): void => void emit({ type: "message", text: mdToHtml(text), project });
 
   // Register this surface as an operator sink: lines mirrored from the OTHER surface (Telegram)
   // render here. Output-only — deliver never re-enters the pipeline, so no mirrored line can become
@@ -134,11 +145,14 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       new Promise<"allow" | "deny">((resolve) => {
         const id = crypto.randomUUID();
         pending.set(id, resolve);
-        // The engine gave up waiting (approval timeout, ADR-0012): drop the prompt.
+        const e: WebEvent = { type: "escalation", id, reason };
+        pendingEvents.set(id, { id: emit(e), e });
+        // The engine gave up waiting (approval timeout, ADR-0012): drop the prompt, and stop
+        // replaying it to reconnecting consoles (ADR-0014, the feed window) — nothing left to click.
         signal?.addEventListener("abort", () => {
+          pendingEvents.delete(id);
           if (pending.delete(id)) resolve("deny");
         }, { once: true });
-        emit({ type: "escalation", id, reason });
         // The actionable prompt stays here (POST /approve); the other surface just SEES it pending.
         opts.bus?.mirror("web", { kind: "notice", text: `⏳ approval pending on the web console: ${reason}` });
       }),
@@ -183,8 +197,16 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       opts.bus?.mirror("web", { kind: "echo", text });
       await handleMessage(text, opts.chatId, deps);
     },
-    subscribe(listener) {
-      for (const e of events) listener(e); // replay history, then go live
+    subscribe(listener, sub) {
+      const after = sub?.after ?? 0;
+      const oldest = replay[0]?.id ?? lastId + 1;
+      // A pending escalation that fell out of the window must still be answerable on this console.
+      for (const p of pendingEvents.values()) if (p.id > after && p.id < oldest) listener(p.e, p.id);
+      for (const { id, e } of replay) {
+        if (id <= after) continue;
+        if (e.type === "escalation" && !pendingEvents.has(e.id)) continue; // answered: nothing to click
+        listener(e, id);
+      }
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
@@ -192,6 +214,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const resolve = pending.get(id);
       if (!resolve) return false;
       pending.delete(id);
+      pendingEvents.delete(id);
       resolve(decision);
       opts.bus?.mirror("web", { kind: "notice", text: `approval ${decision} on the web console` });
       return true;

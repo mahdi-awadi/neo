@@ -17,6 +17,7 @@ import type { Inbox } from "../engine/inbox";
 import type { OperatorBus } from "../engine/operator-bus";
 import { basename } from "node:path";
 import { faults } from "../engine/fault";
+import { DEFAULT_WEB_FEED_WINDOW } from "../config";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
 const COOKIE = "neo_session";
@@ -91,7 +92,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 
     if (req.method === "GET" && path === "/") {
       const uid = sessionUser(req);
-      const html = uid === undefined ? loginPage(deps.botUsername) : consolePage();
+      const html = uid === undefined ? loginPage(deps.botUsername) : consolePage({ feedWindow: deps.engine.cfg.webFeedWindow });
       // never cache: the login page embeds the bot username, and a stale copy (e.g. an old
       // bot handle behind Cloudflare/browser cache) silently breaks Telegram login.
       return new Response(html, {
@@ -306,7 +307,10 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const stream = new ReadableStream({
         start(controller) {
           const enc = new TextEncoder();
-          const unsub = channel.subscribe((e) => controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`)));
+          // Each event carries its feed id; a reconnecting EventSource sends it back as Last-Event-ID
+          // and gets only the later events — never the whole history again (ADR-0014).
+          const after = Number(req.headers.get("last-event-id")) || 0;
+          const unsub = channel.subscribe((e, id) => controller.enqueue(enc.encode(`id: ${id}\ndata: ${JSON.stringify(e)}\n\n`)), { after });
           // Keepalive comment every 15s so Bun's idleTimeout never closes this long-lived
           // SSE connection (the default 10s drop was killing live dashboard updates).
           const ping = setInterval(() => {
@@ -375,7 +379,8 @@ function loginPage(botUsername: string): string {
 </div></body></html>`;
 }
 
-export function consolePage(): string {
+export function consolePage(opts: { feedWindow?: number } = {}): string {
+  const feedWindow = opts.feedWindow ?? DEFAULT_WEB_FEED_WINDOW;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Neo · dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -519,21 +524,30 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
  </main>
 </div>
 <script>
+var FEED_WINDOW=${feedWindow};var POLL_MS=15000;
 var S={projects:[],sdk:{provider:'subscription',label:'Claude Agent SDK',choices:[]},usage:null,loops:[],recent:[],repos:[],todos:[]};
 function esc(s){return (s||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 function post(p,b){return fetch(p,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});}
 function fmt(n){n=n||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'k';return ''+Math.round(n);}
 function age(ms){var s=Math.floor((ms||0)/1000);if(s<60)return s+'s';var m=Math.floor(s/60);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h';return Math.floor(h/24)+'d';}
 
-function loadState(){return fetch('/api/state?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){S=d;renderAll();});}
-function renderAll(){renderRepos();renderSdk();renderProjects();renderTodos();renderLoops();renderUsage();renderRecent();}
+// One /api/state request at a time: a burst of 'projects' events coalesces into one follow-up load.
+var stateLoad=null,stateAgain=false;
+function loadState(){if(stateLoad){stateAgain=true;return stateLoad;}
+ stateLoad=fetch('/api/state?_='+Date.now(),{cache:'no-store',signal:AbortSignal.timeout(POLL_MS)}).then(function(r){return r.json();}).then(function(d){S=d;renderAll();})
+  .catch(function(){}).then(function(){stateLoad=null;if(stateAgain){stateAgain=false;loadState();}});return stateLoad;}
+// Re-render a section only when its data changed — a rebuild wipes whatever the operator is typing in it.
+var lastJson={};
+function changed(k,v){var j=JSON.stringify(v);if(lastJson[k]===j)return false;lastJson[k]=j;return true;}
+function renderAll(){renderRepos();if(changed('sdk',S.sdk))renderSdk();if(changed('projects',S.projects))renderProjects();renderTodos();
+ if(changed('loops',S.loops))renderLoops();if(changed('usage',S.usage))renderUsage();if(changed('recent',S.recent))renderRecent();}
 
 function renderRepos(){var sel=document.getElementById('repo');if(sel.dataset.n==String(S.repos.length))return;sel.dataset.n=String(S.repos.length);
  var cur=sel.value;sel.innerHTML='<option value="">— pick a repo —</option>';
  S.repos.forEach(function(r){var o=document.createElement('option');o.value=r;o.textContent=r.split('/').pop();sel.appendChild(o);});
  if(cur)sel.value=cur;}
 
-function renderSdk(){var sdk=S.sdk||{provider:'subscription',label:'Claude Agent SDK',choices:[]};
+function renderSdk(){lastJson.sdk=JSON.stringify(S.sdk);var sdk=S.sdk||{provider:'subscription',label:'Claude Agent SDK',choices:[]};
  var label=document.getElementById('sdk-label');if(label)label.textContent=sdk.provider==='codex'?'Codex':'Claude';
  var foot=document.getElementById('sdk-foot');if(foot)foot.textContent=sdk.provider==='codex'?'Codex SDK':'Claude SDK';
  var box=document.getElementById('sdkbox');if(!box)return;box.innerHTML='';
@@ -691,7 +705,15 @@ function refreshFeed(){
 }
 function setFilter(p){filterProject=p;refreshFeed();}
 function clearFilter(){filterProject=null;refreshFeed();}
-function pushFeed(node,kind,project){node._kind=kind;node._project=project||null;feedNodes.push(node);feed.appendChild(node);refreshFeed();}
+// O(1) per event (ADR-0014): style only the new row, keep at most FEED_WINDOW rows (a pending
+// escalation card is never dropped), and scroll at most once per animation frame.
+var tailQueued=false;
+function pushFeed(node,kind,project){node._kind=kind;node._project=project||null;
+ var v=nodeVisible(node);node.style.display=v?'':'none';if(v)ph.style.display='none';
+ feedNodes.push(node);feed.appendChild(node);
+ if(feedNodes.length>FEED_WINDOW){for(var i=0;i<feedNodes.length;i++){var o=feedNodes[i];if(o._kind!=='esc'){o.remove();feedNodes.splice(i,1);
+  if(nodeVisible(o)&&!feedNodes.some(nodeVisible))ph.style.display='';break;}}}
+ if(v&&!tailQueued){tailQueued=true;requestAnimationFrame(function(){tailQueued=false;feed.scrollTop=feed.scrollHeight;});}}
 function feedMsg(html,kind,project){var d=document.createElement('div');d.className='row '+(kind==='me'?'me':'out');d.innerHTML=html;pushFeed(d,kind,project);return d;}
 function say(text){var v=(text||'').trim();if(!v)return;feedMsg('› '+esc(v),'me',filterProject);post('/msg',{text:v});}
 function uploadFile(){var i=document.getElementById('file');if(!i.files.length)return;var fd=new FormData();fd.append('file',i.files[0]);fetch('/upload',{method:'POST',body:fd}).then(function(r){if(!r.ok)alert('upload failed ('+r.status+')');});i.value='';}
@@ -707,11 +729,11 @@ es.onmessage=function(ev){var e=JSON.parse(ev.data);
   var c=document.createElement('div');c.className='escc';c.innerHTML='⚠ '+esc(e.reason);
   var a=document.createElement('div');a.className='acts';
   ['allow','deny'].forEach(function(dec){var b=document.createElement('button');b.className='chip '+(dec==='allow'?'ok':'no');b.textContent=dec;
-   b.onclick=function(){post('/approve',{id:e.id,decision:dec});c.remove();refreshFeed();};a.appendChild(b);});
+   b.onclick=function(){post('/approve',{id:e.id,decision:dec});c.remove();var ix=feedNodes.indexOf(c);if(ix>=0)feedNodes.splice(ix,1);refreshFeed();};a.appendChild(b);});
   c.appendChild(a);pushFeed(c,'esc',null);tab('activity');}
  else if(e.type==='file'){var d=document.createElement('div');d.className='row out';d.innerHTML='📎 <a href="'+e.url+'">'+esc(e.name)+'</a>';pushFeed(d,'out',e.project);}
 };
 document.getElementById('ff').onsubmit=function(ev){ev.preventDefault();var m=document.getElementById('msg');say(m.value);m.value='';};
-loadState();loadInbox();setInterval(function(){loadState();loadInbox();},15000);
+loadState();loadInbox();setInterval(function(){loadState();loadInbox();},POLL_MS);
 </script></body></html>`;
 }

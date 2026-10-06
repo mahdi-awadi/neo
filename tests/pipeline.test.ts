@@ -54,6 +54,7 @@ function cfg(): NeoConfig {
     secretaryStaleHours: 24,
     codebaseMemoryListTimeoutMs: 15_000,
     inboxListDefault: 100,
+    webFeedWindow: 500,
     messageRoutesCacheCap: 2_000,
     stuckAfterMs: 600_000,
     longTurnAlertMs: 1_200_000,

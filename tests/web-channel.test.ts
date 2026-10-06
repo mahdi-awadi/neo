@@ -52,6 +52,7 @@ function cfg(): NeoConfig {
     secretaryStaleHours: 24,
     codebaseMemoryListTimeoutMs: 15_000,
     inboxListDefault: 100,
+    webFeedWindow: 500,
     messageRoutesCacheCap: 2_000,
     stuckAfterMs: 600_000,
     longTurnAlertMs: 1_200_000,
@@ -414,4 +415,83 @@ test("todo(): the console's queue actions run the shared /todo command against t
   expect(ch.todo("").text).toContain("every project queue is empty");
   expect(ch.todo("cancel 7").text).toContain("No todo #7");
   expect(createWebChannel({ engine: eng, chatId: 42 }).todo("").text).toContain("unavailable");
+});
+
+// ADR-0014: the console feed is a bounded replay window, resumed by event id.
+function windowed(feedWindow: number, onStart?: (h: RunHandlers) => void) {
+  const eng = engine(fakeStart(onStart).start);
+  eng.cfg.webFeedWindow = feedWindow;
+  return { eng, ch: createWebChannel({ engine: eng, chatId: 42 }) };
+}
+const texts = (es: WebEvent[]) => es.filter((e) => e.type === "message").map((e) => (e as { text: string }).text);
+
+test("a new subscriber gets only the newest webFeedWindow events, oldest first", () => {
+  const { ch } = windowed(3);
+  for (let i = 1; i <= 5; i++) ch.notify(`line ${i}`);
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  expect(events.length).toBe(3);
+  expect(texts(events).map((t) => t.match(/line \d/)?.[0])).toEqual(["line 3", "line 4", "line 5"]);
+});
+
+test("every feed event carries an increasing id; a resume point replays only later events", () => {
+  const { ch } = windowed(10);
+  for (let i = 1; i <= 4; i++) ch.notify(`line ${i}`);
+  const ids: number[] = [];
+  ch.subscribe((_e, id) => ids.push(id));
+  expect(ids.length).toBe(4);
+  expect([...ids].sort((a, b) => a - b)).toEqual(ids);
+  expect(new Set(ids).size).toBe(4);
+
+  const resumed: WebEvent[] = [];
+  ch.subscribe((e) => resumed.push(e), { after: ids[2] });
+  expect(texts(resumed).length).toBe(1);
+  expect(texts(resumed)[0]).toContain("line 4");
+});
+
+test("a pending escalation older than the window is still replayed; an answered one is not", async () => {
+  const dir = scratch();
+  let h!: RunHandlers;
+  const { ch } = windowed(2, (x) => void (h = x));
+  await ch.send(`/open ${dir} go`);
+  void h.onEscalation("pending one");
+  const answeredP = h.onEscalation("answered one");
+  const first: WebEvent[] = [];
+  ch.subscribe((e) => first.push(e));
+  const answered = first.find((e) => e.type === "escalation" && e.reason.includes("answered")) as { id: string };
+  ch.resolveApproval(answered.id, "deny");
+  await answeredP;
+  for (let i = 0; i < 5; i++) ch.notify(`noise ${i}`); // pushes both escalations out of the window
+
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e));
+  const reasons = late.filter((e) => e.type === "escalation").map((e) => (e as { reason: string }).reason);
+  expect(reasons).toEqual(["pending one"]);
+});
+
+test("a resumed subscriber that already has a pending escalation does not get it again", async () => {
+  const dir = scratch();
+  let h!: RunHandlers;
+  const { ch } = windowed(2, (x) => void (h = x));
+  await ch.send(`/open ${dir} go`);
+  void h.onEscalation("pending one");
+  let last = 0;
+  ch.subscribe((_e, id) => (last = id));
+  for (let i = 0; i < 5; i++) ch.notify(`noise ${i}`);
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e), { after: last });
+  expect(late.filter((e) => e.type === "escalation").length).toBe(0);
+});
+
+test("feed ids keep increasing across a daemon restart, so an open console's stale resume point never hides new events", async () => {
+  const before = windowed(10).ch;
+  before.notify("old");
+  let staleId = 0;
+  before.subscribe((_e, id) => (staleId = id));
+  await Bun.sleep(2);
+  const after = windowed(10).ch; // a fresh channel = the daemon after a restart
+  after.notify("new");
+  const got: WebEvent[] = [];
+  after.subscribe((e) => got.push(e), { after: staleId });
+  expect(texts(got).some((t) => t.includes("new"))).toBe(true);
 });

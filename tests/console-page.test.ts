@@ -42,3 +42,34 @@ test("consolePage has a Queue tab that renders the todo queues and posts its act
   expect(body).toContain("function renderTodos");
   expect(body).toContain("/api/todo");
 });
+
+// ADR-0014: the page keeps a bounded feed and does O(1) work per streamed event.
+test("consolePage embeds the configured feed window", () => {
+  const body = consolePage({ feedWindow: 37 }).match(/<script>([\s\S]*?)<\/script>/)![1];
+  expect(body).toContain("FEED_WINDOW=37");
+  expect(() => new Function(body)).not.toThrow();
+});
+
+test("pushFeed never rescans the whole feed or forces a layout per event", () => {
+  const body = consolePage().match(/<script>([\s\S]*?)<\/script>/)![1];
+  const push = body.match(/function pushFeed\([^)]*\)\{[\s\S]*?\n/)![0];
+  expect(push).not.toContain("refreshFeed()");
+  expect(push).not.toContain("scrollHeight");
+});
+
+test("state refresh: one request at a time, bounded by a timeout so a hung fetch cannot stop polling", () => {
+  const body = consolePage().match(/<script>([\s\S]*?)<\/script>/)![1];
+  const load = body.match(/function loadState\(\)\{[\s\S]*?stateLoad=null[\s\S]*?return stateLoad;\}/)![0];
+  expect(load).toContain("AbortSignal.timeout(POLL_MS)");
+  expect(load).toContain("stateLoad=null");
+});
+
+test("renderAll skips unchanged sections but always re-renders the clock-dependent Queue tab", () => {
+  const body = consolePage().match(/<script>([\s\S]*?)<\/script>/)![1];
+  const all = body.match(/function renderAll\(\)\{[\s\S]*?\}\n/)![0];
+  expect(all).toContain("changed('loops',S.loops)");
+  expect(all).toContain("renderTodos();");
+  expect(all).not.toContain("changed('todos'");
+  // A direct SDK repaint (switch button, SSE) records what it drew, so a later poll is compared to it.
+  expect(body).toMatch(/function renderSdk\(\)\{lastJson\.sdk=/);
+});

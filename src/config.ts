@@ -191,6 +191,10 @@ export interface NeoConfig {
   /** Default page size for the customer inbox list when a caller omits one (the operator-facing
    *  web console list). Default 100. */
   inboxListDefault: number;
+  /** Replay window of the web console feed (ADR-0014): how many of the newest feed events the
+   *  engine keeps for a console that opens or reconnects, and how many rows the page keeps.
+   *  Older events drop out (the ledger and Telegram keep the record). Default 500. */
+  webFeedWindow: number;
   /** In-memory reply-route cache bound (oldest evicted first). The ledger is the durable source of
    *  truth behind it, so this only sizes the fast front cache. Default 2000. */
   messageRoutesCacheCap: number;
@@ -276,6 +280,9 @@ export const DEFAULT_MODELS: ModelsCfg = {
   aliases: { ...CLAUDE_TIER_MODELS },
 };
 
+/** Default web console replay window (ADR-0014). Exported so the console page can default to it. */
+export const DEFAULT_WEB_FEED_WINDOW = 500;
+
 const DEFAULTS = {
   providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider },
   subscriptionInteractiveReservePct: 0.2,
@@ -309,6 +316,7 @@ const DEFAULTS = {
   secretaryStaleHours: 24,
   codebaseMemoryListTimeoutMs: 15_000,
   inboxListDefault: 100,
+  webFeedWindow: DEFAULT_WEB_FEED_WINDOW,
   messageRoutesCacheCap: 2_000,
   telegramToolSteps: false,
   telegramFloodMaxWaitMs: 30_000,
@@ -446,6 +454,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     secretaryStaleHours: fileCfg.secretaryStaleHours ?? DEFAULTS.secretaryStaleHours,
     codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,
     inboxListDefault: fileCfg.inboxListDefault ?? DEFAULTS.inboxListDefault,
+    webFeedWindow: fileCfg.webFeedWindow ?? DEFAULTS.webFeedWindow,
     messageRoutesCacheCap: fileCfg.messageRoutesCacheCap ?? DEFAULTS.messageRoutesCacheCap,
     telegramToolSteps: fileCfg.telegramToolSteps ?? DEFAULTS.telegramToolSteps,
     telegramFloodMaxWaitMs: fileCfg.telegramFloodMaxWaitMs ?? DEFAULTS.telegramFloodMaxWaitMs,

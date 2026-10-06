@@ -381,6 +381,24 @@ port cannot be bound at startup, or Telegram long polling has stopped for good (
 restarts it). Any other polling stop is reported and polling restarts.
 _Avoid_: fatal error
 
+### The operator web console
+
+**Console feed**:
+The console's running list of lines: worker output, mirrored echoes and notices, escalations, and
+files. It is a live view, not a record — the ledger and Telegram keep the record.
+_Avoid_: history, transcript, log
+
+**Replay window**:
+The newest feed events the engine keeps for a console that opens or reconnects (`webFeedWindow`).
+Older events drop out. A pending **escalation** is always replayed, even when it is older than the
+window, because the operator must still be able to answer it.
+_Avoid_: backlog, buffer, history
+
+**Resume point**:
+The id of the last feed event a console received. A reconnecting console sends it and gets only the
+later events, so a dropped connection never shows a line twice.
+_Avoid_: cursor, offset, checkpoint
+
 **Draft version**:
 A counter on an inbox item, bumped by every change to its draft reply. A Send names the version the
 operator approved. The send is refused (*stale*) when the draft changed since, or the item was
