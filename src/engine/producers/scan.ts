@@ -1,7 +1,9 @@
 /** The repo scan (ADR-0018, spec §7): every tracked repo, one at a time — the git producer and the
  *  GitHub producer, each reconciled for that project (a kind whose read failed keeps its rows), and a
  *  `meta` row per project (`gh:<project>`: last scan, last good scan, counts, error) for the
- *  dashboard. A heartbeat step starts it every `github.scanEveryMs`. Plain code, no AI. */
+ *  dashboard; then the optional per-project probes (probe.ts: `probe:<project>` health,
+ *  `deploy:<project>` deployed version). A heartbeat step starts it every `github.scanEveryMs`.
+ *  Plain code, no AI. */
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { Ledger } from "../ledger";
@@ -10,7 +12,8 @@ import type { GitRead } from "../git-read";
 import { reconcileScan } from "../attention";
 import type { AttentionCfg } from "./engine";
 import { gitDrafts, type ProjectCfg } from "./git";
-import { githubDrafts } from "./github";
+import { DEFAULT_GITHUB_CFG, githubDrafts } from "./github";
+import { probeDeploy, probeHealth, type Fetcher } from "./probe";
 
 const HOUR = 3_600_000;
 
@@ -24,6 +27,10 @@ export interface ScanDeps {
   attention: AttentionCfg;
   projects: Record<string, ProjectCfg>;
   now: () => number;
+  /** Bound on each probe HTTP call (the daemon passes `github.callTimeoutMs`, the git reads' bound). */
+  probeTimeoutMs?: number;
+  /** The probes' HTTP seam (default: global fetch). */
+  fetch?: Fetcher;
 }
 
 /** What `gh:<project>` holds. */
@@ -102,6 +109,23 @@ async function scanProject(d: ScanDeps, folder: string, project: string): Promis
   const failed = [...git.failed, ...gh.failed];
   const error = failed.length ? gh.error ?? `could not read: ${failed.join(", ")}` : undefined;
   writeMeta(d, project, { github: gh.github, counts, ...(error ? { error } : {}) }, failed.length === 0);
+  await runProbes(d, folder, project, cfg, git.tracked);
+}
+
+/** The optional probes of one project (probe.ts). An unconfigured probe makes no call and leaves no
+ *  row (a row left from an earlier config is removed). The deploy branch is `deployBranch`, else the
+ *  git producer's base branch (the first tracked branch). Never throws. */
+async function runProbes(d: ScanDeps, folder: string, project: string, cfg: ScanDeps["projects"][string], tracked: string[]): Promise<void> {
+  const timeoutMs = d.probeTimeoutMs ?? DEFAULT_GITHUB_CFG.callTimeoutMs;
+  const now = d.now();
+  const [health, deploy] = await Promise.all([
+    cfg.healthUrl ? probeHealth({ url: cfg.healthUrl, timeoutMs, now, ...(d.fetch ? { fetch: d.fetch } : {}) }) : undefined,
+    cfg.deployedVersionUrl ? probeDeploy({ read: d.read, folder, cfg, branch: cfg.deployBranch ?? tracked[0], timeoutMs, now, ...(d.fetch ? { fetch: d.fetch } : {}) }) : undefined,
+  ]);
+  if (health) d.ledger.setMeta(`probe:${project}`, health, now);
+  else d.ledger.deleteMeta(`probe:${project}`);
+  if (deploy) d.ledger.setMeta(`deploy:${project}`, deploy, now);
+  else d.ledger.deleteMeta(`deploy:${project}`);
 }
 
 function writeMeta(d: ScanDeps, project: string, m: Omit<ScanMeta, "lastScanAt" | "lastGoodAt" | "errorEventAt">, good = false): void {

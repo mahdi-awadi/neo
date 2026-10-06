@@ -305,7 +305,8 @@
       "dirty": "{{n}} uncommitted",
       "worktrees": "{{n}} other worktrees",
       "ahead": "{{n}} ahead",
-      "undeployed": "{{n}} commits not deployed",
+      "undeployed": "{{n}} commits not deployed ({{branch}} @ {{sha}} live)",
+      "deployError": "the deployed version could not be read:",
       "error": "git could not be read:"
     },
     "gh": {

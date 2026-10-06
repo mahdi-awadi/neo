@@ -13,6 +13,7 @@ import type { SessionState } from "./liveness";
 import { aheadOf, parseWorktrees, uncommittedFrom, type GitRead, type GitResult } from "./git-read";
 import type { ProjectCfg } from "./producers/git";
 import type { ScanMeta } from "./producers/scan";
+import type { DeployMeta, ProbeMeta } from "./producers/probe";
 import { activeTodos, type DashTodo } from "./dashboard";
 import { describeSession, stateOf } from "./session-status";
 import { listOpen } from "./attention";
@@ -35,12 +36,9 @@ const SEP = "\u001f";
 
 export type ProjectHealth = "ok" | "attention" | "down" | "unknown";
 
-/** What `probe:<project>` holds (written by the deployed-version/health probe, P6 6.3). */
-export interface ProbeMeta {
-  at: number;
-  ok: boolean;
-  error?: string;
-}
+/** `probe:<project>` (health) and `deploy:<project>` (deployed version) — written by the scan's
+ *  probes (producers/probe.ts, P6 6.3). */
+export type { ProbeMeta, DeployMeta } from "./producers/probe";
 
 export interface ThreadSummary {
   id: number;
@@ -86,8 +84,14 @@ export interface ProjectGit {
   drift?: { from: string; to: string; ahead: number };
   /** Other linked worktrees: not the main checkout, not this folder, not prunable (folder gone). */
   worktrees?: number;
-  /** Only when `deployedVersionUrl` is configured (filled by the 6.3 probe). */
+  /** Commits on the deploy branch after the deployed sha. Only when `deployedVersionUrl` is
+   *  configured and its last probe read and counted it (`deploy:<project>`). */
   undeployed?: number;
+  /** With `undeployed`: the branch counted on and the deployed sha (short). */
+  deployBranch?: string;
+  deployedSha?: string;
+  /** The last deployed-version probe failed (configured only): why. */
+  deployError?: string;
   error?: string;
 }
 
@@ -334,7 +338,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     folder,
     now: nowPart,
     queue: c.queue,
-    git: await gitFacts(d.read, folder, cfg),
+    git: { ...(await gitFacts(d.read, folder, cfg)), ...part("deploy", name, () => deployFacts(d.ledger, name, cfg), {}) },
     github,
     decisions,
     plans,
@@ -343,6 +347,17 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     ...(restartGated ? { restartGated } : {}),
     health: c.health,
   };
+}
+
+/** The deploy part of the git facts, from the last `deploy:<project>` probe row — only when the
+ *  project configures `deployedVersionUrl` (spec §9: without config, nothing about deployment). */
+export function deployFacts(ledger: Ledger, name: string, cfg: ProjectCfg): Pick<ProjectGit, "undeployed" | "deployBranch" | "deployedSha" | "deployError"> {
+  if (!cfg.deployedVersionUrl) return {};
+  const m = ledger.getMeta(`deploy:${name}`)?.value as DeployMeta | undefined;
+  if (!m || typeof m !== "object") return {};
+  if (typeof m.undeployed === "number" && typeof m.sha === "string" && typeof m.branch === "string")
+    return { undeployed: m.undeployed, deployBranch: m.branch, deployedSha: m.sha.slice(0, 7) };
+  return typeof m.error === "string" ? { deployError: m.error } : {};
 }
 
 /** One read that never throws (a throwing reader is a failed read). */
@@ -507,7 +522,8 @@ export function renderProject(v: ProjectView, now: number, o: { maxLines: number
   ].filter((x): x is string => !!x && !!x.trim());
   if (gitParts.length) L.push(`git: ${gitParts.join(" · ")}`);
   if (g.error) L.push(`git error: ${todoTitle(g.error)}`);
-  if (g.undeployed !== undefined) L.push(`deploy: ${plural(g.undeployed, "commit")} not deployed`);
+  if (g.undeployed !== undefined) L.push(`deploy: ${plural(g.undeployed, "commit")} not deployed (${g.deployBranch} @ ${g.deployedSha} live)`);
+  else if (g.deployError) L.push(`deploy: could not read the deployed version (${todoTitle(g.deployError)})`);
 
   const gh = v.github;
   const ghParts =

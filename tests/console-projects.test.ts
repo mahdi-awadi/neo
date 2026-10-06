@@ -80,3 +80,14 @@ test("review fixes: a bad #project= hash is ignored; Latin values are bidi-isola
   expect(String((ar as any).pj.sect.github)).toBe("GitHub");
   expect(JSON.stringify(ar)).not.toContain("\u200c"); // no zero-width non-joiner
 });
+
+test("P6 6.3: the DEPLOY line names the branch and the live sha as LTR runs, and a failed probe its error; both catalogues", () => {
+  const pane = fn("renderProjectPane");
+  expect(pane).toContain('tx("pj.git.undeployed", { n: g.undeployed, branch: ltr(g.deployBranch), sha: ltr(g.deployedSha) })');
+  expect(pane).toContain('t("pj.git.deployError")');
+  expect(pane).toContain("ltr(g.deployError)");
+  for (const cat of [en, ar]) {
+    const s = String((cat as any).pj.git.undeployed);
+    for (const v of ["{{n}}", "{{branch}}", "{{sha}}"]) expect(s).toContain(v);
+  }
+});

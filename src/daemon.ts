@@ -148,6 +148,7 @@ async function main(): Promise<void> {
     const scan = runScan({
       ledger, registry, read: createGitRead({ timeoutMs: gh.callTimeoutMs }), workRoot: cfg.workRoot, neoFolder,
       attention: cfg.attention ?? DEFAULT_ATTENTION_CFG, projects: cfg.projects ?? {}, now: () => Date.now(),
+      probeTimeoutMs: gh.callTimeoutMs,
     }).finally(() => void (scanning = false));
     faults.contain("attention.scan", scan);
   };

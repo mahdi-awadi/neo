@@ -949,7 +949,9 @@ function renderProjectPane(v: Any): void {
   if (g.worktrees !== undefined) facts.push(t("pj.git.worktrees", { n: g.worktrees }));
   if (facts.length) git.push(`<div class="tart rfo">${facts.join(" · ")}</div>`);
   if (g.drift) git.push(`<div class="tart">${ltr(`${g.drift.from} → ${g.drift.to}`)}<span class="rfo">${t("pj.git.ahead", { n: g.drift.ahead })}</span></div>`);
-  if (g.undeployed !== undefined) git.push(`<div class="tart">${t("pj.git.undeployed", { n: g.undeployed })}</div>`);
+  // DEPLOY — only when the project configures deployedVersionUrl (the scan's probe, P6 6.3).
+  if (g.undeployed !== undefined) git.push(`<div class="tart">${tx("pj.git.undeployed", { n: g.undeployed, branch: ltr(g.deployBranch), sha: ltr(g.deployedSha) })}</div>`);
+  else if (g.deployError) git.push(`<div class="tart pjerr">${t("pj.git.deployError")}${ltr(g.deployError)}</div>`);
   if (g.error) git.push(`<div class="tart pjerr">${t("pj.git.error")}${ltr(g.error)}</div>`);
   h += pjSect("pj.sect.git", git);
   // GITHUB — the last scan's counts, when it last worked, and its error.
