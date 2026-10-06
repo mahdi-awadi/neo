@@ -138,6 +138,14 @@ export interface RunHandlers {
   /** The CLI's session state (`session_state_changed`): running / idle / requires_action. Internal
    *  plumbing for `active()` + `onSettled`; callers normally want `onSettled`. */
   onSessionState?: (state: string) => void;
+  /** Raw stream facts for the context checkpoint watch (ADR-0014): each assistant message's model +
+   *  usage, each tool call, and each tool result. Observers only — never change the run. */
+  onUsage?: (model: string | undefined, usage: Record<string, number>) => void;
+  onToolUse?: (id: string | undefined, name: string, input: unknown) => void;
+  onToolResult?: (id: string | undefined, isError: boolean) => void;
+  /** Consulted by the governor hook BEFORE the governor: a returned reason DENIES the tool call with
+   *  that reason (an armed context checkpoint, ADR-0014); undefined = no opinion. Claude only. */
+  contextSteer?: (toolName: string, input: unknown) => string | undefined;
   /** Structured diagnostic events (session lifecycle). The engine wires this to ledger.recordEvent;
    *  a bare worker leaves it unset. NEVER carries message bodies — kinds + small metadata only. */
   onEvent?: (kind: string, data?: Record<string, unknown>) => void;
@@ -371,9 +379,10 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string, source: O
   };
 }
 
-/** The SDK hook result: no opinion, or force the call into the permission flow (= canUseTool). */
+/** The SDK hook result: no opinion, force the call into the permission flow (= canUseTool), or deny
+ *  it outright (an armed context checkpoint only). */
 type GovernorHookOutput = Record<string, never> | {
-  hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision: "ask"; permissionDecisionReason: string };
+  hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision: "ask" | "deny"; permissionDecisionReason: string };
 };
 
 // The governor as an SDK PreToolUse hook. A settings allow rule (e.g. `Bash(git:*)` in a trusted
@@ -385,9 +394,19 @@ type GovernorHookOutput = Record<string, never> | {
 // in one place. It is synchronous on purpose — the SDK FAILS OPEN when a hook throws (verified), and
 // presumably on a hook timeout, so it never awaits the operator and any error also returns "ask".
 // An allow verdict returns no opinion, so settings deny rules still apply.
-export function buildGovernorHook(folder: string) {
+//
+// An armed context checkpoint (ADR-0014) speaks first, through `steer`: its reason DENIES the call,
+// telling the worker to write its handoff note and end the turn. A throwing steer has no opinion.
+export function buildGovernorHook(folder: string, steer?: RunHandlers["contextSteer"]) {
   return async (input: HookInput, _toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
+    let steered: string | undefined;
+    try {
+      steered = steer?.(input.tool_name, input.tool_input);
+    } catch {
+      steered = undefined;
+    }
+    if (steered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: steered } };
     let reason: string;
     try {
       const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder });
@@ -424,8 +443,17 @@ function sdkOptions(
     permissionMode: "default",
     canUseTool: buildCanUseTool(handlers, order.folder, order.source),
     // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls.
-    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder)] }] },
+    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, handlers.contextSteer)] }] },
   };
+}
+
+/** Run an observer callback; an observer's throw never breaks the stream. */
+function observe(fn: () => void): void {
+  try {
+    fn();
+  } catch {
+    // observers only
+  }
 }
 
 // Drain the SDK message stream into a RunResult, forwarding assistant text to the channel.
@@ -451,13 +479,17 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // The API-error fallback: the CLI gives up after its own retries and emits an assistant
         // message carrying the error kind. Remember it — the result that follows only has a status.
         if (typeof msg.error === "string") apiError = msg.error as ApiErrorKind;
-        const content = (msg.message as { content?: unknown } | undefined)?.content;
+        const message = msg.message as { content?: unknown; usage?: Record<string, number>; model?: string } | undefined;
+        if (message?.usage) observe(() => handlers.onUsage?.(message.model, message.usage!));
+        const content = message?.content;
         if (Array.isArray(content)) {
           for (const b of content as Array<{ type?: string; text?: string; name?: string; input?: unknown; id?: string }>) {
             if (b?.type === "text" && b.text?.trim()) {
               handlers.onActivity?.("replying");
               handlers.onMessage(b.text.trim(), "text");
             } else if (b?.type === "tool_use" && typeof b.name === "string") {
+              const name = b.name;
+              observe(() => handlers.onToolUse?.(b.id, name, b.input));
               const short = b.name.startsWith("mcp__") ? b.name.split("__").pop() ?? b.name : b.name;
               if (typeof b.id === "string") toolShortById.set(b.id, short);
               const detail = toolDetail(b.input);
@@ -475,6 +507,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         if (Array.isArray(content)) {
           for (const b of content as Array<{ type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
             if (b?.type !== "tool_result") continue;
+            observe(() => handlers.onToolResult?.(b.tool_use_id, b.is_error === true));
             const short = b.tool_use_id ? toolShortById.get(b.tool_use_id) : undefined;
             if (!short || RESULT_SILENT_TOOLS.has(short)) continue; // unknown or low-signal → stay quiet
             const preview = toolResultPreview(b.content);

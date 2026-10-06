@@ -1045,3 +1045,46 @@ test("runOrder also reports the window under the de-tagged key when the canonica
     ["claude-opus-5-5-20261001", 1_000_000],
   ]);
 });
+
+// ADR-0014: the checkpoint watch reads raw stream facts — each turn's usage and every tool call/result.
+test("the stream reports usage, tool uses and tool results to the raw callbacks, in order", async () => {
+  const seen: unknown[] = [];
+  const usage = { input_tokens: 5, cache_read_input_tokens: 600_000, cache_creation_input_tokens: 10, output_tokens: 3 };
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", session_id: "s", message: { model: "claude-opus-5-5", usage, content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "git commit -m x" } }] } };
+      yield { type: "user", session_id: "s", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "nothing to commit" }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(
+    order(),
+    {
+      onMessage: () => {},
+      onEscalation: async () => "deny",
+      onUsage: (model, u) => void seen.push(["usage", model, u.cache_read_input_tokens]),
+      onToolUse: (id, name, input) => void seen.push(["use", id, name, (input as { command: string }).command]),
+      onToolResult: (id, isError) => void seen.push(["result", id, isError]),
+    },
+    { query: q as never },
+  );
+  expect(seen).toEqual([
+    ["usage", "claude-opus-5-5", 600_000],
+    ["use", "t1", "Bash", "git commit -m x"],
+    ["result", "t1", true],
+  ]);
+});
+
+test("the SDK options carry the handlers' context steer into the governor hook", async () => {
+  let hooks: { PreToolUse: Array<{ hooks: Array<(i: unknown, id: string, o: { signal: AbortSignal }) => Promise<unknown>> }> } | undefined;
+  const q = (args: { options: { hooks?: typeof hooks } }) => {
+    hooks = args.options.hooks;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", contextSteer: () => "write the note" }, { query: q as never });
+  const out = (await hooks!.PreToolUse[0].hooks[0]({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/tmp/a" } }, "t", { signal: new AbortController().signal })) as {
+    hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+  };
+  expect(out.hookSpecificOutput).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "write the note" });
+});
