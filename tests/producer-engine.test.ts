@@ -140,11 +140,41 @@ test("a kind whose read fails keeps its open items (no false resolve); the other
   expect(listOpen(ledger, { now: T0 + 8 * H }).map((r) => r.kind)).toEqual(["ctx_window_suspect"]);
 });
 
+test("more waiting threads than one page: the oldest are read first and nothing is falsely resolved", () => {
+  const { ledger, deps } = setup();
+  for (let i = 0; i < 102; i++) thread(ledger, { project: "gold", folder: "/home/gold", state: "waiting", at: T0 + i });
+  const first = runEngineProducer(deps, T0 + 20 * H);
+  expect(first.opened).toHaveLength(100);
+  const keys = new Set(listOpen(ledger, { now: T0 + 20 * H }).map((r) => Number(r.key)));
+  const ids = ledger.threadsByState("waiting", { limit: 200 }).map((t) => t.id);
+  expect(keys.has(Math.min(...ids))).toBe(true); // the oldest waiting thread is in
+  expect(runEngineProducer(deps, T0 + 21 * H).resolved).toEqual([]);
+});
+
+test("project names come from the folder, the same for every kind (a session named gold-2 is still gold)", () => {
+  const { registry, deps } = setup();
+  session(registry, "/home/gold");
+  const s2 = session(registry, "/home/gold");
+  registry.noteBlocked(s2.id, { kind: "approval", label: "Bash", since: T0 });
+  expect(engineDrafts(deps, T0 + H).map((d) => d.project)).toEqual(["gold"]);
+});
+
+test("a new ctx_window_suspect item also records one event naming the model and window", () => {
+  const { ledger, registry, deps } = setup({ measure: () => ({ occupancy: 2.35, model: "claude-opus-5-5", windowTokens: 200_000 }) });
+  const s = session(registry, "/home/gold");
+  registry.setSdkSessionId(s.id, "sdk-1");
+  runEngineProducer(deps, T0);
+  runEngineProducer(deps, T0 + 60_000);
+  const ev = ledger.listEvents({ kind: "ctx_window_suspect" });
+  expect(ev).toHaveLength(1);
+  expect(ev[0]!.data).toMatchObject({ model: "claude-opus-5-5", windowTokens: 200_000, occupancy: 2.35 });
+});
+
 test("every kind the producer emits is listed in ENGINE_KINDS", () => {
   expect([...ENGINE_KINDS].sort()).toEqual(["approval_stuck", "ctx_window_suspect", "decision_stale", "queue_paused", "thread_failed", "thread_waiting"]);
 });
 
 test("readAttentionCfg: defaults, and only well-typed positive numbers are kept", () => {
-  expect(readAttentionCfg(undefined)).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72 });
+  expect(readAttentionCfg(undefined)).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30 });
   expect(readAttentionCfg({ waitingHours: 2, decisionStaleHours: "x", queuePausedHours: -1 })).toMatchObject({ waitingHours: 2, decisionStaleHours: 24, queuePausedHours: 6 });
 });

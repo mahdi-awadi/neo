@@ -82,8 +82,12 @@ async function main(): Promise<void> {
     ledger,
     registry,
     cfg: { ...(cfg.attention ?? DEFAULT_ATTENTION_CFG), approvalRemindMs: (cfg.governor ?? DEFAULT_GOVERNOR_CFG).approvalRemindMs, companyFolder: cfg.companyFolder },
-    // The same measure the gates and the console use, over the SDK-reported windows (ADR-0013).
-    measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel: contextWindows(ledger, cfg.contextPolicy.windowTokensByModel) }),
+  };
+  /** One engine-producer pass: the same context measure the gates and the console use, over the
+   *  SDK-reported windows (ADR-0013), read once per tick. */
+  const attentionEngineTick = (): void => {
+    const windowTokensByModel = contextWindows(ledger, cfg.contextPolicy.windowTokensByModel);
+    runEngineProducer({ ...engineProducerDeps, measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }) }, Date.now());
   };
   console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
   console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
@@ -329,7 +333,7 @@ async function main(): Promise<void> {
           ],
           // What the engine itself sees needs the operator (ADR-0018): stuck approvals, paused queues,
           // failed/waiting threads, stale decisions, an impossible ctx%. Ledger + registry only.
-          ["attention.engine", () => runEngineProducer(engineProducerDeps, Date.now())],
+          ["attention.engine", attentionEngineTick],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed

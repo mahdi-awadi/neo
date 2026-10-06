@@ -385,7 +385,7 @@ test("trace.showRefs defaults to auto; config.json can turn it off", () => {
 });
 
 test("attention thresholds default, and config.json overrides them (P4, ADR-0018)", () => {
-  expect(loadConfig(dir()).attention).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72 });
+  expect(loadConfig(dir()).attention).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30 });
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ attention: { waitingHours: 4 } }));
   expect(loadConfig(d).attention?.waitingHours).toBe(4);

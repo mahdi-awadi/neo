@@ -316,6 +316,9 @@ export interface Ledger {
   /** The console's thread list (spec §6): newest-updated first, filtered, keyset-paged. `before` is
    *  the previous page's `next` (opaque); `limit` is clamped to 1..PAGE_MAX. */
   listThreads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: ThreadListRow[]; next?: string };
+  /** The threads in one state, oldest-updated first, inside `since`/`until` (updated_at), no counts —
+   *  the attention producers' read. `limit` is clamped to 1..PAGE_MAX. */
+  threadsByState(state: ThreadState, f: { since?: number; until?: number; limit: number }): ThreadRow[];
   /** One thread as a list row (with its counts) — the console's live row update. */
   threadListRow(id: number): ThreadListRow | undefined;
   /** Every attention row (open or resolved) one producer has for one project. */
@@ -329,6 +332,8 @@ export interface Ledger {
   /** The projects where one producer still has a live row (open, or dismissed and still seen) — the
    *  ones its next reconcile must visit even when it reports nothing there. */
   attentionProjects(source: AttentionSource): string[];
+  /** Delete one source's rows resolved before `before` (not dismissed: those remember the operator). */
+  pruneAttention(source: AttentionSource, before: number): void;
   /** The projects that have threads and how many, most recently active first (bounded). */
   threadProjects(limit: number): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
@@ -876,6 +881,14 @@ export function openLedger(
       const last = out.at(-1);
       return { rows: out, ...(rows.length > limit && last ? { next: `${last.updatedAt}.${last.id}` } : {}) };
     },
+    threadsByState(state, f) {
+      const where = ["state = ?"];
+      const params: Array<string | number> = [state];
+      if (f.since !== undefined) (where.push("updated_at >= ?"), params.push(f.since));
+      if (f.until !== undefined) (where.push("updated_at <= ?"), params.push(f.until));
+      params.push(clampPage(f.limit));
+      return (db.query(`SELECT * FROM threads WHERE ${where.join(" AND ")} ORDER BY updated_at ASC, id ASC LIMIT ?`).all(...params) as ThreadDbRow[]).map(mapThreadRow);
+    },
     threadListRow(id) {
       const q = threadListQuery({}, undefined, 1, id);
       const row = db.query(q.sql).get(...q.params) as ThreadListDbRow | null;
@@ -915,6 +928,9 @@ export function openLedger(
       return (
         db.query(`SELECT DISTINCT project FROM attention_items WHERE source = ? AND (resolved_at IS NULL OR dismissed = 1)`).all(source) as Array<{ project: string }>
       ).map((r) => r.project);
+    },
+    pruneAttention(source, before) {
+      db.query(`DELETE FROM attention_items WHERE source = ? AND resolved_at < ? AND dismissed = 0`).run(source, before);
     },
     listOpenAttention(f) {
       const where = ["resolved_at IS NULL", "(snoozed_until IS NULL OR snoozed_until <= ?)"];

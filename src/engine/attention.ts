@@ -3,6 +3,7 @@
  *  producer's rows for one project. New → open; still there → seen again; gone → resolved; back →
  *  the same row reopens. Plain code over the ledger — no AI. */
 import type { AttentionDraft, AttentionRow, AttentionSource, Ledger } from "./ledger";
+import { faults } from "./fault";
 
 export type { AttentionDraft, AttentionRow, AttentionSeverity, AttentionSource } from "./ledger";
 
@@ -49,12 +50,14 @@ export function reconcile(
 
 /** Reconcile one producer's drafts across every project it reports, plus every project where it still
  *  has a live row — so an item whose project now reports nothing is resolved too. `"error"` changes
- *  nothing anywhere. */
+ *  nothing anywhere. Each project is its own unit (ADR-0010): one that fails is reported and the
+ *  others still reconcile. `keepResolvedMs`: this source's rows resolved longer ago are pruned. */
 export function reconcileAll(
   ledger: Ledger,
   source: AttentionSource,
   drafts: AttentionDraft[] | "error",
   now: number,
+  opts: { keepResolvedMs?: number } = {},
 ): { opened: number[]; resolved: number[] } {
   const opened: number[] = [];
   const resolved: number[] = [];
@@ -63,9 +66,15 @@ export function reconcileAll(
   for (const p of ledger.attentionProjects(source)) byProject.set(p, []);
   for (const d of drafts) byProject.set(d.project, [...(byProject.get(d.project) ?? []), d]);
   for (const [project, list] of byProject) {
-    const r = reconcile(ledger, source, project, list, now);
-    opened.push(...r.opened);
-    resolved.push(...r.resolved);
+    faults.guard(`attention.reconcile.${source}`, () => {
+      const r = reconcile(ledger, source, project, list, now);
+      opened.push(...r.opened);
+      resolved.push(...r.resolved);
+    }, { project });
+  }
+  if (opts.keepResolvedMs !== undefined) {
+    const before = now - opts.keepResolvedMs;
+    faults.guard(`attention.prune.${source}`, () => ledger.pruneAttention(source, before));
   }
   return { opened, resolved };
 }
@@ -75,7 +84,9 @@ export function snooze(ledger: Ledger, id: number, untilMs: number): void {
   ledger.updateAttention(id, { snoozedUntil: untilMs });
 }
 
-/** The operator closes an item: resolved now, and not reopened until its key disappears and comes back. */
+/** The operator closes an item: resolved now, and not reopened until its key disappears and comes back.
+ *  Dismissing an item the producer already resolved works the same way: if its key returns while
+ *  still remembered, it stays closed. */
 export function dismiss(ledger: Ledger, id: number, now: number): void {
   ledger.updateAttention(id, { resolvedAt: now, dismissed: true });
 }

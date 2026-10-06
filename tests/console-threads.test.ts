@@ -64,6 +64,17 @@ test("threadListRow: one thread with its list counts; undefined when gone", () =
   expect(l.threadListRow(id + 999)).toBeUndefined();
 });
 
+test("threadsByState: one state, oldest first, inside since/until, no counts", () => {
+  const l = openLedger(":memory:");
+  const a = thread(l, { state: "waiting", at: 100 });
+  const b = thread(l, { state: "waiting", at: 200 });
+  thread(l, { state: "done", at: 150 });
+  expect(l.threadsByState("waiting", { limit: 10 }).map((t) => t.id)).toEqual([a, b]);
+  expect(l.threadsByState("waiting", { until: 150, limit: 10 }).map((t) => t.id)).toEqual([a]);
+  expect(l.threadsByState("waiting", { since: 150, limit: 10 }).map((t) => t.id)).toEqual([b]);
+  expect(l.threadsByState("waiting", { limit: 1 }).map((t) => t.id)).toEqual([a]);
+});
+
 test("the thread-list queries use their indexes (spec §11.11)", () => {
   const l = openLedger(":memory:");
   expect(l._explain("threadsByProject")).toContain("idx_threads_project");

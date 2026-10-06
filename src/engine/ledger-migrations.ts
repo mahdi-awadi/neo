@@ -335,8 +335,9 @@ function consoleIndexes(db: Database): void {
 
 /** Version 7 — what needs the operator (spec §3.5, ADR-0018): one row per (project, kind, key) that
  *  producers reconcile, and the boot record the restart producer compares against. `dismissed`: the
- *  operator closed it; it stays closed until its key disappears and comes back. Both tables are
- *  naturally small (one row per live finding; one row per boot, pruned to the newest 100). */
+ *  operator closed it; it stays closed until its key disappears and comes back. A row is one
+ *  producer's (source's) finding. Both tables stay small: resolved items are pruned after
+ *  `attention.keepResolvedDays`; boots are pruned to the newest 100. */
 function attention(db: Database): void {
   db.run(
     `CREATE TABLE attention_items (
@@ -348,11 +349,11 @@ function attention(db: Database): void {
        first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
        resolved_at INTEGER, snoozed_until INTEGER, todo_id INTEGER,
        dismissed INTEGER NOT NULL DEFAULT 0,
-       UNIQUE (project, kind, key)
+       UNIQUE (project, source, kind, key)
      )`,
   );
   db.run(`CREATE INDEX idx_attention_open ON attention_items (resolved_at, project, severity)`);
-  db.run(`CREATE INDEX idx_attention_source ON attention_items (project, source)`);
+  db.run(`CREATE INDEX idx_attention_source ON attention_items (source, project)`);
   db.run(
     `CREATE TABLE engine_boots (
        at INTEGER PRIMARY KEY, head_sha TEXT NOT NULL, branch TEXT NOT NULL,

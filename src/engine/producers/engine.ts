@@ -4,7 +4,7 @@
  *  runs on every heartbeat tick. Plain code, no AI. `dispatch_spinning` is added with its detector
  *  (Task 4.3). */
 import { basename } from "node:path";
-import type { AttentionDraft, Ledger } from "../ledger";
+import { PAGE_MAX, type AttentionDraft, type Ledger, type ThreadRow } from "../ledger";
 import type { Registry } from "../registry";
 import type { SessionInfo } from "../../types";
 import { reconcileAll } from "../attention";
@@ -23,9 +23,11 @@ export interface AttentionCfg {
   decisionStaleHours: number;
   /** A failed thread stays an item this long after it failed. */
   failedLookbackHours: number;
+  /** Resolved items are deleted this long after they resolved (a dismissed one is kept). */
+  keepResolvedDays: number;
 }
 
-export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72 };
+export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30 };
 
 /** Config `attention` from config.json: each positive number is kept, anything else is the default. */
 export function readAttentionCfg(raw: unknown): AttentionCfg {
@@ -37,6 +39,7 @@ export function readAttentionCfg(raw: unknown): AttentionCfg {
     waitingHours: positive(r.waitingHours, d.waitingHours),
     decisionStaleHours: positive(r.decisionStaleHours, d.decisionStaleHours),
     failedLookbackHours: positive(r.failedLookbackHours, d.failedLookbackHours),
+    keepResolvedDays: positive(r.keepResolvedDays, d.keepResolvedDays),
   };
 }
 
@@ -61,11 +64,13 @@ export function engineDrafts(deps: EngineProducerDeps, now: number): AttentionDr
   return engineScan(deps, now).drafts;
 }
 
-/** The drafts, plus the kinds whose read failed. Each kind is read on its own: a failed read is
- *  reported and costs that kind only, never the others. */
+/** The drafts, plus the kinds whose read failed or was cut at a page. Each kind is read on its own: a
+ *  failed read is reported and costs that kind only, never the others. */
 function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionDraft[]; failed: Set<EngineKind> } {
   const { ledger, registry, cfg } = deps;
   const company = { project: basename(cfg.companyFolder), folder: cfg.companyFolder };
+  // One name per project for every kind: the folder's (a session may be named `gold-2`).
+  const at = (folder: string | undefined) => (folder ? { project: basename(folder), folder } : company);
   const out: AttentionDraft[] = [];
   const draft = (d: Omit<AttentionDraft, "source" | "severity"> & { severity?: AttentionDraft["severity"] }): void =>
     void out.push({ source: "engine", severity: "normal", ...d });
@@ -83,34 +88,42 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
     for (const s of sessions) {
       const b = s.blockedOn;
       if (b?.kind !== "approval" || now - b.since <= cfg.approvalRemindMs) continue;
-      draft({ project: s.name, folder: s.order.folder, kind: "approval_stuck", key: s.id, severity: "high", title: `approval pending ${age(now - b.since)}: ${b.label}` });
+      draft({ ...at(s.order.folder), kind: "approval_stuck", key: s.id, severity: "high", title: `approval pending ${age(now - b.since)}: ${b.label}` });
     }
   });
 
   kind("queue_paused", () => {
     for (const p of ledger.listTodoPaused()) {
       if (now - p.at <= cfg.queuePausedHours * HOUR) continue;
-      draft({ project: basename(p.folder), folder: p.folder, kind: "queue_paused", key: p.folder, title: `todo queue paused ${age(now - p.at)}: ${p.reason}` });
+      draft({ ...at(p.folder), kind: "queue_paused", key: p.folder, title: `todo queue paused ${age(now - p.at)}: ${p.reason}` });
     }
   });
+
+  // A read cut at one page is partial: its drafts count, and its other live rows are kept, so the
+  // threads past the page are never resolved by mistake. Oldest first: those are the ones that matter.
+  const page = (name: EngineKind, rows: ThreadRow[]): ThreadRow[] => {
+    if (rows.length <= PAGE_MAX) return rows;
+    failed.add(name);
+    return rows.slice(0, PAGE_MAX);
+  };
 
   kind("thread_failed", () => {
-    for (const t of ledger.listThreads({ state: "failed", since: now - cfg.failedLookbackHours * HOUR }, { limit: 100 }).rows) {
-      draft({ ...(t.project && t.folder ? { project: t.project, folder: t.folder } : company), kind: "thread_failed", key: String(t.id), title: `thread failed: ${t.title}` });
+    for (const t of page("thread_failed", ledger.threadsByState("failed", { since: now - cfg.failedLookbackHours * HOUR, limit: PAGE_MAX + 1 }))) {
+      draft({ ...at(t.folder), kind: "thread_failed", key: String(t.id), title: `thread failed: ${t.title}` });
     }
   });
 
+  // Waiting with no new line for waitingHours (the thread's clock is its last update).
   kind("thread_waiting", () => {
-    for (const t of ledger.listThreads({ state: "waiting" }, { limit: 100 }).rows) {
-      if (now - t.updatedAt <= cfg.waitingHours * HOUR) continue;
-      draft({ ...(t.project && t.folder ? { project: t.project, folder: t.folder } : company), kind: "thread_waiting", key: String(t.id), title: `thread waiting ${age(now - t.updatedAt)}: ${t.title}` });
+    for (const t of page("thread_waiting", ledger.threadsByState("waiting", { until: now - cfg.waitingHours * HOUR, limit: PAGE_MAX + 1 }))) {
+      draft({ ...at(t.folder), kind: "thread_waiting", key: String(t.id), title: `thread waiting ${age(now - t.updatedAt)}: ${t.title}` });
     }
   });
 
   kind("decision_stale", () => {
     for (const d of ledger.listOpenDecisions()) {
       if (d.kind !== "decision" || now - d.createdAt <= cfg.decisionStaleHours * HOUR) continue;
-      draft({ ...(d.project && d.folder ? { project: d.project, folder: d.folder } : company), kind: "decision_stale", key: d.id, title: `decision open ${age(now - d.createdAt)}: ${d.question}` });
+      draft({ ...at(d.folder), kind: "decision_stale", key: d.id, title: `decision open ${age(now - d.createdAt)}: ${d.question}` });
     }
   });
 
@@ -121,8 +134,9 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
       const m = deps.measure(s);
       if (!m || m.occupancy <= 1) continue;
       draft({
-        project: s.name, folder: s.order.folder, kind: "ctx_window_suspect", key: s.order.folder,
+        ...at(s.order.folder), kind: "ctx_window_suspect", key: s.order.folder,
         title: `ctx ${Math.round(m.occupancy * 100)}% is impossible: model ${m.model ?? "unknown"}, window ${m.windowTokens ?? "unknown"} tokens`,
+        detail: JSON.stringify({ occupancy: m.occupancy, model: m.model ?? null, windowTokens: m.windowTokens ?? null }),
       });
     }
   });
@@ -141,7 +155,14 @@ export function runEngineProducer(deps: EngineProducerDeps, now: number): { open
       }
     }
   }
-  return reconcileAll(deps.ledger, "engine", drafts, now);
+  const r = reconcileAll(deps.ledger, "engine", drafts, now, { keepResolvedMs: deps.cfg.keepResolvedDays * 24 * HOUR });
+  // An impossible ctx% is also an event (spec §8.5) — once, when its item opens.
+  for (const id of r.opened) {
+    const row = deps.ledger.attentionById(id);
+    if (row?.kind !== "ctx_window_suspect") continue;
+    deps.ledger.recordEvent("ctx_window_suspect", { folder: row.folder, data: { project: row.project, ...(JSON.parse(row.detail ?? "{}") as object) } });
+  }
+  return r;
 }
 
 /** A compact age for a title: `45m`, `7h`, `3d`. */

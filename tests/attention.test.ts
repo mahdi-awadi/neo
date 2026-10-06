@@ -96,3 +96,20 @@ test("reconcileAll: one producer's drafts across projects; a project whose items
   expect(listOpen(l, { now: 300 }).map((r) => r.source)).toEqual(["git"]);
   expect(reconcileAll(l, "engine", "error", 400)).toEqual({ opened: [], resolved: [] });
 });
+
+test("two sources may report the same kind and key for one project — each owns its own row", () => {
+  const l = openLedger(":memory:");
+  reconcile(l, "git", "gold", [draft({ kind: "dirty", key: "/home/gold" })], 100);
+  expect(() => reconcile(l, "engine", "gold", [draft({ source: "engine", kind: "dirty", key: "/home/gold" })], 100)).not.toThrow();
+  expect(listOpen(l, { now: 100 }).map((r) => r.source).sort()).toEqual(["engine", "git"]);
+});
+
+test("reconcileAll prunes resolved rows older than keepResolvedMs; dismissed and open rows stay", () => {
+  const l = openLedger(":memory:");
+  const [a, b] = reconcileAll(l, "engine", [draft({ source: "engine", key: "a" }), draft({ source: "engine", key: "b" })], 100).opened;
+  dismiss(l, b!, 150);
+  reconcileAll(l, "engine", [draft({ source: "engine", key: "b" })], 200); // a resolves at 200
+  reconcileAll(l, "engine", [draft({ source: "engine", key: "b" })], 10_000, { keepResolvedMs: 1_000 });
+  expect(l.attentionById(a!)).toBeUndefined();
+  expect(l.attentionById(b!)?.dismissed).toBe(true);
+});
