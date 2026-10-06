@@ -50,6 +50,44 @@ export function lastCommitIn(folder: string): string | undefined {
   }
 }
 
+/** One bounded, read-only git query in `folder`; undefined on any failure (not a repo, git missing,
+ *  timeout). */
+function git(folder: string, args: string[]): string | undefined {
+  try {
+    const r = spawnSync("git", ["-C", folder, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS });
+    return r.status === 0 ? r.stdout : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The handoff note is written FOR a reset, so it never counts as uncommitted work (ADR-0014). */
+const HANDOFF_NOTE = "HANDOFF.md";
+
+/** Paths with uncommitted changes (modified, staged or untracked), relative to the repo root, minus
+ *  this folder's own `HANDOFF.md` (the folder may be a sub-folder of its repo). `[]` = clean;
+ *  undefined = not a git repo or git failed. */
+export function uncommittedIn(folder: string): string[] | undefined {
+  const out = git(folder, ["status", "--porcelain", "--untracked-files=all"]);
+  if (out === undefined) return undefined;
+  const note = (git(folder, ["rev-parse", "--show-prefix"])?.trim() ?? "") + HANDOFF_NOTE;
+  return out
+    .split("\n")
+    .filter((l) => l.length > 3)
+    .map((l) => l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop()!)
+    .filter((p) => p !== note);
+}
+
+/** Branch, HEAD (`<sha> <subject>`) and uncommitted paths, read from git — the facts a handoff note
+ *  must not take from the worker's word. `{}` outside a repo. */
+export function gitFacts(folder: string): { branch?: string; head?: string; uncommitted?: string[] } {
+  const uncommitted = uncommittedIn(folder);
+  if (uncommitted === undefined) return {};
+  const branch = git(folder, ["rev-parse", "--abbrev-ref", "HEAD"])?.trim() || undefined;
+  const head = git(folder, ["log", "-1", "--format=%h %s"])?.trim() || undefined;
+  return { branch, head, uncommitted };
+}
+
 function oneLine(text: string, max = NOTE_MAX): string {
   const first = text.split("\n").find((l) => l.trim())?.trim() ?? "";
   return first.length > max ? `${first.slice(0, max - 1)}…` : first;
