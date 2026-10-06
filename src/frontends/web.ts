@@ -21,7 +21,7 @@ import { DEFAULT_WEB_FEED_WINDOW } from "../config";
 import { isPlanAction } from "../engine/plans";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { createConsoleI18n, isLang, type Lang } from "./web/i18n";
+import { createConsoleI18n, isLang, LANGS, type Lang } from "./web/i18n";
 import { BRAND, ICONS } from "./web/brand";
 import type { ThreadFilter, ThreadOrigin, ThreadState } from "../engine/ledger";
 
@@ -129,7 +129,9 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       // Only the listed files: the name is looked up, never joined into a path from the request.
       const icon = ICONS.find((i) => i.file === path.slice("/icons/".length));
       if (!icon) return new Response("not found", { status: 404 });
-      return new Response(Bun.file(join(WEB_DIR, "icons", icon.file)), { headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" } });
+      return new Response(Bun.file(join(WEB_DIR, "icons", icon.file)), {
+        headers: { "content-type": "image/png", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" },
+      });
     }
 
     // --- machine-to-machine: POST /agent/ingress (bearer auth, no session cookie) ---
@@ -507,8 +509,19 @@ export function consolePage(opts: { feedWindow?: number; lang?: Lang } = {}): st
 /** The offline page the service worker shows when a navigation fails (localized, public). */
 export function offlinePage(lang: Lang = "en"): string {
   const i18n = createConsoleI18n(lang);
-  return fill(OFFLINE_HTML, { ...THEME_SLOTS, LANG: lang, DIR: i18n.dir(lang), TITLE: escHtml(i18n.t("offline.title")), BODY: escHtml(i18n.t("offline.body")), RETRY: escHtml(i18n.t("offline.retry")) });
+  return fill(OFFLINE_HTML, { ...THEME_SLOTS, LANG: lang, DIR: i18n.dir(lang), TITLE: escHtml(i18n.t("offline.title")), BODY: escHtml(i18n.t("offline.body")), RETRY: escHtml(i18n.t("offline.retry")), STRINGS: OFFLINE_STRINGS });
 }
+
+/** Every language's offline strings as JSON for the page's inline script: the cached page then follows
+ *  the current language cookie on the client. `<` is escaped so the JSON can never close its <script>. */
+const OFFLINE_STRINGS = JSON.stringify(
+  Object.fromEntries(
+    LANGS.map((l) => {
+      const i = createConsoleI18n(l);
+      return [l, { dir: i.dir(l), title: i.t("offline.title"), body: i.t("offline.body"), retry: i.t("offline.retry") }];
+    }),
+  ),
+).replace(/</g, "\\u003c");
 
 /** The web app manifest (AC11): strings from the catalogue, colours from brand.ts, icons from ICONS. */
 function manifest(lang: Lang) {

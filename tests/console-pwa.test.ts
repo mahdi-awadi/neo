@@ -86,6 +86,7 @@ test("/icons serves only the allowlisted PNGs (AC13): no traversal, unknown name
     expect(res.status, i.file).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect(res.headers.get("cache-control")).toBe("public, max-age=86400");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     const bytes = new Uint8Array(await res.arrayBuffer());
     expect([...bytes.slice(1, 4)].map((c) => String.fromCharCode(c)).join("")).toBe("PNG");
     // The PNG header's width/height match the declared size.
@@ -117,6 +118,41 @@ test("/offline.html is public, no-cache, localized; Arabic is rtl", async () => 
   expect(arHtml).not.toMatch(/%[A-Z_]+%/);
 });
 
+/** Run the offline page's inline language script against a fake document (the page the worker cached). */
+function runOfflineScript(html: string, cookie: string) {
+  const strings = html.match(/<script id="offline-strings" type="application\/json">([\s\S]*?)<\/script>/)![1]!;
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]!;
+  const lang0 = html.match(/<html lang="([a-z]+)" dir="([a-z]+)"/)!;
+  const els: Record<string, { textContent: string }> = { "offline-strings": { textContent: strings }, "o-title": { textContent: "" }, "o-body": { textContent: "" }, "o-retry": { textContent: "" } };
+  const doc = { cookie, title: "", documentElement: { lang: lang0[1]!, dir: lang0[2]! }, getElementById: (id: string) => els[id] ?? null };
+  new Function("document", script)(doc);
+  return { lang: doc.documentElement.lang, dir: doc.documentElement.dir, title: doc.title, h: els["o-title"]!.textContent, body: els["o-body"]!.textContent, retry: els["o-retry"]!.textContent };
+}
+
+test("the cached offline page follows the CURRENT language cookie on the client (spec §4: the language changes)", async () => {
+  const html = await (await get(app(), "/offline.html")).text(); // cached while the operator used English
+  const ar = createConsoleI18n("ar");
+  // Both catalogues' strings are embedded; "<" can never close the JSON script early.
+  expect(html).toContain(JSON.stringify(ar.t("offline.body")).slice(1, -1));
+  expect(html.match(/<script id="offline-strings" type="application\/json">([\s\S]*?)<\/script>/)![1]).not.toContain("<");
+  expect(runOfflineScript(html, "neo_session=x; neo_lang=ar")).toEqual({ lang: "ar", dir: "rtl", title: ar.t("offline.title"), h: ar.t("offline.title"), body: ar.t("offline.body"), retry: ar.t("offline.retry") });
+  // No cookie or an unknown language: the page keeps what the server rendered.
+  expect(runOfflineScript(html, "")).toMatchObject({ lang: "en", dir: "ltr", h: "" });
+  expect(runOfflineScript(html, "neo_lang=xx")).toMatchObject({ lang: "en", dir: "ltr", h: "" });
+  const en = createConsoleI18n("en");
+  const arPage = await (await get(app(), "/offline.html", "neo_lang=ar")).text();
+  expect(runOfflineScript(arPage, "neo_lang=en")).toEqual({ lang: "en", dir: "ltr", title: en.t("offline.title"), h: en.t("offline.title"), body: en.t("offline.body"), retry: en.t("offline.retry") });
+});
+
+test("the offline page has the light theme: its ink is the brand's light ink", () => {
+  const css = readFileSync(join(WEB, "offline.html"), "utf8");
+  const light = css.match(/@media \(prefers-color-scheme:light\)\{:root\{([^}]*)\}\}/);
+  expect(light).not.toBeNull();
+  expect(light![1]!.match(/--ink:(#[0-9a-f]{6})/)![1]).toBe(BRAND.inkLight);
+  for (const tok of ["--fg", "--muted", "--accent", "--border", "--accent-fill", "--on-accent"]) expect(light![1]).toContain(`${tok}:`);
+  expect(css).toContain("color-scheme:dark light");
+});
+
 test("shellRule (AC14): shell → cache; navigations → network then offline; everything else untouched", () => {
   const r = (url: string, method = "GET", mode?: string) => shellRule({ url: url.startsWith("http") ? url : ORIGIN + url, method, mode }, ORIGIN);
   for (const s of SHELL) expect(r(s), s).toBe("cache");
@@ -138,16 +174,14 @@ test("shellRule (AC14): shell → cache; navigations → network then offline; e
 test("the cache name carries a version (AC15); old Neo caches share its prefix", () => {
   expect(CACHE.startsWith(CACHE_PREFIX)).toBe(true);
   expect(CACHE).toMatch(/^neo-shell-v\d+$/);
-  const sw = readFileSync(join(WEB, "sw.ts"), "utf8");
-  // activate deletes the other neo-shell-* caches and claims the open pages; install precaches the shell fresh.
-  expect(sw).toMatch(/startsWith\(CACHE_PREFIX\)\s*&&\s*\w+\s*!==\s*CACHE/);
-  expect(sw).toContain("clients.claim()");
-  expect(sw).toContain('cache: "reload"');
+  // The entry is a thin classic script: the behaviour lives in sw-worker.ts (tests/console-sw.test.ts).
+  expect(readFileSync(join(WEB, "sw.ts"), "utf8")).toContain("attachWorker(");
 });
 
 test("both pages link the manifest, the Apple touch icon and theme colours for both schemes (AC16)", () => {
   for (const html of [consolePage(), loginPage("neo_bot")]) {
-    expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest">');
+    // With credentials, so the manifest request carries the neo_lang cookie (its language).
+    expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">');
     expect(html).toContain('<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">');
     expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: dark)" content="${BRAND.inkDark}">`);
     expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: light)" content="${BRAND.inkLight}">`);
