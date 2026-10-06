@@ -20,7 +20,13 @@ export interface ProjectCfg {
   issueLabel?: string;
   /** Kinds never raised for this project. */
   ignoreKinds?: string[];
+  /** A URL whose JSON names the deployed commit (P6: "undeployed" is shown only when this is set). */
   deployedVersionUrl?: string;
+  /** The dotted JSON path to the sha in that answer (e.g. "version"). */
+  deployedVersionPath?: string;
+  /** The branch that is deployed (its commits after the deployed sha are "undeployed"). */
+  deployBranch?: string;
+  /** Probed for the dashboard's health: its last probe failing makes the project "down". */
   healthUrl?: string;
 }
 
@@ -184,6 +190,8 @@ export function readProjectsCfg(raw: unknown): Record<string, ProjectCfg> {
       ...(str(r.issueLabel) ? { issueLabel: str(r.issueLabel) } : {}),
       ...(strings(r.ignoreKinds) ? { ignoreKinds: strings(r.ignoreKinds) } : {}),
       ...(str(r.deployedVersionUrl) ? { deployedVersionUrl: str(r.deployedVersionUrl) } : {}),
+      ...(str(r.deployedVersionPath) ? { deployedVersionPath: str(r.deployedVersionPath) } : {}),
+      ...(str(r.deployBranch) ? { deployBranch: str(r.deployBranch) } : {}),
       ...(str(r.healthUrl) ? { healthUrl: str(r.healthUrl) } : {}),
     };
   }

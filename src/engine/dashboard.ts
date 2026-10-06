@@ -82,6 +82,27 @@ export interface DashTodo {
   paused?: string;
 }
 
+/** Running + queued todos (all projects, or one folder's): running first, then each queue in order;
+ *  `position` is the 1-based queue position, 0 for a running todo. The one todo mapping — the console
+ *  and the project dashboard both read it. */
+export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
+  const nextPos = new Map<string, number>();
+  return ledger.listTodos({ ...(folder !== undefined ? { folder } : {}), statuses: ["running", "queued"] }).map((t) => {
+    const position = t.status === "queued" ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
+    if (t.status === "queued") nextPos.set(t.folder, position);
+    return {
+      id: t.id,
+      project: t.project,
+      status: t.status as DashTodo["status"],
+      position,
+      title: todoTitle(t.brief),
+      createdAt: t.createdAt,
+      startedAt: t.startedAt,
+      paused: ledger.todoPaused(t.folder)?.reason,
+    };
+  });
+}
+
 /** Folders directly under `root` that are git repos — the New-project picker's options. */
 export function listRepos(root = "/home"): string[] {
   try {
@@ -167,21 +188,7 @@ export function dashboardSnapshot(opts: {
     task: o.task,
     status: opts.ledger.getOutcome(o.id)?.status ?? "pending",
   }));
-  const nextPos = new Map<string, number>();
-  const todos: DashTodo[] = opts.ledger.listTodos({ statuses: ["running", "queued"] }).map((t) => {
-    const position = t.status === "queued" ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
-    if (t.status === "queued") nextPos.set(t.folder, position);
-    return {
-      id: t.id,
-      project: t.project,
-      status: t.status as DashTodo["status"],
-      position,
-      title: todoTitle(t.brief),
-      createdAt: t.createdAt,
-      startedAt: t.startedAt,
-      paused: opts.ledger.todoPaused(t.folder)?.reason,
-    };
-  });
+  const todos = activeTodos(opts.ledger);
   const contextEvents: DashContextEvent[] = opts.ledger.listContextEvents({ limit: CONTEXT_EVENTS_SHOWN }).map((e) => ({
     project: basename(e.folder),
     folder: e.folder,
