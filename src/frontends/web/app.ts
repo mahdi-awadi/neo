@@ -68,6 +68,7 @@ function applyStatic(): void {
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => (el.textContent = tx(el.dataset.i18n!)));
   document.querySelectorAll<HTMLInputElement>("[data-i18n-placeholder]").forEach((el) => (el.placeholder = tx(el.dataset.i18nPlaceholder!)));
   document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((el) => (el.title = tx(el.dataset.i18nTitle!)));
+  document.querySelectorAll<HTMLElement>("[data-i18n-aria]").forEach((el) => el.setAttribute("aria-label", tx(el.dataset.i18nAria!)));
 }
 
 // One /api/state request at a time: a burst of 'projects' events coalesces into one follow-up load.
@@ -198,6 +199,7 @@ function renderProjects(): void {
     const busy = p.state === "working" || p.state === "quiet";
     d.innerHTML = `<span class="dot ${p.state === "wedged" ? "" : busy ? "running" : "idle"}"></span><div class="meta"><div class="nm">${esc(p.name)}${ctxChip(p)}</div><div class="fo">${ltr(p.folder)} · ${esc(p.line || p.state)}</div></div>`;
     d.onclick = () => {
+      closeDrawer(false);
       setFilter(p.name);
       tab("activity");
       void post("/select", { id: p.id }).then(loadState);
@@ -224,6 +226,7 @@ function openProject(): void {
     alert(tx("newProject.missing"));
     return;
   }
+  closeDrawer(false);
   void post("/api/open", { folder, task }).then(() => {
     ($("task") as HTMLTextAreaElement).value = "";
     tab("activity");
@@ -521,6 +524,64 @@ function deleteInbox(id: string): void {
   void fetch("/api/inbox/" + encodeURIComponent(id), { method: "DELETE" }).then(loadInbox).catch(loadInbox);
 }
 
+// ── Phone and tablet layout (spec 2026-10-07, AC2–AC5) ──────────────────────────────────────────
+const MEDIUM = matchMedia("(max-width:1024px)");
+const NARROW = matchMedia("(max-width:768px)");
+function reducedMotion(): boolean {
+  return matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+/** The sidebar as a drawer on medium and narrow screens: closed it is off-canvas and inert (no focus,
+ *  no screen reader); the menu button's aria-expanded and label follow the state. */
+function setDrawer(open: boolean, moveFocus: boolean): void {
+  const app = document.querySelector(".app")!;
+  const was = app.classList.contains("drawer-open");
+  app.classList.toggle("drawer-open", open);
+  const menu = $("menu");
+  menu.setAttribute("aria-expanded", String(open));
+  menu.setAttribute("aria-label", tx(open ? "nav.close" : "nav.menu"));
+  menu.title = tx(open ? "nav.close" : "nav.menu");
+  ($("side") as HTMLElement & { inert: boolean }).inert = MEDIUM.matches && !open;
+  if (!moveFocus || was === open) return;
+  if (open) $("side").querySelector<HTMLElement>("select,textarea,button,[tabindex]")?.focus();
+  else $("menu").focus();
+}
+function closeDrawer(moveFocus = true): void {
+  setDrawer(false, moveFocus);
+}
+/** Narrow master–detail (AC4): opening a thread or a project shows its pane full width. On a narrow
+ *  screen the step is a history entry, so the browser's back (Android's back button) returns to the list. */
+function enterDetail(view: "vthreads" | "vprojects"): void {
+  const v = $(view);
+  if (v.classList.contains("detail")) return;
+  v.classList.add("detail");
+  if (NARROW.matches) history.pushState({ detail: view }, "");
+}
+function leaveDetail(): void {
+  ["vthreads", "vprojects"].forEach((id) => $(id).classList.remove("detail"));
+}
+function back(): void {
+  if ((history.state as Any)?.detail) history.back(); // popstate leaves the detail view
+  else leaveDetail();
+}
+/** The app height follows the visual viewport, so the composer stays above the on-screen keyboard (AC5).
+ *  At most one write per animation frame; a browser without visualViewport keeps 100dvh. */
+function fitViewport(): void {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  let queued = false;
+  const fit = (): void => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
+    });
+  };
+  vv.addEventListener("resize", fit);
+  vv.addEventListener("scroll", fit);
+  fit();
+}
+
 const VIEWS = ["activity", "threads", "projects", "todos", "loops", "usage", "recent", "inbox"];
 function tab(name: string): void {
   VIEWS.forEach((n) => {
@@ -528,6 +589,8 @@ function tab(name: string): void {
     const b = document.querySelector(`.tab[data-v="${n}"]`);
     if (b) b.classList.toggle("on", n === name);
   });
+  // On a narrow screen the tab row scrolls sideways: keep the active tab in view (AC3).
+  document.querySelector(`.tab[data-v="${name}"]`)?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: reducedMotion() ? "instant" : "smooth" });
   if (name === "inbox") void loadInbox();
   if (name === "threads") openThreads();
   if (name === "projects") loadProjects();
@@ -1017,6 +1080,7 @@ function openFromHash(): void {
     return; // a malformed link (`#project=%E0`) is ignored — it must never stop the console starting
   }
   tab("projects");
+  enterDetail("vprojects");
   showProject(name);
 }
 function planAction(id: number, action: string, version: number): void {
@@ -1058,19 +1122,36 @@ document.addEventListener("click", (ev) => {
     case "threads-older":
       return loadThreads(false);
     case "thread-open":
+      enterDetail("vthreads");
       return openThread(Number(id));
     case "thread-older":
       return olderMessages();
     case "plan":
       return planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version));
     case "project-open":
+      enterDetail("vprojects");
       return showProject(el.dataset.project ?? "");
     case "project-thread":
       tab("threads");
+      enterDetail("vthreads");
       return openThread(Number(id));
+    case "back":
+      return back();
   }
 });
 $("open-project").onclick = openProject;
+$("menu").onclick = () => setDrawer(!document.querySelector(".app")!.classList.contains("drawer-open"), true);
+$("scrim").onclick = () => closeDrawer();
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && document.querySelector(".app")!.classList.contains("drawer-open")) closeDrawer();
+});
+// Back to a wide screen: the sidebar is a column again, never a stuck-open drawer.
+MEDIUM.addEventListener("change", () => setDrawer(false, false));
+window.addEventListener("popstate", () => {
+  if (!(history.state as Any)?.detail) leaveDetail();
+});
+setDrawer(false, false);
+fitViewport();
 $("attach").onclick = () => $("file").click();
 $("file").onchange = uploadFile;
 $("lang").onclick = () => {

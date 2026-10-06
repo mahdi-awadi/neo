@@ -51,7 +51,7 @@ test("catalogue parity: every key in en is in ar and the reverse, none empty, sa
 test("every key the module and the page shell use exists in the catalogue", () => {
   const used = new Set<string>();
   for (const m of APP.matchAll(/\btx?\("([a-zA-Z0-9.-]+)"/g)) used.add(m[1]!);
-  for (const m of SHELL.matchAll(/data-i18n(?:-placeholder|-title)?="([a-zA-Z0-9.-]+)"/g)) used.add(m[1]!);
+  for (const m of SHELL.matchAll(/data-i18n(?:-placeholder|-title|-aria)?="([a-zA-Z0-9.-]+)"/g)) used.add(m[1]!);
   expect(used.size).toBeGreaterThan(60);
   for (const k of used) expect(EN.has(k), k).toBe(true);
   // Keys built from data (`threads.state.${...}`) are covered by their families existing in full.

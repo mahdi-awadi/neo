@@ -329,5 +329,11 @@
     "title": "You are offline",
     "body": "Neo needs a connection to show live work. Check your network, then try again.",
     "retry": "Try again"
+  },
+  "nav": {
+    "menu": "Menu",
+    "close": "Close menu",
+    "back": "Back",
+    "views": "Views"
   }
 }
