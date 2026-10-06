@@ -23,6 +23,6 @@ test("the same (tool, input) toolLoopLimit times in one turn → once; a turn en
   const w = createSpinWatch({ digests: 3, toolLoopLimit: 3 });
   expect([w.tool("Bash", "h1"), w.tool("Bash", "h1"), w.tool("Bash", "h1"), w.tool("Bash", "h1")]).toEqual([false, false, true, false]);
   w.turnEnd();
-  expect([w.tool("Bash", "h1"), w.tool("Bash", "h1")]).toEqual([false, false]);
+  expect([w.tool("Bash", "h1"), w.tool("Bash", "h1"), w.tool("Bash", "h1")]).toEqual([false, false, true]); // counted afresh
   expect([w.tool("Bash", "h2"), w.tool("Read", "h2"), w.tool("Bash", "h2")]).toEqual([false, false, false]);
 });

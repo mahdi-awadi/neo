@@ -581,6 +581,7 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     dispatchSpinDigests: deps.cfg.dispatchSpinDigests,
     dispatchSpinPolicy: deps.cfg.dispatchSpinPolicy,
     toolLoopLimit: deps.cfg.toolLoopLimit,
+    toolLoopExempt: deps.cfg.toolLoopExempt,
     apiRetryLadderMs: deps.cfg.apiRetryLadderMs,
     apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac,
     contextPolicy: deps.cfg.contextPolicy,

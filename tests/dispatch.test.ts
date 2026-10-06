@@ -1617,7 +1617,8 @@ test("the same digest fingerprint dispatchSpinDigests times → one alert to ope
     lastCommit: () => "8694a46 feat: task 5",
   });
   while (!ctl.h) await settle(2); // the run starts in the background
-  const beat = setInterval(() => ctl.h!.onActivity!("Bash: bun test (run 3)"), 4);
+  let n = 0;
+  const beat = setInterval(() => (ctl.h!.onToolUse!(`b${n}`, "Bash", { command: `bun test --run ${n++}` }), ctl.h!.onActivity!("Bash: bun test (run 3)")), 4);
   await settle(200);
   clearInterval(beat);
   const alerts = replies.filter((r) => r.text.includes("no new commit or note"));
@@ -1628,6 +1629,31 @@ test("the same digest fingerprint dispatchSpinDigests times → one alert to ope
   const s = d.registry.list().find((x) => x.order.folder === join(root, "eticket-v3"))!;
   expect(s.spinning?.label).toContain("Bash: bun test");
   expect(ctl.followUps.some((f) => f.includes("stop working now"))).toBe(false); // policy "alert": no wrap-up
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
+test("a worker waiting on the operator (or an API retry) is never counted as spinning", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 20, dispatchStallMs: 60_000, dispatchSpinDigests: 2 }, 1, {
+    start: start as never,
+    root,
+    lastCommit: () => "8694a46 feat: task 5",
+  });
+  while (!ctl.h) await settle(2);
+  ctl.h.onActivity!("Bash: rm -rf build");
+  const s = d.registry.list().find((x) => x.order.folder === join(root, "eticket-v3"))!;
+  d.registry.noteBlocked(s.id, { kind: "approval", label: "Bash: rm -rf build", since: Date.now() });
+  await settle(200); // ~10 digest ticks while blocked
+  // A long single tool call sends only heartbeats: busy, not looping.
+  d.registry.noteBlocked(s.id, undefined);
+  const beat = setInterval(() => ctl.h!.onActivity!("Bash: docker build"), 4);
+  await settle(150);
+  clearInterval(beat);
+  expect(replies.some((r) => r.text.includes("no new commit or note"))).toBe(false);
+  expect(d.ledger.listEvents({ kind: "dispatch_spinning" })).toHaveLength(0);
   ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
 });
 
@@ -1643,13 +1669,15 @@ test("dispatchSpinPolicy wrapup also sends the wrap-up follow-up; a new commit c
     lastCommit: () => head,
   });
   while (!ctl.h) await settle(2); // the run starts in the background
-  const beat = setInterval(() => ctl.h!.onActivity!("Bash: bun test"), 4);
+  let n = 0;
+  const beat = setInterval(() => (ctl.h!.onToolUse!(`b${n}`, "Bash", { command: `bun test --run ${n++}` }), ctl.h!.onActivity!("Bash: bun test")), 4);
   await settle(120);
   expect(ctl.followUps.filter((f) => f.includes("Commit any green work"))).toHaveLength(1);
   const s = () => d.registry.list().find((x) => x.order.folder === join(root, "eticket-v3"))!;
   expect(s().spinning).toBeDefined();
   clearInterval(beat);
   head = "9f1c2d0 feat: task 6";
+  ctl.h!.onToolUse!("x", "Bash", { command: "bun test" });
   ctl.h!.onActivity!("Bash: bun test"); // one digest with the new HEAD, then quiet
   await settle(60);
   expect(s().spinning).toBeUndefined();
@@ -1664,11 +1692,20 @@ test("the same tool call toolLoopLimit times in one turn → the same alert once
   await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 0, dispatchStallMs: 60_000, toolLoopLimit: 3 }, 1, { start: start as never, root });
   while (!ctl.h) await settle(2); // the run starts in the background
   for (let i = 0; i < 4; i++) ctl.h!.onToolUse!(`t${i}`, "Bash", { command: "bun test" });
+  const s = () => d.registry.list().find((x) => x.order.folder === join(root, "eticket-v3"))!;
+  expect(s().spinning).toBeDefined();
   ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "", costUsd: 0 });
+  expect(s().spinning).toBeUndefined(); // a tool-loop mark ends with its turn
   for (let i = 0; i < 2; i++) ctl.h!.onToolUse!(`u${i}`, "Bash", { command: "bun test" });
-  const alerts = replies.filter((r) => r.text.includes("same Bash call"));
-  expect(alerts).toHaveLength(1);
-  expect(alerts[0]!.priority).toBe("alert");
+  const alerts = () => replies.filter((r) => r.text.includes("same Bash call"));
+  expect(alerts()).toHaveLength(1);
+  expect(alerts()[0]!.priority).toBe("alert");
+  expect(alerts()[0]!.text).toContain("3 times");
+  ctl.h!.onToolUse!("u2", "Bash", { command: "bun test" }); // the limit again in the new turn: a new alert
+  expect(alerts()).toHaveLength(2);
+  // Polling a background job with the same input is waiting, not looping.
+  for (let i = 0; i < 5; i++) ctl.h!.onToolUse!(`p${i}`, "BashOutput", { bash_id: "b1" });
+  expect(replies.some((r) => r.text.includes("same BashOutput call"))).toBe(false);
   expect(d.ledger.listEvents({ kind: "dispatch_spinning" })[0]?.data).toMatchObject({ reason: "tool_loop", tool: "Bash" });
   ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
 });

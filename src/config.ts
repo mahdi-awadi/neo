@@ -13,7 +13,7 @@ import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
-import { DISPATCH_SPIN_DIGESTS_DEFAULT, TOOL_LOOP_LIMIT_DEFAULT } from "./engine/dispatch-report";
+import { DISPATCH_SPIN_DIGESTS_DEFAULT, TOOL_LOOP_EXEMPT_DEFAULT, TOOL_LOOP_LIMIT_DEFAULT } from "./engine/dispatch-report";
 import { isLang, type Lang } from "./frontends/web/langs";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
@@ -163,6 +163,9 @@ export interface NeoConfig {
   /** The same tool call (tool + input) this many times in a row inside one turn → the spin alert.
    *  Default 8. */
   toolLoopLimit?: number;
+  /** Tools never counted by the tool-loop guard (polling a background job is waiting). Default
+   *  ["BashOutput", "TaskOutput"]. */
+  toolLoopExempt?: string[];
   /** At boot, a dispatch started within this window (ms) that never recorded its end was cut short
    *  by the restart/crash: its end is recorded and the dispatcher gets a report with its stop
    *  point. Default 24 h. */
@@ -496,6 +499,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     dispatchSpinDigests: wholeAtLeast(fileCfg.dispatchSpinDigests, 2, DISPATCH_SPIN_DIGESTS_DEFAULT),
     dispatchSpinPolicy: fileCfg.dispatchSpinPolicy === "wrapup" ? "wrapup" : "alert",
     toolLoopLimit: wholeAtLeast(fileCfg.toolLoopLimit, 2, TOOL_LOOP_LIMIT_DEFAULT),
+    toolLoopExempt: Array.isArray(fileCfg.toolLoopExempt) && fileCfg.toolLoopExempt.every((x) => typeof x === "string") ? fileCfg.toolLoopExempt : TOOL_LOOP_EXEMPT_DEFAULT,
     dispatchProgressMs: fileCfg.dispatchProgressMs ?? DEFAULTS.dispatchProgressMs,
     dispatchRecoverWindowMs: fileCfg.dispatchRecoverWindowMs ?? DEFAULTS.dispatchRecoverWindowMs,
     todoOnFailure: TODO_FAILURE_POLICIES.includes(fileCfg.todoOnFailure as TodoFailurePolicy)

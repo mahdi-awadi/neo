@@ -217,6 +217,8 @@ export function recoverInterruptedDispatches(
 export const DISPATCH_SPIN_DIGESTS_DEFAULT = 3;
 /** The same tool call this many times in a row in one turn counts as a loop (spec §8.1). */
 export const TOOL_LOOP_LIMIT_DEFAULT = 8;
+/** Tools whose repeats are waiting, not looping: polling a background shell or task. */
+export const TOOL_LOOP_EXEMPT_DEFAULT = ["BashOutput", "TaskOutput"];
 
 /** A digest's fingerprint (spec §8.1): the activity label with absolute paths, hex runs and numbers
  *  replaced by `#`, the latest note and the HEAD line. Two equal fingerprints: the worker was

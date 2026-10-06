@@ -31,6 +31,7 @@ import {
   createSpinWatch,
   DISPATCH_SPIN_DIGESTS_DEFAULT,
   TOOL_LOOP_LIMIT_DEFAULT,
+  TOOL_LOOP_EXEMPT_DEFAULT,
   type DispatcherLink,
   type StopPoint,
 } from "./dispatch-report";
@@ -153,6 +154,9 @@ export interface DispatchDeps {
   /** The same (tool, input) this many times in a row inside one turn → the same alert. Default
    *  TOOL_LOOP_LIMIT_DEFAULT. */
   toolLoopLimit?: number;
+  /** Tools whose repeats are waiting, not looping (polling a background job). Default
+   *  TOOL_LOOP_EXEMPT_DEFAULT. */
+  toolLoopExempt?: string[];
   /** How a dispatch reaches its dispatcher (the company). The pipeline wires one that can also wake
    *  an idle company; absent → `liveCompanyLink` (follow-up into a live company only). */
   dispatcher?: DispatcherLink;
@@ -766,12 +770,25 @@ export async function dispatchToProject(
     let lastDigestAt = startedAt;
     const stopPoint = (): StopPoint => ({ lastCommit: readCommit(folder), lastNote, lastActivity });
     // Spinning (spec §8.1): active, but nothing changes — counted, never judged by AI.
-    const spinDigests = Math.max(1, deps.dispatchSpinDigests ?? DISPATCH_SPIN_DIGESTS_DEFAULT);
-    const spin = createSpinWatch({ digests: spinDigests, toolLoopLimit: Math.max(2, deps.toolLoopLimit ?? TOOL_LOOP_LIMIT_DEFAULT) });
-    const clearSpin = (): void => noteRegistry(() => deps.registry.noteSpinning(session.id, undefined));
+    const spinDigests = Math.max(2, deps.dispatchSpinDigests ?? DISPATCH_SPIN_DIGESTS_DEFAULT);
+    const loopLimit = Math.max(2, deps.toolLoopLimit ?? TOOL_LOOP_LIMIT_DEFAULT);
+    const loopExempt = new Set(deps.toolLoopExempt ?? TOOL_LOOP_EXEMPT_DEFAULT);
+    const spin = createSpinWatch({ digests: spinDigests, toolLoopLimit: loopLimit });
+    // A digest counts toward a spin only when the worker did real work since the last one (a tool
+    // call or a message) — heartbeats of one long tool call, or a wait on the operator or an API
+    // retry, refresh the activity clock but are not the worker repeating itself.
+    let workSinceDigest = false;
+    let spinMark: "digest" | "tool_loop" | undefined;
+    const clearSpin = (): void => {
+      spinMark = undefined;
+      noteRegistry(() => deps.registry.noteSpinning(session.id, undefined));
+    };
     /** One spin: an event, the registry mark (the engine producer raises the attention item), one
      *  alert to the operator and the dispatcher, and with policy "wrapup" the stall's wrap-up. */
-    const spinning = (text: string, label: string, data: Record<string, unknown>): void => {
+    const spinning = (text: string, label: string, data: { reason: "digest" | "tool_loop" } & Record<string, unknown>): void =>
+      void faults.guard("dispatch.spinning", () => spinAlert(text, label, data), { folder });
+    const spinAlert = (text: string, label: string, data: { reason: "digest" | "tool_loop" } & Record<string, unknown>): void => {
+      spinMark = data.reason;
       event("dispatch_spinning", { orderId: order.id, folder, data: { project: name, label, ...data } });
       noteRegistry(() => deps.registry.noteSpinning(session.id, { label, since: now() }));
       void say(`🌀 ${text}`, "alert", { cause: liveCause() });
@@ -792,6 +809,7 @@ export async function dispatchToProject(
       {
         onMessage: (t, kind) => {
           lastActivityAt = now();
+          workSinceDigest = true;
           if (kind !== "tool") lastNote = t;
           noteRegistry(() => deps.registry.noteOutput(session.id, now()));
           void say(t, undefined, { cause: liveCause() });
@@ -860,8 +878,10 @@ export async function dispatchToProject(
           probe?.onUsage();
         },
         onToolUse: (id, toolName, input) => {
-          if (spin.tool(toolName, createHash("sha256").update(JSON.stringify(input ?? null)).digest("hex"))) {
-            spinning(`${name} ran the same ${toolName} call ${deps.toolLoopLimit ?? TOOL_LOOP_LIMIT_DEFAULT} times in a row in one turn`, toolName, { reason: "tool_loop", tool: toolName });
+          workSinceDigest = true;
+          // Polling a background job with the same input is waiting, not looping.
+          if (!loopExempt.has(toolName) && spin.tool(toolName, createHash("sha256").update(JSON.stringify(input ?? null)).digest("hex"))) {
+            spinning(`${name} ran the same ${toolName} call ${loopLimit} times in a row in one turn`, toolName, { reason: "tool_loop", tool: toolName });
           }
           watch?.onToolUse(id, toolName, input);
           probe?.onToolUse(id, toolName, input);
@@ -871,6 +891,7 @@ export async function dispatchToProject(
         onTurnComplete: (result) => {
           lastActivityAt = now();
           spin.turnEnd();
+          if (spinMark === "tool_loop") clearSpin(); // a tool loop is one turn's
           if (result.sessionId) lastSessionId = result.sessionId;
           const kind = result.apiError;
           if (kind) {
@@ -976,8 +997,10 @@ export async function dispatchToProject(
         if (progressMs > 0 && t - lastDigestAt >= progressMs) {
           if (lastActivityAt > lastDigestAt) {
             const lastCommit = readCommit(folder);
-            const fp = spin.digest(digestFingerprint(lastActivity, lastNote, lastCommit));
-            if (fp.changed) clearSpin();
+            const counts = workSinceDigest && !deps.registry.get(session.id)?.blockedOn && t >= retryingUntil;
+            workSinceDigest = false;
+            const fp = counts ? spin.digest(digestFingerprint(lastActivity, lastNote, lastCommit)) : { changed: false, spinning: false };
+            if (fp.changed && spinMark === "digest") clearSpin();
             if (fp.spinning) {
               const mins = Math.max(1, Math.round((spinDigests * progressMs) / 60_000));
               spinning(`${name} has repeated «${lastActivity ?? "the same step"}» for ${mins} min with no new commit or note`, lastActivity ?? "", { reason: "digest", digests: spinDigests });
