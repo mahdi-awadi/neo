@@ -558,11 +558,13 @@ export async function dispatchToProject(
     // end-of-run handoff. Its resume id is read again AFTER the wait: the handoff clears it.
     let gatedResume = resume;
     if (gatedResume && policy) {
-      await awaitHandoff(folder);
-      gatedResume =
+      // A handoff that outlived its hold may still own the session: start fresh, touch nothing.
+      const waited = await awaitHandoff(folder);
+      const current =
         (canResumeWith(session.sdkProvider, worker) ? deps.registry.get(session.id)?.sdkSessionId : undefined) ||
         deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
         undefined;
+      gatedResume = waited === "timed-out" ? undefined : current;
     }
     if (gatedResume && policy) {
       try {
@@ -954,7 +956,7 @@ export async function dispatchToProject(
         deps.ledger.recordSession(order.id, result.sessionId, worker);
       }
       deps.meter.note({ costUsd: result.costUsd }, now());
-      deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
+      deps.ledger.recordOutcome(order.id, ok ? "done" : "error", ok ? result.summary : summary);
     } catch {
       // observer/bookkeeping errors must not surface into the worker path
     }
@@ -964,7 +966,7 @@ export async function dispatchToProject(
         sessionId: result.sessionId || undefined,
         folder,
         // workClass + costUsd together are what lets the meter report interactive vs background spend.
-        data: { project: name, workClass, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
+        data: { project: name, workClass, ok, timedOut, costUsd: result.costUsd, apiError: result.apiError, ...(checkpointLost ? { checkpointLost: true } : {}) },
       });
       let note: string | undefined;
       try {

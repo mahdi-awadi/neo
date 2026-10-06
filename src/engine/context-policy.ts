@@ -527,6 +527,11 @@ export function handoffHoldMs(cfg: Pick<ContextPolicyCfg, "handoffTimeoutMs">): 
 // dispatch end and the todo queue's next release) can never run two handoffs on one folder at once.
 const handoffsInFlight = new Map<string, Promise<void>>();
 
+// Folders whose handoff outlived its hold (a hung interrupt): its worker may still be alive and
+// its resume id is not cleared yet. Until it settles, a gate must start fresh — never measure or
+// hand off that session a second time.
+const hungHandoffs = new Set<string>();
+
 /** Register `p` as the folder's in-flight handoff (chained after any earlier one). It holds the folder
  *  for at most `maxMs`: a handoff whose worker never ends (a hung interrupt) must not wedge every
  *  later gate on the folder. */
@@ -534,7 +539,13 @@ export function trackHandoff(folder: string, p: Promise<unknown>, maxMs: number)
   const prev = handoffsInFlight.get(folder) ?? Promise.resolve();
   const bounded = (): Promise<unknown> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const limit = new Promise<void>((res) => (timer = setTimeout(res, maxMs)));
+    const limit = new Promise<void>((res) => (timer = setTimeout(res, maxMs))).then(() => {
+      hungHandoffs.add(folder);
+      void p.then(
+        () => hungHandoffs.delete(folder),
+        () => hungHandoffs.delete(folder),
+      );
+    });
     return Promise.race([p, limit]).finally(() => clearTimeout(timer));
   };
   const next: Promise<void> = prev.then(bounded).then(
@@ -547,9 +558,16 @@ export function trackHandoff(folder: string, p: Promise<unknown>, maxMs: number)
   });
 }
 
-/** Resolves once the folder has no handoff in flight. Never rejects. */
-export async function awaitHandoff(folder: string): Promise<void> {
+/** True while a handoff of the folder is being waited on. */
+export function handoffInFlight(folder: string): boolean {
+  return handoffsInFlight.has(folder);
+}
+
+/** Resolves once the folder has no handoff in flight: `clear`, or `timed-out` when a handoff
+ *  outlived its hold and has still not settled (start fresh — see hungHandoffs). Never rejects. */
+export async function awaitHandoff(folder: string): Promise<"clear" | "timed-out"> {
   for (let p = handoffsInFlight.get(folder); p; p = handoffsInFlight.get(folder)) await p;
+  return hungHandoffs.has(folder) ? "timed-out" : "clear";
 }
 
 // One `deferred` row per (session, boundary): a session sitting on uncommitted work settles many times.

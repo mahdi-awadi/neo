@@ -34,6 +34,7 @@ import {
   awaitHandoff,
   trackHandoff,
   handoffHoldMs,
+  handoffInFlight,
   handoffPreamble,
   handoffDeferred,
   continuationBrief,
@@ -153,7 +154,8 @@ async function applyContextPolicy(
   current: () => string | undefined,
 ): Promise<{ resumeId: string; idleMs: number; preLines?: number }> {
   if (!resumeId) return { resumeId: "", idleMs: 0 };
-  await awaitHandoff(folder);
+  // A handoff that outlived its hold may still own the session: start fresh, touch nothing.
+  if ((await awaitHandoff(folder)) === "timed-out") return { resumeId: "", idleMs: 0 };
   resumeId = current() ?? "";
   if (!resumeId) return { resumeId: "", idleMs: 0 };
   try {
@@ -256,6 +258,10 @@ export async function handleMessage(
   const addressed = focus?.session ?? registry.getDefault();
   if (addressed && !text.trim().startsWith("/")) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
+    if (registry.getControl(addressed.id)?.closed?.() === true) {
+      const why = handoffInFlight(addressed.order.folder) ? "is handing off its context" : "is closing";
+      await deps.reply(chatId, `⏳ ${addressed.name} ${why} — your message will follow`);
+    }
     const live = await pastClose(registry, addressed, handoffHoldMs(deps.cfg.contextPolicy));
     if (!live) {
       await deps.reply(chatId, `⏳ ${addressed.name} is still closing — send that again in a moment`);
@@ -842,7 +848,7 @@ function startSession(
     void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert");
   });
   faults.contain("pipeline.runDone", ended, ctx);
-  void ended.catch(() => closing?.release()); // release() is idempotent
+  void ended.catch(() => (closing ?? pendingClose)?.release()); // release() is idempotent
   const endedQuietly = ended.then(
     () => undefined,
     () => undefined,

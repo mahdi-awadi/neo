@@ -1926,4 +1926,6 @@ test("a todo dispatch armed at a checkpoint that cannot complete ends as failed 
   expect(end?.ok).toBe(false);
   expect(end?.continuation).toBeUndefined();
   expect(end?.summary).toContain("could not complete");
+  const recorded = d.ledger.listRecent(5).find((o) => o.task.includes("build all phases"))!;
+  expect(d.ledger.getOutcome(recorded.id)?.status).toBe("error"); // the record agrees with the report
 });

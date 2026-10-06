@@ -9,7 +9,7 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
 import { createUsageMeter } from "../src/engine/usage";
 import { openTrustStore } from "../src/engine/trust";
-import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter } from "../src/engine/context-policy";
+import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter, trackHandoff } from "../src/engine/context-policy";
 import type { NeoConfig } from "../src/config";
 import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
@@ -1298,6 +1298,7 @@ test("a message sent while a session closes for its handoff reaches the fresh se
   await sent;
   await tick();
   expect(f.runs[0].followUps).toEqual([]); // never pushed into the closed channel
+  expect(h.replies.some((r) => r.includes("handing off"))).toBe(true); // told why it waits
   expect(f.runs).toHaveLength(2);
   expect(f.runs[1].resume).toBeUndefined(); // a fresh session
   expect(f.runs[1].task).toContain("and then the README");
@@ -1479,4 +1480,21 @@ test("an armed checkpoint that cannot complete (work appeared) tells the operato
   run.onSettled?.();
   expect(f.runs[0].closed).toBe(false);
   expect(replies.some((r) => r.includes("could not complete"))).toBe(true);
+});
+
+test("a resume gate whose wait ended on the bound starts fresh and never hands off the possibly-live session", async () => {
+  const dir = gitScratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.ledger.recordOrder({ id: "t1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h.ledger.recordSession("t1", "old-id");
+  trackHandoff(dir, new Promise<void>(() => {}), 10); // a handoff whose worker never ends
+  let handedOff = false;
+  await handleMessage(`/open ${dir} continue`, 9, {
+    ...h.base,
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }),
+    handoff: async () => void (handedOff = true),
+  });
+  expect(handedOff).toBe(false);
+  expect(f.resumeSeen()).toBeUndefined(); // fresh
 });

@@ -597,3 +597,11 @@ test("contextPolicyWarnings flags lines out of order, and is quiet for the defau
   expect(contextPolicyWarnings({ ...CFG, sweetSpotPct: 0.65 })[0]).toContain("sweetSpotPct 0.65 ≥ checkpointPct 0.6");
   expect(contextPolicyWarnings({ ...CFG, checkpointPct: 0.95 })[0]).toContain("checkpointPct 0.95 ≥ emergencyPct 0.9");
 });
+
+test("awaitHandoff says when its wait ended on the bound rather than on the handoff", async () => {
+  expect(await awaitHandoff("/p/quiet")).toBe("clear");
+  trackHandoff("/p/done", Promise.resolve(), 1_000);
+  expect(await awaitHandoff("/p/done")).toBe("clear");
+  trackHandoff("/p/hung", new Promise<void>(() => {}), 10);
+  expect(await awaitHandoff("/p/hung")).toBe("timed-out");
+});
