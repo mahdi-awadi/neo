@@ -177,15 +177,26 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
 
   /** A dispatch run of a todo ended: record it, apply the failure policy, release the next one,
    *  and send the operator ONE line about the transition (none when the queue is empty). */
-  const finish = async (end: { orderId: string; ok: boolean; summary: string }, l: TodoLauncher): Promise<void> => {
+  const finish = async (end: { orderId: string; ok: boolean; summary: string; continuation?: string }, l: TodoLauncher): Promise<void> => {
     live.delete(end.orderId);
     const t = ledger.todoByOrder(end.orderId);
     if (!t || t.status !== "running") return;
-    ledger.updateTodo(t.id, { status: end.ok ? "done" : "failed", result: end.summary, endedAt: now() });
+    // Handed off at a safe checkpoint (ADR-0014): the work is not finished. Its continuation goes to
+    // the HEAD of the project's queue, so the release below starts it before anything else.
+    const cont =
+      end.ok && end.continuation
+        ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation, team: t.team, workClass: t.workClass, createdBy: t.createdBy }, now())
+        : undefined;
+    if (cont) ledger.moveTodo(cont.id, 1);
+    ledger.updateTodo(t.id, { status: end.ok ? "done" : "failed", result: cont ? `${end.summary} → continuing as #${cont.id}` : end.summary, endedAt: now() });
     if (!end.ok && q.onFailure() === "pause" && queued(t.folder).length > 0) {
       ledger.setTodoPaused(t.folder, `#${t.id} failed`, now());
     }
-    const head = end.ok ? `${t.project}: done #${t.id}` : `${t.project}: #${t.id} failed`;
+    const head = cont
+      ? `${t.project}: #${t.id} handed off at a safe checkpoint, continuing as #${cont.id}`
+      : end.ok
+        ? `${t.project}: done #${t.id}`
+        : `${t.project}: #${t.id} failed`;
     const r = await release(t.folder, launcher() ?? l, true);
     const line = r.started
       ? `${head}, starting ${tag(r.started)}`

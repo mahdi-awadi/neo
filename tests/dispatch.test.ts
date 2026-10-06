@@ -10,7 +10,7 @@ import { openTrustStore } from "../src/engine/trust";
 import type { Order } from "../src/types";
 import type { StructuredAsk } from "../src/engine/structured-question";
 import { startOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
-import type { ContextPolicyCfg, ContextSignals } from "../src/engine/context-policy";
+import { trackHandoff, continuationBrief, type ContextPolicyCfg, type ContextSignals } from "../src/engine/context-policy";
 import { DEFAULT_MODELS } from "../src/config";
 
 const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
@@ -1761,4 +1761,142 @@ test("trustNewProjects: dispatching into a never-seen project trusts it; an expl
   expect(d.trust.isTrusted(join(root, "fresh"))).toBe(true);
   expect(d.trust.isTrusted(join(root, "kept-off"))).toBe(false);
   expect(d.ledger.listEvents({ kind: "trust_default_on" }).map((e) => e.folder)).toEqual([join(root, "fresh")]);
+});
+
+// ---- ADR-0014: a finished dispatch above the sweet spot hands off; a safe checkpoint continues ----
+
+function gitProject(): { root: string; folder: string } {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  const folder = join(root, "eticket-v3");
+  mkdirSync(folder);
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-C", folder, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
+  g("init", "-q");
+  writeFileSync(join(folder, "a.txt"), "1");
+  g("add", ".");
+  g("commit", "-q", "-m", "first");
+  return { root, folder };
+}
+const tick = async (n = 10) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
+};
+const finished = (sessionId: string): RunResult => ({ ok: true, sessionId, summary: "done", costUsd: 0 });
+
+test("a dispatch that ends above the sweet spot hands off before the todo queue releases the next brief", async () => {
+  const { root } = gitProject();
+  const { d } = makeDeps();
+  const calls: string[] = [];
+  const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: Promise.resolve(finished("s1")) });
+  await dispatchToProject("eticket-v3", "task", { ...d, contextPolicy: TEST_CONTEXT_POLICY }, 1, {
+    start: fakeStart as never,
+    root,
+    signals: () => ({ occupancy: 0.7, turns: 5, ageMs: 0, idleMs: 0 }),
+    handoff: (async (_s: unknown, _c: unknown, hd: { boundary?: string; decision?: { reason?: string } }) => void calls.push(`handoff:${hd.boundary}:${hd.decision?.reason}`)) as never,
+    hooks: { onEnd: () => void calls.push("end") },
+  });
+  await tick();
+  expect(calls).toEqual(["handoff:settled:above-sweet-spot", "end"]);
+});
+
+test("a dispatch that ends inside the sweet spot keeps its session", async () => {
+  const { root } = gitProject();
+  const { d } = makeDeps();
+  let handedOff = false;
+  const fakeStart = () => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: Promise.resolve(finished("s1")) });
+  await dispatchToProject("eticket-v3", "task", { ...d, contextPolicy: TEST_CONTEXT_POLICY }, 1, {
+    start: fakeStart as never,
+    root,
+    signals: () => ({ occupancy: 0.3, turns: 5, ageMs: 0, idleMs: 0 }),
+    handoff: (async () => void (handedOff = true)) as never,
+  });
+  await tick();
+  expect(handedOff).toBe(false);
+});
+
+test("the dispatch gate waits for the folder's in-flight handoff before it measures", async () => {
+  const { root, folder } = gitProject();
+  const { d } = makeDeps();
+  d.ledger.recordOrder({ id: "prev", source: "neo", folder, task: "x", chatId: SUB_CHAT, createdAt: 0 });
+  d.ledger.recordSession("prev", "sid");
+  let release!: () => void;
+  trackHandoff(folder, new Promise<void>((r) => (release = r)));
+  let started = false;
+  const fakeStart = () => {
+    started = true;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "task", { ...d, contextPolicy: TEST_CONTEXT_POLICY }, 1, {
+    start: fakeStart as never,
+    root,
+    signals: () => ({ occupancy: 0.1, turns: 5, ageMs: 0, idleMs: 0 }),
+  });
+  await tick();
+  expect(started).toBe(false);
+  release();
+  await tick();
+  expect(started).toBe(true);
+});
+
+test("a todo dispatch armed at a safe checkpoint ends as a continuation, with no extra handoff turn", async () => {
+  const { root, folder } = gitProject();
+  const { d, replies } = makeDeps();
+  d.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  let handedOff = false;
+  let steer: RunHandlers["contextSteer"];
+  let finish!: (r: RunResult) => void;
+  const fakeStart = (_o: Order, h: RunHandlers) => {
+    steer = h.contextSteer;
+    h.onUsage?.("claude-opus-5-5", { input_tokens: 820_000 }); // 82% ≥ checkpoint 0.8
+    h.onToolUse?.("c1", "Bash", { command: "git commit -m 'phase 2'" });
+    h.onToolResult?.("c1", false);
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: new Promise<RunResult>((r) => (finish = r)) };
+  };
+  let end: { continuation?: string; ok: boolean } | undefined;
+  await dispatchToProject("eticket-v3", "build all phases", { ...d, contextPolicy: TEST_CONTEXT_POLICY }, 1, {
+    start: fakeStart as never,
+    root,
+    signals: () => ({ occupancy: 0.82, turns: 5, ageMs: 0, idleMs: 0 }),
+    handoff: (async () => void (handedOff = true)) as never,
+    hooks: { onEnd: (e) => void (end = e) },
+  });
+  await tick();
+  expect(steer?.("Edit", { file_path: join(folder, "a.txt") })).toContain("Neo context checkpoint");
+  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
+  finish(finished("s1"));
+  await tick();
+  expect(handedOff).toBe(false);
+  expect(end).toMatchObject({ ok: true, continuation: continuationBrief("build all phases") });
+  expect(d.ledger.listContextEvents({ folder }).find((e) => e.verdict === "handoff")).toMatchObject({ boundary: "checkpoint", reason: "heavy" });
+  expect(replies.some((r) => r.text.includes("safe checkpoint"))).toBe(true);
+});
+
+test("a dispatch with no continuation path (not from the todo queue) is never steered", async () => {
+  const { root, folder } = gitProject();
+  const { d } = makeDeps();
+  d.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  let steer: RunHandlers["contextSteer"] = () => "unset";
+  const fakeStart = (_o: Order, h: RunHandlers) => {
+    steer = h.contextSteer;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "task", { ...d, contextPolicy: TEST_CONTEXT_POLICY }, 1, { start: fakeStart as never, root });
+  await tick();
+  expect(steer).toBeUndefined();
+  void folder;
+});
+
+test("a fresh dispatch after a handoff starts from the note, inline", async () => {
+  const { root, folder } = gitProject();
+  const { d } = makeDeps();
+  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nthe cart\n");
+  const handoffId = d.ledger.recordContextEvent(folder, "handoff", 0.7, 1, { reason: "above-sweet-spot" });
+  let task = "";
+  const fakeStart = (o: Order) => {
+    task = o.task;
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "carry on", { ...d, contextPolicy: TEST_CONTEXT_POLICY }, 1, { start: fakeStart as never, root });
+  await tick();
+  expect(task).toContain("the cart");
+  expect(task).toContain("carry on");
+  expect(d.ledger.listContextEvents({ folder })[0]).toMatchObject({ verdict: "resumed", detail: { handoffId } });
 });

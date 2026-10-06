@@ -8,7 +8,8 @@ import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import { createApiCooldown } from "../src/engine/api-retry";
 import type { DispatchDeps } from "../src/engine/dispatch";
-import type { RunResult } from "../src/engine/session-runner";
+import type { RunHandlers, RunResult } from "../src/engine/session-runner";
+import { continuationBrief } from "../src/engine/context-policy";
 import { createTodoQueue, projectBusy, todoTitle } from "../src/engine/todo-queue";
 
 const settle = () => new Promise((r) => setTimeout(r, 25));
@@ -460,4 +461,61 @@ test("/todo parsing: verbs ignore case, ids are plain digits (optional #), extra
   expect(ledger.todoById(2)?.status).toBe("queued");
   expect(cmd("/todo UP #3")).toContain("position 1");
   expect(cmd("/todo Cancel #2")).toContain("cancelled #2");
+});
+
+// ADR-0014: a todo handed off at a safe checkpoint is not finished — its continuation goes to the
+// head of the project's queue and starts at once, from the handoff note.
+test("a checkpoint continuation becomes the next todo at the head of the queue and starts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-todo-"));
+  const folder = join(root, "eticket-v3");
+  mkdirSync(folder);
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-C", folder, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
+  g("init", "-q");
+  writeFileSync(join(folder, "a.txt"), "1");
+  g("add", ".");
+  g("commit", "-q", "-m", "first");
+  const ledger = openLedger(":memory:");
+  ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  const registry = createRegistry();
+  const replies: string[] = [];
+  const deps: DispatchDeps = {
+    ledger,
+    registry,
+    meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
+    reply: (_c, text) => void replies.push(text),
+    askApproval: async () => "deny",
+    workRoot: root,
+    contextPolicy: { sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70, maxTurns: 200, maxAgeMs: 1e12, handoffTimeoutMs: 1_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
+  };
+  const runs: Array<{ task: string; finish: (r: RunResult) => void }> = [];
+  const start = (order: { task: string }, h: RunHandlers) => {
+    let finish!: (r: RunResult) => void;
+    const done = new Promise<RunResult>((res) => (finish = res));
+    runs.push({ task: order.task, finish });
+    if (runs.length === 1) {
+      // the first run reaches a safe checkpoint in the heavy band and writes its note
+      h.onUsage?.("claude-opus-5-5", { input_tokens: 700_000 });
+      h.onToolUse?.("c1", "Bash", { command: "git commit -m 'phase 2'" });
+      h.onToolResult?.("c1", false);
+    }
+    return { followUp: () => {}, queued: () => 0, active: () => false, closed: () => false, close: () => {}, interrupt: async () => {}, done };
+  };
+  const queue = createTodoQueue({ ledger, registry, onFailure: () => "continue", dispatchOpts: { start: start as never, now: () => 1_000, signals: () => ({ occupancy: 0.1, turns: 1, ageMs: 0, idleMs: 0 }) } });
+  queue.setLauncher(() => ({ deps, replyChat: 1 }));
+  await queue.submit({ project: "eticket-v3", brief: "build all phases", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "later work", workClass: "interactive" }, deps, 1);
+  await settle();
+  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
+  runs[0].finish({ ok: true, sessionId: "s1", summary: "note written", costUsd: 0 });
+  await settle();
+  const all = ledger.listTodos({ folder });
+  const [first, cont, later] = [all.find((t) => t.brief === "build all phases")!, all.find((t) => t.brief === continuationBrief("build all phases"))!, all.find((t) => t.brief === "later work")!];
+  expect(first.status).toBe("done");
+  expect(first.result).toContain(`#${cont.id}`);
+  expect(cont.status).toBe("running"); // released at once, ahead of "later work"
+  expect(later.status).toBe("queued");
+  expect(runs).toHaveLength(2);
+  expect(runs[1].task).toContain("phase 3"); // the continuation starts from the note, inline
+  expect(replies.some((r) => r.includes(`continuing as #${cont.id}`))).toBe(true);
 });
