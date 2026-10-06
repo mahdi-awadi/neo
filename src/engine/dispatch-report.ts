@@ -53,7 +53,7 @@ export function lastCommitIn(folder: string): string | undefined {
 
 /** One bounded, read-only git query in `folder`; undefined on any failure (not a repo, git missing,
  *  timeout). */
-function git(folder: string, args: string[]): string | undefined {
+export function git(folder: string, args: string[]): string | undefined {
   try {
     const r = spawnSync("git", ["-C", folder, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS });
     return r.status === 0 ? r.stdout : undefined;

@@ -309,11 +309,28 @@ function toolActions(db: Database): void {
   db.run(`CREATE INDEX idx_tool_actions_thread ON tool_actions (thread_id, id)`);
 }
 
+/** Version 5 — the plan registry (spec §3.5, ADR-0019). attention_items / engine_boots come later. */
+function plans(db: Database): void {
+  db.run(
+    `CREATE TABLE plans (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       project TEXT NOT NULL, folder TEXT NOT NULL, path TEXT NOT NULL,
+       title TEXT NOT NULL, sha256 TEXT NOT NULL,
+       status TEXT NOT NULL,
+       steps_total INTEGER NOT NULL DEFAULT 0, steps_done INTEGER NOT NULL DEFAULT 0,
+       thread_id INTEGER, order_id TEXT, todo_id INTEGER, decision_id TEXT,
+       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, sent_at INTEGER,
+       UNIQUE (folder, path)
+     )`,
+  );
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
   { version: 3, name: "cause columns", up: causeColumns },
   { version: 4, name: "tool actions", up: toolActions },
+  { version: 5, name: "plans", up: plans },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

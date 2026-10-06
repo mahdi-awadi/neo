@@ -145,6 +145,31 @@ export interface ThreadArtifacts {
   toolActions: number;
 }
 
+export type PlanStatus = "draft" | "sent" | "approved" | "executing" | "done" | "abandoned";
+
+/** A plan/spec file the engine has seen (ADR-0019), keyed by (folder, path); `path` is relative. */
+export interface PlanRow {
+  id: number;
+  project: string;
+  folder: string;
+  path: string;
+  title: string;
+  sha256: string;
+  status: PlanStatus;
+  stepsTotal: number;
+  stepsDone: number;
+  threadId?: number;
+  orderId?: string;
+  todoId?: number;
+  decisionId?: string;
+  createdAt: number;
+  updatedAt: number;
+  sentAt?: number;
+}
+
+/** What `upsertPlan` takes: a row without its id (a new row gets one) and timestamps default to now. */
+export type PlanDraft = Omit<PlanRow, "id" | "createdAt" | "updatedAt"> & { id?: number; createdAt?: number; updatedAt?: number };
+
 export interface Ledger {
   /** `cause` links the order to the message that started it; `parentOrderId` is the company order
    *  that dispatched it (spec §3.3). Both optional: an order without them stores NULL. */
@@ -197,6 +222,12 @@ export interface Ledger {
   threadArtifacts(threadId: number, limit: number): ThreadArtifacts;
   /** Append one governed tool call (single INSERT; retention amortised — see TOOL_ACTIONS_KEEP). */
   recordToolAction(a: NewToolAction): void;
+  planByPath(folder: string, path: string): PlanRow | undefined;
+  planById(id: number): PlanRow | undefined;
+  /** Insert, or update the row for (folder, path); returns the stored row. */
+  upsertPlan(p: PlanDraft): PlanRow;
+  /** Newest-updated first, bounded (default 50, max 100); `project` filters. */
+  listPlans(project?: string, limit?: number): PlanRow[];
   /** TEST-ONLY seam: the EXPLAIN QUERY PLAN text of a named hot query (spec §11.11). */
   _explain(query: "messagesInThread"): string;
   /** The full transcript for a chat, oldest-first; `limit` keeps only the most recent N. */
@@ -679,6 +710,40 @@ export function openLedger(
         );
       }
     },
+    planByPath(folder, path) {
+      const r = db.query(`SELECT * FROM plans WHERE folder = ? AND path = ?`).get(folder, path) as PlanDbRow | null;
+      return r ? mapPlanRow(r) : undefined;
+    },
+    planById(id) {
+      const r = db.query(`SELECT * FROM plans WHERE id = ?`).get(id) as PlanDbRow | null;
+      return r ? mapPlanRow(r) : undefined;
+    },
+    upsertPlan(p) {
+      const now = Date.now();
+      db.query(
+        `INSERT INTO plans (project, folder, path, title, sha256, status, steps_total, steps_done, thread_id, order_id, todo_id, decision_id, created_at, updated_at, sent_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (folder, path) DO UPDATE SET
+           project = excluded.project, title = excluded.title, sha256 = excluded.sha256, status = excluded.status,
+           steps_total = excluded.steps_total, steps_done = excluded.steps_done, thread_id = excluded.thread_id,
+           order_id = excluded.order_id, todo_id = excluded.todo_id, decision_id = excluded.decision_id,
+           updated_at = excluded.updated_at, sent_at = excluded.sent_at`,
+      ).run(
+        p.project, p.folder, p.path, p.title, p.sha256, p.status, p.stepsTotal, p.stepsDone,
+        p.threadId ?? null, p.orderId ?? null, p.todoId ?? null, p.decisionId ?? null,
+        p.createdAt ?? now, p.updatedAt ?? now, p.sentAt ?? null,
+      );
+      return mapPlanRow(db.query(`SELECT * FROM plans WHERE folder = ? AND path = ?`).get(p.folder, p.path) as PlanDbRow);
+    },
+    listPlans(project, limit = 50) {
+      const n = Math.max(1, Math.min(100, Math.floor(limit)));
+      const rows = (
+        project === undefined
+          ? db.query(`SELECT * FROM plans ORDER BY updated_at DESC, id DESC LIMIT ?`).all(n)
+          : db.query(`SELECT * FROM plans WHERE project = ? ORDER BY updated_at DESC, id DESC LIMIT ?`).all(project, n)
+      ) as PlanDbRow[];
+      return rows.map(mapPlanRow);
+    },
     _explain(query) {
       const sql = { messagesInThread: SQL_THREAD_PAGE_BEFORE }[query];
       const rows = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(0, 0, 1) as Array<{ detail: string }>;
@@ -1142,6 +1207,25 @@ export function openLedger(
 
 /** The columns a MessageRow is read from; callers append WHERE/ORDER. */
 const MESSAGE_COLS = `SELECT id, chat_id, role, content, at, thread_id, cause_id, surface, channel_msg_id, project, folder, order_id, kind, priority FROM messages`;
+interface PlanDbRow {
+  id: number; project: string; folder: string; path: string; title: string; sha256: string; status: string;
+  steps_total: number; steps_done: number; thread_id: number | null; order_id: string | null;
+  todo_id: number | null; decision_id: string | null; created_at: number; updated_at: number; sent_at: number | null;
+}
+
+function mapPlanRow(r: PlanDbRow): PlanRow {
+  return {
+    id: r.id, project: r.project, folder: r.folder, path: r.path, title: r.title, sha256: r.sha256,
+    status: r.status as PlanStatus, stepsTotal: r.steps_total, stepsDone: r.steps_done,
+    ...(r.thread_id !== null ? { threadId: r.thread_id } : {}),
+    ...(r.order_id !== null ? { orderId: r.order_id } : {}),
+    ...(r.todo_id !== null ? { todoId: r.todo_id } : {}),
+    ...(r.decision_id !== null ? { decisionId: r.decision_id } : {}),
+    createdAt: r.created_at, updatedAt: r.updated_at,
+    ...(r.sent_at !== null ? { sentAt: r.sent_at } : {}),
+  };
+}
+
 /** A thread page below a keyset cursor — the hot path `_explain` checks uses idx_messages_thread. */
 const SQL_THREAD_PAGE_BEFORE = `${MESSAGE_COLS} WHERE thread_id = ? AND id < ? ORDER BY id DESC LIMIT ?`;
 
