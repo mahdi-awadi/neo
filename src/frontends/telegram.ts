@@ -399,7 +399,7 @@ export function createTelegramBot(
     const chatId = ctx.chat?.id ?? 0;
     const dec = ledger.decisionById(tap.id);
     if (!dec || dec.status !== "open") {
-      await ctx.answerCallbackQuery("already answered");
+      await ackCallback(ctx, "already answered");
       try {
         await ctx.editMessageReplyMarkup();
       } catch {
@@ -411,7 +411,7 @@ export function createTelegramBot(
     // "✏️ Other / type an answer": capture the operator's next message as a free-text answer.
     if (tap.kind === "other") {
       pendingDecisionAnswer.set(chatId, tap.id);
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       await bot.api.sendMessage(chatId, "✏️ Send your answer as your next message — I'll deliver it to the project.");
       return;
     }
@@ -422,10 +422,10 @@ export function createTelegramBot(
       if (tap.kind === "submit") {
         const sel = pendingStructuredSelection.get(tap.id) ?? emptySelection(ask);
         if (!isComplete(ask, sel)) {
-          await ctx.answerCallbackQuery("pick an option for each question");
+          await ackCallback(ctx, "pick an option for each question");
           return;
         }
-        await ctx.answerCallbackQuery("submitted");
+        await ackCallback(ctx, "submitted");
         try {
           await ctx.editMessageReplyMarkup();
         } catch {
@@ -439,7 +439,7 @@ export function createTelegramBot(
       // A single single-select question resolves on this one tap (today's UX — no Submit needed).
       if (!needsSubmit(ask) && isComplete(ask, sel)) {
         const answer = answerText(ask, sel);
-        await ctx.answerCallbackQuery(`answered: ${answer.slice(0, 40)}`);
+        await ackCallback(ctx, `answered: ${answer.slice(0, 40)}`);
         try {
           await ctx.editMessageReplyMarkup();
         } catch {
@@ -449,7 +449,7 @@ export function createTelegramBot(
         return;
       }
       // Multi-select / multi-question: re-render the keyboard with the updated (✓) selection.
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       try {
         await ctx.editMessageReplyMarkup({ reply_markup: structuredKeyboard(tap.id, ask, sel) });
       } catch {
@@ -460,11 +460,11 @@ export function createTelegramBot(
 
     // A FLAT (legacy) decision: options[] only. Submit doesn't apply; an option tap resolves directly.
     if (tap.kind === "submit") {
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       return;
     }
     const chosen = dec.options?.[tap.optIdx] ?? `option ${Number.isNaN(tap.optIdx) ? "?" : tap.optIdx}`;
-    await ctx.answerCallbackQuery(`answered: ${chosen.slice(0, 40)}`);
+    await ackCallback(ctx, `answered: ${chosen.slice(0, 40)}`);
     try {
       await ctx.editMessageReplyMarkup(); // drop the option buttons
     } catch {
@@ -748,7 +748,7 @@ export function createTelegramBot(
 
   on.on("callback_query:data", async (ctx) => {
     if (!admin.isAdmin(ctx.from?.id ?? -1)) {
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       return;
     }
 
@@ -760,7 +760,7 @@ export function createTelegramBot(
       const result = cb.startsWith("use:")
         ? selectProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel, contextPolicy: cfg.contextPolicy })
         : killProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel, contextPolicy: cfg.contextPolicy });
-      await ctx.answerCallbackQuery(cb.startsWith("use:") ? "switched" : "killed");
+      await ackCallback(ctx, cb.startsWith("use:") ? "switched" : "killed");
       try {
         await ctx.editMessageText(
           result.text,
@@ -776,7 +776,7 @@ export function createTelegramBot(
     if (cb.startsWith("inbox:")) {
       const id = cb.slice("inbox:".length);
       const view = inbox ? renderInboxItem(inbox, id) : undefined;
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       if (!view) {
         await ctx.reply("That message is no longer in the inbox.");
         return;
@@ -790,7 +790,7 @@ export function createTelegramBot(
     if (cb.startsWith("inbox-draft:")) {
       const id = cb.slice("inbox-draft:".length);
       const chatId = ctx.chat?.id ?? 0;
-      await ctx.answerCallbackQuery("drafting…");
+      await ackCallback(ctx, "drafting…");
       if (!inbox) return;
       await ctx.editMessageReplyMarkup(); // drop the button while the company drafts
       say(chatId, "⏳ the company is drafting a reply…");
@@ -819,7 +819,7 @@ export function createTelegramBot(
     if (cb.startsWith("inbox-edit:")) {
       const id = cb.slice("inbox-edit:".length);
       const chatId = ctx.chat?.id ?? 0;
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       if (!inbox || !inbox.get(id)) {
         await ctx.reply("That message is no longer in the inbox.");
         return;
@@ -834,7 +834,7 @@ export function createTelegramBot(
     if (cb.startsWith("inbox-send:")) {
       const id = cb.slice("inbox-send:".length);
       const chatId = ctx.chat?.id ?? 0;
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       const view = inbox ? renderInboxItem(inbox, id) : undefined;
       const url = gatewaySendUrl;
       const secret = cfg.agentIngressSecret;
@@ -905,7 +905,7 @@ export function createTelegramBot(
     // Tap a loop run button.
     if (cb.startsWith("runloop:")) {
       const loop = matchLoop(cb.slice("runloop:".length), ledger);
-      await ctx.answerCallbackQuery(loop ? "running" : "unknown loop");
+      await ackCallback(ctx, loop ? "running" : "unknown loop");
       if (loop)
         launchLoop(loop, ctx.chat?.id ?? 0, {
           reply: (cid, t) => faults.contain("telegram.send", () => sendWorkerLine(cid, t)),
@@ -931,7 +931,7 @@ export function createTelegramBot(
     // Tap on a /project button (P6): `a` sends what `/attention <name>` sends, `t` the project's threads.
     const pjTap = /^pj:([at]):(.+)$/.exec(cb);
     if (pjTap) {
-      await ctx.answerCallbackQuery();
+      await ackCallback(ctx);
       const chatId = ctx.chat?.id ?? admin.adminId();
       if (chatId === undefined) return;
       const text = pjTap[1] === "a" ? `/attention ${pjTap[2]}` : `/project ${pjTap[2]} threads`;
@@ -950,7 +950,7 @@ export function createTelegramBot(
       // The toast holds TAP_TOAST_MAX characters: a longer answer (the ignored files a remove deletes)
       // is also posted in full, so the operator never consents to a list they could not read.
       const long = r.text.length > TAP_TOAST_MAX;
-      await ctx.answerCallbackQuery(long ? `${r.text.slice(0, TAP_TOAST_MAX - 1)}…` : r.text);
+      await ackCallback(ctx, long ? `${r.text.slice(0, TAP_TOAST_MAX - 1)}…` : r.text);
       if (long) {
         try {
           await ctx.reply(r.text);
@@ -986,21 +986,21 @@ export function createTelegramBot(
       if (action === "changes") {
         const plan = ledger.planById(planId);
         if (plan && plan.version !== version) {
-          await ctx.answerCallbackQuery(`this card is v${version} — the newest is v${plan.version}; use that card`);
+          await ackCallback(ctx, `this card is v${version} — the newest is v${plan.version}; use that card`);
           return;
         }
         const dec = plan?.decisionId ? ledger.decisionById(plan.decisionId) : undefined;
         if (dec?.status !== "open") {
-          await ctx.answerCallbackQuery("This plan's review is closed.");
+          await ackCallback(ctx, "This plan's review is closed.");
           return;
         }
         pendingDecisionAnswer.set(chatId, dec.id);
-        await ctx.answerCallbackQuery();
+        await ackCallback(ctx);
         await bot.api.sendMessage(chatId, "✏️ Send your changes as your next message — I'll deliver them to the worker that wrote the plan.");
         return;
       }
       const r = await applyPlanAction(planDeps(), planId, action, version);
-      await ctx.answerCallbackQuery(r.text.slice(0, 200));
+      await ackCallback(ctx, r.text.slice(0, 200));
       const after = ledger.planById(planId);
       if (after) {
         try {
@@ -1021,12 +1021,12 @@ export function createTelegramBot(
       pend.resolve(verdict); // unblock the waiting worker
       resolveEscalationDecision(ledger, pend.decisionId, verdict); // close the tracked decision row
       bus?.mirror("telegram", { kind: "notice", text: `approval ${verdict} on Telegram` });
-      await ctx.answerCallbackQuery(verdict === "allow" ? "Allowed" : "Denied");
+      await ackCallback(ctx, verdict === "allow" ? "Allowed" : "Denied");
       await ctx.editMessageReplyMarkup(); // drop the buttons
     } else {
       // No waiting resolver: it timed out (ADR-0012) or a restart dropped it. Say so and drop the
       // stale buttons, so a late Allow never looks like it worked.
-      await ctx.answerCallbackQuery("No longer pending — this approval timed out or expired.");
+      await ackCallback(ctx, "No longer pending — this approval timed out or expired.");
       await ctx.editMessageReplyMarkup().catch(() => {});
     }
   });
@@ -1182,6 +1182,23 @@ export function createPlanPoster(api: Api, target: () => number | undefined): Po
       return undefined;
     }
   };
+}
+
+/** Telegram only lets a callback query be answered for a short window. A tap redelivered after a
+ *  restart is past it, and the answer fails with this 400. */
+export function isStaleCallbackQuery(err: unknown): boolean {
+  return err instanceof GrammyError && err.error_code === 400 && /query is too old|query ID is invalid/.test(err.description);
+}
+
+/** Answer a button tap. The answer is a best-effort UX ack, so a stale query never aborts the
+ *  handler (the edit that drops the buttons must still run). Any other failure propagates. */
+export async function ackCallback(ctx: Context, text?: string): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery(text);
+  } catch (err) {
+    if (!isStaleCallbackQuery(err)) throw err;
+    console.debug(`[telegram] stale callback query not answered: ${(err as GrammyError).description}`);
+  }
 }
 
 /** A stop of long polling that no retry can fix: a revoked token (401) or another poller on the same
