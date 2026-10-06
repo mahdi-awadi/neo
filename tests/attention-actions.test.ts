@@ -133,3 +133,12 @@ test("renderAttention keeps every item to one bounded line (a multi-line, long t
   expect(lines).toHaveLength(3);
   expect(lines[2]!.length).toBeLessThan(160);
 });
+
+test("a double tap where the todo is done at once (delivered into an open session) still makes one todo", async () => {
+  const r = rig();
+  const [id] = reconcile(r.ledger, "engine", "gold", [draft()], 100).opened;
+  await applyAttentionAction(r.deps, id!, "todo", 200);
+  r.ledger.updateTodo(r.ledger.attentionById(id!)!.todoId!, { status: "done", endedAt: 201 });
+  expect((await applyAttentionAction(r.deps, id!, "todo", 202)).text).toContain("(done)");
+  expect(r.submitted).toHaveLength(1);
+});

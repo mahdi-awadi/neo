@@ -55,9 +55,10 @@ export async function applyAttentionAction(deps: AttentionActionDeps, id: number
 
 async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<{ ok: boolean; text: string }> {
   const { ledger } = deps;
-  // A linked todo that is still queued or running is THE todo; a finished, failed or cancelled one can be retried.
+  // The linked todo is THE todo unless it failed or was cancelled — even "done": a brief delivered into
+  // an open session is done at once while the item is still open. A returning item has no link (reopen).
   const existing = row.todoId !== undefined ? ledger.todoById(row.todoId) : undefined;
-  if (existing && (existing.status === "queued" || existing.status === "running")) return { ok: true, text: `already todo #${existing.id} (${existing.status})` };
+  if (existing && existing.status !== "failed" && existing.status !== "cancelled") return { ok: true, text: `already todo #${existing.id} (${existing.status})` };
   const launcher = deps.todo?.launcher();
   if (!deps.todo || !launcher || !deps.trace) return { ok: false, text: "the todo queue is unavailable — → todo needs it" };
   const brief = attentionBrief(row);
