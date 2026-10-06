@@ -95,3 +95,16 @@ test("a gh failure changes no GitHub items, keeps the last good time, and record
   expect(d.ledger.getMeta("gh:gold")?.value).toMatchObject({ lastGoodAt: 10_000_000, error: "error connecting to api.github.com" });
   expect(d.ledger.listEvents({ kind: "github_scan_error" })).toHaveLength(1);
 });
+
+test("a tracked repo that was deleted has its git and GitHub items resolved", async () => {
+  const w = root();
+  const gold = repo(w, "gold");
+  const d = deps(w);
+  d.ledger.recordOrder(order(gold));
+  writeFileSync(join(gold, "wip.txt"), "wip");
+  await runScan(d);
+  expect(listOpen(d.ledger, { now: 10_000_000 }).map((r) => r.kind)).toEqual(["dirty"]);
+  rmSync(gold, { recursive: true, force: true });
+  await runScan(d);
+  expect(listOpen(d.ledger, { now: 10_000_000 })).toEqual([]);
+});

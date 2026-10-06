@@ -3,7 +3,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createGitRead } from "../src/engine/git-read";
+import { createGitRead, uncommittedFrom } from "../src/engine/git-read";
 import { exec } from "../src/engine/update-sys";
 
 test("exec: a command past its timeout is killed and says so; a missing binary is a result, not a throw", async () => {
@@ -24,7 +24,7 @@ test("createGitRead: git runs in the folder with no prompts or pager; a failure 
   };
   const g = createGitRead({ timeoutMs: 20_000, exec: fake });
   expect(await g.git("/home/gold", ["status"])).toEqual({ ok: true, out: "ok\n" });
-  expect(calls[0]).toMatchObject({ cmd: ["git", "-C", "/home/gold", "status"], env: { GIT_TERMINAL_PROMPT: "0", GH_PAGER: "", NO_COLOR: "1" } });
+  expect(calls[0]).toMatchObject({ cmd: ["git", "-C", "/home/gold", "status"], env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GH_PAGER: "", GH_PROMPT_DISABLED: "1", NO_COLOR: "1" } });
   expect(await g.git("/home/gold", ["log", "bad"])).toEqual({ ok: false, out: "", err: "fatal: bad revision" });
   expect(await g.gh("/home/gold", ["pr", "list", "slow"])).toEqual({ ok: false, out: "", err: "timeout" });
   expect(calls.at(-1)).toMatchObject({ cmd: ["gh", "pr", "list", "slow"], cwd: "/home/gold" });
@@ -40,4 +40,9 @@ test("createGitRead against a real repo", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("uncommittedFrom: porcelain paths, renames to their new name, the folder's own HANDOFF.md left out", () => {
+  const out = " M src/a.ts\n?? notes/HANDOFF.md\nR  old.ts -> new.ts\n?? sub/HANDOFF.md\n";
+  expect(uncommittedFrom(out, "sub/")).toEqual(["src/a.ts", "notes/HANDOFF.md", "new.ts"]);
 });

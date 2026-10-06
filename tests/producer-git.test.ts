@@ -111,3 +111,34 @@ test("a read that fails marks its kinds failed, never resolves them; ignoreKinds
   expect(gone.drafts).toEqual([]);
   void DAY;
 });
+
+test("the base is the remote's default branch; with no base known, stale/no_upstream are failed, not resolved", async () => {
+  const { dir } = repo();
+  sh(dir, "remote", "set-head", "origin", "main");
+  sh(dir, "checkout", "-q", "-b", "feat/y");
+  const r = await gitDrafts(read, input(dir));
+  expect(r.tracked).toEqual(["main"]); // not the checked-out feat/y
+  sh(dir, "remote", "set-head", "origin", "-d");
+  sh(dir, "checkout", "-q", "--detach");
+  const d = await gitDrafts(read, input(dir));
+  expect(d.tracked).toEqual([]);
+  expect([...d.failed].sort()).toEqual(["no_upstream", "stale_branch"]);
+});
+
+test("dirty reuses the uncommitted-files rule (HANDOFF.md is not work) and keeps the todo's title and thread link", async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, "HANDOFF.md"), "note");
+  expect(await kinds(input(dir))).toEqual([]);
+  writeFileSync(join(dir, "wip.txt"), "wip");
+  const keep = { title: "3 uncommitted files after todo #4", detail: "thread m4g2 · files: a.ts" };
+  const d = (await gitDrafts(read, input(dir, { dirtyHigh: true, dirtyKeep: keep }))).drafts.find((x) => x.kind === "dirty")!;
+  expect(d).toMatchObject({ severity: "high", ...keep });
+});
+
+test("while a session works in the folder, an open dirty item is kept as it is (not resolved, not re-judged)", async () => {
+  const { dir } = repo();
+  writeFileSync(join(dir, "wip.txt"), "wip");
+  const r = await gitDrafts(read, input(dir, { sessionIn: (f) => f === dir }));
+  expect(r.drafts.map((d) => d.kind)).not.toContain("dirty");
+  expect(r.failed.has("dirty")).toBe(true);
+});

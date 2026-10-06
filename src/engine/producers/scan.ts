@@ -58,12 +58,22 @@ export async function trackedRepos(d: Pick<ScanDeps, "ledger" | "read" | "workRo
 /** One pass over every tracked repo. Each project is its own unit: a failure is in its meta row and
  *  never stops the others. */
 export async function runScan(d: ScanDeps): Promise<void> {
+  const scanned = new Set<string>();
   for (const folder of await trackedRepos(d)) {
     const project = basename(folder);
+    scanned.add(project);
     try {
       await scanProject(d, folder, project);
     } catch (e) {
       writeMeta(d, project, { github: true, counts: {}, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // A repo that is gone (deleted or moved): nothing there needs the operator any more.
+  for (const source of ["git", "github"] as const) {
+    for (const project of d.ledger.attentionProjects(source)) {
+      if (scanned.has(project)) continue;
+      const rows = d.ledger.attentionRows(project, source);
+      if (rows.length && rows.every((r) => !existsSync(r.folder))) reconcileScan(d.ledger, source, project, [], new Set(), d.now());
     }
   }
 }
@@ -82,10 +92,11 @@ async function scanProject(d: ScanDeps, folder: string, project: string): Promis
     sessionIn: (f) => d.registry.findByFolder(f)?.status === "running",
     lastWorkAt: (f) => d.ledger.lastOrderAt(f),
     dirtyHigh: openDirty?.severity === "high",
+    ...(openDirty?.severity === "high" ? { dirtyKeep: { title: openDirty.title, ...(openDirty.detail ? { detail: openDirty.detail } : {}) } } : {}),
   });
   reconcileScan(d.ledger, "git", project, git.drafts, git.failed, now);
   const gh = await githubDrafts(d.read, { folder, project, cfg, tracked: git.tracked });
-  reconcileScan(d.ledger, "github", project, gh.drafts, gh.failed, now);
+  reconcileScan(d.ledger, "github", project, gh.drafts, new Set([...gh.failed, ...gh.partial, ...gh.unavailable]), now);
   const counts: Record<string, number> = {};
   for (const x of [...git.drafts, ...gh.drafts]) counts[x.kind] = (counts[x.kind] ?? 0) + 1;
   const failed = [...git.failed, ...gh.failed];

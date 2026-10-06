@@ -16,7 +16,7 @@ export type GitRunner = (folder: string, args: string[]) => string | undefined;
 /** One bounded, read-only git query in `folder`; undefined on any failure. */
 export function git(folder: string, args: string[]): string | undefined {
   try {
-    const r = spawnSync("git", ["-C", folder, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS });
+    const r = spawnSync("git", ["-C", folder, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" } });
     return r.status === 0 ? r.stdout : undefined;
   } catch {
     return undefined;
@@ -93,8 +93,10 @@ export interface GitRead {
   gh(folder: string, args: string[]): Promise<GitResult>;
 }
 
-/** No terminal prompt (a missing credential fails at once), no pager, no colour codes in the output. */
-const READ_ENV = { GIT_TERMINAL_PROMPT: "0", GH_PAGER: "", NO_COLOR: "1" };
+/** No terminal prompt (a missing credential fails at once), no optional index lock (a background
+ *  `git status` must never make a working session's `git commit` fail on index.lock), no pager, no
+ *  prompts from gh, no colour codes in the output. */
+const READ_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GH_PAGER: "", GH_PROMPT_DISABLED: "1", NO_COLOR: "1" };
 
 export function createGitRead(o: { timeoutMs: number; exec?: (cmd: string[], opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }) => Promise<ExecResult> }): GitRead {
   const run = o.exec ?? defaultExec;
@@ -104,4 +106,19 @@ export function createGitRead(o: { timeoutMs: number; exec?: (cmd: string[], opt
     git: async (folder, args) => result(await run(["git", "-C", folder, ...args], { timeoutMs: o.timeoutMs, env: READ_ENV })),
     gh: async (folder, args) => result(await run(["gh", ...args], { cwd: folder, timeoutMs: o.timeoutMs, env: READ_ENV })),
   };
+}
+
+/** The handoff note is written FOR a reset, so it never counts as uncommitted work (ADR-0021). */
+const HANDOFF_NOTE = "HANDOFF.md";
+
+/** The uncommitted paths in `git status --porcelain --untracked-files=all` output (relative to the
+ *  repo root; a rename counts as its new name), minus the folder's own HANDOFF.md — `prefix` is the
+ *  folder inside its repo (`git rev-parse --show-prefix`). The one rule for "uncommitted work". */
+export function uncommittedFrom(porcelain: string, prefix: string): string[] {
+  const note = prefix + HANDOFF_NOTE;
+  return porcelain
+    .split("\n")
+    .filter((l) => l.length > 3)
+    .map((l) => l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop()!)
+    .filter((p) => p !== note);
 }

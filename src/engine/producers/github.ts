@@ -26,6 +26,11 @@ export interface GithubScanInput {
 export interface GithubScan {
   drafts: AttentionDraft[];
   failed: Set<GithubKind>;
+  /** Read, but cut at its limit: its drafts count, and its other live rows are kept. */
+  partial: Set<GithubKind>;
+  /** An alert feature that answered 403/404 (off, or not visible to this account): its rows are kept,
+   *  nothing new opens, and it is not a scan failure. */
+  unavailable: Set<GithubKind>;
   /** false: the repo has no GitHub remote (nothing to read, nothing failed). */
   github: boolean;
   /** A read hit GitHub's rate limit. */
@@ -34,15 +39,20 @@ export interface GithubScan {
   error?: string;
 }
 
-/** Not a GitHub repo at all — no remote, or not a repository GitHub knows. */
-const NO_GITHUB = /no git remotes|none of the git remotes|not a git repository|could not resolve to a repository/i;
+/** Not a GitHub repo at all: no remote, or no remote on GitHub. ("Could not resolve to a Repository"
+ *  is a renamed, deleted or inaccessible repo — a failure that keeps the items, not "no GitHub".) */
+const NO_GITHUB = /no git remotes|none of the git remotes|not a git repository/i;
 /** A security-alert feature that is off or not visible to this account. */
 const FEATURE_OFF = /HTTP (403|404)/;
 const RATE_LIMIT = /rate limit/i;
+/** A completed run that did not pass. */
+const CI_FAILED = new Set(["failure", "timed_out", "startup_failure"]);
 
 export async function githubDrafts(read: GitRead, i: GithubScanInput): Promise<GithubScan> {
   const drafts: AttentionDraft[] = [];
   const failed = new Set<GithubKind>();
+  const partial = new Set<GithubKind>();
+  const unavailable = new Set<GithubKind>();
   let rateLimited = false;
   let error: string | undefined;
   const at = { project: i.project, folder: i.folder, source: "github" as const, severity: "normal" as const };
@@ -51,74 +61,88 @@ export async function githubDrafts(read: GitRead, i: GithubScanInput): Promise<G
 
   const repo = await read.gh(i.folder, ["repo", "view", "--json", "nameWithOwner,url"]);
   if (!repo.ok) {
-    if (NO_GITHUB.test(repo.err ?? "")) return { drafts: [], failed, github: false, rateLimited: false };
-    return { drafts: [], failed: new Set(GITHUB_KINDS), github: true, rateLimited: RATE_LIMIT.test(repo.err ?? ""), error: repo.err || "gh failed" };
+    if (NO_GITHUB.test(repo.err ?? "")) return { drafts: [], failed, partial, unavailable, github: false, rateLimited: false };
+    return { drafts: [], failed: new Set(GITHUB_KINDS), partial, unavailable, github: true, rateLimited: RATE_LIMIT.test(repo.err ?? ""), error: repo.err || "gh failed" };
   }
 
-  /** One JSON read for `kinds`: undefined when it failed (its kinds are marked failed). `optional`:
-   *  a 403/404 means the feature is off — an empty list, not a failure. */
-  const json = async <T>(kinds: GithubKind[], args: string[], optional = false): Promise<T[] | undefined> => {
+  /** One JSON list read for `kinds`: undefined when it failed (its kinds are marked failed). A list
+   *  as long as `limit` may be cut: partial. `optional` (an alert feature): 403/404 is unavailable. */
+  const json = async <T>(kinds: GithubKind[], args: string[], limit: number, optional = false): Promise<T[] | undefined> => {
     const r: GitResult = await read.gh(i.folder, args);
     if (r.ok) {
+      let v: unknown;
       try {
-        return JSON.parse(r.out || "[]") as T[];
+        v = JSON.parse(r.out || "[]");
       } catch {
-        error ??= `unreadable JSON from gh ${args.slice(0, 2).join(" ")}`;
-        kinds.forEach((k) => failed.add(k));
-        return undefined;
+        v = undefined;
       }
+      if (Array.isArray(v)) {
+        if (v.length >= limit) kinds.forEach((k) => partial.add(k));
+        return v as T[];
+      }
+      error ??= `unreadable JSON from gh ${args.slice(0, 2).join(" ")}`;
+      kinds.forEach((k) => failed.add(k));
+      return undefined;
+    }
+    if (optional && FEATURE_OFF.test(r.err ?? "") && !RATE_LIMIT.test(r.err ?? "")) {
+      kinds.forEach((k) => unavailable.add(k));
+      return undefined;
     }
     if (RATE_LIMIT.test(r.err ?? "")) rateLimited = true;
-    else if (optional && FEATURE_OFF.test(r.err ?? "")) return [];
     error ??= r.err || "gh failed";
     kinds.forEach((k) => failed.add(k));
     return undefined;
   };
+  const LIMIT = Number(LIST_LIMIT);
   type Item = { number: number; title: string; url: string };
 
-  for (const p of (await json<Item & { isDraft?: boolean }>(["pr_open"], ["pr", "list", "--state", "open", "--limit", LIST_LIMIT, "--json", "number,title,url,isDraft"])) ?? []) {
+  for (const p of (await json<Item & { isDraft?: boolean }>(["pr_open"], ["pr", "list", "--state", "open", "--limit", LIST_LIMIT, "--json", "number,title,url,isDraft"], LIMIT)) ?? []) {
     draft({ kind: "pr_open", key: String(p.number), title: `PR #${p.number}${p.isDraft ? " (draft)" : ""}: ${p.title}`, url: p.url });
   }
-  for (const p of (await json<Item>(["pr_review_requested"], ["pr", "list", "--state", "open", "--search", "review-requested:@me", "--limit", LIST_LIMIT, "--json", "number,title,url"])) ?? []) {
+  for (const p of (await json<Item>(["pr_review_requested"], ["pr", "list", "--state", "open", "--search", "review-requested:@me", "--limit", LIST_LIMIT, "--json", "number,title,url"], LIMIT)) ?? []) {
     draft({ kind: "pr_review_requested", key: String(p.number), title: `PR #${p.number} waits for your review: ${p.title}`, url: p.url });
   }
 
-  const runs = await json<{ headBranch: string; conclusion: string; status: string; workflowName: string; url: string }>(
-    ["ci_failed"],
-    ["run", "list", "--limit", LIST_LIMIT, "--json", "databaseId,headBranch,conclusion,status,workflowName,url"],
-  );
-  if (runs) {
-    // The newest completed run per tracked branch (gh lists newest first).
+  // CI: per tracked branch (a busy repo's other branches never push its runs off the list), the
+  // newest completed run of each workflow. No tracked branch known → failed, never "all green".
+  if (!i.tracked.length) failed.add("ci_failed");
+  for (const branch of i.tracked) {
+    const runs = await json<{ headBranch: string; conclusion: string; status: string; workflowName: string; url: string }>(
+      ["ci_failed"],
+      ["run", "list", "--branch", branch, "--limit", LIST_LIMIT, "--json", "headBranch,conclusion,status,workflowName,url"],
+      Number.POSITIVE_INFINITY, // the newest run per workflow is all that matters; older ones never resolve it
+    );
     const seen = new Set<string>();
-    for (const r of runs) {
-      if (r.status !== "completed" || !i.tracked.includes(r.headBranch) || seen.has(r.headBranch)) continue;
-      seen.add(r.headBranch);
-      if (r.conclusion === "failure") draft({ kind: "ci_failed", key: r.headBranch, severity: "high", title: `${r.workflowName} failed on ${r.headBranch}`, url: r.url });
+    for (const r of runs ?? []) {
+      if (r.status !== "completed" || seen.has(r.workflowName)) continue;
+      seen.add(r.workflowName);
+      if (CI_FAILED.has(r.conclusion)) draft({ kind: "ci_failed", key: `${branch}:${r.workflowName}`, severity: "high", title: `${r.workflowName} failed on ${branch}`, url: r.url });
     }
   }
 
   const label = i.cfg.issueLabel ?? DEFAULT_ISSUE_LABEL;
-  const assigned = await json<Item>(["issue_open"], ["issue", "list", "--state", "open", "--assignee", "@me", "--limit", LIST_LIMIT, "--json", "number,title,url"]);
-  const labelled = await json<Item>(["issue_open"], ["issue", "list", "--state", "open", "--label", label, "--limit", LIST_LIMIT, "--json", "number,title,url"]);
+  const assigned = await json<Item>(["issue_open"], ["issue", "list", "--state", "open", "--assignee", "@me", "--limit", LIST_LIMIT, "--json", "number,title,url"], LIMIT);
+  const labelled = await json<Item>(["issue_open"], ["issue", "list", "--state", "open", "--label", label, "--limit", LIST_LIMIT, "--json", "number,title,url"], LIMIT);
   if (assigned && labelled) {
     const byNumber = new Map([...assigned, ...labelled].map((x) => [x.number, x]));
     for (const x of byNumber.values()) draft({ kind: "issue_open", key: String(x.number), title: `issue #${x.number}: ${x.title}`, url: x.url });
   }
 
-  const alerts = (path: string) => ["api", `repos/{owner}/{repo}/${path}?state=open&per_page=100`];
+  const ALERTS_PAGE = 100;
+  const alerts = (path: string) => ["api", `repos/{owner}/{repo}/${path}?state=open&per_page=${ALERTS_PAGE}`];
   const highSev = (s?: string) => s === "critical" || s === "high";
-  for (const a of (await json<{ number: number; html_url: string; security_advisory?: { severity?: string; summary?: string } }>(["dependabot"], alerts("dependabot/alerts"), true)) ?? []) {
+  for (const a of (await json<{ number: number; html_url: string; security_advisory?: { severity?: string; summary?: string } }>(["dependabot"], alerts("dependabot/alerts"), ALERTS_PAGE, true)) ?? []) {
     draft({ kind: "dependabot", key: String(a.number), severity: highSev(a.security_advisory?.severity) ? "high" : "normal", title: `dependabot #${a.number} (${a.security_advisory?.severity ?? "?"}): ${a.security_advisory?.summary ?? ""}`, url: a.html_url });
   }
-  for (const a of (await json<{ number: number; html_url: string; rule?: { description?: string; security_severity_level?: string } }>(["code_scanning"], alerts("code-scanning/alerts"), true)) ?? []) {
+  for (const a of (await json<{ number: number; html_url: string; rule?: { description?: string; security_severity_level?: string } }>(["code_scanning"], alerts("code-scanning/alerts"), ALERTS_PAGE, true)) ?? []) {
     draft({ kind: "code_scanning", key: String(a.number), severity: highSev(a.rule?.security_severity_level) ? "high" : "normal", title: `code scanning #${a.number}: ${a.rule?.description ?? ""}`, url: a.html_url });
   }
-  for (const a of (await json<{ number: number; html_url: string; secret_type_display_name?: string }>(["secret_scanning"], alerts("secret-scanning/alerts"), true)) ?? []) {
+  for (const a of (await json<{ number: number; html_url: string; secret_type_display_name?: string }>(["secret_scanning"], alerts("secret-scanning/alerts"), ALERTS_PAGE, true)) ?? []) {
     draft({ kind: "secret_scanning", key: String(a.number), severity: "high", title: `secret leaked #${a.number}: ${a.secret_type_display_name ?? "secret"}`, url: a.html_url });
   }
 
   const ignore = new Set(i.cfg.ignoreKinds ?? []);
-  return { drafts: drafts.filter((d) => !ignore.has(d.kind)), failed, github: true, rateLimited, ...(error ? { error } : {}) };
+  return { drafts: drafts.filter((d) => !ignore.has(d.kind)), failed, partial, unavailable, github: true, rateLimited, ...(error ? { error: rateLimited ? `GitHub rate limit: ${error}` : error } : {}) };
 }
 
 /** Config `github` (config.json): how often the scan runs and how long one git/gh call may take. */

@@ -4,7 +4,7 @@
  *  Read through git-read (bounded, never throws); each read that fails marks its kinds failed so the
  *  scan keeps their rows (no false resolve). No repo or branch name is in code (AC5.6). */
 import type { AttentionDraft } from "../ledger";
-import type { GitRead } from "../git-read";
+import { uncommittedFrom, type GitRead } from "../git-read";
 
 export const GIT_KINDS = ["unpushed", "no_upstream", "dirty", "stale_branch", "drift", "worktree"] as const;
 export type GitKind = (typeof GIT_KINDS)[number];
@@ -36,6 +36,8 @@ export interface GitScanInput {
   lastWorkAt(folder: string): number | undefined;
   /** The open `dirty` item was raised high (left after a todo): keep it high. */
   dirtyHigh: boolean;
+  /** …and keep its title and detail (the todo and its thread link, spec §8.6). */
+  dirtyKeep?: { title: string; detail?: string };
 }
 
 const SEP = "\u001f";
@@ -61,8 +63,13 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
   const head = await read.git(i.folder, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const refsOut = await read.git(i.folder, ["for-each-ref", "refs/heads", `--format=%(refname:short)${SEP}%(upstream:short)${SEP}%(upstream:track,nobracket)${SEP}%(committerdate:unix)`]);
   const current = head.ok ? head.out.trim() : undefined;
-  const tracked = i.cfg.trackedBranches?.length ? i.cfg.trackedBranches : current && current !== "HEAD" ? [current] : [];
+  // What matters: the configured branches, else the remote's default branch, else the checked-out one.
+  // Never "nothing" by accident: with no branch known, the kinds that need one are failed, not resolved.
+  const originHead = await read.git(i.folder, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  const remoteDefault = originHead.ok ? originHead.out.trim().replace(/^origin\//, "") : undefined;
+  const tracked = i.cfg.trackedBranches?.length ? i.cfg.trackedBranches : remoteDefault ? [remoteDefault] : current && current !== "HEAD" ? [current] : [];
   const base = tracked[0];
+  if (!base) fail("no_upstream", "stale_branch");
   let refs: Ref[] | undefined;
   if (!head.ok || !refsOut.ok) fail("unpushed", "no_upstream", "stale_branch");
   else {
@@ -89,7 +96,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
     if (m.ok) merged = new Set(m.out.split("\n").filter(Boolean));
   }
   if (refs && base) {
-    if (!merged) fail("stale_branch");
+    if (!merged || !refs.some((r) => r.branch === base)) fail("stale_branch");
     else {
       for (const r of refs) {
         if (merged.has(r.branch) || tracked.includes(r.branch) || i.now - r.at <= i.staleBranchDays * DAY) continue;
@@ -98,14 +105,27 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
     }
   }
 
-  const status = await read.git(i.folder, ["status", "--porcelain"]);
-  if (!status.ok) fail("dirty");
+  // While a session works here its changes are work in progress: an open item is kept as it is.
+  if (i.sessionIn(i.folder)) fail("dirty");
   else {
-    const n = status.out.split("\n").filter(Boolean).length;
-    if (n > 0 && !i.sessionIn(i.folder)) draft({ kind: "dirty", key: i.folder, severity: i.dirtyHigh ? "high" : "normal", title: `${n} uncommitted file(s), no session working on them` });
+    const status = await read.git(i.folder, ["status", "--porcelain", "--untracked-files=all"]);
+    const prefix = await read.git(i.folder, ["rev-parse", "--show-prefix"]);
+    if (!status.ok || !prefix.ok) fail("dirty");
+    else {
+      const n = uncommittedFrom(status.out, prefix.out.trim()).length; // the one rule (HANDOFF.md is not work)
+      if (n > 0) {
+        const keep = i.dirtyHigh ? i.dirtyKeep : undefined;
+        draft({ kind: "dirty", key: i.folder, severity: i.dirtyHigh ? "high" : "normal", title: keep?.title ?? `${n} uncommitted file(s), no session working on them`, ...(keep?.detail ? { detail: keep.detail } : {}) });
+      }
+    }
   }
 
   for (const [a, b] of i.cfg.driftPairs ?? []) {
+    if (!refs) {
+      fail("drift");
+      break;
+    }
+    if (!refs.some((r) => r.branch === a) || !refs.some((r) => r.branch === b)) continue; // not here: nothing to compare
     const c = await read.git(i.folder, ["rev-list", "--count", `${b}..${a}`]);
     if (!c.ok) {
       fail("drift");
@@ -126,6 +146,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
       if (!path || !sha || i.sessionIn(path)) continue;
       const ct = await read.git(i.folder, ["log", "-1", "--format=%ct", sha]);
       const last = Math.max(i.lastWorkAt(path) ?? 0, ct.ok ? Number(ct.out.trim()) * 1000 : 0);
+      if (last === 0) continue; // no time known: never a made-up idle age
       if (i.now - last <= i.worktreeIdleHours * HOUR) continue;
       const ws = await read.git(path, ["status", "--porcelain"]);
       const ref = branch ? refs?.find((r) => r.branch === branch) : undefined;

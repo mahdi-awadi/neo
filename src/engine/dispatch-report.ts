@@ -9,7 +9,7 @@
 //     waking an idle company — so a reload, a crash or a closed company session cannot lose one.
 //     Whatever is still pending rides along with the next delivery, or is prepended to the
 //     operator's next message to the company (pipeline.ts).
-import { git } from "./git-read";
+import { git, uncommittedFrom } from "./git-read";
 import type { Cause, Ledger } from "./ledger";
 import type { Registry } from "./registry";
 
@@ -43,21 +43,13 @@ export function lastCommitIn(folder: string): string | undefined {
 /** One bounded, read-only git query (git-read.ts is the process boundary). */
 export { git } from "./git-read";
 
-/** The handoff note is written FOR a reset, so it never counts as uncommitted work (ADR-0021). */
-const HANDOFF_NOTE = "HANDOFF.md";
-
 /** Paths with uncommitted changes (modified, staged or untracked), relative to the repo root, minus
  *  this folder's own `HANDOFF.md` (the folder may be a sub-folder of its repo). `[]` = clean;
  *  undefined = not a git repo or git failed. */
 export function uncommittedIn(folder: string): string[] | undefined {
   const out = git(folder, ["status", "--porcelain", "--untracked-files=all"]);
   if (out === undefined) return undefined;
-  const note = (git(folder, ["rev-parse", "--show-prefix"])?.trim() ?? "") + HANDOFF_NOTE;
-  return out
-    .split("\n")
-    .filter((l) => l.length > 3)
-    .map((l) => l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop()!)
-    .filter((p) => p !== note);
+  return uncommittedFrom(out, git(folder, ["rev-parse", "--show-prefix"])?.trim() ?? "");
 }
 
 /** Branch, HEAD (`<sha> <subject>`) and uncommitted paths, read from git — the facts a handoff note
