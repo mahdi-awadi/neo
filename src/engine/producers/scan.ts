@@ -75,6 +75,12 @@ export async function runScan(d: ScanDeps): Promise<void> {
       writeMeta(d, project, { github: true, counts: {}, error: e instanceof Error ? e.message : String(e) });
     }
   }
+  // A configured project the scan no longer tracks: its probe rows say nothing current.
+  for (const project of Object.keys(d.projects)) {
+    if (scanned.has(project)) continue;
+    d.ledger.deleteMeta(`probe:${project}`);
+    d.ledger.deleteMeta(`deploy:${project}`);
+  }
   // A repo that is gone (deleted or moved): nothing there needs the operator any more.
   for (const source of ["git", "github"] as const) {
     for (const project of d.ledger.attentionProjects(source)) {

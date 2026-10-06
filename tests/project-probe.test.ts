@@ -10,8 +10,8 @@ import { createRegistry } from "../src/engine/registry";
 import { createGitRead, type GitRead } from "../src/engine/git-read";
 import { runScan, type ScanDeps } from "../src/engine/producers/scan";
 import { readAttentionCfg } from "../src/engine/producers/engine";
-import { DEFAULT_DEPLOYED_VERSION_PATH, probeDeploy, shaAt, type DeployMeta, type Fetcher } from "../src/engine/producers/probe";
-import { projectView, renderProject, type ProbeMeta } from "../src/engine/project-view";
+import { DEFAULT_DEPLOYED_VERSION_PATH, MAX_PROBE_BODY_BYTES, probeDeploy, probeHealth, redactUrls, shaAt, type DeployMeta, type Fetcher } from "../src/engine/producers/probe";
+import { projectDeps, projectView, renderProject, type ProbeMeta } from "../src/engine/project-view";
 import type { ProjectCfg } from "../src/engine/producers/git";
 
 const made: string[] = [];
@@ -231,4 +231,101 @@ test("shaAt walks a dot path; anything else is undefined", () => {
   expect(shaAt({ a: 1 }, "a.b")).toBeUndefined();
   expect(shaAt(null, "a")).toBeUndefined();
   expect(shaAt({ a: "x" }, "")).toBeUndefined();
+});
+
+// ── P6 phase review fixes ─────────────────────────────────────────────────────────────────────────
+
+test("an answer larger than the cap is cut off: the stream is cancelled, an error names the bound", async () => {
+  expect(MAX_PROBE_BODY_BYTES).toBe(64 * 1024);
+  let sent = 0;
+  const chunk = new Uint8Array(16 * 1024).fill(0x20);
+  const s = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () =>
+      new Response(
+        new ReadableStream({
+          // Yields each chunk: the server shares this process, so a sync pull would starve the client.
+          async pull(c) {
+            await Bun.sleep(1);
+            sent += chunk.length;
+            c.enqueue(chunk);
+          },
+        }),
+      ),
+  });
+  servers.push(s);
+  const { dir } = repo();
+  const m = await probeDeploy({ read: reader(), folder: dir, cfg: { deployedVersionUrl: `http://127.0.0.1:${s.port}/v` }, branch: "main", timeoutMs: 5_000, now: NOW });
+  expect(m.error).toBe(`the answer is larger than ${MAX_PROBE_BODY_BYTES} bytes`);
+  expect(m.undeployed).toBeUndefined();
+  expect(sent).toBeLessThan(MAX_PROBE_BODY_BYTES * 64); // stopped early, not read to the timeout
+});
+
+test("redirects are not followed: a 3xx fails health and the version read; the location is redacted", async () => {
+  const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(null, { status: 302, headers: { location: "http://u:pw@elsewhere.test/login?token=secret#x" } }) });
+  servers.push(s);
+  const url = `http://127.0.0.1:${s.port}/v`;
+  const h = await probeHealth({ url, timeoutMs: 5_000, now: NOW });
+  expect(h.ok).toBe(false);
+  expect(h.error).toBe("redirected to http://elsewhere.test/login");
+  const { dir } = repo();
+  const d = await probeDeploy({ read: reader(), folder: dir, cfg: { deployedVersionUrl: url }, branch: "main", timeoutMs: 5_000, now: NOW });
+  expect(d.error).toBe("redirected to http://elsewhere.test/login");
+});
+
+test("shaAt reads own properties only: __proto__, constructor and inherited names never resolve", () => {
+  expect(shaAt({}, "__proto__")).toBeUndefined();
+  expect(shaAt({}, "constructor")).toBeUndefined();
+  expect(shaAt({}, "toString")).toBeUndefined();
+  expect(shaAt(JSON.parse('{"__proto__":{"v":"abc1234"}}'), "__proto__.v")).toBe("abc1234"); // an own key named so is data
+});
+
+test("errors never store a URL's userinfo, query or fragment", async () => {
+  expect(redactUrls("failed http://u:p@h.test:8080/a/b?key=secret#f and https://x.test/?q=1")).toBe("failed http://h.test:8080/a/b and https://x.test/");
+  const fetch: Fetcher = async (u) => {
+    throw new Error(`could not reach ${u}`);
+  };
+  const h = await probeHealth({ url: "http://user:pass@h.test/health?token=secret", timeoutMs: 1_000, now: NOW, fetch });
+  expect(h.error).toBe("could not reach http://h.test/health");
+});
+
+test("only http and https URLs are probed: anything else is an error and no call is made", async () => {
+  const { work, dir } = repo();
+  let fetched = 0;
+  const fetch: Fetcher = async () => (fetched++, new Response("{}"));
+  const d = scanDeps(work, dir, { gold: { healthUrl: "file:///etc/passwd", deployedVersionUrl: "ftp://h.test/v" } }, { fetch });
+  await runScan(d);
+  expect(fetched).toBe(0);
+  expect(probeMeta(d)).toMatchObject({ ok: false, error: "only http and https URLs are probed" });
+  expect(deployMeta(d)?.error).toBe("only http and https URLs are probed");
+  expect(deployMeta(d)?.undeployed).toBeUndefined();
+});
+
+test("stale rows: a probe or deploy row older than 2× github.scanEveryMs is ignored by health and the DEPLOY line", async () => {
+  const { work, dir } = repo();
+  const projects = { gold: { healthUrl: "http://h.test/", deployedVersionUrl: "http://h.test/v" } };
+  const d = scanDeps(work, dir, projects);
+  const scanEveryMs = 1_000;
+  const view = (at: number) => {
+    d.ledger.setMeta("probe:gold", { at, ok: false, error: "HTTP 500" }, at);
+    d.ledger.setMeta("deploy:gold", { at, branch: "main", sha: "abcdef1234567", undeployed: 4 }, at);
+    return projectView(projectDeps({ ledger: d.ledger, registry: d.registry, cfg: { github: { scanEveryMs, callTimeoutMs: 1_000 }, projects }, neoFolder: d.neoFolder, read: reader() }), "gold", NOW);
+  };
+  const fresh = (await view(NOW - 2 * scanEveryMs))!;
+  expect(fresh.health).toBe("down");
+  expect(fresh.git.undeployed).toBe(4);
+  const stale = (await view(NOW - 2 * scanEveryMs - 1))!;
+  expect(stale.health).not.toBe("down");
+  expect("undeployed" in stale.git).toBe(false);
+});
+
+test("the scan's gone pass deletes probe:/deploy: rows of configured projects it no longer tracks", async () => {
+  const { work, dir } = repo();
+  const d = scanDeps(work, dir, { gold: {}, gone: { healthUrl: "http://h.test/" } });
+  d.ledger.setMeta("probe:gone", { at: 1, ok: false }, 1);
+  d.ledger.setMeta("deploy:gone", { at: 1, undeployed: 2 }, 1);
+  await runScan(d);
+  expect(d.ledger.getMeta("probe:gone")).toBeUndefined();
+  expect(d.ledger.getMeta("deploy:gone")).toBeUndefined();
 });

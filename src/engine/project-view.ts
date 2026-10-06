@@ -152,7 +152,16 @@ export interface ProjectViewDeps {
   projects: Record<string, ProjectCfg>;
   /** Neo's own repo: its view carries the restart-gated work. */
   neoFolder: string;
+  /** A probe/deploy row older than this is ignored (default: PROBE_STALE_SCANS × the default
+   *  `github.scanEveryMs`; projectDeps derives it from the configured one). */
+  probeStaleMs?: number;
 }
+
+/** A probe row is current for this many scan intervals; older, it says nothing (the scan stopped). */
+export const PROBE_STALE_SCANS = 2;
+const defaultStaleMs = (): number => PROBE_STALE_SCANS * DEFAULT_GITHUB_CFG.scanEveryMs;
+/** A probe row written within `staleMs` of now. */
+const fresh = (at: unknown, now: number, staleMs: number): boolean => typeof at === "number" && now - at <= staleMs;
 
 /** The health rule (spec §9): `down` when a configured healthUrl's last probe failed; `attention`
  *  when a high item is open; `unknown` with no data at all; else `ok`. */
@@ -199,11 +208,10 @@ function common(d: Omit<ProjectViewDeps, "read">, name: string, folder: string, 
     "health",
     name,
     () => {
-      const probeRow = d.ledger.getMeta(`probe:${name}`);
-      const raw = probeRow?.value as ProbeMeta | undefined;
-      const probe = raw && typeof raw.ok === "boolean" ? raw : undefined;
+      const raw = d.ledger.getMeta(`probe:${name}`)?.value as ProbeMeta | undefined;
+      const probe = raw && typeof raw.ok === "boolean" && fresh(raw.at, now, d.probeStaleMs ?? defaultStaleMs()) ? raw : undefined;
       const anyTodo = queue.length > 0 || d.ledger.listTodos({ folder, limit: 1 }).length > 0;
-      const hasData = !!session || anyTodo || open.length > 0 || !!scan || !!probeRow || threads.length > 0;
+      const hasData = !!session || anyTodo || open.length > 0 || !!scan || !!probe || threads.length > 0;
       return projectHealth({ healthUrl: d.projects[name]?.healthUrl, probe, high: open.filter((r) => r.severity === "high").length, hasData });
     },
     "unknown" as ProjectHealth,
@@ -338,7 +346,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     folder,
     now: nowPart,
     queue: c.queue,
-    git: { ...(await gitFacts(d.read, folder, cfg)), ...part("deploy", name, () => deployFacts(d.ledger, name, cfg), {}) },
+    git: { ...(await gitFacts(d.read, folder, cfg)), ...part("deploy", name, () => deployFacts(d.ledger, name, cfg, now, d.probeStaleMs ?? defaultStaleMs()), {}) },
     github,
     decisions,
     plans,
@@ -350,11 +358,12 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
 }
 
 /** The deploy part of the git facts, from the last `deploy:<project>` probe row — only when the
- *  project configures `deployedVersionUrl` (spec §9: without config, nothing about deployment). */
-export function deployFacts(ledger: Ledger, name: string, cfg: ProjectCfg): Pick<ProjectGit, "undeployed" | "deployBranch" | "deployedSha" | "deployError"> {
+ *  project configures `deployedVersionUrl` (spec §9: without config, nothing about deployment) and
+ *  the row is not older than `staleMs`. */
+export function deployFacts(ledger: Ledger, name: string, cfg: ProjectCfg, now: number, staleMs: number): Pick<ProjectGit, "undeployed" | "deployBranch" | "deployedSha" | "deployError"> {
   if (!cfg.deployedVersionUrl) return {};
   const m = ledger.getMeta(`deploy:${name}`)?.value as DeployMeta | undefined;
-  if (!m || typeof m !== "object") return {};
+  if (!m || typeof m !== "object" || !fresh(m.at, now, staleMs)) return {};
   if (typeof m.undeployed === "number" && typeof m.sha === "string" && typeof m.branch === "string")
     return { undeployed: m.undeployed, deployBranch: m.branch, deployedSha: m.sha.slice(0, 7) };
   return typeof m.error === "string" ? { deployError: m.error } : {};
@@ -439,7 +448,7 @@ export async function gitFacts(read: GitRead, folder: string, cfg: ProjectCfg): 
 }
 
 /** The deps every surface builds the same way: the bounded git reader from `github.callTimeoutMs`,
- *  config `projects`, and Neo's own folder (the daemon's working folder, unless named). */
+ *  the probe staleness from `github.scanEveryMs`, config `projects`, and Neo's own folder (the daemon's working folder, unless named). */
 export function projectDeps(o: {
   ledger: Ledger;
   registry: Registry;
@@ -454,6 +463,7 @@ export function projectDeps(o: {
     read: o.read ?? createGitRead({ timeoutMs: (o.cfg.github ?? DEFAULT_GITHUB_CFG).callTimeoutMs }),
     projects: o.cfg.projects ?? {},
     neoFolder: o.neoFolder ?? process.cwd(),
+    probeStaleMs: PROBE_STALE_SCANS * (o.cfg.github ?? DEFAULT_GITHUB_CFG).scanEveryMs,
   };
 }
 

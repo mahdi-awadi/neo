@@ -860,3 +860,10 @@ Three surfaces read it: the console's Projects tab (`GET /api/projects`, `GET /a
 its attention buttons use the same action path as the feed), `/project <name>` (alias `/p`) on
 Telegram with attention, threads and console buttons, and the company's `sessions` tool, which ends
 with one summary line per project. No new knob. Going live needs a daemon restart (operator-gated).
+
+Task 6.3 added two optional probes to the repo scan (`producers/probe.ts`). With
+`projects.<name>.healthUrl` set, the scan GETs it and a failed answer makes the project `down`. With
+`deployedVersionUrl` set, it reads the deployed sha from the JSON answer, checks it is a hex sha in the
+repo, and counts the commits on the deploy branch after it: the console DEPLOY line and `/project`
+show "N commits not deployed (branch @ sha live)", or the probe's error. Each call is bounded in
+time and size, only http(s), no redirects; old rows are ignored. Without config there is no call.
