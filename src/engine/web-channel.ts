@@ -32,7 +32,7 @@ import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 import type { Cause, ThreadChange } from "./trace";
 import { faults } from "./fault";
-import { applyPlanAction, planDepsFrom, type PlanAction } from "./plans";
+import { applyPlanAction, planActions, planDepsFrom, type PlanAction } from "./plans";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -63,7 +63,8 @@ export interface ThreadView {
   orders: ThreadArtifacts["orders"];
   todos: ThreadArtifacts["todos"];
   decisions: ThreadArtifacts["decisions"];
-  plans: PlanRow[];
+  /** Each plan with the actions its status offers (the card's buttons). */
+  plans: Array<PlanRow & { actions: PlanAction[] }>;
   toolActions: number;
 }
 
@@ -104,6 +105,8 @@ export interface WebChannel {
   threads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: Array<ThreadListRow & { ref?: string }>; next?: string };
   /** One thread: a page of its messages (newest first) and what it produced. Undefined: no such thread. */
   thread(id: number, page: { before?: number; limit: number }): ThreadView | undefined;
+  /** The projects that have threads, with their thread counts (the console's project rail). */
+  threadProjects(): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. */
   search(q: string, f: { project?: string; before?: number; limit: number }): { rows: Array<SearchHit & { ref?: string; threadRef?: string }>; next?: number };
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
@@ -353,9 +356,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         orders: art.orders,
         todos: art.todos,
         decisions: art.decisions,
-        plans: ledger.plansInThread(id, PAGE_MAX),
+        plans: ledger.plansInThread(id, PAGE_MAX).map((p) => ({ ...p, actions: planActions(p.status) })),
         toolActions: art.toolActions,
       };
+    },
+    threadProjects() {
+      return opts.engine.ledger.threadProjects(PAGE_MAX);
     },
     search(q, f) {
       const trace = opts.engine.trace;

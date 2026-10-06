@@ -1,0 +1,246 @@
+{
+  "meta": {
+    "title": "Neo · dashboard",
+    "loginTitle": "Neo · sign in"
+  },
+  "login": {
+    "sub": "operator deck — sign in to command"
+  },
+  "brand": {
+    "sub": "operator deck",
+    "langSwitch": "العربية",
+    "langSwitchTitle": "Switch the console to Arabic"
+  },
+  "newProject": {
+    "section": "New project",
+    "pickRepo": "— pick a repo —",
+    "taskPlaceholder": "What should Neo do in this project?",
+    "open": "Open project",
+    "missing": "Pick a repo and describe the task."
+  },
+  "sdk": {
+    "section": "Worker SDK",
+    "claude": "Claude",
+    "codex": "Codex",
+    "claudeFoot": "Claude SDK",
+    "codexFoot": "Codex SDK",
+    "claudeLabel": "Claude Agent SDK",
+    "codexLabel": "OpenAI Codex SDK",
+    "switchFailed": "SDK switch failed"
+  },
+  "projects": {
+    "section": "Projects",
+    "empty": "No open projects yet.",
+    "emptyHint": "Pick a repo above and open one.",
+    "noneActive": "no active project",
+    "active": "active · {{name}}",
+    "openNoneActive": "{{count}} open · none active",
+    "kill": "kill"
+  },
+  "ctx": {
+    "chip": "ctx {{pct}}%",
+    "chipNone": "ctx –",
+    "reset": "reset {{age}} ago",
+    "lastReset": "last reset: {{verdict}}",
+    "band": {
+      "healthy": "healthy",
+      "above": "above the sweet spot",
+      "heavy": "heavy",
+      "emergency": "emergency"
+    }
+  },
+  "tabs": {
+    "activity": "Activity",
+    "threads": "Threads",
+    "queue": "Queue",
+    "loops": "Loops",
+    "usage": "Usage",
+    "recent": "Recent",
+    "inbox": "Inbox"
+  },
+  "feed": {
+    "placeholder": "Open a project, or select one on the left — its activity streams here.",
+    "emptyFor": "No activity yet for {{project}}.",
+    "showing": "Showing",
+    "showAll": "show all activity",
+    "compose": "message the active project — a follow-up for the AI…",
+    "send": "Send",
+    "attach": "attach a file",
+    "uploadFailed": "upload failed ({{status}})",
+    "allow": "allow",
+    "deny": "deny"
+  },
+  "loops": {
+    "newTitle": "New loop",
+    "name": "name (e.g. nightly-fmt)",
+    "summary": "summary",
+    "folder": "folder (under /home)",
+    "prompt": "what the worker does each iteration",
+    "goalCommand": "goal: command (verifiable)",
+    "goalJudge": "goal: judge (LLM)",
+    "goalValue": "shell command, or judge criteria",
+    "triggerManual": "trigger: manual",
+    "triggerInterval": "trigger: interval",
+    "triggerCron": "trigger: cron",
+    "triggerValue": "interval minutes, or cron expr (0 4 * * *)",
+    "maxIterations": "max iterations",
+    "budget": "budget USD (optional)",
+    "create": "Create loop",
+    "invalid": "invalid",
+    "title": "Loops",
+    "none": "No loops configured.",
+    "custom": "custom",
+    "builtin": "built-in",
+    "run": "▶ Run",
+    "on": "on",
+    "off": "off",
+    "delete": "Delete",
+    "confirmDelete": "Delete loop {{name}}?"
+  },
+  "usage": {
+    "title": "Subscription usage",
+    "unavailable": "Usage unavailable.",
+    "limits": "Subscription limits",
+    "limitsLater": "Limit status appears after the next run.",
+    "fiveHour": "5-hour",
+    "sevenDay": "7-day",
+    "used": "{{name}}: {{used}}% used · {{left}}% left",
+    "within": "{{name}}: within limit",
+    "hourly": "hourly",
+    "daily": "daily",
+    "weekly": "weekly",
+    "tokens": "{{n}} tokens",
+    "weeklyResets": "weekly resets {{when}}",
+    "foot5h": "5h ✓",
+    "foot7d": "7d ✓",
+    "live": "live"
+  },
+  "queue": {
+    "title": "Todo queues",
+    "empty": "Every project queue is empty.",
+    "paused": "{{project}} — paused ({{reason}})",
+    "resume": "Resume",
+    "pause": "Pause",
+    "running": "▶ running {{age}}",
+    "moveUp": "move up",
+    "cancel": "Cancel",
+    "confirmCancel": "Cancel #{{id}}?"
+  },
+  "recent": {
+    "title": "Recent orders",
+    "empty": "Nothing run yet.",
+    "ctxTitle": "Context resets",
+    "ctxEmpty": "No context resets yet.",
+    "at": "{{verdict}} at {{pct}}%",
+    "resumedClean": "resumed cleanly in {{steps}} steps",
+    "slowResume": "slow resume: {{steps}} steps",
+    "noEdit": "{{steps}} steps, no edit",
+    "ago": "{{age}} ago",
+    "verdict": {
+      "handoff": "handoff",
+      "clear": "clear",
+      "deferred": "deferred",
+      "resumed": "resumed",
+      "fresh": "fresh start"
+    }
+  },
+  "inbox": {
+    "titleEmpty": "Inbox — customer messages",
+    "empty": "No customer messages yet.",
+    "title": "Inbox — you review & reply; never auto-sent",
+    "delete": "🗑 Delete",
+    "deleteTitle": "Delete this message",
+    "noSubject": "(no subject)",
+    "instructions": "optional instructions for the agent…",
+    "sendToAgent": "▶ Send to agent",
+    "drafting": "⏳ the company is drafting a reply…",
+    "draftHint": "DRAFT — edit it, then send (or send back to the agent to revise):",
+    "sendToCustomer": "✓ Send to customer",
+    "notes": "revision notes…",
+    "redraft": "↩ Send back to agent",
+    "replied": "✓ replied",
+    "confirmSend": "Send this reply to the customer?",
+    "sendFailed": "Send failed.",
+    "confirmDelete": "Delete this message? This cannot be undone.",
+    "status": {
+      "new": "new",
+      "with-agent": "with agent",
+      "drafted": "drafted",
+      "replied": "replied"
+    }
+  },
+  "threads": {
+    "projects": "Projects",
+    "allProjects": "all",
+    "search": "search messages…",
+    "state": {
+      "all": "any state",
+      "open": "open",
+      "waiting": "waiting",
+      "done": "done",
+      "failed": "failed"
+    },
+    "origin": {
+      "all": "any origin",
+      "operator": "operator",
+      "loop": "loop",
+      "attention": "attention",
+      "ingress": "ingress",
+      "legacy": "legacy"
+    },
+    "since": {
+      "all": "any time",
+      "day": "last 24 h",
+      "week": "last 7 days",
+      "month": "last 30 days"
+    },
+    "loadOlder": "load older",
+    "empty": "No threads match.",
+    "pick": "Pick a thread to see its work.",
+    "counts": "messages {{messages}} · decisions {{decisions}} · todos {{todos}}",
+    "untitled": "(untitled)",
+    "you": "you",
+    "neo": "neo",
+    "olderMessages": "older messages",
+    "decisions": "Decisions",
+    "todos": "Todos",
+    "plans": "Plans",
+    "toolActions": "tool actions: {{count}}",
+    "reply": "reply in this thread…",
+    "planLine": "{{status}} · {{done}}/{{total}} · v{{version}}",
+    "changesHint": "To ask for changes, reply to the plan card on Telegram.",
+    "loadFailed": "Could not load — try again.",
+    "decisionStatus": {
+      "open": "open",
+      "answered": "answered",
+      "dismissed": "dismissed"
+    },
+    "todoStatus": {
+      "queued": "queued",
+      "running": "running",
+      "done": "done",
+      "failed": "failed",
+      "cancelled": "cancelled"
+    },
+    "planStatus": {
+      "draft": "draft",
+      "sent": "sent",
+      "approved": "approved",
+      "executing": "executing",
+      "done": "done",
+      "abandoned": "dropped"
+    },
+    "planAction": {
+      "approve": "Approve",
+      "execute": "Execute",
+      "done": "Done",
+      "drop": "Drop"
+    }
+  },
+  "age": {
+    "s": "{{n}}s",
+    "m": "{{n}}m",
+    "h": "{{n}}h",
+    "d": "{{n}}d"
+  }
+}

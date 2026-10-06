@@ -137,3 +137,26 @@ test("GET /api/threads, /api/threads/:id and /api/search: paged JSON behind the 
   // Bad filter values are ignored (never a 500).
   expect((await get("/api/threads?state=nonsense&origin=x&since=abc&limit=-4")).rows).toHaveLength(1);
 });
+
+test("threadProjects: projects with threads and their counts, most recently active first", () => {
+  const l = openLedger(":memory:");
+  thread(l, { project: "gold", at: 100 });
+  thread(l, { project: "gold", at: 150 });
+  thread(l, { project: "waselni", at: 300 });
+  thread(l, { at: 400 }); // no project: not in the rail
+  expect(l.threadProjects(10)).toEqual([
+    { project: "waselni", threads: 1 },
+    { project: "gold", threads: 2 },
+  ]);
+});
+
+test("GET /api/thread-projects and a thread's plans with the actions their status offers", async () => {
+  const a = app();
+  const t1 = thread(a.ledger, { project: "gold", at: 100 });
+  a.ledger.upsertPlan({ project: "gold", folder: "/home/gold", path: "plans/a.md", title: "A", sha256: "s", status: "approved", stepsTotal: 2, stepsDone: 1, threadId: t1 });
+  const cookie = (await a.instance.fetch(new Request(loginUrl(555)))).headers.get("set-cookie")!.split(";")[0]!;
+  const get = async (u: string) => (await a.instance.fetch(new Request(`http://neo.test${u}`, { headers: { cookie } }))).json() as Promise<any>;
+  expect(await get("/api/thread-projects")).toEqual({ rows: [{ project: "gold", threads: 1 }] });
+  const view = await get(`/api/threads/${t1}`);
+  expect(view.plans).toEqual([expect.objectContaining({ title: "A", status: "approved", actions: ["execute", "drop"] })]);
+});

@@ -12,6 +12,7 @@ import type { HealthCfg } from "./engine/health";
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
+import { isLang, type Lang } from "./frontends/web/langs";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
@@ -222,6 +223,9 @@ export interface NeoConfig {
   /** The plan registry (ADR-0019): where plans live, whether new versions are sent, the size cap and
    *  the Execute brief. Optional like `trace`; `loadConfig` always fills it. */
   plans?: PlansCfg;
+  /** The web console's language when the operator has not picked one (its EN | ع switch sets a
+   *  cookie): "en" or "ar". Optional like `trace`; `loadConfig` always fills it. */
+  consoleLang?: Lang;
   /** Alert when a running session has produced NO ACTIVITY for this long (ms). Default 10 min. */
   stuckAfterMs: number;
   /** Alert when one activity label has run this long (ms). Default 20 min. */
@@ -494,6 +498,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
     plans: readPlansCfg(fileCfg.plans),
+    consoleLang: isLang(fileCfg.consoleLang) ? fileCfg.consoleLang : "en",
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

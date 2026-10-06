@@ -1,0 +1,26 @@
+<!doctype html><html lang="%LANG%" dir="%DIR%"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%TITLE%</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500&display=swap" rel="stylesheet">
+<style>
+ :root{--ink:#080b10;--fg:#d7e2ee;--muted:#67788c;--accent:#3fe0a2;--glow:rgba(63,224,162,.25);--border:#1a2530}
+ *{box-sizing:border-box}html,body{height:100%}
+ body{margin:0;background:var(--ink);color:var(--fg);font-family:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;display:grid;place-items:center;overflow:hidden;
+  background-image:radial-gradient(720px 470px at 50% -12%,rgba(63,224,162,.10),transparent 60%)}
+ body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.5;
+  background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);
+  background-size:46px 46px;mask-image:radial-gradient(circle at 50% 42%,rgba(0,0,0,.2),transparent 70%)}
+ .card{text-align:center;position:relative;z-index:1;animation:rise .6s cubic-bezier(.2,.8,.2,1) both}
+ .wm{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:42px;letter-spacing:.34em;margin:0 0 6px;display:inline-flex;align-items:center;gap:15px}
+ .pulse{width:11px;height:11px;border-radius:50%;background:var(--accent);box-shadow:0 0 18px var(--glow);animation:pulse 2.4s infinite}
+ .sub{font-family:'JetBrains Mono','IBM Plex Sans Arabic',monospace;font-size:11px;letter-spacing:.26em;text-transform:uppercase;color:var(--muted);margin:0 0 28px}
+ :lang(ar) .sub{letter-spacing:normal;font-size:13px}
+ @keyframes pulse{0%{box-shadow:0 0 0 0 var(--glow)}70%{box-shadow:0 0 0 13px transparent}100%{box-shadow:0 0 0 0 transparent}}
+ @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+</style></head>
+<body><div class="card">
+ <h1 class="wm" dir="ltr"><span class="pulse"></span>NEO</h1>
+ <p class="sub">%SUB%</p>
+ <script async src="https://telegram.org/js/telegram-widget.js?22"
+  data-telegram-login="%BOT%" data-size="large" data-userpic="false" data-auth-url="/auth/telegram" data-request-access="write" data-lang="%LANG%"></script>
+</div></body></html>

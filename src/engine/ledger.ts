@@ -273,6 +273,8 @@ export interface Ledger {
   /** The console's thread list (spec §6): newest-updated first, filtered, keyset-paged. `before` is
    *  the previous page's `next` (opaque); `limit` is clamped to 1..PAGE_MAX. */
   listThreads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: ThreadListRow[]; next?: string };
+  /** The projects that have threads and how many, most recently active first (bounded). */
+  threadProjects(limit: number): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
    *  are quoted (never a syntax error); any failure is an empty list. */
   searchMessages(q: string, f: { project?: string; before?: number; limit: number }): SearchHit[];
@@ -815,6 +817,11 @@ export function openLedger(
       const out = rows.slice(0, limit).map(mapThreadListRow);
       const last = out.at(-1);
       return { rows: out, ...(rows.length > limit && last ? { next: `${last.updatedAt}.${last.id}` } : {}) };
+    },
+    threadProjects(limit) {
+      return db
+        .query(`SELECT project, count(*) AS threads FROM threads WHERE project IS NOT NULL GROUP BY project ORDER BY max(updated_at) DESC LIMIT ?`)
+        .all(clampPage(limit)) as Array<{ project: string; threads: number }>;
     },
     searchMessages(q, f) {
       const where = ["messages_fts MATCH ?"];

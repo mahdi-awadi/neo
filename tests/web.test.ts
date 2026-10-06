@@ -225,7 +225,9 @@ test("GET / serves the login page when unauthenticated and the console when auth
   expect(await anon.text()).toContain("telegram-widget");
   const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
   const authed = await a.instance.fetch(new Request("http://neo.test/", { headers: { cookie } }));
-  expect(await authed.text()).toContain("Neo");
+  const page = await authed.text();
+  expect(page).toContain("NEO");
+  expect(page).toContain('<script type="module" src="/app.js"></script>');
 });
 
 // ADR-0014: /stream tags each feed event with an SSE id and resumes from Last-Event-ID.

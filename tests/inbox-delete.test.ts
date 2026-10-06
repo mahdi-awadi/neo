@@ -25,6 +25,8 @@ test("web frontend exposes DELETE /api/inbox/:id wired to inbox.delete (source c
   expect(src).toMatch(/DELETE/);
   expect(src).toMatch(/\/api\/inbox\//);
   expect(src).toMatch(/\.delete\(/);
-  // a delete button affordance on inbox rows in the rendered page
-  expect(src).toMatch(/deleteInbox/);
+  // a delete button affordance on inbox rows in the console's client module
+  const app = await Bun.file(new URL("../src/frontends/web/app.ts", import.meta.url)).text();
+  expect(app).toMatch(/function deleteInbox/);
+  expect(app).toContain("/api/inbox/");
 });
