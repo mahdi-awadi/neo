@@ -69,10 +69,14 @@ export function restartDrafts(d: RestartDeps): AttentionDraft[] | "error" {
       ...(listed ? { detail: listed } : {}),
     });
   }
-  if (branch === "HEAD") out.push({ ...at, key: "branch", title: `live checkout is detached at ${short(head)}, the daemon runs ${boot.branch}` });
-  else if (branch !== boot.branch) out.push({ ...at, key: "branch", title: `live checkout is on ${branch}, the daemon runs ${boot.branch}` });
+  // What runs: its branch, or its commit when the daemon booted on a detached HEAD.
+  const running = boot.branch === "HEAD" ? short(boot.headSha) : boot.branch;
+  if (branch === "HEAD") {
+    if (boot.branch !== "HEAD" || head !== boot.headSha) out.push({ ...at, key: "branch", title: `live checkout is detached at ${short(head)}, the daemon runs ${running}` });
+  } else if (branch !== boot.branch) out.push({ ...at, key: "branch", title: `live checkout is on ${branch}, the daemon runs ${running}` });
   // Work waiting to merge into what runs: the running branch, or the running commit if that branch is gone.
-  const unmerged = unmergedBranches(d.folder, boot.branch, run) ?? unmergedBranches(d.folder, boot.headSha, run);
+  const into = boot.branch === "HEAD" ? boot.headSha : boot.branch;
+  const unmerged = unmergedBranches(d.folder, into, run) ?? unmergedBranches(d.folder, boot.headSha, run);
   if (!unmerged) return "error";
   for (const u of unmerged) {
     if (u.branch === branch || u.branch === boot.branch || !d.branchPrefixes.some((p) => u.branch.startsWith(p))) continue;

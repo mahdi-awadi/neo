@@ -134,3 +134,14 @@ test("restartNeededSince: the latest result per item since the boot, only those 
   l.recordEvent("update_result", { at: 170, data: { category: "sdk", id: "sdk", outcome: "rolled_back" } }); // back to the running version
   expect(restartNeededSince(l, 100)).toEqual([]);
 });
+
+test("a daemon booted on a detached HEAD: merges are judged against the running commit", () => {
+  const dir = repo();
+  sh(dir, "checkout", "-q", "--detach");
+  const boot = bootOf(dir); // branch "HEAD"
+  sh(dir, "checkout", "-q", "-b", "fix/z", "master");
+  commit(dir, "z.txt", "fix: z");
+  sh(dir, "checkout", "-q", "--detach", boot.headSha);
+  const drafts = restartDrafts(deps(dir, boot)) as Exclude<ReturnType<typeof restartDrafts>, "error">;
+  expect(drafts.map((d) => d.key)).toEqual(["merge:fix/z"]);
+});
