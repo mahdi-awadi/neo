@@ -457,3 +457,58 @@ test("readPlansCfg keeps each well-typed field and falls back for the rest", () 
     maxPerRun: 5,
   });
 });
+
+// ── P2 re-review fixes ─────────────────────────────────────────────────────────────────────
+
+test("content changed since the newest card (not yet sent): approve and execute are refused on every surface", async () => {
+  const dir = repo();
+  let fail = false;
+  const { ledger, deps } = rig({ postPlan: async () => (fail ? undefined : { chatId: 1, messageId: 2 }) });
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  fail = true;
+  put(dir, PLAN, BODY + "- [ ] a step nobody reviewed\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  const plan = ledger.planByPath(dir, PLAN)!;
+  expect(plan.version).toBe(1);
+  const refused = { ok: false, text: "the plan changed after its newest card (v1) — wait for the new card, or see /plans" };
+  expect(await applyPlanAction(deps, plan.id, "approve", 1)).toEqual(refused);
+  expect(await applyPlanAction(deps, plan.id, "approve")).toEqual(refused);
+  const { todo, submitted } = fakeTodo(ledger);
+  expect(await applyPlanAction({ ...deps, todo }, plan.id, "execute", 1)).toEqual(refused);
+  expect(submitted).toEqual([]);
+  // Drop is always allowed: it acts on no content.
+  expect(await applyPlanAction(deps, plan.id, "drop", 1)).toEqual({ ok: true, text: "Dropped" });
+});
+
+test("ticking steps of a sent plan keeps it sent and updates its step count", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  put(dir, PLAN, "# Fare list port\n- [x] one\n- [ ] two\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toHaveLength(1);
+  expect(ledger.planByPath(dir, PLAN)).toMatchObject({ status: "sent", stepsDone: 1, stepsTotal: 2 });
+});
+
+test("the '+N more' note rides on the last card that really lands", async () => {
+  const dir = repo();
+  const landed: string[] = [];
+  const { deps } = rig({
+    trace: undefined,
+    cfg: { ...DEFAULT_PLANS_CFG, maxPerRun: 2 },
+    postPlan: async (_rec, _path, caption) => {
+      if (caption.includes("· B")) return undefined;
+      landed.push(caption);
+      return { chatId: 1, messageId: landed.length };
+    },
+  });
+  for (const n of ["a", "b", "c", "d"]) put(dir, `plans/${n}.md`, `# ${n.toUpperCase()}`);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(landed).toEqual(["📄 plan · gold · A", "📄 plan · gold · C · +1 more: /plans"]);
+});
+
+test("readPlansCfg refuses brace globs (git pathspecs cannot read them)", () => {
+  expect(readPlansCfg({ paths: ["docs/{plans,specs}/**/*.md"] }).paths).toEqual(DEFAULT_PLANS_CFG.paths);
+});

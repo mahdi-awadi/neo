@@ -92,20 +92,23 @@ function planTitle(md: string, path: string): string {
   return basename(path);
 }
 
-/** Upsert the plan by (folder, path). `isNewVersion` = new row or a different sha256. A new version
- *  resets status to draft only from draft/sent; an approved/executing/done plan that is edited keeps
- *  its status while sha, title and steps update. */
+/** Upsert the plan by (folder, path). Its `sha256` is the `reviewHash`, so `isNewVersion` = a new row
+ *  or changed text; ticking checkboxes only updates the step count. A new version resets status to
+ *  draft only from draft/sent; an approved/executing/done plan that is edited keeps its status while
+ *  sha, title and steps update. */
 export function registerPlan(
   ledger: Ledger,
   p: { project: string; folder: string; path: string; content: string; cause?: Cause; orderId?: string },
 ): { plan: PlanRow; isNewVersion: boolean } {
-  const sha256 = createHash("sha256").update(p.content).digest("hex");
+  const sha256 = reviewHash(p.content);
   const prev = ledger.planByPath(p.folder, p.path);
   const isNewVersion = !prev || prev.sha256 !== sha256;
   const steps = countSteps(p.content);
   const base = { project: p.project, folder: p.folder, path: p.path, title: planTitle(p.content, p.path), sha256, stepsTotal: steps.total, stepsDone: steps.done };
   if (prev && !isNewVersion) {
-    return { plan: prev, isNewVersion: false };
+    // Same text: only progress (ticked steps) can have moved.
+    if (prev.stepsDone === steps.done && prev.stepsTotal === steps.total) return { plan: prev, isNewVersion: false };
+    return { plan: ledger.upsertPlan({ ...prev, stepsTotal: steps.total, stepsDone: steps.done }), isNewVersion: false };
   }
   const status = !prev || prev.status === "draft" || prev.status === "sent" ? "draft" : prev.status;
   const plan = ledger.upsertPlan({
@@ -152,7 +155,8 @@ export function readPlansCfg(raw: unknown): PlansCfg {
   const positive = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : d);
   const d = DEFAULT_PLANS_CFG;
   return {
-    paths: Array.isArray(r.paths) && r.paths.length > 0 && r.paths.every((p) => typeof p === "string" && p.length > 0) ? (r.paths as string[]) : d.paths,
+    // Globs are also git pathspecs (`:(glob)`), which have no `{a,b}` alternation.
+    paths: Array.isArray(r.paths) && r.paths.length > 0 && r.paths.every((p) => typeof p === "string" && p.length > 0 && !/[{}]/.test(p)) ? (r.paths as string[]) : d.paths,
     send: typeof r.send === "boolean" ? r.send : d.send,
     maxBytes: positive(r.maxBytes, d.maxBytes),
     executeBrief: typeof r.executeBrief === "string" && r.executeBrief.trim() ? r.executeBrief : d.executeBrief,
@@ -255,25 +259,18 @@ function readPlan(folder: string, path: string, maxBytes: number): string | unde
   }
 }
 
-/** A registered plan and the hash its version is judged by (`reviewHash`). */
-interface Registered {
-  plan: PlanRow;
-  review: string;
-}
-
 /** Register the file and finish an executing plan whose every step is checked. */
-function register(deps: PlanDeps, run: PlanRun, path: string, content: string): Registered {
+function register(deps: PlanDeps, run: PlanRun, path: string, content: string): PlanRow {
   const { plan } = registerPlan(deps.ledger, { project: run.project, folder: run.folder, path, content, cause: run.cause, orderId: run.orderId });
-  const review = reviewHash(content);
   if (plan.status === "executing" && plan.stepsTotal > 0 && plan.stepsDone === plan.stepsTotal) {
-    return { plan: deps.ledger.upsertPlan({ ...plan, status: "done" }), review };
+    return deps.ledger.upsertPlan({ ...plan, status: "done" });
   }
-  return { plan, review };
+  return plan;
 }
 
 /** Whether a send of this version would post a card (it is not finished and not already sent). */
-function unsent(deps: PlanDeps, r: Registered): boolean {
-  return !!deps.postPlan && deps.cfg.send && r.plan.status !== "done" && r.plan.status !== "abandoned" && r.plan.sentSha256 !== r.review;
+function unsent(deps: PlanDeps, plan: PlanRow): boolean {
+  return !!deps.postPlan && deps.cfg.send && plan.status !== "done" && plan.status !== "abandoned" && plan.sentSha256 !== plan.sha256;
 }
 
 /** Content versions being posted right now, `<folder>\0<path>\0<sha256>`. Run ends overlap (a turn
@@ -290,20 +287,19 @@ type SendOutcome = "sent" | "already" | "failed" | "off";
  *  card opens its tracked decision (so a failed post leaves nothing open, and the next run end
  *  tries again), closes the previous version's decision and becomes a `plan` line of its thread.
  *  A done or dropped plan is never sent again. */
-async function sendPlan(deps: PlanDeps, r: Registered, run: PlanRun, more = 0): Promise<SendOutcome> {
-  const { plan, review } = r;
+async function sendPlan(deps: PlanDeps, plan: PlanRow, run: PlanRun, more = 0): Promise<SendOutcome> {
   if (!deps.postPlan || !deps.cfg.send || plan.status === "done" || plan.status === "abandoned") return "off";
-  const key = `${plan.folder}\0${plan.path}\0${review}`;
-  if (plan.sentSha256 === review || posting.has(key)) return "already";
+  const key = `${plan.folder}\0${plan.path}\0${plan.sha256}`;
+  if (plan.sentSha256 === plan.sha256 || posting.has(key)) return "already";
   posting.add(key);
   try {
-    return await postVersion(deps, r, run, deps.postPlan, more);
+    return await postVersion(deps, plan, run, deps.postPlan, more);
   } finally {
     posting.delete(key);
   }
 }
 
-async function postVersion(deps: PlanDeps, { plan, review }: Registered, run: PlanRun, postPlan: PostPlan, more: number): Promise<SendOutcome> {
+async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan: PostPlan, more: number): Promise<SendOutcome> {
   const { ledger, trace } = deps;
   const cause = run.cause;
   const ref = cause && trace ? trace.ref(cause.threadId) : undefined;
@@ -327,7 +323,7 @@ async function postVersion(deps: PlanDeps, { plan, review }: Registered, run: Pl
   const now = ledger.planById(plan.id) ?? plan;
   const previous = now.decisionId ? ledger.decisionById(now.decisionId) : undefined;
   if (previous?.status === "open") ledger.dismissDecision(previous.id);
-  ledger.upsertPlan({ ...now, status: now.status === "draft" ? "sent" : now.status, decisionId, sentAt: Date.now(), sentSha256: review, version });
+  ledger.upsertPlan({ ...now, status: now.status === "draft" ? "sent" : now.status, decisionId, sentAt: Date.now(), sentSha256: plan.sha256, version });
   ledger.recordEvent("plan_sent", { folder: plan.folder, orderId: run.orderId, cause, data: { project: plan.project, planId: plan.id, path: plan.path, version } });
   if (trace && cause) {
     faults.guard("plans.line", () => {
@@ -344,23 +340,27 @@ async function postVersion(deps: PlanDeps, { plan, review }: Registered, run: Pl
  *  names how many more wait in `/plans`. Each file is its own unit (ADR-0010): one that throws is
  *  reported and the rest still go. */
 export async function onRunEndPlans(deps: PlanDeps, run: PlanRun): Promise<void> {
-  const toSend: Registered[] = [];
+  const toSend: PlanRow[] = [];
   for (const path of changedPlanFiles(run.folder, run.startSha, deps.cfg.paths, deps.git)) {
     try {
       const content = readPlan(run.folder, path, deps.cfg.maxBytes);
       if (content === undefined) continue;
-      const r = register(deps, run, path, content);
-      if (unsent(deps, r)) toSend.push(r);
+      const plan = register(deps, run, path, content);
+      if (unsent(deps, plan)) toSend.push(plan);
     } catch (e) {
       faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path });
     }
   }
+  // Post until `cap` cards have landed; the one that would be the last carries the count still
+  // waiting, so a post that fails passes the note on to the next plan.
   const cap = deps.cfg.maxPerRun;
-  for (const [i, r] of toSend.slice(0, cap).entries()) {
+  let landed = 0;
+  for (let i = 0; i < toSend.length && landed < cap; i++) {
+    const plan = toSend[i]!;
     try {
-      await sendPlan(deps, r, run, i === cap - 1 ? toSend.length - cap : 0);
+      if ((await sendPlan(deps, plan, run, landed === cap - 1 ? toSend.length - i - 1 : 0)) === "sent") landed++;
     } catch (e) {
-      faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path: r.plan.path });
+      faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path: plan.path });
     }
   }
 }
@@ -401,6 +401,11 @@ export async function applyPlanAction(deps: PlanDeps, planId: number, action: Pl
   const plan = ledger.planById(planId);
   if (!plan) return { ok: false, text: `no plan #${planId}` };
   if (version !== undefined && version !== plan.version) return { ok: false, text: `this card is v${version} — the newest is v${plan.version}; use that card` };
+  // Approve and Execute act on the text the operator read: refused when the file changed after the
+  // newest card and that version has not reached them yet (held back by the cap, or its post failed).
+  if ((action === "approve" || action === "execute") && plan.sentSha256 !== undefined && plan.sentSha256 !== plan.sha256) {
+    return { ok: false, text: `the plan changed after its newest card (v${plan.version}) — wait for the new card, or see /plans` };
+  }
   if (plan.status === "done" || plan.status === "abandoned") return { ok: false, text: `this plan is already ${plan.status === "done" ? "done" : "dropped"}` };
   // The card's buttons are the rule on every surface: an action its status does not offer is refused.
   if (!planActions(plan.status).includes(action)) {
