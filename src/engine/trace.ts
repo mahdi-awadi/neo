@@ -3,7 +3,7 @@
 // started work calls root(). Thread choice is deterministic (spec §4.1) — no time window, no text
 // matching. Thread state is derived by refreshThread() only (spec §5). Contained: nothing here
 // throws for an unknown reply target or a pruned thread.
-import type { Cause, Ledger, MessageKind, ThreadArtifacts, ThreadOrigin, ThreadRow } from "./ledger";
+import type { Cause, Ledger, MessageKind, ThreadArtifacts, ThreadOrigin, ThreadRow, ThreadState } from "./ledger";
 import type { Priority } from "./priority";
 import type { Registry } from "./registry";
 import { faults } from "./fault";
@@ -56,6 +56,18 @@ export interface Trace {
   tree(msgId: number, opts?: { limit?: number }): TraceTree;
   /** Re-derive and store a thread's state from its linked facts. Idempotent; a no-op for a pruned thread. */
   refreshThread(threadId: number): void;
+  /** Hear every thread whose state changed (the console moves its row live, ADR-0017). Returns the
+   *  unsubscribe. A listener that throws is reported; the refresh is never affected. */
+  onThreadChange(listener: (c: ThreadChange) => void): () => void;
+}
+
+/** One thread state change, as the console's `thread` event carries it. */
+export interface ThreadChange {
+  id: number;
+  state: ThreadState;
+  project?: string;
+  title: string;
+  updatedAt: number;
 }
 
 /** The ref a line carries (spec §4.3): acks, a turn's first reply and result-like lines; never progress. */
@@ -136,8 +148,13 @@ export function createTrace(deps: {
       lastEnd: facts.lastEnd,
       closedByOperator: facts.closedByOperator,
     });
-    if (state !== thread.state) ledger.setThreadState(threadId, state, now());
+    if (state === thread.state) return;
+    const at = now();
+    ledger.setThreadState(threadId, state, at);
+    const change: ThreadChange = { id: threadId, state, ...(thread.project !== undefined ? { project: thread.project } : {}), title: thread.title, updatedAt: at };
+    for (const l of threadListeners) faults.guard("trace.threadListener", () => l(change), { threadId });
   }
+  const threadListeners = new Set<(c: ThreadChange) => void>();
 
   function newThread(rootMsgId: number, origin: ThreadOrigin, title: string, at: number, project?: string, folder?: string): void {
     ledger.setMessageThread(rootMsgId, rootMsgId);
@@ -234,5 +251,9 @@ export function createTrace(deps: {
       };
     },
     refreshThread,
+    onThreadChange(listener) {
+      threadListeners.add(listener);
+      return () => void threadListeners.delete(listener);
+    },
   };
 }

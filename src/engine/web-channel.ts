@@ -30,7 +30,7 @@ import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
 import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
-import type { Cause } from "./trace";
+import type { Cause, ThreadChange } from "./trace";
 import { faults } from "./fault";
 import { applyPlanAction, planDepsFrom, type PlanAction } from "./plans";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
@@ -51,7 +51,9 @@ export type WebEvent =
   | { type: "projects"; text: string; items: SelectableProject[] }
   | { type: "loops"; items: LoopInfo[] }
   | { type: "sdk"; sdk: WorkerSdkState }
-  | { type: "file"; name: string; url: string; project?: string };
+  | { type: "file"; name: string; url: string; project?: string }
+  // A thread changed state (ADR-0017): the console moves its row without a re-fetch.
+  | ({ type: "thread" } & ThreadChange);
 
 /** One thread as the console shows it (spec §6). `next` is the cursor for the older messages. */
 export interface ThreadView {
@@ -151,6 +153,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       else emit({ type: "notice", text: line.text });
     },
   });
+
+  // Live thread states (ADR-0017). One subscription per channel for the daemon's life.
+  opts.engine.trace?.onThreadChange((c) => void emit({ type: "thread", ...c }));
 
   // Loops started here send the plans they wrote (ADR-0019) — only where a card can be posted.
   const loopPlans = opts.engine.postPlan ? planDepsFrom(opts.engine, opts.engine.cfg.plans) : undefined;

@@ -572,3 +572,36 @@ test("a trace that fails on inbound never blocks the operator's web message", as
   await ch.send("hello there");
   expect(got.some((e) => e.type === "message")).toBe(true); // the pipeline still answered
 });
+
+// P3 Task 3.3 (ADR-0017): a thread that changes state is pushed to the console once, so the thread
+// list moves its row without a re-fetch; no change → no event.
+test("a thread state change is one `thread` event; an unchanged refresh is none", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry, now: () => 5000 });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  const cause = trace.inbound({ chatId: 42, text: "ship the fare list", surface: "web" });
+  trace.outbound({ chatId: 42, text: "on it", cause, project: "gold", folder: "/home/gold" });
+  const before = events.filter((e) => e.type === "thread").length;
+  trace.refreshThread(cause.threadId); // nothing changed
+  expect(events.filter((e) => e.type === "thread").length).toBe(before);
+  eng.ledger.openDecision({ kind: "decision", question: "ship?", cause });
+  trace.refreshThread(cause.threadId);
+  trace.refreshThread(cause.threadId);
+  const changes = events.filter((e) => e.type === "thread");
+  expect(changes.length).toBe(before + 1);
+  expect(changes.at(-1)).toEqual({ type: "thread", id: cause.threadId, state: "waiting", project: "gold", title: "ship the fare list", updatedAt: 5000 });
+});
+
+test("a throwing thread listener is contained: the refresh still stores the state", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  trace.onThreadChange(() => {
+    throw new Error("listener broke");
+  });
+  const cause = trace.inbound({ chatId: 42, text: "x", surface: "web" });
+  eng.ledger.openDecision({ kind: "decision", question: "?", cause });
+  expect(() => trace.refreshThread(cause.threadId)).not.toThrow();
+  expect(eng.ledger.threadById(cause.threadId)!.state).toBe("waiting");
+});
