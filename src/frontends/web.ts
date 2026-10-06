@@ -563,7 +563,7 @@ function setSdk(provider){post('/api/sdk',{provider:provider}).then(function(r){
 
 // ctx% against the sweet spot (ADR-0014): the band colours the chip; the last reset rides along.
 function ctxChip(p){if(p.ctxPct==null&&!p.lastReset)return '';var b=p.ctxBand||'healthy';
- var t=(p.ctxPct!=null?'ctx '+p.ctxPct+'%':'ctx –')+(p.lastReset?' · ↻ '+age(Date.now()-p.lastReset.at):'');
+ var t=(p.ctxPct!=null?'ctx '+p.ctxPct+'%':'ctx –')+(p.lastReset?' · reset '+age(Date.now()-p.lastReset.at)+' ago':'');
  var tip=b+(p.lastReset?' — last reset: '+p.lastReset.verdict+(p.lastReset.reason?' ('+p.lastReset.reason+')':''):'');
  return '<span class="ctx '+esc(b)+'" title="'+esc(tip)+'">'+esc(t)+'</span>';}
 function renderProjects(){var box=document.getElementById('projects');document.getElementById('pcount').textContent=S.projects.length||'';
@@ -661,7 +661,7 @@ function renderRecent(){var v=document.getElementById('vrecent');var h='<div cla
   h+='<div class="rrow"><span>'+ic+'</span><div style="flex:1;min-width:0"><div>'+esc(o.task)+'</div><div class="rfo">'+esc(o.folder)+'</div></div></div>';});
  h+='</div>'+renderContextEvents();v.innerHTML=h;}
 // The context-reset timeline (ADR-0014): every handoff, clear, deferral and resume, with its reason.
-var CTX_ICON={handoff:'↻',clear:'⚠',deferred:'⏸',resumed:'▶',fresh:'○'};
+var CTX_ICON={handoff:'🔁',clear:'⚠️',deferred:'⏸',resumed:'▶',fresh:'🆕'};
 function renderContextEvents(){var C=S.contextEvents||[];var h='<div class="card"><h3>Context resets</h3>';
  if(!C.length)h+='<div class="empty">No context resets yet.</div>';
  C.forEach(function(e){var what=e.verdict+(e.verdict==='resumed'?'':' at '+Math.round(e.occupancy*100)+'%');
