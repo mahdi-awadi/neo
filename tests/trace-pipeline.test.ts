@@ -181,8 +181,10 @@ test("an open-session snapshot keeps the cause across a reload", async () => {
 
   ledger.saveOpenSessions(rows);
   restoreSessions(registry, ledger);
-  expect(registry.causeOf("s1")).toEqual(cause);
-  expect(registry.causeOf("s2")).toBeUndefined();
+  // §11.3: restored without a live cause; the stored one files its first output.
+  expect(registry.causeOf("s1")).toBeUndefined();
+  expect(registry.lastCauseOf("s1")).toEqual(cause);
+  expect(registry.lastCauseOf("s2")).toBeUndefined();
 });
 
 test("drainAndPersist snapshots the session's last cause even after its turn ended", async () => {
@@ -228,4 +230,104 @@ test("inbound: a failing thread insert leaves no orphan message; a failing refre
   const c = trace.inbound({ chatId: 7, text: "hello", surface: "telegram" });
   expect(ledger.messageById(c.msgId)?.threadId).toBe(c.threadId);
   expect(ledger.threadById(c.threadId)).toBeDefined();
+});
+
+// --- Fix round 1 (review of Task 1.4) ---
+
+test("a session removed mid-turn (/kill, idle sweep): its causes are answered and the final line goes to the latest one", async () => {
+  const h = harness();
+  const dir = scratch();
+  const a = inbound(h, `/open ${dir} go`);
+  const run = await handleMessage(`/open ${dir} go`, 7, h.deps, "neo", a);
+  const id = h.registry.list()[0]!.id;
+  h.registry.setFocus(7, id, "pinned");
+  const b = inbound(h, "and b");
+  await handleMessage("and b", 7, h.deps, "neo", b);
+  expect(h.ledger.threadById(b.threadId)?.state).toBe("open");
+
+  h.registry.remove(id); // what /kill and the idle sweep do, before the run has ended
+  h.f.finish({ ok: false, sessionId: "s1", summary: "interrupted", costUsd: 0 });
+  await run!.done;
+  await tick();
+  // Nothing is stuck "open": A's order ended in an error (a killed run), so its thread failed.
+  expect(h.ledger.threadById(a.threadId)?.state).toBe("failed");
+  expect(h.ledger.threadById(b.threadId)?.state).toBe("done");
+  const last = h.ledger.messagesInThread(b.threadId, { limit: 50 })[0]!;
+  expect(last).toMatchObject({ content: "interrupted", causeId: b.msgId });
+});
+
+test("§11.3: a restored session has no live cause; a resume with no new message files its first output under the stored cause", async () => {
+  const h = harness();
+  const dir = scratch();
+  const stored = inbound(h, "work on beta");
+  h.ledger.saveOpenSessions([{ id: "s1", name: "beta", folder: dir, chatId: 7, sdkSessionId: "", task: "t", source: "neo", createdAt: 1, cause: stored }]);
+  restoreSessions(h.registry, h.ledger);
+  expect(h.registry.causeOf("s1")).toBeUndefined(); // not active work
+  expect(h.registry.lastCauseOf("s1")).toEqual(stored);
+  h.trace.refreshThread(stored.threadId);
+  expect(h.ledger.threadById(stored.threadId)?.state).toBe("done");
+
+  h.registry.setFocus(7, "s1", "pinned");
+  await handleMessage("carry on", 7, h.deps); // no cause: no new operator message reaches the trace
+  h.f.h().onMessage("first output");
+  const row = h.ledger.messagesInThread(stored.threadId, { limit: 50 }).find((m) => m.content === "first output");
+  expect(row?.causeId).toBe(stored.msgId);
+  expect(h.ledger.threadById(stored.threadId)?.state).toBe("done"); // not stuck "open"
+  h.f.h().onTurnEnd?.();
+  expect(h.ledger.threadById(stored.threadId)?.state).toBe("done");
+});
+
+test("a turn answers only the inputs it consumed: Codex A then queued B", async () => {
+  const h = harness();
+  const dir = scratch();
+  const a = inbound(h, `/open ${dir} go`);
+  await handleMessage(`/open ${dir} go`, 7, h.deps, "neo", a);
+  const id = h.registry.list()[0]!.id;
+  h.registry.setFocus(7, id, "pinned");
+  h.f.h().onTurnStart?.(1); // the Codex loop took A
+
+  const b = inbound(h, "and b");
+  await handleMessage("and b", 7, h.deps, "neo", b); // queued behind A's turn
+  h.f.h().onMessage("a-out");
+  const aOut = h.ledger.messagesInThread(a.threadId, { limit: 50 }).find((m) => m.content === "a-out");
+  expect(aOut?.causeId).toBe(a.msgId);
+
+  h.f.h().onTurnEnd?.();
+  expect(h.ledger.threadById(a.threadId)?.state).toBe("done");
+  expect(h.ledger.threadById(b.threadId)?.state).toBe("open"); // B has not run yet
+
+  h.f.h().onTurnStart?.(1); // B's own turn
+  h.f.h().onMessage("b-out");
+  expect(h.ledger.messagesInThread(b.threadId, { limit: 50 }).find((m) => m.content === "b-out")?.causeId).toBe(b.msgId);
+  expect(h.ledger.threadById(b.threadId)?.state).toBe("open");
+  h.f.h().onTurnEnd?.();
+  expect(h.ledger.threadById(b.threadId)?.state).toBe("done");
+});
+
+test("a resume that throws before the run starts leaves no cause delivered (thread not stuck open)", async () => {
+  const h = harness();
+  const dir = scratch();
+  const first = inbound(h, `/open ${dir} go`);
+  const run = await handleMessage(`/open ${dir} go`, 7, h.deps, "neo", first);
+  h.f.finish({ ok: true, sessionId: "s1", summary: "ok", costUsd: 0 });
+  await run!.done;
+  await tick();
+  const id = h.registry.list()[0]!.id;
+  h.registry.setFocus(7, id, "pinned");
+  const deps = { ...h.deps, reply: (_c: number, t: string) => { if (t.startsWith("↩︎ resuming")) throw new Error("channel down"); h.sent.push(t); } };
+  const c = inbound(h, "again");
+  await expect(handleMessage("again", 7, deps, "neo", c)).rejects.toThrow("channel down");
+  expect(h.registry.causeOf(id)).toBeUndefined();
+  expect(h.ledger.threadById(c.threadId)?.state).toBe("done");
+});
+
+test("the approval verdict row uses the injected clock and is the thread's newest line", async () => {
+  const h = harness();
+  const dir = scratch();
+  const cause = inbound(h, `/open ${dir} go`);
+  await handleMessage(`/open ${dir} go`, 7, { ...h.deps, now: () => 4242 }, "neo", cause);
+  await h.f.h().onEscalation("risky shell command: rm -rf build");
+  const newest = h.ledger.messagesInThread(cause.threadId, { limit: 1 })[0]!;
+  expect(newest).toMatchObject({ role: "user", content: "approval: allow", at: 4242 });
+  expect(h.ledger.threadById(cause.threadId)?.lastMsgId).toBe(newest.id);
 });

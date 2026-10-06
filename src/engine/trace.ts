@@ -36,9 +36,12 @@ export interface Trace {
     /** The web composer opened inside a thread. */
     threadId?: number;
   }): Cause;
-  /** A Neo line goes out. Writes the row under `cause` (none: a line nobody caused), returns its id. */
+  /** A Neo line goes out. Writes the row under `cause` (none: a line nobody caused), returns its id.
+   *  `role: "user"` files an operator reply that is not a new message (an approval verdict). */
   outbound(p: {
-    chatId: number; text: string; cause?: Cause; kind?: MessageKind;
+    chatId: number; text: string; cause?: Cause; kind?: MessageKind; role?: "assistant" | "user";
+    /** When the line was written (default: the trace's clock). */
+    at?: number;
     project?: string; folder?: string; orderId?: string; priority?: Priority;
   }): number;
   /** The channel posted an outbound row; remember its Telegram id (reply → thread). */
@@ -71,7 +74,8 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
     const thread = ledger.threadById(threadId);
     if (!thread) return; // pruned: artifacts keep the ids, nothing to update
     const facts = ledger.threadFacts(threadId);
-    const inThread = registry.list().filter((s) => registry.causeOf(s.id)?.threadId === threadId);
+    // A session works this thread while a cause of the thread is delivered to it and not yet answered.
+    const inThread = registry.list().filter((s) => registry.pendingCauses(s.id).some((c) => c.threadId === threadId));
     const state = deriveThreadState({
       openDecisions: facts.openDecisions,
       pendingApprovals: inThread.filter((s) => s.blockedOn?.kind === "approval").length,
@@ -125,9 +129,9 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
       return cause;
     },
     outbound(p) {
-      const at = now();
+      const at = p.at ?? now();
       const msgId = ledger.insertMessage({
-        chatId: p.chatId, role: "assistant", content: p.text, at, surface: "engine", kind: p.kind ?? "text",
+        chatId: p.chatId, role: p.role ?? "assistant", content: p.text, at, surface: "engine", kind: p.kind ?? "text",
         threadId: p.cause?.threadId, causeId: p.cause?.msgId,
         project: p.project, folder: p.folder, orderId: p.orderId, priority: p.priority,
       });

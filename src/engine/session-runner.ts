@@ -141,6 +141,10 @@ export interface RunHandlers {
    *  and the end of the run. The pipeline answers every cause delivered during the turn here
    *  (spec §4.2). May fire with no turn open (the run's end); callers treat that as a no-op. */
   onTurnEnd?: () => void;
+  /** A turn started and consumed `consumed` queued inputs — reported only where the runner knows it:
+   *  the Codex loop takes exactly one input per turn. The Claude SDK pulls queued input eagerly, so
+   *  a Claude turn consumes everything delivered before its end and this never fires (spec §4.2). */
+  onTurnStart?: (consumed: number) => void;
   /** The CLI's session state (`session_state_changed`): running / idle / requires_action. Internal
    *  plumbing for `active()` + `onSettled`; callers normally want `onSettled`. */
   onSessionState?: (state: string) => void;
@@ -1074,6 +1078,7 @@ function startCodexOrder(
         if (next === undefined) break;
         currentAbort = new AbortController();
         turnActive = true;
+        observe(() => handlers.onTurnStart?.(1));
         final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
         turnActive = false;
         observe(() => handlers.onTurnEnd?.());

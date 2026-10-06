@@ -5,7 +5,7 @@
 // without any channel.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { NeoConfig } from "../config";
+import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { Order, OrderSource, SessionInfo } from "../types";
 import type { Cause, Ledger, MessageKind } from "./ledger";
 import type { Registry } from "./registry";
@@ -50,7 +50,6 @@ import type { Priority } from "./priority";
 import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { refSuffix, type Trace } from "./trace";
-import { DEFAULT_TRACE } from "../config";
 import { faults } from "./fault";
 import {
   apiExhaustionWarning,
@@ -100,6 +99,8 @@ export interface ReplyMeta {
   kind?: MessageKind;
   /** The registry id of the session the line belongs to: its cause files the line. */
   session?: string;
+  /** File the line under this cause (the run's final line, once the session may be gone). */
+  cause?: Cause;
 }
 
 export interface PipelineDeps {
@@ -203,6 +204,7 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
     };
   }
   const mode = (deps.cfg.trace ?? DEFAULT_TRACE).showRefs;
+  const now = deps.now ?? Date.now;
   const causeFor = (session: string | undefined): Cause | undefined =>
     (session !== undefined ? (registry.causeOf(session) ?? registry.lastCauseOf(session)) : undefined) ?? inbound;
   /** The first `text` line under this cause in this session's turn. */
@@ -215,11 +217,12 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
     ...deps,
     reply: (c, t, project, priority, meta) => {
       const session = meta?.session ?? target();
-      const cause = causeFor(session);
       const kind = meta?.kind ?? kindOf(priority);
+      // An ack always answers the message that came in; any other line, its session's turn.
+      const cause = meta?.cause ?? (kind === "ack" && inbound ? inbound : causeFor(session));
       const suffix =
         faults.guard("pipeline.recordReply", () => {
-          trace.outbound({ chatId: c, text: t, cause, kind, project, priority });
+          trace.outbound({ chatId: c, text: t, cause, kind, project, priority, at: now() });
           if (!cause) return "";
           const ref = trace.ref(THREAD_REF_KINDS.has(kind) ? cause.threadId : cause.msgId);
           return refSuffix(kind, kind === "text" && firstOfTurn(session, cause), ref, mode);
@@ -229,14 +232,13 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
     askApproval: async (c, reason, signal) => {
       const cause = causeFor(target());
       const askId = faults.guard("pipeline.recordApproval", () =>
-        trace.outbound({ chatId: c, text: `⚠ approve? ${reason}`, cause, kind: "approval" }),
+        trace.outbound({ chatId: c, text: `⚠ approve? ${reason}`, cause, kind: "approval", at: now() }),
       );
       const decision = await rawAskApproval(c, reason, signal);
+      // The verdict answers the prompt: filed under it, in the same thread.
+      const verdictCause = cause && { msgId: askId ?? cause.msgId, threadId: cause.threadId };
       faults.guard("pipeline.recordApproval", () =>
-        ledger.insertMessage({
-          chatId: c, role: "user", content: `approval: ${decision}`, at: Date.now(), kind: "text",
-          threadId: cause?.threadId, causeId: askId ?? cause?.msgId,
-        }),
+        trace.outbound({ chatId: c, text: `approval: ${decision}`, cause: verdictCause, kind: "text", role: "user", at: now() }),
       );
       return decision;
     },
@@ -332,15 +334,12 @@ export async function handleMessage(
   // Durable conversation log: capture the inbound line (a given cause means trace.inbound already
   // wrote it), then record every outbound line and approval round-trip (see `recorded`).
   if (!cause) ledger.recordMessage(chatId, "user", text);
-  // The session this message is delivered to, once known: its cause files every later line.
+  // The session this message is delivered to, once known: its lines are filed under its turn's cause.
+  // The cause itself is delivered with the input (the session's control, or startSession), so it
+  // lines up with what the runner's turns consume.
   let target: string | undefined;
   deps = recorded(deps, cause, () => target);
-  const deliver = (id: string): void => {
-    target = id;
-    if (!cause) return;
-    registry.setCause(id, cause);
-    refreshThread(deps, cause.threadId);
-  };
+  const deliver = (id: string): void => void (target = id);
 
   // Anthropic is actively REJECTING a window: say so, with its real reset, then carry on. This sits
   // ahead of every branch below because most operator messages are plain-text follow-ups that
@@ -380,7 +379,7 @@ export async function handleMessage(
     if (control && live.status === "running") {
       // Live worker — the follow-up queues behind the in-flight turn. Report the REAL status, not a
       // bare "busy": what it's doing, for how long, and how deep the queue is.
-      control.followUp(body());
+      control.followUp(body(), cause);
       deliver(live.id);
       registry.touch(live.id, now());
       // The operator's message answers (or replaces) a raised DECISION. A pending approval is
@@ -455,6 +454,7 @@ export async function handleMessage(
     }),
     gate.idleMs,
     gate.preLines,
+    cause,
   );
 }
 
@@ -491,6 +491,7 @@ async function resumeSession(
   const { registry, ledger } = deps;
   const resumed: Order = { ...live.order, id: crypto.randomUUID(), task, createdAt: now() };
   ledger.recordOrder(resumed, cause ? { cause } : undefined);
+  // Nothing is delivered until startSession: a resume that fails before it leaves no cause open.
   registry.setStatus(live.id, "running");
   registry.touch(live.id, now());
   // Guard BEFORE the first await: anything arriving meanwhile (a second operator message, a
@@ -514,6 +515,7 @@ async function resumeSession(
       runConfigFor(live.id, registry, deps, chatId, gate.resumeId),
       gate.idleMs,
       gate.preLines,
+      cause,
     );
     // The company is live again: hand it any dispatch result turned away while it was reopening.
     if (live.id === registry.getDefault()?.id) faults.contain("pipeline.flushDispatcherInbox", () => flushDispatcherInbox(ledger, liveCompanyLink(registry, deps.lifecycle), now()));
@@ -628,6 +630,8 @@ function startSession(
    *  Lets the run.done handler scan only the lines THIS resume appended, so it finds the FIRST
    *  post-resume assistant turn rather than the run's last one (see firstAssistantCacheReadAfter). */
   resumePreLines?: number,
+  /** The operator message the run's first input carries (ADR-0015); none for engine input. */
+  initialCause?: Cause,
 ): SessionRun {
   // Every line this run sends belongs to this session: its cause files it (spec §4.2).
   const reply = deps.reply;
@@ -680,6 +684,19 @@ function startSession(
   let retryPending = false;
   // Set when the settle check closes the run for a handoff; consumed by the run.done handler.
   let pendingClose: PendingClose | undefined;
+  // Every input this run is given goes through here, in order, so the registry's turn accounting
+  // lines up with the runner's turns (spec §4.2). The run remembers its causes itself: /kill and the
+  // idle sweep remove the registry entry before the run ends, and its end must still answer them.
+  let runLast: Cause | undefined;
+  const runThreads = new Set<number>();
+  const deliverInput = (cause?: Cause): void => {
+    registry.deliver(registryId, cause);
+    if (!cause) return;
+    runLast = cause;
+    runThreads.add(cause.threadId);
+    refreshThread(deps, cause.threadId);
+  };
+  deliverInput(initialCause);
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
   // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
   // follow-up into a live worker). Default `scopes: []` → memoryEnabledFor is always false.
@@ -694,7 +711,9 @@ function startSession(
         registry.noteOutput(registryId, now());
         void deps.reply(chatId, t, project, undefined, { kind: kind === "tool" ? "progress" : "text" });
       },
-      // The turn is over: every cause delivered during it is answered (spec §4.2).
+      // A turn took its inputs (Codex: one each); attribution follows what it consumed.
+      onTurnStart: (n) => faults.guard("pipeline.turnStart", () => registry.startTurn(registryId, n), ctx),
+      // The turn is over: every cause it consumed is answered (spec §4.2).
       onTurnEnd: () => faults.guard("pipeline.turnEnd", () => answerTurn(deps, registryId), ctx),
       // Liveness pulse on ANY streamed SDK event — the authoritative clock the watchdog, the idle
       // sweep and every status line read. Without it a worker mid-generation (a long turn writing
@@ -806,6 +825,7 @@ function startSession(
           (deps.sleep ?? realSleep)(delayMs).then(() => {
             retryPending = false;
             registry.touch(registryId, now());
+            deliverInput(registry.lastCauseOf(registryId)); // the retried brief answers the failed turn's cause
             runRef?.followUp(apiRetryFollowUp(order.task));
           }),
           { project, orderId: order.id, folder: order.folder },
@@ -819,8 +839,9 @@ function startSession(
   // next settle decides afresh (with a full handoff turn if still needed).
   const control: SessionRun = {
     ...run,
-    followUp: (text: string) => {
+    followUp: (text: string, cause?: Cause) => {
       watch?.disarm();
+      deliverInput(cause);
       run.followUp(text);
     },
   };
@@ -865,6 +886,9 @@ function startSession(
   // completion below still releases it (see `ended` rejection) — never only via the hold's bound.
   let closing: PendingClose | undefined;
   const ended = run.done.then((result) => {
+    // The final line answers the latest cause — read before anything below, and from the run itself
+    // when the registry entry is already gone (/kill, idle sweep).
+    const finalCause = registry.causeOf(registryId) ?? registry.lastCauseOf(registryId) ?? runLast;
     const pc = pendingClose;
     pendingClose = undefined;
     closing = pc;
@@ -958,8 +982,11 @@ function startSession(
     // already in this conversation; it is not a walked-away job, so it is NOT a `result` and must not
     // spam the group). A failed one is an ALERT the operator must see (Decisions). The frontend
     // prepends the single priority accent (🟢/🔴) — no per-call-site glyph here (Feature 2).
-    void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert");
+    void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert", { cause: finalCause });
+    // The run is over: whatever it was given and never answered is answered now (spec §5).
     refShown.delete(registryId);
+    registry.endTurn(registryId, { all: true });
+    for (const threadId of runThreads) refreshThread(deps, threadId);
   });
   faults.contain("pipeline.runDone", ended, ctx);
   void ended.catch(() => (closing ?? pendingClose)?.release()); // release() is idempotent

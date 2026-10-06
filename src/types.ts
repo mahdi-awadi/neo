@@ -1,5 +1,6 @@
 // Shared types for the Neo engine.
 import type { BlockedOn } from "./engine/liveness";
+import type { Cause } from "./engine/ledger";
 
 export type { BlockedOn };
 
@@ -57,7 +58,9 @@ export type Verdict =
  * `SessionRun` (session-runner) is the concrete implementation.
  */
 export interface SessionControl {
-  followUp(text: string): void;
+  /** Push a brief behind the running turn. `cause`: the operator message it carries (ADR-0015) —
+   *  the pipeline's control files it in turn order; a control that does not trace ignores it. */
+  followUp(text: string, cause?: Cause): void;
   interrupt(): Promise<void>;
   /** Follow-ups waiting behind the in-flight turn (observability; optional for old fakes). */
   queued?(): number;

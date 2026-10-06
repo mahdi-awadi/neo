@@ -60,15 +60,28 @@ export interface Registry {
   getDefault(): SessionInfo | undefined;
   /** Record what the session is doing right now; `since` is kept while the label is unchanged. */
   noteActivity(id: string, label: string, now?: number): void;
-  /** A message was delivered to this session (a brief pushed, or a run started): remember its cause. */
+  /** One input was delivered to this session (a brief pushed, or a run started), with the cause of
+   *  the operator message it carries — none for engine input (a dispatcher report, a wrap-up). Inputs
+   *  keep their order, so a runner that reports what a turn consumed (startTurn) lines up with them. */
+  deliver(id: string, cause?: Cause): void;
+  /** `deliver` for an input that has a cause. */
   setCause(id: string, cause: Cause): void;
-  /** The cause output is attributed to: the newest delivered cause whose turn has not ended. */
+  /** A turn started and took the next `n` waiting inputs (the Codex loop takes one per turn). A
+   *  runner that cannot tell (the Claude SDK pulls input eagerly) never calls this. */
+  startTurn(id: string, n: number): void;
+  /** The cause output is attributed to (spec §4.2): the newest cause the current turn consumed; when
+   *  no runner reported a turn start, the newest delivered cause whose turn has not ended. */
   causeOf(id: string): Cause | undefined;
-  /** The turn ended: every cause delivered so far is answered. Returns them (oldest first) and clears them. */
-  endTurn(id: string): Cause[];
-  /** The newest cause ever delivered to the session, kept after its turn ended: lines after the turn
-   *  (the run's final result) and the reload snapshot (spec §11.3) are filed under it. */
+  /** Every delivered cause not yet answered, oldest first — the session's open work (spec §5). */
+  pendingCauses(id: string): Cause[];
+  /** The turn ended: the causes it consumed are answered (all delivered ones when no turn start was
+   *  reported, or with `all` — the run is over). Returns them, oldest first, and drops them. */
+  endTurn(id: string, opts?: { all?: boolean }): Cause[];
+  /** The newest cause a turn took or answered, kept after the turn ended: lines after the turn (the
+   *  run's final result) and the reload snapshot (spec §11.3) are filed under it. */
   lastCauseOf(id: string): Cause | undefined;
+  /** Boot restore (spec §11.3): the session has no live cause, but its next output is filed under this. */
+  restoreCause(id: string, cause: Cause): void;
   /** Stamp the last stuck-alert time (watchdog dedup). */
   noteAlert(id: string, now?: number): void;
 }
@@ -77,8 +90,15 @@ export function createRegistry(): Registry {
   const sessions = new Map<string, SessionInfo>();
   const controls = new Map<string, SessionControl>();
   const focus = new Map<number, { id: string; mode: FocusMode }>(); // chatId -> focused project
-  const causes = new Map<string, Cause[]>(); // session id -> causes delivered, turn not yet ended
-  const lastCauses = new Map<string, Cause>(); // session id -> newest cause delivered, ended or not
+  // session id -> inputs delivered and not yet answered, in order; `consumed` = taken by the current turn
+  const inputs = new Map<string, Array<{ cause?: Cause; consumed: boolean }>>();
+  const lastCauses = new Map<string, Cause>(); // session id -> newest cause a turn took or answered
+  const newest = (list: Array<{ cause?: Cause }>): Cause | undefined => list.findLast((x) => x.cause)?.cause;
+  const deliver = (id: string, cause?: Cause): void => {
+    const list = inputs.get(id);
+    if (list) list.push({ cause, consumed: false });
+    else inputs.set(id, [{ cause, consumed: false }]);
+  };
   let defaultId: string | undefined; // the always-on default project (fallback target)
 
   function uniqueName(base: string): string {
@@ -119,22 +139,36 @@ export function createRegistry(): Registry {
     remove: (id) => {
       sessions.delete(id);
       controls.delete(id);
-      causes.delete(id);
+      inputs.delete(id);
       lastCauses.delete(id);
     },
-    setCause(id, cause) {
-      lastCauses.set(id, cause);
-      const list = causes.get(id);
-      if (list) list.push(cause);
-      else causes.set(id, [cause]);
+    deliver,
+    setCause: (id, cause) => deliver(id, cause),
+    startTurn(id, n) {
+      const waiting = (inputs.get(id) ?? []).filter((x) => !x.consumed).slice(0, n);
+      for (const x of waiting) x.consumed = true;
+      const took = newest(waiting);
+      if (took) lastCauses.set(id, took);
     },
-    causeOf: (id) => causes.get(id)?.at(-1),
-    endTurn(id) {
-      const list = causes.get(id) ?? [];
-      causes.delete(id);
-      return list;
+    causeOf(id) {
+      const list = inputs.get(id) ?? [];
+      const consumed = list.filter((x) => x.consumed);
+      return newest(consumed.length > 0 ? consumed : list);
+    },
+    pendingCauses: (id) => (inputs.get(id) ?? []).flatMap((x) => (x.cause ? [x.cause] : [])),
+    endTurn(id, opts) {
+      const list = inputs.get(id) ?? [];
+      const all = opts?.all === true || !list.some((x) => x.consumed);
+      const answered = all ? list : list.filter((x) => x.consumed);
+      const rest = all ? [] : list.filter((x) => !x.consumed);
+      if (rest.length > 0) inputs.set(id, rest);
+      else inputs.delete(id);
+      const last = newest(answered);
+      if (last) lastCauses.set(id, last);
+      return answered.flatMap((x) => (x.cause ? [x.cause] : []));
     },
     lastCauseOf: (id) => lastCauses.get(id),
+    restoreCause: (id, cause) => void lastCauses.set(id, cause),
     attachControl(id, control) {
       // Defensive against F5: /kill during a pending gate can remove the session before the
       // (possibly async) caller reaches attachControl. Storing it then would leak an orphan

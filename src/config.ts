@@ -254,9 +254,6 @@ export interface NeoConfig {
   sqliteBusyTimeoutMs: number;
 }
 
-/** Shipped fault policy (ADR-0010): one alert per fault signature per 15 min, at most 6 distinct
- *  fault alerts an hour, and (deduplicated) faults queued for the company to investigate — at most 3
- *  an hour, so a fault the company's own reply re-triggers cannot loop. */
 export interface TraceCfg {
   showRefs: "auto" | "off";
 }
@@ -264,6 +261,9 @@ export interface TraceCfg {
 /** Shipped ref display (spec §4.3): refs on. */
 export const DEFAULT_TRACE: TraceCfg = { showRefs: "auto" };
 
+/** Shipped fault policy (ADR-0010): one alert per fault signature per 15 min, at most 6 distinct
+ *  fault alerts an hour, and (deduplicated) faults queued for the company to investigate — at most 3
+ *  an hour, so a fault the company's own reply re-triggers cannot loop. */
 export const DEFAULT_FAULTS: FaultCfg = { dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: true, maxHandoffsPerHour: 3 };
 /** Shipped health thresholds (ADR-0010): sample each minute; 2 s of timer drift or 2 GB resident
  *  memory is degraded. */

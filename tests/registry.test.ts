@@ -219,3 +219,46 @@ test("lastCauseOf keeps the newest cause after the turn ends, until the session 
   reg.remove(o.id);
   expect(reg.lastCauseOf(o.id)).toBeUndefined();
 });
+
+test("turn accounting: a turn answers only what it consumed; unconsumed causes wait for the next turn", () => {
+  const reg = createRegistry();
+  const o = order();
+  reg.add(o);
+  const A = { msgId: 1, threadId: 1 };
+  const B = { msgId: 2, threadId: 2 };
+  reg.setCause(o.id, A);
+  reg.startTurn(o.id, 1);
+  reg.setCause(o.id, B);
+  expect(reg.causeOf(o.id)).toEqual(A); // newest consumed by the current turn
+  expect(reg.pendingCauses(o.id)).toEqual([A, B]);
+  expect(reg.endTurn(o.id)).toEqual([A]);
+  expect(reg.pendingCauses(o.id)).toEqual([B]);
+  reg.startTurn(o.id, 1);
+  expect(reg.causeOf(o.id)).toEqual(B);
+  expect(reg.endTurn(o.id)).toEqual([B]);
+  expect(reg.lastCauseOf(o.id)).toEqual(B);
+});
+
+test("turn accounting: an input without a cause takes its turn slot; endTurn all answers what is left", () => {
+  const reg = createRegistry();
+  const o = order();
+  reg.add(o);
+  const B = { msgId: 2, threadId: 2 };
+  reg.deliver(o.id); // e.g. a dispatcher report: no operator message
+  reg.setCause(o.id, B);
+  reg.startTurn(o.id, 1);
+  expect(reg.causeOf(o.id)).toBeUndefined(); // the uncaused input is what runs
+  expect(reg.endTurn(o.id)).toEqual([]);
+  expect(reg.endTurn(o.id, { all: true })).toEqual([B]);
+  expect(reg.pendingCauses(o.id)).toEqual([]);
+});
+
+test("restoreCause seeds only the last cause: no live cause, nothing pending", () => {
+  const reg = createRegistry();
+  const o = order();
+  reg.add(o);
+  reg.restoreCause(o.id, { msgId: 9, threadId: 9 });
+  expect(reg.causeOf(o.id)).toBeUndefined();
+  expect(reg.pendingCauses(o.id)).toEqual([]);
+  expect(reg.lastCauseOf(o.id)).toEqual({ msgId: 9, threadId: 9 });
+});

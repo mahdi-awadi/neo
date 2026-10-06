@@ -1147,3 +1147,31 @@ test("onTurnEnd: a live Codex session ends a turn after each one", async () => {
   await run.done;
   expect(ends).toBe(2);
 });
+
+test("onTurnStart: a live Codex session reports one consumed input per turn; Claude never reports", async () => {
+  const f = fakeCodexFactory({
+    turns: (input) => [
+      { type: "item.completed", item: { id: "i", type: "agent_message", text: `re:${input}` } },
+      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } },
+    ],
+  });
+  const seen: string[] = [];
+  const run = startOrder(
+    order("x"),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnStart: (n) => void seen.push(`start:${n}`), onTurnEnd: () => void seen.push("end") },
+    { provider: "codex", codexFactory: f.factory },
+  );
+  while (seen.length < 2) await new Promise((r) => setTimeout(r, 1));
+  run.followUp("y");
+  while (seen.length < 4) await new Promise((r) => setTimeout(r, 1));
+  run.close();
+  await run.done;
+  expect(seen).toEqual(["start:1", "end", "start:1", "end"]);
+
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  let starts = 0;
+  const claude = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnStart: () => void starts++ }, { query: q as never });
+  claude.close();
+  await claude.done;
+  expect(starts).toBe(0); // the SDK pulls input eagerly: the pipeline falls back to "all delivered"
+});

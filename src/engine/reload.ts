@@ -187,7 +187,7 @@ export function restoreSessions(registry: Registry, ledger: Ledger, now: () => n
     const existing = registry.findByFolder(row.folder);
     if (existing) {
       if (sdkSessionId && !existing.sdkSessionId) registry.setSdkSessionId(existing.id, sdkSessionId, row.sdkProvider);
-      if (row.cause && !registry.lastCauseOf(existing.id)) registry.setCause(existing.id, row.cause);
+      if (row.cause && !registry.lastCauseOf(existing.id)) registry.restoreCause(existing.id, row.cause);
       continue;
     }
     const session = registry.add(
@@ -196,8 +196,9 @@ export function restoreSessions(registry: Registry, ledger: Ledger, now: () => n
     );
     registry.setStatus(session.id, "idle"); // idle = resumable; the next follow-up/dispatch resumes it
     if (sdkSessionId) registry.setSdkSessionId(session.id, sdkSessionId, row.sdkProvider);
-    // The first output after the restore is filed under the session's last cause (spec §11.3).
-    if (row.cause) registry.setCause(session.id, row.cause);
+    // Restored with no live cause (an idle session is not active work); its first output after the
+    // restore is filed under the session's last cause (spec §11.3).
+    if (row.cause) registry.restoreCause(session.id, row.cause);
     restored.push(session);
   }
   return restored;
