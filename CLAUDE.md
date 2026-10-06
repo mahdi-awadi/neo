@@ -53,7 +53,7 @@ customer inbox, governor hardening, context policy + session liveness, graceful 
 rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
 down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), the toolchain auto-updater
 (ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011),
-the Telegram flood gate, and context-efficiency Phase 1
+the Telegram flood gate, the context sweet spot (boundary handoffs + safe checkpoints, ADR-0014), and context-efficiency Phase 1
 (per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
 default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.

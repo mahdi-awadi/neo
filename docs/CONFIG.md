@@ -70,7 +70,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `stuckAfterMs` | `600000` (10m) | Watchdog: alert when a session **with a turn in flight** shows NO activity for this long (any streamed SDK event counts as activity). A session sitting between turns, or waiting on the operator, is never alerted however old it is. |
 | `longTurnAlertMs` | `1200000` (20m) | Watchdog: an FYI when one activity label has run this long **while still pulsing** — explicitly not a "stuck" claim. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
-| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
+| `contextPolicy` | `{ sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9, handoffNoteMaxChars: 20000, handoffOrientationMaxSteps: 70, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context lifecycle. See "Context sweet spot" below for the band and the handoff knobs, and "Context policy: learned cache TTL + per-model window" for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
 | `models` | `{ default: "claude-opus-5-5[1m]", aliases: { opus: "claude-opus-5-5[1m]", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-4-5", fable: "claude-fable-5-1" } }` | Which model workers run. `default` applies to every launch path that does not name one itself; `aliases` maps a tier word to a pinned id. See "Worker models" below. |
 | `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. A path that names no `model` takes `models.default`. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
@@ -217,6 +217,27 @@ word in it is dropped with no effort set, because no effort can be inferred from
 
 Codex SDK auth is handled by Codex itself: use your local Codex login or provide `CODEX_API_KEY` in
 the process environment. Neo does not read or store that key directly.
+
+## Context sweet spot (ADR-0014)
+
+Neo keeps each session's context in a sweet spot. It hands a session off only at a **task
+boundary** (the session settled after a task, or is about to resume for a new one) or at a **safe
+checkpoint** mid-task (a commit just succeeded or a plan step was marked done, and the tree is
+clean). A number crossing a line never interrupts work by itself.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `sweetSpotPct` | `0.4` | Above this occupancy, hand off at the next task boundary. Was `handoffPct` (0.65); a legacy `handoffPct` in config.json is still read as `sweetSpotPct`. |
+| `checkpointPct` | `0.6` | Above this, also hand off at the next safe checkpoint, mid-task. Set it to `1` or more to turn mid-task handoffs off. |
+| `emergencyPct` | `0.9` | The last resort. Hand off even with uncommitted work; at a cold resume, clear and alert. |
+| `handoffNoteMaxChars` | `20000` | Max characters of the handoff note put into the next session's first brief. |
+| `handoffOrientationMaxSteps` | `70` | A resumed session that reaches its first edit or commit within this many model calls counts as a clean resume. |
+
+The defaults come from 31,585 Opus turns (2026-07-08 → 2026-10-06). Quality (tool-error rate) is
+flat to ~65%. Cost per turn grows with occupancy: the 19% of turns above 40% read 41% of all cache
+tokens. The SDK auto-compacts at ~97%. The handoff never runs with uncommitted work, except in the
+emergency band. Every handoff, clear, deferral and resume is a `context_events` row with its reason,
+shown in `/status` and in the console's Recent tab.
 
 ## Context policy: learned cache TTL + per-model window
 
