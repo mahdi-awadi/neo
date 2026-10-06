@@ -440,7 +440,7 @@ export function createTelegramBot(
       bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
-    askApproval: (cid, reason) =>
+    askApproval: (cid, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
         // Track the escalation as a DECISION so an ignored allow/deny still shows in /decisions + the
@@ -449,6 +449,13 @@ export function createTelegramBot(
         const sess = registry.findByChat(cid);
         const decisionId = openEscalationDecision(ledger, { reason, project: sess?.name, folder: sess?.order.folder, chatId: cid });
         pending.set(token, { resolve, decisionId });
+        // The engine gave up waiting (approval timeout, ADR-0012): it already denied, so drop the
+        // prompt and close the tracked decision row — a late tap then finds nothing to resolve.
+        signal?.addEventListener("abort", () => {
+          if (!pending.delete(token)) return;
+          faults.guard("telegram.approval", () => resolveEscalationDecision(ledger, decisionId, "deny"));
+          resolve("deny");
+        }, { once: true });
         const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
         // Route the blocking approval to the unmuted Decisions channel (falls back to the DM when
         // decisionsChatId is unset — today's behavior). The Allow/Deny buttons stay actionable here;

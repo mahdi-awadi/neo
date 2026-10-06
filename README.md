@@ -198,7 +198,7 @@ that form too (for example, `/sdk@neo_bot codex`).
 | `/pin <name>` | Keep talking to a project across messages (until `/unpin`). |
 | `/unpin` (`/company`, `/main`) | Return focus to the company / main agent. |
 | `/kill <name>` | Stop a project session. |
-| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). New projects start trusted by default (`trustNewProjects`); `/trust off` is remembered. Trust never approves a write outside the project folder and never applies to customer work (ADR-0011). |
+| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). New projects start trusted by default (`trustNewProjects`); `/trust off` is remembered. Trust never decides a write outside the project folder (`governor.outOfFolderWrites` does; default allow, ADR-0012) and never applies to customer work (ADR-0011). |
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
 | `/todo [<project>]` (`/queue`) | The per-project todo queues: what runs and what waits. `/todo cancel <id>` and `/todo up <id>` change one todo; `/todo pause\|resume <project>` holds or releases a queue. |
 | `/updates` | Toolchain updates (Agent SDK, plugins, MCP servers): the last run and each item's state. `/updates run` checks now; `/updates apply <item>` applies one item, held or not; `/updates rollback <item>` restores the previous version. See `docs/CONFIG.md` → "Toolchain updates". |

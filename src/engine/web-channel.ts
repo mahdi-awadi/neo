@@ -130,10 +130,14 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       message(styleLine(text, priority), project); // local delivery, styled by priority (Feature 2)
       opts.bus?.mirror("web", { kind: "reply", text, project, priority }); // + mirror to Telegram
     },
-    askApproval: (_chatId, reason) =>
+    askApproval: (_chatId, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
         const id = crypto.randomUUID();
         pending.set(id, resolve);
+        // The engine gave up waiting (approval timeout, ADR-0012): drop the prompt.
+        signal?.addEventListener("abort", () => {
+          if (pending.delete(id)) resolve("deny");
+        }, { once: true });
         emit({ type: "escalation", id, reason });
         // The actionable prompt stays here (POST /approve); the other surface just SEES it pending.
         opts.bus?.mirror("web", { kind: "notice", text: `⏳ approval pending on the web console: ${reason}` });

@@ -10,6 +10,7 @@ import type { UpdatesCfg } from "./engine/updater";
 import type { FaultCfg } from "./engine/fault";
 import type { HealthCfg } from "./engine/health";
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
+import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
@@ -204,6 +205,9 @@ export interface NeoConfig {
    *  operator and the company session are shown. See engine/liveness.ts + ADR 0003. Optional:
    *  absent ⇒ DEFAULT_LIVENESS_THRESHOLDS at the point of use, so no caller has to thread it. */
   liveness?: LivenessThresholds;
+  /** Governor knobs: out-of-folder writes + approval reminders/timeout (ADR-0012). Optional like
+   *  `liveness`: absent ⇒ writes "ask" (fail closed); `loadConfig` always fills the defaults. */
+  governor?: GovernorCfg;
   /** Alert when a running session has produced NO ACTIVITY for this long (ms). Default 10 min. */
   stuckAfterMs: number;
   /** Alert when one activity label has run this long (ms). Default 20 min. */
@@ -309,6 +313,8 @@ const DEFAULTS = {
   telegramToolSteps: false,
   telegramFloodMaxWaitMs: 30_000,
   liveness: DEFAULT_LIVENESS_THRESHOLDS,
+  // Operator order (2026-10-06): out-of-folder writes are always approved (ADR-0012).
+  governor: DEFAULT_GOVERNOR_CFG,
   stuckAfterMs: 10 * 60 * 1000,
   longTurnAlertMs: 20 * 60 * 1000,
   alertRepeatMs: 15 * 60 * 1000,
@@ -444,6 +450,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     telegramToolSteps: fileCfg.telegramToolSteps ?? DEFAULTS.telegramToolSteps,
     telegramFloodMaxWaitMs: fileCfg.telegramFloodMaxWaitMs ?? DEFAULTS.telegramFloodMaxWaitMs,
     liveness: { ...DEFAULTS.liveness, ...(fileCfg.liveness ?? {}) },
+    governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

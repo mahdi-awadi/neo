@@ -34,6 +34,8 @@ import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
 import { clearDecisionBlock, describeSession } from "./session-status";
 import type { Priority } from "./priority";
+import { patientApproval } from "./escalation";
+import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { faults } from "./fault";
 import {
   apiExhaustionWarning,
@@ -76,7 +78,8 @@ export interface PipelineDeps {
    *  PROGRESS) routes the line to a surface: DECISION/ALERT → the notified Decisions channel,
    *  PROGRESS/DONE → the muted firehose (see engine/priority.ts + the frontend). */
   reply: (chatId: number, text: string, project?: string, priority?: Priority) => void | Promise<void>;
-  askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
+  /** `signal` aborts when the engine gives up waiting (approval timeout): drop the prompt. */
+  askApproval: (chatId: number, reason: string, signal?: AbortSignal) => Promise<"allow" | "deny">;
   /** Post a raised decision to the operator's Decisions channel (frontend-supplied; builds the
    *  inline keyboard). Threaded into neoMcpServers so the `ask_operator` tool can post — and its
    *  presence gates that tool (operator surfaces only; never the customer/ingress path). */
@@ -188,9 +191,9 @@ export async function handleMessage(
       ledger.recordMessage(c, "assistant", t);
       return rawReply(c, t, project, priority);
     },
-    askApproval: async (c, reason) => {
+    askApproval: async (c, reason, signal) => {
       ledger.recordMessage(c, "assistant", `⚠ approve? ${reason}`);
-      const decision = await rawAskApproval(c, reason);
+      const decision = await rawAskApproval(c, reason, signal);
       ledger.recordMessage(c, "user", `approval: ${decision}`);
       return decision;
     },
@@ -394,6 +397,7 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     workers: deps.cfg.workers,
     models: deps.cfg.models,
     providers: deps.cfg.providers,
+    governor: deps.cfg.governor,
     workerEnv: deps.cfg.workerEnv,
     memory: deps.cfg.memory,
     companyFolder: deps.cfg.companyFolder,
@@ -494,7 +498,11 @@ function startSession(
           /* observer only */
         }
         try {
-          return await deps.askApproval(chatId, reason);
+          return await patientApproval((signal) => deps.askApproval(chatId, reason, signal), reason, {
+            patience: deps.cfg.governor ?? DEFAULT_GOVERNOR_CFG,
+            say: (text, priority) => void deps.reply(chatId, text, project, priority),
+            record: (kind, data) => ledger.recordEvent(kind, { orderId: order.id, folder: order.folder, data: { project, ...data } }),
+          });
         } finally {
           try {
             registry.noteBlocked(registryId, undefined);

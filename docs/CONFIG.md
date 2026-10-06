@@ -242,6 +242,20 @@ doesn't know yet). It is threaded into every gate that measures context: `dispat
 re-measurement — so a configured override changes gate verdicts, not just the number shown for
 `/status` ctx%.
 
+## Governor (`governor`) — ADR-0012
+
+```json
+{ "governor": { "outOfFolderWrites": "allow", "approvalRemindMs": 1800000, "approvalTimeoutMs": 7200000 } }
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `outOfFolderWrites` | `"allow"` | Write/Edit/NotebookEdit outside the session's project folder. `"allow"` = no approval (operator order, 2026-10-06). `"ask"` = a fence escalation the operator must tap (ADR-0011). Any other value acts as `"ask"`. Own work only, loops included. Customer-sourced work and the ingress path always ask. Tainted briefs have no tools at all. |
+| `approvalRemindMs` | `1800000` (30m) | While an approval is pending, re-post a reminder to the Decisions surface this often. `0` = no reminders. |
+| `approvalTimeoutMs` | `7200000` (2h) | Deny an approval nobody answered after this long. The worker gets the deny, the operator gets an alert, and the ledger records `approval_timeout`. `0` = wait for the operator forever. |
+
+Per-key merge: setting one key keeps the defaults of the others. Restart-gated, like all config.
+
 ## Toolchain updates (`updates`) — ADR-0009
 
 Neo keeps its own toolchain current: the worker Agent SDK pin, the Claude Code plugins, and the MCP

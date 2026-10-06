@@ -339,8 +339,20 @@ _Avoid_: trust flag, known project
 
 **Fence escalation**:
 An escalation that only the operator can approve: a file write outside the session's project
-folder. **Trust** never approves it automatically; autonomous paths deny it.
+folder, when `governor.outOfFolderWrites` is `"ask"` or the work is customer-sourced. **Trust**
+never approves it automatically; autonomous paths deny it.
 _Avoid_: hard escalation, blocked write
+
+**Standing write approval**:
+The operator's permanent "yes" to file writes outside the project folder
+(`governor.outOfFolderWrites: "allow"`, the default since 2026-10-06). Own work only: customer
+work and ingress keep the fence (ADR-0012).
+_Avoid_: write allowlist, trusted writes
+
+**Approval patience**:
+How long a pending approval waits: a reminder to the operator every `approvalRemindMs`, then a
+deny after `approvalTimeoutMs` (fails closed). An approval never waits silently forever (ADR-0012).
+_Avoid_: approval TTL, auto-approve on timeout
 
 ### Errors that must not stop the engine
 
