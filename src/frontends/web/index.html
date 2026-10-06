@@ -109,6 +109,9 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .escc{border:1px solid color-mix(in srgb,var(--warn) 50%,var(--border));background:color-mix(in srgb,var(--warn) 7%,var(--panel));border-radius:13px;padding:13px 15px;margin:9px 0}
 .acts{display:flex;gap:8px;margin-top:11px}
 .chip{padding:6px 13px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-family:var(--mono);font-size:11px;cursor:pointer}
+#install{margin-inline-end:6px}
+.hint{display:flex;align-items:center;gap:12px;padding:9px 22px;border-bottom:1px solid var(--border);background:var(--panel);font-size:13px;color:var(--fg)}
+.hint[hidden]{display:none}.hint span{flex:1}
 .chip.ok{border-color:color-mix(in srgb,var(--accent) 60%,var(--border));color:var(--accent)}.chip.no{border-color:color-mix(in srgb,var(--danger) 50%,var(--border));color:var(--danger)}
 /* Threads (ADR-0017): project rail · thread list · thread pane. */
 #vthreads{padding:0;flex-direction:row}
@@ -185,8 +188,10 @@ bdi.ref{font-family:var(--code);font-size:.92em}
    <button class="tab" data-v="recent" data-i18n="tabs.recent"></button>
    <button class="tab" data-v="inbox"><span data-i18n="tabs.inbox"></span><span id="ibadge" class="ibadge"></span></button>
    <span class="spacer"></span><span class="who" id="who"></span>
+   <button class="chip" id="install" hidden data-i18n="pwa.install" data-i18n-title="pwa.installTitle"></button>
    <button class="chip" id="lang" data-i18n="brand.langSwitch" data-i18n-title="brand.langSwitchTitle"></button>
   </div>
+  <div class="hint" id="ioshint" hidden role="status"><span data-i18n="pwa.iosHint"></span><button class="chip" type="button" id="ioshint-x" data-i18n="pwa.dismiss"></button></div>
   <div class="view on" id="vactivity">
    <div id="fbar"></div>
    <div id="feed"><div class="fe" id="ph" data-i18n="feed.placeholder"></div></div>

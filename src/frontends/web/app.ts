@@ -6,6 +6,7 @@
 // history endpoints (/api/threads, /api/threads/:id, /api/search — ADR-0017).
 import { createConsoleI18n, isLang } from "./i18n";
 import { pastedImages } from "./paste";
+import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
 
 const root = document.documentElement;
 const i18n = createConsoleI18n(isLang(root.lang) ? root.lang : "en");
@@ -1077,6 +1078,59 @@ $("lang").onclick = () => {
   document.cookie = `neo_lang=${root.lang === "ar" ? "en" : "ar"}; path=/; max-age=31536000; samesite=lax`;
   location.reload();
 };
+
+// The installable console (ADR-0022): the shell-only service worker, registered only where browsers
+// allow it. A failed registration is logged and ignored — the console never depends on the worker.
+if (isSecureContext && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch((err) => console.warn("service worker registration failed", err));
+}
+// The install chip follows installMode(): the browser's own prompt where it offers one, the iOS share
+// hint on iPhone/iPad, nothing once installed or dismissed.
+type InstallPrompt = Event & { prompt(): Promise<unknown> };
+let installPrompt: InstallPrompt | null = null;
+function installDismissed(): boolean {
+  try {
+    return localStorage.getItem(INSTALL_DISMISSED_KEY) === "1";
+  } catch {
+    return false; // storage blocked: offer it again, never break the page
+  }
+}
+function renderInstall(): void {
+  const standalone = matchMedia("(display-mode: standalone)").matches || (navigator as Any).standalone === true;
+  const mode = installMode({ standalone, prompt: installPrompt !== null, ios: isIos(navigator.userAgent, navigator.maxTouchPoints), dismissed: installDismissed() });
+  $("install").hidden = mode === "none";
+  $("install").dataset.mode = mode;
+  if (mode === "none") $("ioshint").hidden = true;
+}
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault(); // keep it for the chip instead of the browser's own banner
+  installPrompt = e as InstallPrompt;
+  renderInstall();
+});
+window.addEventListener("appinstalled", () => {
+  installPrompt = null;
+  renderInstall();
+});
+$("install").onclick = () => {
+  if ($("install").dataset.mode === "ios-hint") {
+    $("ioshint").hidden = false;
+    return;
+  }
+  const p = installPrompt;
+  installPrompt = null; // a prompt event is single-use
+  renderInstall();
+  if (p) void p.prompt().catch((err) => console.warn("install prompt failed", err));
+};
+$("ioshint-x").onclick = () => {
+  try {
+    localStorage.setItem(INSTALL_DISMISSED_KEY, "1");
+  } catch {
+    // storage blocked: the hint just closes for this page
+  }
+  $("ioshint").hidden = true;
+  renderInstall();
+};
+renderInstall();
 // Paste-to-attach: images go through sendFile; the default paste is NOT cancelled, so text still lands.
 $("msg").addEventListener("paste", (e) => {
   pastedImages((e as ClipboardEvent).clipboardData?.items, Date.now()).forEach(sendFile);

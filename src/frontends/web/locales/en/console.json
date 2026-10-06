@@ -319,7 +319,11 @@
   "pwa": {
     "name": "Neo — operator console",
     "shortName": "Neo",
-    "description": "Command your projects from anywhere: live activity, threads, approvals and queues."
+    "description": "Command your projects from anywhere: live activity, threads, approvals and queues.",
+    "install": "Install app",
+    "installTitle": "Install Neo as an app on this device",
+    "iosHint": "To install: tap Share, then Add to Home Screen.",
+    "dismiss": "Dismiss"
   },
   "offline": {
     "title": "You are offline",
