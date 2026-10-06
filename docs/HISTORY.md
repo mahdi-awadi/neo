@@ -773,3 +773,13 @@ other stop restarts polling. Inbox Send is idempotent on a new `draft_version` (
 edited or already-sent draft → stale), for web and Telegram. The context handoff is contained. The
 branch's own 429 retry was dropped for the existing flood gate, and the Telegram tests now run
 through it (grammy `client.fetch`).
+
+### Web console freeze fixed (2026-10-06, ADR-0012)
+
+The web console froze after a day of uptime. The engine replayed every feed event since boot to
+each new connection (9,729 events, 3.6 MB), and the page rescanned all rows and forced a layout
+per event: a 46 s long task, then no response. The feed is now a bounded replay window
+(`webFeedWindow`, 500) with SSE ids, so a reconnect resumes after `Last-Event-ID`. The page keeps
+the same window and does O(1) work per event. `/api/state` no longer re-parses whole session
+transcripts (10–37 MB) on each poll: `sessionContext` parses only the appended bytes (0.6–0.9 s →
+~20 ms). Going live needs a daemon restart (operator-gated).

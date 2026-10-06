@@ -97,13 +97,15 @@ test("retention + list knobs default per spec and read config.json", () => {
   expect(c.decisionsKeep).toBe(5_000);
   expect(c.codebaseMemoryListTimeoutMs).toBe(15_000);
   expect(c.inboxListDefault).toBe(100);
+  expect(c.webFeedWindow).toBe(500);
   const d = dir();
-  writeFileSync(join(d, "config.json"), JSON.stringify({ routeKeep: 5, eventsKeep: 7, codebaseMemoryListTimeoutMs: 9, inboxListDefault: 11 }));
+  writeFileSync(join(d, "config.json"), JSON.stringify({ routeKeep: 5, eventsKeep: 7, codebaseMemoryListTimeoutMs: 9, inboxListDefault: 11, webFeedWindow: 13 }));
   const o = loadConfig(d);
   expect(o.routeKeep).toBe(5);
   expect(o.eventsKeep).toBe(7);
   expect(o.codebaseMemoryListTimeoutMs).toBe(9);
   expect(o.inboxListDefault).toBe(11);
+  expect(o.webFeedWindow).toBe(13);
 });
 
 test("decisionsChatId is undefined by default, reads config.json, and env wins", () => {

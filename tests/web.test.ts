@@ -62,6 +62,7 @@ function cfg(): NeoConfig {
     secretaryStaleHours: 24,
     codebaseMemoryListTimeoutMs: 15_000,
     inboxListDefault: 100,
+    webFeedWindow: 500,
     messageRoutesCacheCap: 2_000,
     stuckAfterMs: 600_000,
     longTurnAlertMs: 1_200_000,
@@ -222,4 +223,40 @@ test("GET / serves the login page when unauthenticated and the console when auth
   const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
   const authed = await a.instance.fetch(new Request("http://neo.test/", { headers: { cookie } }));
   expect(await authed.text()).toContain("Neo");
+});
+
+// ADR-0012: /stream tags each feed event with an SSE id and resumes from Last-Event-ID.
+async function readStream(res: Response, want: number): Promise<string> {
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let text = "";
+  for (let i = 0; i < 20 && (text.match(/^data: /gm) ?? []).length < want; i++) {
+    const r = await Promise.race([reader.read(), Bun.sleep(100).then(() => ({ done: true, value: undefined }))]);
+    if (r.done) break;
+    text += dec.decode(r.value);
+  }
+  return text;
+}
+
+test("GET /stream sends an SSE id per event and resumes after Last-Event-ID", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const msg = (text: string) =>
+    a.instance.fetch(new Request("http://neo.test/msg", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ text }) }));
+  await msg("/help");
+  await msg("/help");
+
+  const ac = new AbortController();
+  const full = await readStream(await a.instance.fetch(new Request("http://neo.test/stream", { headers: { cookie }, signal: ac.signal })), 2);
+  ac.abort();
+  const ids = [...full.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]));
+  expect(ids.length).toBe(2);
+
+  const ac2 = new AbortController();
+  const resumed = await readStream(
+    await a.instance.fetch(new Request("http://neo.test/stream", { headers: { cookie, "last-event-id": String(ids[0]) }, signal: ac2.signal })),
+    1,
+  );
+  ac2.abort();
+  expect([...resumed.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]))).toEqual([ids[1]]);
 });

@@ -2,7 +2,7 @@
 // transcript JSONL (same source of truth as usage.ts) and decides, at safe boundaries only,
 // whether to keep it, hand off + clear it, or clear it immediately. Fail OPEN on read errors:
 // a measurement problem must never destroy a session.
-import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Order, SessionInfo } from "../types";
@@ -102,6 +102,40 @@ export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg, ttlMs:
   return "keep";
 }
 
+/** Running totals of one transcript, up to `offset` (the byte after its last complete line). */
+interface TranscriptTally {
+  offset: number;
+  turns: number;
+  firstTs: number;
+  lastInputSide: number;
+  lastModel?: string;
+}
+
+// Transcripts are append-only and grow to tens of MB, and every live session is measured on each
+// console poll and gate check. So each path keeps its tally and a call parses only the appended
+// bytes. A file smaller than the tally's offset was rewritten: it is read again from the start.
+const tallies = new Map<string, TranscriptTally>();
+
+function foldLines(t: TranscriptTally, text: string): void {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj: { type?: string; timestamp?: string; message?: { usage?: Record<string, number>; model?: string } };
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+    if (!t.firstTs && Number.isFinite(ts)) t.firstTs = ts;
+    const u = obj.type === "assistant" ? obj.message?.usage : undefined;
+    if (!u) continue;
+    t.turns++;
+    t.lastInputSide = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+    t.lastModel = obj.message?.model ?? t.lastModel;
+  }
+}
+
 /** Measured signals for one session, from ~/.claude/projects/<encodeCwd(folder)>/<id>.jsonl. */
 export function sessionContext(
   folder: string,
@@ -114,33 +148,37 @@ export function sessionContext(
   const now = opts.now ?? (() => Date.now());
   const path = join(projectsDir, encodeCwd(folder), `${sdkSessionId}.jsonl`);
   try {
-    if (!existsSync(path)) return none;
-    let turns = 0;
-    let firstTs = 0;
-    let lastInputSide = 0;
-    let lastModel: string | undefined;
-    for (const line of readFileSync(path, "utf8").split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let obj: { type?: string; timestamp?: string; message?: { usage?: Record<string, number>; model?: string } };
-      try {
-        obj = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
-      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
-      if (!firstTs && Number.isFinite(ts)) firstTs = ts;
-      const u = obj.type === "assistant" ? obj.message?.usage : undefined;
-      if (!u) continue;
-      turns++;
-      lastInputSide = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
-      lastModel = obj.message?.model ?? lastModel;
+    if (!existsSync(path)) {
+      tallies.delete(path);
+      return none;
     }
+    const st = statSync(path);
+    let t = tallies.get(path);
+    if (!t || st.size < t.offset) t = { offset: 0, turns: 0, firstTs: 0, lastInputSide: 0 };
+    let tail = "";
+    if (st.size > t.offset) {
+      const buf = Buffer.alloc(st.size - t.offset);
+      const fd = openSync(path, "r");
+      try {
+        readSync(fd, buf, 0, buf.length, t.offset);
+      } finally {
+        closeSync(fd);
+      }
+      // Commit only complete lines (split on the byte, so a multi-byte character is never cut).
+      const cut = buf.lastIndexOf(0x0a) + 1;
+      foldLines(t, buf.subarray(0, cut).toString("utf8"));
+      t.offset += cut;
+      tail = buf.subarray(cut).toString("utf8");
+    }
+    tallies.set(path, t);
+    // A last line with no newline yet still counts now, but is not committed: it is re-read when completed.
+    const view = tail ? { ...t } : t;
+    if (tail) foldLines(view, tail);
     return {
-      occupancy: lastInputSide / windowTokensFor(lastModel, opts.windowTokensByModel),
-      turns,
-      ageMs: firstTs ? Math.max(0, now() - firstTs) : 0,
-      idleMs: Math.max(0, now() - statSync(path).mtimeMs),
+      occupancy: view.lastInputSide / windowTokensFor(view.lastModel, opts.windowTokensByModel),
+      turns: view.turns,
+      ageMs: view.firstTs ? Math.max(0, now() - view.firstTs) : 0,
+      idleMs: Math.max(0, now() - st.mtimeMs),
     };
   } catch {
     return none; // fail OPEN

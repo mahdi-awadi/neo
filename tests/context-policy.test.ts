@@ -215,6 +215,47 @@ test("sessionContext divides occupancy by the model's window when the transcript
   expect(sig.occupancy).toBeCloseTo(100_000 / 500_000, 5);
 });
 
+// The console polls this for every live session, and the transcripts grow to tens of MB. A call
+// must parse only what was appended since the last call, never the whole file again.
+function growing(name: string) {
+  const projectsDir = mkdtempSync(join(tmpdir(), "neo-ctx-"));
+  const dir = join(projectsDir, encodeCwd(`/p/${name}`));
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "s.jsonl");
+  const turn = (input: number) => JSON.stringify({ type: "assistant", timestamp: "2026-07-08T00:00:00.000Z", message: { usage: { input_tokens: input } } });
+  const read = () => sessionContext(`/p/${name}`, "s", { projectsDir });
+  return { file, turn, read };
+}
+
+test("sessionContext parses only the bytes appended since its last read", () => {
+  const g = growing("grow");
+  writeFileSync(g.file, g.turn(10) + "\n" + g.turn(20) + "\n");
+  expect(g.read().turns).toBe(2);
+  // Blank out the already-read prefix in place (same size): a full re-read would now see 0 turns there.
+  const size = Bun.file(g.file).size;
+  writeFileSync(g.file, " ".repeat(size - 1) + "\n");
+  appendFileSync(g.file, g.turn(30) + "\n");
+  const sig = g.read();
+  expect(sig.turns).toBe(3);
+  expect(sig.occupancy).toBeCloseTo(30 / windowTokensFor(undefined), 8);
+});
+
+test("sessionContext re-reads from the start when the transcript shrank (rewritten)", () => {
+  const g = growing("shrink");
+  writeFileSync(g.file, g.turn(10) + "\n" + g.turn(20) + "\n" + g.turn(30) + "\n");
+  expect(g.read().turns).toBe(3);
+  writeFileSync(g.file, g.turn(5) + "\n");
+  expect(g.read().turns).toBe(1);
+});
+
+test("sessionContext counts a last line with no newline once, also after it is completed", () => {
+  const g = growing("partial");
+  writeFileSync(g.file, g.turn(10) + "\n" + g.turn(20));
+  expect(g.read().turns).toBe(2);
+  appendFileSync(g.file, "\n" + g.turn(30) + "\n");
+  expect(g.read().turns).toBe(3);
+});
+
 test("sessionContext fails OPEN on a missing transcript", () => {
   expect(sessionContext("/nowhere", "nope", { projectsDir: "/nonexistent" })).toEqual({ occupancy: 0, turns: 0, ageMs: 0, idleMs: 0 });
 });
