@@ -87,7 +87,7 @@ export interface WebChannel {
   todo(args: string): { ok: boolean; text: string };
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
    *  operator's text, which the console does not carry yet, so it is refused here. */
-  planAction(id: number, action: PlanAction): Promise<{ ok: boolean; text: string }>;
+  planAction(id: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
   notify(text: string, project?: string): void;
   /** Resolve a token issued by an outbound file event to its on-disk path (for GET /file). */
@@ -308,9 +308,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
     },
-    async planAction(id, action) {
+    async planAction(id, action, version) {
       if (action === "changes") return { ok: false, text: "reply to the plan card on Telegram with your changes" };
-      const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action);
+      const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action, version);
       opts.bus?.mirror("web", { kind: "notice", text: `plan #${id}: ${r.text} (web console)` });
       return r;
     },

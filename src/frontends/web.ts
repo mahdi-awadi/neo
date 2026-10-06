@@ -312,11 +312,12 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 
     if (req.method === "POST" && path === "/api/plan") {
       // A plan card action (ADR-0019): { id, action } → the shared engine rules.
-      const body = (await req.json().catch(() => ({}))) as { id?: unknown; action?: unknown };
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown; action?: unknown; version?: unknown };
       if (typeof body.id !== "number" || typeof body.action !== "string" || !isPlanAction(body.action)) {
         return Response.json({ ok: false, error: "id + action (approve|changes|execute|done|drop) required" }, { status: 400 });
       }
-      return Response.json(await channel.planAction(body.id, body.action), { headers: { "cache-control": "no-store" } });
+      const version = typeof body.version === "number" ? body.version : undefined;
+      return Response.json(await channel.planAction(body.id, body.action, version), { headers: { "cache-control": "no-store" } });
     }
 
     if (req.method === "POST" && path === "/api/loop/enable") {

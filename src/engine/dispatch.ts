@@ -113,8 +113,8 @@ export interface DispatchDeps {
   askApproval: (chatId: number, reason: string, signal?: AbortSignal, cause?: Cause) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
-  /** Post a plan card (ADR-0019; frontend-supplied, operator surfaces only). Absent → plans are
-   *  registered but never sent, and `send_file` of a plan is a plain file. */
+  /** Post a plan card (ADR-0019; frontend-supplied, operator surfaces only). Absent → no plan
+   *  detection at all (nothing is registered), and `send_file` of a plan is a plain file. */
   postPlan?: PostPlan;
   /** Config `plans` (paths, send, size cap, Execute brief). Absent → the shipped defaults. */
   plans?: PlansCfg;

@@ -11,7 +11,7 @@ import type { FaultCfg } from "./engine/fault";
 import type { HealthCfg } from "./engine/health";
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
-import { DEFAULT_PLANS_CFG, type PlansCfg } from "./engine/plans";
+import { readPlansCfg, type PlansCfg } from "./engine/plans";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
@@ -493,7 +493,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     liveness: { ...DEFAULTS.liveness, ...(fileCfg.liveness ?? {}) },
     governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
-    plans: { ...DEFAULT_PLANS_CFG, ...(fileCfg.plans ?? {}) },
+    plans: readPlansCfg(fileCfg.plans),
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

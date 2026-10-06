@@ -27,17 +27,20 @@ export function changedPlanFiles(folder: string, sinceSha: string | undefined, g
     if (prefixOut === undefined) return [];
     const prefix = prefixOut.trim();
     const failed = (what: string) => console.warn(`[plans] git ${what} failed in ${folder} — plan detection is partial`);
+    // Git reads only the plan globs (relative to `folder`), so a big repo's walk stays small; the
+    // Bun.Glob filter below stays the rule.
+    const pathspecs = globs.map((g) => `:(glob)${g}`);
     const found = new Set<string>();
     if (sinceSha) {
       // -z: NUL-separated and never quoted (non-ASCII names); --relative: paths from `folder`, only
       // under it; --diff-filter=d: no deletions.
-      const diff = git(folder, ["diff", "--name-only", "-z", "--relative", "--diff-filter=d", `${sinceSha}..HEAD`]);
+      const diff = git(folder, ["diff", "--name-only", "-z", "--relative", "--diff-filter=d", `${sinceSha}..HEAD`, "--", ...pathspecs]);
       if (diff === undefined) failed("diff");
       for (const p of (diff ?? "").split("\0")) if (p) found.add(p);
     }
-    // Porcelain paths are relative to the repo root (the pathspec keeps them under `folder`); rename
+    // Porcelain paths are relative to the repo root (the pathspecs keep them under `folder`); rename
     // entries carry the old path as a second field.
-    const status = git(folder, ["status", "--porcelain", "-z", "--untracked-files=all", "--", "."]);
+    const status = git(folder, ["status", "--porcelain", "-z", "--untracked-files=all", "--", ...pathspecs]);
     if (status === undefined) failed("status");
     const parts = (status ?? "").split("\0");
     for (let i = 0; i < parts.length; i++) {
@@ -131,6 +134,8 @@ export interface PlansCfg {
   maxBytes: number;
   /** The brief an Execute tap queues; `{path}` is the plan's path in its project. */
   executeBrief: string;
+  /** At most this many cards per run end (a merge or pull can bring many plans); the rest wait in `/plans`. */
+  maxPerRun: number;
 }
 
 export const DEFAULT_PLANS_CFG: PlansCfg = {
@@ -138,7 +143,22 @@ export const DEFAULT_PLANS_CFG: PlansCfg = {
   send: true,
   maxBytes: 1_000_000,
   executeBrief: "Execute the plan at {path} task by task. Tick each step's checkbox in the file when it is done.",
+  maxPerRun: 3,
 };
+
+/** Config `plans` from config.json: each well-typed field is kept, anything else is the default. */
+export function readPlansCfg(raw: unknown): PlansCfg {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const positive = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : d);
+  const d = DEFAULT_PLANS_CFG;
+  return {
+    paths: Array.isArray(r.paths) && r.paths.length > 0 && r.paths.every((p) => typeof p === "string" && p.length > 0) ? (r.paths as string[]) : d.paths,
+    send: typeof r.send === "boolean" ? r.send : d.send,
+    maxBytes: positive(r.maxBytes, d.maxBytes),
+    executeBrief: typeof r.executeBrief === "string" && r.executeBrief.trim() ? r.executeBrief : d.executeBrief,
+    maxPerRun: positive(r.maxPerRun, d.maxPerRun),
+  };
+}
 
 /** What the operator can do with a plan (the card's buttons; `/plans` and the web API take the same). */
 export type PlanAction = "approve" | "changes" | "execute" | "done" | "drop";
@@ -167,9 +187,10 @@ export function isPlanAction(s: string): s is PlanAction {
 }
 
 /** The frontend half of a send: post the file (`path` is absolute) with the buttons `planActions`
- *  names for `rec.status`, as one card. Returns where it landed; undefined = not posted. */
+ *  names for `rec.status`, as one card for content version `rec.version` (its taps carry it, so an
+ *  older card cannot act on newer content). Returns where it landed; undefined = not posted. */
 export type PostPlan = (
-  rec: { planId: number; project: string; folder: string; status: PlanStatus },
+  rec: { planId: number; project: string; folder: string; status: PlanStatus; version: number },
   path: string,
   caption: string,
 ) => Promise<{ chatId: number; messageId: number } | undefined>;
@@ -206,9 +227,16 @@ export function headSha(folder: string, git: GitRunner = defaultGit): string | u
   return git(folder, ["rev-parse", "HEAD"])?.trim() || undefined;
 }
 
-/** `📄 plan · gold · Fare list port · v2 · thread m4g2` — the version only from the second. */
-export function planCaption(p: Pick<PlanRow, "project" | "title">, version: number, ref?: string): string {
-  return `📄 plan · ${p.project} · ${p.title}${version > 1 ? ` · v${version}` : ""}${ref ? ` · thread ${ref}` : ""}`;
+/** `📄 plan · gold · Fare list port · v2 · thread m4g2` — the version only from the second; `more`
+ *  names the plans this run end held back (`· +2 more: /plans`). */
+export function planCaption(p: Pick<PlanRow, "project" | "title">, version: number, ref?: string, more = 0): string {
+  return `📄 plan · ${p.project} · ${p.title}${version > 1 ? ` · v${version}` : ""}${ref ? ` · thread ${ref}` : ""}${more > 0 ? ` · +${more} more: /plans` : ""}`;
+}
+
+/** The content hash a version is judged by: checkbox marks do not count, so ticking steps is
+ *  progress on the version the operator has, never a new card. */
+export function reviewHash(md: string): string {
+  return createHash("sha256").update(md.replace(/^(\s*[-*+]\s+\[)[ xX](\])/gm, "$1 $2")).digest("hex");
 }
 
 /** The plan's text, or undefined when it is gone, not a file, or over `maxBytes` (logged). */
@@ -227,13 +255,25 @@ function readPlan(folder: string, path: string, maxBytes: number): string | unde
   }
 }
 
+/** A registered plan and the hash its version is judged by (`reviewHash`). */
+interface Registered {
+  plan: PlanRow;
+  review: string;
+}
+
 /** Register the file and finish an executing plan whose every step is checked. */
-function register(deps: PlanDeps, run: PlanRun, path: string, content: string): PlanRow {
+function register(deps: PlanDeps, run: PlanRun, path: string, content: string): Registered {
   const { plan } = registerPlan(deps.ledger, { project: run.project, folder: run.folder, path, content, cause: run.cause, orderId: run.orderId });
+  const review = reviewHash(content);
   if (plan.status === "executing" && plan.stepsTotal > 0 && plan.stepsDone === plan.stepsTotal) {
-    return deps.ledger.upsertPlan({ ...plan, status: "done" });
+    return { plan: deps.ledger.upsertPlan({ ...plan, status: "done" }), review };
   }
-  return plan;
+  return { plan, review };
+}
+
+/** Whether a send of this version would post a card (it is not finished and not already sent). */
+function unsent(deps: PlanDeps, r: Registered): boolean {
+  return !!deps.postPlan && deps.cfg.send && r.plan.status !== "done" && r.plan.status !== "abandoned" && r.plan.sentSha256 !== r.review;
 }
 
 /** Content versions being posted right now, `<folder>\0<path>\0<sha256>`. Run ends overlap (a turn
@@ -250,26 +290,27 @@ type SendOutcome = "sent" | "already" | "failed" | "off";
  *  card opens its tracked decision (so a failed post leaves nothing open, and the next run end
  *  tries again), closes the previous version's decision and becomes a `plan` line of its thread.
  *  A done or dropped plan is never sent again. */
-async function sendPlan(deps: PlanDeps, plan: PlanRow, run: PlanRun): Promise<SendOutcome> {
+async function sendPlan(deps: PlanDeps, r: Registered, run: PlanRun, more = 0): Promise<SendOutcome> {
+  const { plan, review } = r;
   if (!deps.postPlan || !deps.cfg.send || plan.status === "done" || plan.status === "abandoned") return "off";
-  const key = `${plan.folder}\0${plan.path}\0${plan.sha256}`;
-  if (plan.sentSha256 === plan.sha256 || posting.has(key)) return "already";
+  const key = `${plan.folder}\0${plan.path}\0${review}`;
+  if (plan.sentSha256 === review || posting.has(key)) return "already";
   posting.add(key);
   try {
-    return await postVersion(deps, plan, run, deps.postPlan);
+    return await postVersion(deps, r, run, deps.postPlan, more);
   } finally {
     posting.delete(key);
   }
 }
 
-async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan: PostPlan): Promise<SendOutcome> {
+async function postVersion(deps: PlanDeps, { plan, review }: Registered, run: PlanRun, postPlan: PostPlan, more: number): Promise<SendOutcome> {
   const { ledger, trace } = deps;
   const cause = run.cause;
   const ref = cause && trace ? trace.ref(cause.threadId) : undefined;
   const version = plan.version + 1;
   const status = plan.status === "draft" ? "sent" : plan.status;
-  const caption = planCaption(plan, version, ref);
-  const posted = await postPlan({ planId: plan.id, project: plan.project, folder: plan.folder, status }, join(plan.folder, plan.path), caption);
+  const caption = planCaption(plan, version, ref, more);
+  const posted = await postPlan({ planId: plan.id, project: plan.project, folder: plan.folder, status, version }, join(plan.folder, plan.path), caption);
   if (!posted) return "failed";
   const decisionId = ledger.openDecision({
     kind: "decision",
@@ -286,7 +327,7 @@ async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan
   const now = ledger.planById(plan.id) ?? plan;
   const previous = now.decisionId ? ledger.decisionById(now.decisionId) : undefined;
   if (previous?.status === "open") ledger.dismissDecision(previous.id);
-  ledger.upsertPlan({ ...now, status: now.status === "draft" ? "sent" : now.status, decisionId, sentAt: Date.now(), sentSha256: plan.sha256, version });
+  ledger.upsertPlan({ ...now, status: now.status === "draft" ? "sent" : now.status, decisionId, sentAt: Date.now(), sentSha256: review, version });
   ledger.recordEvent("plan_sent", { folder: plan.folder, orderId: run.orderId, cause, data: { project: plan.project, planId: plan.id, path: plan.path, version } });
   if (trace && cause) {
     faults.guard("plans.line", () => {
@@ -299,16 +340,27 @@ async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan
 }
 
 /** At a run's end (company, project, dispatch, loop): register every plan file the run changed and
- *  send each content version the operator has not had. Each file is its own unit (ADR-0010): one
- *  that throws is reported and the rest still go. */
+ *  send each content version the operator has not had — at most `maxPerRun` cards; the last one
+ *  names how many more wait in `/plans`. Each file is its own unit (ADR-0010): one that throws is
+ *  reported and the rest still go. */
 export async function onRunEndPlans(deps: PlanDeps, run: PlanRun): Promise<void> {
+  const toSend: Registered[] = [];
   for (const path of changedPlanFiles(run.folder, run.startSha, deps.cfg.paths, deps.git)) {
     try {
       const content = readPlan(run.folder, path, deps.cfg.maxBytes);
       if (content === undefined) continue;
-      await sendPlan(deps, register(deps, run, path, content), run);
+      const r = register(deps, run, path, content);
+      if (unsent(deps, r)) toSend.push(r);
     } catch (e) {
       faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path });
+    }
+  }
+  const cap = deps.cfg.maxPerRun;
+  for (const [i, r] of toSend.slice(0, cap).entries()) {
+    try {
+      await sendPlan(deps, r, run, i === cap - 1 ? toSend.length - cap : 0);
+    } catch (e) {
+      faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path: r.plan.path });
     }
   }
 }
@@ -342,11 +394,13 @@ function answerCard(deps: PlanDeps, plan: PlanRow, action: PlanAction): void {
   if (trace && plan.threadId !== undefined) faults.guard("plans.refreshThread", () => trace.refreshThread(plan.threadId!));
 }
 
-/** An operator tap (Telegram, web, a command). The plan moves only here and on the checkbox count. */
-export async function applyPlanAction(deps: PlanDeps, planId: number, action: PlanAction): Promise<{ ok: boolean; text: string }> {
+/** An operator tap (Telegram, web, a command). The plan moves only here and on the checkbox count.
+ *  `version`: the card's version — a tap on an older card than the newest sent is refused. */
+export async function applyPlanAction(deps: PlanDeps, planId: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }> {
   const { ledger } = deps;
   const plan = ledger.planById(planId);
   if (!plan) return { ok: false, text: `no plan #${planId}` };
+  if (version !== undefined && version !== plan.version) return { ok: false, text: `this card is v${version} — the newest is v${plan.version}; use that card` };
   if (plan.status === "done" || plan.status === "abandoned") return { ok: false, text: `this plan is already ${plan.status === "done" ? "done" : "dropped"}` };
   // The card's buttons are the rule on every surface: an action its status does not offer is refused.
   if (!planActions(plan.status).includes(action)) {

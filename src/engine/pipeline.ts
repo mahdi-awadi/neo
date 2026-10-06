@@ -108,7 +108,7 @@ export interface PipelineDeps {
   /** Deliver a worker-produced file back to the channel (the `send_file` tool calls this). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
   /** Post a plan card (ADR-0019): the one Telegram poster the daemon builds, shared by every
-   *  operator surface. Absent → plans are registered, never sent. */
+   *  operator surface. Absent (no bot token, the customer path) → no plan detection at all. */
   postPlan?: PostPlan;
   /** Per-project trust — when a folder is trusted, risky tools auto-approve. */
   trust: TrustStore;

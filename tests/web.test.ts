@@ -268,10 +268,11 @@ test("GET /stream sends an SSE id per event and resumes after Last-Event-ID", as
 test("POST /api/plan applies a plan action; a bad body is a 400", async () => {
   const a = app();
   const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
-  const plan = a.ledger.upsertPlan({ project: "gold", folder: "/home/gold", path: "plans/a.md", title: "A", sha256: "s", status: "sent", stepsTotal: 0, stepsDone: 0 });
+  const plan = a.ledger.upsertPlan({ project: "gold", folder: "/home/gold", path: "plans/a.md", title: "A", sha256: "s", status: "sent", stepsTotal: 0, stepsDone: 0, version: 1 });
   const post = (body: unknown) =>
     a.instance.fetch(new Request("http://neo.test/api/plan", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
-  const ok = await post({ id: plan.id, action: "approve" });
+  expect(await (await post({ id: plan.id, action: "approve", version: 2 })).json()).toEqual({ ok: false, text: "this card is v2 — the newest is v1; use that card" });
+  const ok = await post({ id: plan.id, action: "approve", version: 1 });
   expect(await ok.json()).toEqual({ ok: true, text: "Approved" });
   expect(a.ledger.planById(plan.id)!.status).toBe("approved");
   expect((await post({ id: plan.id, action: "explode" })).status).toBe(400);

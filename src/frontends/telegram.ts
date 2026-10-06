@@ -899,13 +899,18 @@ export function createTelegramBot(
     // Tap on a plan card (ADR-0019). The engine owns every rule; this answers the tap and redraws the
     // card's buttons for the plan's new status. "Changes" takes the next message as the review answer
     // (the same path as a decision's "✏️ Other"), which resumes the worker that wrote the plan.
-    const planTap = /^plan:(\d+):([a-z]+)$/.exec(cb);
-    if (planTap && isPlanAction(planTap[2]!)) {
+    const planTap = /^plan:(\d+):(\d+):([a-z]+)$/.exec(cb);
+    if (planTap && isPlanAction(planTap[3]!)) {
       const planId = Number(planTap[1]);
-      const action = planTap[2];
+      const version = Number(planTap[2]);
+      const action = planTap[3];
       const chatId = ctx.chat?.id ?? 0;
       if (action === "changes") {
         const plan = ledger.planById(planId);
+        if (plan && plan.version !== version) {
+          await ctx.answerCallbackQuery(`this card is v${version} — the newest is v${plan.version}; use that card`);
+          return;
+        }
         const dec = plan?.decisionId ? ledger.decisionById(plan.decisionId) : undefined;
         if (dec?.status !== "open") {
           await ctx.answerCallbackQuery("This plan's review is closed.");
@@ -916,12 +921,12 @@ export function createTelegramBot(
         await bot.api.sendMessage(chatId, "✏️ Send your changes as your next message — I'll deliver them to the worker that wrote the plan.");
         return;
       }
-      const r = await applyPlanAction(planDeps(), planId, action);
+      const r = await applyPlanAction(planDeps(), planId, action, version);
       await ctx.answerCallbackQuery(r.text.slice(0, 200));
       const after = ledger.planById(planId);
       if (after) {
         try {
-          await ctx.editMessageReplyMarkup({ reply_markup: planKeyboard(planId, after.status) });
+          await ctx.editMessageReplyMarkup({ reply_markup: planKeyboard(planId, after.status, version) });
         } catch {
           // "not modified" — ignore
         }
@@ -1050,10 +1055,11 @@ function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefin
   return undefined;
 }
 
-/** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<action>` tap. */
-export function planKeyboard(planId: number, status: PlanStatus): InlineKeyboard {
+/** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<version>:<action>`
+ *  tap — the version keeps an older card from acting on newer content. */
+export function planKeyboard(planId: number, status: PlanStatus, version: number): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const a of planActions(status)) kb.text(PLAN_LABELS[a], `plan:${planId}:${a}`);
+  for (const a of planActions(status)) kb.text(PLAN_LABELS[a], `plan:${planId}:${version}:${a}`);
   return kb;
 }
 
@@ -1067,7 +1073,7 @@ export function createPlanPoster(api: Api, target: () => number | undefined): Po
     if (chatId === undefined) return undefined;
     try {
       // Telegram caps a document caption at 1024 characters.
-      const m = await api.sendDocument(chatId, new InputFile(path), { caption: caption.slice(0, 1024), reply_markup: planKeyboard(rec.planId, rec.status) });
+      const m = await api.sendDocument(chatId, new InputFile(path), { caption: caption.slice(0, 1024), reply_markup: planKeyboard(rec.planId, rec.status, rec.version) });
       return { chatId, messageId: m.message_id };
     } catch (e) {
       faults.report("telegram.plan", e, { project: rec.project, chatId });

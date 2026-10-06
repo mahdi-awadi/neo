@@ -11,6 +11,7 @@ import {
   offerPlanFile,
   onRunEndPlans,
   planActions,
+  readPlansCfg,
   renderPlans,
   DEFAULT_PLANS_CFG,
   type PlanDeps,
@@ -377,4 +378,82 @@ test("Execute writes only status and todo: changes made while submit ran are kep
   } as unknown as TodoQueue;
   await applyPlanAction({ ...deps, todo }, plan.id, "execute");
   expect(ledger.planById(plan.id)).toMatchObject({ status: "executing", todoId: 1, sha256: "newer", stepsDone: 1, version: 2 });
+});
+
+// ── P2 phase review fixes ──────────────────────────────────────────────────────────────────
+
+test("ticking checkboxes is progress, not a new version: no card while executing or approved; a real edit is v2", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  const plan = ledger.planByPath(dir, PLAN)!;
+  await applyPlanAction(deps, plan.id, "approve");
+  put(dir, PLAN, "# Fare list port\n- [x] one\n- [ ] two\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toHaveLength(1);
+  const { todo } = fakeTodo(ledger);
+  await applyPlanAction({ ...deps, todo }, plan.id, "execute");
+  put(dir, PLAN, "# Fare list port\n- [X] one\n- [x] two\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toHaveLength(1);
+  expect(ledger.planById(plan.id)).toMatchObject({ status: "done", stepsDone: 2 });
+  expect(ledger.listOpenDecisions()).toEqual([]);
+  // A real edit of an approved plan is a new version to review.
+  const b = repo();
+  const r = rig();
+  put(b, PLAN, BODY);
+  await onRunEndPlans(r.deps, { project: "gold", folder: b, chatId: 42 });
+  await applyPlanAction(r.deps, r.ledger.planByPath(b, PLAN)!.id, "approve");
+  put(b, PLAN, BODY + "- [ ] a new step\n");
+  await onRunEndPlans(r.deps, { project: "gold", folder: b, chatId: 42 });
+  expect(r.posts.map((p) => p.caption)).toEqual(["📄 plan · gold · Fare list port", "📄 plan · gold · Fare list port · v2"]);
+});
+
+test("one run end posts at most plans.maxPerRun cards; the last names how many more wait in /plans", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig({ trace: undefined, cfg: { ...DEFAULT_PLANS_CFG, maxPerRun: 2 } });
+  for (const n of ["a", "b", "c", "d"]) put(dir, `plans/${n}.md`, `# ${n.toUpperCase()}`);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts.map((p) => p.caption)).toEqual(["📄 plan · gold · A", "📄 plan · gold · B · +2 more: /plans"]);
+  expect(ledger.planByPath(dir, "plans/c.md")).toMatchObject({ status: "draft" });
+  expect(ledger.listOpenDecisions()).toHaveLength(2);
+});
+
+test("a tap on an older version's card is refused; the newest card's tap works", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  put(dir, PLAN, BODY + "- [ ] three\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts.map((p) => p.rec.version)).toEqual([1, 2]);
+  const id = ledger.planByPath(dir, PLAN)!.id;
+  expect(await applyPlanAction(deps, id, "approve", 1)).toEqual({ ok: false, text: "this card is v1 — the newest is v2; use that card" });
+  expect(await applyPlanAction(deps, id, "approve", 2)).toEqual({ ok: true, text: "Approved" });
+});
+
+test("a loop fire whose run throws still sends the plans it wrote", async () => {
+  const dir = repo();
+  const { posts, deps } = rig({ trace: undefined });
+  const loop: LoopDef = { name: "planner", usage: "/loop planner", summary: "s", folder: dir, prompt: "p", goal: { kind: "manual" } as never, trigger: { kind: "manual" }, bounds: { maxIterations: 1 } };
+  let n = 0;
+  const run = async (): Promise<RunResult> => {
+    put(dir, PLAN, BODY);
+    throw new Error("worker crashed");
+  };
+  await expect(startScheduledLoop(loop, { reply: () => {}, chatId: 42, run, check: async () => ({ met: n++ > 0, detail: "" }), plans: deps })).rejects.toThrow("worker crashed");
+  expect(posts).toHaveLength(1);
+});
+
+test("readPlansCfg keeps each well-typed field and falls back for the rest", () => {
+  expect(readPlansCfg(undefined)).toEqual(DEFAULT_PLANS_CFG);
+  expect(readPlansCfg({ paths: "docs/*.md", send: "yes", maxBytes: -1, executeBrief: 7, maxPerRun: 0 })).toEqual(DEFAULT_PLANS_CFG);
+  expect(readPlansCfg({ paths: ["x/**/*.md"], send: false, maxBytes: 10, executeBrief: "go {path}", maxPerRun: 5 })).toEqual({
+    paths: ["x/**/*.md"],
+    send: false,
+    maxBytes: 10,
+    executeBrief: "go {path}",
+    maxPerRun: 5,
+  });
 });

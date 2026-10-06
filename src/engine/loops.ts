@@ -601,8 +601,7 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
       ...extras,
     },
     { run: deps.run, check },
-  );
-  await loopPlans(deps.plans, loop, chatId, planStart, cause);
+  ).finally(() => loopPlans(deps.plans, loop, chatId, planStart, cause));
   const outcome = `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`;
   await deps.reply(chatId, outcome + line(outcome, "result"));
   return out;
@@ -673,8 +672,7 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
       ...extras,
     },
     { run: deps.run, check },
-  );
-  await loopPlans(deps.plans, loop, deps.chatId, planStart, cause);
+  ).finally(() => loopPlans(deps.plans, loop, deps.chatId, planStart, cause));
   return out;
 }
 
