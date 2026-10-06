@@ -843,7 +843,7 @@ function renderAttention(e: Any): void {
           .then((r) => r.json())
           .then((x) => {
             feedMsg("⋯ " + esc(x.text || x.error || ""), "me", null);
-            if (action !== "todo") row.remove(); // snoozed, dismissed, or already resolved elsewhere
+            if (x.ok && action !== "todo") row.remove(); // a refusal keeps the row (it may point at → todo)
           })
           .catch(() => feedMsg("⋯ " + esc(tx("attention.failed")), "me", null));
       };

@@ -910,8 +910,9 @@ export function createTelegramBot(
       const action = attTap[2];
       const r = await applyAttentionAction(attentionDeps(), id, action, Date.now());
       await ctx.answerCallbackQuery(r.text.slice(0, 200));
-      // Snoozed, dismissed — or already resolved elsewhere (the console, a scan): the row has nothing left to do.
-      if (action !== "todo") {
+      // Snoozed, dismissed or removed: the row has nothing left to do. A refusal keeps it (its answer
+      // may point at → todo).
+      if (r.ok && action !== "todo") {
         const rows = (ctx.callbackQuery.message?.reply_markup?.inline_keyboard ?? []).filter(
           (row) => !row.some((b) => "callback_data" in b && b.callback_data.startsWith(`att:${id}:`)),
         );

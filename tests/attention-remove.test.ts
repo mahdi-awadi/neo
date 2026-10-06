@@ -67,3 +67,28 @@ test("a session running in the worktree refuses Remove; so does an unpushed, unm
   const [other] = reconcile(s.ledger, "engine", "gold", [{ project: "gold", folder: s.dir, source: "engine", kind: "queue_paused", key: s.dir, title: "paused", severity: "normal" }], 100).opened;
   expect((await applyAttentionAction(s.deps, other!, "remove", 200)).ok).toBe(false);
 });
+
+test("ignored files (a .env) are named first; a second tap within the window deletes them with the worktree", async () => {
+  const s = setup();
+  writeFileSync(join(s.wt, ".gitignore"), ".env\n");
+  git(s.wt, "add", ".gitignore");
+  git(s.wt, "commit", "-q", "-m", "ignore env");
+  git(s.dir, "merge", "-q", "--ff-only", "feat/ota");
+  writeFileSync(join(s.wt, ".env"), "SECRET=1");
+  const first = await applyAttentionAction(s.deps, s.id, "remove", 1_000);
+  expect(first.ok).toBe(false);
+  expect(first.text).toContain(".env");
+  expect(existsSync(join(s.wt, ".env"))).toBe(true);
+  const late = await applyAttentionAction(s.deps, s.id, "remove", 1_000 + 6 * 60_000); // window passed: asks again
+  expect(late.ok).toBe(false);
+  const second = await applyAttentionAction(s.deps, s.id, "remove", 1_000 + 6 * 60_000 + 10_000);
+  expect(second.ok).toBe(true);
+  expect(existsSync(s.wt)).toBe(false);
+});
+
+test("any session for the worktree (idle too) refuses remove — a resume would land in a deleted folder", async () => {
+  const s = setup();
+  const sess = s.registry.add({ id: "o2", source: "neo", folder: s.wt, task: "t", chatId: 1, createdAt: 0 }, 0);
+  s.registry.setStatus(sess.id, "idle");
+  expect((await applyAttentionAction(s.deps, s.id, "remove", 200)).text).toBe(`in use by ${sess.name}`);
+});

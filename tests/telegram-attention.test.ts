@@ -80,3 +80,10 @@ test("a removable worktree item gets a remove button first", () => {
   const kb = attentionKeyboard([{ id: 3, actions: ["remove", "todo", "snooze", "dismiss"] }], 24);
   expect(kb.inline_keyboard[0]!.map((b) => (b as { callback_data: string }).callback_data)).toEqual(["att:3:remove", "att:3:todo", "att:3:snooze", "att:3:dismiss"]);
 });
+
+test("a refused action keeps the item's row (its answer may point at → todo)", async () => {
+  const r = rig();
+  reconcile(r.ledger, "engine", "gold", [item], 100);
+  await r.press("att:1:remove"); // not a worktree: refused
+  expect(r.calls.some((c) => c.method === "editMessageReplyMarkup")).toBe(false);
+});

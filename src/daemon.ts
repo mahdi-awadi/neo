@@ -129,11 +129,12 @@ async function main(): Promise<void> {
   });
   const gated = (): string => gatedText(restartDeps());
   // The daily attention digest (AC5.5): a high item → the Decisions group, else the operator's DM.
-  const sendDigest = async (text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<void> => {
+  const sendDigest = async (text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<{ chatId: number; messageId: number } | void> => {
     const target = priority === "result" ? (cfg.decisionsChatId ?? admin.adminId()) : admin.adminId();
     if (!operatorApi || target === undefined) return;
     const hours = (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours;
-    await operatorApi.sendMessage(target, text, buttons.length ? { reply_markup: attentionKeyboard(buttons, hours) } : {});
+    const m = await operatorApi.sendMessage(target, text, buttons.length ? { reply_markup: attentionKeyboard(buttons, hours) } : {});
+    return { chatId: target, messageId: m.message_id };
   };
   // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
   // time, in the background — a tick only starts it (single-flight).
@@ -397,7 +398,7 @@ async function main(): Promise<void> {
           // failed/waiting threads, stale decisions, an impossible ctx%. Ledger + registry only.
           ["attention.engine", attentionEngineTick],
           ["attention.scan", attentionScanTick],
-          ["attention.digest", () => runDigest({ ledger, trace, digestAt: (cfg.attention ?? DEFAULT_ATTENTION_CFG).digestAt, consoleUrl: cfg.publicUrl || undefined, send: sendDigest }, Date.now())],
+          ["attention.digest", () => runDigest({ ledger, trace, digestAt: (cfg.attention ?? DEFAULT_ATTENTION_CFG).digestAt, maxLines: (cfg.attention ?? DEFAULT_ATTENTION_CFG).listLines, consoleUrl: cfg.publicUrl || undefined, send: sendDigest }, Date.now())],
           // What is built but not running (spec §8.4): git + the boot record + the updater.
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],

@@ -143,3 +143,11 @@ test("while a session works in the folder, an open dirty item is kept as it is (
   expect(r.kept.has("dirty")).toBe(true);
   expect(r.failed.has("dirty")).toBe(false); // on purpose, not a failed read: no scan error
 });
+
+test("a linked worktree whose folder was deleted by hand is not an item", async () => {
+  const { dir, root } = repo();
+  const wt = join(root, "gold-gone");
+  sh(dir, "worktree", "add", "-q", "-b", "feat/gone", wt);
+  rmSync(wt, { recursive: true, force: true });
+  expect(await kinds(input(dir, { now: Date.now() + 13 * 3_600_000 }))).toEqual([]);
+});

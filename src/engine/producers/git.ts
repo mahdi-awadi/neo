@@ -4,6 +4,7 @@
  *  Read through git-read (bounded, never throws); each read that fails marks its kinds failed so the
  *  scan keeps their rows (no false resolve). No repo or branch name is in code (AC5.6). */
 import type { AttentionDraft } from "../ledger";
+import { existsSync } from "node:fs";
 import { uncommittedFrom, type GitRead } from "../git-read";
 
 export const GIT_KINDS = ["unpushed", "no_upstream", "dirty", "stale_branch", "drift", "worktree"] as const;
@@ -145,7 +146,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
       const path = /^worktree (.+)$/m.exec(b)?.[1];
       const sha = /^HEAD (\w+)$/m.exec(b)?.[1];
       const branch = /^branch refs\/heads\/(.+)$/m.exec(b)?.[1];
-      if (!path || !sha || i.sessionIn(path)) continue;
+      if (!path || !sha || i.sessionIn(path) || !existsSync(path)) continue; // deleted by hand: nothing left on disk
       const ct = await read.git(i.folder, ["log", "-1", "--format=%ct", sha]);
       const last = Math.max(i.lastWorkAt(path) ?? 0, ct.ok ? Number(ct.out.trim()) * 1000 : 0);
       if (last === 0) continue; // no time known: never a made-up idle age

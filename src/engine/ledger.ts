@@ -340,6 +340,9 @@ export interface Ledger {
   updateAttention(id: number, patch: AttentionPatch): void;
   /** Open, not snoozed at `now`: severity first (high, normal, low), then newest seen; ≤ PAGE_MAX. */
   listOpenAttention(f: { project?: string; now: number; limit?: number }): AttentionRow[];
+  /** Every open item not snoozed at `now`, uncapped (the digest counts them all; the table holds only
+   *  live findings plus recently resolved ones, so it stays small). Severity first, newest seen. */
+  allOpenAttention(now: number): AttentionRow[];
   /** The projects where one producer still has a live row (open, or dismissed and still seen) — the
    *  ones its next reconcile must visit even when it reports nothing there. */
   attentionProjects(source: AttentionSource): string[];
@@ -944,6 +947,16 @@ export function openLedger(
         params.push(typeof v === "boolean" ? (v ? 1 : 0) : v);
       }
       if (sets.length) db.query(`UPDATE attention_items SET ${sets.join(", ")} WHERE id = ?`).run(...params, id);
+    },
+    allOpenAttention(now) {
+      return (
+        db
+          .query(
+            `SELECT * FROM attention_items WHERE resolved_at IS NULL AND (snoozed_until IS NULL OR snoozed_until <= ?)
+             ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, last_seen DESC, id DESC`,
+          )
+          .all(now) as AttentionDbRow[]
+      ).map(mapAttentionRow);
     },
     attentionProjects(source) {
       return (

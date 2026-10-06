@@ -16,6 +16,8 @@ import type { Registry } from "./registry";
 
 /** Bound on the worktree status read and remove. */
 const REMOVE_TIMEOUT_MS = 30_000;
+/** A remove that deletes ignored files needs a second tap within this window. */
+const REMOVE_CONFIRM_MS = 5 * 60_000;
 
 export type AttentionAction = "remove" | "todo" | "snooze" | "dismiss";
 const ACTIONS: AttentionAction[] = ["remove", "todo", "snooze", "dismiss"];
@@ -103,12 +105,26 @@ async function removeWorktree(deps: AttentionActionDeps, row: AttentionRow, now:
   const f = worktreeFacts(row);
   if (!f) return { ok: false, text: `#${row.id} is not a leftover worktree` };
   if (!attentionActions(row).includes("remove")) return { ok: false, text: `${f.path}: not pushed or merged, or not clean — → todo instead` };
+  // Any session for it, idle too: a resume would land in a folder that no longer exists.
   const session = deps.registry?.findByFolder(f.path);
-  if (session?.status === "running") return { ok: false, text: `in use by ${session.name}` };
+  if (session) return { ok: false, text: `in use by ${session.name}` };
   const run = deps.exec ?? exec;
-  const status = await run(["git", "-C", f.path, "status", "--porcelain", "--untracked-files=all"], { timeoutMs: REMOVE_TIMEOUT_MS, env: { GIT_OPTIONAL_LOCKS: "0" } });
+  const status = await run(["git", "-C", f.path, "status", "--porcelain", "--ignored", "--untracked-files=normal"], { timeoutMs: REMOVE_TIMEOUT_MS, env: { GIT_OPTIONAL_LOCKS: "0" } });
   if (status.code !== 0) return { ok: false, text: `could not read ${f.path}: ${status.err.trim()}` };
-  if (status.out.trim()) return { ok: false, text: `${f.path} has uncommitted changes now — → todo instead` };
+  const lines = status.out.split("\n").filter(Boolean);
+  if (lines.some((l) => !l.startsWith("!! "))) return { ok: false, text: `${f.path} has uncommitted changes now — → todo instead` };
+  // git deletes ignored files (a .env, local data) without asking: name them, and remove only on a
+  // second tap within REMOVE_CONFIRM_MS — consent to exactly what is lost.
+  const ignored = lines.map((l) => l.slice(3));
+  if (ignored.length) {
+    const key = `rmconfirm:${row.id}`;
+    const asked = deps.ledger.getMeta(key)?.value as { at: number } | undefined;
+    if (!asked || now - asked.at > REMOVE_CONFIRM_MS) {
+      deps.ledger.setMeta(key, { at: now }, now);
+      const shown = ignored.slice(0, 5).join(", ") + (ignored.length > 5 ? ` (+${ignored.length - 5} more)` : "");
+      return { ok: false, text: `${f.path} also holds ignored files that remove deletes: ${shown} — tap remove again within ${REMOVE_CONFIRM_MS / 60_000} min to delete them` };
+    }
+  }
   const r = await run(["git", "-C", row.folder, "worktree", "remove", f.path], { timeoutMs: REMOVE_TIMEOUT_MS });
   if (r.code !== 0) return { ok: false, text: `git refused: ${r.err.trim()}` };
   deps.ledger.updateAttention(row.id, { resolvedAt: now });
@@ -173,33 +189,39 @@ export function renderAttention(
 }
 
 /** The daily digest (spec §7, AC5.5): per project the count by severity and its top `TOP_HIGH` high
- *  items (each with → todo), the console link; `result` priority (the Decisions group) only when
- *  something is high. Nothing new and nothing high → one line. `prevIds`: the items open at the
- *  last digest. */
+ *  items (each with → todo), at most `maxLines` lines, then the console link; `result` priority (the
+ *  Decisions group) only when something is high. Nothing new and nothing high → one line. Counts
+ *  cover every open item. `prevIds`: the items open at the last digest. */
 export function renderDigest(
-  rows: AttentionRow[],
-  prevIds: number[],
-  consoleUrl: string | undefined,
-): { text: string; priority: "result" | "progress"; buttons: Array<AttentionRow & { actions: AttentionAction[] }> } {
-  const prev = new Set(prevIds);
+  ledger: Ledger,
+  o: { now: number; prevIds: number[]; consoleUrl?: string; maxLines: number },
+): { text: string; priority: "result" | "progress"; buttons: Array<AttentionRow & { actions: AttentionAction[] }>; ids: number[] } {
+  const rows = ledger.allOpenAttention(o.now);
+  const ids = rows.map((r) => r.id);
+  const prev = new Set(o.prevIds);
   const fresh = rows.filter((r) => !prev.has(r.id)).length;
   const high = rows.filter((r) => r.severity === "high").length;
   const priority = high > 0 ? "result" : "progress";
-  if (!fresh && !high) return { text: `☀ attention today: ${rows.length} open, nothing new, nothing high — /attention`, priority, buttons: [] };
+  if (!fresh && !high) return { text: `☀ attention today: ${rows.length} open, nothing new, nothing high — /attention`, priority, buttons: [], ids };
   const lines = [`☀ attention today: ${rows.length} open, ${high} high, ${fresh} new since the last digest`];
   const buttons: Array<AttentionRow & { actions: AttentionAction[] }> = [];
   const byProject = new Map<string, AttentionRow[]>();
   for (const r of rows) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]); // severity first
+  let shownProjects = 0;
   for (const [project, items] of byProject) {
+    const top = items.filter((x) => x.severity === "high").slice(0, TOP_HIGH);
+    if (lines.length + 1 + top.length > o.maxLines) break; // one bounded message (Telegram: 4096)
     const count = (sev: AttentionRow["severity"]) => items.filter((r) => r.severity === sev).length;
     lines.push(`${project}: ${(["high", "normal", "low"] as const).filter((s) => count(s)).map((s) => `${count(s)} ${s}`).join(" · ")}`);
-    for (const r of items.filter((x) => x.severity === "high").slice(0, TOP_HIGH)) {
+    for (const r of top) {
       lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${todoTitle(r.title)}`);
       buttons.push({ ...r, actions: ["todo"] });
     }
+    shownProjects++;
   }
-  if (consoleUrl) lines.push(consoleUrl);
-  return { text: lines.join("\n"), priority, buttons };
+  if (shownProjects < byProject.size) lines.push(`… +${byProject.size - shownProjects} more projects — /attention`);
+  if (o.consoleUrl) lines.push(o.consoleUrl);
+  return { text: lines.join("\n"), priority, buttons, ids };
 }
 
 /** High items shown per project in the digest. */
@@ -211,8 +233,11 @@ export interface DigestDeps {
   /** Cron (server time), config attention.digestAt. */
   digestAt: string;
   consoleUrl?: string;
-  /** Post the digest: `result` → the Decisions group, `progress` → the operator's DM. */
-  send(text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<void>;
+  /** The digest's line cap (config attention.listLines). */
+  maxLines: number;
+  /** Post the digest: `result` → the Decisions group, `progress` → the operator's DM. Returns the
+   *  posted message, so a reply to it joins the digest's thread. */
+  send(text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<{ chatId: number; messageId: number } | void>;
 }
 
 /** The heartbeat's digest step: when `digestAt` is due (once per matching minute — the last send is
@@ -221,13 +246,17 @@ export interface DigestDeps {
 export async function runDigest(deps: DigestDeps, now: number): Promise<boolean> {
   const last = deps.ledger.getMeta("digest:last")?.value as { at: number; ids: number[] } | undefined;
   if (!isDue({ kind: "cron", expr: deps.digestAt }, last?.at, now)) return false;
-  const rows = listOpen(deps.ledger, { now });
-  deps.ledger.setMeta("digest:last", { at: now, ids: rows.map((r) => r.id) }, now); // before the send: never twice
-  const d = renderDigest(rows, last?.ids ?? [], deps.consoleUrl);
-  if (deps.trace) {
-    const cause = deps.trace.root({ origin: "attention", title: "daily attention digest" });
-    deps.trace.outbound({ chatId: ENGINE_CHAT_ID, text: d.text, cause, kind: "digest" });
+  const d = renderDigest(deps.ledger, { now, prevIds: last?.ids ?? [], consoleUrl: deps.consoleUrl, maxLines: deps.maxLines });
+  // Written before the send, so a restart or a retry never sends twice; a failed send loses that
+  // day's digest (logged by the heartbeat), and /attention still shows everything.
+  deps.ledger.setMeta("digest:last", { at: now, ids: d.ids }, now);
+  const cause = deps.trace?.root({ origin: "attention", title: "daily attention digest" });
+  const posted = await deps.send(d.text, d.priority, d.buttons.map((b) => ({ id: b.id, actions: b.actions })));
+  // The line is filed under the chat it was posted in and bound to its message (like a plan card),
+  // so a reply to the digest joins the digest's thread.
+  if (deps.trace && cause) {
+    const msgId = deps.trace.outbound({ chatId: posted ? posted.chatId : ENGINE_CHAT_ID, text: d.text, cause, kind: "digest" });
+    if (posted) deps.trace.bindChannel(msgId, posted.chatId, posted.messageId);
   }
-  await deps.send(d.text, d.priority, d.buttons.map((b) => ({ id: b.id, actions: b.actions })));
   return true;
 }

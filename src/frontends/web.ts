@@ -360,7 +360,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       // An attention item's one-tap action (ADR-0018): { id, action } → the shared engine rules.
       const body = (await req.json().catch(() => ({}))) as { id?: unknown; action?: unknown };
       if (typeof body.id !== "number" || typeof body.action !== "string" || !isAttentionAction(body.action)) {
-        return Response.json({ ok: false, error: "id + action (todo|snooze|dismiss) required" }, { status: 400 });
+        return Response.json({ ok: false, error: "id + action (remove|todo|snooze|dismiss) required" }, { status: 400 });
       }
       return Response.json(await channel.attentionAction(body.id, body.action), { headers: { "cache-control": "no-store" } });
     }
