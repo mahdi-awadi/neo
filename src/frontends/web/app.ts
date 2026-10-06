@@ -827,6 +827,30 @@ function onThreadEvent(e: Any): void {
   // New lines already append live (appendThreadLine); only a new state needs the pane re-read.
   if (TH.open === e.id && stateChanged) openThread(e.id);
 }
+/** `/attention` (ADR-0018): the list, then one row of buttons per item — → todo, snooze, dismiss. A
+ *  snoozed or dismissed item's row goes; → todo stays (a second tap shows the todo). */
+function renderAttention(e: Any): void {
+  const d = feedMsg(`<div dir="auto" style="white-space:pre-wrap">${esc(e.text)}</div>`, "out", null);
+  for (const it of e.items as Any[]) {
+    const row = document.createElement("div");
+    row.className = "acts";
+    (["todo", "snooze", "dismiss"] as const).forEach((action) => {
+      const b = document.createElement("button");
+      b.className = "chip";
+      b.textContent = tx(`attention.${action}`, { id: it.id });
+      b.onclick = () => {
+        void post("/api/attention", { id: it.id, action })
+          .then((r) => r.json())
+          .then((x) => {
+            feedMsg("⋯ " + esc(x.text || x.error || ""), "me", null);
+            if (x.ok && action !== "todo") row.remove();
+          });
+      };
+      row.appendChild(b);
+    });
+    d.appendChild(row);
+  }
+}
 function planAction(id: number, action: string, version: number): void {
   void post("/api/plan", { id, action, version })
     .then((r) => r.json())
@@ -916,6 +940,7 @@ es.onmessage = (ev) => {
     if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "user", content: e.text, at: Date.now() });
   } else if (e.type === "notice") feedMsg("⋯ " + esc(e.text), "me", filterProject);
   else if (e.type === "projects") void loadState();
+  else if (e.type === "attention") renderAttention(e);
   else if (e.type === "sdk") {
     S.sdk = e.sdk;
     renderSdk();

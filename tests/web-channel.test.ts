@@ -14,6 +14,7 @@ import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-r
 import type { Order } from "../src/types";
 import { DEFAULT_GOVERNOR_CFG } from "../src/engine/governor";
 import { createTrace } from "../src/engine/trace";
+import { reconcile, listOpen } from "../src/engine/attention";
 
 function cfg(): NeoConfig {
   return {
@@ -683,4 +684,20 @@ test("search hits reach the console as safe HTML with the match marked", () => {
   const r = ch.search("fare", { limit: 10 });
   expect(r.rows[0]).toMatchObject({ threadId: cause.threadId, threadRef: trace.ref(cause.threadId) });
   expect(r.rows[0]!.snippet).toBe("fix &lt;the&gt; <mark>fare</mark> list");
+});
+
+// P4 Task 4.6: /attention on the web is an `attention` event with its items; the one-tap actions run
+// the same engine rules as a Telegram tap.
+test("/attention emits an attention event; attentionAction applies the shared rules", async () => {
+  const eng = engine(fakeStart().start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  reconcile(eng.ledger, "engine", "gold", [{ project: "gold", folder: "/home/gold", source: "engine", kind: "queue_paused", key: "/home/gold", title: "todo queue paused 7h", severity: "normal" }], 100);
+  await ch.send("/attention");
+  const ev = events.find((e) => e.type === "attention") as { text: string; items: Array<{ id: number }> } | undefined;
+  expect(ev?.text).toContain("attention: 1 open");
+  expect(ev?.items.map((i) => i.id)).toEqual([1]);
+  expect(await ch.attentionAction(1, "dismiss")).toMatchObject({ ok: true });
+  expect(listOpen(eng.ledger, { now: Date.now() })).toEqual([]);
 });

@@ -244,5 +244,10 @@
     "m": "{{n}}m",
     "h": "{{n}}h",
     "d": "{{n}}d"
+  },
+  "attention": {
+    "todo": "#{{id}} → todo",
+    "snooze": "snooze 1 day",
+    "dismiss": "dismiss"
   }
 }

@@ -17,6 +17,9 @@ import { faults } from "./fault";
 
 import type { TodoFailurePolicy } from "../config";
 
+/** The attention kinds the queue raises (spec §8.6) — the briefs test checks each has a template. */
+export const DIRTY_KINDS = ["dirty"] as const;
+
 /** Finished todos shown in a single project's `/todo <project>` view. */
 const HISTORY_SHOWN = 5;
 
@@ -210,7 +213,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (!files?.length) return undefined;
       const shown = files.slice(0, 10).join(", ") + (files.length > 10 ? ` (+${files.length - 10} more)` : "");
       raise(ledger, {
-        project: basename(t.folder), folder: t.folder, source: "git", kind: "dirty", key: t.folder, severity: "high",
+        project: basename(t.folder), folder: t.folder, source: "git", kind: DIRTY_KINDS[0], key: t.folder, severity: "high",
         title: `${files.length} uncommitted file${files.length === 1 ? "" : "s"} after todo #${t.id}`,
         detail: `${t.cause ? `thread ${msgRef(t.cause.threadId)} · ` : ""}files: ${shown}`,
       }, now());

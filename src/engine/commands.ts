@@ -4,6 +4,9 @@
 // caller falls through to the order pipeline. `select` is the set of tappable projects for
 // /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
+import { renderAttention } from "./attention-actions";
+import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
+import type { AttentionRow } from "./ledger";
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Ledger } from "./ledger";
@@ -50,7 +53,7 @@ export interface CommandDeps {
   requestReload?: () => void;
   /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. `publicUrl` is the
    *  console base the /trace link points at. */
-  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl">>;
+  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention">>;
   /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
   todo?: TodoQueue;
   /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
@@ -80,6 +83,8 @@ export interface CommandResult {
   inbox?: InboxListEntry[];
   /** Updated worker-SDK state (for web UI controls). */
   sdk?: WorkerSdkState;
+  /** One-tap attention items (for /attention) — frontends render → todo / snooze / dismiss per item. */
+  attention?: Array<Pick<AttentionRow, "id" | "project" | "title" | "severity">>;
 }
 
 interface CommandContext {
@@ -170,6 +175,16 @@ const COMMANDS: Command[] = [
     usage: "/updates · /updates run · /updates apply|rollback <item>",
     summary: "toolchain updates (SDK, plugins, MCP): status, check now, apply a held one, roll back",
     run: ({ deps, args }) => ({ text: updatesCommand(args.trim(), deps.updates) }),
+  },
+  {
+    name: "attention",
+    usage: "/attention [<project>]",
+    summary: "what needs you: open items by project, severity first, with → todo / snooze / dismiss",
+    run: ({ deps, args, now }) => {
+      const c = deps.cfg?.attention ?? DEFAULT_ATTENTION_CFG;
+      const r = renderAttention(deps.ledger, { project: args.trim() || undefined, now, maxLines: c.listLines, maxButtons: c.listButtons, consoleUrl: deps.cfg?.publicUrl || undefined });
+      return { text: r.text, attention: r.buttons.map((b) => ({ id: b.id, project: b.project, title: b.title, severity: b.severity })) };
+    },
   },
   {
     name: "gated",

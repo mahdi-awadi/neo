@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { reconcile } from "../src/engine/attention";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -281,4 +282,16 @@ test("POST /api/plan applies a plan action; a bad body is a 400", async () => {
   expect((await post({ action: "drop" })).status).toBe(400);
   // "Changes" needs the operator's text, which the console does not carry yet: refused, not guessed.
   expect(await (await post({ id: plan.id, action: "changes" })).json()).toEqual({ ok: false, text: "reply to the plan card on Telegram with your changes" });
+});
+
+// ADR-0018: an attention item's one-tap actions on the web console use the same engine rules as a tap.
+test("POST /api/attention applies an attention action; a bad body is a 400", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const [id] = reconcile(a.ledger, "engine", "gold", [{ project: "gold", folder: "/home/gold", source: "engine", kind: "queue_paused", key: "/home/gold", title: "paused", severity: "normal" }], 100).opened;
+  const post = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/attention", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  expect(await (await post({ id, action: "snooze" })).json()).toMatchObject({ ok: true });
+  expect((await post({ id, action: "explode" })).status).toBe(400);
+  expect((await post({ action: "dismiss" })).status).toBe(400);
 });

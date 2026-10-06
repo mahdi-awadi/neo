@@ -25,9 +25,14 @@ export interface AttentionCfg {
   failedLookbackHours: number;
   /** Resolved items are deleted this long after they resolved (a dismissed one is kept). */
   keepResolvedDays: number;
+  /** How long `snooze` hides an item. */
+  snoozeHours: number;
+  /** `/attention`: at most this many lines, and one-tap buttons for the first `listButtons` items. */
+  listLines: number;
+  listButtons: number;
 }
 
-export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30 };
+export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10 };
 
 /** Config `attention` from config.json: each positive number is kept, anything else is the default. */
 export function readAttentionCfg(raw: unknown): AttentionCfg {
@@ -40,6 +45,9 @@ export function readAttentionCfg(raw: unknown): AttentionCfg {
     decisionStaleHours: positive(r.decisionStaleHours, d.decisionStaleHours),
     failedLookbackHours: positive(r.failedLookbackHours, d.failedLookbackHours),
     keepResolvedDays: positive(r.keepResolvedDays, d.keepResolvedDays),
+    snoozeHours: positive(r.snoozeHours, d.snoozeHours),
+    listLines: Math.floor(positive(r.listLines, d.listLines)),
+    listButtons: Math.floor(positive(r.listButtons, d.listButtons)),
   };
 }
 

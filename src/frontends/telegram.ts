@@ -2,6 +2,8 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
+import { applyAttentionAction, isAttentionAction, ATTENTION_LABELS } from "../engine/attention-actions";
+import { DEFAULT_ATTENTION_CFG } from "../engine/producers/engine";
 import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ApiClientOptions } from "grammy";
 import type { MessageEntity, UserFromGetMe } from "grammy/types";
@@ -270,6 +272,7 @@ export function createTelegramBot(
   // The plan registry (ADR-0019): plan taps, and the loops this bot starts (only where a card can be posted).
   const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, trace, todo: reload?.todo }, cfg.plans);
   const loopPlans = reload?.postPlan ? planDeps() : undefined;
+  const attentionDeps = () => ({ ledger, todo: reload?.todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 });
   /** Trace an operator line (spec §4.1). Contained (ADR-0010): a trace fault costs the thread, never
    *  the message — without a cause the pipeline records the line itself, as before. */
   const inbound = (chatId: number, text: string, msg?: TracedMessage, threadId?: number): Cause | undefined => {
@@ -659,6 +662,8 @@ export function createTelegramBot(
         say(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
       } else if (command.inbox?.length) {
         say(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
+      } else if (command.attention?.length) {
+        say(chatId, command.text, { reply_markup: attentionKeyboard(command.attention) });
       } else {
         say(chatId, command.text);
       }
@@ -897,6 +902,28 @@ export function createTelegramBot(
       return;
     }
 
+    // Tap on an attention item (ADR-0018): → todo, snooze, dismiss — the engine owns the rules. A
+    // snoozed or dismissed item's row leaves the message; → todo keeps it (a second tap shows the todo).
+    const attTap = /^att:(\d+):([a-z]+)$/.exec(cb);
+    if (attTap && isAttentionAction(attTap[2]!)) {
+      const id = Number(attTap[1]);
+      const action = attTap[2];
+      const r = await applyAttentionAction(attentionDeps(), id, action, Date.now());
+      await ctx.answerCallbackQuery(r.text.slice(0, 200));
+      if (r.ok && action !== "todo") {
+        const rows = (ctx.callbackQuery.message?.reply_markup?.inline_keyboard ?? []).filter(
+          (row) => !row.some((b) => "callback_data" in b && b.callback_data.startsWith(`att:${id}:`)),
+        );
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: rows } });
+        } catch {
+          // "not modified" — ignore
+        }
+      }
+      bus?.mirror("telegram", { kind: "notice", text: `attention #${id}: ${r.text}` });
+      return;
+    }
+
     // Tap on a plan card (ADR-0019). The engine owns every rule; this answers the tap and redraws the
     // card's buttons for the plan's new status. "Changes" takes the next message as the review answer
     // (the same path as a decision's "✏️ Other"), which resumes the worker that wrote the plan.
@@ -1058,6 +1085,16 @@ function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefin
 
 /** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<version>:<action>`
  *  tap — the version keeps an older card from acting on newer content. */
+/** One row per attention item: `#7 → todo`, `snooze 1d`, `dismiss` — `att:<id>:<action>` callbacks. */
+export function attentionKeyboard(items: Array<{ id: number }>): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  items.forEach((it, i) => {
+    if (i > 0) kb.row();
+    kb.text(`#${it.id} ${ATTENTION_LABELS.todo}`, `att:${it.id}:todo`).text(ATTENTION_LABELS.snooze, `att:${it.id}:snooze`).text(ATTENTION_LABELS.dismiss, `att:${it.id}:dismiss`);
+  });
+  return kb;
+}
+
 export function planKeyboard(planId: number, status: PlanStatus, version: number): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const a of planActions(status)) kb.text(PLAN_LABELS[a], `plan:${planId}:${version}:${a}`);

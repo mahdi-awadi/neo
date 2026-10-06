@@ -3,6 +3,8 @@
 // worker output + escalations as events an HTTP/SSE layer can fan out, and resolves
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
+import { applyAttentionAction, type AttentionAction } from "./attention-actions";
+import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
 import { basename } from "node:path";
 import { handleMessage, type PipelineDeps } from "./pipeline";
 import { sharedCodebaseMemoryIndexer } from "./codebase-memory";
@@ -12,6 +14,7 @@ import {
   killProject as engineKillProject,
   type SelectableProject,
   type CommandDeps,
+  type CommandResult,
 } from "./commands";
 import {
   handleLoop,
@@ -53,6 +56,8 @@ export type WebEvent =
   | { type: "loops"; items: LoopInfo[] }
   | { type: "sdk"; sdk: WorkerSdkState }
   | { type: "file"; name: string; url: string; project?: string }
+  // What needs the operator (ADR-0018, /attention): the list and its one-tap items.
+  | { type: "attention"; text: string; items: NonNullable<CommandResult["attention"]> }
   // A thread changed state (ADR-0017): the console moves its row without a re-fetch.
   | ({ type: "thread"; ref?: string } & ThreadChange & Partial<Pick<ThreadListRow, "messages" | "openDecisions" | "activeTodos">>);
 
@@ -113,6 +118,8 @@ export interface WebChannel {
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
    *  operator's text, which the console does not carry yet, so it is refused here. */
   planAction(id: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }>;
+  /** An attention item's one-tap action (ADR-0018) — the same engine rules as a Telegram tap. */
+  attentionAction(id: number, action: AttentionAction): Promise<{ ok: boolean; text: string }>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
   notify(text: string, project?: string): void;
   /** Resolve a token issued by an outbound file event to its on-disk path (for GET /file). */
@@ -245,7 +252,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       });
       if (command !== null) {
         if (command.sdk) emit({ type: "sdk", sdk: command.sdk });
-        if (command.select?.length) {
+        if (command.attention?.length) {
+          emit({ type: "attention", text: command.text, items: command.attention });
+        } else if (command.select?.length) {
           emit({ type: "projects", text: command.text, items: command.select });
         } else {
           message(command.text);
@@ -410,6 +419,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       if (action === "changes") return { ok: false, text: "reply to the plan card on Telegram with your changes" };
       const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action, version);
       opts.bus?.mirror("web", { kind: "notice", text: `plan #${id}: ${r.text} (web console)` });
+      return r;
+    },
+    async attentionAction(id, action) {
+      const { ledger, todo, trace, cfg } = opts.engine;
+      const r = await applyAttentionAction({ ledger, todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 }, id, action, Date.now());
+      opts.bus?.mirror("web", { kind: "notice", text: `attention #${id}: ${r.text} (web console)` });
       return r;
     },
     todo(args) {
