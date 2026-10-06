@@ -10,11 +10,10 @@ import type { Registry } from "./registry";
 import { heldByReserve, type WorkClass } from "./budget";
 import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts } from "./dispatch";
 import { lastCommitIn } from "./dispatch-report";
+import { todoTitle } from "./todo-title";
 
 import type { TodoFailurePolicy } from "../config";
 
-/** Max chars of a brief's title in operator lines and lists. */
-const TITLE_MAX = 60;
 /** Finished todos shown in a single project's `/todo <project>` view. */
 const HISTORY_SHOWN = 5;
 
@@ -53,11 +52,8 @@ export interface TodoQueue {
   launcher(): TodoLauncher | undefined;
 }
 
-/** The first non-empty line of a brief, bounded — how a todo is named in lines and lists. */
-export function todoTitle(brief: string): string {
-  const first = brief.split("\n").find((l) => l.trim())?.trim() ?? "";
-  return first.length > TITLE_MAX ? `${first.slice(0, TITLE_MAX - 1)}…` : first;
-}
+/** The title rule lives in todo-title.ts (the ledger migrations use it too); re-exported for callers. */
+export { todoTitle };
 
 /** True when the project's session cannot take a brief now: preparing (running, no live handle yet),
  *  closing, in a turn, or holding a follow-up. Mirrors dispatch's reuse guard. */

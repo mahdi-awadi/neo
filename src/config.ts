@@ -177,6 +177,9 @@ export interface NeoConfig {
   /** Pending-decisions retention cap: max RESOLVED (answered/dismissed) decision rows kept (open
    *  rows are never pruned). Pruned in amortised batches. Default 5 000. */
   decisionsKeep: number;
+  /** Tool-action retention cap: max rows kept in the tool_actions table (pruned in batches, like
+   *  events, but its own table so busy workers can't push events out). Default 100 000. */
+  toolActionsKeep: number;
   /** Secretary digest loop cadence (5-field cron, server-local). The loop reviews the open-decisions
    *  queue and sends ONE consolidated digest to the Decisions channel; SILENT when the queue is empty
    *  (no worker run). Opt-in (disabled by default like other loops). Default every 2h, 08:00–22:00.
@@ -310,6 +313,7 @@ const DEFAULTS = {
   routeKeep: 20_000,
   eventsKeep: 50_000,
   decisionsKeep: 5_000,
+  toolActionsKeep: 100_000,
   // Secretary digest loop: opt-in (enabledByDefault:false on the LoopDef), so these are only the
   // cadence/staleness knobs. Every 2h during waking hours; a decision older than 24h reads as stale.
   secretaryCron: "0 8-22/2 * * *",
@@ -463,6 +467,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     routeKeep: fileCfg.routeKeep ?? DEFAULTS.routeKeep,
     eventsKeep: fileCfg.eventsKeep ?? DEFAULTS.eventsKeep,
     decisionsKeep: fileCfg.decisionsKeep ?? DEFAULTS.decisionsKeep,
+    toolActionsKeep: fileCfg.toolActionsKeep ?? DEFAULTS.toolActionsKeep,
     secretaryCron: process.env.SECRETARY_CRON ?? fileCfg.secretaryCron ?? DEFAULTS.secretaryCron,
     secretaryStaleHours: fileCfg.secretaryStaleHours ?? DEFAULTS.secretaryStaleHours,
     codebaseMemoryListTimeoutMs: fileCfg.codebaseMemoryListTimeoutMs ?? DEFAULTS.codebaseMemoryListTimeoutMs,

@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   for (const w of contextPolicyWarnings(cfg.contextPolicy)) console.log(`  WARN: ${w}`);
   mkdirSync("data", { recursive: true });
   const busyTimeoutMs = cfg.sqliteBusyTimeoutMs;
-  const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep, busyTimeoutMs });
+  const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep, toolActionsKeep: cfg.toolActionsKeep, busyTimeoutMs });
   // A dispatch the previous daemon started but never finished (reload or crash) is reported to the
   // company with where it stopped. Runs FIRST — before any frontend or the scheduler can start a
   // new dispatch that would look unfinished. Queued in the dispatcher inbox, NOT delivered now: the

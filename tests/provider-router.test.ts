@@ -39,6 +39,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     routeKeep: 20_000,
     eventsKeep: 50_000,
     decisionsKeep: 5_000,
+    toolActionsKeep: 100_000,
     secretaryCron: "0 8-22/2 * * *",
     secretaryStaleHours: 24,
     codebaseMemoryListTimeoutMs: 15_000,

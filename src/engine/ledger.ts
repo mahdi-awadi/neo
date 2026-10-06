@@ -6,6 +6,7 @@ import { migrate } from "./ledger-migrations";
 import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
 import type { StructuredAsk } from "./structured-question";
+import type { Priority } from "./priority";
 
 /** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
  *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
@@ -21,6 +22,86 @@ export const DECISIONS_KEEP = 5_000;
 export const DECISIONS_PRUNE_INTERVAL = 200;
 /** Delivered dispatcher-inbox rows kept as history (pending rows are never pruned). */
 export const DISPATCHER_INBOX_KEEP = 500;
+
+/** Tool-action retention (spec §3.4): its own table and cap, pruned in coarse batches like events. */
+export const TOOL_ACTIONS_KEEP = 100_000;
+export const TOOL_ACTIONS_PRUNE_INTERVAL = 1000;
+
+/** What caused a piece of work (ADR-0015): the message it answers and that message's thread. Set
+ *  once where work starts and copied, never re-derived, into everything that work produces. */
+export interface Cause {
+  msgId: number;
+  threadId: number;
+}
+
+export type MessageKind =
+  | "text" | "ack" | "progress" | "digest" | "result" | "decision" | "alert" | "approval" | "file" | "plan" | "notice";
+export type MessageSurface = "telegram" | "web" | "engine";
+
+/** One transcript line to write. `threadId`/`causeId` link it (spec §3.2); a root has no cause. */
+export interface NewMessage {
+  chatId: number;
+  role: "user" | "assistant";
+  content: string;
+  at: number;
+  threadId?: number;
+  causeId?: number;
+  surface?: MessageSurface;
+  /** The Telegram message_id, when known (a reply to it joins this message's thread). */
+  channelMsgId?: number;
+  project?: string;
+  folder?: string;
+  orderId?: string;
+  kind?: MessageKind;
+  priority?: Priority;
+}
+
+export interface MessageRow extends NewMessage {
+  id: number;
+  kind: MessageKind;
+}
+
+export type ThreadState = "open" | "waiting" | "done" | "failed";
+export type ThreadOrigin = "operator" | "loop" | "attention" | "ingress" | "legacy";
+
+/** A new thread; `id` is its root message id. */
+export interface NewThread {
+  id: number;
+  origin: ThreadOrigin;
+  title: string;
+  state: ThreadState;
+  createdAt: number;
+  project?: string;
+  folder?: string;
+}
+
+export interface ThreadRow extends NewThread {
+  closedByOperator: boolean;
+  updatedAt: number;
+  lastMsgId?: number;
+}
+
+/** The ledger's facts about one thread, for deriveThreadState (spec §5). Registry facts (pending
+ *  approvals, sessions in a turn) are added by the caller. */
+export interface ThreadFacts {
+  openDecisions: number;
+  /** This thread's todos that are queued or running. */
+  activeTodos: number;
+  /** The newest ended order (outcome) or todo in this thread: `ok`, or `failed` for an error. */
+  lastEnd?: "ok" | "failed";
+  closedByOperator: boolean;
+}
+
+/** One governed tool call (spec §3.4). `label` is the activity label, never the full tool input. */
+export interface NewToolAction {
+  orderId: string;
+  tool: string;
+  label: string;
+  verdict: "allow" | "auto" | "escalate" | "deny";
+  at?: number;
+  folder?: string;
+  cause?: Cause;
+}
 
 /** A blocking question / alert the operator must act on — the durable pending-decisions queue.
  *  `kind:"decision"` needs an answer (a worker question or a governor escalation); `kind:"alert"`
@@ -38,6 +119,8 @@ export interface NewDecision {
   /** A structured multi-question / multi-select ask (Feature 1). When set, the frontend renders the
    *  richer keyboard from this and accumulates a selection; `options` remains the simple flat form. */
   spec?: StructuredAsk;
+  /** The message (and thread) this decision came from, when known. */
+  cause?: Cause;
 }
 
 export interface DecisionRow extends NewDecision {
@@ -55,7 +138,9 @@ export interface DecisionRow extends NewDecision {
 }
 
 export interface Ledger {
-  recordOrder(order: Order): void;
+  /** `cause` links the order to the message that started it; `parentOrderId` is the company order
+   *  that dispatched it (spec §3.3). Both optional: an order without them stores NULL. */
+  recordOrder(order: Order, opts?: { cause?: Cause; parentOrderId?: string }): void;
   recordOutcome(orderId: string, status: string, summary: string): void;
   getOutcome(orderId: string): { status: string; summary: string } | undefined;
   /** Persist the worker's SDK session id against an order, so it can later be resumed. `provider`
@@ -75,6 +160,25 @@ export interface Ledger {
   autoApprovalsFor(orderId: string): string[];
   /** Append one line of a conversation (keyed by chat = the thread), e.g. "user"/"assistant". */
   recordMessage(chatId: number, role: string, content: string): void;
+  /** Write one transcript line; returns its id (the message ref, spec §3.2). */
+  insertMessage(m: NewMessage): number;
+  /** One page of a thread, newest first. `before` is a keyset cursor: only ids below it. */
+  messagesInThread(threadId: number, opts: { before?: number; limit: number }): MessageRow[];
+  /** The message posted as Telegram `channelMsgId` in `chatId`, if we recorded it. */
+  messageByChannel(chatId: number, channelMsgId: number): MessageRow | undefined;
+  /** Remember the channel's id for a posted message. Only binds when the row is in `chatId`. */
+  setChannelMsg(msgId: number, chatId: number, channelMsgId: number): void;
+  insertThread(t: NewThread): void;
+  threadById(id: number): ThreadRow | undefined;
+  setThreadState(id: number, state: ThreadState, at: number): void;
+  /** A new line joined the thread: record it as the newest and bump `updated_at`. */
+  touchThread(id: number, lastMsgId: number, at: number): void;
+  /** The ledger's facts about one thread (spec §5), for deriveThreadState. */
+  threadFacts(id: number): ThreadFacts;
+  /** Append one governed tool call (single INSERT; retention amortised — see TOOL_ACTIONS_KEEP). */
+  recordToolAction(a: NewToolAction): void;
+  /** TEST-ONLY seam: the EXPLAIN QUERY PLAN text of a named hot query (spec §11.11). */
+  _explain(query: "messagesInThread"): string;
   /** The full transcript for a chat, oldest-first; `limit` keeps only the most recent N. */
   conversation(chatId: number, limit?: number): ConversationMessage[];
   /** Loop scheduler state — last fire time + explicit enable override (implements LoopStateStore). */
@@ -111,7 +215,7 @@ export interface Ledger {
   clearSessionsFor(folder: string): void;
   /** Persist the map from a sent channel message → the project it belongs to, so a reply to that
    *  message routes back to the right project even after a /reload (source of truth for MessageRoutes). */
-  rememberRoute(chatId: number, messageId: number, target: RouteTarget): void;
+  rememberRoute(chatId: number, messageId: number, target: RouteTarget, cause?: Cause): void;
   /** The project a replied-to message belongs to, or undefined if it isn't tracked (any more). */
   routeFor(chatId: number, messageId: number): RouteTarget | undefined;
   /** Graceful reload: replace the open-session snapshot (what was live at shutdown). */
@@ -125,7 +229,7 @@ export interface Ledger {
    *  durable trail to diagnose instability from (API retry loops, wedged dispatches, stalls). */
   recordEvent(
     kind: string,
-    input?: { orderId?: string; sessionId?: string; folder?: string; data?: Record<string, unknown>; at?: number },
+    input?: { orderId?: string; sessionId?: string; folder?: string; data?: Record<string, unknown>; at?: number; cause?: Cause },
   ): void;
   /** Recent events, newest-first. Filter by kind and/or orderId; capped by `limit` (default 50). */
   listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): EngineEvent[];
@@ -148,7 +252,7 @@ export interface Ledger {
   noteDecisionsReminded(ids: string[], at?: number): void;
   /** Dispatcher inbox (ADR-0007): queue one final dispatch result for the company. Returns its id.
    *  It stays pending until delivered, so a reload or a closed company session cannot lose it. */
-  queueDispatcherReport(project: string, text: string, at?: number): number;
+  queueDispatcherReport(project: string, text: string, at?: number, cause?: Cause): number;
   /** `SELECT 1` — throws when the database cannot be read (the health check, ADR-0010). */
   ping(): void;
   /** Pending (undelivered) dispatcher reports, oldest first. */
@@ -186,6 +290,8 @@ export interface NewTodo {
   team?: "frontend-backend";
   workClass: "interactive" | "background";
   createdBy: "operator" | "company";
+  /** The message (and thread) this todo came from, when known. */
+  cause?: Cause;
 }
 
 export interface TodoRow extends NewTodo {
@@ -302,15 +408,30 @@ function contextEventRow(r: ContextEventDbRow): ContextEventRow {
 
 export function openLedger(
   path: string,
-  opts: { routeKeep?: number; eventsKeep?: number; decisionsKeep?: number; busyTimeoutMs?: number } = {},
+  opts: { routeKeep?: number; eventsKeep?: number; decisionsKeep?: number; toolActionsKeep?: number; busyTimeoutMs?: number } = {},
 ): Ledger {
   const db = openSqlite(path, { busyTimeoutMs: opts.busyTimeoutMs });
   const routeKeep = opts.routeKeep ?? ROUTE_KEEP;
   const eventsKeep = opts.eventsKeep ?? EVENTS_KEEP;
   const decisionsKeep = opts.decisionsKeep ?? DECISIONS_KEEP;
+  const toolActionsKeep = opts.toolActionsKeep ?? TOOL_ACTIONS_KEEP;
   migrate(db, { path });
   let eventInserts = 0;
   let decisionCloses = 0;
+  let toolActionInserts = 0;
+
+  const insertMessage = (m: NewMessage): number => {
+    const r = db
+      .query(
+        `INSERT INTO messages (chat_id, role, content, at, thread_id, cause_id, surface, channel_msg_id, project, folder, order_id, kind, priority)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        m.chatId, m.role, m.content, m.at, m.threadId ?? null, m.causeId ?? null, m.surface ?? null, m.channelMsgId ?? null,
+        m.project ?? null, m.folder ?? null, m.orderId ?? null, m.kind ?? "text", m.priority ?? null,
+      );
+    return Number(r.lastInsertRowid);
+  };
 
   const todoById = (id: number): TodoRow | undefined => {
     const r = db.query(`SELECT * FROM project_todos WHERE id = ?`).get(id) as TodoDbRow | null;
@@ -318,11 +439,14 @@ export function openLedger(
   };
 
   return {
-    recordOrder(o) {
+    recordOrder(o, opts = {}) {
       db.query(
-        `INSERT OR REPLACE INTO orders (id, source, folder, task, chat_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(o.id, o.source, o.folder, o.task, o.chatId, o.createdAt);
+        `INSERT OR REPLACE INTO orders (id, source, folder, task, chat_id, created_at, cause_msg_id, thread_id, parent_order_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        o.id, o.source, o.folder, o.task, o.chatId, o.createdAt,
+        opts.cause?.msgId ?? null, opts.cause?.threadId ?? null, opts.parentOrderId ?? null,
+      );
     },
     recordOutcome(orderId, status, summary) {
       db.query(
@@ -390,12 +514,86 @@ export function openLedger(
       ).map((r) => r.reason);
     },
     recordMessage(chatId, role, content) {
-      db.query(`INSERT INTO messages (chat_id, role, content, at) VALUES (?, ?, ?, ?)`).run(
-        chatId,
-        role,
-        content,
-        Date.now(),
-      );
+      insertMessage({ chatId, role: role as NewMessage["role"], content, at: Date.now() });
+    },
+    insertMessage,
+    messagesInThread(threadId, opts) {
+      const rows = (
+        opts.before === undefined
+          ? db.query(`${MESSAGE_COLS} WHERE thread_id = ? ORDER BY id DESC LIMIT ?`).all(threadId, opts.limit)
+          : db.query(SQL_THREAD_PAGE_BEFORE).all(threadId, opts.before, opts.limit)
+      ) as MessageDbRow[];
+      return rows.map(mapMessageRow);
+    },
+    messageByChannel(chatId, channelMsgId) {
+      const r = db
+        .query(`${MESSAGE_COLS} WHERE chat_id = ? AND channel_msg_id = ? ORDER BY id DESC LIMIT 1`)
+        .get(chatId, channelMsgId) as MessageDbRow | null;
+      return r ? mapMessageRow(r) : undefined;
+    },
+    setChannelMsg(msgId, chatId, channelMsgId) {
+      db.query(`UPDATE messages SET channel_msg_id = ? WHERE id = ? AND chat_id = ?`).run(channelMsgId, msgId, chatId);
+    },
+    insertThread(t) {
+      db.query(
+        `INSERT INTO threads (id, origin, project, folder, title, state, created_at, updated_at, last_msg_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(t.id, t.origin, t.project ?? null, t.folder ?? null, t.title, t.state, t.createdAt, t.createdAt, t.id);
+    },
+    threadById(id) {
+      const r = db.query(`SELECT * FROM threads WHERE id = ?`).get(id) as ThreadDbRow | null;
+      return r ? mapThreadRow(r) : undefined;
+    },
+    setThreadState(id, state, at) {
+      db.query(`UPDATE threads SET state = ?, updated_at = ? WHERE id = ?`).run(state, at, id);
+    },
+    touchThread(id, lastMsgId, at) {
+      db.query(`UPDATE threads SET last_msg_id = ?, updated_at = ? WHERE id = ?`).run(lastMsgId, at, id);
+    },
+    threadFacts(id) {
+      const f = db
+        .query(
+          `SELECT
+             (SELECT count(*) FROM decisions WHERE thread_id = ?1 AND status = 'open') AS open_decisions,
+             (SELECT count(*) FROM project_todos WHERE thread_id = ?1 AND status IN ('queued', 'running')) AS active_todos,
+             (SELECT closed_by_operator FROM threads WHERE id = ?1) AS closed`,
+        )
+        .get(id) as { open_decisions: number; active_todos: number; closed: number | null };
+      // The newest end among this thread's orders (their outcome) and todos. An order outcome is
+      // 'done' or 'error'; a todo ends 'done', 'failed' or 'cancelled' — a cancel is not a failure.
+      const end = db
+        .query(
+          `SELECT ok FROM (
+             SELECT o.at AS at, o.status = 'done' AS ok FROM outcomes o JOIN orders ord ON ord.id = o.order_id
+             WHERE ord.thread_id = ?1
+             UNION ALL
+             SELECT ended_at AS at, status != 'failed' AS ok FROM project_todos
+             WHERE thread_id = ?1 AND status IN ('done', 'failed', 'cancelled') AND ended_at IS NOT NULL
+           ) ORDER BY at DESC LIMIT 1`,
+        )
+        .get(id) as { ok: number } | null;
+      return {
+        openDecisions: f.open_decisions,
+        activeTodos: f.active_todos,
+        ...(end ? { lastEnd: end.ok ? ("ok" as const) : ("failed" as const) } : {}),
+        closedByOperator: f.closed === 1,
+      };
+    },
+    recordToolAction(a) {
+      db.query(
+        `INSERT INTO tool_actions (order_id, msg_id, thread_id, folder, tool, label, verdict, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(a.orderId, a.cause?.msgId ?? null, a.cause?.threadId ?? null, a.folder ?? null, a.tool, a.label, a.verdict, a.at ?? Date.now());
+      // Amortised retention like events: one cheap DELETE by id every TOOL_ACTIONS_PRUNE_INTERVAL inserts.
+      if (++toolActionInserts % TOOL_ACTIONS_PRUNE_INTERVAL === 0) {
+        db.query(`DELETE FROM tool_actions WHERE id <= (SELECT id FROM tool_actions ORDER BY id DESC LIMIT 1 OFFSET ?)`).run(
+          toolActionsKeep,
+        );
+      }
+    },
+    _explain(query) {
+      const sql = { messagesInThread: SQL_THREAD_PAGE_BEFORE }[query];
+      const rows = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(0, 0, 1) as Array<{ detail: string }>;
+      return rows.map((r) => r.detail).join("\n");
     },
     conversation(chatId, limit = 500) {
       // Pull the most recent `limit` (rowid breaks ties when many share one ms), then re-sort
@@ -448,13 +646,14 @@ export function openLedger(
       db.query(`DELETE FROM loop_state WHERE name = ?`).run(name);
     },
     recordEvent(kind, input = {}) {
-      db.query(`INSERT INTO events (kind, at, order_id, session_id, folder, data) VALUES (?, ?, ?, ?, ?, ?)`).run(
+      db.query(`INSERT INTO events (kind, at, order_id, session_id, folder, data, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
         kind,
         input.at ?? Date.now(),
         input.orderId ?? null,
         input.sessionId ?? null,
         input.folder ?? null,
         input.data ? JSON.stringify(input.data) : null,
+        input.cause?.msgId ?? null,
       );
       // Amortised retention: prune only every EVENTS_PRUNE_INTERVAL inserts, so the common path
       // stays a single insert (never a DELETE-per-insert).
@@ -602,14 +801,15 @@ export function openLedger(
       // every order in this folder, so lastSessionFor(folder, *) returns undefined afterward.
       db.query(`UPDATE orders SET sdk_session_id = NULL, sdk_provider = NULL WHERE folder = ?`).run(folder);
     },
-    rememberRoute(chatId, messageId, target) {
+    rememberRoute(chatId, messageId, target, cause) {
       db.query(
-        `INSERT INTO message_routes (chat_id, message_id, session_id, folder, project, at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO message_routes (chat_id, message_id, session_id, folder, project, at, msg_id, thread_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(chat_id, message_id) DO UPDATE SET
            session_id = excluded.session_id, folder = excluded.folder,
-           project = excluded.project, at = excluded.at`,
-      ).run(chatId, messageId, target.sessionId, target.folder, target.project, Date.now());
+           project = excluded.project, at = excluded.at,
+           msg_id = excluded.msg_id, thread_id = excluded.thread_id`,
+      ).run(chatId, messageId, target.sessionId, target.folder, target.project, Date.now(), cause?.msgId ?? null, cause?.threadId ?? null);
       // Bound the table: drop the oldest rows past a generous keep-window (source of truth stays intact).
       db.query(
         `DELETE FROM message_routes WHERE rowid NOT IN (
@@ -638,8 +838,9 @@ export function openLedger(
       const id = crypto.randomUUID();
       db.query(
         `INSERT INTO decisions
-           (id, kind, project, folder, order_id, session_id, chat_id, question, options, spec, status, created_at, reminder_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0)`,
+           (id, kind, project, folder, order_id, session_id, chat_id, question, options, spec, status, created_at, reminder_count,
+            cause_msg_id, thread_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?)`,
       ).run(
         id,
         rec.kind,
@@ -652,6 +853,8 @@ export function openLedger(
         rec.options && rec.options.length ? JSON.stringify(rec.options) : null,
         rec.spec ? JSON.stringify(rec.spec) : null,
         at,
+        rec.cause?.msgId ?? null,
+        rec.cause?.threadId ?? null,
       );
       return id;
     },
@@ -696,10 +899,10 @@ export function openLedger(
     ping() {
       db.query("SELECT 1").get();
     },
-    queueDispatcherReport(project, text, at = Date.now()) {
+    queueDispatcherReport(project, text, at = Date.now(), cause) {
       const r = db
-        .query(`INSERT INTO dispatcher_inbox (project, text, at) VALUES (?, ?, ?) RETURNING id`)
-        .get(project, text, at) as { id: number };
+        .query(`INSERT INTO dispatcher_inbox (project, text, at, cause_msg_id, thread_id) VALUES (?, ?, ?, ?, ?) RETURNING id`)
+        .get(project, text, at, cause?.msgId ?? null, cause?.threadId ?? null) as { id: number };
       // Delivered rows are history only — keep the newest DISPATCHER_INBOX_KEEP of them.
       db.query(
         `DELETE FROM dispatcher_inbox WHERE delivered_at IS NOT NULL AND id NOT IN
@@ -742,10 +945,13 @@ export function openLedger(
         .get(rec.folder) as { next: number };
       const r = db
         .query(
-          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?) RETURNING id`,
+          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?) RETURNING id`,
         )
-        .get(rec.project, rec.folder, rec.brief, rec.team ?? null, rec.workClass, rec.createdBy, at, next) as { id: number };
+        .get(
+          rec.project, rec.folder, rec.brief, rec.team ?? null, rec.workClass, rec.createdBy, at, next,
+          rec.cause?.msgId ?? null, rec.cause?.threadId ?? null,
+        ) as { id: number };
       return todoById(r.id)!;
     },
     todoById,
@@ -836,6 +1042,76 @@ export function openLedger(
   }
 }
 
+/** The columns a MessageRow is read from; callers append WHERE/ORDER. */
+const MESSAGE_COLS = `SELECT id, chat_id, role, content, at, thread_id, cause_id, surface, channel_msg_id, project, folder, order_id, kind, priority FROM messages`;
+/** A thread page below a keyset cursor — the hot path `_explain` checks uses idx_messages_thread. */
+const SQL_THREAD_PAGE_BEFORE = `${MESSAGE_COLS} WHERE thread_id = ? AND id < ? ORDER BY id DESC LIMIT ?`;
+
+interface MessageDbRow {
+  id: number;
+  chat_id: number;
+  role: string;
+  content: string;
+  at: number;
+  thread_id: number | null;
+  cause_id: number | null;
+  surface: string | null;
+  channel_msg_id: number | null;
+  project: string | null;
+  folder: string | null;
+  order_id: string | null;
+  kind: string;
+  priority: string | null;
+}
+
+/** Map a stored message row to a MessageRow, dropping NULL columns. */
+function mapMessageRow(r: MessageDbRow): MessageRow {
+  const row: MessageRow = { id: r.id, chatId: r.chat_id, role: r.role as MessageRow["role"], content: r.content, at: r.at, kind: r.kind as MessageKind };
+  if (r.thread_id !== null) row.threadId = r.thread_id;
+  if (r.cause_id !== null) row.causeId = r.cause_id;
+  if (r.surface !== null) row.surface = r.surface as MessageSurface;
+  if (r.channel_msg_id !== null) row.channelMsgId = r.channel_msg_id;
+  if (r.project !== null) row.project = r.project;
+  if (r.folder !== null) row.folder = r.folder;
+  if (r.order_id !== null) row.orderId = r.order_id;
+  if (r.priority !== null) row.priority = r.priority as Priority;
+  return row;
+}
+
+interface ThreadDbRow {
+  id: number;
+  origin: string;
+  project: string | null;
+  folder: string | null;
+  title: string;
+  state: string;
+  closed_by_operator: number;
+  created_at: number;
+  updated_at: number;
+  last_msg_id: number | null;
+}
+
+function mapThreadRow(r: ThreadDbRow): ThreadRow {
+  const row: ThreadRow = {
+    id: r.id,
+    origin: r.origin as ThreadOrigin,
+    title: r.title,
+    state: r.state as ThreadState,
+    closedByOperator: r.closed_by_operator === 1,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+  if (r.project !== null) row.project = r.project;
+  if (r.folder !== null) row.folder = r.folder;
+  if (r.last_msg_id !== null) row.lastMsgId = r.last_msg_id;
+  return row;
+}
+
+/** Both cause columns set → the cause; otherwise none (legacy rows, uncaused work). */
+function causeOf(msgId: number | null, threadId: number | null): Cause | undefined {
+  return msgId !== null && threadId !== null ? { msgId, threadId } : undefined;
+}
+
 /** The raw project_todos row shape as stored in SQLite. */
 interface TodoDbRow {
   id: number;
@@ -852,6 +1128,8 @@ interface TodoDbRow {
   result: string | null;
   started_at: number | null;
   ended_at: number | null;
+  cause_msg_id: number | null;
+  thread_id: number | null;
 }
 
 function mapTodoRow(r: TodoDbRow): TodoRow {
@@ -870,6 +1148,7 @@ function mapTodoRow(r: TodoDbRow): TodoRow {
     result: r.result ?? undefined,
     startedAt: r.started_at ?? undefined,
     endedAt: r.ended_at ?? undefined,
+    cause: causeOf(r.cause_msg_id, r.thread_id),
   };
 }
 
@@ -893,6 +1172,8 @@ interface DecisionDbRow {
   decision_message_id: number | null;
   last_reminded_at: number | null;
   reminder_count: number;
+  cause_msg_id: number | null;
+  thread_id: number | null;
 }
 
 /** Map a stored decisions row to the public DecisionRow (drops nulls, parses the options JSON). */
@@ -934,5 +1215,6 @@ function mapDecisionRow(r: DecisionDbRow): DecisionRow {
     decisionMessageId: r.decision_message_id ?? undefined,
     lastRemindedAt: r.last_reminded_at ?? undefined,
     reminderCount: r.reminder_count,
+    cause: causeOf(r.cause_msg_id, r.thread_id),
   };
 }

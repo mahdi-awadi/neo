@@ -95,6 +95,7 @@ test("retention + list knobs default per spec and read config.json", () => {
   expect(c.routeKeep).toBe(20_000);
   expect(c.eventsKeep).toBe(50_000);
   expect(c.decisionsKeep).toBe(5_000);
+  expect(c.toolActionsKeep).toBe(100_000);
   expect(c.codebaseMemoryListTimeoutMs).toBe(15_000);
   expect(c.inboxListDefault).toBe(100);
   expect(c.webFeedWindow).toBe(500);

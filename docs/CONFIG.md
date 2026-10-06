@@ -56,6 +56,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `eventsKeep` | `50000` | Diagnostic event-log retention cap: max rows kept in the `events` table (pruned in amortised batches). |
 | `decisionsChatId` | *(unset)* | The Decisions channel chat id (also `DECISIONS_CHAT_ID`). See the `.env` table above. |
 | `decisionsKeep` | `5000` | Pending-decisions retention cap: max RESOLVED (answered/dismissed) decision rows kept. OPEN rows are never pruned. |
+| `toolActionsKeep` | `100000` | Tool-action retention cap: max rows kept in the `tool_actions` table (one row per governed tool call; pruned in amortised batches, separate from `events`). |
 | `secretaryCron` | `"0 8-22/2 * * *"` | Secretary digest cadence (also `SECRETARY_CRON`) — every 2h, 08:00–22:00, server-local. Opt-in (`/loop secretary on`). |
 | `secretaryStaleHours` | `24` | A decision waiting longer than this many hours is flagged **STALE** (an escalation) in the digest. |
 | `codebaseMemoryIndexTimeoutMs` | `300000` (5m) | Bounded wait for an engine-side codebase-memory `index_repository` before a dispatch proceeds anyway (best-effort). |

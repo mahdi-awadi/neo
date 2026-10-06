@@ -2,6 +2,7 @@
 // entry in MIGRATIONS, never an edit to an old one. `user_version` records how far a db has got.
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import { todoTitle } from "./todo-title";
 
 export interface Migration {
   version: number;
@@ -185,7 +186,135 @@ function baseline(db: Database): void {
   db.run(`CREATE TABLE IF NOT EXISTS todo_paused (folder TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL)`);
 }
 
-export const MIGRATIONS: Migration[] = [{ version: 1, name: "baseline", up: baseline }];
+/** v2 (spec §3.2): messages get an id (the message ref) plus thread/cause/channel columns; threads;
+ *  full-text search over message content. Set-based throughout: production has ~300k messages. */
+function messageIdsAndThreads(db: Database): void {
+  db.run(
+    `CREATE TABLE messages_v2 (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       chat_id INTEGER NOT NULL,
+       role TEXT NOT NULL,
+       content TEXT NOT NULL,
+       at INTEGER NOT NULL,
+       thread_id INTEGER,
+       cause_id INTEGER,
+       surface TEXT,
+       channel_msg_id INTEGER,
+       project TEXT, folder TEXT, order_id TEXT,
+       kind TEXT NOT NULL DEFAULT 'text',
+       priority TEXT
+     )`,
+  );
+  db.run(`INSERT INTO messages_v2 (chat_id, role, content, at, kind) SELECT chat_id, role, content, at, 'text' FROM messages ORDER BY rowid`);
+  db.run(`DROP TABLE messages`);
+  db.run(`ALTER TABLE messages_v2 RENAME TO messages`);
+  db.run(`CREATE INDEX idx_messages_chat ON messages (chat_id, at)`);
+  db.run(`CREATE INDEX idx_messages_thread ON messages (thread_id, id)`);
+  db.run(`CREATE INDEX idx_messages_channel ON messages (chat_id, channel_msg_id)`);
+
+  db.run(
+    `CREATE TABLE threads (
+       id INTEGER PRIMARY KEY,
+       origin TEXT NOT NULL,
+       project TEXT, folder TEXT,
+       title TEXT NOT NULL,
+       state TEXT NOT NULL,
+       closed_by_operator INTEGER NOT NULL DEFAULT 0,
+       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+       last_msg_id INTEGER
+     )`,
+  );
+  db.run(`CREATE INDEX idx_threads_project ON threads (project, updated_at DESC)`);
+  db.run(`CREATE INDEX idx_threads_state ON threads (state, updated_at DESC)`);
+
+  // Legacy rows: one 'legacy' thread per (chat, UTC day), rooted at the day's first row, state done.
+  // No cause is set — old rows never recorded which line answered which, so none is claimed.
+  db.run(
+    `CREATE TEMP TABLE legacy_days AS
+       SELECT chat_id, CAST(at / 86400000 AS INTEGER) AS day,
+              MIN(id) AS tid, MIN(at) AS first_at, MAX(at) AS last_at, MAX(id) AS last_id
+       FROM messages GROUP BY chat_id, CAST(at / 86400000 AS INTEGER)`,
+  );
+  db.run(`CREATE UNIQUE INDEX temp.legacy_days_key ON legacy_days (chat_id, day)`);
+  db.run(
+    `INSERT INTO threads (id, origin, title, state, created_at, updated_at, last_msg_id)
+       SELECT tid, 'legacy', '', 'done', first_at, last_at, last_id FROM legacy_days`,
+  );
+  db.run(
+    `UPDATE messages SET thread_id = d.tid FROM legacy_days d
+       WHERE d.chat_id = messages.chat_id AND d.day = CAST(messages.at / 86400000 AS INTEGER)`,
+  );
+  db.run(`DROP TABLE temp.legacy_days`);
+  // Titles use the todo title rule, which lives in TS — one UPDATE per legacy thread (one per
+  // chat-day, a few hundred), not per message.
+  const setTitle = db.query(`UPDATE threads SET title = ? WHERE id = ?`);
+  const roots = db
+    .query(`SELECT t.id AS id, m.content AS content FROM threads t JOIN messages m ON m.id = t.id WHERE t.origin = 'legacy'`)
+    .all() as Array<{ id: number; content: string }>;
+  for (const r of roots) setTitle.run(todoTitle(r.content), r.id);
+
+  // External-content FTS5 index over messages.content (unicode61 tokenizes Arabic, spec §11.10).
+  // Triggers keep it in step; 'rebuild' indexes the copied rows once.
+  db.run(`CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id', tokenize='unicode61')`);
+  db.run(
+    `CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN
+       INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+     END`,
+  );
+  db.run(
+    `CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
+       INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+     END`,
+  );
+  db.run(
+    `CREATE TRIGGER messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+       INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+       INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+     END`,
+  );
+  db.run(`INSERT INTO messages_fts (messages_fts) VALUES ('rebuild')`);
+}
+
+/** v3 (spec §3.3): cause columns on the tables that already exist, so every artifact links straight
+ *  to the message (and thread) that caused it. Legacy rows keep NULL. */
+function causeColumns(db: Database): void {
+  const add: Array<[table: string, cols: string[]]> = [
+    ["orders", ["cause_msg_id INTEGER", "thread_id INTEGER", "parent_order_id TEXT"]],
+    ["project_todos", ["cause_msg_id INTEGER", "thread_id INTEGER", "attention_id INTEGER", "plan_id INTEGER"]],
+    ["decisions", ["cause_msg_id INTEGER", "thread_id INTEGER"]],
+    ["dispatcher_inbox", ["cause_msg_id INTEGER", "thread_id INTEGER"]],
+    ["message_routes", ["msg_id INTEGER", "thread_id INTEGER"]],
+    ["events", ["msg_id INTEGER"]],
+    ["open_sessions", ["cause_msg_id INTEGER", "thread_id INTEGER"]],
+  ];
+  for (const [table, cols] of add) for (const col of cols) db.run(`ALTER TABLE ${table} ADD COLUMN ${col}`);
+  db.run(`CREATE INDEX idx_orders_thread ON orders (thread_id)`);
+  db.run(`CREATE INDEX idx_project_todos_thread ON project_todos (thread_id)`);
+  db.run(`CREATE INDEX idx_decisions_thread ON decisions (thread_id)`);
+  db.run(`CREATE INDEX idx_events_msg ON events (msg_id)`);
+}
+
+/** v4 (spec §3.4): one row per governed tool call — the label only, never the full input. Its own
+ *  table with its own retention, so a busy worker cannot push diagnostic events out of `events`. */
+function toolActions(db: Database): void {
+  db.run(
+    `CREATE TABLE tool_actions (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       order_id TEXT NOT NULL, msg_id INTEGER, thread_id INTEGER, folder TEXT,
+       tool TEXT NOT NULL, label TEXT NOT NULL,
+       verdict TEXT NOT NULL,
+       at INTEGER NOT NULL
+     )`,
+  );
+  db.run(`CREATE INDEX idx_tool_actions_thread ON tool_actions (thread_id, id)`);
+}
+
+export const MIGRATIONS: Migration[] = [
+  { version: 1, name: "baseline", up: baseline },
+  { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
+  { version: 3, name: "cause columns", up: causeColumns },
+  { version: 4, name: "tool actions", up: toolActions },
+];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good
  *  ones stay applied when a later one throws. Before the first pending migration a file db that
