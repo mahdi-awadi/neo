@@ -136,6 +136,11 @@ export interface RunHandlers {
    *  is a turn boundary, not the end of the brief. A CLI without those events (and Codex) is settled
    *  at every turn boundary. A single-brief caller (dispatch) closes the run here. */
   onSettled?: () => void;
+  /** Fires when the runner considers a turn over — the same moments its in-turn flag (`active()`)
+   *  clears: a `result` (or the CLI's `idle`, when it sends session-state events), each Codex turn,
+   *  and the end of the run. The pipeline answers every cause delivered during the turn here
+   *  (spec §4.2). May fire with no turn open (the run's end); callers treat that as a no-op. */
+  onTurnEnd?: () => void;
   /** The CLI's session state (`session_state_changed`): running / idle / requires_action. Internal
    *  plumbing for `active()` + `onSettled`; callers normally want `onSettled`. */
   onSessionState?: (state: string) => void;
@@ -965,13 +970,17 @@ function startClaudeOrder(
     onTurnComplete: (result) => {
       if (!stateEvents) inTurn = false;
       handlers.onTurnComplete?.(result);
-      if (!stateEvents) handlers.onSettled?.();
+      if (!stateEvents) {
+        observe(() => handlers.onTurnEnd?.());
+        handlers.onSettled?.();
+      }
     },
     onSessionState: (state) => {
       stateEvents = true;
       handlers.onSessionState?.(state);
       if (state === "idle") {
         inTurn = false;
+        observe(() => handlers.onTurnEnd?.());
         handlers.onSettled?.();
       } else {
         inTurn = true; // running, or requires_action (mid-turn, waiting on a permission)
@@ -1011,6 +1020,7 @@ function startClaudeOrder(
     return open({ ...deps, resume: undefined });
   })().finally(() => {
     inTurn = false; // the run is over — it cannot still be processing a turn
+    observe(() => handlers.onTurnEnd?.());
   });
 
   return {
@@ -1066,10 +1076,12 @@ function startCodexOrder(
         turnActive = true;
         final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
         turnActive = false;
+        observe(() => handlers.onTurnEnd?.());
         currentAbort = undefined;
         if (!final.ok) break;
       }
     } catch (err) {
+      if (turnActive) observe(() => handlers.onTurnEnd?.());
       turnActive = false;
       const reason = err instanceof Error ? err.message : String(err);
       final = { ok: false, sessionId: final.sessionId, summary: reason, costUsd: 0, apiError: apiErrorFromCodexMessage(reason) };

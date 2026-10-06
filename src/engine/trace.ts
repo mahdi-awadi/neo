@@ -6,6 +6,7 @@
 import type { Cause, Ledger, MessageKind, ThreadArtifacts, ThreadOrigin, ThreadRow } from "./ledger";
 import type { Priority } from "./priority";
 import type { Registry } from "./registry";
+import { faults } from "./fault";
 import { deriveThreadState } from "./thread-state";
 import { todoTitle } from "./todo-title";
 
@@ -86,6 +87,15 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
     ledger.insertThread({ id: rootMsgId, origin, title, state: "done", createdAt: at, project, folder });
   }
 
+  /** A line joined a thread: mark it the newest and re-derive the state. Best-effort (ADR-0010): the
+   *  line is already written, so a fault here is reported, never thrown at the operator's line. */
+  function bookkeep(component: string, line: Cause, at: number): void {
+    faults.guard(component, () => {
+      ledger.touchThread(line.threadId, line.msgId, at);
+      refreshThread(line.threadId);
+    }, { msgId: line.msgId, threadId: line.threadId });
+  }
+
   /** Rule 1: the thread (and message) a Telegram reply target belongs to, if we know it. */
   function replyTarget(r: { chatId: number; channelMsgId: number }): { threadId: number; msgId?: number } | undefined {
     const m = ledger.messageByChannel(r.chatId, r.channelMsgId);
@@ -100,19 +110,19 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
       const target = (p.replyTo && replyTarget(p.replyTo)) || undefined;
       const web = p.threadId !== undefined && ledger.threadById(p.threadId) ? p.threadId : undefined;
       const joined = target && ledger.threadById(target.threadId) ? target : web !== undefined ? { threadId: web } : undefined;
-      const msgId = ledger.insertMessage({
-        chatId: p.chatId, role: "user", content: p.text, at, surface: p.surface, channelMsgId: p.channelMsgId, kind: "text",
-        threadId: joined?.threadId, causeId: joined && "msgId" in joined ? joined.msgId : undefined,
-      });
-      let threadId: number;
-      if (joined) threadId = joined.threadId;
-      else {
-        threadId = msgId;
+      // The row and (for a new thread) its thread land together: a crash never leaves a message
+      // pointing at a thread that does not exist. This part is the must-have — a throw here is the caller's.
+      const cause = ledger.transaction((): Cause => {
+        const msgId = ledger.insertMessage({
+          chatId: p.chatId, role: "user", content: p.text, at, surface: p.surface, channelMsgId: p.channelMsgId, kind: "text",
+          threadId: joined?.threadId, causeId: joined && "msgId" in joined ? joined.msgId : undefined,
+        });
+        if (joined) return { msgId, threadId: joined.threadId };
         newThread(msgId, "operator", todoTitle(p.text), at);
-      }
-      ledger.touchThread(threadId, msgId, at);
-      refreshThread(threadId);
-      return { msgId, threadId };
+        return { msgId, threadId: msgId };
+      });
+      bookkeep("trace.inbound", cause, at);
+      return cause;
     },
     outbound(p) {
       const at = now();
@@ -121,12 +131,7 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
         threadId: p.cause?.threadId, causeId: p.cause?.msgId,
         project: p.project, folder: p.folder, orderId: p.orderId, priority: p.priority,
       });
-      if (p.cause) {
-        try {
-          ledger.touchThread(p.cause.threadId, msgId, at);
-          refreshThread(p.cause.threadId);
-        } catch { /* a bookkeeping fault never costs the operator a line */ }
-      }
+      if (p.cause) bookkeep("trace.outbound", { msgId, threadId: p.cause.threadId }, at);
       return msgId;
     },
     bindChannel(msgId, chatId, channelMsgId) {
@@ -134,13 +139,15 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
     },
     root(p) {
       const at = now();
-      const msgId = ledger.insertMessage({
-        chatId: ENGINE_CHAT_ID, role: "assistant", content: p.title, at, surface: "engine", kind: "notice",
-        project: p.project, folder: p.folder,
+      const msgId = ledger.transaction(() => {
+        const id = ledger.insertMessage({
+          chatId: ENGINE_CHAT_ID, role: "assistant", content: p.title, at, surface: "engine", kind: "notice",
+          project: p.project, folder: p.folder,
+        });
+        newThread(id, p.origin, todoTitle(p.title), at, p.project, p.folder);
+        return id;
       });
-      newThread(msgId, p.origin, todoTitle(p.title), at, p.project, p.folder);
-      ledger.touchThread(msgId, msgId, at);
-      refreshThread(msgId);
+      bookkeep("trace.root", { msgId, threadId: msgId }, at);
       return { msgId, threadId: msgId };
     },
     ref: (msgId) => `m${msgId.toString(36)}`,

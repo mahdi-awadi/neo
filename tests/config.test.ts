@@ -376,3 +376,10 @@ test("a legacy contextPolicy.handoffPct is honoured as sweetSpotPct; sweetSpotPc
   expect(withCfg({ contextPolicy: { handoffPct: 0.5 } }).contextPolicy.sweetSpotPct).toBe(0.5);
   expect(withCfg({ contextPolicy: { handoffPct: 0.5, sweetSpotPct: 0.3 } }).contextPolicy.sweetSpotPct).toBe(0.3);
 });
+
+test("trace.showRefs defaults to auto; config.json can turn it off", () => {
+  expect(loadConfig(dir()).trace).toEqual({ showRefs: "auto" });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ trace: { showRefs: "off" } }));
+  expect(loadConfig(d).trace?.showRefs).toBe("off");
+});

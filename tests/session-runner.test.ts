@@ -1088,3 +1088,62 @@ test("the SDK options carry the handlers' context steer into the governor hook",
   };
   expect(out.hookSpecificOutput).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "write the note" });
 });
+
+// --- Turn end (Task 1.4, spec §4.2): the runner says when a turn is over, at the same place it
+// clears its in-turn flag, so the pipeline can answer every cause delivered during that turn. ---
+
+test("onTurnEnd: each result ends a turn without session-state events, and the run's end ends one too", async () => {
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  let ends = 0;
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnEnd: () => void ends++ }, { query: q as never });
+  while (ends === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(ends).toBe(1);
+  run.close();
+  await run.done;
+  expect(ends).toBe(2); // the run is over — any turn still open ends with it
+});
+
+test("onTurnEnd: with session-state events only idle ends the turn, never a mid-brief result", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const { q } = scriptedQuery(
+    [
+      { type: "system", subtype: "session_state_changed", state: "running" },
+      { type: "result", subtype: "success", result: "launched", total_cost_usd: 0 },
+      "pause",
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ],
+    gate,
+  );
+  let turns = 0;
+  let ends = 0;
+  const run = startOrder(
+    order("x"),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnComplete: () => void turns++, onTurnEnd: () => void ends++ },
+    { query: q as never },
+  );
+  while (turns === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(ends).toBe(0);
+  release();
+  while (ends === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(ends).toBe(1);
+  run.close();
+  await run.done;
+});
+
+test("onTurnEnd: a live Codex session ends a turn after each one", async () => {
+  const f = fakeCodexFactory({
+    turns: (input) => [
+      { type: "item.completed", item: { id: "i", type: "agent_message", text: `re:${input}` } },
+      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } },
+    ],
+  });
+  let ends = 0;
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnEnd: () => void ends++ }, { provider: "codex", codexFactory: f.factory });
+  while (ends === 0) await new Promise((r) => setTimeout(r, 1));
+  run.followUp("y");
+  while (ends < 2) await new Promise((r) => setTimeout(r, 1));
+  run.close();
+  await run.done;
+  expect(ends).toBe(2);
+});

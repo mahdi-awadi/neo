@@ -270,6 +270,9 @@ export interface Ledger {
   queueDispatcherReport(project: string, text: string, at?: number, cause?: Cause): number;
   /** `SELECT 1` — throws when the database cannot be read (the health check, ADR-0010). */
   ping(): void;
+  /** Run `fn` in one transaction: every write in it lands, or none does (a throw rolls back and
+   *  rethrows). Nests as a savepoint. */
+  transaction<T>(fn: () => T): T;
   /** Pending (undelivered) dispatcher reports, oldest first. */
   pendingDispatcherReports(): DispatcherReport[];
   /** Mark reports delivered (`at`), or back to pending (`null`) when a delivery failed. */
@@ -355,6 +358,8 @@ export interface OpenSessionRow {
   task: string;
   source: OrderSource;
   createdAt: number;
+  /** The session's last cause (spec §11.3): the first output after a restore is filed under it. */
+  cause?: Cause;
 }
 
 export interface ConversationMessage {
@@ -818,16 +823,19 @@ export function openLedger(
     saveOpenSessions(rows) {
       db.run(`DELETE FROM open_sessions`);
       const insert = db.query(
-        `INSERT INTO open_sessions (id, name, folder, chat_id, sdk_session_id, sdk_provider, task, source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO open_sessions (id, name, folder, chat_id, sdk_session_id, sdk_provider, task, source, created_at, cause_msg_id, thread_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const r of rows)
-        insert.run(r.id, r.name, r.folder, r.chatId, r.sdkSessionId, r.sdkProvider ?? null, r.task, r.source, r.createdAt);
+        insert.run(
+          r.id, r.name, r.folder, r.chatId, r.sdkSessionId, r.sdkProvider ?? null, r.task, r.source, r.createdAt,
+          r.cause?.msgId ?? null, r.cause?.threadId ?? null,
+        );
     },
     takeOpenSessions() {
       const rows = db
         .query(
-          `SELECT id, name, folder, chat_id, sdk_session_id, sdk_provider, task, source, created_at
+          `SELECT id, name, folder, chat_id, sdk_session_id, sdk_provider, task, source, created_at, cause_msg_id, thread_id
            FROM open_sessions ORDER BY created_at`,
         )
         .all() as Array<{
@@ -840,6 +848,8 @@ export function openLedger(
         task: string;
         source: string;
         created_at: number;
+        cause_msg_id: number | null;
+        thread_id: number | null;
       }>;
       db.run(`DELETE FROM open_sessions`);
       return rows.map((r) => ({
@@ -852,6 +862,7 @@ export function openLedger(
         task: r.task,
         source: r.source as OrderSource,
         createdAt: r.created_at,
+        ...(r.cause_msg_id !== null && r.thread_id !== null ? { cause: { msgId: r.cause_msg_id, threadId: r.thread_id } } : {}),
       }));
     },
     clearSessionsFor(folder) {
@@ -957,6 +968,7 @@ export function openLedger(
     ping() {
       db.query("SELECT 1").get();
     },
+    transaction: (fn) => db.transaction(fn)(),
     queueDispatcherReport(project, text, at = Date.now(), cause) {
       const r = db
         .query(`INSERT INTO dispatcher_inbox (project, text, at, cause_msg_id, thread_id) VALUES (?, ?, ?, ?, ?) RETURNING id`)

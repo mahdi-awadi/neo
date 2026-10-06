@@ -206,3 +206,16 @@ test("cause bookkeeping: newest delivered cause wins, endTurn answers all and cl
   reg.remove(o.id);
   expect(reg.causeOf(o.id)).toBeUndefined();
 });
+
+test("lastCauseOf keeps the newest cause after the turn ends, until the session is removed", () => {
+  const reg = createRegistry();
+  const o = order();
+  reg.add(o);
+  expect(reg.lastCauseOf(o.id)).toBeUndefined();
+  reg.setCause(o.id, { msgId: 1, threadId: 1 });
+  reg.setCause(o.id, { msgId: 2, threadId: 2 });
+  reg.endTurn(o.id);
+  expect(reg.lastCauseOf(o.id)).toEqual({ msgId: 2, threadId: 2 });
+  reg.remove(o.id);
+  expect(reg.lastCauseOf(o.id)).toBeUndefined();
+});

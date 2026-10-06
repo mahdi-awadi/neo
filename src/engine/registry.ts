@@ -66,6 +66,9 @@ export interface Registry {
   causeOf(id: string): Cause | undefined;
   /** The turn ended: every cause delivered so far is answered. Returns them (oldest first) and clears them. */
   endTurn(id: string): Cause[];
+  /** The newest cause ever delivered to the session, kept after its turn ended: lines after the turn
+   *  (the run's final result) and the reload snapshot (spec §11.3) are filed under it. */
+  lastCauseOf(id: string): Cause | undefined;
   /** Stamp the last stuck-alert time (watchdog dedup). */
   noteAlert(id: string, now?: number): void;
 }
@@ -75,6 +78,7 @@ export function createRegistry(): Registry {
   const controls = new Map<string, SessionControl>();
   const focus = new Map<number, { id: string; mode: FocusMode }>(); // chatId -> focused project
   const causes = new Map<string, Cause[]>(); // session id -> causes delivered, turn not yet ended
+  const lastCauses = new Map<string, Cause>(); // session id -> newest cause delivered, ended or not
   let defaultId: string | undefined; // the always-on default project (fallback target)
 
   function uniqueName(base: string): string {
@@ -116,8 +120,10 @@ export function createRegistry(): Registry {
       sessions.delete(id);
       controls.delete(id);
       causes.delete(id);
+      lastCauses.delete(id);
     },
     setCause(id, cause) {
+      lastCauses.set(id, cause);
       const list = causes.get(id);
       if (list) list.push(cause);
       else causes.set(id, [cause]);
@@ -128,6 +134,7 @@ export function createRegistry(): Registry {
       causes.delete(id);
       return list;
     },
+    lastCauseOf: (id) => lastCauses.get(id),
     attachControl(id, control) {
       // Defensive against F5: /kill during a pending gate can remove the session before the
       // (possibly async) caller reaches attachControl. Storing it then would leak an orphan

@@ -215,6 +215,9 @@ export interface NeoConfig {
   /** Governor knobs: out-of-folder writes + approval reminders/timeout (ADR-0012). Optional like
    *  `liveness`: absent ⇒ writes "ask" (fail closed); `loadConfig` always fills the defaults. */
   governor?: GovernorCfg;
+  /** Message refs (spec §4.3): `showRefs` "auto" puts ` · m4f2` on acks, a turn's first reply and
+   *  result-like lines; "off" hides them. Optional like `governor`; `loadConfig` always fills it. */
+  trace?: TraceCfg;
   /** Alert when a running session has produced NO ACTIVITY for this long (ms). Default 10 min. */
   stuckAfterMs: number;
   /** Alert when one activity label has run this long (ms). Default 20 min. */
@@ -254,6 +257,13 @@ export interface NeoConfig {
 /** Shipped fault policy (ADR-0010): one alert per fault signature per 15 min, at most 6 distinct
  *  fault alerts an hour, and (deduplicated) faults queued for the company to investigate — at most 3
  *  an hour, so a fault the company's own reply re-triggers cannot loop. */
+export interface TraceCfg {
+  showRefs: "auto" | "off";
+}
+
+/** Shipped ref display (spec §4.3): refs on. */
+export const DEFAULT_TRACE: TraceCfg = { showRefs: "auto" };
+
 export const DEFAULT_FAULTS: FaultCfg = { dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: true, maxHandoffsPerHour: 3 };
 /** Shipped health thresholds (ADR-0010): sample each minute; 2 s of timer drift or 2 GB resident
  *  memory is degraded. */
@@ -478,6 +488,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     telegramFloodMaxWaitMs: fileCfg.telegramFloodMaxWaitMs ?? DEFAULTS.telegramFloodMaxWaitMs,
     liveness: { ...DEFAULTS.liveness, ...(fileCfg.liveness ?? {}) },
     governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
+    trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,

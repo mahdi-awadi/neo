@@ -3,7 +3,8 @@
 // follow-up into every RUNNING session (the dispatch grace-window pattern: commit green work +
 // leave a WIP note), wait a bounded drain window for turns to finish, hard-interrupt stragglers,
 // then persist every open session's folder + SDK resume id in the ledger. Boot: restore that
-// snapshot as idle+resumable registry entries so a follow-up or dispatch resumes them.
+// snapshot as idle+resumable registry entries so a follow-up or dispatch resumes them. The snapshot
+// carries each session's last cause, so its first output after the restore keeps its thread.
 // Deterministic and clock/sleep-injected (no AI, no real timers in tests).
 import type { SessionInfo } from "../types";
 import type { Ledger, OpenSessionRow } from "./ledger";
@@ -113,6 +114,9 @@ export async function drainAndPersist(opts: {
       task: s.order.task,
       source: s.order.source,
       createdAt: s.order.createdAt,
+      // The turn the wrap-up ended has answered its causes; the last one still names the thread
+      // the session's next output belongs to (spec §11.3).
+      cause: registry.causeOf(s.id) ?? registry.lastCauseOf(s.id),
     }));
   ledger.saveOpenSessions(rows);
 
@@ -183,6 +187,7 @@ export function restoreSessions(registry: Registry, ledger: Ledger, now: () => n
     const existing = registry.findByFolder(row.folder);
     if (existing) {
       if (sdkSessionId && !existing.sdkSessionId) registry.setSdkSessionId(existing.id, sdkSessionId, row.sdkProvider);
+      if (row.cause && !registry.lastCauseOf(existing.id)) registry.setCause(existing.id, row.cause);
       continue;
     }
     const session = registry.add(
@@ -191,6 +196,8 @@ export function restoreSessions(registry: Registry, ledger: Ledger, now: () => n
     );
     registry.setStatus(session.id, "idle"); // idle = resumable; the next follow-up/dispatch resumes it
     if (sdkSessionId) registry.setSdkSessionId(session.id, sdkSessionId, row.sdkProvider);
+    // The first output after the restore is filed under the session's last cause (spec §11.3).
+    if (row.cause) registry.setCause(session.id, row.cause);
     restored.push(session);
   }
   return restored;
