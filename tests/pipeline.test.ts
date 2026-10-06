@@ -62,7 +62,7 @@ function cfg(): NeoConfig {
     drainWindowMs: 90_000,
     trustNewProjects: false,
     contextPolicy: {
-      handoffPct: 0.65,
+      sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
       emergencyPct: 0.85,
       maxTurns: 200,
       maxAgeMs: 604_800_000,
@@ -646,24 +646,27 @@ test("pre-resume gate: a configured windowTokensByModel flips the verdict (real 
     }),
   );
   try {
-    // Default 200k facts-map window: 150_000 / 200_000 = 0.75 >= handoffPct (0.65) → "handoff".
+    // cfg says "big-model" has a 200k window: 150_000 / 200_000 = 0.75 >= sweetSpotPct (0.65) → "handoff".
+    // (A guessed window would drive no band rule at all — ADR-0014 — so both halves set the window.)
     const f1 = fakeStart();
     const h1 = harness({ start: f1.start });
     h1.ledger.recordOrder({ id: "d1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
     h1.ledger.recordSession("d1", sdkId);
     const calls: string[] = [];
+    const cfg1 = { ...h1.base.cfg, contextPolicy: { ...h1.base.cfg.contextPolicy, windowTokensByModel: { "big-model": 200_000 } } };
     await handleMessage(`/open ${dir} continue`, 9, {
       ...h1.base,
+      cfg: cfg1,
       handoff: async (s) => {
         calls.push("handoff");
         h1.ledger.clearSessionsFor(s.order.folder);
       },
     });
-    expect(calls).toEqual(["handoff"]); // default facts map (no override) → handoff, same transcript
+    expect(calls).toEqual(["handoff"]); // 200k override → handoff, same transcript
     expect(f1.resumeSeen()).toBeUndefined(); // fresh, not resumed
 
     // SAME transcript, but cfg now overrides "big-model"'s window to 1,000,000 tokens:
-    // 150_000 / 1_000_000 = 0.15 — well under handoffPct → "keep" instead.
+    // 150_000 / 1_000_000 = 0.15 — well under sweetSpotPct → "keep" instead.
     const f2 = fakeStart();
     const h2 = harness({ start: f2.start });
     h2.ledger.recordOrder({ id: "d2", source: "neo", folder: dir, task: "x", chatId: 10, createdAt: 0 });

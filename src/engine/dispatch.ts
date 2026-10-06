@@ -528,7 +528,7 @@ export async function dispatchToProject(
         const signals = opts.signals ?? sessionContext;
         const sig = signals(folder, gatedResume, { windowTokensByModel: contextWindows(deps.ledger, deps.contextPolicy.windowTokensByModel) });
         const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(deps.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.contextPolicy);
-        const verdict = decideContext(sig, deps.contextPolicy, ttlMs);
+        const verdict = decideContext(sig, deps.contextPolicy, ttlMs).verdict;
         if (verdict === "clear") {
           gatedResume = undefined;
           deps.ledger.clearSessionsFor(folder);

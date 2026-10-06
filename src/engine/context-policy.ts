@@ -54,9 +54,46 @@ export interface ContextSignals {
 
 export type ContextVerdict = "keep" | "handoff" | "clear";
 
+/** WHERE the policy is asked (ADR-0014). A number crossing a line says THAT a session should be
+ *  replaced, never WHEN — so the engine only asks at one of these moments:
+ *  - `resume`: an idle session is about to be reused for a new task (often a cold cache);
+ *  - `settled`: a task just finished and the session is at rest (warm cache);
+ *  - `checkpoint`: mid-task, right after a commit or a completed plan step, with a clean tree. */
+export type ContextBoundary = "resume" | "settled" | "checkpoint";
+
+/** Where occupancy sits, in one word (CONTEXT.md "Context band"). */
+export type ContextBand = "healthy" | "above" | "heavy" | "emergency";
+
+export type ContextReason =
+  | "emergency"
+  | "above-sweet-spot"
+  | "heavy"
+  | "projected-overflow"
+  | "stale-resume"
+  | "max-turns"
+  | "max-age";
+
+export interface ContextDecision {
+  verdict: ContextVerdict;
+  /** Why — set on every `handoff`/`clear`, recorded in the ledger and shown to the operator. */
+  reason?: ContextReason;
+  band: ContextBand;
+}
+
 export interface ContextPolicyCfg {
-  handoffPct: number;
+  /** RATIO (0-1): the top of the sweet spot. Above it a session is handed off at its next task
+   *  boundary (`resume` / `settled`). Was `handoffPct` 0.65; 0.40 from transcript data (ADR-0014). */
+  sweetSpotPct: number;
+  /** RATIO (0-1): above it a session is also handed off at the next SAFE CHECKPOINT, mid-task.
+   *  Set it to 1 or more to turn mid-task handoffs off. */
+  checkpointPct: number;
+  /** RATIO (0-1): the last-resort line, below the SDK's own auto-compaction (~0.97). */
   emergencyPct: number;
+  /** Max characters of a handoff note inlined into a continuation's first brief. */
+  handoffNoteMaxChars: number;
+  /** A resumed session that reaches its first productive action (an edit or a commit) within this
+   *  many model calls counts as a successful handoff (CONTEXT.md "Orientation"). */
+  handoffOrientationMaxSteps: number;
   maxTurns: number;
   maxAgeMs: number;
   handoffTimeoutMs: number;
@@ -113,12 +150,42 @@ export function effectiveCacheTtlMs(
   return lo > hi ? (hi + lo) / 2 : cfg.cacheTtlFallbackMs; // overlapping data → not learnable yet
 }
 
-export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg, ttlMs: number): ContextVerdict {
-  // A guessed window must never destroy a session (ADR-0013): over the emergency line it hands off.
-  if (sig.occupancy >= cfg.emergencyPct) return sig.windowKnown === false ? "handoff" : "clear";
-  if (sig.idleMs >= ttlMs && sig.occupancy >= cfg.staleResumePct) return "handoff";
-  if (sig.occupancy >= cfg.handoffPct || sig.turns >= cfg.maxTurns || sig.ageMs >= cfg.maxAgeMs) return "handoff";
-  return "keep";
+export function contextBand(
+  occupancy: number,
+  cfg: Pick<ContextPolicyCfg, "sweetSpotPct" | "checkpointPct" | "emergencyPct">,
+): ContextBand {
+  if (occupancy >= cfg.emergencyPct) return "emergency";
+  if (occupancy >= cfg.checkpointPct) return "heavy";
+  if (occupancy >= cfg.sweetSpotPct) return "above";
+  return "healthy";
+}
+
+/** THE context policy (one, deterministic). `at` says where it is asked (ADR-0014); `projected` is
+ *  the occupancy the current plan is on course to reach (checkpoint only). */
+export function decideContext(
+  sig: ContextSignals,
+  cfg: ContextPolicyCfg,
+  ttlMs: number,
+  at: { boundary: ContextBoundary; projected?: number } = { boundary: "resume" },
+): ContextDecision {
+  const band = contextBand(sig.occupancy, cfg);
+  const known = sig.windowKnown !== false;
+  const handoff = (reason: ContextReason): ContextDecision => ({ verdict: "handoff", reason, band });
+  // The last resort. Only a cold resume of a known-full session is cleared: everywhere else a note
+  // still fits, and a guessed window must never destroy a session (ADR-0013).
+  if (band === "emergency") return at.boundary === "resume" && known ? { verdict: "clear", reason: "emergency", band } : handoff("emergency");
+  if (at.boundary === "resume" && sig.idleMs >= ttlMs && sig.occupancy >= cfg.staleResumePct) return handoff("stale-resume");
+  if (at.boundary === "checkpoint") {
+    // Mid-task: only a heavy session, or one its own plan will carry past the emergency line.
+    if (!known) return { verdict: "keep", band };
+    if (band === "heavy") return handoff("heavy");
+    if (band === "above" && (at.projected ?? 0) >= cfg.emergencyPct) return handoff("projected-overflow");
+    return { verdict: "keep", band };
+  }
+  if (known && band !== "healthy") return handoff("above-sweet-spot");
+  if (sig.turns >= cfg.maxTurns) return handoff("max-turns");
+  if (sig.ageMs >= cfg.maxAgeMs) return handoff("max-age");
+  return { verdict: "keep", band };
 }
 
 /** Running totals of one transcript, up to `offset` (the byte after its last complete line). */

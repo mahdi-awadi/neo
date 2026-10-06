@@ -322,8 +322,14 @@ const DEFAULTS = {
   alertRepeatMs: 15 * 60 * 1000,
   drainWindowMs: 90 * 1000,
   contextPolicy: {
-    handoffPct: 0.65,
-    emergencyPct: 0.85,
+    // ADR-0014: from 31,585 Opus turns. Quality is flat to ~65%; cost per turn is linear, and the
+    // 19% of turns above 40% read 41% of all cache tokens. SDK auto-compaction fires at ~97%.
+    sweetSpotPct: 0.4,
+    checkpointPct: 0.6,
+    emergencyPct: 0.9,
+    handoffNoteMaxChars: 20_000,
+    // p75 of measured orientation (model calls before the first edit/commit after a handoff).
+    handoffOrientationMaxSteps: 70,
     maxTurns: 200,
     maxAgeMs: 7 * 24 * 3600 * 1000,
     handoffTimeoutMs: 180_000,
@@ -389,6 +395,13 @@ function loadDotEnv(dir: string): void {
 /** Lowercase every key of a record, so a case-insensitive lookup can never miss an operator's entry. */
 function lowercaseKeys(o: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(o).map(([k, v]) => [k.toLowerCase(), v]));
+}
+
+/** The context policy from config.json over the defaults. `handoffPct` is the pre-ADR-0014 name of
+ *  `sweetSpotPct`: an operator who set it keeps their line, unless they also set the new name. */
+function contextPolicyFrom(file: (Partial<ContextPolicyCfg> & { handoffPct?: number }) | undefined): ContextPolicyCfg {
+  const { handoffPct, ...rest } = file ?? {};
+  return { ...DEFAULTS.contextPolicy, ...(handoffPct !== undefined ? { sweetSpotPct: handoffPct } : {}), ...rest };
 }
 
 export function loadConfig(dir: string = process.cwd()): NeoConfig {
@@ -457,7 +470,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,
     alertRepeatMs: fileCfg.alertRepeatMs ?? DEFAULTS.alertRepeatMs,
     drainWindowMs: fileCfg.drainWindowMs ?? DEFAULTS.drainWindowMs,
-    contextPolicy: { ...DEFAULTS.contextPolicy, ...(fileCfg.contextPolicy ?? {}) },
+    contextPolicy: contextPolicyFrom(fileCfg.contextPolicy),
     models: {
       default:
         process.env.NEO_WORKER_MODEL?.trim() || fileCfg.models?.default?.trim() || DEFAULTS.models.default,

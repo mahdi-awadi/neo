@@ -14,7 +14,7 @@ import type { ContextPolicyCfg, ContextSignals } from "../src/engine/context-pol
 import { DEFAULT_MODELS } from "../src/config";
 
 const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
-  handoffPct: 0.65,
+  sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
   emergencyPct: 0.85,
   maxTurns: 200,
   maxAgeMs: 7 * 24 * 3600 * 1000,
@@ -1176,7 +1176,7 @@ test("dispatch with a 'handoff' verdict runs the handoff BEFORE start, and drops
     order.push("start");
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
-  const fakeSignals = (): ContextSignals => ({ occupancy: 0.7, turns: 5, ageMs: 0, idleMs: 0 }); // >= handoffPct, < emergencyPct → handoff
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.7, turns: 5, ageMs: 0, idleMs: 0 }); // >= sweetSpotPct, < emergencyPct → handoff
   const fakeHandoff = async () => {
     order.push("handoff");
   };
@@ -1205,7 +1205,7 @@ test("dispatch with a 'keep' verdict passes the prior resume id through unchange
     seenResume = dd?.resume;
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
-  const fakeSignals = (): ContextSignals => ({ occupancy: 0.1, turns: 5, ageMs: 0, idleMs: 0 }); // well under handoffPct → keep
+  const fakeSignals = (): ContextSignals => ({ occupancy: 0.1, turns: 5, ageMs: 0, idleMs: 0 }); // well under sweetSpotPct → keep
   await dispatchToProject("eticket-v3", "task", deps, 1, {
     start: fakeStart as never,
     now: () => 0,

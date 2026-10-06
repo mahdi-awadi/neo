@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import {
   decideContext,
+  contextBand,
   sessionContext,
   encodeCwd,
   windowTokensFor,
@@ -20,11 +21,15 @@ import {
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import type { Order, SessionInfo } from "../src/types";
+import type { ContextSignals } from "../src/engine/context-policy";
 import type { RunHandlers } from "../src/engine/session-runner";
 
 const CFG = {
-  handoffPct: 0.65,
-  emergencyPct: 0.85,
+  sweetSpotPct: 0.4,
+  checkpointPct: 0.6,
+  emergencyPct: 0.9,
+  handoffNoteMaxChars: 20_000,
+  handoffOrientationMaxSteps: 70,
   maxTurns: 200,
   maxAgeMs: 604_800_000,
   handoffTimeoutMs: 180_000,
@@ -93,14 +98,45 @@ test("writeIdleStateNote swallows write errors so idle-close never breaks", () =
   ).not.toThrow();
 });
 
-test("decideContext verdict matrix", () => {
-  const ttl = CFG.cacheTtlFallbackMs;
-  expect(decideContext({ occupancy: 0.1, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("keep");
-  expect(decideContext({ occupancy: 0.65, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // at threshold
-  expect(decideContext({ occupancy: 0.2, turns: 200, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // turns
-  expect(decideContext({ occupancy: 0.2, turns: 5, ageMs: 604_800_000, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // age
-  expect(decideContext({ occupancy: 0.85, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("clear"); // emergency wins over handoff
-  expect(decideContext({ occupancy: 0.99, turns: 300, ageMs: 999_999_999, idleMs: 0 }, CFG, ttl)).toBe("clear");
+const sig = (occupancy: number, over: Partial<ContextSignals> = {}): ContextSignals => ({ occupancy, turns: 1, ageMs: 0, idleMs: 0, ...over });
+const FAR = 1e12; // a cache TTL nothing is idle past
+
+test("contextBand splits occupancy at the three knobs", () => {
+  expect([0.1, 0.4, 0.6, 0.9].map((o) => contextBand(o, CFG))).toEqual(["healthy", "above", "heavy", "emergency"]);
+});
+
+test("resume and settled boundaries hand off above the sweet spot and keep inside it", () => {
+  for (const boundary of ["resume", "settled"] as const) {
+    expect(decideContext(sig(0.39), CFG, FAR, { boundary })).toEqual({ verdict: "keep", band: "healthy" });
+    expect(decideContext(sig(0.41), CFG, FAR, { boundary })).toEqual({ verdict: "handoff", reason: "above-sweet-spot", band: "above" });
+  }
+});
+
+test("the boundary defaults to a resume (the gate callers that predate boundaries)", () => {
+  expect(decideContext(sig(0.92), CFG, FAR).verdict).toBe("clear");
+});
+
+test("a checkpoint hands off only in the heavy band, or when the plan projects past emergency", () => {
+  expect(decideContext(sig(0.5), CFG, FAR, { boundary: "checkpoint" }).verdict).toBe("keep");
+  expect(decideContext(sig(0.61), CFG, FAR, { boundary: "checkpoint" })).toEqual({ verdict: "handoff", reason: "heavy", band: "heavy" });
+  expect(decideContext(sig(0.45), CFG, FAR, { boundary: "checkpoint", projected: 1.05 }).reason).toBe("projected-overflow");
+  // inside the sweet spot a task is never interrupted, whatever the projection says
+  expect(decideContext(sig(0.3), CFG, FAR, { boundary: "checkpoint", projected: 1.5 }).verdict).toBe("keep");
+  // turns/age are boundary rules, never a reason to stop mid-task
+  expect(decideContext(sig(0.1, { turns: 900 }), CFG, FAR, { boundary: "checkpoint" }).verdict).toBe("keep");
+});
+
+test("emergency: clear only at a resume on a known window; every other case hands off", () => {
+  expect(decideContext(sig(0.92), CFG, FAR, { boundary: "resume" })).toEqual({ verdict: "clear", reason: "emergency", band: "emergency" });
+  expect(decideContext(sig(0.92, { windowKnown: false }), CFG, FAR, { boundary: "resume" }).verdict).toBe("handoff");
+  expect(decideContext(sig(0.92), CFG, FAR, { boundary: "settled" })).toEqual({ verdict: "handoff", reason: "emergency", band: "emergency" });
+  expect(decideContext(sig(0.92), CFG, FAR, { boundary: "checkpoint" }).reason).toBe("emergency");
+});
+
+test("a guessed window drives no band rule, only turns, age and staleness", () => {
+  expect(decideContext(sig(0.7, { windowKnown: false }), CFG, FAR, { boundary: "settled" }).verdict).toBe("keep");
+  expect(decideContext(sig(0.1, { windowKnown: false, turns: 200 }), CFG, FAR, { boundary: "settled" }).reason).toBe("max-turns");
+  expect(decideContext(sig(0.1, { ageMs: 604_800_000 }), CFG, FAR, { boundary: "resume" }).reason).toBe("max-age");
 });
 
 test("effectiveCacheTtlMs: with too few observations, returns the fallback", () => {
@@ -118,11 +154,13 @@ test("effectiveCacheTtlMs: learns the boundary between observed hits and misses"
   expect(effectiveCacheTtlMs(obs, POLICY)).toBe((50 * 60_000 + 70 * 60_000) / 2);
 });
 
-test("decideContext: idle past the effective TTL + fat transcript → handoff; either alone → keep", () => {
+test("decideContext: a resume idle past the cache TTL on a fat transcript hands off; either alone keeps", () => {
   const ttl = 3_600_000;
-  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("handoff");
-  expect(decideContext({ occupancy: 0.2, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("keep");
-  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 60_000 }, POLICY, ttl)).toBe("keep");
+  expect(decideContext(sig(0.36, { idleMs: 2 * ttl }), POLICY, ttl, { boundary: "resume" }).reason).toBe("stale-resume");
+  expect(decideContext(sig(0.2, { idleMs: 2 * ttl }), POLICY, ttl, { boundary: "resume" }).verdict).toBe("keep");
+  expect(decideContext(sig(0.36, { idleMs: 60_000 }), POLICY, ttl, { boundary: "resume" }).verdict).toBe("keep");
+  // a settled session's cache is warm by definition — staleness is a resume-only rule
+  expect(decideContext(sig(0.36, { idleMs: 2 * ttl }), POLICY, ttl, { boundary: "settled" }).verdict).toBe("keep");
 });
 
 test("sessionContext reports idleMs from the transcript mtime; 0 on any error (fail-open)", async () => {
@@ -365,11 +403,10 @@ test("sessionContext measures an Opus 5.5 transcript against the SDK-reported 1M
 // ADR-0013 review: right after a restart no model has reported its window yet, and the resume gate
 // runs BEFORE the first turn. A guessed window must never destroy a session — at most a handoff.
 test("decideContext: over the emergency line on a GUESSED window hands off, never clears", () => {
-  const cfg = { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 1e12, handoffTimeoutMs: 1, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 };
-  const sig = { occupancy: 2.74, turns: 10, ageMs: 0, idleMs: 0 };
-  expect(decideContext({ ...sig, windowKnown: false }, cfg, 3_600_000)).toBe("handoff");
-  expect(decideContext({ ...sig, windowKnown: true }, cfg, 3_600_000)).toBe("clear");
-  expect(decideContext(sig, cfg, 3_600_000)).toBe("clear"); // unset = known (hand-built signals)
+  const s = { occupancy: 2.74, turns: 10, ageMs: 0, idleMs: 0 };
+  expect(decideContext({ ...s, windowKnown: false }, CFG, 3_600_000).verdict).toBe("handoff");
+  expect(decideContext({ ...s, windowKnown: true }, CFG, 3_600_000).verdict).toBe("clear");
+  expect(decideContext(s, CFG, 3_600_000).verdict).toBe("clear"); // unset = known (hand-built signals)
 });
 
 test("sessionContext says whether the window was reported or guessed", () => {

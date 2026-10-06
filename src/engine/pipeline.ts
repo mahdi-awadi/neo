@@ -123,7 +123,7 @@ async function applyContextPolicy(
     const signals = deps.signals ?? sessionContext;
     const sig = signals(folder, resumeId, { windowTokensByModel: contextWindows(deps.ledger, deps.cfg.contextPolicy.windowTokensByModel) });
     const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
-    const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs);
+    const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs).verdict;
     if (verdict === "keep") {
       const lineCount = deps.lineCount ?? transcriptLineCount;
       const preLines = lineCount(folder, resumeId);
@@ -616,7 +616,7 @@ function startSession(
         const signals = deps.signals ?? sessionContext;
         const sig = signals(order.folder, result.sessionId, { windowTokensByModel: contextWindows(ledger, deps.cfg.contextPolicy.windowTokensByModel) });
         const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
-        if (decideContext(sig, deps.cfg.contextPolicy, ttlMs) !== "keep") {
+        if (decideContext(sig, deps.cfg.contextPolicy, ttlMs).verdict !== "keep") {
           const handoff = deps.handoff ?? runHandoff;
           const info = registry.get(registryId);
           if (info) {

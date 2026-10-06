@@ -491,7 +491,7 @@ function loopRunExtras(
           });
           const obs = deps.store?.listCacheObservations(cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW) ?? [];
           const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
-          return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;
+          return decideContext(ctx, cfg.contextPolicy, ttlMs).verdict === "keep" ? id : undefined;
         }
       : undefined,
     check:
