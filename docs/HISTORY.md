@@ -815,3 +815,14 @@ continuation starts fresh with the note inline. The note has fixed sections plus
 git. A resumed session's orientation (model calls to its first edit) is measured. A message sent
 while a session closes is no longer dropped. Going live needs a daemon restart (operator-gated).
 
+
+### Trace spine (2026-10-06, ADR-0015/0016)
+
+Neo could not answer "why did this happen?". Now every message has an id and a short ref (like
+`m4g2`), and messages join threads. A reply-to in Telegram, or the web composer's thread, joins
+that thread. Dispatches, todos, decisions, files, tool actions, loops and ingress all carry their
+cause. `/trace <ref>` and `GET /api/trace/:ref` show the chain. Refs show on acks, a turn's first
+reply and result lines (`trace.showRefs`). Tool calls are kept in a new `tool_actions` table
+(`toolActionsKeep`). The ledger now has numbered migrations (v1–v4). On first boot after the
+restart, the migration runs once (about 8 s on a 142 MB ledger). A backup, `ledger.db.bak-v<from>`,
+is written first. Going live needs a daemon restart (operator-gated).
