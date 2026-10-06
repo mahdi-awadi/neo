@@ -10,19 +10,34 @@ import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
 
-/** Context-window size is a FACT about the model, not a tuning knob — one global constant would be
- *  wrong the moment two different models are in play. Keyed by the model id Claude Code's own
- *  transcripts report (`message.model`); `default` is the conservative fallback for an unknown or
- *  absent model. Config may override per model (operator choice over facts) via
- *  ContextPolicyCfg.windowTokensByModel — see windowTokensFor. */
+/** Context-window size is a FACT about the model, not a tuning knob. The SDK reports it on every
+ *  result and the ledger keeps it per model (ADR-0013) — see contextWindows. This table holds only
+ *  the fallback for a model the SDK has not reported yet. */
 const MODEL_WINDOW_TOKENS: Record<string, number> = { default: 200_000 };
+
+/** The known window per model for a measurement (ADR-0013): the SDK-reported windows from the
+ *  ledger, with the operator's `contextPolicy.windowTokensByModel` overrides on top. Pass the result
+ *  as `windowTokensByModel` to sessionContext / windowTokensFor. */
+export function contextWindows(
+  ledger: Pick<Ledger, "modelWindows">,
+  overrides?: Record<string, number>,
+): Record<string, number> {
+  return { ...ledger.modelWindows(), ...overrides };
+}
 
 /** The context-window size (tokens) for `model`, from the facts map, with `overrides` (config)
  *  winning per model. `model === undefined` (no model found in the transcript yet) falls back to
  *  the default fact — fail-open, never throws. */
 export function windowTokensFor(model: string | undefined, overrides?: Record<string, number>): number {
-  const m = { ...MODEL_WINDOW_TOKENS, ...overrides };
-  return (model !== undefined && m[model]) || m.default;
+  return knownWindowFor(model, overrides) ?? MODEL_WINDOW_TOKENS.default;
+}
+
+/** The window for `model` when one is actually known — reported, overridden or a model fact, or a
+ *  `default` the operator set — and `undefined` when windowTokensFor would only be guessing. */
+function knownWindowFor(model: string | undefined, overrides?: Record<string, number>): number | undefined {
+  const m: Record<string, number> = { ...MODEL_WINDOW_TOKENS, ...overrides };
+  if (model !== undefined && model !== "default" && m[model]) return m[model];
+  return overrides?.default || undefined;
 }
 
 export interface ContextSignals {
@@ -32,6 +47,9 @@ export interface ContextSignals {
   /** How long the session has sat idle since its transcript was last written (ms). 0 = fail-open
    *  (unmeasurable — e.g. no transcript yet). Used to gate the stale-resume rule below. */
   idleMs: number;
+  /** `false` when a turn was measured but its model's window is only the default guess — no window
+   *  reported or overridden yet (ADR-0013). Unset means known, or nothing measured. */
+  windowKnown?: boolean;
 }
 
 export type ContextVerdict = "keep" | "handoff" | "clear";
@@ -96,7 +114,8 @@ export function effectiveCacheTtlMs(
 }
 
 export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg, ttlMs: number): ContextVerdict {
-  if (sig.occupancy >= cfg.emergencyPct) return "clear";
+  // A guessed window must never destroy a session (ADR-0013): over the emergency line it hands off.
+  if (sig.occupancy >= cfg.emergencyPct) return sig.windowKnown === false ? "handoff" : "clear";
   if (sig.idleMs >= ttlMs && sig.occupancy >= cfg.staleResumePct) return "handoff";
   if (sig.occupancy >= cfg.handoffPct || sig.turns >= cfg.maxTurns || sig.ageMs >= cfg.maxAgeMs) return "handoff";
   return "keep";
@@ -176,6 +195,7 @@ export function sessionContext(
     if (tail) foldLines(view, tail);
     return {
       occupancy: view.lastInputSide / windowTokensFor(view.lastModel, opts.windowTokensByModel),
+      ...(view.turns > 0 && knownWindowFor(view.lastModel, opts.windowTokensByModel) === undefined ? { windowKnown: false } : {}),
       turns: view.turns,
       ageMs: view.firstTs ? Math.max(0, now() - view.firstTs) : 0,
       idleMs: Math.max(0, now() - st.mtimeMs),
@@ -334,7 +354,7 @@ export interface HandoffDeps {
  *  with a subsequent fresh session on the same folder. */
 export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
   const now = deps.now ?? (() => Date.now());
-  const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: cfg.windowTokensByModel });
+  const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: contextWindows(deps.ledger, cfg.windowTokensByModel) });
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",

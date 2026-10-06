@@ -792,3 +792,13 @@ per event: a 46 s long task, then no response. The feed is now a bounded replay 
 the same window and does O(1) work per event. `/api/state` no longer re-parses whole session
 transcripts (10–37 MB) on each poll: `sessionContext` parses only the appended bytes (0.6–0.9 s →
 ~20 ms). Going live needs a daemon restart (operator-gated).
+
+### Context % over 100% fixed (2026-10-06, ADR-0013)
+
+The console showed 235–306% context for waselni, gold and eticket-v3. The sessions were at 47–71%.
+Transcripts report `claude-opus-5-5` (the SDK strips `[1m]`), and the window table only had a 200k
+default, so every Opus 5.5 session (1M window) read five times too full. The gates used the same
+number: 519 `clear` verdicts since 2026-07-08, only 2 of them truly at 85% of 1M. Each `clear`
+dropped a session with no handoff note. The window now comes from the SDK's
+`result.modelUsage[*].contextWindow`, kept per model in the ledger, with the operator override on
+top. Going live needs a daemon restart (operator-gated).

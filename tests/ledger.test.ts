@@ -183,3 +183,12 @@ test("folders lists every distinct folder an order was ever recorded for", () =>
   led.recordOrder(order({ id: "c", folder: "/p/b" }));
   expect(led.folders()).toEqual(["/p/a", "/p/b"]);
 });
+
+test("model windows: the newest SDK-reported window per model wins (ADR-0013)", () => {
+  const l = openLedger(":memory:");
+  expect(l.modelWindows()).toEqual({});
+  l.recordModelWindow("claude-opus-5-5", 200_000, 1);
+  l.recordModelWindow("claude-opus-5-5", 1_000_000, 2);
+  l.recordModelWindow("claude-haiku-4-5", 200_000, 3);
+  expect(l.modelWindows()).toEqual({ "claude-opus-5-5": 1_000_000, "claude-haiku-4-5": 200_000 });
+});

@@ -120,3 +120,40 @@ test("dashboardSnapshot carries the derived state and the one-line status per pr
   expect(beta.state).toBe("idle");
   expect(beta.line).toContain("nothing in flight");
 });
+
+// ADR-0013: the console's ctx% must use the SDK-reported window the ledger holds, merged under the
+// operator's override — the 235–306% the console showed was a 1M Opus session divided by 200k.
+test("dashboardSnapshot measures with the SDK-reported windows from the ledger, override on top", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d5", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-y");
+  const ledger = openLedger(":memory:");
+  ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  let seen: Record<string, number> | undefined;
+  dashboardSnapshot({
+    registry,
+    ledger,
+    chatId: 0,
+    now: 10_000,
+    windowTokensByModel: { "big-model": 2_000_000 },
+    signals: (_f, _id, opts) => {
+      seen = opts?.windowTokensByModel;
+      return { occupancy: 0.5, turns: 1, ageMs: 0, idleMs: 0 };
+    },
+  });
+  expect(seen).toEqual({ "claude-opus-5-5": 1_000_000, "big-model": 2_000_000 });
+});
+
+test("dashboardSnapshot shows no ctx% while the window is only a guess (never a fake 274%)", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d6", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-z");
+  const rows = dashboardSnapshot({
+    registry,
+    ledger: openLedger(":memory:"),
+    chatId: 0,
+    now: 10_000,
+    signals: () => ({ occupancy: 2.74, turns: 1, ageMs: 0, idleMs: 0, windowKnown: false }),
+  }).projects;
+  expect(rows.find((r) => r.id === "d6")!.ctxPct).toBeUndefined();
+});

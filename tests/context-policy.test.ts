@@ -7,6 +7,7 @@ import {
   sessionContext,
   encodeCwd,
   windowTokensFor,
+  contextWindows,
   runHandoff,
   HANDOFF_PROMPT,
   MEMORY_FLUSH_SENTENCE,
@@ -329,4 +330,59 @@ test("runHandoff's task is byte-identical to HANDOFF_PROMPT when memoryFlush is 
   };
   await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never });
   expect(sawTask).toBe(HANDOFF_PROMPT);
+});
+
+// ADR-0013 — the live bug: transcripts report `claude-opus-5-5` (the SDK strips `[1m]`), the code
+// table only knew `default: 200_000`, so a 547k-token Opus turn read as 274% and tripped `clear`.
+test("contextWindows: operator override beats the SDK-reported window, which beats the default", () => {
+  const ledger = openLedger(":memory:");
+  ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  ledger.recordModelWindow("claude-sonnet-5-5", 200_000);
+  const w = contextWindows(ledger, { "claude-sonnet-5-5": 1_000_000 });
+  expect(windowTokensFor("claude-opus-5-5", w)).toBe(1_000_000); // SDK-reported
+  expect(windowTokensFor("claude-sonnet-5-5", w)).toBe(1_000_000); // operator override wins
+  expect(windowTokensFor("never-seen", w)).toBe(200_000); // default fact
+  expect(contextWindows(ledger)).toEqual({ "claude-opus-5-5": 1_000_000, "claude-sonnet-5-5": 200_000 });
+});
+
+test("sessionContext measures an Opus 5.5 transcript against the SDK-reported 1M window", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-ctxwin-"));
+  try {
+    const folder = "/p/waselni";
+    mkdirSync(join(dir, encodeCwd(folder)), { recursive: true });
+    const turn = { type: "assistant", message: { model: "claude-opus-5-5", usage: { input_tokens: 2, cache_read_input_tokens: 546_145, cache_creation_input_tokens: 1_572 } } };
+    writeFileSync(join(dir, encodeCwd(folder), "s-opus.jsonl"), `${JSON.stringify(turn)}\n`);
+    const ledger = openLedger(":memory:");
+    ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+    const sig = sessionContext(folder, "s-opus", { projectsDir: dir, windowTokensByModel: contextWindows(ledger) });
+    expect(sig.occupancy).toBeCloseTo(0.547719, 6); // was 2.738595 against the 200k default
+    expect(sig.occupancy).toBeLessThan(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADR-0013 review: right after a restart no model has reported its window yet, and the resume gate
+// runs BEFORE the first turn. A guessed window must never destroy a session — at most a handoff.
+test("decideContext: over the emergency line on a GUESSED window hands off, never clears", () => {
+  const cfg = { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 1e12, handoffTimeoutMs: 1, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 };
+  const sig = { occupancy: 2.74, turns: 10, ageMs: 0, idleMs: 0 };
+  expect(decideContext({ ...sig, windowKnown: false }, cfg, 3_600_000)).toBe("handoff");
+  expect(decideContext({ ...sig, windowKnown: true }, cfg, 3_600_000)).toBe("clear");
+  expect(decideContext(sig, cfg, 3_600_000)).toBe("clear"); // unset = known (hand-built signals)
+});
+
+test("sessionContext says whether the window was reported or guessed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-ctxknown-"));
+  try {
+    const folder = "/p/gold";
+    mkdirSync(join(dir, encodeCwd(folder)), { recursive: true });
+    const turn = { type: "assistant", message: { model: "claude-opus-5-5", usage: { input_tokens: 470_000 } } };
+    writeFileSync(join(dir, encodeCwd(folder), "s.jsonl"), `${JSON.stringify(turn)}\n`);
+    expect(sessionContext(folder, "s", { projectsDir: dir }).windowKnown).toBe(false);
+    expect(sessionContext(folder, "s", { projectsDir: dir, windowTokensByModel: { "claude-opus-5-5": 1_000_000 } }).windowKnown).toBeUndefined(); // known
+    expect(sessionContext(folder, "missing", { projectsDir: dir }).windowKnown).toBeUndefined(); // nothing measured
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

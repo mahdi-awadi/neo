@@ -11,7 +11,7 @@ import type { NeoConfig } from "../src/config";
 import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 
 const okRun = (sid = "s"): RunResult => ({ ok: true, sessionId: sid, summary: "", costUsd: 0 });
-const defMethods = { listLoopDefs: () => [], saveLoopDef: () => {}, deleteLoopDef: () => {}, listCacheObservations: () => [] };
+const defMethods = { listLoopDefs: () => [], saveLoopDef: () => {}, deleteLoopDef: () => {}, listCacheObservations: () => [], modelWindows: () => ({}) };
 const cinput = (over: Partial<LoopInput> = {}): LoopInput => ({
   name: "nightly-fmt",
   summary: "fmt",

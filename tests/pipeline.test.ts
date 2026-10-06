@@ -676,6 +676,42 @@ test("pre-resume gate: a configured windowTokensByModel flips the verdict (real 
   }
 });
 
+// ADR-0013 — the live bug: a 547k-token Opus 5.5 session (real window 1M) read as 274% of the 200k
+// default, so every resume gate returned `clear` and dropped the session with no handoff note.
+test("pre-resume gate: the SDK-reported window in the ledger keeps a 1M-window session (no config override)", async () => {
+  const dir = scratch();
+  const sdkId = "sdk-reported-window";
+  const transcriptDir = join(homedir(), ".claude", "projects", encodeCwd(dir));
+  mkdirSync(transcriptDir, { recursive: true });
+  writeFileSync(
+    join(transcriptDir, `${sdkId}.jsonl`),
+    JSON.stringify({
+      type: "assistant",
+      timestamp: new Date().toISOString(),
+      message: { model: "claude-opus-5-5", usage: { input_tokens: 2, cache_read_input_tokens: 546_145, cache_creation_input_tokens: 1_572 } },
+    }),
+  );
+  try {
+    const f = fakeStart();
+    const h = harness({ start: f.start });
+    h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+    h.ledger.recordOrder({ id: "d1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+    h.ledger.recordSession("d1", sdkId);
+    await handleMessage(`/open ${dir} continue`, 9, h.base);
+    expect(f.resumeSeen()).toBe(sdkId); // 0.55 of 1M → keep, resumed
+    expect(h.ledger.listContextEvents()).toEqual([]); // no clear recorded
+  } finally {
+    rmSync(transcriptDir, { recursive: true, force: true });
+  }
+});
+
+test("a session's SDK-reported context window is recorded in the ledger", async () => {
+  const f = fakeStart({ onStart: (hd) => hd.onContextWindow?.("claude-opus-5-5", 1_000_000) });
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${scratch()} go`, 9, h.base);
+  expect(h.ledger.modelWindows()).toEqual({ "claude-opus-5-5": 1_000_000 });
+});
+
 test("fresh start reads HANDOFF.md when it exists", async () => {
   const dir = scratch();
   writeFileSync(join(dir, "HANDOFF.md"), "state");

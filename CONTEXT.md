@@ -235,6 +235,20 @@ The per-launch-path override of the pinned model and its run settings (`model`, 
 default, not "whatever the SDK picks".
 _Avoid_: worker config, path settings
 
+### How full a session is
+
+**Context window**:
+The most tokens one model can hold in a single request — a fact about the model. The SDK reports it
+on every turn it completes. A **model id**'s context-size tag does not always change it: Opus 5.5 has
+a 1M window with or without `[1m]` (ADR-0013).
+_Avoid_: context size, context limit, max tokens
+
+**Context occupancy**:
+The share of the **context window** the session's last turn used: that turn's input, cache-read and
+cache-write tokens, divided by the window. Not a sum over turns. It is 0 to 1; above 1 means the
+window is wrong, not that the session overran. The console shows it as ctx%.
+_Avoid_: context use, fill, ctx (except as the display label)
+
 ### Telling a working session from a wedged one
 
 **Activity**:

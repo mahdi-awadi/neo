@@ -94,6 +94,10 @@ export interface Ledger {
   recordCacheObservation(gapMs: number, hit: boolean, at?: number): void;
   /** Most recent observations, newest-first, capped by `limit`. */
   listCacheObservations(limit?: number): Array<{ gapMs: number; hit: boolean; at: number }>;
+  /** The SDK-reported context window of `model` (its canonical id) as of `at` (ADR-0013). */
+  recordModelWindow(model: string, tokens: number, at?: number): void;
+  /** The newest SDK-reported context window per model: canonical model id → tokens. */
+  modelWindows(): Record<string, number>;
   /** Wipe the resume-target session id for every order in this folder (fresh start after a handoff/clear). */
   clearSessionsFor(folder: string): void;
   /** Persist the map from a sent channel message → the project it belongs to, so a reply to that
@@ -308,6 +312,13 @@ export function openLedger(
   db.run(
     `CREATE TABLE IF NOT EXISTS cache_observations (
        gap_ms INTEGER NOT NULL, hit INTEGER NOT NULL, at INTEGER NOT NULL
+     )`,
+  );
+  // The context window the SDK reports per model, newest only (ADR-0013). The transcript names the
+  // canonical model id but not its window, so the context policy reads the window from here.
+  db.run(
+    `CREATE TABLE IF NOT EXISTS model_windows (
+       model TEXT PRIMARY KEY, tokens INTEGER NOT NULL, at INTEGER NOT NULL
      )`,
   );
   // Reply-routing map: which project each sent channel message belongs to, so a REPLY to a specific
@@ -620,6 +631,16 @@ export function openLedger(
           .query(`SELECT gap_ms, hit, at FROM cache_observations ORDER BY at DESC, rowid DESC LIMIT ?`)
           .all(limit) as Array<{ gap_ms: number; hit: number; at: number }>
       ).map((r) => ({ gapMs: r.gap_ms, hit: r.hit === 1, at: r.at }));
+    },
+    recordModelWindow(model, tokens, at = Date.now()) {
+      db.query(
+        `INSERT INTO model_windows (model, tokens, at) VALUES (?, ?, ?)
+         ON CONFLICT(model) DO UPDATE SET tokens = excluded.tokens, at = excluded.at WHERE excluded.at >= model_windows.at`,
+      ).run(model, tokens, at);
+    },
+    modelWindows() {
+      const rows = db.query(`SELECT model, tokens FROM model_windows`).all() as Array<{ model: string; tokens: number }>;
+      return Object.fromEntries(rows.map((r) => [r.model, r.tokens]));
     },
     saveOpenSessions(rows) {
       db.run(`DELETE FROM open_sessions`);

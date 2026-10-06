@@ -8,7 +8,7 @@ import type { Ledger } from "./ledger";
 import type { UsageMeter, UsageSnapshot } from "./usage";
 import type { Provider } from "../types";
 import { listLoops, type LoopInfo } from "./loops";
-import { sessionContext, type ContextSignals } from "./context-policy";
+import { sessionContext, contextWindows, type ContextSignals } from "./context-policy";
 import { workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
@@ -91,12 +91,14 @@ export function dashboardSnapshot(opts: {
 }): DashState {
   const now = opts.now ?? Date.now();
   const activeId = opts.registry.findByChat(opts.chatId)?.id;
+  const windows = contextWindows(opts.ledger, opts.windowTokensByModel);
   const projects: DashProject[] = opts.registry.list().map((s) => {
     let ctxPct: number | undefined;
     if (s.sdkSessionId) {
       try {
-        const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel: opts.windowTokensByModel });
-        ctxPct = Math.round(sig.occupancy * 100);
+        const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel: windows });
+        // A guessed window gives a meaningless % (ADR-0013) — show none until the SDK reports one.
+        if (sig.windowKnown !== false) ctxPct = Math.round(sig.occupancy * 100);
       } catch {
         // skip on error
       }
