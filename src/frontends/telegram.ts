@@ -916,7 +916,13 @@ export function createTelegramBot(
       // is also posted in full, so the operator never consents to a list they could not read.
       const long = r.text.length > TAP_TOAST_MAX;
       await ctx.answerCallbackQuery(long ? `${r.text.slice(0, TAP_TOAST_MAX - 1)}…` : r.text);
-      if (long) await ctx.reply(r.text);
+      if (long) {
+        try {
+          await ctx.reply(r.text);
+        } catch (e) {
+          faults.report("telegram.attentionAnswer", e, { id }); // contained: the tap's outcome still applies below
+        }
+      }
       // Snoozed, dismissed, removed or already resolved: the row has nothing left to do. A refusal
       // keeps it (its answer may point at → todo).
       if (r.drop) {
