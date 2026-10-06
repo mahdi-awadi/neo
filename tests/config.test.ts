@@ -125,8 +125,11 @@ test("decisionsChatId is undefined by default, reads config.json, and env wins",
 test("contextPolicy defaults per spec", () => {
   const c = loadConfig("/nonexistent-dir");
   expect(c.contextPolicy).toEqual({
-    handoffPct: 0.65,
-    emergencyPct: 0.85,
+    sweetSpotPct: 0.4,
+    checkpointPct: 0.6,
+    emergencyPct: 0.9,
+    handoffNoteMaxChars: 20_000,
+    handoffOrientationMaxSteps: 70,
     maxTurns: 200,
     maxAgeMs: 604_800_000,
     handoffTimeoutMs: 180_000,
@@ -146,7 +149,7 @@ test("messageRoutesCacheCap + contextPolicy.cacheObsWindow default and read conf
   const o = loadConfig(d);
   expect(o.messageRoutesCacheCap).toBe(42);
   expect(o.contextPolicy.cacheObsWindow).toBe(8);
-  expect(o.contextPolicy.handoffPct).toBe(0.65); // unset contextPolicy fields keep defaults
+  expect(o.contextPolicy.sweetSpotPct).toBe(0.4); // unset contextPolicy fields keep defaults
 });
 
 /** Run `fn` with `key` forced to `value` (or unset when undefined), restoring the prior value after. */
@@ -353,4 +356,22 @@ test("error containment knobs: defaults, and config.json merges per key (ADR-001
   expect(o.health.everyMs).toBe(0);
   expect(o.health.lagWarnMs).toBe(2_000);
   expect(o.sqliteBusyTimeoutMs).toBe(100);
+});
+
+// ADR-0021: the sweet-spot band comes from transcript data (31,585 Opus turns), not a guess.
+const withCfg = (json: unknown) => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify(json));
+  return loadConfig(d);
+};
+
+test("the context band defaults to sweet spot 0.40, checkpoint 0.60, emergency 0.90", () => {
+  const cp = loadConfig(dir()).contextPolicy;
+  expect([cp.sweetSpotPct, cp.checkpointPct, cp.emergencyPct]).toEqual([0.4, 0.6, 0.9]);
+  expect([cp.handoffNoteMaxChars, cp.handoffOrientationMaxSteps]).toEqual([20_000, 70]);
+});
+
+test("a legacy contextPolicy.handoffPct is honoured as sweetSpotPct; sweetSpotPct wins when both are set", () => {
+  expect(withCfg({ contextPolicy: { handoffPct: 0.5 } }).contextPolicy.sweetSpotPct).toBe(0.5);
+  expect(withCfg({ contextPolicy: { handoffPct: 0.5, sweetSpotPct: 0.3 } }).contextPolicy.sweetSpotPct).toBe(0.3);
 });

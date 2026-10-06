@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openLedger } from "../src/engine/ledger";
@@ -9,6 +10,8 @@ import {
   flushDispatcherInbox,
   formatStopPoint,
   lastCommitIn,
+  uncommittedIn,
+  gitFacts,
   liveCompanyLink,
   progressDigest,
   recoverInterruptedDispatches,
@@ -164,4 +167,46 @@ test("recoverInterruptedDispatches ignores starts older than the recovery window
   const ledger = openLedger(":memory:");
   ledger.recordEvent("dispatch_start", { orderId: "old", folder: "/home/x", data: { project: "x" }, at: 1_000 });
   expect(recoverInterruptedDispatches(ledger, { now: 1_000_000, windowMs: 10_000, lastCommit: () => undefined })).toBe(0);
+});
+
+// ADR-0021: a handoff never leaves uncommitted work behind, so the engine reads it from git itself.
+function gitRepo(): string {
+  const d = mkdtempSync(join(tmpdir(), "neo-git-"));
+  const g = (...a: string[]) => spawnSync("git", ["-C", d, "-c", "user.email=t@t", "-c", "user.name=t", ...a], { encoding: "utf8" });
+  g("init", "-q", "-b", "main");
+  writeFileSync(join(d, "a.txt"), "1");
+  g("add", ".");
+  g("commit", "-q", "-m", "first");
+  return d;
+}
+
+test("uncommittedIn lists changed paths, ignores HANDOFF.md, and is undefined outside a repo", () => {
+  const d = gitRepo();
+  expect(uncommittedIn(d)).toEqual([]);
+  writeFileSync(join(d, "HANDOFF.md"), "note");
+  expect(uncommittedIn(d)).toEqual([]); // the note itself is never "uncommitted work"
+  writeFileSync(join(d, "a.txt"), "2");
+  writeFileSync(join(d, "new.ts"), "x");
+  expect(uncommittedIn(d)?.sort()).toEqual(["a.txt", "new.ts"]);
+  expect(uncommittedIn(mkdtempSync(join(tmpdir(), "neo-nogit-")))).toBeUndefined();
+});
+
+test("gitFacts reads branch, HEAD and uncommitted files", () => {
+  const d = gitRepo();
+  writeFileSync(join(d, "b.txt"), "x");
+  const f = gitFacts(d);
+  expect(f.branch).toBe("main");
+  expect(f.head).toMatch(/^[0-9a-f]{7,} first$/);
+  expect(f.uncommitted).toEqual(["b.txt"]);
+  expect(gitFacts(mkdtempSync(join(tmpdir(), "neo-nogit-")))).toEqual({});
+});
+
+test("uncommittedIn ignores the note of a project that lives in a sub-folder of its repo", () => {
+  const d = gitRepo();
+  const sub = join(d, "desks", "dev");
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, "HANDOFF.md"), "note");
+  expect(uncommittedIn(sub)).toEqual([]);
+  writeFileSync(join(d, "HANDOFF.md"), "the repo root's note is NOT this project's note");
+  expect(uncommittedIn(sub)).toEqual(["HANDOFF.md"]);
 });

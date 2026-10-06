@@ -183,7 +183,7 @@ function fakeNeoConfig(companyFolder: string): NeoConfig {
     drainWindowMs: 90_000,
     trustNewProjects: false,
     contextPolicy: {
-      handoffPct: 0.65,
+      sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
       emergencyPct: 0.85,
       maxTurns: 200,
       maxAgeMs: 604_800_000,

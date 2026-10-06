@@ -12,6 +12,7 @@ import type { NeoConfig } from "../src/config";
 import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
+import { DEFAULT_GOVERNOR_CFG } from "../src/engine/governor";
 
 function cfg(): NeoConfig {
   return {
@@ -59,7 +60,7 @@ function cfg(): NeoConfig {
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
     trustNewProjects: false,
-    contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
+    contextPolicy: { sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
     models: DEFAULT_MODELS,
     updates: DEFAULT_UPDATES,
     faults: DEFAULT_FAULTS,
@@ -494,4 +495,19 @@ test("feed ids keep increasing across a daemon restart, so an open console's sta
   const got: WebEvent[] = [];
   after.subscribe((e) => got.push(e), { after: staleId });
   expect(texts(got).some((t) => t.includes("new"))).toBe(true);
+});
+
+// The feed window (ADR-0014, console) meets the approval timeout (ADR-0012, governor): an escalation
+// the engine gave up on is denied AND no longer replayed — a console must not show a dead prompt.
+test("a timed-out escalation is not replayed to a console that connects later", async () => {
+  const dir = scratch();
+  let h!: RunHandlers;
+  const { eng, ch } = windowed(10, (x) => void (h = x));
+  eng.cfg.governor = { ...DEFAULT_GOVERNOR_CFG, approvalRemindMs: 0, approvalTimeoutMs: 20 };
+  await ch.send(`/open ${dir} go`);
+  const verdict = await h.onEscalation("nobody answers");
+  expect(verdict).toBe("deny");
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e));
+  expect(late.filter((e) => e.type === "escalation")).toEqual([]);
 });

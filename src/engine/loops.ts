@@ -29,7 +29,10 @@ export interface LoopDefStore {
 }
 /** The ledger satisfies all three halves; commands/UX take the combined store. `listCacheObservations`
  *  feeds the LEARNED-cache-TTL resume gate in loopRunExtras (see context-policy.ts). */
-export type LoopStore = LoopDefStore & LoopStateStore & Pick<Ledger, "listCacheObservations" | "modelWindows">;
+export type LoopStore = LoopDefStore &
+  LoopStateStore &
+  Pick<Ledger, "listCacheObservations" | "modelWindows"> &
+  Partial<Pick<Ledger, "recordContextEvent">>;
 
 export interface LoopDef extends SchedulableLoop {
   name: string; // canonical key, e.g. "docs-sweep"
@@ -491,7 +494,16 @@ function loopRunExtras(
           });
           const obs = deps.store?.listCacheObservations(cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW) ?? [];
           const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
-          return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;
+          const decision = decideContext(ctx, cfg.contextPolicy, ttlMs, { boundary: "resume" });
+          if (decision.verdict === "keep") return id;
+          // A loop's standing brief is re-read every iteration, so a fresh start loses nothing — but
+          // it is still a context reset, recorded with its reason (ADR-0021).
+          try {
+            deps.store?.recordContextEvent?.(loop.folder, "fresh", ctx.occupancy, undefined, { reason: decision.reason, boundary: "resume", sessionId: id });
+          } catch {
+            // observer only
+          }
+          return undefined;
         }
       : undefined,
     check:

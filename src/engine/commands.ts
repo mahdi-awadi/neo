@@ -13,7 +13,7 @@ import type { UsageMeter, RateLimitInfo } from "./usage";
 import type { TrustStore } from "./trust";
 import type { Inbox } from "./inbox";
 import { renderInboxList, type InboxListEntry } from "./inbox-actions";
-import { sessionContext, contextWindows, type ContextSignals } from "./context-policy";
+import { sessionContext, contextWindows, contextLabel, lastContextReset, resetLabel, type BandCfg, type ContextSignals } from "./context-policy";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
@@ -41,6 +41,9 @@ export interface CommandDeps {
    *  ContextPolicyCfg.windowTokensByModel doc). Optional: undefined ⇒ today's behavior (facts-map
    *  default only). */
   windowTokensByModel?: Record<string, number>;
+  /** The sweet-spot lines (cfg.contextPolicy) — /status names a session's band against them
+   *  (ADR-0021). Absent ⇒ the bare ctx% only. */
+  contextPolicy?: BandCfg;
   /** Graceful reload (/reload): the daemon injects drain-then-exit; channels without it can't reload. */
   requestReload?: () => void;
   /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. */
@@ -96,7 +99,7 @@ const COMMANDS: Command[] = [
     aliases: ["ls", "status"],
     usage: "/list",
     summary: "open projects (★ = active · tap a name to switch)",
-    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel)),
+    run: ({ deps, now, chatId }) => renderList(deps, now, chatId),
   },
   {
     name: "use",
@@ -261,7 +264,7 @@ export function handleCommand(text: string, chatId: number, deps: CommandDeps): 
  * tapped project receives the next message, then focus reverts to the company (use /pin to hold). */
 export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   deps.registry.setFocus(chatId, id, "once");
-  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel));
+  return renderList(deps, (deps.now ?? (() => Date.now()))(), chatId);
 }
 
 /** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
@@ -269,14 +272,14 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
 export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   const now = (deps.now ?? (() => Date.now()))();
   if (deps.registry.getDefault()?.id === id) {
-    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel)).select };
+    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps, now, chatId).select };
   }
   if (deps.registry.get(id)) {
     void deps.registry.getControl(id)?.interrupt();
     deps.registry.setStatus(id, "done");
     deps.registry.remove(id);
   }
-  return renderList(deps.registry, deps.trust, now, chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel));
+  return renderList(deps, now, chatId);
 }
 
 const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo pause <project> · /todo resume <project>";
@@ -407,14 +410,9 @@ function stateIcon(state: SessionState): string {
   return "⚪️";
 }
 
-function renderList(
-  registry: Registry,
-  trust: CommandDeps["trust"],
-  now: number,
-  chatId: number,
-  signals?: CommandDeps["signals"],
-  windowTokensByModel?: Record<string, number>,
-): CommandResult {
+function renderList(deps: CommandDeps, now: number, chatId: number): CommandResult {
+  const { registry, trust, signals, ledger } = deps;
+  const windowTokensByModel = contextWindows(ledger, deps.windowTokensByModel);
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
   // The chat's focused project (if any) is the one messages currently address; mark it ▶ (one-shot,
@@ -443,12 +441,19 @@ function renderList(
       if (s.sdkSessionId) {
         try {
           const sig = (signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel });
-          if (sig.windowKnown !== false) ctx = ` · ctx ${Math.round(sig.occupancy * 100)}%`; // no % on a guessed window (ADR-0013)
+          if (sig.windowKnown !== false) ctx = ` · ${contextLabel(sig.occupancy, deps.contextPolicy)}`; // no % on a guessed window (ADR-0013)
         } catch {
           // skip on error
         }
       }
-      return `${star}${stateIcon(state)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx} · "${task}"`;
+      let reset = "";
+      try {
+        const last = lastContextReset(ledger, s.order.folder);
+        if (last) reset = ` · ${resetLabel(last, now)}`;
+      } catch {
+        // skip on error
+      }
+      return `${star}${stateIcon(state)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"`;
     })
     .join("\n");
   return { text, select };

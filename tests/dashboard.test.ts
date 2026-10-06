@@ -157,3 +157,28 @@ test("dashboardSnapshot shows no ctx% while the window is only a guess (never a 
   }).projects;
   expect(rows.find((r) => r.id === "d6")!.ctxPct).toBeUndefined();
 });
+
+// ADR-0021: the console shows each project's band and last reset, and a timeline of resets.
+test("dashboard rows carry the context band and the last reset; the snapshot lists recent resets", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "c1", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-c");
+  const ledger = openLedger(":memory:");
+  ledger.recordContextEvent("/p/gold", "handoff", 0.52, 100, { reason: "above-sweet-spot", boundary: "settled" });
+  const r = ledger.recordContextEvent("/p/gold", "resumed", 0, 200, { detail: { handoffId: 1 } });
+  ledger.updateContextEventDetail(r, { productive: true, steps: 12, success: true });
+  ledger.recordContextEvent("/p/waselni", "clear", 0.95, 300, { reason: "emergency", boundary: "resume" });
+  const snap = dashboardSnapshot({
+    registry,
+    ledger,
+    chatId: 0,
+    now: 10_000,
+    contextPolicy: { sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9 },
+    signals: () => ({ occupancy: 0.63, turns: 3, ageMs: 0, idleMs: 0 }),
+  });
+  const row = snap.projects.find((p) => p.id === "c1")!;
+  expect(row.ctxBand).toBe("heavy");
+  expect(row.lastReset).toEqual({ verdict: "handoff", reason: "above-sweet-spot", at: 100 });
+  expect(snap.contextEvents.map((e) => [e.project, e.verdict])).toEqual([["waselni", "clear"], ["gold", "resumed"], ["gold", "handoff"]]);
+  expect(snap.contextEvents[1]).toMatchObject({ steps: 12, success: true });
+});

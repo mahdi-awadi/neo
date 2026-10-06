@@ -85,9 +85,17 @@ export interface Ledger {
   saveLoopDef(name: string, json: string): void;
   listLoopDefs(): Array<{ name: string; json: string }>;
   deleteLoopDef(name: string): void;
-  /** Audit: a context-policy verdict (e.g. a handoff) fired for a folder. */
-  recordContextEvent(folder: string, verdict: string, occupancy: number, at?: number): void;
-  listContextEvents(limit?: number): Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
+  /** One context reset or its follow-up (ADR-0021): `handoff`, `clear`, `deferred`, `resumed`
+   *  (a fresh session started from a handoff note) or `fresh` (a loop started fresh). Returns the
+   *  row id, so a later measurement can fill in its detail. */
+  recordContextEvent(folder: string, verdict: string, occupancy: number, at?: number, extra?: ContextEventExtra): number;
+  /** Newest first. A number is the legacy `limit`. */
+  listContextEvents(opts?: number | { folder?: string; limit?: number }): ContextEventRow[];
+  /** Merge `detail` into a context event's detail (e.g. a resumed session's orientation). */
+  updateContextEventDetail(id: number, detail: Record<string, unknown>): void;
+  /** The folder's newest `handoff` that no `resumed` (or later `clear`) row has followed yet — the
+   *  note a fresh session there must start from. */
+  pendingHandoff(folder: string): ContextEventRow | undefined;
   /** LEARNED cache-TTL input: one (idle gap before a resume, was the prompt cache still warm?)
    *  observation, so the effective staleness TTL can be derived from real behavior instead of a
    *  fixed provider-documented number (see context-policy.ts effectiveCacheTtlMs). */
@@ -240,6 +248,57 @@ export const LEDGER_PATH = "data/ledger.db";
 
 /** Retention caps default to the module constants (behavior-preserving); the daemon passes the
  *  operator-configured `routeKeep`/`eventsKeep` so these bounds are tuning, not baked-in. */
+/** What a context event carries beyond its verdict (ADR-0021). */
+export interface ContextEventExtra {
+  reason?: string;
+  boundary?: string;
+  sessionId?: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface ContextEventRow extends ContextEventExtra {
+  id: number;
+  folder: string;
+  verdict: string;
+  occupancy: number;
+  at: number;
+}
+
+interface ContextEventDbRow {
+  id: number;
+  folder: string;
+  verdict: string;
+  occupancy: number;
+  at: number;
+  reason: string | null;
+  boundary: string | null;
+  session_id: string | null;
+  detail: string | null;
+}
+
+function parseDetail(json: string | null): Record<string, unknown> | undefined {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return undefined; // tolerate a corrupt blob
+  }
+}
+
+function contextEventRow(r: ContextEventDbRow): ContextEventRow {
+  return {
+    id: r.id,
+    folder: r.folder,
+    verdict: r.verdict,
+    occupancy: r.occupancy,
+    at: r.at,
+    reason: r.reason ?? undefined,
+    boundary: r.boundary ?? undefined,
+    sessionId: r.session_id ?? undefined,
+    detail: parseDetail(r.detail),
+  };
+}
+
 export function openLedger(
   path: string,
   opts: { routeKeep?: number; eventsKeep?: number; decisionsKeep?: number; busyTimeoutMs?: number } = {},
@@ -301,12 +360,17 @@ export function openLedger(
   if (!openCols.some((c) => c.name === "sdk_provider")) {
     db.run(`ALTER TABLE open_sessions ADD COLUMN sdk_provider TEXT`);
   }
-  // Audit trail of context-policy verdicts (handoff/clear) fired per folder.
+  // Audit trail of context-policy verdicts (handoff/clear/…) fired per folder (ADR-0021).
   db.run(
     `CREATE TABLE IF NOT EXISTS context_events (
        folder TEXT NOT NULL, verdict TEXT NOT NULL, occupancy REAL NOT NULL, at INTEGER NOT NULL
      )`,
   );
+  const ctxCols = db.query(`PRAGMA table_info(context_events)`).all() as Array<{ name: string }>;
+  for (const col of ["reason", "boundary", "session_id", "detail"]) {
+    if (!ctxCols.some((c) => c.name === col)) db.run(`ALTER TABLE context_events ADD COLUMN ${col} TEXT`);
+  }
+  db.run(`CREATE INDEX IF NOT EXISTS context_events_folder_at ON context_events(folder, at)`);
   // LEARNED cache-TTL inputs: one row per resume, recording the idle gap beforehand and whether
   // the prompt cache was still warm (see context-policy.ts effectiveCacheTtlMs).
   db.run(
@@ -611,15 +675,34 @@ export function openLedger(
         };
       });
     },
-    recordContextEvent(folder, verdict, occupancy, at = Date.now()) {
-      db.query(
-        `INSERT INTO context_events (folder, verdict, occupancy, at) VALUES (?, ?, ?, ?)`,
-      ).run(folder, verdict, occupancy, at);
+    recordContextEvent(folder, verdict, occupancy, at = Date.now(), extra = {}) {
+      const r = db
+        .query(
+          `INSERT INTO context_events (folder, verdict, occupancy, at, reason, boundary, session_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(folder, verdict, occupancy, at, extra.reason ?? null, extra.boundary ?? null, extra.sessionId ?? null, extra.detail ? JSON.stringify(extra.detail) : null);
+      return Number(r.lastInsertRowid);
     },
-    listContextEvents(limit = 50) {
-      return db
-        .query(`SELECT folder, verdict, occupancy, at FROM context_events ORDER BY at DESC LIMIT ?`)
-        .all(limit) as Array<{ folder: string; verdict: string; occupancy: number; at: number }>;
+    listContextEvents(opts = {}) {
+      const { folder, limit = 50 } = typeof opts === "number" ? { limit: opts } : opts;
+      const rows = (
+        folder === undefined
+          ? db.query(`SELECT rowid AS id, * FROM context_events ORDER BY at DESC, rowid DESC LIMIT ?`).all(limit)
+          : db.query(`SELECT rowid AS id, * FROM context_events WHERE folder = ? ORDER BY at DESC, rowid DESC LIMIT ?`).all(folder, limit)
+      ) as ContextEventDbRow[];
+      return rows.map(contextEventRow);
+    },
+    updateContextEventDetail(id, detail) {
+      const row = db.query(`SELECT detail FROM context_events WHERE rowid = ?`).get(id) as { detail: string | null } | null;
+      if (!row) return;
+      const merged = { ...parseDetail(row.detail), ...detail };
+      db.query(`UPDATE context_events SET detail = ? WHERE rowid = ?`).run(JSON.stringify(merged), id);
+    },
+    pendingHandoff(folder) {
+      const row = db
+        .query(`SELECT rowid AS id, * FROM context_events WHERE folder = ? AND verdict IN ('handoff', 'resumed', 'clear') ORDER BY at DESC, rowid DESC LIMIT 1`)
+        .get(folder) as ContextEventDbRow | null;
+      return row && row.verdict === "handoff" ? contextEventRow(row) : undefined;
     },
     recordCacheObservation(gapMs, hit, at = Date.now()) {
       db.query(`INSERT INTO cache_observations (gap_ms, hit, at) VALUES (?, ?, ?)`).run(gapMs, hit ? 1 : 0, at);

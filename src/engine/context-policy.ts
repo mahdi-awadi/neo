@@ -7,8 +7,10 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Order, SessionInfo } from "../types";
 import type { Registry } from "./registry";
-import type { Ledger } from "./ledger";
+import type { Ledger, ContextEventRow } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
+import { gitFacts, uncommittedIn } from "./dispatch-report";
+import { humanAge } from "./liveness";
 
 /** Context-window size is a FACT about the model, not a tuning knob. The SDK reports it on every
  *  result and the ledger keeps it per model (ADR-0013) — see contextWindows. This table holds only
@@ -54,9 +56,46 @@ export interface ContextSignals {
 
 export type ContextVerdict = "keep" | "handoff" | "clear";
 
+/** WHERE the policy is asked (ADR-0021). A number crossing a line says THAT a session should be
+ *  replaced, never WHEN — so the engine only asks at one of these moments:
+ *  - `resume`: an idle session is about to be reused for a new task (often a cold cache);
+ *  - `settled`: a task just finished and the session is at rest (warm cache);
+ *  - `checkpoint`: mid-task, right after a commit or a completed plan step, with a clean tree. */
+export type ContextBoundary = "resume" | "settled" | "checkpoint";
+
+/** Where occupancy sits, in one word (CONTEXT.md "Context band"). */
+export type ContextBand = "healthy" | "above" | "heavy" | "emergency";
+
+export type ContextReason =
+  | "emergency"
+  | "above-sweet-spot"
+  | "heavy"
+  | "projected-overflow"
+  | "stale-resume"
+  | "max-turns"
+  | "max-age";
+
+export interface ContextDecision {
+  verdict: ContextVerdict;
+  /** Why — set on every `handoff`/`clear`, recorded in the ledger and shown to the operator. */
+  reason?: ContextReason;
+  band: ContextBand;
+}
+
 export interface ContextPolicyCfg {
-  handoffPct: number;
+  /** RATIO (0-1): the top of the sweet spot. Above it a session is handed off at its next task
+   *  boundary (`resume` / `settled`). Was `handoffPct` 0.65; 0.40 from transcript data (ADR-0021). */
+  sweetSpotPct: number;
+  /** RATIO (0-1): above it a session is also handed off at the next SAFE CHECKPOINT, mid-task.
+   *  Set it to 1 or more to turn mid-task handoffs off. */
+  checkpointPct: number;
+  /** RATIO (0-1): the last-resort line, below the SDK's own auto-compaction (~0.97). */
   emergencyPct: number;
+  /** Max characters of a handoff note inlined into a continuation's first brief. */
+  handoffNoteMaxChars: number;
+  /** A resumed session that reaches its first productive action (an edit or a commit) within this
+   *  many model calls counts as a successful handoff (CONTEXT.md "Orientation"). */
+  handoffOrientationMaxSteps: number;
   maxTurns: number;
   maxAgeMs: number;
   handoffTimeoutMs: number;
@@ -113,12 +152,79 @@ export function effectiveCacheTtlMs(
   return lo > hi ? (hi + lo) / 2 : cfg.cacheTtlFallbackMs; // overlapping data → not learnable yet
 }
 
-export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg, ttlMs: number): ContextVerdict {
-  // A guessed window must never destroy a session (ADR-0013): over the emergency line it hands off.
-  if (sig.occupancy >= cfg.emergencyPct) return sig.windowKnown === false ? "handoff" : "clear";
-  if (sig.idleMs >= ttlMs && sig.occupancy >= cfg.staleResumePct) return "handoff";
-  if (sig.occupancy >= cfg.handoffPct || sig.turns >= cfg.maxTurns || sig.ageMs >= cfg.maxAgeMs) return "handoff";
-  return "keep";
+export function contextBand(
+  occupancy: number,
+  cfg: Pick<ContextPolicyCfg, "sweetSpotPct" | "checkpointPct" | "emergencyPct">,
+): ContextBand {
+  if (occupancy >= cfg.emergencyPct) return "emergency";
+  if (occupancy >= cfg.checkpointPct) return "heavy";
+  if (occupancy >= cfg.sweetSpotPct) return "above";
+  return "healthy";
+}
+
+/** The three lines a band is read against. */
+export type BandCfg = Pick<ContextPolicyCfg, "sweetSpotPct" | "checkpointPct" | "emergencyPct">;
+
+/** Lines that make a band unreachable (e.g. a legacy `handoffPct` 0.65 above the 0.60 checkpoint).
+ *  The daemon prints them at boot; the policy still runs (fail open). A checkpointPct ≥ 1 is the
+ *  documented "mid-task handoffs off" and is never flagged. */
+export function contextPolicyWarnings(cfg: BandCfg): string[] {
+  const out: string[] = [];
+  if (cfg.checkpointPct < 1) {
+    if (cfg.sweetSpotPct >= cfg.checkpointPct) out.push(`contextPolicy: sweetSpotPct ${cfg.sweetSpotPct} ≥ checkpointPct ${cfg.checkpointPct} — the "above" band can never be reached`);
+    if (cfg.checkpointPct >= cfg.emergencyPct) out.push(`contextPolicy: checkpointPct ${cfg.checkpointPct} ≥ emergencyPct ${cfg.emergencyPct} — the "heavy" band can never be reached`);
+  } else if (cfg.sweetSpotPct >= cfg.emergencyPct) {
+    out.push(`contextPolicy: sweetSpotPct ${cfg.sweetSpotPct} ≥ emergencyPct ${cfg.emergencyPct} — boundary handoffs never fire before the emergency line`);
+  }
+  return out;
+}
+
+/** `ctx 52% above` — the one ctx% label (/status, console). Inside the sweet spot, just the number. */
+export function contextLabel(occupancy: number, cfg?: BandCfg): string {
+  const label = `ctx ${Math.round(occupancy * 100)}%`;
+  const band = cfg ? contextBand(occupancy, cfg) : "healthy";
+  return band === "healthy" ? label : `${label} ${band === "emergency" ? "EMERGENCY" : band}`;
+}
+
+/** Verdicts that replaced a session (a `deferred` or `resumed` row is not a reset). */
+const RESET_VERDICTS = new Set(["handoff", "clear", "fresh"]);
+
+/** The folder's newest context reset, if any. */
+export function lastContextReset(ledger: Pick<Ledger, "listContextEvents">, folder: string): ContextEventRow | undefined {
+  return ledger.listContextEvents({ folder, limit: 20 }).find((e) => RESET_VERDICTS.has(e.verdict));
+}
+
+/** `↻ handoff 2h ago (above-sweet-spot)` */
+export function resetLabel(e: Pick<ContextEventRow, "verdict" | "reason" | "at">, now: number): string {
+  return `↻ ${e.verdict} ${humanAge(now - e.at)} ago${e.reason ? ` (${e.reason})` : ""}`;
+}
+
+/** THE context policy (one, deterministic). `at` says where it is asked (ADR-0021); `projected` is
+ *  the occupancy the current plan is on course to reach (checkpoint only). */
+export function decideContext(
+  sig: ContextSignals,
+  cfg: ContextPolicyCfg,
+  ttlMs: number,
+  at: { boundary: ContextBoundary; projected?: number } = { boundary: "resume" },
+): ContextDecision {
+  const band = contextBand(sig.occupancy, cfg);
+  const known = sig.windowKnown !== false;
+  const handoff = (reason: ContextReason): ContextDecision => ({ verdict: "handoff", reason, band });
+  // The last resort. Only a cold resume of a known-full session is cleared: everywhere else a note
+  // still fits, and a guessed window must never destroy a session (ADR-0013).
+  if (band === "emergency") return at.boundary === "resume" && known ? { verdict: "clear", reason: "emergency", band } : handoff("emergency");
+  if (at.boundary === "resume" && sig.idleMs >= ttlMs && sig.occupancy >= cfg.staleResumePct) return handoff("stale-resume");
+  if (at.boundary === "checkpoint") {
+    // Mid-task: only a heavy session, or one its own plan will carry past the emergency line.
+    if (!known) return { verdict: "keep", band };
+    if (band === "heavy") return handoff("heavy");
+    if (band === "above" && (at.projected ?? 0) >= cfg.emergencyPct) return handoff("projected-overflow");
+    return { verdict: "keep", band };
+  }
+  if (known && band !== "healthy") return handoff("above-sweet-spot");
+  if (sig.turns >= cfg.maxTurns) return handoff("max-turns");
+  if (sig.ageMs >= cfg.maxAgeMs) return handoff("max-age");
+  return { verdict: "keep", band };
 }
 
 /** Running totals of one transcript, up to `offset` (the byte after its last complete line). */
@@ -272,9 +378,258 @@ export function firstAssistantCacheReadAfter(
   }
 }
 
+/** The sections every handoff note carries (CONTEXT.md "Handoff note"). */
+export const HANDOFF_SECTIONS = ["Goal", "Done", "Next steps", "Branch / commit", "Open decisions", "Gotchas"] as const;
+
+const SECTION_GUIDE: Record<(typeof HANDOFF_SECTIONS)[number], string> = {
+  Goal: "what this work is for, in one or two lines",
+  Done: "what is finished, with commit hashes",
+  "Next steps": "numbered, concrete, the next one first; say so if anything is uncommitted",
+  "Branch / commit": "the branch and the last commit",
+  "Open decisions": "what waits on the operator or is still undecided",
+  Gotchas: "traps, failed approaches, facts that took effort to find",
+};
+
+const NOTE_SHAPE = HANDOFF_SECTIONS.map((h) => `## ${h} — ${SECTION_GUIDE[h]}`).join("\n");
+
 export const HANDOFF_PROMPT =
-  "Write a concise state-of-work handoff to HANDOFF.md in the project root: what is in flight, " +
-  "decisions made, blockers, and next steps. Overwrite any existing HANDOFF.md. Then stop — do not continue other work.";
+  "Write the state-of-work handoff for the fresh session that takes over from you. Overwrite HANDOFF.md " +
+  "in the project root with exactly these sections:\n" +
+  NOTE_SHAPE +
+  "\nKeep it short and factual. Then stop — do not continue other work.";
+
+/** The governor-hook deny reason at an armed safe checkpoint (ADR-0021): the worker writes the note in
+ *  its own warm context, then ends its turn; every other tool is denied until it does. */
+export function checkpointSteer(occupancy: number): string {
+  return (
+    `Neo context checkpoint: this session is at ${Math.round(occupancy * 100)}% of its context window, ` +
+    "and your work so far is committed. A fresh session will finish this task. Do NOT start the next step. " +
+    "Now overwrite HANDOFF.md in the project root with exactly these sections:\n" +
+    NOTE_SHAPE +
+    "\nYou may read files and commit HANDOFF.md with a plain one-line `git commit -m` message (no $(...), heredoc, " +
+    "`;` or `&`). Then end your turn — every other tool is blocked until you do."
+  );
+}
+
+const CONTINUATION_HEAD =
+  "Continue this task in a fresh session. Neo handed the previous session off at a safe checkpoint; its " +
+  "handoff note (above) says what is done and what is next. Do not redo work it lists as done.";
+
+/** The first brief of a CONTINUATION. Carries the original brief (when there is one) exactly once,
+ *  however many times a task is continued. */
+export function continuationBrief(task?: string): string {
+  const original = task?.startsWith(CONTINUATION_HEAD) ? task.slice(CONTINUATION_HEAD.length).replace(/^\n\nOriginal brief:\n/, "") : task;
+  return original?.trim() ? `${CONTINUATION_HEAD}\n\nOriginal brief:\n${original}` : CONTINUATION_HEAD;
+}
+
+/** The required sections a note does not have as a `## ` heading. */
+export function missingSections(note: string): string[] {
+  const heads = new Set(note.split("\n").filter((l) => l.startsWith("## ")).map((l) => l.slice(3).trim().toLowerCase()));
+  return HANDOFF_SECTIONS.filter((h) => !heads.has(h.toLowerCase()));
+}
+
+export interface HandoffFacts {
+  branch?: string;
+  head?: string;
+  uncommitted?: string[];
+  occupancy: number;
+  at: number;
+  boundary: ContextBoundary;
+  reason?: ContextReason;
+}
+
+const FACTS_HEAD = "## Engine facts";
+const UNCOMMITTED_SHOWN = 20;
+
+/** The block of facts the engine itself vouches for (git + its own measurement), never the worker. */
+export function engineFactsBlock(f: HandoffFacts): string {
+  const files = f.uncommitted ?? [];
+  const dirty = files.length === 0 ? "none" : files.slice(0, UNCOMMITTED_SHOWN).join(", ") + (files.length > UNCOMMITTED_SHOWN ? ` (+${files.length - UNCOMMITTED_SHOWN} more)` : "");
+  return [
+    FACTS_HEAD,
+    "_Written by Neo from git and its own measurement, not by the worker._",
+    `- Branch: ${f.branch ?? "(not a git repo)"}`,
+    `- HEAD: ${f.head ?? "(none)"}`,
+    `- Uncommitted: ${f.uncommitted === undefined ? "(unknown)" : dirty}`,
+    `- Handed off: ${new Date(f.at).toISOString()} at ${Math.round(f.occupancy * 100)}% of the context window (${f.reason ?? "policy"}, ${f.boundary})`,
+  ].join("\n");
+}
+
+/** The note's identity right now (mtime + size), or undefined when there is none. Taken BEFORE a
+ *  handoff turn and compared after it: comparing the mtime with the wall clock is wrong, because file
+ *  times come from a coarse kernel clock that can lag `Date.now()` by milliseconds. */
+export function noteStamp(folder: string): string | undefined {
+  try {
+    const st = statSync(join(folder, "HANDOFF.md"));
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** After a handoff: make sure HANDOFF.md was (re)written since `before` (its noteStamp when the
+ *  handoff began) — else write `fallback()` — then append the engine facts, replacing an older facts
+ *  block. Best-effort: never throws. */
+export function finalizeHandoffNote(
+  folder: string,
+  facts: HandoffFacts,
+  opts: { before: string | undefined; fallback: () => string },
+): { written: boolean; missing: string[] } {
+  const path = join(folder, "HANDOFF.md");
+  try {
+    const now = noteStamp(folder);
+    const written = now !== undefined && now !== opts.before;
+    const body = written ? readFileSync(path, "utf8") : opts.fallback();
+    const cut = body.indexOf(FACTS_HEAD);
+    const note = (cut >= 0 ? body.slice(0, cut) : body).trimEnd();
+    writeFileSync(path, `${note}\n\n${engineFactsBlock(facts)}\n`);
+    return { written, missing: missingSections(note) };
+  } catch {
+    return { written: false, missing: [...HANDOFF_SECTIONS] };
+  }
+}
+
+/** For a fresh start in `folder`: when a handoff is pending there, the note itself (capped at
+ *  `handoffNoteMaxChars`) to put at the top of the first brief, and a `resumed` row recording that
+ *  this session started from it. A pointer line is not enough — 8 of 47 measured sessions told to
+ *  "Read HANDOFF.md first" never did (ADR-0021). undefined when nothing is pending. Never throws. */
+export function handoffPreamble(
+  folder: string,
+  ledger: Pick<Ledger, "pendingHandoff" | "recordContextEvent">,
+  cfg: Pick<ContextPolicyCfg, "handoffNoteMaxChars">,
+  now: number,
+): { text: string; eventId: number } | undefined {
+  try {
+    const pending = ledger.pendingHandoff(folder);
+    if (!pending) return undefined;
+    const path = join(folder, "HANDOFF.md");
+    let note = existsSync(path) ? readFileSync(path, "utf8").trim() : "(the handoff note is missing — check the git log)";
+    if (note.length > cfg.handoffNoteMaxChars) note = `${note.slice(0, cfg.handoffNoteMaxChars)}\n\n(note truncated — read HANDOFF.md for the rest)`;
+    const eventId = ledger.recordContextEvent(folder, "resumed", 0, now, { reason: pending.reason, boundary: "resume", detail: { handoffId: pending.id } });
+    const why = `${pending.reason ?? "context policy"}, ${Math.round(pending.occupancy * 100)}%`;
+    const text =
+      `This session continues earlier work: Neo handed the previous session off (${why}). Its handoff note ` +
+      "follows. It is your starting point — do not redo what it lists as done.\n\n" +
+      `--- HANDOFF.md ---\n${note}\n--- end of handoff note ---`;
+    return { text, eventId };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The longest a folder is held as "handing off": the handoff turn's own bound, twice. */
+export function handoffHoldMs(cfg: Pick<ContextPolicyCfg, "handoffTimeoutMs">): number {
+  return 2 * cfg.handoffTimeoutMs;
+}
+
+// One handoff per folder at a time (ADR-0021). A gate about to reuse or replace a folder's session
+// first awaits the folder's in-flight handoff, so a settle-time handoff and an incoming message (or a
+// dispatch end and the todo queue's next release) can never run two handoffs on one folder at once.
+const handoffsInFlight = new Map<string, Promise<void>>();
+
+// Folders whose handoff outlived its hold (a hung interrupt): its worker may still be alive and
+// its resume id is not cleared yet. Until it settles, a gate must start fresh — never measure or
+// hand off that session a second time.
+const hungHandoffs = new Set<string>();
+
+/** Register `p` as the folder's in-flight handoff (chained after any earlier one). It holds the folder
+ *  for at most `maxMs`: a handoff whose worker never ends (a hung interrupt) must not wedge every
+ *  later gate on the folder. */
+export function trackHandoff(folder: string, p: Promise<unknown>, maxMs: number): void {
+  const prev = handoffsInFlight.get(folder) ?? Promise.resolve();
+  const bounded = (): Promise<unknown> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<void>((res) => (timer = setTimeout(res, maxMs))).then(() => {
+      hungHandoffs.add(folder);
+      void p.then(
+        () => hungHandoffs.delete(folder),
+        () => hungHandoffs.delete(folder),
+      );
+    });
+    return Promise.race([p, limit]).finally(() => clearTimeout(timer));
+  };
+  const next: Promise<void> = prev.then(bounded).then(
+    () => undefined,
+    () => undefined, // a failed handoff still releases its waiters
+  );
+  handoffsInFlight.set(folder, next);
+  void next.then(() => {
+    if (handoffsInFlight.get(folder) === next) handoffsInFlight.delete(folder);
+  });
+}
+
+/** True while a handoff of the folder is being waited on. */
+export function handoffInFlight(folder: string): boolean {
+  return handoffsInFlight.has(folder);
+}
+
+/** Resolves once the folder has no handoff in flight: `clear`, or `timed-out` when a handoff
+ *  outlived its hold and has still not settled (start fresh — see hungHandoffs). Never rejects. */
+export async function awaitHandoff(folder: string): Promise<"clear" | "timed-out"> {
+  for (let p = handoffsInFlight.get(folder); p; p = handoffsInFlight.get(folder)) await p;
+  return hungHandoffs.has(folder) ? "timed-out" : "clear";
+}
+
+// One `deferred` row per (session, boundary): a session sitting on uncommitted work settles many times.
+// Bounded: the oldest key is forgotten past DEFERRED_SEEN_MAX (worst case, one repeated row).
+const deferredSeen = new Set<string>();
+const DEFERRED_SEEN_MAX = 1_000;
+
+/** "Never with uncommitted work" (ADR-0021): true when a handoff the policy wants must wait because
+ *  the folder has uncommitted changes (HANDOFF.md aside) — except in the emergency band, which goes
+ *  ahead anyway. A non-git folder never blocks a boundary. Records one `deferred` per session and
+ *  boundary. Never throws (fails open = not deferred). */
+export function handoffDeferred(
+  folder: string,
+  decision: ContextDecision,
+  ctx: {
+    ledger: Pick<Ledger, "recordContextEvent">;
+    boundary: ContextBoundary;
+    occupancy: number;
+    sessionId?: string;
+    uncommitted?: (folder: string) => string[] | undefined;
+  },
+): boolean {
+  try {
+    if (decision.band === "emergency") return false;
+    const dirty = (ctx.uncommitted ?? uncommittedIn)(folder);
+    if (!dirty || dirty.length === 0) return false;
+    const key = `${folder}\0${ctx.sessionId ?? ""}\0${ctx.boundary}`;
+    if (!deferredSeen.has(key)) {
+      deferredSeen.add(key);
+      if (deferredSeen.size > DEFERRED_SEEN_MAX) deferredSeen.delete(deferredSeen.values().next().value!);
+      ctx.ledger.recordContextEvent(folder, "deferred", ctx.occupancy, undefined, {
+        reason: decision.reason,
+        boundary: ctx.boundary,
+        sessionId: ctx.sessionId,
+        detail: { uncommitted: dirty.length },
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const REASON_TEXT: Record<ContextReason, (cfg: ContextPolicyCfg) => string> = {
+  emergency: (c) => `EMERGENCY — past ${pct(c.emergencyPct)}`,
+  "above-sweet-spot": (c) => `above the ${pct(c.sweetSpotPct)} sweet spot`,
+  heavy: (c) => `heavy — past ${pct(c.checkpointPct)}`,
+  "projected-overflow": () => "the plan would overflow the window",
+  "stale-resume": () => "idle past the prompt-cache lifetime",
+  "max-turns": (c) => `${c.maxTurns}+ model calls`,
+  "max-age": () => "session too old",
+};
+const BOUNDARY_TEXT: Record<ContextBoundary, string> = { resume: "before resuming", settled: "task done", checkpoint: "at a safe checkpoint" };
+const pct = (r: number) => `${Math.round(r * 100)}%`;
+
+/** One operator line for a context reset: what, how full, why, where. */
+export function describeContextReset(kind: "handoff" | "clear", occupancy: number, cfg: ContextPolicyCfg, reason?: ContextReason, boundary?: ContextBoundary): string {
+  const why = [reason ? REASON_TEXT[reason](cfg) : undefined, boundary ? BOUNDARY_TEXT[boundary] : undefined].filter(Boolean).join(", ");
+  return kind === "clear"
+    ? `⚠️ emergency context clear at ${pct(occupancy)}${why ? ` (${why})` : ""} — no handoff note; the next session starts cold`
+    : `🔁 context handoff at ${pct(occupancy)}${why ? ` (${why})` : ""} — the next session starts from HANDOFF.md`;
+}
 
 /** Prepended to HANDOFF_PROMPT (never merged into it — HANDOFF_PROMPT stays byte-identical for
  *  the Phase-1 fence) when a handoff fires for a memory-scoped folder, so the worker captures
@@ -290,12 +645,12 @@ export const MEMORY_FLUSH_SENTENCE =
  *  handoff (the richer, worker-written HANDOFF_PROMPT above) fired. Reuses the SAME single HANDOFF.md
  *  file that the fresh-start path already tells a worker to "Read first" (pipeline.startSession) and
  *  that the dispatch preamble surfaces as a root-level .md — so it's discoverable with no extra wiring. */
-export function idleStateNote(session: SessionInfo, now: number): string {
+export function idleStateNote(session: SessionInfo, now: number, cause = "this session was idle-closed"): string {
   const activity = session.activity?.label;
   return [
     `# HANDOFF — ${session.name}`,
     "",
-    "_Auto-written by Neo when this session was idle-closed (a deterministic engine note, not a",
+    `_Auto-written by Neo when ${cause} (a deterministic engine note, not a`,
     "worker turn). It records where the session left off so the next run can pick up; it is",
     "overwritten each time the session is closed._",
     "",
@@ -346,15 +701,31 @@ export interface HandoffDeps {
    *  memory before writing HANDOFF.md. Absent/false → task is HANDOFF_PROMPT, byte-identical to
    *  before this field existed. */
   memoryFlush?: boolean;
+  /** The policy decision that called this handoff (its reason + band are recorded and reported). */
+  decision?: ContextDecision;
+  /** Where the decision was taken (ADR-0021). */
+  boundary?: ContextBoundary;
+  /** Tell the operator (the caller binds chat + project). `"alert"` for an emergency. */
+  notify?: (text: string, priority?: "alert") => void;
+  /** Test seam: git facts for the note (default: gitFacts). */
+  facts?: (folder: string) => ReturnType<typeof gitFacts>;
 }
 
-/** Run the handoff turn against the fat session (bounded), then ALWAYS clear its resume state.
- *  If the turn doesn't finish within `cfg.handoffTimeoutMs`, it is INTERRUPTED (not abandoned) —
- *  an abandoned handoff would leave an unbounded worker running on the folder, which could race
- *  with a subsequent fresh session on the same folder. */
+/** Run the handoff turn against the fat session (bounded), then ALWAYS complete the handoff (see
+ *  completeHandoff). If the turn doesn't finish within `cfg.handoffTimeoutMs`, it is INTERRUPTED (not
+ *  abandoned) — an abandoned handoff would leave an unbounded worker running on the folder, which
+ *  could race with a subsequent fresh session on the same folder. Tracked as the folder's in-flight
+ *  handoff for its whole length (awaitHandoff). */
 export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
+  const work = handoffTurnThenComplete(session, cfg, deps);
+  trackHandoff(session.order.folder, work, handoffHoldMs(cfg));
+  await work;
+}
+
+async function handoffTurnThenComplete(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
   const now = deps.now ?? (() => Date.now());
   const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: contextWindows(deps.ledger, cfg.windowTokensByModel) });
+  const before = noteStamp(session.order.folder);
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",
@@ -381,14 +752,49 @@ export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, de
       clearTimeout(timer);
     }
   } catch {
-    // the clear below is the point; a failed handoff turn must not prevent it
+    // completing the handoff below is the point; a failed handoff turn must not prevent it
+  }
+  completeHandoff(session, cfg, deps, { before, occupancy: sig.occupancy });
+}
+
+/** The end of every handoff, with or without a handoff turn (a safe checkpoint's worker already
+ *  wrote its note): make the note complete (fallback + engine facts), forget the session's resume
+ *  id, record the handoff with its reason, and tell the operator — an emergency as an alert.
+ *  Never throws. */
+export function completeHandoff(
+  session: SessionInfo,
+  cfg: ContextPolicyCfg,
+  deps: Pick<HandoffDeps, "registry" | "ledger" | "now" | "decision" | "boundary" | "notify" | "facts">,
+  opts: { before: string | undefined; occupancy: number },
+): void {
+  const now = deps.now ?? (() => Date.now());
+  const folder = session.order.folder;
+  const boundary = deps.boundary ?? "resume";
+  const reason = deps.decision?.reason;
+  const sessionId = session.sdkSessionId || undefined; // read before the reset below clears the entry
+  let detail: Record<string, unknown> = {};
+  try {
+    const git = (deps.facts ?? gitFacts)(folder);
+    const note = finalizeHandoffNote(
+      folder,
+      { ...git, occupancy: opts.occupancy, at: now(), boundary, reason },
+      { before: opts.before, fallback: () => idleStateNote(session, now(), "the handoff turn wrote no note") },
+    );
+    detail = { ...note, branch: git.branch, head: git.head, uncommitted: git.uncommitted?.length };
+  } catch {
+    // the note is best-effort — the reset below must still happen
   }
   try {
     deps.registry.setSdkSessionId(session.id, "");
-    deps.ledger.clearSessionsFor(session.order.folder);
-    deps.ledger.recordContextEvent(session.order.folder, "handoff", sig.occupancy, now());
+    deps.ledger.clearSessionsFor(folder);
+    deps.ledger.recordContextEvent(folder, "handoff", opts.occupancy, now(), { reason, boundary, sessionId, detail });
   } catch {
     // observer-grade bookkeeping — never throw into a worker path
+  }
+  try {
+    deps.notify?.(describeContextReset("handoff", opts.occupancy, cfg, reason, boundary), deps.decision?.band === "emergency" ? "alert" : undefined);
+  } catch {
+    // a failed notice never undoes the handoff
   }
 }
 

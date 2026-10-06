@@ -593,6 +593,7 @@ export function createTelegramBot(
       requestReload: reload?.requestReload,
       cfg,
       windowTokensByModel: cfg.contextPolicy.windowTokensByModel,
+      contextPolicy: cfg.contextPolicy,
       todo: reload?.todo,
       updates: reload?.updates,
     });
@@ -665,8 +666,8 @@ export function createTelegramBot(
       const id = cb.slice(cb.indexOf(":") + 1);
       const chatId = ctx.chat?.id ?? 0;
       const result = cb.startsWith("use:")
-        ? selectProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel })
-        : killProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel });
+        ? selectProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel, contextPolicy: cfg.contextPolicy })
+        : killProject(id, chatId, { registry, ledger, usage, trust, windowTokensByModel: cfg.contextPolicy.windowTokensByModel, contextPolicy: cfg.contextPolicy });
       await ctx.answerCallbackQuery(cb.startsWith("use:") ? "switched" : "killed");
       try {
         await ctx.editMessageText(

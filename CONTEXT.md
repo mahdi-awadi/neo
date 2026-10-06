@@ -249,6 +249,59 @@ cache-write tokens, divided by the window. Not a sum over turns. It is 0 to 1; a
 window is wrong, not that the session overran. The console shows it as ctx%.
 _Avoid_: context use, fill, ctx (except as the display label)
 
+**Sweet spot**:
+The occupancy range in which a session is cheap and sharp enough to keep: below the sweet-spot
+line. Above it, every turn pays to re-read a large cached context, so the session is handed off at
+the next **task boundary**.
+_Avoid_: healthy zone, threshold, limit
+
+**Context band**:
+Where a session's occupancy sits, in one word: **healthy** (inside the sweet spot), **above** (past
+the sweet spot: hand off at the next task boundary), **heavy** (past the checkpoint line: hand off
+at the next **safe checkpoint**, even mid-task), **emergency** (near the real limit: the last
+resort).
+_Avoid_: level, status, zone
+
+**Task boundary**:
+A moment between two pieces of work, when nothing is lost by starting fresh: a session **settled**
+after its task, or an idle session about to be resumed for a new one. The normal place for a
+**context handoff**.
+_Avoid_: break, pause, end
+
+**Safe checkpoint**:
+A point inside a task where the work so far is complete and committed: a commit just succeeded or
+the worker marked a plan step done, and the folder has no uncommitted changes. The only mid-task
+moment the engine may hand a session off.
+_Avoid_: savepoint, stop point (that is where an interrupted dispatch stopped)
+
+**Context handoff**:
+Replacing a full session with a fresh one without losing the work's thread: the old session writes
+a **handoff note**, the engine forgets its resume id, and the next session starts from the note.
+Always recorded with its reason. Never done with uncommitted work, except in the emergency band.
+_Avoid_: reset, compact, clear, restart
+
+**Handoff note**:
+The state-of-work note (`HANDOFF.md`) a session writes for its successor: the goal, what is done,
+the next steps, the branch and commit, open decisions, gotchas. The engine appends the facts it can
+check itself (branch, last commit, uncommitted files).
+_Avoid_: summary, WIP note, memory
+
+**Continuation**:
+The fresh session that picks up a task a mid-task handoff interrupted. Its first brief carries the
+handoff note itself, not a pointer to it.
+_Avoid_: retry, resume (resume keeps the old session)
+
+**Emergency clear**:
+Dropping a session's resume id with no handoff note, because it is too close to the real limit to
+write one safely. The last resort. Always recorded and alerted.
+_Avoid_: reset, wipe, clear (unqualified)
+
+**Orientation**:
+How much work a session started from a handoff note does before its first productive action (an
+edit or a commit). A short orientation means the note carried the thread; a long one means the new
+session had to rediscover it.
+_Avoid_: warm-up, ramp-up
+
 ### Telling a working session from a wedged one
 
 **Activity**:

@@ -171,7 +171,7 @@ function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
     drainWindowMs: 90_000,
     trustNewProjects: false,
     contextPolicy: {
-      handoffPct: 0.65,
+      sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
       emergencyPct: 0.85,
       maxTurns: 200,
       maxAgeMs: 604_800_000,
@@ -199,8 +199,9 @@ test("startScheduledLoop wires loopRunExtras' runDeps + context-policy resume ga
   const sdkId = "sdk-loop-gate-fat";
   const transcriptDir = join(homedir(), ".claude", "projects", encodeCwd(folder));
   mkdirSync(transcriptDir, { recursive: true });
-  // A fat pre-resume transcript: 150k input-side tokens against the default 200k window = 0.75
-  // occupancy, ≥ contextPolicy.handoffPct (0.65) → the gate should drop this resume.
+  // A fat pre-resume transcript: 150k input-side tokens against a configured 200k window = 0.75
+  // occupancy, ≥ contextPolicy.sweetSpotPct (0.65) → the gate should drop this resume. (The window is
+  // set, not guessed: a guessed window drives no band rule — ADR-0021.)
   writeFileSync(
     join(transcriptDir, `${sdkId}.jsonl`),
     JSON.stringify({
@@ -211,14 +212,14 @@ test("startScheduledLoop wires loopRunExtras' runDeps + context-policy resume ga
   );
   const loop: LoopDef = { ...remLoop(folder), bounds: { maxIterations: 5 } };
   try {
-    // Case 1 (default facts-map window): the gate sees the fat transcript and drops the resume —
+    // Case 1 (a 200k window): the gate sees the fat transcript and drops the resume —
     // iteration 2 must run WITHOUT the sdk id it would otherwise have carried.
     const dropped: Array<{ resume?: string; model?: string }> = [];
     let n1 = 0;
     const out1 = await startScheduledLoop(loop, {
       chatId: 1,
       reply: () => {},
-      cfg: loopCfg(),
+      cfg: loopCfg({ contextPolicy: { ...loopCfg().contextPolicy, windowTokensByModel: { default: 200_000 } } }),
       run: async (_o, _h, runDeps) => {
         dropped.push({ resume: runDeps?.resume, model: runDeps?.model });
         return okRun(sdkId);
@@ -234,7 +235,7 @@ test("startScheduledLoop wires loopRunExtras' runDeps + context-policy resume ga
     expect(dropped[1].model).toBe("loop-test-model");
 
     // Case 2 — same transcript, but a windowTokensByModel override widens the window so occupancy
-    // drops well under handoffPct: the SAME gate now KEEPS the resume, proving case 1 wasn't a
+    // drops well under sweetSpotPct: the SAME gate now KEEPS the resume, proving case 1 wasn't a
     // no-op (the gate is actually wired to cfg, not bypassed).
     const kept: Array<{ resume?: string; model?: string }> = [];
     let n2 = 0;
@@ -445,5 +446,33 @@ test("startLoop no-ops the memory-dream loop (no worker started) when the compan
     expect(replies.some((r) => r.includes("memory disabled (company not in memory.scopes)"))).toBe(true);
   } finally {
     rmSync(companyFolder, { recursive: true, force: true });
+  }
+});
+
+// ADR-0021: a loop iteration that starts fresh instead of resuming is a context reset — recorded with
+// its reason, like every other one.
+test("a loop resume dropped by the context gate is recorded as a fresh start with its reason", async () => {
+  const folder = "/home/neo-loop-fresh-fixture";
+  const sdkId = "sdk-loop-fresh";
+  const transcriptDir = join(homedir(), ".claude", "projects", encodeCwd(folder));
+  mkdirSync(transcriptDir, { recursive: true });
+  writeFileSync(
+    join(transcriptDir, `${sdkId}.jsonl`),
+    JSON.stringify({ type: "assistant", timestamp: new Date().toISOString(), message: { usage: { input_tokens: 150_000 } } }) + "\n",
+  );
+  const store = openLedger(":memory:");
+  try {
+    let n = 0;
+    await startScheduledLoop({ ...remLoop(folder), bounds: { maxIterations: 5 } }, {
+      chatId: 1,
+      reply: () => {},
+      cfg: loopCfg({ contextPolicy: { ...loopCfg().contextPolicy, windowTokensByModel: { default: 200_000 } } }),
+      store,
+      run: async () => okRun(sdkId),
+      check: async () => ({ met: n++ >= 2, detail: "" }), // the goal is checked before the first iteration too
+    });
+    expect(store.listContextEvents({ folder })[0]).toMatchObject({ verdict: "fresh", reason: "above-sweet-spot", boundary: "resume", sessionId: sdkId });
+  } finally {
+    rmSync(transcriptDir, { recursive: true, force: true });
   }
 });

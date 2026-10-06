@@ -536,3 +536,29 @@ test("/updates apply <item> forces that one item; rollback <item> rolls it back;
   expect(handleCommand("/updates nonsense x", 1, { ...deps(), updates: f.updater })!.text).toContain("Usage");
   expect(f.calls.length).toBe(2);
 });
+
+// ADR-0021: /status shows where each session sits against the sweet spot, and its last reset.
+const BANDS = { sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9 };
+
+test("/status names the context band outside the sweet spot, and nothing inside it", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ id: "b1", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(a.id, "sess-a");
+  const d = deps({ registry });
+  const at = (occupancy: number) => handleCommand("/status", 1, { ...d, contextPolicy: BANDS, signals: () => ({ occupancy, turns: 3, ageMs: 0, idleMs: 0 }) })!.text;
+  expect(at(0.2)).toContain("ctx 20% ·");
+  expect(at(0.52)).toContain("ctx 52% above");
+  expect(at(0.65)).toContain("ctx 65% heavy");
+  expect(at(0.93)).toContain("ctx 93% EMERGENCY");
+});
+
+test("/status shows the project's last context reset with its reason", () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const a = registry.add(order({ id: "b2", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(a.id, "sess-b");
+  ledger.recordContextEvent("/p/gold", "handoff", 0.52, 10_000 - 2 * 3_600_000, { reason: "above-sweet-spot", boundary: "settled" });
+  const d = deps({ registry, ledger, now: () => 10_000 });
+  const out = handleCommand("/status", 1, { ...d, contextPolicy: BANDS, signals: () => ({ occupancy: 0.1, turns: 3, ageMs: 0, idleMs: 0 }) })!.text;
+  expect(out).toContain("↻ handoff 2h ago (above-sweet-spot)");
+});

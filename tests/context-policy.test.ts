@@ -1,9 +1,10 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import {
   decideContext,
+  contextBand,
   sessionContext,
   encodeCwd,
   windowTokensFor,
@@ -11,6 +12,16 @@ import {
   runHandoff,
   HANDOFF_PROMPT,
   MEMORY_FLUSH_SENTENCE,
+  HANDOFF_SECTIONS,
+  checkpointSteer,
+  continuationBrief,
+  missingSections,
+  finalizeHandoffNote,
+  noteStamp,
+  handoffPreamble,
+  trackHandoff,
+  awaitHandoff,
+  contextPolicyWarnings,
   idleStateNote,
   writeIdleStateNote,
   effectiveCacheTtlMs,
@@ -20,11 +31,15 @@ import {
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import type { Order, SessionInfo } from "../src/types";
+import type { ContextSignals } from "../src/engine/context-policy";
 import type { RunHandlers } from "../src/engine/session-runner";
 
 const CFG = {
-  handoffPct: 0.65,
-  emergencyPct: 0.85,
+  sweetSpotPct: 0.4,
+  checkpointPct: 0.6,
+  emergencyPct: 0.9,
+  handoffNoteMaxChars: 20_000,
+  handoffOrientationMaxSteps: 70,
   maxTurns: 200,
   maxAgeMs: 604_800_000,
   handoffTimeoutMs: 180_000,
@@ -93,14 +108,45 @@ test("writeIdleStateNote swallows write errors so idle-close never breaks", () =
   ).not.toThrow();
 });
 
-test("decideContext verdict matrix", () => {
-  const ttl = CFG.cacheTtlFallbackMs;
-  expect(decideContext({ occupancy: 0.1, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("keep");
-  expect(decideContext({ occupancy: 0.65, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // at threshold
-  expect(decideContext({ occupancy: 0.2, turns: 200, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // turns
-  expect(decideContext({ occupancy: 0.2, turns: 5, ageMs: 604_800_000, idleMs: 0 }, CFG, ttl)).toBe("handoff"); // age
-  expect(decideContext({ occupancy: 0.85, turns: 5, ageMs: 0, idleMs: 0 }, CFG, ttl)).toBe("clear"); // emergency wins over handoff
-  expect(decideContext({ occupancy: 0.99, turns: 300, ageMs: 999_999_999, idleMs: 0 }, CFG, ttl)).toBe("clear");
+const sig = (occupancy: number, over: Partial<ContextSignals> = {}): ContextSignals => ({ occupancy, turns: 1, ageMs: 0, idleMs: 0, ...over });
+const FAR = 1e12; // a cache TTL nothing is idle past
+
+test("contextBand splits occupancy at the three knobs", () => {
+  expect([0.1, 0.4, 0.6, 0.9].map((o) => contextBand(o, CFG))).toEqual(["healthy", "above", "heavy", "emergency"]);
+});
+
+test("resume and settled boundaries hand off above the sweet spot and keep inside it", () => {
+  for (const boundary of ["resume", "settled"] as const) {
+    expect(decideContext(sig(0.39), CFG, FAR, { boundary })).toEqual({ verdict: "keep", band: "healthy" });
+    expect(decideContext(sig(0.41), CFG, FAR, { boundary })).toEqual({ verdict: "handoff", reason: "above-sweet-spot", band: "above" });
+  }
+});
+
+test("the boundary defaults to a resume (the gate callers that predate boundaries)", () => {
+  expect(decideContext(sig(0.92), CFG, FAR).verdict).toBe("clear");
+});
+
+test("a checkpoint hands off only in the heavy band, or when the plan projects past emergency", () => {
+  expect(decideContext(sig(0.5), CFG, FAR, { boundary: "checkpoint" }).verdict).toBe("keep");
+  expect(decideContext(sig(0.61), CFG, FAR, { boundary: "checkpoint" })).toEqual({ verdict: "handoff", reason: "heavy", band: "heavy" });
+  expect(decideContext(sig(0.45), CFG, FAR, { boundary: "checkpoint", projected: 1.05 }).reason).toBe("projected-overflow");
+  // inside the sweet spot a task is never interrupted, whatever the projection says
+  expect(decideContext(sig(0.3), CFG, FAR, { boundary: "checkpoint", projected: 1.5 }).verdict).toBe("keep");
+  // turns/age are boundary rules, never a reason to stop mid-task
+  expect(decideContext(sig(0.1, { turns: 900 }), CFG, FAR, { boundary: "checkpoint" }).verdict).toBe("keep");
+});
+
+test("emergency: clear only at a resume on a known window; every other case hands off", () => {
+  expect(decideContext(sig(0.92), CFG, FAR, { boundary: "resume" })).toEqual({ verdict: "clear", reason: "emergency", band: "emergency" });
+  expect(decideContext(sig(0.92, { windowKnown: false }), CFG, FAR, { boundary: "resume" }).verdict).toBe("handoff");
+  expect(decideContext(sig(0.92), CFG, FAR, { boundary: "settled" })).toEqual({ verdict: "handoff", reason: "emergency", band: "emergency" });
+  expect(decideContext(sig(0.92), CFG, FAR, { boundary: "checkpoint" }).reason).toBe("emergency");
+});
+
+test("a guessed window drives no band rule, only turns, age and staleness", () => {
+  expect(decideContext(sig(0.7, { windowKnown: false }), CFG, FAR, { boundary: "settled" }).verdict).toBe("keep");
+  expect(decideContext(sig(0.1, { windowKnown: false, turns: 200 }), CFG, FAR, { boundary: "settled" }).reason).toBe("max-turns");
+  expect(decideContext(sig(0.1, { ageMs: 604_800_000 }), CFG, FAR, { boundary: "resume" }).reason).toBe("max-age");
 });
 
 test("effectiveCacheTtlMs: with too few observations, returns the fallback", () => {
@@ -118,11 +164,13 @@ test("effectiveCacheTtlMs: learns the boundary between observed hits and misses"
   expect(effectiveCacheTtlMs(obs, POLICY)).toBe((50 * 60_000 + 70 * 60_000) / 2);
 });
 
-test("decideContext: idle past the effective TTL + fat transcript → handoff; either alone → keep", () => {
+test("decideContext: a resume idle past the cache TTL on a fat transcript hands off; either alone keeps", () => {
   const ttl = 3_600_000;
-  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("handoff");
-  expect(decideContext({ occupancy: 0.2, turns: 10, ageMs: 0, idleMs: 2 * ttl }, POLICY, ttl)).toBe("keep");
-  expect(decideContext({ occupancy: 0.4, turns: 10, ageMs: 0, idleMs: 60_000 }, POLICY, ttl)).toBe("keep");
+  expect(decideContext(sig(0.36, { idleMs: 2 * ttl }), POLICY, ttl, { boundary: "resume" }).reason).toBe("stale-resume");
+  expect(decideContext(sig(0.2, { idleMs: 2 * ttl }), POLICY, ttl, { boundary: "resume" }).verdict).toBe("keep");
+  expect(decideContext(sig(0.36, { idleMs: 60_000 }), POLICY, ttl, { boundary: "resume" }).verdict).toBe("keep");
+  // a settled session's cache is warm by definition — staleness is a resume-only rule
+  expect(decideContext(sig(0.36, { idleMs: 2 * ttl }), POLICY, ttl, { boundary: "settled" }).verdict).toBe("keep");
 });
 
 test("sessionContext reports idleMs from the transcript mtime; 0 on any error (fail-open)", async () => {
@@ -318,7 +366,7 @@ test("runHandoff prepends the memory flush sentence before HANDOFF_PROMPT when m
   expect(sawTask).toContain(HANDOFF_PROMPT);
 });
 
-test("runHandoff's task is byte-identical to HANDOFF_PROMPT when memoryFlush is absent (Phase-1 fence pin)", async () => {
+test("runHandoff's task is exactly HANDOFF_PROMPT when memoryFlush is absent", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
   const s = registry.add({ id: "h6", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
@@ -365,11 +413,10 @@ test("sessionContext measures an Opus 5.5 transcript against the SDK-reported 1M
 // ADR-0013 review: right after a restart no model has reported its window yet, and the resume gate
 // runs BEFORE the first turn. A guessed window must never destroy a session — at most a handoff.
 test("decideContext: over the emergency line on a GUESSED window hands off, never clears", () => {
-  const cfg = { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 1e12, handoffTimeoutMs: 1, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 };
-  const sig = { occupancy: 2.74, turns: 10, ageMs: 0, idleMs: 0 };
-  expect(decideContext({ ...sig, windowKnown: false }, cfg, 3_600_000)).toBe("handoff");
-  expect(decideContext({ ...sig, windowKnown: true }, cfg, 3_600_000)).toBe("clear");
-  expect(decideContext(sig, cfg, 3_600_000)).toBe("clear"); // unset = known (hand-built signals)
+  const s = { occupancy: 2.74, turns: 10, ageMs: 0, idleMs: 0 };
+  expect(decideContext({ ...s, windowKnown: false }, CFG, 3_600_000).verdict).toBe("handoff");
+  expect(decideContext({ ...s, windowKnown: true }, CFG, 3_600_000).verdict).toBe("clear");
+  expect(decideContext(s, CFG, 3_600_000).verdict).toBe("clear"); // unset = known (hand-built signals)
 });
 
 test("sessionContext says whether the window was reported or guessed", () => {
@@ -385,4 +432,176 @@ test("sessionContext says whether the window was reported or guessed", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- ADR-0021: the handoff note, its engine facts, the continuation, one handoff per folder ----
+
+const NOTE = HANDOFF_SECTIONS.map((h) => `## ${h}\nx`).join("\n\n");
+const again0 = (dir: string) => readFileSync(join(dir, "HANDOFF.md"), "utf8") + "\nmore";
+
+test("HANDOFF_PROMPT and the checkpoint steer both ask for every required section", () => {
+  for (const h of HANDOFF_SECTIONS) {
+    expect(HANDOFF_PROMPT).toContain(`## ${h}`);
+    expect(checkpointSteer(0.63)).toContain(`## ${h}`);
+  }
+  expect(checkpointSteer(0.63)).toContain("63%");
+});
+
+test("missingSections names the required sections a note lacks", () => {
+  expect(missingSections("## Goal\nship\n## Done\n- a")).toEqual(["Next steps", "Branch / commit", "Open decisions", "Gotchas"]);
+  expect(missingSections(NOTE)).toEqual([]);
+});
+
+test("continuationBrief carries the original brief once, however often a task is continued", () => {
+  const once = continuationBrief("build the cart");
+  expect(once).toContain("build the cart");
+  expect(continuationBrief(once)).toBe(once);
+  expect(continuationBrief()).not.toContain("Original brief");
+});
+
+test("finalizeHandoffNote appends git facts to a fresh note and reports missing sections", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship it\n");
+  const r = finalizeHandoffNote(dir, { branch: "feat/x", head: "abc1234 add cart", uncommitted: [], occupancy: 0.52, at: 0, boundary: "settled", reason: "above-sweet-spot" }, { before: undefined, fallback: () => "unused" });
+  expect(r).toEqual({ written: true, missing: ["Done", "Next steps", "Branch / commit", "Open decisions", "Gotchas"] });
+  const note = readFileSync(join(dir, "HANDOFF.md"), "utf8");
+  expect(note.startsWith("## Goal\nship it")).toBe(true);
+  expect(note).toContain("## Engine facts");
+  expect(note).toContain("feat/x");
+  expect(note).toContain("abc1234 add cart");
+  expect(note).toContain("52%");
+  // run twice (a second handoff on the same note): ONE facts block, the newest
+  const stamp = noteStamp(dir);
+  writeFileSync(join(dir, "HANDOFF.md"), again0(dir)); // the second handoff's worker rewrites the note
+  expect(noteStamp(dir)).not.toBe(stamp);
+  finalizeHandoffNote(dir, { branch: "feat/y", occupancy: 0.6, at: 0, boundary: "settled" }, { before: stamp, fallback: () => "unused" });
+  const again = readFileSync(join(dir, "HANDOFF.md"), "utf8");
+  expect(again.split("## Engine facts").length).toBe(2);
+  expect(again).toContain("feat/y");
+});
+
+test("finalizeHandoffNote writes the fallback when the turn left no fresh note", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
+  const r = finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { before: undefined, fallback: () => "# fallback" });
+  expect(r.written).toBe(false);
+  expect(readFileSync(join(dir, "HANDOFF.md"), "utf8")).toStartWith("# fallback");
+  writeFileSync(join(dir, "HANDOFF.md"), "old note");
+  // the note the turn found and did not touch is stale, however recent its mtime
+  expect(finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { before: noteStamp(dir), fallback: () => "# fallback" }).written).toBe(false);
+});
+
+test("noteStamp is undefined without a note and changes when the note is rewritten", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-stamp-"));
+  expect(noteStamp(dir)).toBeUndefined();
+  writeFileSync(join(dir, "HANDOFF.md"), "a");
+  const a = noteStamp(dir);
+  writeFileSync(join(dir, "HANDOFF.md"), "bb");
+  expect(noteStamp(dir)).not.toBe(a);
+});
+
+test("handoffPreamble inlines a pending handoff's note once, capped, and records the resume", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-pre-"));
+  const ledger = openLedger(":memory:");
+  expect(handoffPreamble(dir, ledger, CFG, 5)).toBeUndefined(); // nothing pending
+  writeFileSync(join(dir, "HANDOFF.md"), "N".repeat(30_000));
+  const h = ledger.recordContextEvent(dir, "handoff", 0.52, 1, { reason: "above-sweet-spot", boundary: "settled" });
+  const pre = handoffPreamble(dir, ledger, CFG, 5)!;
+  expect(pre.text).toContain("N".repeat(20_000));
+  expect(pre.text).not.toContain("N".repeat(20_001));
+  expect(pre.text).toContain("truncated");
+  expect(ledger.listContextEvents()[0]).toMatchObject({ id: pre.eventId, verdict: "resumed", detail: { handoffId: h } });
+  expect(handoffPreamble(dir, ledger, CFG, 6)).toBeUndefined(); // consumed
+});
+
+test("awaitHandoff waits for a tracked handoff of the same folder only, and never throws", async () => {
+  let release!: () => void;
+  const order: string[] = [];
+  trackHandoff("/p/a", new Promise<void>((r) => (release = r)).then(() => void order.push("handoff")), 60_000);
+  trackHandoff("/p/b", Promise.reject(new Error("boom")), 60_000);
+  await awaitHandoff("/p/b"); // a failed handoff still releases its waiters
+  await awaitHandoff("/p/none");
+  const waiting = awaitHandoff("/p/a").then(() => void order.push("next"));
+  await Promise.resolve();
+  expect(order).toEqual([]);
+  release();
+  await waiting;
+  expect(order).toEqual(["handoff", "next"]);
+});
+
+test("runHandoff records reason and boundary, appends facts, and tells the operator", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-rh-"));
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h9", source: "neo", folder: dir, task: "t", chatId: 1, createdAt: 0 }, 0);
+  registry.setSdkSessionId(s.id, "fat-9");
+  const notes: Array<[string, string | undefined]> = [];
+  const fakeRun = async () => {
+    writeFileSync(join(dir, "HANDOFF.md"), NOTE);
+    return { ok: true, sessionId: "fat-9", summary: "written", costUsd: 0 };
+  };
+  await runHandoff(s, { ...CFG }, {
+    registry,
+    ledger,
+    run: fakeRun as never,
+    decision: { verdict: "handoff", reason: "above-sweet-spot", band: "above" },
+    boundary: "settled",
+    notify: (text, priority) => void notes.push([text, priority]),
+  });
+  const ev = ledger.listContextEvents()[0];
+  expect(ev).toMatchObject({ verdict: "handoff", reason: "above-sweet-spot", boundary: "settled", sessionId: "fat-9" });
+  expect(ev.detail).toMatchObject({ written: true, missing: [] });
+  expect(readFileSync(join(dir, "HANDOFF.md"), "utf8")).toContain("## Engine facts");
+  expect(notes).toHaveLength(1);
+  expect(notes[0][1]).toBeUndefined(); // an ordinary handoff is a muted progress line
+  expect(notes[0][0]).toContain("sweet spot");
+});
+
+test("runHandoff alerts the operator for an emergency handoff", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h10", source: "neo", folder: mkdtempSync(join(tmpdir(), "neo-rh-")), task: "t", chatId: 1, createdAt: 0 }, 0);
+  const notes: Array<string | undefined> = [];
+  await runHandoff(s, { ...CFG }, {
+    registry,
+    ledger,
+    run: (async () => ({ ok: true, sessionId: "", summary: "", costUsd: 0 })) as never,
+    decision: { verdict: "handoff", reason: "emergency", band: "emergency" },
+    boundary: "settled",
+    notify: (_t, p) => void notes.push(p),
+  });
+  expect(notes).toEqual(["alert"]);
+});
+
+// ---- code review 2026-10-06 ----
+
+test("a tracked handoff that never settles holds its folder only up to its bound", async () => {
+  trackHandoff("/p/wedged", new Promise<void>(() => {}), 20);
+  const t0 = Date.now();
+  await awaitHandoff("/p/wedged");
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(15);
+  expect(Date.now() - t0).toBeLessThan(2_000);
+});
+
+test("handoffPreamble records the resumed row with the handoff's reason and the resume boundary", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-pre-"));
+  const ledger = openLedger(":memory:");
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nx");
+  ledger.recordContextEvent(dir, "handoff", 0.52, 1, { reason: "above-sweet-spot", boundary: "settled" });
+  handoffPreamble(dir, ledger, CFG, 5);
+  expect(ledger.listContextEvents()[0]).toMatchObject({ verdict: "resumed", reason: "above-sweet-spot", boundary: "resume" });
+});
+
+test("contextPolicyWarnings flags lines out of order, and is quiet for the defaults or a disabled checkpoint", () => {
+  expect(contextPolicyWarnings(CFG)).toEqual([]);
+  expect(contextPolicyWarnings({ ...CFG, checkpointPct: 1 })).toEqual([]); // mid-task handoffs off
+  expect(contextPolicyWarnings({ ...CFG, sweetSpotPct: 0.65 })[0]).toContain("sweetSpotPct 0.65 ≥ checkpointPct 0.6");
+  expect(contextPolicyWarnings({ ...CFG, checkpointPct: 0.95 })[0]).toContain("checkpointPct 0.95 ≥ emergencyPct 0.9");
+});
+
+test("awaitHandoff says when its wait ended on the bound rather than on the handoff", async () => {
+  expect(await awaitHandoff("/p/quiet")).toBe("clear");
+  trackHandoff("/p/done", Promise.resolve(), 1_000);
+  expect(await awaitHandoff("/p/done")).toBe("clear");
+  trackHandoff("/p/hung", new Promise<void>(() => {}), 10);
+  expect(await awaitHandoff("/p/hung")).toBe("timed-out");
 });

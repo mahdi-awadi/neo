@@ -73,3 +73,12 @@ test("renderAll skips unchanged sections but always re-renders the clock-depende
   // A direct SDK repaint (switch button, SSE) records what it drew, so a later poll is compared to it.
   expect(body).toMatch(/function renderSdk\(\)\{lastJson\.sdk=/);
 });
+
+test("consolePage shows each project's ctx% with its band and a Context resets timeline", () => {
+  const html = consolePage();
+  expect(html).toContain("p.ctxBand");
+  expect(html).toContain("p.lastReset");
+  expect(html).toContain("S.contextEvents");
+  expect(html).toContain("Context resets");
+  for (const band of ["healthy", "above", "heavy", "emergency"]) expect(html).toContain(`.ctx.${band}`);
+});

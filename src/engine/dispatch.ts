@@ -30,7 +30,27 @@ import {
 } from "./dispatch-report";
 import { frontendBackend, teamLeadPreamble } from "./agent-teams";
 import { DEFAULT_PROJECT } from "./default-project";
-import { decideContext, sessionContext, contextWindows, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
+import {
+  decideContext,
+  sessionContext,
+  contextWindows,
+  runHandoff,
+  completeHandoff,
+  effectiveCacheTtlMs,
+  CACHE_OBS_WINDOW,
+  windowTokensFor,
+  awaitHandoff,
+  trackHandoff,
+  handoffHoldMs,
+  handoffPreamble,
+  handoffDeferred,
+  continuationBrief,
+  describeContextReset,
+  noteStamp,
+  type ContextPolicyCfg,
+} from "./context-policy";
+import { faults } from "./fault";
+import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./context-checkpoint";
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
@@ -300,8 +320,10 @@ export interface DispatchHooks {
   /** Extra line for the dispatcher's final result (e.g. what the queue does next). `ok` is false
    *  for any bad end: failure, stall abort, or a reload cut. */
   resultNote?: (ok: boolean) => string | undefined;
-  /** The run is over and its result has reached the operator and the dispatcher inbox. */
-  onEnd?: (end: { orderId: string; ok: boolean; summary: string }) => void | Promise<void>;
+  /** The run is over and its result has reached the operator and the dispatcher inbox. A
+   *  `continuation` means the run was handed off at a safe checkpoint (ADR-0021): the task is NOT
+   *  finished, and this brief continues it in a fresh session. */
+  onEnd?: (end: { orderId: string; ok: boolean; summary: string; continuation?: string }) => void | Promise<void>;
   /** Skip the "→ dispatching to …" line (the queue sends its own start line). */
   quietStart?: boolean;
 }
@@ -530,25 +552,45 @@ export async function dispatchToProject(
   // the gate's occasional real await (the "handoff" verdict runs a bounded worker turn) never
   // delays the string this function returns to the calling company session.
   void (async () => {
+    const policy = deps.contextPolicy;
+    const notify = (t: string, pr?: "alert") => void deps.reply(replyChat, t, name, pr);
+    // Never measure (or resume) a folder another gate is handing off — e.g. the previous dispatch's
+    // end-of-run handoff. Its resume id is read again AFTER the wait: the handoff clears it.
     let gatedResume = resume;
-    if (gatedResume && deps.contextPolicy) {
+    if (gatedResume && policy) {
+      // A handoff that outlived its hold may still own the session: start fresh, touch nothing.
+      const waited = await awaitHandoff(folder);
+      const current =
+        (canResumeWith(session.sdkProvider, worker) ? deps.registry.get(session.id)?.sdkSessionId : undefined) ||
+        deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
+        undefined;
+      gatedResume = waited === "timed-out" ? undefined : current;
+    }
+    if (gatedResume && policy) {
       try {
         const signals = opts.signals ?? sessionContext;
-        const sig = signals(folder, gatedResume, { windowTokensByModel: contextWindows(deps.ledger, deps.contextPolicy.windowTokensByModel) });
-        const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(deps.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.contextPolicy);
-        const verdict = decideContext(sig, deps.contextPolicy, ttlMs);
-        if (verdict === "clear") {
-          gatedResume = undefined;
+        const sig = signals(folder, gatedResume, { windowTokensByModel: contextWindows(deps.ledger, policy.windowTokensByModel) });
+        const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
+        const decision = decideContext(sig, policy, ttlMs, { boundary: "resume" });
+        const deferred = decision.verdict !== "keep" && handoffDeferred(folder, decision, { ledger: deps.ledger, boundary: "resume", occupancy: sig.occupancy, sessionId: gatedResume });
+        if (deferred) {
+          // uncommitted work: keep resuming (ADR-0021)
+        } else if (decision.verdict === "clear") {
           deps.ledger.clearSessionsFor(folder);
-          deps.ledger.recordContextEvent(folder, "clear", sig.occupancy);
-        } else if (verdict === "handoff") {
+          deps.ledger.recordContextEvent(folder, "clear", sig.occupancy, undefined, { reason: decision.reason, boundary: "resume", sessionId: gatedResume });
+          notify(describeContextReset("clear", sig.occupancy, policy, decision.reason, "resume"), "alert");
+          gatedResume = undefined;
+        } else if (decision.verdict === "handoff") {
           const handoff = opts.handoff ?? runHandoff;
           const target: SessionInfo = { ...session, sdkSessionId: session.sdkSessionId || gatedResume };
-          await handoff(target, deps.contextPolicy, {
+          await handoff(target, policy, {
             registry: deps.registry,
             ledger: deps.ledger,
             runDeps: profileDeps(providerCfg, "handoff"),
             memoryFlush: !!memoryGate(deps, folder),
+            decision,
+            boundary: "resume",
+            notify,
           });
           gatedResume = undefined;
         }
@@ -573,6 +615,35 @@ export async function dispatchToProject(
         deps.ledger.recordOrder(order); // keep the recorded task in sync with what the worker gets
       }
     }
+
+    // A fresh start after a context handoff begins FROM the note, inline (ADR-0021), and the probe
+    // measures how quickly it got going.
+    let probe: ResumeProbe | undefined;
+    if (gatedResume === undefined && policy) {
+      const pre = handoffPreamble(folder, deps.ledger, policy, now());
+      if (pre) {
+        order.task = `${pre.text}\n\n${order.task}`;
+        deps.ledger.recordOrder(order);
+        probe = createResumeProbe((r) => deps.ledger.updateContextEventDetail(pre.eventId, { ...r, success: r.steps <= policy.handoffOrientationMaxSteps }));
+      }
+    }
+    // Safe checkpoints (ADR-0021) need somewhere to continue: only a todo-queue dispatch has one
+    // (onEnd), and only a Claude worker can be steered (the PreToolUse hook).
+    let noteAtArm: string | undefined;
+    const watch =
+      policy && hooks.onEnd && worker !== "codex"
+        ? createCheckpointWatch({
+            folder,
+            cfg: policy,
+            windows: () => contextWindows(deps.ledger, policy.windowTokensByModel),
+            now,
+            onArm: (a) => {
+              noteAtArm = noteStamp(folder);
+              deps.ledger.recordEvent("context_checkpoint_armed", { orderId: order.id, folder, data: { project: name, occupancy: a.occupancy, reason: a.decision.reason } });
+            },
+          })
+        : undefined;
+    let lastSessionId = gatedResume ?? "";
 
     // Guarantee the structural map the brief now REQUIRES: the worker can't self-index (the governor
     // denies subagents the codebase-memory index tools), so the engine does it here before the worker
@@ -675,8 +746,19 @@ export async function dispatchToProject(
           deps.ledger.recordAutoApproval(order.id, reason);
           void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
         },
+        onUsage: (model, usage) => {
+          watch?.onUsage(model, usage);
+          probe?.onUsage();
+        },
+        onToolUse: (id, toolName, input) => {
+          watch?.onToolUse(id, toolName, input);
+          probe?.onToolUse(id, toolName, input);
+        },
+        onToolResult: (id, isError) => watch?.onToolResult(id, isError),
+        contextSteer: watch ? (tool, input) => watch.steer(tool, input) : undefined,
         onTurnComplete: (result) => {
           lastActivityAt = now();
+          if (result.sessionId) lastSessionId = result.sessionId;
           const kind = result.apiError;
           if (kind) {
             deps.cooldown?.note(kind, now()); // sibling dispatches/loops back off too
@@ -847,13 +929,26 @@ export async function dispatchToProject(
     // An abnormal end (stall abort, error, crash, API give-up, interrupt) — or a run wrapped up early
     // for an engine reload — says where it stopped, so the dispatcher can resume.
     const reloading = deps.lifecycle?.draining() === true;
-    const stop = timedOut || !result.ok || reloading ? stopPoint() : undefined;
-    const summary = reloading
-      ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — resume it after the restart)`
-      : result.summary;
+    // Handed off at a safe checkpoint (ADR-0021)? Then the task is not done — it continues fresh.
+    const armed = watch?.armed();
+    const atCheckpoint =
+      !!armed && result.ok && !timedOut && !reloading &&
+      !handoffDeferred(folder, armed.decision, { ledger: deps.ledger, boundary: "checkpoint", occupancy: armed.occupancy, sessionId: result.sessionId || lastSessionId });
+    // Armed, but the checkpoint could not complete (work appeared after it): the worker was told to
+    // stop part-way, so this is NOT a finished task — it ends as a failure that says why.
+    const checkpointLost = !!armed && !atCheckpoint && result.ok && !timedOut && !reloading;
+    const ok = result.ok && !checkpointLost;
+    const stop = timedOut || !ok || reloading ? stopPoint() : undefined;
+    const summary = atCheckpoint
+      ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
+      : checkpointLost
+        ? `stopped at a context checkpoint (${Math.round(armed!.occupancy * 100)}%) that could not complete — uncommitted changes appeared after it; HANDOFF.md may be partial, dispatch it again to continue`
+        : reloading
+        ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — resume it after the restart)`
+        : result.summary;
     const stopLine = stop ? formatStopPoint(stop) : "";
     const line =
-      (result.ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
+      (ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
       (stopLine ? `\n${stopLine}` : "");
     try {
       if (result.sessionId) {
@@ -861,7 +956,7 @@ export async function dispatchToProject(
         deps.ledger.recordSession(order.id, result.sessionId, worker);
       }
       deps.meter.note({ costUsd: result.costUsd }, now());
-      deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
+      deps.ledger.recordOutcome(order.id, ok ? "done" : "error", ok ? result.summary : summary);
     } catch {
       // observer/bookkeeping errors must not surface into the worker path
     }
@@ -871,15 +966,15 @@ export async function dispatchToProject(
         sessionId: result.sessionId || undefined,
         folder,
         // workClass + costUsd together are what lets the meter report interactive vs background spend.
-        data: { project: name, workClass, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
+        data: { project: name, workClass, ok, timedOut, costUsd: result.costUsd, apiError: result.apiError, ...(checkpointLost ? { checkpointLost: true } : {}) },
       });
       let note: string | undefined;
       try {
-        note = hooks.resultNote?.(result.ok && !timedOut && !reloading);
+        note = hooks.resultNote?.(ok && !timedOut && !reloading);
       } catch {
         note = undefined; // the queue's note is extra — the result itself must still be queued
       }
-      const report = dispatchResultText({ project: name, ok: result.ok, summary, stop });
+      const report = dispatchResultText({ project: name, ok, summary, stop });
       deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now());
     } catch {
       // observer only — never surfaces into the worker path
@@ -900,11 +995,45 @@ export async function dispatchToProject(
     } catch {
       // observer/bookkeeping errors must not surface into the worker path
     }
+    // The run ended at a task boundary: hand the session off now, while its cache is warm, if it is
+    // above the sweet spot — tracked, so the todo queue's next release waits for it (ADR-0021).
+    let continuation: string | undefined;
+    if (policy && !reloading && !timedOut) {
+      try {
+        const entry = deps.registry.get(session.id);
+        const sid = result.sessionId || lastSessionId;
+        const handoff = opts.handoff ?? runHandoff;
+        const handoffDeps = { registry: deps.registry, ledger: deps.ledger, runDeps: profileDeps(providerCfg, "handoff"), memoryFlush: !!memoryGate(deps, folder), notify };
+        let work: Promise<unknown> | undefined;
+        if (atCheckpoint && armed) {
+          const target: SessionInfo = { ...(entry ?? session), sdkSessionId: sid };
+          const at = { ...handoffDeps, decision: armed.decision, boundary: "checkpoint" as const };
+          // The worker wrote its note in its own context — no extra handoff turn, unless it did not.
+          work = noteStamp(folder) !== noteAtArm ? Promise.resolve(completeHandoff(target, policy, at, { before: noteAtArm, occupancy: armed.occupancy })) : handoff(target, policy, at);
+          continuation = continuationBrief(task);
+        } else if (entry && result.ok && sid) {
+          const signals = opts.signals ?? sessionContext;
+          const sig = signals(folder, sid, { windowTokensByModel: contextWindows(deps.ledger, policy.windowTokensByModel) });
+          const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
+          const decision = decideContext(sig, policy, ttlMs, { boundary: "settled" });
+          if (decision.verdict !== "keep" && !handoffDeferred(folder, decision, { ledger: deps.ledger, boundary: "settled", occupancy: sig.occupancy, sessionId: sid })) {
+            work = handoff({ ...entry, sdkSessionId: sid }, policy, { ...handoffDeps, decision, boundary: "settled" });
+          }
+        }
+        if (work) {
+          // Tracked, not awaited: the operator's result goes out now; the next dispatch's gate waits.
+          trackHandoff(folder, work, handoffHoldMs(policy));
+          faults.contain("dispatch.handoff", work, { project: name, orderId: order.id, folder });
+        }
+      } catch {
+        // observer only — the report below must still go out
+      }
+    }
     try {
       // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure
       // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
       // The frontend prepends the single priority accent (✅/🔴) — no per-call-site glyph (Feature 2).
-      await deps.reply(replyChat, line, name, result.ok ? "result" : "alert");
+      await deps.reply(replyChat, line, name, ok ? "result" : "alert");
     } catch {
       // the operator line is best-effort; the dispatcher report below must still go out
     }
@@ -917,7 +1046,7 @@ export async function dispatchToProject(
     }
     // Last: the result is out, so the todo queue may release the project's next brief (ADR-0008).
     try {
-      await hooks.onEnd?.({ orderId: order.id, ok: result.ok && !timedOut && !reloading, summary });
+      await hooks.onEnd?.({ orderId: order.id, ok: ok && !timedOut && !reloading, summary, ...(continuation ? { continuation } : {}) });
     } catch {
       // observer only
     }

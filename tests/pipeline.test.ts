@@ -9,7 +9,7 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
 import { createUsageMeter } from "../src/engine/usage";
 import { openTrustStore } from "../src/engine/trust";
-import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter } from "../src/engine/context-policy";
+import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter, trackHandoff } from "../src/engine/context-policy";
 import type { NeoConfig } from "../src/config";
 import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
@@ -62,7 +62,7 @@ function cfg(): NeoConfig {
     drainWindowMs: 90_000,
     trustNewProjects: false,
     contextPolicy: {
-      handoffPct: 0.65,
+      sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
       emergencyPct: 0.85,
       maxTurns: 200,
       maxAgeMs: 604_800_000,
@@ -646,24 +646,27 @@ test("pre-resume gate: a configured windowTokensByModel flips the verdict (real 
     }),
   );
   try {
-    // Default 200k facts-map window: 150_000 / 200_000 = 0.75 >= handoffPct (0.65) → "handoff".
+    // cfg says "big-model" has a 200k window: 150_000 / 200_000 = 0.75 >= sweetSpotPct (0.65) → "handoff".
+    // (A guessed window would drive no band rule at all — ADR-0021 — so both halves set the window.)
     const f1 = fakeStart();
     const h1 = harness({ start: f1.start });
     h1.ledger.recordOrder({ id: "d1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
     h1.ledger.recordSession("d1", sdkId);
     const calls: string[] = [];
+    const cfg1 = { ...h1.base.cfg, contextPolicy: { ...h1.base.cfg.contextPolicy, windowTokensByModel: { "big-model": 200_000 } } };
     await handleMessage(`/open ${dir} continue`, 9, {
       ...h1.base,
+      cfg: cfg1,
       handoff: async (s) => {
         calls.push("handoff");
         h1.ledger.clearSessionsFor(s.order.folder);
       },
     });
-    expect(calls).toEqual(["handoff"]); // default facts map (no override) → handoff, same transcript
+    expect(calls).toEqual(["handoff"]); // 200k override → handoff, same transcript
     expect(f1.resumeSeen()).toBeUndefined(); // fresh, not resumed
 
     // SAME transcript, but cfg now overrides "big-model"'s window to 1,000,000 tokens:
-    // 150_000 / 1_000_000 = 0.15 — well under handoffPct → "keep" instead.
+    // 150_000 / 1_000_000 = 0.15 — well under sweetSpotPct → "keep" instead.
     const f2 = fakeStart();
     const h2 = harness({ start: f2.start });
     h2.ledger.recordOrder({ id: "d2", source: "neo", folder: dir, task: "x", chatId: 10, createdAt: 0 });
@@ -1171,4 +1174,327 @@ test("trustNewProjects: a project the operator turned off stays off when opened 
 
   expect(handlers!.autoApprove?.()).toBe(false);
   expect(h.ledger.listEvents({ kind: "trust_default_on" })).toEqual([]);
+});
+
+// ---- ADR-0021: the sweet spot on live sessions — settle handoffs, safe checkpoints, inline notes ----
+
+/** A live fake whose runs the test drives: it emits stream events through the handlers, and a run
+ *  ends only when the test finishes it (or on interrupt). close() marks it closed, like the real one. */
+function liveFake() {
+  const runs: Array<{ task: string; resume?: string; h: RunHandlers; closed: boolean; followUps: string[]; finish: (r: RunResult) => void }> = [];
+  const start = (o: Order, h: RunHandlers, d?: { resume?: string }): SessionRun => {
+    let finish!: (r: RunResult) => void;
+    const done = new Promise<RunResult>((res) => (finish = res));
+    const run = { task: o.task, resume: d?.resume, h, closed: false, followUps: [] as string[], finish };
+    runs.push(run);
+    return {
+      followUp: (t: string) => void run.followUps.push(t),
+      interrupt: async () => {
+        run.closed = true;
+        finish({ ok: false, sessionId: "", summary: "interrupted", costUsd: 0 });
+      },
+      queued: () => 0,
+      active: () => false,
+      close: () => void (run.closed = true),
+      closed: () => run.closed,
+      done,
+    } as SessionRun;
+  };
+  return { start, runs };
+}
+
+const tick = async (n = 5) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+/** A temp git repo with one commit: a clean tree. */
+function gitScratch(): string {
+  const d = scratch();
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
+  g("init", "-q");
+  writeFileSync(join(d, "a.txt"), "1");
+  g("add", ".");
+  g("commit", "-q", "-m", "first");
+  return d;
+}
+
+const ok = (sessionId: string): RunResult => ({ ok: true, sessionId, summary: "done", costUsd: 0 });
+type HandoffCall = { folder: string; reason?: string; boundary?: string };
+
+function sweetHarness(occupancy: number) {
+  const f = liveFake();
+  const h = harness({ start: f.start });
+  const handoffs: HandoffCall[] = [];
+  const base = {
+    ...h.base,
+    signals: () => ({ occupancy, turns: 10, ageMs: 0, idleMs: 0 }),
+    handoff: async (s: { order: { folder: string } }, _c: unknown, d: { decision?: { reason?: string }; boundary?: string }) => {
+      handoffs.push({ folder: s.order.folder, reason: d.decision?.reason, boundary: d.boundary });
+    },
+  };
+  return { f, h, base: base as typeof h.base, handoffs };
+}
+
+test("a session that settles above the sweet spot is closed and handed off once, while the cache is warm", async () => {
+  const dir = gitScratch();
+  const { f, base, handoffs } = sweetHarness(0.7); // harness sweet spot is 0.65
+  await handleMessage(`/open ${dir} work`, 9, base);
+  const run = f.runs[0];
+  run.h.onTurnComplete?.(ok("s1"));
+  run.h.onSettled?.();
+  expect(run.closed).toBe(true);
+  run.finish(ok("s1"));
+  await tick();
+  expect(handoffs).toEqual([{ folder: dir, reason: "above-sweet-spot", boundary: "settled" }]);
+});
+
+test("a session that settles inside the sweet spot is left alone", async () => {
+  const dir = gitScratch();
+  const { f, base, handoffs } = sweetHarness(0.3);
+  await handleMessage(`/open ${dir} work`, 9, base);
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.();
+  expect(f.runs[0].closed).toBe(false);
+  expect(handoffs).toEqual([]);
+});
+
+test("uncommitted work defers a settle handoff, recorded once per session", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "wip.ts"), "half done");
+  const { f, h, base, handoffs } = sweetHarness(0.7);
+  await handleMessage(`/open ${dir} work`, 9, base);
+  for (let i = 0; i < 2; i++) {
+    f.runs[0].h.onTurnComplete?.(ok("s1"));
+    f.runs[0].h.onSettled?.();
+  }
+  expect(f.runs[0].closed).toBe(false);
+  expect(handoffs).toEqual([]);
+  expect(h.ledger.listContextEvents().map((e) => [e.verdict, e.boundary])).toEqual([["deferred", "settled"]]);
+});
+
+test("a message sent while a session closes for its handoff reaches the fresh session, not the closed one", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const b = {
+    ...base,
+    handoff: async (s: { id: string; order: { folder: string } }) => {
+      await slow;
+      h.registry.setSdkSessionId(s.id, "");
+      h.ledger.clearSessionsFor(s.order.folder);
+    },
+  } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.(); // closes run 0 for the handoff
+  const sent = handleMessage("and then the README", 9, b);
+  await tick();
+  f.runs[0].finish(ok("s1")); // the closed run ends; its handoff is now in flight
+  await tick();
+  expect(f.runs).toHaveLength(1); // still waiting for the handoff
+  release();
+  await sent;
+  await tick();
+  expect(f.runs[0].followUps).toEqual([]); // never pushed into the closed channel
+  expect(h.replies.some((r) => r.includes("handing off"))).toBe(true); // told why it waits
+  expect(f.runs).toHaveLength(2);
+  expect(f.runs[1].resume).toBeUndefined(); // a fresh session
+  expect(f.runs[1].task).toContain("and then the README");
+});
+
+test("a fresh start after a handoff gets the note inline and measures its orientation", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship the cart\n");
+  const { f, h, base } = sweetHarness(0.1);
+  const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1, { reason: "above-sweet-spot", boundary: "settled" });
+  await handleMessage(`/open ${dir} carry on`, 9, base);
+  expect(f.runs[0].task).toContain("ship the cart");
+  expect(f.runs[0].task).not.toContain("Read HANDOFF.md first");
+  const resumed = h.ledger.listContextEvents()[0];
+  expect(resumed).toMatchObject({ verdict: "resumed", detail: { handoffId } });
+  f.runs[0].h.onUsage?.("claude-opus-5-5", { input_tokens: 1 });
+  f.runs[0].h.onUsage?.("claude-opus-5-5", { input_tokens: 1 });
+  f.runs[0].h.onToolUse?.("e1", "Edit", { file_path: join(dir, "a.txt") });
+  expect(h.ledger.listContextEvents()[0].detail).toEqual({ handoffId, productive: true, steps: 2, success: true });
+});
+
+test("a safe checkpoint in the heavy band steers the worker to its note, then a continuation starts fresh", async () => {
+  const dir = gitScratch();
+  const { f, h, base, handoffs } = sweetHarness(0.1);
+  h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  await handleMessage(`/open ${dir} build all five phases`, 9, base);
+  const run = f.runs[0].h;
+  run.onUsage?.("claude-opus-5-5", { input_tokens: 2, cache_read_input_tokens: 819_998 }); // 82% ≥ checkpoint 0.8
+  run.onToolUse?.("c1", "Bash", { command: "git commit -m 'phase 2'" });
+  run.onToolResult?.("c1", false);
+  expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toContain("Neo context checkpoint");
+  expect(run.contextSteer?.("Write", { file_path: join(dir, "HANDOFF.md") })).toBeUndefined();
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nfive phases\n## Next steps\n1. phase 3\n"); // the worker obeys
+  run.onTurnComplete?.(ok("s1"));
+  run.onSettled?.();
+  expect(f.runs[0].closed).toBe(true);
+  f.runs[0].finish(ok("s1"));
+  await tick(10);
+  expect(handoffs).toEqual([]); // the worker wrote the note in its own context: no extra handoff turn
+  const ev = h.ledger.listContextEvents().find((e) => e.verdict === "handoff")!;
+  expect(ev).toMatchObject({ boundary: "checkpoint", reason: "heavy", sessionId: "s1" });
+  expect(ev.detail).toMatchObject({ written: true });
+  expect(f.runs).toHaveLength(2);
+  expect(f.runs[1].resume).toBeUndefined();
+  expect(f.runs[1].task).toContain("phase 3"); // the note, inline
+  expect(f.runs[1].task).toContain("Continue this task in a fresh session");
+});
+
+test("an operator message to an armed session disarms the steer — the operator's turn is never blocked", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.1);
+  h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  await handleMessage(`/open ${dir} long task`, 9, base);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  const run = f.runs[0].h;
+  run.onUsage?.("claude-opus-5-5", { input_tokens: 820_000 });
+  run.onToolUse?.("c1", "Bash", { command: "git commit -m x" });
+  run.onToolResult?.("c1", false);
+  expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toBeDefined();
+  await handleMessage("actually, fix the login first", 9, base);
+  expect(f.runs[0].followUps).toContain("actually, fix the login first");
+  expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toBeUndefined();
+});
+
+test("the resume gate defers a handoff over uncommitted work, and an emergency clear alerts the operator", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "wip.ts"), "x");
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.ledger.recordOrder({ id: "g1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h.ledger.recordSession("g1", "fat-id");
+  await handleMessage(`/open ${dir} continue`, 9, { ...h.base, signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }) });
+  expect(f.resumeSeen()).toBe("fat-id"); // kept: never reset over uncommitted work
+  expect(h.ledger.listContextEvents()[0]).toMatchObject({ verdict: "deferred", boundary: "resume", reason: "above-sweet-spot" });
+
+  const f2 = fakeStart();
+  const h2 = harness({ start: f2.start });
+  const alerts: Array<[string, string | undefined]> = [];
+  h2.ledger.recordOrder({ id: "g2", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h2.ledger.recordSession("g2", "full-id");
+  await handleMessage(`/open ${dir} continue`, 9, {
+    ...h2.base,
+    reply: (_c: number, t: string, _p?: string, pr?: string) => void alerts.push([t, pr]),
+    signals: () => ({ occupancy: 0.9, turns: 10, ageMs: 0, idleMs: 0 }),
+  } as typeof h2.base);
+  expect(h2.ledger.listContextEvents()[0]).toMatchObject({ verdict: "clear", reason: "emergency", boundary: "resume" });
+  expect(alerts.some(([t, pr]) => pr === "alert" && t.includes("emergency context clear"))).toBe(true);
+});
+
+test("a resumed session that ends before any edit records how far it got, with no success verdict", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nx\n");
+  const { f, h, base } = sweetHarness(0.1);
+  const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1);
+  await handleMessage(`/open ${dir} just a question`, 9, base);
+  f.runs[0].h.onUsage?.("claude-opus-5-5", { input_tokens: 1 });
+  f.runs[0].finish(ok("s9"));
+  await tick();
+  expect(h.ledger.listContextEvents().find((e) => e.verdict === "resumed")?.detail).toEqual({ handoffId, productive: false, steps: 1 });
+});
+
+// ---- code review 2026-10-06 (ADR-0021 follow-ups) ----
+
+test("a message that arrives during the handoff turn starts ONE fresh session — no second, context-free handoff", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const calls: string[] = [];
+  const b = {
+    ...base,
+    handoff: async (s: { id: string; sdkSessionId: string; order: { folder: string } }) => {
+      calls.push(s.sdkSessionId);
+      await slow;
+      h.registry.setSdkSessionId(s.id, "");
+      h.ledger.clearSessionsFor(s.order.folder);
+    },
+  } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.();
+  f.runs[0].finish(ok("s1")); // run ended; the (slow) handoff turn is now running, the control detached
+  await tick();
+  const sent = handleMessage("next thing", 9, b);
+  await tick();
+  release();
+  await sent;
+  await tick();
+  expect(calls).toEqual(["s1"]);
+  expect(f.runs).toHaveLength(2);
+  expect(f.runs[1].resume).toBeUndefined();
+  expect(f.runs[1].task).toContain("next thing");
+});
+
+test("a settle while an API retry is pending never closes the run — the retried brief is not lost", async () => {
+  const dir = gitScratch();
+  const { f, base } = sweetHarness(0.7);
+  let wake!: () => void;
+  const b = { ...base, sleep: () => new Promise<void>((r) => (wake = r)) } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  const run = f.runs[0];
+  run.h.onTurnComplete?.({ ok: false, sessionId: "s1", summary: "", costUsd: 0, apiError: "rate_limit" });
+  run.h.onSettled?.();
+  expect(run.closed).toBe(false);
+  wake();
+  await tick();
+  expect(run.followUps.length).toBe(1); // the retry reached the open channel
+});
+
+test("a message for a closing run whose end never comes is answered, not left hanging", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  const b = { ...base, cfg: { ...base.cfg, contextPolicy: { ...base.cfg.contextPolicy, handoffTimeoutMs: 10 } } } as typeof base;
+  const replies: string[] = [];
+  const b2 = { ...b, reply: (_c: number, t: string) => void replies.push(t) } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b2);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.(); // closed; the test never finishes the run
+  await handleMessage("hello?", 9, b2);
+  expect(replies.some((r) => r.includes("still closing"))).toBe(true);
+  expect(f.runs[0].followUps).toEqual([]);
+});
+
+test("an armed checkpoint that cannot complete (work appeared) tells the operator", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.1);
+  const replies: string[] = [];
+  const b = { ...base, reply: (_c: number, t: string) => void replies.push(t) } as typeof base;
+  h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  await handleMessage(`/open ${dir} long task`, 9, b);
+  const run = f.runs[0].h;
+  run.onUsage?.("claude-opus-5-5", { input_tokens: 820_000 });
+  run.onToolUse?.("c1", "Bash", { command: "git commit -m x" });
+  run.onToolResult?.("c1", false);
+  writeFileSync(join(dir, "late.ts"), "written after the checkpoint");
+  run.onTurnComplete?.(ok("s1"));
+  run.onSettled?.();
+  expect(f.runs[0].closed).toBe(false);
+  expect(replies.some((r) => r.includes("could not complete"))).toBe(true);
+});
+
+test("a resume gate whose wait ended on the bound starts fresh and never hands off the possibly-live session", async () => {
+  const dir = gitScratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.ledger.recordOrder({ id: "t1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h.ledger.recordSession("t1", "old-id");
+  trackHandoff(dir, new Promise<void>(() => {}), 10); // a handoff whose worker never ends
+  let handedOff = false;
+  await handleMessage(`/open ${dir} continue`, 9, {
+    ...h.base,
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }),
+    handoff: async () => void (handedOff = true),
+  });
+  expect(handedOff).toBe(false);
+  expect(f.resumeSeen()).toBeUndefined(); // fresh
 });

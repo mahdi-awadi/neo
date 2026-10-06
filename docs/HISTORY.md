@@ -802,3 +802,16 @@ number: 519 `clear` verdicts since 2026-07-08, only 2 of them truly at 85% of 1M
 dropped a session with no handoff note. The window now comes from the SDK's
 `result.modelUsage[*].contextWindow`, kept per model in the ledger, with the operator override on
 top. Going live needs a daemon restart (operator-gated).
+
+### Context sweet spot (2026-10-06, ADR-0021)
+
+A live session was measured only when its run ended or at the next resume, so it grew without a
+check. Handoffs then ran lazily against a cold cache, and 8 of 47 fresh sessions told to read
+HANDOFF.md never did. Now the policy is asked at three boundaries: `resume`, `settled` and
+`checkpoint`. The band comes from transcript data: sweet spot 40%, checkpoint 60%, emergency 90%.
+A settled session above 40% is handed off at once, while its cache is warm. A heavy session is
+steered at a safe, committed checkpoint through the governor hook to write its note, and a
+continuation starts fresh with the note inline. The note has fixed sections plus engine facts from
+git. A resumed session's orientation (model calls to its first edit) is measured. A message sent
+while a session closes is no longer dropped. Going live needs a daemon restart (operator-gated).
+
