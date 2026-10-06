@@ -238,7 +238,8 @@ operator-choice override of a model's context window, keyed by the model id the 
 (`claude-opus-5-5`, never the `[1m]`-tagged pin). You normally leave it unset: the SDK reports each
 model's real window on every completed turn and the ledger keeps the newest one per model
 (`model_windows`, ADR-0013). The window for a measurement is the override, then the SDK-reported
-window, then 200k for a model the SDK has not reported yet. The same windows reach every place that
+window, then 200k for a model the SDK has not reported yet. On that 200k guess a gate never
+clears a session (it hands off instead), and the console shows no ctx%. The same windows reach every place that
 measures context: `dispatch`'s gate, `pipeline`'s pre- and post-resume gates, the loop-resume gate,
 `runHandoff`'s re-measurement, the web console and `/status` ctx%.
 

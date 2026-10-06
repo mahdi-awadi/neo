@@ -361,3 +361,28 @@ test("sessionContext measures an Opus 5.5 transcript against the SDK-reported 1M
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ADR-0013 review: right after a restart no model has reported its window yet, and the resume gate
+// runs BEFORE the first turn. A guessed window must never destroy a session — at most a handoff.
+test("decideContext: over the emergency line on a GUESSED window hands off, never clears", () => {
+  const cfg = { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 1e12, handoffTimeoutMs: 1, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 };
+  const sig = { occupancy: 2.74, turns: 10, ageMs: 0, idleMs: 0 };
+  expect(decideContext({ ...sig, windowKnown: false }, cfg, 3_600_000)).toBe("handoff");
+  expect(decideContext({ ...sig, windowKnown: true }, cfg, 3_600_000)).toBe("clear");
+  expect(decideContext(sig, cfg, 3_600_000)).toBe("clear"); // unset = known (hand-built signals)
+});
+
+test("sessionContext says whether the window was reported or guessed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-ctxknown-"));
+  try {
+    const folder = "/p/gold";
+    mkdirSync(join(dir, encodeCwd(folder)), { recursive: true });
+    const turn = { type: "assistant", message: { model: "claude-opus-5-5", usage: { input_tokens: 470_000 } } };
+    writeFileSync(join(dir, encodeCwd(folder), "s.jsonl"), `${JSON.stringify(turn)}\n`);
+    expect(sessionContext(folder, "s", { projectsDir: dir }).windowKnown).toBe(false);
+    expect(sessionContext(folder, "s", { projectsDir: dir, windowTokensByModel: { "claude-opus-5-5": 1_000_000 } }).windowKnown).toBeUndefined(); // known
+    expect(sessionContext(folder, "missing", { projectsDir: dir }).windowKnown).toBeUndefined(); // nothing measured
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

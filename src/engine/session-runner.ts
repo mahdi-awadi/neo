@@ -538,15 +538,19 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
 }
 
 /** Report each `modelUsage` entry's `contextWindow` under its canonical model id. The key is the
- *  requested id and may carry the `[1m]` tag; the transcript never does, so the tag is dropped when
- *  the SDK gives no `canonicalModel`. Entries without a positive window are skipped. */
+ *  requested id and may carry the `[1m]` tag; the transcript never does, so the tag is dropped.
+ *  Entries without a positive window are skipped. */
 function reportContextWindows(modelUsage: unknown, report?: (model: string, tokens: number) => void): void {
   if (!report || !modelUsage || typeof modelUsage !== "object") return;
   for (const [key, u] of Object.entries(modelUsage as Record<string, { contextWindow?: unknown; canonicalModel?: unknown }>)) {
     const tokens = u?.contextWindow;
     if (typeof tokens !== "number" || !(tokens > 0)) continue;
-    const model = typeof u.canonicalModel === "string" && u.canonicalModel ? u.canonicalModel : key.replace(/\[1m\]$/i, "");
-    report(model, tokens);
+    // The transcript names the model by `message.model`; report under the canonical id AND the
+    // de-tagged key, so a lookup matches whichever of the two the transcript uses.
+    const bare = key.replace(/\[1m\]$/i, "");
+    const canonical = typeof u.canonicalModel === "string" && u.canonicalModel ? u.canonicalModel : bare;
+    report(canonical, tokens);
+    if (bare !== canonical) report(bare, tokens);
   }
 }
 

@@ -97,7 +97,8 @@ export function dashboardSnapshot(opts: {
     if (s.sdkSessionId) {
       try {
         const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel: windows });
-        ctxPct = Math.round(sig.occupancy * 100);
+        // A guessed window gives a meaningless % (ADR-0013) — show none until the SDK reports one.
+        if (sig.windowKnown !== false) ctxPct = Math.round(sig.occupancy * 100);
       } catch {
         // skip on error
       }

@@ -443,7 +443,7 @@ function renderList(
       if (s.sdkSessionId) {
         try {
           const sig = (signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel });
-          ctx = ` · ctx ${Math.round(sig.occupancy * 100)}%`;
+          if (sig.windowKnown !== false) ctx = ` · ctx ${Math.round(sig.occupancy * 100)}%`; // no % on a guessed window (ADR-0013)
         } catch {
           // skip on error
         }

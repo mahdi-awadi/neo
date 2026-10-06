@@ -29,8 +29,15 @@ export function contextWindows(
  *  winning per model. `model === undefined` (no model found in the transcript yet) falls back to
  *  the default fact — fail-open, never throws. */
 export function windowTokensFor(model: string | undefined, overrides?: Record<string, number>): number {
-  const m = { ...MODEL_WINDOW_TOKENS, ...overrides };
-  return (model !== undefined && m[model]) || m.default;
+  return knownWindowFor(model, overrides) ?? MODEL_WINDOW_TOKENS.default;
+}
+
+/** The window for `model` when one is actually known — reported, overridden or a model fact, or a
+ *  `default` the operator set — and `undefined` when windowTokensFor would only be guessing. */
+function knownWindowFor(model: string | undefined, overrides?: Record<string, number>): number | undefined {
+  const m: Record<string, number> = { ...MODEL_WINDOW_TOKENS, ...overrides };
+  if (model !== undefined && model !== "default" && m[model]) return m[model];
+  return overrides?.default || undefined;
 }
 
 export interface ContextSignals {
@@ -40,6 +47,9 @@ export interface ContextSignals {
   /** How long the session has sat idle since its transcript was last written (ms). 0 = fail-open
    *  (unmeasurable — e.g. no transcript yet). Used to gate the stale-resume rule below. */
   idleMs: number;
+  /** `false` when a turn was measured but its model's window is only the default guess — no window
+   *  reported or overridden yet (ADR-0013). Unset means known, or nothing measured. */
+  windowKnown?: boolean;
 }
 
 export type ContextVerdict = "keep" | "handoff" | "clear";
@@ -104,7 +114,8 @@ export function effectiveCacheTtlMs(
 }
 
 export function decideContext(sig: ContextSignals, cfg: ContextPolicyCfg, ttlMs: number): ContextVerdict {
-  if (sig.occupancy >= cfg.emergencyPct) return "clear";
+  // A guessed window must never destroy a session (ADR-0013): over the emergency line it hands off.
+  if (sig.occupancy >= cfg.emergencyPct) return sig.windowKnown === false ? "handoff" : "clear";
   if (sig.idleMs >= ttlMs && sig.occupancy >= cfg.staleResumePct) return "handoff";
   if (sig.occupancy >= cfg.handoffPct || sig.turns >= cfg.maxTurns || sig.ageMs >= cfg.maxAgeMs) return "handoff";
   return "keep";
@@ -184,6 +195,7 @@ export function sessionContext(
     if (tail) foldLines(view, tail);
     return {
       occupancy: view.lastInputSide / windowTokensFor(view.lastModel, opts.windowTokensByModel),
+      ...(view.turns > 0 && knownWindowFor(view.lastModel, opts.windowTokensByModel) === undefined ? { windowKnown: false } : {}),
       turns: view.turns,
       ageMs: view.firstTs ? Math.max(0, now() - view.firstTs) : 0,
       idleMs: Math.max(0, now() - st.mtimeMs),

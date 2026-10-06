@@ -1029,3 +1029,19 @@ test("runOrder reports each model's SDK context window at the result, under its 
     ["claude-haiku-4-5-20251001", 200_000],
   ]);
 });
+
+test("runOrder also reports the window under the de-tagged key when the canonical id differs", async () => {
+  const q = () =>
+    (async function* () {
+      yield {
+        type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s",
+        modelUsage: { "claude-opus-5-5-20261001[1m]": { contextWindow: 1_000_000, canonicalModel: "claude-opus-5-5" } },
+      };
+    })();
+  const seen: Array<[string, number]> = [];
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", onContextWindow: (m, t) => seen.push([m, t]) }, { query: q as never });
+  expect(seen).toEqual([
+    ["claude-opus-5-5", 1_000_000],
+    ["claude-opus-5-5-20261001", 1_000_000],
+  ]);
+});

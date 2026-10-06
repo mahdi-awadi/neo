@@ -21,6 +21,9 @@ the session without a handoff note.
 2. The ledger keeps the newest window per model (`model_windows`).
 3. The window for a measurement is, in order: the operator's `contextPolicy.windowTokensByModel`
    override, then the SDK-reported window, then the code default (200k) for a model never seen.
+4. A measurement on that guessed default is marked `windowKnown: false`. A guess never destroys a
+   session: over `emergencyPct` the gate hands off (a note is written) instead of `clear`. The
+   console and `/status` show no ctx% until the window is known.
 
 ## Considered options
 
@@ -34,6 +37,8 @@ the session without a handoff note.
 
 ## Consequences
 
-- A model never seen since the ledger was created uses the 200k default until its first turn
-  completes. That is the first seconds of a fresh install, not a steady state.
+- The table is empty after this change ships, and a resume gate runs before the resumed session's
+  first turn. So the first resume of each large open session after the restart measures on the
+  200k guess. Rule 4 turns what would be a `clear` into a handoff. Once any turn on the model
+  completes, the window is known for every session on it.
 - The context-policy thresholds (`handoffPct` 0.65, `emergencyPct` 0.85) now mean what they say.
