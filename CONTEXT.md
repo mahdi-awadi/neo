@@ -421,6 +421,110 @@ How long a pending approval waits: a reminder to the operator every `approvalRem
 deny after `approvalTimeoutMs` (fails closed). An approval never waits silently forever (ADR-0012).
 _Avoid_: approval TTL, auto-approve on timeout
 
+### Tracing work back to the operator
+
+**Operator message**:
+One line the operator sends from Telegram or the web console. It gets a ledger id the moment it
+arrives. Customer mail is not an operator message.
+_Avoid_: input, prompt, request
+
+**Message ref**:
+The short form of a message id that the operator reads and types — `m4f2`. One ref names one
+message, and the ref of a thread's root names the thread.
+_Avoid_: message id (in operator text), ticket number
+
+**Cause**:
+The operator message (and its thread) that a piece of work traces back to. Set once where the work
+starts, then copied into everything that work produces: replies, orders, todos, decisions, tool
+actions, dispatch results, files and plans. The message-level form of the **originating trigger**.
+_Avoid_: parent, source, context
+
+**Thread**:
+One operator message, or one engine trigger, and everything it caused, in time order — replies,
+dispatches, progress, results, decisions, plans and the operator's follow-ups. A message joins a
+thread only by an explicit link (a reply, or the console's thread composer). Not a **session**: one
+session serves many threads, and one thread can reach many sessions.
+_Avoid_: conversation, chat, session, ticket
+
+**Thread root**:
+The first message of a thread. For background work (a loop fire, an attention todo, an ingress
+brief) the engine writes the root itself, so every thread has one.
+_Avoid_: first message, parent
+
+**Thread state**:
+What a thread needs, derived from its facts: **open** (work is queued or running), **waiting** (an
+open decision or approval — the operator owes an answer), **done**, or **failed** (the newest work
+ended badly and nothing runs). Waiting beats open. The operator may close a thread; a new message
+reopens it.
+_Avoid_: status (unqualified), progress
+
+**Trace**:
+The tree of everything one message or thread produced, read from the ledger. What `/trace` shows.
+_Avoid_: log, history, audit
+
+### What needs the operator
+
+**Attention item**:
+One fact about a project that needs someone to act — a failed CI run, a branch not pushed, a
+leftover worktree, an approval waiting for hours, a plan nobody executed. It is opened, refreshed
+and resolved by code, never by AI. It can become one todo.
+_Avoid_: alert, issue, warning, notification
+
+**Producer**:
+The code that reads one source (git, GitHub, the engine, plans, the running build) and returns the
+attention items it sees now. A producer that cannot read its source changes nothing.
+_Avoid_: scanner, checker, watcher
+
+**Daily digest**:
+One message a day with each project's open attention items, the worst first, each one tap away from
+a todo.
+_Avoid_: report, summary, newsletter
+
+**Project dashboard**:
+One view of a project: what runs now, its queue, git and GitHub state, open decisions, plans,
+attention items, recent threads and health. The same view on the web, on Telegram and for the
+company.
+_Avoid_: project page, status page, overview
+
+**Spinning dispatch**:
+A dispatch that shows activity but no progress: several progress digests in a row with the same
+step, the same note and the same last commit. Different from **wedged** (no activity at all).
+_Avoid_: stuck, looping, hung
+
+**Leftover worktree**:
+A linked git worktree that no session works in. Worktree folders are temporary by operator rule, so
+one that stays is an attention item.
+_Avoid_: stale checkout, extra folder
+
+### Plans
+
+**Plan**:
+A design or implementation document a worker writes under a project's **plan paths**. The engine
+registers each one, sends it to the operator, and tracks its status.
+_Avoid_: spec (when the tracked document is meant), proposal, design doc
+
+**Plan paths**:
+The folders, set in config, where plans and specs live (`docs/**/plans/`, `docs/**/specs/`, …). A
+file written there in a run is a plan.
+_Avoid_: plan folder, docs
+
+**Plan status**:
+`draft` (registered, not sent), `sent` (the operator has it), `approved`, `executing` (a todo works
+it), `done`, or `abandoned`. Moves only on an operator tap or a fact the engine can read.
+_Avoid_: plan state, phase
+
+### The running engine
+
+**Running build**:
+The engine code the daemon actually runs — the commit it booted from, recorded at boot.
+_Avoid_: current version, deployed version
+
+**Restart-gated change**:
+A change that exists on disk but not in the running build: a commit after the boot commit, a fix
+branch not merged yet, an update that needs a restart. Computed from git and the updater, never
+remembered by hand. Wider than a **restart-gated update**, which is one kind of it.
+_Avoid_: pending restart, waiting fix
+
 ### Errors that must not stop the engine
 
 **Unit of work**:
