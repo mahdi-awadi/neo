@@ -7,13 +7,17 @@ import type { TodoQueue } from "./todo-queue";
 import type { Trace } from "./trace";
 import { dismiss, listOpen, snooze } from "./attention";
 import { attentionBrief } from "./attention-briefs";
+import { todoTitle } from "./todo-title";
+import { faults } from "./fault";
 
 export type AttentionAction = "todo" | "snooze" | "dismiss";
 const ACTIONS: AttentionAction[] = ["todo", "snooze", "dismiss"];
 export const isAttentionAction = (s: string): s is AttentionAction => (ACTIONS as string[]).includes(s);
 
-/** The button labels, in card order. */
-export const ATTENTION_LABELS: Record<AttentionAction, string> = { todo: "→ todo", snooze: "snooze 1d", dismiss: "dismiss" };
+/** The Telegram button labels (engine text, like the plan buttons); snooze names its configured hours. */
+export function attentionLabel(action: AttentionAction, snoozeHours: number): string {
+  return action === "todo" ? "→ todo" : action === "snooze" ? `snooze ${snoozeHours}h` : "dismiss";
+}
 
 export interface AttentionActionDeps {
   ledger: Ledger;
@@ -39,14 +43,21 @@ export async function applyAttentionAction(deps: AttentionActionDeps, id: number
       dismiss(ledger, id, now);
       return { ok: true, text: `#${id} dismissed — it comes back only if it goes away and returns` };
     case "todo":
-      return toTodo(deps, row);
+      // Contained (ADR-0010): a fault in the trace or the queue is the tap's answer, never a throw.
+      try {
+        return await toTodo(deps, row);
+      } catch (e) {
+        faults.report("attention.toTodo", e, { id });
+        return { ok: false, text: `→ todo failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
   }
 }
 
 async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<{ ok: boolean; text: string }> {
   const { ledger } = deps;
+  // A linked todo that is still queued or running is THE todo; a finished, failed or cancelled one can be retried.
   const existing = row.todoId !== undefined ? ledger.todoById(row.todoId) : undefined;
-  if (existing && existing.status !== "cancelled") return { ok: true, text: `already todo #${existing.id} (${existing.status})` };
+  if (existing && (existing.status === "queued" || existing.status === "running")) return { ok: true, text: `already todo #${existing.id} (${existing.status})` };
   const launcher = deps.todo?.launcher();
   if (!deps.todo || !launcher || !deps.trace) return { ok: false, text: "the todo queue is unavailable — → todo needs it" };
   const brief = attentionBrief(row);
@@ -87,7 +98,8 @@ export function renderAttention(
     lines.push(`${project}:`);
     for (const r of items) {
       if (lines.length >= o.maxLines) break;
-      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${r.title}${r.todoId !== undefined ? ` → todo #${r.todoId}` : ""}`);
+      // One bounded line per item: a title may hold a long, multi-line question (the brief keeps it all).
+      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${todoTitle(r.title)}${r.todoId !== undefined ? ` → todo #${r.todoId}` : ""}`);
       shown++;
       if (buttons.length < o.maxButtons) buttons.push(r);
     }

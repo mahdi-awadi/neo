@@ -247,7 +247,8 @@
   },
   "attention": {
     "todo": "#{{id}} → todo",
-    "snooze": "snooze 1 day",
-    "dismiss": "dismiss"
+    "snooze": "snooze {{hours}}h",
+    "dismiss": "dismiss",
+    "failed": "That action did not reach Neo — try again."
   }
 }

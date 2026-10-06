@@ -837,14 +837,15 @@ function renderAttention(e: Any): void {
     (["todo", "snooze", "dismiss"] as const).forEach((action) => {
       const b = document.createElement("button");
       b.className = "chip";
-      b.textContent = tx(`attention.${action}`, { id: it.id });
+      b.textContent = tx(`attention.${action}`, { id: it.id, hours: e.snoozeHours });
       b.onclick = () => {
         void post("/api/attention", { id: it.id, action })
           .then((r) => r.json())
           .then((x) => {
             feedMsg("⋯ " + esc(x.text || x.error || ""), "me", null);
-            if (x.ok && action !== "todo") row.remove();
-          });
+            if (action !== "todo") row.remove(); // snoozed, dismissed, or already resolved elsewhere
+          })
+          .catch(() => feedMsg("⋯ " + esc(tx("attention.failed")), "me", null));
       };
       row.appendChild(b);
     });

@@ -80,7 +80,8 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
   // One name per project for every kind: the folder's (a session may be named `gold-2`).
   const at = (folder: string | undefined) => (folder ? { project: basename(folder), folder } : company);
   const out: AttentionDraft[] = [];
-  const draft = (d: Omit<AttentionDraft, "source" | "severity"> & { severity?: AttentionDraft["severity"] }): void =>
+  // `kind` is an EngineKind: a new kind must join ENGINE_KINDS, so the brief-coverage test sees it.
+  const draft = (d: Omit<AttentionDraft, "source" | "severity" | "kind"> & { kind: EngineKind; severity?: AttentionDraft["severity"] }): void =>
     void out.push({ source: "engine", severity: "normal", ...d });
   const failed = new Set<EngineKind>();
   const kind = (name: EngineKind, read: () => void): void => {

@@ -57,7 +57,7 @@ export type WebEvent =
   | { type: "sdk"; sdk: WorkerSdkState }
   | { type: "file"; name: string; url: string; project?: string }
   // What needs the operator (ADR-0018, /attention): the list and its one-tap items.
-  | { type: "attention"; text: string; items: NonNullable<CommandResult["attention"]> }
+  | { type: "attention"; text: string; items: NonNullable<CommandResult["attention"]>; snoozeHours: number }
   // A thread changed state (ADR-0017): the console moves its row without a re-fetch.
   | ({ type: "thread"; ref?: string } & ThreadChange & Partial<Pick<ThreadListRow, "messages" | "openDecisions" | "activeTodos">>);
 
@@ -253,7 +253,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       if (command !== null) {
         if (command.sdk) emit({ type: "sdk", sdk: command.sdk });
         if (command.attention?.length) {
-          emit({ type: "attention", text: command.text, items: command.attention });
+          emit({ type: "attention", text: command.text, items: command.attention, snoozeHours: (opts.engine.cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours });
         } else if (command.select?.length) {
           emit({ type: "projects", text: command.text, items: command.select });
         } else {

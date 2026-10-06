@@ -98,3 +98,38 @@ test("/attention [project] answers with the list and its one-tap items", () => {
   expect(r.attention?.map((a) => a.id)).toEqual([1]);
   expect(handleCommand("/attention", 1, deps)!.text).toContain("gold:");
 });
+
+test("an item that comes back can be queued again; a failed todo can be retried; a live one is not doubled", async () => {
+  const r = rig();
+  const [id] = reconcile(r.ledger, "engine", "gold", [draft()], 100).opened;
+  await applyAttentionAction(r.deps, id!, "todo", 200);
+  const first = r.ledger.attentionById(id!)!.todoId!;
+  expect((await applyAttentionAction(r.deps, id!, "todo", 250)).text).toContain(`already todo #${first} (queued)`);
+  r.ledger.updateTodo(first, { status: "failed", endedAt: 300 });
+  expect((await applyAttentionAction(r.deps, id!, "todo", 310)).text).toMatch(/^queued as todo #\d+$/); // retry after a failure
+  const second = r.ledger.attentionById(id!)!.todoId!;
+  expect(second).not.toBe(first);
+  r.ledger.updateTodo(second, { status: "done", endedAt: 400 });
+  reconcile(r.ledger, "engine", "gold", [], 500); // resolved
+  reconcile(r.ledger, "engine", "gold", [draft()], 600); // back: the same row reopens, its old todo is not its todo
+  expect(r.ledger.attentionById(id!)!.todoId).toBeUndefined();
+  expect((await applyAttentionAction(r.deps, id!, "todo", 700)).ok).toBe(true);
+  expect(r.submitted).toHaveLength(3);
+});
+
+test("a → todo whose queue throws answers with the failure, never throws", async () => {
+  const r = rig();
+  const [id] = reconcile(r.ledger, "engine", "gold", [draft()], 100).opened;
+  const broken = { ...r.deps, todo: { launcher: () => ({ deps: {} as never, replyChat: 1 }), submit: async () => { throw new Error("ledger is locked"); } } as unknown as TodoQueue };
+  const a = await applyAttentionAction(broken, id!, "todo", 200);
+  expect(a.ok).toBe(false);
+  expect(a.text).toContain("ledger is locked");
+});
+
+test("renderAttention keeps every item to one bounded line (a multi-line, long title never breaks the list)", () => {
+  const l = openLedger(":memory:");
+  reconcile(l, "engine", "gold", [draft({ kind: "decision_stale", key: "d1", title: `decision open 2d: ${"x".repeat(500)}\nsecond line\nthird` })], 100);
+  const lines = renderAttention(l, { now: 200, maxLines: 30, maxButtons: 10 }).text.split("\n");
+  expect(lines).toHaveLength(3);
+  expect(lines[2]!.length).toBeLessThan(160);
+});

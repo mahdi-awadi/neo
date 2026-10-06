@@ -45,7 +45,7 @@ export function restartDrafts(d: RestartDeps): AttentionDraft[] | "error" {
   if (!d.boot) return "error";
   const boot = d.boot;
   const run = d.run ?? git;
-  const at = { project: basename(d.folder), folder: d.folder, source: "restart" as const, kind: "restart_gated", severity: "normal" as const };
+  const at = { project: basename(d.folder), folder: d.folder, source: "restart" as const, kind: RESTART_KINDS[0], severity: "normal" as const };
   const head = headOf(d.folder, run);
   const branch = branchOf(d.folder, run);
   if (!head || !branch) return "error";

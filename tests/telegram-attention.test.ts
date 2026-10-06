@@ -16,10 +16,10 @@ const ADMIN = 42;
 const botInfo = { id: 1, is_bot: true, first_name: "Neo", username: "neo_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } as never;
 const item = { project: "gold", folder: "/home/gold", source: "engine" as const, kind: "queue_paused", key: "/home/gold", title: "todo queue paused 7h", severity: "normal" as const };
 
-test("attentionKeyboard: one row per item — → todo, snooze 1d, dismiss — as att:<id>:<action>", () => {
-  const kb = attentionKeyboard([{ id: 7 }]);
+test("attentionKeyboard: one row per item — → todo, snooze (configured hours), dismiss — as att:<id>:<action>", () => {
+  const kb = attentionKeyboard([{ id: 7 }], 48);
   expect(kb.inline_keyboard.map((row) => row.map((b) => [b.text, (b as { callback_data: string }).callback_data]))).toEqual([
-    [["#7 → todo", "att:7:todo"], ["snooze 1d", "att:7:snooze"], ["dismiss", "att:7:dismiss"]],
+    [["#7 → todo", "att:7:todo"], ["snooze 48h", "att:7:snooze"], ["dismiss", "att:7:dismiss"]],
   ]);
 });
 

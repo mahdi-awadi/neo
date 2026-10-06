@@ -2,7 +2,7 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
-import { applyAttentionAction, isAttentionAction, ATTENTION_LABELS } from "../engine/attention-actions";
+import { applyAttentionAction, isAttentionAction, attentionLabel } from "../engine/attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "../engine/producers/engine";
 import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ApiClientOptions } from "grammy";
@@ -663,7 +663,7 @@ export function createTelegramBot(
       } else if (command.inbox?.length) {
         say(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
       } else if (command.attention?.length) {
-        say(chatId, command.text, { reply_markup: attentionKeyboard(command.attention) });
+        say(chatId, command.text, { reply_markup: attentionKeyboard(command.attention, (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours) });
       } else {
         say(chatId, command.text);
       }
@@ -910,7 +910,8 @@ export function createTelegramBot(
       const action = attTap[2];
       const r = await applyAttentionAction(attentionDeps(), id, action, Date.now());
       await ctx.answerCallbackQuery(r.text.slice(0, 200));
-      if (r.ok && action !== "todo") {
+      // Snoozed, dismissed — or already resolved elsewhere (the console, a scan): the row has nothing left to do.
+      if (action !== "todo") {
         const rows = (ctx.callbackQuery.message?.reply_markup?.inline_keyboard ?? []).filter(
           (row) => !row.some((b) => "callback_data" in b && b.callback_data.startsWith(`att:${id}:`)),
         );
@@ -1083,18 +1084,20 @@ function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefin
   return undefined;
 }
 
-/** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<version>:<action>`
- *  tap — the version keeps an older card from acting on newer content. */
-/** One row per attention item: `#7 → todo`, `snooze 1d`, `dismiss` — `att:<id>:<action>` callbacks. */
-export function attentionKeyboard(items: Array<{ id: number }>): InlineKeyboard {
+/** One row per attention item: `#7 → todo`, `snooze 24h`, `dismiss` — `att:<id>:<action>` callbacks. */
+export function attentionKeyboard(items: Array<{ id: number }>, snoozeHours: number): InlineKeyboard {
   const kb = new InlineKeyboard();
   items.forEach((it, i) => {
     if (i > 0) kb.row();
-    kb.text(`#${it.id} ${ATTENTION_LABELS.todo}`, `att:${it.id}:todo`).text(ATTENTION_LABELS.snooze, `att:${it.id}:snooze`).text(ATTENTION_LABELS.dismiss, `att:${it.id}:dismiss`);
+    kb.text(`#${it.id} ${attentionLabel("todo", snoozeHours)}`, `att:${it.id}:todo`)
+      .text(attentionLabel("snooze", snoozeHours), `att:${it.id}:snooze`)
+      .text(attentionLabel("dismiss", snoozeHours), `att:${it.id}:dismiss`);
   });
   return kb;
 }
 
+/** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<version>:<action>`
+ *  tap — the version keeps an older card from acting on newer content. */
 export function planKeyboard(planId: number, status: PlanStatus, version: number): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const a of planActions(status)) kb.text(PLAN_LABELS[a], `plan:${planId}:${version}:${a}`);
