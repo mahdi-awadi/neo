@@ -2,7 +2,8 @@ import { test, expect } from "bun:test";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMessageRoutes } from "../src/engine/message-routes";
-import { routeReply, repliedContextBrief, UNRESOLVED_REPLY_MESSAGE } from "../src/engine/reply-routing";
+import { routeReply, routeThreadMessage, repliedContextBrief, UNRESOLVED_REPLY_MESSAGE, UNRESOLVED_THREAD_MESSAGE } from "../src/engine/reply-routing";
+import { createTrace } from "../src/engine/trace";
 import type { Order } from "../src/types";
 
 const CHAT = 42;
@@ -83,4 +84,57 @@ test("a resume with no replied-to text delivers unchanged (nothing to prepend)",
 
 test("repliedContextBrief frames the original + the operator's reply", () => {
   expect(repliedContextBrief("A", "B")).toBe("You previously sent: «A». The operator is replying to that: B");
+});
+
+// ── the console's thread composer (P3 review, AC3.4): a message typed inside a thread goes to THAT
+// thread's project, never to whatever the chat's focus/default happens to be.
+
+function threadIn(f: ReturnType<typeof fixture>, project?: { name: string; folder: string }): number {
+  const trace = createTrace({ ledger: f.ledger, registry: f.registry });
+  const cause = trace.inbound({ chatId: CHAT, text: "start", surface: "web" });
+  if (project) trace.outbound({ chatId: CHAT, text: "on it", cause, project: project.name, folder: project.folder });
+  return cause.threadId;
+}
+
+test("a thread message goes to the thread's project even when another project holds the focus", () => {
+  const f = fixture();
+  const gold = addSession(f.registry, "/home/gold", "running");
+  const acme = addSession(f.registry, "/home/acme", "running");
+  f.registry.setFocus(CHAT, acme.id, "pinned");
+  const threadId = threadIn(f, { name: "gold", folder: "/home/gold" });
+  expect(routeThreadMessage(f.deps, { chatId: CHAT, threadId, text: "next step" })).toEqual({ deliver: "next step" });
+  expect(f.registry.getFocus(CHAT)).toMatchObject({ session: { id: gold.id }, mode: "once" });
+});
+
+test("a thread message to a closed project seeds a resumable entry for its folder", () => {
+  const f = fixture();
+  const threadId = threadIn(f, { name: "gold", folder: "/home/gold" });
+  expect(routeThreadMessage(f.deps, { chatId: CHAT, threadId, text: "go" })).toEqual({ deliver: "go" });
+  expect(f.registry.getFocus(CHAT)?.session.order.folder).toBe("/home/gold");
+});
+
+test("a thread with no project goes to the company, not to a pinned project", () => {
+  const f = fixture();
+  const company = addSession(f.registry, "/tmp/agent", "running");
+  f.registry.setDefault(company.id);
+  const acme = addSession(f.registry, "/home/acme", "running");
+  f.registry.setFocus(CHAT, acme.id, "pinned");
+  const threadId = threadIn(f);
+  expect(routeThreadMessage(f.deps, { chatId: CHAT, threadId, text: "hi" })).toEqual({ deliver: "hi" });
+  expect(f.registry.getFocus(CHAT)?.session.id).toBe(company.id);
+});
+
+test("a project-less thread with no company but a focus elsewhere asks — never guesses", () => {
+  const f = fixture();
+  const acme = addSession(f.registry, "/home/acme", "running");
+  f.registry.setFocus(CHAT, acme.id, "pinned");
+  const threadId = threadIn(f);
+  expect(routeThreadMessage(f.deps, { chatId: CHAT, threadId, text: "hi" })).toEqual({ clarify: UNRESOLVED_THREAD_MESSAGE });
+  expect(f.registry.getFocus(CHAT)?.session.id).toBe(acme.id); // the pin is left alone
+});
+
+test("an unknown thread asks the operator to name the project", () => {
+  const f = fixture();
+  expect(routeThreadMessage(f.deps, { chatId: CHAT, threadId: 999, text: "hi" })).toEqual({ clarify: UNRESOLVED_THREAD_MESSAGE });
+  expect(f.registry.getFocus(CHAT)).toBeUndefined();
 });

@@ -17,6 +17,10 @@ import type { MessageRoutes } from "./message-routes";
 export const UNRESOLVED_REPLY_MESSAGE =
   "I couldn't tell which project that reply was for — name it or /use <project> and resend.";
 
+/** Shown when a console thread message can't be tied to a session — instead of guessing one. */
+export const UNRESOLVED_THREAD_MESSAGE =
+  "I couldn't tell which project that thread belongs to — name it or /use <project> and resend.";
+
 /** Prepend the message the operator replied to, so a RESUMED worker re-grounds in what it sent
  *  before (the live session had been idle-closed and lost that memory). */
 export function repliedContextBrief(original: string, reply: string): string {
@@ -41,6 +45,9 @@ export interface ReplyInput {
   /** The operator's actual message text. */
   text: string;
 }
+
+/** What seeding a folder's session needs (no message routes). */
+export type FolderDeliveryDeps = Pick<ReplyRoutingDeps, "registry" | "ledger" | "now" | "worker">;
 
 /** `deliver` → call handleMessage(deliver); `clarify` → reply that message and do NOT handleMessage. */
 export type ReplyResult = { deliver: string } | { clarify: string };
@@ -71,13 +78,33 @@ export function routeReply(deps: ReplyRoutingDeps, input: ReplyInput): ReplyResu
   return { deliver };
 }
 
+/**
+ * Route a message typed inside a console thread (ADR-0017) to THAT thread's project — never to the
+ * chat's current focus/default. A thread that learned a project goes to its folder through the same
+ * seeding path as a reply; a project-less thread is company work. Nothing to resolve → clarify.
+ */
+export function routeThreadMessage(deps: FolderDeliveryDeps, input: { chatId: number; threadId: number; text: string }): ReplyResult {
+  const { registry, ledger } = deps;
+  const thread = ledger.threadById(input.threadId);
+  if (!thread) return { clarify: UNRESOLVED_THREAD_MESSAGE };
+  if (thread.folder) {
+    deliverIntoFolder(deps, thread.folder, input.chatId, input.text);
+    return { deliver: input.text };
+  }
+  const company = registry.getDefault();
+  if (company) registry.setFocus(input.chatId, company.id, "once");
+  // No company and a focus elsewhere: delivering would land in that other project.
+  else if (registry.getFocus(input.chatId)) return { clarify: UNRESOLVED_THREAD_MESSAGE };
+  return { deliver: input.text };
+}
+
 /** Ensure a focused, resumable session exists for `folder` and return the text to handleMessage into
  *  it. The ONE session-seeding path shared by routeReply (the operator replied to a worker line) and
  *  the decision-answer path (the operator answered a tracked decision): a running session is just
  *  focused once; an idle/closed one is rebuilt as an idle, resume-seeded entry from the folder's last
  *  recorded SDK session so the pipeline's resume branch reopens the same conversation. Focus is
  *  mode "once" — a stray next message never sticks to the project. */
-export function deliverIntoFolder(deps: ReplyRoutingDeps, folder: string, chatId: number, text: string): string {
+export function deliverIntoFolder(deps: FolderDeliveryDeps, folder: string, chatId: number, text: string): string {
   const { registry, ledger } = deps;
   const now = deps.now ?? (() => Date.now());
   const open = registry.findByFolder(folder);

@@ -33,6 +33,7 @@ import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 import type { Cause, ThreadChange } from "./trace";
 import { faults } from "./fault";
 import { applyPlanAction, planActions, planDepsFrom, type PlanAction } from "./plans";
+import { routeThreadMessage } from "./reply-routing";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -246,8 +247,21 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       // their own reply. The web UI shows this message optimistically, so origin "web" is excluded.
       // Commands returned above: they open no thread (spec §4.1 rule 3). Everything else is traced first.
       const cause = inbound(text, sendOpts?.threadId);
+      // Typed inside a thread: it goes to that thread's project, not the chat's focus (AC3.4).
+      let deliver = text;
+      if (sendOpts?.threadId !== undefined) {
+        const routing = routeThreadMessage(
+          { registry: opts.engine.registry, ledger: opts.engine.ledger, worker: opts.engine.cfg.providers.ownWork },
+          { chatId: opts.chatId, threadId: sendOpts.threadId, text },
+        );
+        if ("clarify" in routing) {
+          message(routing.clarify);
+          return;
+        }
+        deliver = routing.deliver;
+      }
       opts.bus?.mirror("web", { kind: "echo", text, ...knownIds({ msgId: cause?.msgId, threadId: cause?.threadId }) });
-      await handleMessage(text, opts.chatId, deps, "neo", cause);
+      await handleMessage(deliver, opts.chatId, deps, "neo", cause);
     },
     subscribe(listener, sub) {
       const after = sub?.after ?? 0;

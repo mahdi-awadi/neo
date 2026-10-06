@@ -542,6 +542,25 @@ test("a web message opens a thread; its reply event carries msgId and threadId; 
   expect(inThread.map((m) => m.content)).toEqual(["and more", "hello there"]);
 });
 
+test("the thread composer delivers to the thread's project, not to the focused one (AC3.4)", async () => {
+  const got: string[] = [];
+  const t = traced(((o: Order, h: RunHandlers) => {
+    const run = fakeStart().start(o, h);
+    return { ...run, followUp: (x: string) => void got.push(`${o.folder}:${x}`) };
+  }) as ReturnType<typeof fakeStart>["start"]);
+  const gold = scratch();
+  const acme = scratch();
+  await t.ch.send(`/open ${gold} start`);
+  await t.ch.send(`/open ${acme} start`);
+  const [g, a] = t.eng.registry.list();
+  for (const s of [g, a]) t.eng.registry.setStatus(s.id, "running");
+  t.eng.registry.setFocus(0, a.id, "pinned");
+  const cause = t.trace.inbound({ chatId: 0, text: "gold work", surface: "web" });
+  t.trace.outbound({ chatId: 0, text: "on it", cause, project: g.name, folder: gold });
+  await t.ch.send("next step", { threadId: cause.threadId });
+  expect(got).toEqual([`${gold}:next step`]);
+});
+
 test("an engine command typed on the web opens no thread; /trace answers on the web", async () => {
   const t = traced();
   await t.ch.send("hello there");
