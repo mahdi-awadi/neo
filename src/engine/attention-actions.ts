@@ -4,7 +4,8 @@
  *  queue as the operator's own work; a second tap shows the existing todo, never a second one. */
 import type { AttentionRow, Ledger } from "./ledger";
 import type { TodoQueue } from "./todo-queue";
-import type { Trace } from "./trace";
+import { ENGINE_CHAT_ID, type Trace } from "./trace";
+import { isDue } from "./trigger";
 import { dismiss, listOpen, snooze } from "./attention";
 import { attentionBrief } from "./attention-briefs";
 import { todoTitle } from "./todo-title";
@@ -169,4 +170,64 @@ export function renderAttention(
   if (shown < rows.length) lines.push(`… +${rows.length - shown} more`);
   if (o.consoleUrl) lines.push(o.consoleUrl);
   return { text: lines.join("\n"), buttons };
+}
+
+/** The daily digest (spec §7, AC5.5): per project the count by severity and its top `TOP_HIGH` high
+ *  items (each with → todo), the console link; `result` priority (the Decisions group) only when
+ *  something is high. Nothing new and nothing high → one line. `prevIds`: the items open at the
+ *  last digest. */
+export function renderDigest(
+  rows: AttentionRow[],
+  prevIds: number[],
+  consoleUrl: string | undefined,
+): { text: string; priority: "result" | "progress"; buttons: Array<AttentionRow & { actions: AttentionAction[] }> } {
+  const prev = new Set(prevIds);
+  const fresh = rows.filter((r) => !prev.has(r.id)).length;
+  const high = rows.filter((r) => r.severity === "high").length;
+  const priority = high > 0 ? "result" : "progress";
+  if (!fresh && !high) return { text: `☀ attention today: ${rows.length} open, nothing new, nothing high — /attention`, priority, buttons: [] };
+  const lines = [`☀ attention today: ${rows.length} open, ${high} high, ${fresh} new since the last digest`];
+  const buttons: Array<AttentionRow & { actions: AttentionAction[] }> = [];
+  const byProject = new Map<string, AttentionRow[]>();
+  for (const r of rows) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]); // severity first
+  for (const [project, items] of byProject) {
+    const count = (sev: AttentionRow["severity"]) => items.filter((r) => r.severity === sev).length;
+    lines.push(`${project}: ${(["high", "normal", "low"] as const).filter((s) => count(s)).map((s) => `${count(s)} ${s}`).join(" · ")}`);
+    for (const r of items.filter((x) => x.severity === "high").slice(0, TOP_HIGH)) {
+      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${todoTitle(r.title)}`);
+      buttons.push({ ...r, actions: ["todo"] });
+    }
+  }
+  if (consoleUrl) lines.push(consoleUrl);
+  return { text: lines.join("\n"), priority, buttons };
+}
+
+/** High items shown per project in the digest. */
+const TOP_HIGH = 3;
+
+export interface DigestDeps {
+  ledger: Ledger;
+  trace?: Trace;
+  /** Cron (server time), config attention.digestAt. */
+  digestAt: string;
+  consoleUrl?: string;
+  /** Post the digest: `result` → the Decisions group, `progress` → the operator's DM. */
+  send(text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<void>;
+}
+
+/** The heartbeat's digest step: when `digestAt` is due (once per matching minute — the last send is
+ *  kept in meta, so a restart in that minute does not send twice), roots an `attention` thread and
+ *  sends the digest. Returns whether it sent. */
+export async function runDigest(deps: DigestDeps, now: number): Promise<boolean> {
+  const last = deps.ledger.getMeta("digest:last")?.value as { at: number; ids: number[] } | undefined;
+  if (!isDue({ kind: "cron", expr: deps.digestAt }, last?.at, now)) return false;
+  const rows = listOpen(deps.ledger, { now });
+  deps.ledger.setMeta("digest:last", { at: now, ids: rows.map((r) => r.id) }, now); // before the send: never twice
+  const d = renderDigest(rows, last?.ids ?? [], deps.consoleUrl);
+  if (deps.trace) {
+    const cause = deps.trace.root({ origin: "attention", title: "daily attention digest" });
+    deps.trace.outbound({ chatId: ENGINE_CHAT_ID, text: d.text, cause, kind: "digest" });
+  }
+  await deps.send(d.text, d.priority, d.buttons.map((b) => ({ id: b.id, actions: b.actions })));
+  return true;
 }

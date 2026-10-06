@@ -9,6 +9,7 @@ import type { Registry } from "../registry";
 import type { SessionInfo } from "../../types";
 import { liveDrafts, reconcileAll } from "../attention";
 import { faults } from "../fault";
+import { isValidCron } from "../trigger";
 
 const HOUR = 3_600_000;
 
@@ -34,9 +35,11 @@ export interface AttentionCfg {
   staleBranchDays: number;
   /** The git scan: a linked worktree nobody worked in this long is left over. */
   worktreeIdleHours: number;
+  /** When the daily digest is sent (cron, server time). */
+  digestAt: string;
 }
 
-export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10, staleBranchDays: 21, worktreeIdleHours: 12 };
+export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10, staleBranchDays: 21, worktreeIdleHours: 12, digestAt: "0 8 * * *" };
 
 /** Config `attention` from config.json: each positive number is kept, anything else is the default. */
 export function readAttentionCfg(raw: unknown): AttentionCfg {
@@ -54,6 +57,7 @@ export function readAttentionCfg(raw: unknown): AttentionCfg {
     listButtons: Math.floor(positive(r.listButtons, d.listButtons)),
     staleBranchDays: positive(r.staleBranchDays, d.staleBranchDays),
     worktreeIdleHours: positive(r.worktreeIdleHours, d.worktreeIdleHours),
+    digestAt: typeof r.digestAt === "string" && isValidCron(r.digestAt) ? r.digestAt : d.digestAt,
   };
 }
 

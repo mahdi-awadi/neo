@@ -11,6 +11,7 @@ import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } fro
 import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
 import { runScan } from "./engine/producers/scan";
+import { runDigest, type AttentionAction } from "./engine/attention-actions";
 import { DEFAULT_GITHUB_CFG } from "./engine/producers/github";
 import { createGitRead } from "./engine/git-read";
 import { restartNeededSince } from "./engine/updater";
@@ -34,7 +35,7 @@ import { tickScheduler, folderBusy } from "./engine/scheduler";
 import { CRON_RESOLUTION_MS, heartbeatMs, nextTickDelayMs, runHeartbeatTick, type HeartbeatLoop } from "./engine/heartbeat";
 import { configureFaults, createFaultReporter, faults, installSafetyNet } from "./engine/fault";
 import { createHealthMonitor, startHealthTimer } from "./engine/health";
-import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster } from "./frontends/telegram";
+import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster, attentionKeyboard } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
@@ -127,6 +128,13 @@ async function main(): Promise<void> {
     configHash: configHashNow(),
   });
   const gated = (): string => gatedText(restartDeps());
+  // The daily attention digest (AC5.5): a high item → the Decisions group, else the operator's DM.
+  const sendDigest = async (text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<void> => {
+    const target = priority === "result" ? (cfg.decisionsChatId ?? admin.adminId()) : admin.adminId();
+    if (!operatorApi || target === undefined) return;
+    const hours = (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours;
+    await operatorApi.sendMessage(target, text, buttons.length ? { reply_markup: attentionKeyboard(buttons, hours) } : {});
+  };
   // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
   // time, in the background — a tick only starts it (single-flight).
   let scanning = false;
@@ -389,6 +397,7 @@ async function main(): Promise<void> {
           // failed/waiting threads, stale decisions, an impossible ctx%. Ledger + registry only.
           ["attention.engine", attentionEngineTick],
           ["attention.scan", attentionScanTick],
+          ["attention.digest", () => runDigest({ ledger, trace, digestAt: (cfg.attention ?? DEFAULT_ATTENTION_CFG).digestAt, consoleUrl: cfg.publicUrl || undefined, send: sendDigest }, Date.now())],
           // What is built but not running (spec §8.4): git + the boot record + the updater.
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
