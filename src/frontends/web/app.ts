@@ -898,6 +898,13 @@ $("lang").onclick = () => {
 };
 
 const es = new EventSource("/stream");
+// Thread events are live only (never replayed): after a reconnect, re-read the list so changes made
+// during the gap show.
+let streamOpened = false;
+es.onopen = () => {
+  if (streamOpened && TH.started) loadThreads(true);
+  streamOpened = true;
+};
 es.onmessage = (ev) => {
   const e = JSON.parse(ev.data);
   if (e.type === "message") {

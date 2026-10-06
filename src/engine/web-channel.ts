@@ -256,9 +256,13 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       // their own reply. The web UI shows this message optimistically, so origin "web" is excluded.
       // Commands returned above: they open no thread (spec §4.1 rule 3). Everything else is traced first.
       const cause = inbound(text, sendOpts?.threadId);
-      // Typed inside a thread: it goes to that thread's project, not the chat's focus (AC3.4).
+      // Typed inside a thread: it goes to that thread's project, not the chat's focus (AC3.4). A slash
+      // line is an order, not a follow-up — the pipeline never uses a focus for it, so none is set.
       let deliver = text;
-      if (sendOpts?.threadId !== undefined) {
+      const { registry } = opts.engine;
+      const pin = registry.getFocus(opts.chatId);
+      const threaded = sendOpts?.threadId !== undefined && !text.trim().startsWith("/");
+      if (threaded && sendOpts?.threadId !== undefined) {
         const routing = routeThreadMessage(
           { registry: opts.engine.registry, ledger: opts.engine.ledger, worker: opts.engine.cfg.providers.ownWork },
           { chatId: opts.chatId, threadId: sendOpts.threadId, text },
@@ -271,6 +275,10 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       }
       opts.bus?.mirror("web", { kind: "echo", text, ...knownIds({ msgId: cause?.msgId, threadId: cause?.threadId }) });
       await handleMessage(deliver, opts.chatId, deps, "neo", cause);
+      // The thread's one-shot focus took the chat's only focus slot: once it is used, the pin returns.
+      if (threaded && pin?.mode === "pinned" && !registry.getFocus(opts.chatId) && registry.get(pin.session.id)) {
+        registry.setFocus(opts.chatId, pin.session.id, "pinned");
+      }
     },
     subscribe(listener, sub) {
       const after = sub?.after ?? 0;
