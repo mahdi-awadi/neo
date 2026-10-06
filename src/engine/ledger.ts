@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import { openSqlite } from "./sqlite";
 import { migrate } from "./ledger-migrations";
 import { safeFtsQuery } from "./memory-recall";
+import { SNIPPET_OPEN, SNIPPET_CLOSE } from "./format";
 import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
 import type { StructuredAsk } from "./structured-question";
@@ -100,7 +101,8 @@ export interface ThreadListRow extends ThreadRow {
   activeTodos: number;
 }
 
-/** One message search hit (FTS5), with a short snippet around the match. */
+/** One message search hit (FTS5), with a short snippet around the match (plain text; the match is
+ *  between SNIPPET_OPEN and SNIPPET_CLOSE — see format.ts snippetHtml). */
 export interface SearchHit {
   id: number;
   threadId?: number;
@@ -273,6 +275,8 @@ export interface Ledger {
   /** The console's thread list (spec §6): newest-updated first, filtered, keyset-paged. `before` is
    *  the previous page's `next` (opaque); `limit` is clamped to 1..PAGE_MAX. */
   listThreads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: ThreadListRow[]; next?: string };
+  /** One thread as a list row (with its counts) — the console's live row update. */
+  threadListRow(id: number): ThreadListRow | undefined;
   /** The projects that have threads and how many, most recently active first (bounded). */
   threadProjects(limit: number): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
@@ -818,6 +822,11 @@ export function openLedger(
       const last = out.at(-1);
       return { rows: out, ...(rows.length > limit && last ? { next: `${last.updatedAt}.${last.id}` } : {}) };
     },
+    threadListRow(id) {
+      const q = threadListQuery({}, undefined, 1, id);
+      const row = db.query(q.sql).get(...q.params) as ThreadListDbRow | null;
+      return row ? mapThreadListRow(row) : undefined;
+    },
     threadProjects(limit) {
       return db
         .query(`SELECT project, count(*) AS threads FROM threads WHERE project IS NOT NULL GROUP BY project ORDER BY max(updated_at) DESC LIMIT ?`)
@@ -835,10 +844,11 @@ export function openLedger(
         params.push(f.before);
       }
       params.push(clampPage(f.limit));
+      params.unshift(SNIPPET_OPEN, SNIPPET_CLOSE); // the snippet() markers bind first (SELECT list)
       try {
         const rows = db
           .query(
-            `SELECT m.id, m.thread_id, m.project, m.at, m.role, m.kind, snippet(messages_fts, 0, '[', ']', '…', 12) AS snippet
+            `SELECT m.id, m.thread_id, m.project, m.at, m.role, m.kind, snippet(messages_fts, 0, ?, ?, '…', 12) AS snippet
              FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
              WHERE ${where.join(" AND ")} ORDER BY messages_fts.rowid DESC LIMIT ?`,
           )
@@ -1360,9 +1370,10 @@ function parseThreadCursor(s: string | undefined): { at: number; id: number } | 
 /** The thread-list query (one builder, so `_explain` checks the SQL the console runs). Only the
  *  filters that are set become conditions, so SQLite can pick the matching index; one extra row
  *  tells the caller there is a next page. */
-function threadListQuery(f: ThreadFilter, cursor: { at: number; id: number } | undefined, limit: number): { sql: string; params: Array<string | number> } {
+function threadListQuery(f: ThreadFilter, cursor: { at: number; id: number } | undefined, limit: number, id?: number): { sql: string; params: Array<string | number> } {
   const where: string[] = [];
   const params: Array<string | number> = [];
+  if (id !== undefined) (where.push("t.id = ?"), params.push(id));
   if (f.project !== undefined) (where.push("t.project = ?"), params.push(f.project));
   if (f.state !== undefined) (where.push("t.state = ?"), params.push(f.state));
   if (f.origin !== undefined) (where.push("t.origin = ?"), params.push(f.origin));

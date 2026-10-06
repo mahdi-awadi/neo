@@ -195,3 +195,10 @@ test("projectHashtag: too-short result gets p_ prefix", () => {
 test("projectHashtag: trims stray edge underscores from sanitizing", () => {
   expect(projectHashtag("-neo-")).toBe("#neo");
 });
+
+import { snippetHtml, SNIPPET_OPEN, SNIPPET_CLOSE } from "../src/engine/format";
+
+test("snippetHtml: the text is escaped; only the match markers become <mark>", () => {
+  const s = `a <b>[x]</b> ${SNIPPET_OPEN}fare${SNIPPET_CLOSE} & more`;
+  expect(snippetHtml(s)).toBe("a &lt;b&gt;[x]&lt;/b&gt; <mark>fare</mark> &amp; more");
+});

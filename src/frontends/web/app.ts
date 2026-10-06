@@ -682,6 +682,7 @@ function threadRow(r: Any): HTMLElement {
   const d = document.createElement("div");
   d.className = "trow" + (TH.open === r.id ? " on" : "");
   d.dataset.id = String(r.id);
+  d.dataset.state = r.state;
   d.dataset.act = "thread-open";
   d.innerHTML = threadRowHtml(r);
   return d;
@@ -691,6 +692,7 @@ function loadThreads(reset: boolean): void {
   const p = threadQuery();
   if (!reset && TH.next) p.set("before", TH.next);
   const seq = ++TH.seq; // a slower older answer never overwrites a newer filter's list
+  if (reset) loadHits(p.get("q") ?? "", seq);
   void fetch("/api/threads?" + p.toString(), { cache: "no-store" })
     .then((r) => r.json())
     .then((d) => {
@@ -703,6 +705,32 @@ function loadThreads(reset: boolean): void {
       if (d.next) rows.insertAdjacentHTML("beforeend", `<button class="run tmore" id="tmore" data-act="threads-older">${t("threads.loadOlder")}</button>`);
     })
     .catch(() => (rows.innerHTML = `<div class="empty">${t("threads.loadFailed")}</div>`));
+}
+/** The messages matching the search box (FTS5 snippets, safe HTML from the server); a hit opens its thread. */
+function loadHits(q: string, seq: number): void {
+  const box = $("thits");
+  if (!q) {
+    box.innerHTML = "";
+    return;
+  }
+  const p = new URLSearchParams({ q, limit: "20" });
+  if (TH.project) p.set("project", TH.project);
+  void fetch("/api/search?" + p.toString(), { cache: "no-store" })
+    .then((r) => r.json())
+    .then((d) => {
+      if (seq !== TH.seq) return;
+      const rows: Any[] = d.rows || [];
+      box.innerHTML = rows.length
+        ? `<div class="sec">${t("threads.hits")}</div>` +
+          rows
+            .map((h) => {
+              const open = h.threadId === undefined ? "" : ` data-act="thread-open" data-id="${h.threadId}"`;
+              return `<div class="thit"${open}><div class="tm">${h.threadRef ? ltr(h.threadRef) + " · " : ""}${h.project ? iso(h.project) + " · " : ""}${ltr(clock(h.at))}</div><div dir="auto">${h.snippet}</div></div>`;
+            })
+            .join("")
+        : "";
+    })
+    .catch(() => (box.innerHTML = ""));
 }
 function openThread(id: number): void {
   TH.open = id;
@@ -778,7 +806,8 @@ function appendThreadLine(m: Any, html?: string): void {
   const b = $("tbody");
   b.scrollTop = b.scrollHeight;
 }
-/** A thread changed state (SSE): its row moves to the top with the new chip, or a new matching thread appears. */
+/** A thread changed (SSE — a new line or a new state): its row moves to the top with its counts, or
+ *  a new matching thread appears. The event is the whole list row. */
 function onThreadEvent(e: Any): void {
   if (!TH.started) return;
   const rows = $("trows");
@@ -790,11 +819,12 @@ function onThreadEvent(e: Any): void {
     old.remove();
     return;
   }
-  const row = threadRow({ ...e, ref: old?.querySelector("bdi")?.textContent ?? undefined });
+  const stateChanged = (old as HTMLElement | null)?.dataset.state !== e.state;
   old?.remove();
   rows.querySelector(".empty")?.remove();
-  rows.prepend(row);
-  if (TH.open === e.id) openThread(e.id);
+  rows.prepend(threadRow(e));
+  // New lines already append live (appendThreadLine); only a new state needs the pane re-read.
+  if (TH.open === e.id && stateChanged) openThread(e.id);
 }
 function planAction(id: number, action: string, version: number): void {
   void post("/api/plan", { id, action, version })

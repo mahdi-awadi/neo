@@ -25,7 +25,7 @@ import {
 } from "./loops";
 import type { LoopInput } from "./loop-validate";
 import { dashboardSnapshot, type DashState } from "./dashboard";
-import { mdToHtml } from "./format";
+import { mdToHtml, snippetHtml } from "./format";
 import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
 import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
@@ -54,7 +54,7 @@ export type WebEvent =
   | { type: "sdk"; sdk: WorkerSdkState }
   | { type: "file"; name: string; url: string; project?: string }
   // A thread changed state (ADR-0017): the console moves its row without a re-fetch.
-  | ({ type: "thread" } & ThreadChange);
+  | ({ type: "thread"; ref?: string } & ThreadChange & Partial<Pick<ThreadListRow, "messages" | "openDecisions" | "activeTodos">>);
 
 /** One thread as the console shows it (spec §6). `next` is the cursor for the older messages. */
 export interface ThreadView {
@@ -108,7 +108,7 @@ export interface WebChannel {
   thread(id: number, page: { before?: number; limit: number }): ThreadView | undefined;
   /** The projects that have threads, with their thread counts (the console's project rail). */
   threadProjects(): Array<{ project: string; threads: number }>;
-  /** FTS5 search over every message, newest first, keyset-paged by id. */
+  /** FTS5 search over every message, newest first, keyset-paged by id. `snippet` is safe HTML. */
   search(q: string, f: { project?: string; before?: number; limit: number }): { rows: Array<SearchHit & { ref?: string; threadRef?: string }>; next?: number };
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
    *  operator's text, which the console does not carry yet, so it is refused here. */
@@ -158,8 +158,17 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
   });
 
-  // Live thread states (ADR-0017). One subscription per channel for the daemon's life.
-  opts.engine.trace?.onThreadChange((c) => void emit({ type: "thread", ...c }));
+  // Live thread rows (ADR-0017). One subscription per channel for the daemon's life. The event is the
+  // whole list row (counts + ref), so a moved row keeps them. Live only, never replayed: a console
+  // that connects later reads the list fresh, and per-message events must not crowd the feed window.
+  const trace = opts.engine.trace;
+  trace?.onThreadChange((c) => {
+    if (!listeners.size) return;
+    const row = opts.engine.ledger.threadListRow(c.id);
+    const e: WebEvent = { type: "thread", ...(row ?? c), ref: trace.ref(c.id) };
+    const id = ++lastId;
+    for (const l of listeners) l(e, id);
+  });
 
   // Loops started here send the plans they wrote (ADR-0019) — only where a card can be posted.
   const loopPlans = opts.engine.postPlan ? planDepsFrom(opts.engine, opts.engine.cfg.plans) : undefined;
@@ -383,6 +392,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const hits = opts.engine.ledger.searchMessages(q, { ...f, limit: limit + 1 });
       const rows = hits.slice(0, limit).map((h) => ({
         ...h,
+        snippet: snippetHtml(h.snippet),
         ...(trace ? { ref: trace.ref(h.id), ...(h.threadId !== undefined ? { threadRef: trace.ref(h.threadId) } : {}) } : {}),
       }));
       return { rows, ...(hits.length > limit ? { next: rows.at(-1)!.id } : {}) };

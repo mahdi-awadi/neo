@@ -56,7 +56,7 @@ export interface Trace {
   tree(msgId: number, opts?: { limit?: number }): TraceTree;
   /** Re-derive and store a thread's state from its linked facts. Idempotent; a no-op for a pruned thread. */
   refreshThread(threadId: number): void;
-  /** Hear every thread whose state changed (the console moves its row live, ADR-0017). Returns the
+  /** Hear every thread whose state changed or that a new line joined (the console moves its row live, ADR-0017). Returns the
    *  unsubscribe. A listener that throws is reported; the refresh is never affected. */
   onThreadChange(listener: (c: ThreadChange) => void): () => void;
 }
@@ -135,7 +135,9 @@ export function createTrace(deps: {
   const { ledger, registry } = deps;
   const now = deps.now ?? Date.now;
 
-  function refreshThread(threadId: number): void {
+  /** `touchedAt`: a line just joined the thread — tell the listeners even when the state holds, so
+   *  the console moves the row to the top. */
+  function refreshThread(threadId: number, touchedAt?: number): void {
     const thread = ledger.threadById(threadId);
     if (!thread) return; // pruned: artifacts keep the ids, nothing to update
     const facts = ledger.threadFacts(threadId);
@@ -148,9 +150,12 @@ export function createTrace(deps: {
       lastEnd: facts.lastEnd,
       closedByOperator: facts.closedByOperator,
     });
-    if (state === thread.state) return;
-    const at = now();
-    ledger.setThreadState(threadId, state, at);
+    let at: number;
+    if (state !== thread.state) {
+      at = now();
+      ledger.setThreadState(threadId, state, at);
+    } else if (touchedAt !== undefined) at = thread.updatedAt;
+    else return;
     const change: ThreadChange = { id: threadId, state, ...(thread.project !== undefined ? { project: thread.project } : {}), title: thread.title, updatedAt: at };
     for (const l of threadListeners) faults.guard("trace.threadListener", () => l(change), { threadId });
   }
@@ -166,7 +171,7 @@ export function createTrace(deps: {
   function bookkeep(component: string, line: Cause, at: number, learn?: { project: string; folder: string }): void {
     faults.guard(component, () => {
       ledger.touchThread(line.threadId, line.msgId, at, learn);
-      refreshThread(line.threadId);
+      refreshThread(line.threadId, at);
     }, { msgId: line.msgId, threadId: line.threadId });
   }
 
@@ -250,7 +255,7 @@ export function createTrace(deps: {
         ...ledger.threadArtifacts(threadId, limit),
       };
     },
-    refreshThread,
+    refreshThread: (threadId) => refreshThread(threadId),
     onThreadChange(listener) {
       threadListeners.add(listener);
       return () => void threadListeners.delete(listener);

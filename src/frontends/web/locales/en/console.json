@@ -173,6 +173,7 @@
     "projects": "Projects",
     "allProjects": "all",
     "search": "search messages…",
+    "hits": "Matching messages",
     "state": {
       "all": "any state",
       "open": "open",

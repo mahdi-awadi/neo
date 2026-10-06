@@ -12,9 +12,13 @@ export { LANGS, isLang, type Lang } from "./langs";
 export const RESOURCES = { en: { console: en }, ar: { console: ar } } as const;
 
 /** A ready instance for one language (synchronous: the catalogues are bundled, nothing is fetched).
- *  Interpolated values are HTML-escaped by default — `t()` output goes into markup. */
+ *  Interpolated values and missing keys are HTML-escaped — `t()` output goes into markup. */
 export function createConsoleI18n(lang: Lang): i18n {
   const inst = i18next.createInstance();
-  void inst.init({ lng: lang, fallbackLng: "en", ns: ["console"], defaultNS: "console", resources: RESOURCES, initAsync: false, returnNull: false });
+  void inst.init({
+    lng: lang, fallbackLng: "en", ns: ["console"], defaultNS: "console", resources: RESOURCES, initAsync: false, returnNull: false,
+    // A missing key returns the key, which may carry a server value (`threads.state.<value>`): escape it.
+    parseMissingKeyHandler: (key) => key.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!),
+  });
   return inst;
 }

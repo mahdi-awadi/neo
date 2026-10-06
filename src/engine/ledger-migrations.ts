@@ -329,8 +329,9 @@ function plans(db: Database): void {
 /** Version 6 — the console's history reads (ADR-0017): the newest-first thread list and a thread's
  *  plans. attention_items / engine_boots come later (version 7). */
 function consoleIndexes(db: Database): void {
-  db.run(`CREATE INDEX idx_threads_updated ON threads (updated_at DESC, id DESC)`);
-  db.run(`CREATE INDEX idx_plans_thread ON plans (thread_id)`);
+  // IF NOT EXISTS: a ledger opened by an earlier branch build may already have them.
+  db.run(`CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads (updated_at DESC, id DESC)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_plans_thread ON plans (thread_id)`);
 }
 
 export const MIGRATIONS: Migration[] = [

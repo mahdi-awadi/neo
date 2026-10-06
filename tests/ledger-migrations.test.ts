@@ -66,3 +66,12 @@ test("a failure names the backup when one was made", () => {
   const bad = [{ version: 1, name: "boom", up: () => { throw new Error("boom"); } }];
   expect(() => migrate(seed, { path, migrations: bad })).toThrow(`${path}.bak-v0`);
 });
+
+test("migration 6 runs on a ledger that already has its indexes (an intermediate branch build made them)", () => {
+  const db = new Database(":memory:");
+  migrate(db, { path: ":memory:", migrations: MIGRATIONS.filter((m) => m.version <= 5) });
+  db.run(`CREATE INDEX idx_threads_updated ON threads (updated_at DESC, id DESC)`);
+  db.run(`CREATE INDEX idx_plans_thread ON plans (thread_id)`);
+  expect(() => migrate(db, { path: ":memory:" })).not.toThrow();
+  expect(version(db)).toBe(MIGRATIONS.at(-1)!.version);
+});

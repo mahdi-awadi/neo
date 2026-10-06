@@ -610,7 +610,34 @@ test("a thread state change is one `thread` event; an unchanged refresh is none"
   trace.refreshThread(cause.threadId);
   const changes = events.filter((e) => e.type === "thread");
   expect(changes.length).toBe(before + 1);
-  expect(changes.at(-1)).toEqual({ type: "thread", id: cause.threadId, state: "waiting", project: "gold", title: "ship the fare list", updatedAt: 5000 });
+  expect(changes.at(-1)).toMatchObject({ type: "thread", id: cause.threadId, state: "waiting", project: "gold", title: "ship the fare list", updatedAt: 5000 });
+});
+
+// P3 review minors 2-5: a live row keeps its counts and ref, moves on every new message, and the
+// events are live only (never replayed — the thread list re-fetches on open).
+test("a new line in a thread is a `thread` event with its ref and counts, even when the state holds", () => {
+  const eng = engine(fakeStart().start);
+  let clock = 1000;
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry, now: () => clock });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  const cause = trace.inbound({ chatId: 42, text: "ship it", surface: "web" });
+  clock = 2000;
+  trace.outbound({ chatId: 42, text: "on it", cause });
+  const last = events.filter((e) => e.type === "thread").at(-1);
+  expect(last).toMatchObject({ type: "thread", id: cause.threadId, state: "done", updatedAt: 2000, ref: trace.ref(cause.threadId), messages: 2, openDecisions: 0, activeTodos: 0 });
+});
+
+test("thread events are not replayed to a console that connects later", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  ch.subscribe(() => {});
+  trace.inbound({ chatId: 42, text: "ship it", surface: "web" });
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e));
+  expect(late.filter((e) => e.type === "thread")).toEqual([]);
 });
 
 test("a throwing thread listener is contained: the refresh still stores the state", () => {
@@ -623,4 +650,14 @@ test("a throwing thread listener is contained: the refresh still stores the stat
   eng.ledger.openDecision({ kind: "decision", question: "?", cause });
   expect(() => trace.refreshThread(cause.threadId)).not.toThrow();
   expect(eng.ledger.threadById(cause.threadId)!.state).toBe("waiting");
+});
+
+test("search hits reach the console as safe HTML with the match marked", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  const cause = trace.inbound({ chatId: 42, text: "fix <the> fare list", surface: "web" });
+  const r = ch.search("fare", { limit: 10 });
+  expect(r.rows[0]).toMatchObject({ threadId: cause.threadId, threadRef: trace.ref(cause.threadId) });
+  expect(r.rows[0]!.snippet).toBe("fix &lt;the&gt; <mark>fare</mark> list");
 });

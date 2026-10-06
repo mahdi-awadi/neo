@@ -212,3 +212,19 @@ test("a thread learns its project from the first line that names a project folde
   t.outbound({ chatId: 7, text: "line", cause: r, project: "gold", folder: "/home/gold" });
   expect(led.threadById(r.threadId)).toMatchObject({ project: "neo", folder: "/home/neo" });
 });
+
+test("a line that joins a thread notifies its listeners even when the state holds (the row moves up)", () => {
+  const ledger = openLedger(":memory:");
+  const registry = createRegistry();
+  let clock = 1000;
+  const trace = createTrace({ ledger, registry, now: () => clock });
+  const heard: Array<{ id: number; updatedAt: number }> = [];
+  trace.onThreadChange((c) => heard.push({ id: c.id, updatedAt: c.updatedAt }));
+  const cause = trace.inbound({ chatId: 1, text: "ship it", surface: "web" });
+  clock = 2000;
+  trace.outbound({ chatId: 1, text: "on it", cause });
+  expect(heard.at(-1)).toEqual({ id: cause.threadId, updatedAt: 2000 });
+  const n = heard.length;
+  trace.refreshThread(cause.threadId); // no new line, no new state: nothing to tell
+  expect(heard.length).toBe(n);
+});

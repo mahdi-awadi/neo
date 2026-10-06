@@ -14,6 +14,7 @@ import { createMeter } from "../src/engine/budget";
 import { createSessionStore } from "../src/engine/web-session";
 import { openTrustStore } from "../src/engine/trust";
 import { createTrace } from "../src/engine/trace";
+import { SNIPPET_OPEN, SNIPPET_CLOSE } from "../src/engine/format";
 
 /** One thread rooted at a fresh operator message; `n` extra lines; returns the thread id. */
 function thread(l: Ledger, o: { project?: string; state?: ThreadState; origin?: ThreadOrigin; at: number; title?: string; n?: number; text?: string }): number {
@@ -56,6 +57,13 @@ test("listThreads: newest-updated first, every filter, keyset pages with no over
   expect(l2.listThreads({}, { limit: 1, before: "nope" }).rows.length).toBe(1);
 });
 
+test("threadListRow: one thread with its list counts; undefined when gone", () => {
+  const l = openLedger(":memory:");
+  const id = thread(l, { project: "gold", at: 100, n: 2 });
+  expect(l.threadListRow(id)).toEqual(l.listThreads({}, { limit: 1 }).rows[0]!);
+  expect(l.threadListRow(id + 999)).toBeUndefined();
+});
+
 test("the thread-list queries use their indexes (spec §11.11)", () => {
   const l = openLedger(":memory:");
   expect(l._explain("threadsByProject")).toContain("idx_threads_project");
@@ -71,6 +79,7 @@ test("searchMessages: FTS5 hits newest first with thread and snippet; operator c
   expect(hits).toHaveLength(1);
   expect(hits[0]).toMatchObject({ id: t1, threadId: t1, project: "gold" });
   expect(hits[0]!.snippet).toContain("fare");
+  expect(hits[0]!.snippet).toContain(`${SNIPPET_OPEN}fare${SNIPPET_CLOSE}`); // the match is marked
   expect(l.searchMessages("تذكرة", { limit: 10 }).map((h) => h.threadId)).toEqual([t2]);
   for (const q of ['"', "foo -bar", "NEAR(a b)", "(", "AND", "*", ""]) expect(Array.isArray(l.searchMessages(q, { limit: 10 }))).toBe(true);
   expect(l.searchMessages("fare", { limit: 10, project: "eticket" })).toEqual([]);

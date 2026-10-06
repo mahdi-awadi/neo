@@ -153,3 +153,9 @@ test("the language: the operator's cookie wins, else config consoleLang; /app.js
   expect(js.headers.get("content-type")).toContain("javascript");
   expect(loadConfig(mkdtempSync(join(tmpdir(), "neo-i18n-"))).consoleLang).toBe("en");
 });
+
+test("a missing key (an enum value the catalogue lacks) comes back HTML-escaped, never as raw markup", () => {
+  const i = createConsoleI18n("en");
+  expect(i.t("threads.state.<img src=x onerror=alert(1)>")).toBe("threads.state.&lt;img src=x onerror=alert(1)&gt;");
+  expect(i.t("threads.state.open")).toBe("open");
+});
