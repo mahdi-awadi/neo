@@ -36,10 +36,14 @@ function sim(narrow = true) {
       else if (a === "replace") stack[at] = { detail: v };
     },
     back() {
-      if (backAction(state(), view) === "history") {
+      const b = backAction(state(), view);
+      if (b === "history") {
         at--;
         pop();
-      } else detail.clear();
+      } else {
+        detail.clear();
+        if (b === "local-clear") stack[at] = null;
+      }
     },
     reload() {
       detail.clear();
@@ -86,8 +90,28 @@ test("enter: push from a list, replace from another detail, nothing when wide or
 
 test("back: through history only when the history entry is this view's detail", () => {
   expect(backAction({ detail: "vprojects" }, "vprojects")).toBe("history");
-  expect(backAction({ detail: "vthreads" }, "vprojects")).toBe("local");
+  // Another view's detail entry: leave detail here AND clear that entry, so the next system back is live.
+  expect(backAction({ detail: "vthreads" }, "vprojects")).toBe("local-clear");
   expect(backAction(null, "vprojects")).toBe("local");
+});
+
+test("thread, then project (replaced), back to Threads, in-app back: the next system back is not a dead press", () => {
+  const stack: unknown[] = [null];
+  let at = 0;
+  let view: "vthreads" | "vprojects" = "vthreads";
+  const open = (v: "vthreads" | "vprojects") => {
+    view = v;
+    const a = enterAction(stack[at], v, true);
+    if (a === "push") stack.splice(++at, stack.length, { detail: v });
+    else if (a === "replace") stack[at] = { detail: v };
+  };
+  open("vthreads");
+  open("vprojects"); // replaced the thread's entry
+  view = "vthreads"; // tab back to Threads (its detail still on screen)
+  const b = backAction(stack[at], view);
+  expect(b).toBe("local-clear");
+  if (b === "local-clear") stack[at] = null; // what app.ts does: replaceState(null, "")
+  expect(stack[at]).toBeNull(); // nothing left that a system back would only pop without a change
 });
 
 test("app.ts wires the rule: popstate, enterDetail and startup use the helpers", () => {

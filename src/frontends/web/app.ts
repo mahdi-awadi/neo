@@ -599,8 +599,10 @@ function detailView(): DetailView | null {
   return (["vthreads", "vprojects"] as const).find((id) => $(id).classList.contains("on")) ?? null;
 }
 function back(): void {
-  if (backAction(history.state, detailView()) === "history") history.back(); // popstate leaves the detail view
-  else leaveDetail();
+  const action = backAction(history.state, detailView());
+  if (action === "history") return history.back(); // popstate leaves the detail view
+  if (action === "local-clear") history.replaceState(null, "");
+  leaveDetail();
 }
 /** The app height follows the visual viewport, so the composer stays above the on-screen keyboard (AC5).
  *  At most one write per animation frame; a browser without visualViewport keeps 100dvh. */

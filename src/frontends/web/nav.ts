@@ -25,9 +25,13 @@ export function popDetail(state: unknown, current: DetailView | null): DetailVie
   return d !== null && d === current ? d : null;
 }
 
-/** The in-app back: through the history when its entry is this view's detail, else just leave detail. */
-export function backAction(state: unknown, current: DetailView | null): "history" | "local" {
-  return current !== null && detailOf(state) === current ? "history" : "local";
+/** The in-app back: through the history when its entry is this view's detail; when it names ANOTHER
+ *  view's detail, leave detail and clear that entry ("local-clear"), else a later system back would
+ *  only pop it with no change on screen; with no detail entry, just leave detail. */
+export function backAction(state: unknown, current: DetailView | null): "history" | "local" | "local-clear" {
+  const d = detailOf(state);
+  if (current !== null && d === current) return "history";
+  return d !== null ? "local-clear" : "local";
 }
 
 /** A detail entry that survived a reload has no detail on screen any more: it must be cleared. */
