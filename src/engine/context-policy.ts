@@ -9,7 +9,7 @@ import type { Order, SessionInfo } from "../types";
 import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
-import { gitFacts } from "./dispatch-report";
+import { gitFacts, uncommittedIn } from "./dispatch-report";
 
 /** Context-window size is a FACT about the model, not a tuning knob. The SDK reports it on every
  *  result and the ledger keeps it per model (ADR-0013) — see contextWindows. This table holds only
@@ -499,6 +499,44 @@ export function trackHandoff(folder: string, p: Promise<unknown>): void {
 /** Resolves once the folder has no handoff in flight. Never rejects. */
 export async function awaitHandoff(folder: string): Promise<void> {
   for (let p = handoffsInFlight.get(folder); p; p = handoffsInFlight.get(folder)) await p;
+}
+
+// One `deferred` row per (session, boundary): a session sitting on uncommitted work settles many times.
+const deferredSeen = new Set<string>();
+
+/** "Never with uncommitted work" (ADR-0014): true when a handoff the policy wants must wait because
+ *  the folder has uncommitted changes (HANDOFF.md aside) — except in the emergency band, which goes
+ *  ahead anyway. A non-git folder never blocks a boundary. Records one `deferred` per session and
+ *  boundary. Never throws (fails open = not deferred). */
+export function handoffDeferred(
+  folder: string,
+  decision: ContextDecision,
+  ctx: {
+    ledger: Pick<Ledger, "recordContextEvent">;
+    boundary: ContextBoundary;
+    occupancy: number;
+    sessionId?: string;
+    uncommitted?: (folder: string) => string[] | undefined;
+  },
+): boolean {
+  try {
+    if (decision.band === "emergency") return false;
+    const dirty = (ctx.uncommitted ?? uncommittedIn)(folder);
+    if (!dirty || dirty.length === 0) return false;
+    const key = `${ctx.sessionId ?? folder}:${ctx.boundary}`;
+    if (!deferredSeen.has(key)) {
+      deferredSeen.add(key);
+      ctx.ledger.recordContextEvent(folder, "deferred", ctx.occupancy, undefined, {
+        reason: decision.reason,
+        boundary: ctx.boundary,
+        sessionId: ctx.sessionId,
+        detail: { uncommitted: dirty.length },
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const REASON_TEXT: Record<ContextReason, (cfg: ContextPolicyCfg) => string> = {

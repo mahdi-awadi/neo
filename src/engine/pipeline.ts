@@ -26,11 +26,21 @@ import {
   contextWindows,
   decideContext,
   runHandoff,
+  completeHandoff,
   effectiveCacheTtlMs,
   transcriptLineCount,
   firstAssistantCacheReadAfter,
   CACHE_OBS_WINDOW,
+  awaitHandoff,
+  trackHandoff,
+  handoffPreamble,
+  handoffDeferred,
+  continuationBrief,
+  describeContextReset,
+  noteStamp,
+  type ContextDecision,
 } from "./context-policy";
+import { createCheckpointWatch, createResumeProbe, type CheckpointWatch, type ResumeProbe } from "./context-checkpoint";
 import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
 import { clearDecisionBlock, describeSession } from "./session-status";
@@ -46,6 +56,15 @@ import {
   type ApiCooldown,
 } from "./api-retry";
 
+/** A live run the settle check closed for a context handoff (ADR-0014); run.done completes it. */
+interface PendingClose {
+  kind: "handoff" | "checkpoint";
+  decision: ContextDecision;
+  occupancy?: number;
+  /** Ends the folder's "handing off" hold (awaitHandoff). */
+  release: () => void;
+}
+
 /** Real backoff wait (tests inject deps.sleep instead). */
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -58,6 +77,12 @@ type StartFn = (order: Order, handlers: RunHandlers, deps?: RunDeps) => SessionR
 // a second inbound message during that window sees status "running" + no control and takes
 // the SAME idle-resume branch again, starting a second concurrent resume of the same entry.
 const resuming = new Set<string>();
+
+// Registry id → a promise that settles once that entry's current run has ENDED and its completion
+// bookkeeping ran (including starting any context handoff). A message that finds the run's channel
+// already closed waits on this, then on the folder's handoff, instead of being pushed into a closed
+// channel — where it was silently dropped (ADR-0014).
+const runEnded = new Map<string, Promise<void>>();
 
 export interface PipelineDeps {
   cfg: NeoConfig;
@@ -107,31 +132,36 @@ export interface PipelineDeps {
   todo?: TodoQueue;
 }
 
-/** Apply the context policy to a persisted resume id. Returns the id to actually resume with
- *  ("" = start fresh), the idle gap measured at gate time (before the resume), and — on "keep" —
- *  the OLD transcript's line count at that same moment, so the caller can later scan only the
- *  lines a resume appends and find its first (not just its last) post-resume assistant turn (see
- *  firstAssistantCacheReadAfter). Never throws (fail open = keep the id, no preLines). */
+/** Apply the context policy to a persisted resume id, at the `resume` boundary (ADR-0014). Returns
+ *  the id to actually resume with ("" = start fresh), the idle gap measured at gate time (before the
+ *  resume), and — on "keep" — the OLD transcript's line count at that same moment, so the caller can
+ *  later scan only the lines a resume appends and find its first (not just its last) post-resume
+ *  assistant turn (see firstAssistantCacheReadAfter). Waits for the folder's in-flight handoff first.
+ *  Never throws (fail open = keep the id, no preLines). */
 async function applyContextPolicy(
   folder: string,
   sessionInfo: SessionInfo | undefined,
   resumeId: string,
   deps: PipelineDeps,
+  notify: (text: string, priority?: "alert") => void,
 ): Promise<{ resumeId: string; idleMs: number; preLines?: number }> {
   if (!resumeId) return { resumeId: "", idleMs: 0 };
+  await awaitHandoff(folder);
   try {
+    const policy = deps.cfg.contextPolicy;
     const signals = deps.signals ?? sessionContext;
-    const sig = signals(folder, resumeId, { windowTokensByModel: contextWindows(deps.ledger, deps.cfg.contextPolicy.windowTokensByModel) });
-    const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
-    const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs).verdict;
-    if (verdict === "keep") {
+    const sig = signals(folder, resumeId, { windowTokensByModel: contextWindows(deps.ledger, policy.windowTokensByModel) });
+    const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
+    const decision = decideContext(sig, policy, ttlMs, { boundary: "resume" });
+    if (decision.verdict === "keep" || handoffDeferred(folder, decision, { ledger: deps.ledger, boundary: "resume", occupancy: sig.occupancy, sessionId: resumeId })) {
       const lineCount = deps.lineCount ?? transcriptLineCount;
       const preLines = lineCount(folder, resumeId);
       return { resumeId, idleMs: sig.idleMs, preLines };
     }
-    if (verdict === "clear") {
+    if (decision.verdict === "clear") {
       deps.ledger.clearSessionsFor(folder);
-      deps.ledger.recordContextEvent(folder, "clear", sig.occupancy);
+      deps.ledger.recordContextEvent(folder, "clear", sig.occupancy, undefined, { reason: decision.reason, boundary: "resume", sessionId: resumeId });
+      notify(describeContextReset("clear", sig.occupancy, policy, decision.reason, "resume"), "alert");
       return { resumeId: "", idleMs: 0 };
     }
     // handoff: run it against the fat session (bounded), which clears; then fresh.
@@ -145,11 +175,14 @@ async function applyContextPolicy(
       startedAt: 0,
       lastActivityAt: 0,
     };
-    await handoff(target, deps.cfg.contextPolicy, {
+    await handoff(target, policy, {
       registry: deps.registry,
       ledger: deps.ledger,
       runDeps: profileDeps(deps.cfg, "handoff"),
       memoryFlush: memoryEnabledFor(deps.cfg.memory, folder, deps.cfg.companyFolder),
+      decision,
+      boundary: "resume",
+      notify,
     });
     return { resumeId: "", idleMs: 0 };
   } catch {
@@ -211,9 +244,10 @@ export async function handleMessage(
   //    focus (mode "once") reverts to the company after this one message, so a stray next message
   //    never sticks to a project. An explicit `/pin` (mode "pinned") holds focus across messages.
   const focus = registry.getFocus(chatId);
-  const live = focus?.session ?? registry.getDefault();
-  if (live && !text.trim().startsWith("/")) {
+  const addressed = focus?.session ?? registry.getDefault();
+  if (addressed && !text.trim().startsWith("/")) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
+    const live = await pastClose(registry, addressed);
     const control = registry.getControl(live.id);
     // A message to the company carries any dispatch results still waiting in the dispatcher inbox
     // (e.g. runs cut short by a reload), so the dispatcher sees them before it acts (ADR-0007).
@@ -273,7 +307,9 @@ export async function handleMessage(
 
   // 5. Resume a prior session for this folder/chat, if one was recorded.
   const priorResume = ledger.lastSessionFor(parsed.folder, parsed.chatId, deps.cfg.providers?.ownWork);
-  const gate = priorResume ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps) : { resumeId: "", idleMs: 0 };
+  const gate = priorResume
+    ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps, (t, pr) => void deps.reply(chatId, t, undefined, pr))
+    : { resumeId: "", idleMs: 0 };
   const resume = gate.resumeId;
 
   ledger.recordOrder(parsed);
@@ -295,6 +331,16 @@ export async function handleMessage(
     gate.idleMs,
     gate.preLines,
   );
+}
+
+/** The entry as it is once any CLOSE in progress is over. A run whose channel is already closed (a
+ *  context handoff, an idle-close) drops a pushed follow-up silently, so a message for it waits for
+ *  the run to end and the folder's handoff to finish, then goes down the resume path (ADR-0014). */
+async function pastClose(registry: Registry, s: SessionInfo): Promise<SessionInfo> {
+  if (registry.getControl(s.id)?.closed?.() !== true) return s;
+  await runEnded.get(s.id);
+  await awaitHandoff(s.order.folder);
+  return registry.get(s.id) ?? s;
 }
 
 /** Resume an idle/ended session's SAME registry entry with `task`, carrying its sdk session id
@@ -325,7 +371,7 @@ async function resumeSession(
     // vice versa) is not a resume target, it is a dead session that kills the run.
     const resumable = live.sdkSessionId && canResumeWith(live.sdkProvider, deps.cfg.providers?.ownWork);
     const gate = resumable
-      ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps)
+      ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps, (t, pr) => void deps.reply(chatId, t, live.name, pr))
       : { resumeId: "", idleMs: 0 };
     const run = startSession(
       resumed,
@@ -459,9 +505,44 @@ function startSession(
   // A project's first sight: trusted by default when `trustNewProjects` is on (never re-trusts a
   // folder the operator turned off). Before the worker starts, so its first escalation sees it.
   noteProjectStart(deps, order);
-  if (!runDeps.resume && existsSync(join(order.folder, "HANDOFF.md"))) {
-    order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
+  const folder = order.folder;
+  const policy = deps.cfg.contextPolicy;
+  const ctx = { project, orderId: order.id, folder };
+  // A fresh start after a context handoff begins FROM the note, inline (ADR-0014); the probe then
+  // measures how quickly the new session got going. A HANDOFF.md with no pending handoff (an
+  // idle-close note, the operator's own) keeps the pointer line.
+  let probe: ResumeProbe | undefined;
+  let resumedEventId: number | undefined;
+  if (!runDeps.resume) {
+    const pre = handoffPreamble(folder, ledger, policy, now());
+    if (pre) {
+      resumedEventId = pre.eventId;
+      order = { ...order, task: `${pre.text}\n\n${order.task}` };
+      probe = createResumeProbe((r) =>
+        faults.contain("pipeline.resumeProbe", () => ledger.updateContextEventDetail(pre.eventId, { ...r, success: r.steps <= policy.handoffOrientationMaxSteps }), ctx),
+      );
+    } else if (existsSync(join(folder, "HANDOFF.md"))) {
+      order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
+    }
   }
+  // Safe checkpoints (ADR-0014): Claude only — Codex has no PreToolUse hook to steer through.
+  let noteAtArm: string | undefined;
+  const watch: CheckpointWatch | undefined =
+    runDeps.provider === "codex"
+      ? undefined
+      : createCheckpointWatch({
+          folder,
+          cfg: policy,
+          windows: () => contextWindows(ledger, policy.windowTokensByModel),
+          now,
+          onArm: (a) => {
+            noteAtArm = noteStamp(folder);
+            ledger.recordEvent("context_checkpoint_armed", { orderId: order.id, folder, data: { project, occupancy: a.occupancy, reason: a.decision.reason } });
+          },
+        });
+  let lastSessionId = runDeps.resume ?? "";
+  // Set when the settle check closes the run for a handoff; consumed by the run.done handler.
+  let pendingClose: PendingClose | undefined;
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
   // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
   // follow-up into a live worker). Default `scopes: []` → memoryEnabledFor is always false.
@@ -535,7 +616,20 @@ function startSession(
       },
       // A turn the API refused is NOT a completed turn: the brief never ran. Wait out the throttle
       // and push the same brief back into the (still live) session instead of dropping the work.
+      onUsage: (model, usage) => {
+        watch?.onUsage(model, usage);
+        probe?.onUsage();
+      },
+      onToolUse: (id, name, input) => {
+        watch?.onToolUse(id, name, input);
+        probe?.onToolUse(id, name, input);
+      },
+      onToolResult: (id, isError) => watch?.onToolResult(id, isError),
+      contextSteer: watch ? (tool, input) => watch.steer(tool, input) : undefined,
+      // A task just finished and the session is at rest, its cache warm: the `settled` boundary.
+      onSettled: () => faults.contain("pipeline.contextSettle", () => settleCheck(), ctx),
       onTurnComplete: (result) => {
+        if (result.sessionId) lastSessionId = result.sessionId;
         const kind = result.apiError;
         if (!kind) return;
         deps.cooldown?.note(kind, now()); // hold sibling background work while the storm lasts
@@ -573,11 +667,52 @@ function startSession(
     runDeps,
   );
   runRef = run;
-  registry.attachControl(registryId, run);
+  // The operator's own message always wins over an armed checkpoint: it disarms the steer, and the
+  // next settle decides afresh (with a full handoff turn if still needed).
+  const control: SessionRun = {
+    ...run,
+    followUp: (text: string) => {
+      watch?.disarm();
+      run.followUp(text);
+    },
+  };
+  registry.attachControl(registryId, control);
+
+  /** The settled boundary (ADR-0014): hand off now, while the cache is warm, if the session is above
+   *  the sweet spot — or complete an armed checkpoint. Closes the run; run.done does the rest. */
+  const settleCheck = (): void => {
+    if (pendingClose || run.closed?.() === true || (run.queued?.() ?? 0) > 0) return;
+    const armed = watch?.armed();
+    let next: Omit<PendingClose, "release">;
+    if (armed) {
+      if (handoffDeferred(folder, armed.decision, { ledger, boundary: "checkpoint", occupancy: armed.occupancy, sessionId: lastSessionId })) {
+        watch?.disarm(); // work appeared after the checkpoint: no longer a safe point
+        return;
+      }
+      next = { kind: "checkpoint", decision: armed.decision, occupancy: armed.occupancy };
+    } else {
+      if (!lastSessionId) return;
+      const signals = deps.signals ?? sessionContext;
+      const sig = signals(folder, lastSessionId, { windowTokensByModel: contextWindows(ledger, policy.windowTokensByModel) });
+      const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
+      const decision = decideContext(sig, policy, ttlMs, { boundary: "settled" });
+      if (decision.verdict === "keep") return;
+      if (handoffDeferred(folder, decision, { ledger, boundary: "settled", occupancy: sig.occupancy, sessionId: lastSessionId })) return;
+      next = { kind: "handoff", decision };
+    }
+    // Hold the folder as "handing off" from NOW, so a message arriving before run.done waits for the
+    // handoff instead of racing it. Bounded: a run that never ends cannot wedge the folder.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const guard = setTimeout(() => release(), 2 * policy.handoffTimeoutMs);
+    trackHandoff(folder, held.finally(() => clearTimeout(guard)));
+    pendingClose = { ...next, release };
+    run.close?.();
+  };
 
   // The run's completion bookkeeping is part of the run's unit of work (ADR-0010): a throw here (a
   // locked ledger) is reported with the project + order, never an unhandled rejection.
-  faults.contain("pipeline.runDone", run.done.then((result) => {
+  const ended = run.done.then((result) => {
     if (result.sessionId) {
       // Tag the id with the SDK that minted it — a later resume under a different worker SDK must
       // start fresh instead of feeding it an id it has never heard of.
@@ -611,39 +746,76 @@ function startSession(
         // best-effort — never affects the resume itself
       }
     }
+    if (result.sessionId) lastSessionId = result.sessionId;
+    // The session ended before any edit or commit: record how far it got (success unknown).
+    if (probe && resumedEventId !== undefined && !probe.report().productive) ledger.updateContextEventDetail(resumedEventId, probe.report());
+    const pc = pendingClose;
+    pendingClose = undefined;
+    const notify = (t: string, pr?: "alert") => void deps.reply(chatId, t, project, pr);
+    const info = registry.get(registryId);
+    let handoffWork: Promise<unknown> = Promise.resolve();
     try {
-      if (result.sessionId) {
-        const signals = deps.signals ?? sessionContext;
-        const sig = signals(order.folder, result.sessionId, { windowTokensByModel: contextWindows(ledger, deps.cfg.contextPolicy.windowTokensByModel) });
-        const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
-        if (decideContext(sig, deps.cfg.contextPolicy, ttlMs).verdict !== "keep") {
-          const handoff = deps.handoff ?? runHandoff;
-          const info = registry.get(registryId);
-          if (info) {
-            // The handoff is its own detached unit (ADR-0010): a rejection is reported, never thrown.
-            faults.contain(
-              "pipeline.handoff",
-              () =>
-                handoff(info, deps.cfg.contextPolicy, {
-                  registry,
-                  ledger,
-                  runDeps: profileDeps(deps.cfg, "handoff"),
-                  memoryFlush: memoryEnabledFor(deps.cfg.memory, order.folder, deps.cfg.companyFolder),
-                }),
-              { project, orderId: order.id, folder: order.folder },
-            );
-          }
+      const handoff = deps.handoff ?? runHandoff;
+      const handoffDeps = {
+        registry,
+        ledger,
+        runDeps: profileDeps(deps.cfg, "handoff"),
+        memoryFlush: memoryEnabledFor(deps.cfg.memory, folder, deps.cfg.companyFolder),
+        notify,
+      };
+      if (info && pc?.kind === "checkpoint") {
+        // The worker wrote its note in its own context at the checkpoint — no extra handoff turn,
+        // unless it did not (then the handoff turn writes it).
+        const target = { ...info, sdkSessionId: lastSessionId || info.sdkSessionId };
+        const fresh = noteStamp(folder) !== noteAtArm;
+        handoffWork = fresh
+          ? Promise.resolve(completeHandoff(target, policy, { ...handoffDeps, decision: pc.decision, boundary: "checkpoint" }, { before: noteAtArm, occupancy: pc.occupancy ?? 0 }))
+          : handoff(target, policy, { ...handoffDeps, decision: pc.decision, boundary: "checkpoint" });
+      } else if (info && result.sessionId) {
+        // Any other end of the run (the settle close above, an idle-close, a kill) is a task boundary.
+        let decision = pc?.decision;
+        if (!decision) {
+          const signals = deps.signals ?? sessionContext;
+          const sig = signals(folder, result.sessionId, { windowTokensByModel: contextWindows(ledger, policy.windowTokensByModel) });
+          const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
+          const d = decideContext(sig, policy, ttlMs, { boundary: "settled" });
+          if (d.verdict !== "keep" && !handoffDeferred(folder, d, { ledger, boundary: "settled", occupancy: sig.occupancy, sessionId: result.sessionId })) decision = d;
         }
+        if (decision) handoffWork = handoff(info, policy, { ...handoffDeps, decision, boundary: "settled" });
       }
     } catch {
       // policy is an observer — never break the completion path
     }
+    // The handoff is its own detached unit (ADR-0010): a rejection is reported, never thrown. A
+    // checkpoint's task is not done: once the handoff is complete, a continuation picks it up fresh.
+    faults.contain(
+      "pipeline.handoff",
+      () =>
+        handoffWork
+          .finally(() => pc?.release())
+          .then(async () => {
+            const entry = registry.get(registryId);
+            if (pc?.kind !== "checkpoint" || !entry || deps.lifecycle?.draining()) return;
+            if (registry.getControl(registryId) || resuming.has(registryId)) return; // the operator already reopened it
+            await resumeSession(entry, continuationBrief(), chatId, deps, now, start);
+          }),
+      ctx,
+    );
     // A completed interactive turn is DONE — it stays in the muted DM firehose (the operator is
     // already in this conversation; it is not a walked-away job, so it is NOT a `result` and must not
     // spam the group). A failed one is an ALERT the operator must see (Decisions). The frontend
     // prepends the single priority accent (🟢/🔴) — no per-call-site glyph here (Feature 2).
     void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert");
-  }), { project, orderId: order.id, folder: order.folder });
+  });
+  faults.contain("pipeline.runDone", ended, ctx);
+  const endedQuietly = ended.then(
+    () => undefined,
+    () => undefined,
+  );
+  runEnded.set(registryId, endedQuietly);
+  void endedQuietly.then(() => {
+    if (runEnded.get(registryId) === endedQuietly) runEnded.delete(registryId);
+  });
 
   return run;
 }
