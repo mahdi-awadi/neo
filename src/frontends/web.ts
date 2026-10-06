@@ -415,6 +415,9 @@ aside{width:300px;min-width:300px;background:linear-gradient(180deg,var(--panel)
 .dot.running{background:var(--accent);box-shadow:0 0 8px var(--glow)}.dot.idle{background:var(--warn)}
 .meta{flex:1;min-width:0}.nm{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fo{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.ctx{font-family:var(--mono);font-size:9.5px;font-weight:500;padding:1px 6px;margin-left:7px;border-radius:6px;border:1px solid var(--border);color:var(--muted);vertical-align:1px}
+.ctx.healthy{color:var(--accent);border-color:var(--accent-dim)}.ctx.above{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.ctx.heavy{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}.ctx.emergency{color:var(--ink);background:var(--danger);border-color:var(--danger)}
 .kbtn{opacity:0;background:transparent;border:0;color:var(--faint);cursor:pointer;font-size:13px;padding:3px 5px;border-radius:6px;transition:opacity .12s,color .12s}
 .proj:hover .kbtn{opacity:1}.kbtn:hover{color:var(--danger)}
 .empty{padding:14px 18px;color:var(--muted);font-size:12px;line-height:1.6}
@@ -540,7 +543,7 @@ function loadState(){if(stateLoad){stateAgain=true;return stateLoad;}
 var lastJson={};
 function changed(k,v){var j=JSON.stringify(v);if(lastJson[k]===j)return false;lastJson[k]=j;return true;}
 function renderAll(){renderRepos();if(changed('sdk',S.sdk))renderSdk();if(changed('projects',S.projects))renderProjects();renderTodos();
- if(changed('loops',S.loops))renderLoops();if(changed('usage',S.usage))renderUsage();if(changed('recent',S.recent))renderRecent();}
+ if(changed('loops',S.loops))renderLoops();if(changed('usage',S.usage))renderUsage();if(changed('recent',[S.recent,S.contextEvents]))renderRecent();}
 
 function renderRepos(){var sel=document.getElementById('repo');if(sel.dataset.n==String(S.repos.length))return;sel.dataset.n=String(S.repos.length);
  var cur=sel.value;sel.innerHTML='<option value="">— pick a repo —</option>';
@@ -558,12 +561,17 @@ function renderSdk(){lastJson.sdk=JSON.stringify(S.sdk);var sdk=S.sdk||{provider
  box.appendChild(seg);}
 function setSdk(provider){post('/api/sdk',{provider:provider}).then(function(r){return r.json();}).then(function(d){if(!d.ok){alert(d.error||'SDK switch failed');return;}S.sdk=d.sdk;renderSdk();});}
 
+// ctx% against the sweet spot (ADR-0014): the band colours the chip; the last reset rides along.
+function ctxChip(p){if(p.ctxPct==null&&!p.lastReset)return '';var b=p.ctxBand||'healthy';
+ var t=(p.ctxPct!=null?'ctx '+p.ctxPct+'%':'ctx –')+(p.lastReset?' · ↻ '+age(Date.now()-p.lastReset.at):'');
+ var tip=b+(p.lastReset?' — last reset: '+p.lastReset.verdict+(p.lastReset.reason?' ('+p.lastReset.reason+')':''):'');
+ return '<span class="ctx '+esc(b)+'" title="'+esc(tip)+'">'+esc(t)+'</span>';}
 function renderProjects(){var box=document.getElementById('projects');document.getElementById('pcount').textContent=S.projects.length||'';
  if(!S.projects.length){box.innerHTML='<div class="empty">No open projects yet.<br>Pick a repo above and open one.</div>';document.getElementById('who').textContent='no active project';return;}
  box.innerHTML='';var active=null;
  S.projects.forEach(function(p){var d=document.createElement('div');d.className='proj'+(p.active?' on':'');
   var busy=(p.state==='working'||p.state==='quiet');
-  d.innerHTML='<span class="dot '+(p.state==='wedged'?'':(busy?'running':'idle'))+'"></span><div class="meta"><div class="nm">'+esc(p.name)+'</div><div class="fo">'+esc(p.folder)+' · '+esc(p.line||p.state)+'</div></div>';
+  d.innerHTML='<span class="dot '+(p.state==='wedged'?'':(busy?'running':'idle'))+'"></span><div class="meta"><div class="nm">'+esc(p.name)+ctxChip(p)+'</div><div class="fo">'+esc(p.folder)+' · '+esc(p.line||p.state)+'</div></div>';
   d.onclick=function(){setFilter(p.name);tab('activity');post('/select',{id:p.id}).then(loadState);};
   var k=document.createElement('button');k.className='kbtn';k.textContent='✕';k.title='kill';
   k.onclick=function(ev){ev.stopPropagation();post('/kill',{id:p.id}).then(loadState);};
@@ -651,7 +659,16 @@ function renderRecent(){var v=document.getElementById('vrecent');var h='<div cla
  if(!S.recent.length)h+='<div class="empty">Nothing run yet.</div>';
  S.recent.forEach(function(o){var ic=o.status==='done'?'✓':(o.status==='error'?'✗':'⏳');
   h+='<div class="rrow"><span>'+ic+'</span><div style="flex:1;min-width:0"><div>'+esc(o.task)+'</div><div class="rfo">'+esc(o.folder)+'</div></div></div>';});
- h+='</div>';v.innerHTML=h;}
+ h+='</div>'+renderContextEvents();v.innerHTML=h;}
+// The context-reset timeline (ADR-0014): every handoff, clear, deferral and resume, with its reason.
+var CTX_ICON={handoff:'↻',clear:'⚠',deferred:'⏸',resumed:'▶',fresh:'○'};
+function renderContextEvents(){var C=S.contextEvents||[];var h='<div class="card"><h3>Context resets</h3>';
+ if(!C.length)h+='<div class="empty">No context resets yet.</div>';
+ C.forEach(function(e){var what=e.verdict+(e.verdict==='resumed'?'':' at '+Math.round(e.occupancy*100)+'%');
+  var why=[e.reason,e.boundary].filter(Boolean).join(' · ');
+  var out=e.verdict!=='resumed'||e.steps==null?'':(e.success===true?'resumed cleanly in '+e.steps+' steps':(e.success===false?'slow resume: '+e.steps+' steps':e.steps+' steps, no edit'));
+  h+='<div class="rrow"><span>'+(CTX_ICON[e.verdict]||'·')+'</span><div style="flex:1;min-width:0"><div>'+esc(e.project)+' · '+esc(what)+(why?' · '+esc(why):'')+(out?' · '+esc(out):'')+'</div><div class="rfo">'+age(Date.now()-e.at)+' ago</div></div></div>';});
+ return h+'</div>';}
 
 // Inbox — customer messages the operator reviews (plain data, no AI until 'send to agent').
 function loadInbox(){return fetch('/api/inbox?_='+Date.now(),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){renderInbox(d.items||[]);}).catch(function(){});}

@@ -174,6 +174,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         updates: opts.updates,
         cfg: opts.engine.cfg,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
+        contextPolicy: opts.engine.cfg.contextPolicy,
         todo: opts.engine.todo,
       });
       if (command !== null) {
@@ -220,6 +221,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         trust: opts.engine.trust,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
+        contextPolicy: opts.engine.cfg.contextPolicy,
       });
       emit({ type: "projects", text: result.text, items: result.select ?? [] });
     },
@@ -230,6 +232,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         usage: opts.usage,
         trust: opts.engine.trust,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
+        contextPolicy: opts.engine.cfg.contextPolicy,
       });
       emit({ type: "projects", text: result.text, items: result.select ?? [] });
     },
@@ -274,6 +277,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         reposRoot: opts.engine.cfg.workRoot, // scan the operator's configured project root
         sdkProvider: opts.engine.cfg.providers.ownWork,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
+        contextPolicy: opts.engine.cfg.contextPolicy,
       });
     },
     todo(args) {

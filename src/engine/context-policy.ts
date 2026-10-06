@@ -7,9 +7,10 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Order, SessionInfo } from "../types";
 import type { Registry } from "./registry";
-import type { Ledger } from "./ledger";
+import type { Ledger, ContextEventRow } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
 import { gitFacts, uncommittedIn } from "./dispatch-report";
+import { humanAge } from "./liveness";
 
 /** Context-window size is a FACT about the model, not a tuning knob. The SDK reports it on every
  *  result and the ledger keeps it per model (ADR-0013) — see contextWindows. This table holds only
@@ -159,6 +160,29 @@ export function contextBand(
   if (occupancy >= cfg.checkpointPct) return "heavy";
   if (occupancy >= cfg.sweetSpotPct) return "above";
   return "healthy";
+}
+
+/** The three lines a band is read against. */
+export type BandCfg = Pick<ContextPolicyCfg, "sweetSpotPct" | "checkpointPct" | "emergencyPct">;
+
+/** `ctx 52% above` — the one ctx% label (/status, console). Inside the sweet spot, just the number. */
+export function contextLabel(occupancy: number, cfg?: BandCfg): string {
+  const label = `ctx ${Math.round(occupancy * 100)}%`;
+  const band = cfg ? contextBand(occupancy, cfg) : "healthy";
+  return band === "healthy" ? label : `${label} ${band === "emergency" ? "EMERGENCY" : band}`;
+}
+
+/** Verdicts that replaced a session (a `deferred` or `resumed` row is not a reset). */
+const RESET_VERDICTS = new Set(["handoff", "clear", "fresh"]);
+
+/** The folder's newest context reset, if any. */
+export function lastContextReset(ledger: Pick<Ledger, "listContextEvents">, folder: string): ContextEventRow | undefined {
+  return ledger.listContextEvents({ folder, limit: 20 }).find((e) => RESET_VERDICTS.has(e.verdict));
+}
+
+/** `↻ handoff 2h ago (above-sweet-spot)` */
+export function resetLabel(e: Pick<ContextEventRow, "verdict" | "reason" | "at">, now: number): string {
+  return `↻ ${e.verdict} ${humanAge(now - e.at)} ago${e.reason ? ` (${e.reason})` : ""}`;
 }
 
 /** THE context policy (one, deterministic). `at` says where it is asked (ADR-0014); `projected` is
