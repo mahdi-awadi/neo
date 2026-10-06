@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
-import { createTrace, refSuffix } from "../src/engine/trace";
+import { createTrace, refSuffix, ENGINE_CHAT_ID } from "../src/engine/trace";
 import type { Order } from "../src/types";
 
 function order(id = "o1"): Order {
@@ -170,4 +170,23 @@ test("refSuffix: ack, first reply and result-like lines get the ref; progress do
   expect(refSuffix("progress", false, "m4g2", "auto")).toBe("");
   for (const k of ["result", "decision", "alert", "digest", "plan"] as const) expect(refSuffix(k, false, "m4g2", "auto")).toBe(" · `m4g2`");
   expect(refSuffix("result", false, "m4g2", "off")).toBe("");
+});
+
+test("a line posted to another chat than it was recorded under is still found by (posted chat, channel id)", () => {
+  const { led, t } = setup();
+  const root = t.inbound({ chatId: 7, text: "deploy gold", surface: "telegram", channelMsgId: 1 });
+  const out = t.outbound({ chatId: 7, text: "gold deployed", cause: root, kind: "result" });
+  t.bindChannel(out, -100777, 50); // the Decisions group, not chat 7
+  const reply = t.inbound({ chatId: -100777, text: "nice", surface: "telegram", channelMsgId: 51, replyTo: { chatId: -100777, channelMsgId: 50 } });
+  expect(reply.threadId).toBe(root.threadId);
+  expect(led.messageById(reply.msgId)?.causeId).toBe(out);
+  // A binding is not a delivery route: reply routing still finds no project for it.
+  expect(led.routeFor(-100777, 50)).toBeUndefined();
+});
+
+test("engine-started roots live in their own reserved chat, apart from the web console's chat 0", () => {
+  const { led, t } = setup();
+  expect(ENGINE_CHAT_ID).toBe(-4);
+  const c = t.root({ origin: "loop", title: "loop docs-sweep" });
+  expect(led.messageById(c.msgId)?.chatId).toBe(-4);
 });

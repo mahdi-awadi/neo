@@ -175,7 +175,10 @@ export interface Ledger {
   messageById(id: number): MessageRow | undefined;
   /** The message posted as Telegram `channelMsgId` in `chatId`, if we recorded it. */
   messageByChannel(chatId: number, channelMsgId: number): MessageRow | undefined;
-  /** Remember the channel's id for a posted message. Only binds when the row is in `chatId`. */
+  /** Remember the channel's id for a posted message, keyed by the chat it was POSTED to. Posted in the
+   *  row's own chat → on the row (`messageByChannel`); posted elsewhere (a Decisions-group line, a web
+   *  line mirrored to Telegram) → a binding-only `message_routes` row (`routeCause`), which carries no
+   *  delivery route (`routeFor` ignores it). */
   setChannelMsg(msgId: number, chatId: number, channelMsgId: number): void;
   /** File an already-written message under a thread (a root is written before its own id is known). */
   setMessageThread(msgId: number, threadId: number): void;
@@ -434,6 +437,9 @@ export function openLedger(
 ): Ledger {
   const db = openSqlite(path, { busyTimeoutMs: opts.busyTimeoutMs });
   const routeKeep = opts.routeKeep ?? ROUTE_KEEP;
+  /** Bound the route table: drop the oldest rows past a generous keep-window (source of truth stays intact). */
+  const pruneRoutes = (): void =>
+    void db.query(`DELETE FROM message_routes WHERE rowid NOT IN (SELECT rowid FROM message_routes ORDER BY at DESC, rowid DESC LIMIT ?)`).run(routeKeep);
   const eventsKeep = opts.eventsKeep ?? EVENTS_KEEP;
   const decisionsKeep = opts.decisionsKeep ?? DECISIONS_KEEP;
   const toolActionsKeep = opts.toolActionsKeep ?? TOOL_ACTIONS_KEEP;
@@ -568,7 +574,16 @@ export function openLedger(
       return r ? mapMessageRow(r) : undefined;
     },
     setChannelMsg(msgId, chatId, channelMsgId) {
-      db.query(`UPDATE messages SET channel_msg_id = ? WHERE id = ? AND chat_id = ?`).run(channelMsgId, msgId, chatId);
+      const onRow = db.query(`UPDATE messages SET channel_msg_id = ? WHERE id = ? AND chat_id = ?`).run(channelMsgId, msgId, chatId);
+      if (onRow.changes > 0) return;
+      // Posted to another chat: bind through the route table, keyed by that chat. An empty session
+      // marks a binding, not a route; an existing route keeps its project and gains the ids.
+      db.query(
+        `INSERT INTO message_routes (chat_id, message_id, session_id, folder, project, at, msg_id, thread_id)
+         SELECT ?, ?, '', '', '', ?, id, thread_id FROM messages WHERE id = ?
+         ON CONFLICT(chat_id, message_id) DO UPDATE SET msg_id = excluded.msg_id, thread_id = excluded.thread_id`,
+      ).run(chatId, channelMsgId, Date.now(), msgId);
+      pruneRoutes();
     },
     setMessageThread(msgId, threadId) {
       db.query(`UPDATE messages SET thread_id = ? WHERE id = ?`).run(threadId, msgId);
@@ -881,16 +896,11 @@ export function openLedger(
            project = excluded.project, at = excluded.at,
            msg_id = COALESCE(excluded.msg_id, msg_id), thread_id = COALESCE(excluded.thread_id, thread_id)`,
       ).run(chatId, messageId, target.sessionId, target.folder, target.project, Date.now(), cause?.msgId ?? null, cause?.threadId ?? null);
-      // Bound the table: drop the oldest rows past a generous keep-window (source of truth stays intact).
-      db.query(
-        `DELETE FROM message_routes WHERE rowid NOT IN (
-           SELECT rowid FROM message_routes ORDER BY at DESC, rowid DESC LIMIT ?
-         )`,
-      ).run(routeKeep);
+      pruneRoutes();
     },
     routeFor(chatId, messageId) {
       const row = db
-        .query(`SELECT session_id, folder, project FROM message_routes WHERE chat_id = ? AND message_id = ?`)
+        .query(`SELECT session_id, folder, project FROM message_routes WHERE chat_id = ? AND message_id = ? AND session_id != ''`)
         .get(chatId, messageId) as { session_id: string; folder: string; project: string } | null;
       return row ? { sessionId: row.session_id, folder: row.folder, project: row.project } : undefined;
     },

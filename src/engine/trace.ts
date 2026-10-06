@@ -12,8 +12,9 @@ import { todoTitle } from "./todo-title";
 
 export type { Cause };
 
-/** The system chat that owns engine-started roots (no operator chat exists for them). */
-export const ENGINE_CHAT_ID = 0;
+/** The system chat that owns engine-started roots (no operator chat exists for them). A reserved id of
+ *  its own: 0 is the web console, -1 the default, -2 SUB_CHAT, -3 CUSTOMER_CHAT. */
+export const ENGINE_CHAT_ID = -4;
 
 const TREE_LIMIT = 200;
 const EMPTY = { orders: [], todos: [], decisions: [], toolActions: 0 };

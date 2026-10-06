@@ -124,14 +124,14 @@ const ADMIN = 42;
 const botInfo = { id: 1, is_bot: true, first_name: "Neo", username: "neo_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } as never;
 
 /** A bot with a stubbed Bot API (grammy's client.fetch) and a real trace over an in-memory ledger. */
-function tgRig(o: { wrap?: (t: Trace) => Trace } = {}) {
+function tgRig(o: { wrap?: (t: Trace) => Trace; decisionsChatId?: number; draining?: boolean } = {}) {
   const ledger = openLedger(":memory:");
   const registry = createRegistry();
   const real = createTrace({ ledger, registry });
   const trace = o.wrap ? o.wrap(real) : real;
   const admin = openAdminStore(":memory:");
   admin.claimAdmin(ADMIN);
-  const cfg = { ...loadConfig(mkdtempSync(join(tmpdir(), "neo-tg-trace-"))), telegramToken: "123456:TESTTOKEN", telegramAllowFrom: [], decisionsChatId: undefined };
+  const cfg = { ...loadConfig(mkdtempSync(join(tmpdir(), "neo-tg-trace-"))), telegramToken: "123456:TESTTOKEN", telegramAllowFrom: [], decisionsChatId: o.decisionsChatId };
   const sent: Array<{ text: string; message_id: number; chat_id: number }> = [];
   let nextId = 100;
   const fetch = (async (url: string | URL, init?: { body?: unknown }) => {
@@ -142,19 +142,24 @@ function tgRig(o: { wrap?: (t: Trace) => Trace } = {}) {
     return new Response(JSON.stringify({ ok: true, result }), { headers: { "content-type": "application/json" } });
   }) as unknown as typeof globalThis.fetch;
   const bus = createOperatorBus();
-  const bot = createTelegramBot(cfg, ledger, admin, registry, createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), openTrustStore(":memory:"), undefined, undefined, undefined, { trace }, bus, { botInfo, client: { fetch } });
+  const bot = createTelegramBot(cfg, ledger, admin, registry, createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), openTrustStore(":memory:"), undefined, undefined, undefined, { trace, ...(o.draining ? { lifecycle: { draining: () => true } } : {}) }, bus, { botInfo, client: { fetch } });
   let updateId = 1;
   let messageId = 1;
   const chat = { id: ADMIN, type: "private" as const, first_name: "Neo" };
   const from = { id: ADMIN, is_bot: false, first_name: "Neo" };
-  const text = async (t: string, replyTo?: number) => {
+  const text = async (t: string, replyTo?: number, chatId = ADMIN) => {
     const id = messageId++;
-    const reply_to_message = replyTo === undefined ? undefined : { message_id: replyTo, date: 0, chat, text: "x" };
-    await bot.handleUpdate({ update_id: updateId++, message: { message_id: id, date: 0, chat, from, text: t, ...(reply_to_message ? { reply_to_message } : {}) } } as never);
+    const where = chatId === ADMIN ? chat : { id: chatId, type: "group" as const, title: "Decisions" };
+    const reply_to_message = replyTo === undefined ? undefined : { message_id: replyTo, date: 0, chat: where, text: "x" };
+    await bot.handleUpdate({ update_id: updateId++, message: { message_id: id, date: 0, chat: where, from, text: t, ...(reply_to_message ? { reply_to_message } : {}) } } as never);
     await Bun.sleep(10); // sends are fire-and-forget
     return id;
   };
-  return { ledger, registry, bus, trace: real, sent, text };
+  const press = async (data: string) => {
+    await bot.handleUpdate({ update_id: updateId++, callback_query: { id: String(updateId), from, chat_instance: "c", data, message: { message_id: 1, date: 0, chat, text: "x" } } } as never);
+    await Bun.sleep(10);
+  };
+  return { ledger, registry, bus, trace: real, sent, text, press };
 }
 
 test("an operator message is traced with its Telegram id; Neo's answer is bound to the message it posted", async () => {
@@ -169,7 +174,7 @@ test("an operator message is traced with its Telegram id; Neo's answer is bound 
   expect(bound.threadId).toBe(inbound.threadId);
 });
 
-test("a reply to a Neo line of a project joins that line's thread (rule 1), and the project gets the cause", async () => {
+test("a reply to a mirrored project line joins its thread through the route, and the project gets the cause", async () => {
   const r = tgRig();
   // A live project session whose input we can see.
   const gold = r.registry.add({ id: "o-gold", source: "neo", folder: "/home/gold", task: "t", chatId: ADMIN, createdAt: 1 });
@@ -213,4 +218,45 @@ test("a trace that fails on inbound or bind never blocks the operator's message"
   const before = r.sent.length;
   await r.text("hello there");
   expect(r.sent.length).toBeGreaterThan(before); // the pipeline still answered
+});
+
+// ── fix round 1: binding is keyed by the chat a line was POSTED to ─────────────────────────
+
+const GROUP = -100777;
+
+test("a Decisions-group line with no project: a reply joins its thread even though it is not delivered; reply /trace shows that thread", async () => {
+  const r = tgRig({ decisionsChatId: GROUP });
+  // A result recorded on the web (chat 0), with no project and no session, posted into the group.
+  const root = r.trace.inbound({ chatId: 0, text: "ship gold", surface: "web" });
+  const line = r.trace.outbound({ chatId: 0, text: "gold shipped", cause: root, kind: "result" });
+  r.bus.mirror("web", { kind: "reply", text: "gold shipped", priority: "result", msgId: line, threadId: root.threadId });
+  await Bun.sleep(10);
+  const posted = r.sent.at(-1)!;
+  expect(posted.chat_id).toBe(GROUP);
+
+  const mid = await r.text("and the admin?", posted.message_id, GROUP);
+  expect(r.sent.at(-1)!.text).toContain("project"); // delivery still asks which project (routeReply unchanged)
+  const row = r.ledger.messageByChannel(GROUP, mid)!;
+  expect(row).toMatchObject({ role: "user", content: "and the admin?", threadId: root.threadId, causeId: line });
+
+  await r.text("/trace", posted.message_id, GROUP);
+  expect(r.sent.at(-1)!.text.split("\n")[0]).toContain(r.trace.ref(root.threadId));
+});
+
+test("a reply to a no-project line in the DM is filed in its thread before 'which project?'", async () => {
+  const r = tgRig();
+  await r.text("hello there"); // the pipeline's usage line answers, bound in the DM
+  const answer = r.sent.at(-1)!.message_id;
+  const thread = r.ledger.messageByChannel(ADMIN, answer)!.threadId;
+  const mid = await r.text("what do you mean?", answer);
+  expect(r.ledger.messageByChannel(ADMIN, mid)!.threadId).toBe(thread);
+});
+
+test("the operator's typed decision answer is bound to its Telegram message, in the decision's thread", async () => {
+  const r = tgRig({ draining: true }); // the resume stops at the drain gate: no worker starts
+  const root = r.trace.inbound({ chatId: ADMIN, text: "pick a db", surface: "telegram" });
+  const id = r.ledger.openDecision({ kind: "decision", project: "gold", folder: "/home/gold", chatId: ADMIN, question: "which db?", cause: root });
+  await r.press(`deco:${id}`);
+  const mid = await r.text("Postgres");
+  expect(r.ledger.messageByChannel(ADMIN, mid)).toMatchObject({ role: "user", content: "Postgres", threadId: root.threadId });
 });

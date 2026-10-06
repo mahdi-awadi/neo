@@ -28,7 +28,7 @@ import { dashboardSnapshot, type DashState } from "./dashboard";
 import { mdToHtml } from "./format";
 import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
-import type { LineIds, OperatorBus } from "./operator-bus";
+import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 import type { Cause } from "./trace";
 import { faults } from "./fault";
@@ -90,11 +90,6 @@ export interface WebChannel {
   getFile(token: string): string | undefined;
   /** Test/seam hook: deliver a file as if a worker called send_file. Returns the token. */
   _testSendFile(path: string, caption?: string): string;
-}
-
-/** Only the ids that are known — an untraced line carries neither key. */
-function knownIds(ids: LineIds): LineIds {
-  return { ...(ids.msgId !== undefined ? { msgId: ids.msgId } : {}), ...(ids.threadId !== undefined ? { threadId: ids.threadId } : {}) };
 }
 
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"] }): WebChannel {

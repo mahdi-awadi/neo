@@ -24,6 +24,11 @@ export interface LineIds {
   threadId?: number;
 }
 
+/** Only the ids that are known — an untraced line carries neither key. */
+export function knownIds(ids: LineIds): LineIds {
+  return { ...(ids.msgId !== undefined ? { msgId: ids.msgId } : {}), ...(ids.threadId !== undefined ? { threadId: ids.threadId } : {}) };
+}
+
 /** A connected operator surface. `id` is the origin tag ("telegram" | "web"); `deliver` renders the
  *  line on that surface and MUST NOT re-enter the pipeline. */
 export interface OperatorSink {
