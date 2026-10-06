@@ -53,15 +53,18 @@ test("loopSchedulerEnabled defaults to true; NEO_LOOP_SCHEDULER=0 disables it", 
   }
 });
 
-test("dispatchTimeoutMs defaults to 900000 and reads config.json", () => {
-  expect(loadConfig("/nonexistent-dir").dispatchTimeoutMs).toBe(900_000);
+test("dispatch has no wall-clock ceiling knob (ADR-0007)", () => {
+  const c = loadConfig("/nonexistent-dir") as unknown as Record<string, unknown>;
+  expect(c.dispatchTimeoutMs).toBeUndefined();
+  expect(c.dispatchTimeoutMaxMs).toBeUndefined();
 });
 
-test("dispatch liveness knobs default per spec (ceiling 2h, stall 5m, grace 75s)", () => {
+test("dispatch liveness + reporting knobs default per spec (stall 5m, grace 75s, digest 10m, recovery 24h)", () => {
   const c = loadConfig("/nonexistent-dir");
-  expect(c.dispatchTimeoutMaxMs).toBe(7_200_000);
   expect(c.dispatchStallMs).toBe(300_000);
   expect(c.dispatchGraceMs).toBe(75_000);
+  expect(c.dispatchProgressMs).toBe(600_000);
+  expect(c.dispatchRecoverWindowMs).toBe(86_400_000);
 });
 
 test("watchdog thresholds default per spec", () => {
@@ -71,18 +74,83 @@ test("watchdog thresholds default per spec", () => {
   expect(c.alertRepeatMs).toBe(900_000);
 });
 
+test("API retry policy defaults (ladder 30s/2m/8m, jitter 0.2, cooldown 60s)", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.apiRetryLadderMs).toEqual([30_000, 120_000, 480_000]);
+  expect(c.apiRetryJitterFrac).toBe(0.2);
+  expect(c.apiCooldownMs).toBe(60_000);
+});
+
+test("config.json overrides the API retry policy (ladder length = retry count)", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ apiRetryLadderMs: [1000, 2000], apiRetryJitterFrac: 0, apiCooldownMs: 5000 }));
+  const c = loadConfig(d);
+  expect(c.apiRetryLadderMs).toEqual([1000, 2000]);
+  expect(c.apiRetryJitterFrac).toBe(0);
+  expect(c.apiCooldownMs).toBe(5000);
+});
+
+test("retention + list knobs default per spec and read config.json", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.routeKeep).toBe(20_000);
+  expect(c.eventsKeep).toBe(50_000);
+  expect(c.decisionsKeep).toBe(5_000);
+  expect(c.toolActionsKeep).toBe(100_000);
+  expect(c.codebaseMemoryListTimeoutMs).toBe(15_000);
+  expect(c.inboxListDefault).toBe(100);
+  expect(c.webFeedWindow).toBe(500);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ routeKeep: 5, eventsKeep: 7, codebaseMemoryListTimeoutMs: 9, inboxListDefault: 11, webFeedWindow: 13 }));
+  const o = loadConfig(d);
+  expect(o.routeKeep).toBe(5);
+  expect(o.eventsKeep).toBe(7);
+  expect(o.codebaseMemoryListTimeoutMs).toBe(9);
+  expect(o.inboxListDefault).toBe(11);
+  expect(o.webFeedWindow).toBe(13);
+});
+
+test("decisionsChatId is undefined by default, reads config.json, and env wins", () => {
+  withEnv("DECISIONS_CHAT_ID", undefined, () => {
+    expect(loadConfig("/nonexistent-dir").decisionsChatId).toBeUndefined();
+    const d = dir();
+    writeFileSync(join(d, "config.json"), JSON.stringify({ decisionsChatId: -100123 }));
+    expect(loadConfig(d).decisionsChatId).toBe(-100123);
+  });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ decisionsChatId: -100123 }));
+  withEnv("DECISIONS_CHAT_ID", "-100999", () => {
+    expect(loadConfig(d).decisionsChatId).toBe(-100999); // env over file
+  });
+});
+
 test("contextPolicy defaults per spec", () => {
   const c = loadConfig("/nonexistent-dir");
   expect(c.contextPolicy).toEqual({
-    handoffPct: 0.65,
-    emergencyPct: 0.85,
+    sweetSpotPct: 0.4,
+    checkpointPct: 0.6,
+    emergencyPct: 0.9,
+    handoffNoteMaxChars: 20_000,
+    handoffOrientationMaxSteps: 70,
     maxTurns: 200,
     maxAgeMs: 604_800_000,
     handoffTimeoutMs: 180_000,
     staleResumePct: 0.35,
     cacheTtlFallbackMs: 3_600_000,
     cacheTtlMinObservations: 5,
+    cacheObsWindow: 50,
   });
+});
+
+test("messageRoutesCacheCap + contextPolicy.cacheObsWindow default and read config.json", () => {
+  const c = loadConfig("/nonexistent-dir");
+  expect(c.messageRoutesCacheCap).toBe(2_000);
+  expect(c.contextPolicy.cacheObsWindow).toBe(50);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ messageRoutesCacheCap: 42, contextPolicy: { cacheObsWindow: 8 } }));
+  const o = loadConfig(d);
+  expect(o.messageRoutesCacheCap).toBe(42);
+  expect(o.contextPolicy.cacheObsWindow).toBe(8);
+  expect(o.contextPolicy.sweetSpotPct).toBe(0.4); // unset contextPolicy fields keep defaults
 });
 
 /** Run `fn` with `key` forced to `value` (or unset when undefined), restoring the prior value after. */
@@ -174,12 +242,50 @@ test("worker profiles: per-path overrides merge from config.json over inherit-ev
 test("worker profiles: QUALITY INVARIANT — absent config changes no worker's model/effort/skills", () => {
   const cfg = loadConfig(dir());
   // Only the two effort:"low" behaviors that already exist in code move into config; every
-  // other path (all code-writing paths included) inherits the CLI default model untouched.
+  // other path (all code-writing paths included) stays empty and so takes `models.default`
+  // (ADR-0005) — a path names a model only to DIFFER from the pinned default.
   expect(cfg.workers).toEqual({
     company: { effort: "low" }, project: {}, dispatch: {}, loop: {},
-    judge: {}, ingress: { effort: "low" }, handoff: {},
+    judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {},
   });
   expect(cfg.workerEnv).toEqual({});
+});
+
+test("models: the default is PINNED to a real id — never an inherited SDK default, never a bare alias", () => {
+  const m = loadConfig(dir()).models;
+  // The defect this fixes: no model key anywhere meant every worker took whatever the
+  // subscription happened to default to, with no config change and no record (ADR-0005).
+  expect(m.default).toBe("claude-opus-5-5[1m]");
+  expect(m.aliases).toEqual({
+    opus: "claude-opus-5-5[1m]",
+    sonnet: "claude-sonnet-5-5",
+    haiku: "claude-haiku-4-5",
+    fable: "claude-fable-5-1",
+  });
+  // A bare alias is release-dependent, so it must never BE the pinned value.
+  expect(Object.values(m.aliases)).not.toContain("opus");
+  expect(m.default.startsWith("claude-")).toBe(true);
+});
+
+test("models: config.json overrides the pinned default and merges a single alias", () => {
+  const d = dir();
+  writeFileSync(
+    join(d, "config.json"),
+    JSON.stringify({ models: { default: "claude-sonnet-5-5", aliases: { opus: "claude-opus-5" } } }),
+  );
+  const m = loadConfig(d).models;
+  expect(m.default).toBe("claude-sonnet-5-5");
+  expect(m.aliases.opus).toBe("claude-opus-5");          // file override wins for that tier
+  expect(m.aliases.sonnet).toBe("claude-sonnet-5-5");    // untouched tiers keep the pinned default
+});
+
+test("models: NEO_WORKER_MODEL env beats config.json (env > file > defaults)", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ models: { default: "claude-sonnet-5-5" } }));
+  withEnv("NEO_WORKER_MODEL", "claude-fable-5-1", () => {
+    expect(loadConfig(d).models.default).toBe("claude-fable-5-1");
+  });
+  expect(loadConfig(d).models.default).toBe("claude-sonnet-5-5"); // env unset → file again
 });
 
 test("memory: QUALITY INVARIANT — scopes defaults to [] (total no-op) plus Hermes-measured fallbacks", () => {
@@ -201,4 +307,109 @@ test("memory: config.json can opt a scope in and override the ratio caps", () =>
   expect(cfg.memory.scopes).toEqual(["company"]);
   expect(cfg.memory.snapshotMaxPct).toBe(0.01);
   expect(cfg.memory.userMaxPct).toBe(0.0025); // unset field keeps the default
+});
+
+test("models: alias KEYS from config.json are normalised, so capitalisation cannot silently miss", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ models: { aliases: { Opus: "claude-opus-5" } } }));
+  expect(loadConfig(d).models.aliases.opus).toBe("claude-opus-5");
+});
+
+test("updates: defaults — daily, auto-apply on for every category, breaking updates held (ADR-0009)", () => {
+  const u = loadConfig(dir()).updates;
+  expect(u.enabled).toBe(true);
+  expect(u.everyMs).toBe(24 * 60 * 60 * 1000);
+  expect(u.autoApply).toEqual({ sdk: true, plugins: true, mcp: true });
+  expect(u.holdBreaking).toBe(true);
+  expect(u.baseBranch).toBe("master");
+  expect(u.npmGlobals["playwright-mcp"]).toBe("@playwright/mcp");
+  expect(u.codebaseMemory.repo).toBe("DeusData/codebase-memory-mcp");
+});
+
+test("updates: config.json merges per key — one autoApply category off keeps the others", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ updates: { everyMs: 1000, autoApply: { mcp: false } } }));
+  const u = loadConfig(d).updates;
+  expect(u.everyMs).toBe(1000);
+  expect(u.autoApply).toEqual({ sdk: true, plugins: true, mcp: false });
+  expect(u.holdBreaking).toBe(true);
+});
+
+test("trustNewProjects defaults to true (operator choice, 2026-10-02)", () => {
+  expect(loadConfig(dir()).trustNewProjects).toBe(true);
+});
+
+test("config.json can turn trustNewProjects off", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ trustNewProjects: false }));
+  expect(loadConfig(d).trustNewProjects).toBe(false);
+});
+
+test("error containment knobs: defaults, and config.json merges per key (ADR-0010)", () => {
+  const c = loadConfig(dir());
+  expect(c.faults).toEqual({ dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: true, maxHandoffsPerHour: 3 });
+  expect(c.health).toEqual({ everyMs: 60_000, lagWarnMs: 2_000, rssWarnMb: 2_048 });
+  expect(c.sqliteBusyTimeoutMs).toBe(5_000);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ faults: { companyHandoff: false }, health: { everyMs: 0 }, sqliteBusyTimeoutMs: 100 }));
+  const o = loadConfig(d);
+  expect(o.faults).toEqual({ dedupeMs: 15 * 60_000, maxAlertsPerHour: 6, companyHandoff: false, maxHandoffsPerHour: 3 });
+  expect(o.health.everyMs).toBe(0);
+  expect(o.health.lagWarnMs).toBe(2_000);
+  expect(o.sqliteBusyTimeoutMs).toBe(100);
+});
+
+// ADR-0021: the sweet-spot band comes from transcript data (31,585 Opus turns), not a guess.
+const withCfg = (json: unknown) => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify(json));
+  return loadConfig(d);
+};
+
+test("the context band defaults to sweet spot 0.40, checkpoint 0.60, emergency 0.90", () => {
+  const cp = loadConfig(dir()).contextPolicy;
+  expect([cp.sweetSpotPct, cp.checkpointPct, cp.emergencyPct]).toEqual([0.4, 0.6, 0.9]);
+  expect([cp.handoffNoteMaxChars, cp.handoffOrientationMaxSteps]).toEqual([20_000, 70]);
+});
+
+test("a legacy contextPolicy.handoffPct is honoured as sweetSpotPct; sweetSpotPct wins when both are set", () => {
+  expect(withCfg({ contextPolicy: { handoffPct: 0.5 } }).contextPolicy.sweetSpotPct).toBe(0.5);
+  expect(withCfg({ contextPolicy: { handoffPct: 0.5, sweetSpotPct: 0.3 } }).contextPolicy.sweetSpotPct).toBe(0.3);
+});
+
+test("trace.showRefs defaults to auto; config.json can turn it off", () => {
+  expect(loadConfig(dir()).trace).toEqual({ showRefs: "auto" });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ trace: { showRefs: "off" } }));
+  expect(loadConfig(d).trace?.showRefs).toBe("off");
+});
+
+test("attention thresholds default, and config.json overrides them (P4, ADR-0018)", () => {
+  expect(loadConfig(dir()).attention).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10, staleBranchDays: 21, worktreeIdleHours: 12, digestAt: "0 8 * * *" });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ attention: { waitingHours: 4 } }));
+  expect(loadConfig(d).attention?.waitingHours).toBe(4);
+});
+
+test("spin guards default (3 digests, policy alert, tool loop 8); a bad value keeps the default", () => {
+  expect(loadConfig(dir())).toMatchObject({ dispatchSpinDigests: 3, dispatchSpinPolicy: "alert", toolLoopLimit: 8 });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ dispatchSpinDigests: 4, dispatchSpinPolicy: "wrapup", toolLoopLimit: 0 }));
+  expect(loadConfig(d)).toMatchObject({ dispatchSpinDigests: 4, dispatchSpinPolicy: "wrapup", toolLoopLimit: 8 });
+});
+
+test("restart.branchPrefixes defaults to fix/ feat/ chore/; a bad list keeps the default", () => {
+  expect(loadConfig(dir()).restart).toEqual({ branchPrefixes: ["fix/", "feat/", "chore/"] });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ restart: { branchPrefixes: [""] } }));
+  expect(loadConfig(d).restart?.branchPrefixes).toEqual(["fix/", "feat/", "chore/"]);
+});
+
+test("github scan defaults and per-project settings from config.json (bad fields drop)", () => {
+  expect(loadConfig(dir()).github).toEqual({ scanEveryMs: 1_800_000, callTimeoutMs: 20_000 });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ github: { scanEveryMs: 600_000 }, projects: { gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], issueLabel: 7, ignoreKinds: ["dirty"] } } }));
+  const c = loadConfig(d);
+  expect(c.github).toEqual({ scanEveryMs: 600_000, callTimeoutMs: 20_000 });
+  expect(c.projects).toEqual({ gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], ignoreKinds: ["dirty"] } });
 });

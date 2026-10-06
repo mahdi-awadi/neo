@@ -1,7 +1,34 @@
 # Claude Agent SDK — verified notes (Phase 0 spike)
 
-Verified against `@anthropic-ai/claude-agent-sdk@0.3.183` on 2026-06-19 by running
-`src/spike.ts` (now deleted). Phase 1 builds on this.
+The runtime dependency is pinned to `@anthropic-ai/claude-agent-sdk@0.3.286` in `package.json`.
+The Phase 0 observations below were originally verified against `0.3.183` on 2026-06-19 by running
+`src/spike.ts` (now deleted). Phase 1 builds on those observations.
+
+## Model ids exposed by the bundle (0.3.286, read 2026-10-01)
+
+The bundle carries the canonical list, so it can be read rather than guessed:
+`grep -rhoE 'claude-(opus|sonnet|haiku|fable)[a-z0-9._-]*' node_modules/@anthropic-ai/claude-agent-sdk/`.
+
+```
+claude-3-5-haiku     claude-fable-5      claude-opus-4-0   claude-opus-4-7   claude-sonnet-4-0
+claude-3-5-sonnet    claude-fable-5-1    claude-opus-4-1   claude-opus-4-8   claude-sonnet-4-5
+claude-3-7-sonnet    claude-haiku-4-5    claude-opus-4-5   claude-opus-5     claude-sonnet-4-6
+claude-mythos-5      claude-mythos-5-1   claude-opus-4-6   claude-opus-5-5   claude-sonnet-5
+                                                                             claude-sonnet-5-5
+```
+
+Aliases: `sonnet`, `opus`, `haiku`, `fable`, `best`, `opusplan`, and the 1M-context forms
+`sonnet[1m]`, `opus[1m]`, `fable[1m]`. `[1m]` is a context-size tag the bundle strips from any
+canonical id (`c.replace(/\[1m\]$/i,"")`), so `claude-opus-5-5[1m]` is a valid spelling.
+
+An alias is **release-dependent** and the SDK says so itself when one is used in an allowlist: *"it
+names a different model depending on the release and settings. Name the model instead, for example
+`claude-opus-5-5`."* That is why Neo pins ids — see ADR-0005 and `docs/CONFIG.md` "Worker models".
+
+`claude-opus-5-5`, `claude-opus-5-5[1m]`, `claude-sonnet-5-5` and `claude-fable-5-1` were each run
+against the live API on 2026-10-01 and accepted. The `[1m]` request reports `message.model` as
+`claude-opus-5-5` with the tag stripped, so a transcript **cannot** tell a 1M run from a 200k one —
+which is why `MODEL_WINDOW_TOKENS` (`src/engine/context-policy.ts`) still keys only `default`.
 
 ## Entry point
 
@@ -35,7 +62,8 @@ terminal, no TTY, no tmux**. Confirmed headless.
   SDK message until it completes, so a worker writing a huge file goes quiet for minutes; with it the
   steady drip of stream events keeps Neo's dispatch stall monitor alive (it isn't mistaken for
   silence). Neo consumes these purely as a liveness heartbeat, not for content. Added 2026-07-17.
-- `canUseTool` — the governance hook (see below).
+- `canUseTool` — the governance callback (see below).
+- `hooks.PreToolUse` — the governor hook. It runs before settings allow rules (see below).
 - (for Phase 1) `mcpServers`, `resume`, `model`.
 
 ## canUseTool — the governance hook (KEY FINDING)
@@ -56,6 +84,32 @@ canUseTool: async (tool, input) => {
 
 → Engine impact: `session-runner` translates the governor's `Verdict` into a `PermissionResult` and
 **must echo `updatedInput` on allow**.
+
+## Settings allow rules skip canUseTool — the governor hook (verified 2026-10-01, SDK 0.3.286)
+
+Probes: `spike/governor-bypass-probe.ts` (Neo's real `runOrder()`), `spike/allow-rule-sanity.ts`,
+`spike/hook-ask-spike.ts`.
+
+- **A project allow rule approves a tool before `canUseTool` runs.** In a trusted folder with
+  `{"permissions":{"allow":["Bash(git:*)"]}}`, `git push --dry-run …` and `git log --format=force`
+  ran with **zero** `canUseTool` calls. This was the governor bypass. ADR-0006 has the fix.
+- **Allow rules need direct trust.** The SDK applies a project's allow rules only when the folder
+  itself has `hasTrustDialogAccepted` in `~/.claude.json`. In a folder trusted only through a parent
+  (for example `/home`), allow rules did nothing and deny rules still applied. An untrusted folder
+  applied neither. So run a probe in a directly trusted folder, or it gives a false negative.
+- **A `PreToolUse` hook that returns `permissionDecision: "ask"` sends the call to `canUseTool`, even
+  when an allow rule matches.** An empty return `{}` gives no opinion: the allow rule then approves
+  the call and `canUseTool` is not called.
+- **A hook that throws fails open:** the allow rule approved the call and `canUseTool` was not called.
+  So Neo's hook is synchronous, never waits, and returns `"ask"` on any error.
+- Hooks fire for subagent tool calls too. A team subagent's `git push` reached the governor.
+- **`ask` outranks another hook's `allow`.** A project settings `PreToolUse` command hook returned
+  `allow`, and Neo's hook returned `ask`: `canUseTool` was still called. (The same project hook
+  returning `deny` blocked the call, so the project hook was active.) So a project or plugin hook
+  cannot approve a call past the governor.
+
+Neo's wiring (`sdkOptions`): `hooks: { PreToolUse: [{ hooks: [buildGovernorHook(folder)] }] }`, no
+matcher, placed after the per-run fields together with `permissionMode: "default"` and `canUseTool`.
 
 ## Message stream (observed `msg.type` values)
 

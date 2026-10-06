@@ -101,3 +101,101 @@ test("dashboard rows expose ctxPct via the default sessionContext (no signals in
   expect(rows.find((r) => r.id === "d2")!.ctxPct).toBe(0);
   expect(rows.find((r) => r.id === "d3")!.ctxPct).toBeUndefined();
 });
+
+// The console has to speak the same vocabulary as /list and `sessions` — a project shown as
+// "running" while it sits between turns is the same lie on a third surface.
+test("dashboardSnapshot carries the derived state and the one-line status per project", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ folder: "/p/alpha", task: "build x" }), 0);
+  registry.attachControl(a.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true });
+  registry.noteActivity(a.id, "Bash: bun test", 0);
+  const b = registry.add(order({ folder: "/p/beta", task: "fix y" }), 0);
+  registry.attachControl(b.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false });
+
+  const snap = dashboardSnapshot({ registry, ledger: openLedger(":memory:"), chatId: 0, now: 10_000, reposRoot: "/tmp" });
+  const alpha = snap.projects.find((p) => p.name === "alpha")!;
+  const beta = snap.projects.find((p) => p.name === "beta")!;
+  expect(alpha.state).toBe("working");
+  expect(alpha.line).toContain("Bash: bun test");
+  expect(beta.state).toBe("idle");
+  expect(beta.line).toContain("nothing in flight");
+});
+
+// ADR-0013: the console's ctx% must use the SDK-reported window the ledger holds, merged under the
+// operator's override — the 235–306% the console showed was a 1M Opus session divided by 200k.
+test("dashboardSnapshot measures with the SDK-reported windows from the ledger, override on top", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d5", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-y");
+  const ledger = openLedger(":memory:");
+  ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  let seen: Record<string, number> | undefined;
+  dashboardSnapshot({
+    registry,
+    ledger,
+    chatId: 0,
+    now: 10_000,
+    windowTokensByModel: { "big-model": 2_000_000 },
+    signals: (_f, _id, opts) => {
+      seen = opts?.windowTokensByModel;
+      return { occupancy: 0.5, turns: 1, ageMs: 0, idleMs: 0 };
+    },
+  });
+  expect(seen).toEqual({ "claude-opus-5-5": 1_000_000, "big-model": 2_000_000 });
+});
+
+test("dashboardSnapshot shows no ctx% while the window is only a guess (never a fake 274%)", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d6", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-z");
+  const rows = dashboardSnapshot({
+    registry,
+    ledger: openLedger(":memory:"),
+    chatId: 0,
+    now: 10_000,
+    signals: () => ({ occupancy: 2.74, turns: 1, ageMs: 0, idleMs: 0, windowKnown: false }),
+  }).projects;
+  expect(rows.find((r) => r.id === "d6")!.ctxPct).toBeUndefined();
+});
+
+// ADR-0021: the console shows each project's band and last reset, and a timeline of resets.
+test("dashboard rows carry the context band and the last reset; the snapshot lists recent resets", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "c1", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-c");
+  const ledger = openLedger(":memory:");
+  ledger.recordContextEvent("/p/gold", "handoff", 0.52, 100, { reason: "above-sweet-spot", boundary: "settled" });
+  const r = ledger.recordContextEvent("/p/gold", "resumed", 0, 200, { detail: { handoffId: 1 } });
+  ledger.updateContextEventDetail(r, { productive: true, steps: 12, success: true });
+  ledger.recordContextEvent("/p/waselni", "clear", 0.95, 300, { reason: "emergency", boundary: "resume" });
+  const snap = dashboardSnapshot({
+    registry,
+    ledger,
+    chatId: 0,
+    now: 10_000,
+    contextPolicy: { sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9 },
+    signals: () => ({ occupancy: 0.63, turns: 3, ageMs: 0, idleMs: 0 }),
+  });
+  const row = snap.projects.find((p) => p.id === "c1")!;
+  expect(row.ctxBand).toBe("heavy");
+  expect(row.lastReset).toEqual({ verdict: "handoff", reason: "above-sweet-spot", at: 100 });
+  expect(snap.contextEvents.map((e) => [e.project, e.verdict])).toEqual([["waselni", "clear"], ["gold", "resumed"], ["gold", "handoff"]]);
+  expect(snap.contextEvents[1]).toMatchObject({ steps: 12, success: true });
+});
+
+// AC4.7 (spec §8.5): ctx% over 100 is impossible — the dashboard shows "?" (ctxSuspect), never the number.
+test("an occupancy over 1 is no percentage: ctxSuspect instead of ctxPct", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d5", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-x");
+  const rows = dashboardSnapshot({
+    registry,
+    ledger: openLedger(":memory:"),
+    chatId: 0,
+    now: 10_000,
+    signals: () => ({ occupancy: 2.35, turns: 3, ageMs: 0, idleMs: 0 }),
+  }).projects;
+  const row = rows.find((r) => r.id === "d5")!;
+  expect(row.ctxPct).toBeUndefined();
+  expect(row.ctxSuspect).toBe(true);
+});

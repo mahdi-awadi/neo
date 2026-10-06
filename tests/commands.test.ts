@@ -26,6 +26,7 @@ function deps(
     usage?: any;
     inbox?: ReturnType<typeof openInbox>;
     cfg?: { providers: { ownWork: Provider; customerWork: Provider } };
+    now?: () => number;
   } = {},
 ) {
   return {
@@ -35,7 +36,7 @@ function deps(
     trust: openTrustStore(":memory:"),
     inbox: over.inbox,
     cfg: over.cfg,
-    now: () => 100000,
+    now: over.now ?? (() => 100000),
   };
 }
 
@@ -221,6 +222,15 @@ test("/sdk reports and switches the own-work SDK provider", () => {
   expect(cfg.providers.ownWork).toBe("subscription");
 });
 
+test("/sdk accepts Telegram's @bot suffix", () => {
+  const cfg = { providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider } };
+
+  const result = handleCommand("/sdk@neo_bot codex", 1, deps({ cfg }))!;
+
+  expect(result.sdk?.provider).toBe("codex");
+  expect(cfg.providers.ownWork).toBe("codex");
+});
+
 test("/sdk rejects unknown or customer-only providers without changing config", () => {
   const cfg = { providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider } };
   const out = handleCommand("/sdk gemini", 1, deps({ cfg }))!;
@@ -390,17 +400,20 @@ test("/trust with an unknown explicit target returns a clear not-found message",
   expect(out).toContain("definitely-not-a-real-neo-project");
 });
 
-test("/status shows current activity, busy duration, and queue depth for running sessions", () => {
+test("/status shows current activity, how long since it was seen, and queue depth for a WORKING session", () => {
   const registry = createRegistry();
   const o = order({ folder: "/p/gold", task: "build" });
   const s = registry.add(o, 0);
   registry.setStatus(s.id, "running");
   registry.noteActivity(s.id, "Bash: bun test", 100000 - 4 * 60_000);
-  registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 2 });
+  // A turn genuinely in flight — without this the session is idle between turns, and saying it is
+  // "on Bash: bun test" would be the same lie the old renderer told.
+  registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 2, active: () => true });
   const d = deps({ registry });
   const out = handleCommand("/status", 1, d)!;
+  expect(out.text).toContain("working");
   expect(out.text).toContain("Bash: bun test");
-  expect(out.text).toContain("4m");
+  expect(out.text).toContain("last activity 4m ago");
   expect(out.text).toContain("2 queued");
 });
 
@@ -441,4 +454,116 @@ test("/status shows ctx% via the default sessionContext (no signals injected)", 
   const d = deps({ registry });
   const out = handleCommand("/status", 1, d)!; // no `signals` override — must fall back to sessionContext
   expect(out.text).toContain("ctx 0%");
+});
+
+// /list must speak the same vocabulary as `sessions` and dispatch: the DERIVED state, never the
+// registry's lifetime `status` (which reads "running" for a session doing nothing at all).
+test("/list reports the derived session state, not the registry lifecycle word", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ folder: "/p/alpha" }), 0);
+  registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false });
+  registry.noteActivity(s.id, "waiting", 0);
+
+  const out = handleCommand("/list", 1, deps({ registry, now: () => 10 * 60 * 60 * 1000 }))!.text;
+  expect(out).toContain("idle");
+  expect(out).toContain("nothing in flight");
+  expect(out).not.toContain("running");
+});
+
+test("/list shows a working project's activity and its last-activity age", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ folder: "/p/alpha" }), 0);
+  registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true });
+  registry.noteActivity(s.id, "Bash: bun test", 100_000);
+
+  const out = handleCommand("/list", 1, deps({ registry, now: () => 110_000 }))!.text;
+  expect(out).toContain("working");
+  expect(out).toContain("Bash: bun test");
+  expect(out).toContain("last activity 10s ago");
+});
+
+test("/list's icon follows the derived state — a wedged project is not a green dot", () => {
+  const registry = createRegistry();
+  const idle = registry.add(order({ folder: "/p/alpha" }), 0);
+  registry.attachControl(idle.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false });
+  const stuck = registry.add(order({ folder: "/p/beta" }), 0);
+  registry.attachControl(stuck.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true });
+
+  const out = handleCommand("/list", 1, deps({ registry, now: () => 30 * 60 * 1000 }))!.text;
+  const alpha = out.split("\n").find((l) => l.includes("alpha"))!;
+  const beta = out.split("\n").find((l) => l.includes("beta"))!;
+  expect(alpha).not.toContain("🟢"); // idle between turns — free, not busy
+  expect(beta).toContain("🔴"); // wedged — the only row worth acting on
+});
+
+function fakeUpdater(running = false) {
+  const calls: unknown[] = [];
+  return {
+    calls,
+    updater: {
+      status: () => "STATUS",
+      running: () => running,
+      run: async (o: unknown) => (calls.push(["run", o]), "report"),
+      rollback: async (id: string) => (calls.push(["rollback", id]), "rolled"),
+    },
+  };
+}
+
+test("/updates shows the updater status; unavailable without one", () => {
+  const f = fakeUpdater();
+  expect(handleCommand("/updates", 1, { ...deps(), updates: f.updater })!.text).toBe("STATUS");
+  expect(handleCommand("/updates", 1, deps())!.text).toContain("unavailable");
+});
+
+test("/updates run starts a manual run; a run in progress is not doubled", () => {
+  const f = fakeUpdater();
+  expect(handleCommand("/updates run", 1, { ...deps(), updates: f.updater })!.text).toContain("started");
+  expect(f.calls).toEqual([["run", { trigger: "manual" }]]);
+  const busy = fakeUpdater(true);
+  expect(handleCommand("/updates run", 1, { ...deps(), updates: busy.updater })!.text).toContain("in progress");
+  expect(busy.calls).toEqual([]);
+});
+
+test("/updates apply <item> forces that one item; rollback <item> rolls it back; bad input shows usage", () => {
+  const f = fakeUpdater();
+  handleCommand("/updates apply codebase-memory-mcp", 1, { ...deps(), updates: f.updater });
+  handleCommand("/updates rollback npm:@playwright/mcp", 1, { ...deps(), updates: f.updater });
+  expect(f.calls).toEqual([
+    ["run", { trigger: "manual", only: "codebase-memory-mcp", force: true }],
+    ["rollback", "npm:@playwright/mcp"],
+  ]);
+  expect(handleCommand("/updates apply", 1, { ...deps(), updates: f.updater })!.text).toContain("Usage");
+  expect(handleCommand("/updates nonsense x", 1, { ...deps(), updates: f.updater })!.text).toContain("Usage");
+  expect(f.calls.length).toBe(2);
+});
+
+// ADR-0021: /status shows where each session sits against the sweet spot, and its last reset.
+const BANDS = { sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9 };
+
+test("/status names the context band outside the sweet spot, and nothing inside it", () => {
+  const registry = createRegistry();
+  const a = registry.add(order({ id: "b1", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(a.id, "sess-a");
+  const d = deps({ registry });
+  const at = (occupancy: number) => handleCommand("/status", 1, { ...d, contextPolicy: BANDS, signals: () => ({ occupancy, turns: 3, ageMs: 0, idleMs: 0 }) })!.text;
+  expect(at(0.2)).toContain("ctx 20% ·");
+  expect(at(0.52)).toContain("ctx 52% above");
+  expect(at(0.65)).toContain("ctx 65% heavy");
+  expect(at(0.93)).toContain("ctx 93% EMERGENCY");
+});
+
+test("/status shows the project's last context reset with its reason", () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const a = registry.add(order({ id: "b2", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(a.id, "sess-b");
+  ledger.recordContextEvent("/p/gold", "handoff", 0.52, 10_000 - 2 * 3_600_000, { reason: "above-sweet-spot", boundary: "settled" });
+  const d = deps({ registry, ledger, now: () => 10_000 });
+  const out = handleCommand("/status", 1, { ...d, contextPolicy: BANDS, signals: () => ({ occupancy: 0.1, turns: 3, ageMs: 0, idleMs: 0 }) })!.text;
+  expect(out).toContain("↻ handoff 2h ago (above-sweet-spot)");
+});
+
+test("/gated shows the restart-gated list the engine computes; unavailable without it (P4, spec §8.4)", () => {
+  expect(handleCommand("/gated", 1, { ...deps(), gated: () => "✓ running build = HEAD (abc1234 on master)" })!.text).toContain("running build = HEAD");
+  expect(handleCommand("/gated", 1, deps())!.text).toContain("unavailable");
 });

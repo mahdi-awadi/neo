@@ -4,6 +4,9 @@
 // caller falls through to the order pipeline. `select` is the set of tappable projects for
 // /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
+import { attentionActions, renderAttention, type AttentionAction } from "./attention-actions";
+import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
+import type { AttentionRow } from "./ledger";
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Ledger } from "./ledger";
@@ -13,10 +16,19 @@ import type { UsageMeter, RateLimitInfo } from "./usage";
 import type { TrustStore } from "./trust";
 import type { Inbox } from "./inbox";
 import { renderInboxList, type InboxListEntry } from "./inbox-actions";
-import type { SessionInfo } from "../types";
-import { sessionContext, type ContextSignals } from "./context-policy";
-import { humanAge } from "./session-status";
+import { sessionContext, contextWindows, contextLabel, lastContextReset, resetLabel, type BandCfg, type ContextSignals } from "./context-policy";
+import { describeSession, stateOf } from "./session-status";
+import type { SessionState } from "./liveness";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
+import type { TodoQueue } from "./todo-queue";
+import type { Updater } from "./updater";
+import { renderTrace, type Trace } from "./trace";
+import { renderPlans } from "./plans";
+import { humanAge } from "./liveness";
+import { faults } from "./fault";
+import type { GitRead } from "./git-read";
+import { todoTitle } from "./todo-title";
+import { projectDeps, projectSummary, projectSummaries, projectUrl, projectView, recentThreads, renderProject, summaryLine } from "./project-view";
 
 export interface CommandDeps {
   registry: Registry;
@@ -39,10 +51,28 @@ export interface CommandDeps {
    *  ContextPolicyCfg.windowTokensByModel doc). Optional: undefined ⇒ today's behavior (facts-map
    *  default only). */
   windowTokensByModel?: Record<string, number>;
+  /** The sweet-spot lines (cfg.contextPolicy) — /status names a session's band against them
+   *  (ADR-0021). Absent ⇒ the bare ctx% only. */
+  contextPolicy?: BandCfg;
   /** Graceful reload (/reload): the daemon injects drain-then-exit; channels without it can't reload. */
   requestReload?: () => void;
-  /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. */
-  cfg?: Pick<NeoConfig, "providers">;
+  /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. `publicUrl` is the
+   *  console base the /trace link points at. */
+  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention" | "github" | "projects">>;
+  /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
+  todo?: TodoQueue;
+  /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
+  updates?: Pick<Updater, "status" | "run" | "rollback" | "running">;
+  /** The restart-gated list (spec §8.4, `/gated`): what is built but not running. Absent → unavailable. */
+  gated?: () => string;
+  /** The cause seam (for /trace, ADR-0015). Absent → /trace says it is unavailable. */
+  trace?: Trace;
+  /** The Telegram message this command replied to: a bare `/trace` traces that message's thread. */
+  replyTo?: { chatId: number; channelMsgId: number };
+  /** Neo's own repo (for `/project`). Absent → the daemon's working folder. */
+  neoFolder?: string;
+  /** The git reader `/project` uses. Absent → the bounded default (`github.callTimeoutMs`). */
+  gitRead?: GitRead;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -62,6 +92,14 @@ export interface CommandResult {
   inbox?: InboxListEntry[];
   /** Updated worker-SDK state (for web UI controls). */
   sdk?: WorkerSdkState;
+  /** One-tap attention items (for /attention) — frontends render → todo / snooze / dismiss per item. */
+  attention?: Array<Pick<AttentionRow, "id" | "project" | "title" | "severity"> & { actions: AttentionAction[] }>;
+  /** A command whose answer needs async reads (`/project` reads git live): the frontend sends THIS
+   *  result when it settles, instead of `text`. It never rejects. */
+  later?: Promise<CommandResult>;
+  /** One project's dashboard (`/project <name>`) — frontends add its buttons: attention (N), threads,
+   *  open console. */
+  project?: { name: string; attention: number; consoleUrl?: string };
 }
 
 interface CommandContext {
@@ -90,7 +128,7 @@ const COMMANDS: Command[] = [
     aliases: ["ls", "status"],
     usage: "/list",
     summary: "open projects (★ = active · tap a name to switch)",
-    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel),
+    run: ({ deps, now, chatId }) => renderList(deps, now, chatId),
   },
   {
     name: "use",
@@ -126,6 +164,55 @@ const COMMANDS: Command[] = [
     usage: "/trust [<project-or-folder>] [on|off]",
     summary: "auto-approve all actions for a project (no Allow/Deny prompts)",
     run: ({ deps, args, chatId }) => trustCommand(args.trim(), chatId, deps),
+  },
+  {
+    name: "todo",
+    aliases: ["todos", "queue"],
+    usage: "/todo [<project>] · /todo cancel|up <id> · /todo pause|resume <project>",
+    summary: "per-project todo queues: list, cancel, move up, pause, resume",
+    run: ({ deps, args }) => ({ text: todoCommand(args.trim(), deps.todo) }),
+  },
+  {
+    name: "trace",
+    usage: "/trace <ref> (or reply /trace to a Neo message)",
+    summary: "show everything a message caused",
+    run: ({ deps, args }) => ({ text: traceCommand(args.trim(), deps) }),
+  },
+  {
+    name: "plans",
+    usage: "/plans [<project>]",
+    summary: "plans and specs the engine sent you: status, steps done, thread",
+    run: ({ deps, args }) => ({ text: renderPlans(deps.ledger, deps.trace, args.trim() || undefined) }),
+  },
+  {
+    name: "updates",
+    aliases: ["update"],
+    usage: "/updates · /updates run · /updates apply|rollback <item>",
+    summary: "toolchain updates (SDK, plugins, MCP): status, check now, apply a held one, roll back",
+    run: ({ deps, args }) => ({ text: updatesCommand(args.trim(), deps.updates) }),
+  },
+  {
+    name: "attention",
+    usage: "/attention [<project>]",
+    summary: "what needs you: open items by project, severity first, with → todo / snooze / dismiss",
+    run: ({ deps, args, now }) => {
+      const c = deps.cfg?.attention ?? DEFAULT_ATTENTION_CFG;
+      const r = renderAttention(deps.ledger, { project: args.trim() || undefined, now, maxLines: c.listLines, maxButtons: c.listButtons, consoleUrl: deps.cfg?.publicUrl || undefined });
+      return { text: r.text, attention: r.buttons.map((b) => ({ id: b.id, project: b.project, title: b.title, severity: b.severity, actions: attentionActions(b) })) };
+    },
+  },
+  {
+    name: "project",
+    aliases: ["p"],
+    usage: "/project [<name>] · /project <name> threads",
+    summary: "a project's dashboard: now, queue, git, GitHub, decisions, plans, attention (no name: every project)",
+    run: ({ deps, args, now }) => ({ text: "", later: projectCommand(args.trim(), deps, now) }),
+  },
+  {
+    name: "gated",
+    usage: "/gated",
+    summary: "what is built but not running yet (commits after boot, branches to merge, updates)",
+    run: ({ deps }) => ({ text: deps.gated ? deps.gated() : "/gated is unavailable here" }),
   },
   {
     name: "inbox",
@@ -227,7 +314,10 @@ export function telegramCommands(): TelegramCommand[] {
 export function handleCommand(text: string, chatId: number, deps: CommandDeps): CommandResult | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
-  const [word, ...rest] = trimmed.slice(1).split(/\s+/);
+  const [rawWord, ...rest] = trimmed.slice(1).split(/\s+/);
+  // Telegram addresses commands in group chats as `/command@bot_username`. The command is still
+  // ours, but without stripping the suffix it silently falls through into the work pipeline.
+  const word = rawWord.split("@", 1)[0].toLowerCase();
   const cmd = COMMANDS.find((c) => c.name === word || c.aliases?.includes(word));
   if (!cmd) return null; // /open + unknown -> let the pipeline handle it
   return cmd.run({ chatId, args: rest.join(" "), now: (deps.now ?? (() => Date.now()))(), deps });
@@ -238,7 +328,7 @@ export function handleCommand(text: string, chatId: number, deps: CommandDeps): 
  * tapped project receives the next message, then focus reverts to the company (use /pin to hold). */
 export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   deps.registry.setFocus(chatId, id, "once");
-  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals, deps.windowTokensByModel);
+  return renderList(deps, (deps.now ?? (() => Date.now()))(), chatId);
 }
 
 /** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
@@ -246,14 +336,118 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
 export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   const now = (deps.now ?? (() => Date.now()))();
   if (deps.registry.getDefault()?.id === id) {
-    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel).select };
+    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps, now, chatId).select };
   }
   if (deps.registry.get(id)) {
     void deps.registry.getControl(id)?.interrupt();
     deps.registry.setStatus(id, "done");
     deps.registry.remove(id);
   }
-  return renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel);
+  return renderList(deps, now, chatId);
+}
+
+const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo pause <project> · /todo resume <project>";
+
+/** /todo — read and steer the per-project todo queues. Thin: the queue owns every rule. */
+function todoCommand(args: string, todo: TodoQueue | undefined): string {
+  if (!todo) return "The todo queue is unavailable on this channel.";
+  const words = args.split(/\s+/).filter(Boolean);
+  if (words.length > 2) return TODO_USAGE; // never act on half of what was typed
+  const [first = "", arg = ""] = words;
+  const verb = first.toLowerCase();
+  const id = /^#?\d+$/.test(arg) ? Number(arg.replace(/^#/, "")) : NaN; // plain digits only: no 0x2, 2e0
+  switch (verb) {
+    case "":
+      return todo.list();
+    case "cancel":
+    case "up":
+      if (!(id > 0)) return TODO_USAGE;
+      return verb === "cancel" ? todo.cancel(id) : todo.up(id);
+    case "pause":
+    case "resume":
+      if (!arg) return TODO_USAGE;
+      return verb === "pause" ? todo.pause(arg) : todo.resume(arg);
+    default:
+      if (arg) return TODO_USAGE;
+      return todo.list(first);
+  }
+}
+
+/** /project — the project dashboard (spec §9): no name → every project's one-line summary; a name →
+ *  its dashboard (the P6 sketch) with the attention count and console link the frontends turn into
+ *  buttons; `<name> threads` → its newest threads. One bounded message, `attention.listLines` lines. */
+async function projectCommand(args: string, deps: CommandDeps, now: number): Promise<CommandResult> {
+  try {
+    const maxLines = (deps.cfg?.attention ?? DEFAULT_ATTENTION_CFG).listLines;
+    const consoleUrl = deps.cfg?.publicUrl || undefined;
+    const d = projectDeps({ ledger: deps.ledger, registry: deps.registry, cfg: deps.cfg ?? {}, neoFolder: deps.neoFolder, read: deps.gitRead });
+    const [name, sub] = args.split(/\s+/).filter(Boolean);
+    if (!name) {
+      const r = projectSummaries(d, now, Math.max(1, maxLines - 1));
+      const more = r.total - r.rows.length;
+      return { text: [`projects: ${r.total}`, ...r.rows.map(summaryLine), ...(more > 0 ? [`… +${more} more`] : [])].join("\n") };
+    }
+    const unknown = { text: `No project "${name}" — /project lists the projects the engine knows.` };
+    if (sub === "threads") {
+      if (!projectSummary(d, name, now)) return unknown;
+      const rows = recentThreads(deps.ledger, name);
+      if (!rows.length) return { text: `${name} has no threads yet.` };
+      const lines = rows.map((t) => `${t.ref} ${t.state} ${todoTitle(t.title)} (${humanAge(now - t.updatedAt)})`);
+      return { text: [`threads of ${name} (newest ${rows.length}):`, ...lines, "/trace <ref> shows one", ...(consoleUrl ? [consoleUrl] : [])].join("\n") };
+    }
+    const v = await projectView(d, name, now);
+    if (!v) return unknown;
+    return { text: renderProject(v, now, { maxLines }), project: { name, attention: v.attention.length, ...(consoleUrl ? { consoleUrl: projectUrl(consoleUrl, name) } : {}) } };
+  } catch (e) {
+    faults.report("command.project", e, { project: args });
+    return { text: "The project dashboard failed — the fault is reported." };
+  }
+}
+
+/** /trace — a message's thread and everything it produced (spec §4.4). Thin: the trace owns the tree. */
+function traceCommand(arg: string, deps: CommandDeps): string {
+  const { trace, ledger } = deps;
+  if (!trace) return "Tracing is unavailable on this channel.";
+  let msgId: number | undefined;
+  if (arg) {
+    msgId = trace.parseRef(arg);
+    if (msgId === undefined || !ledger.messageById(msgId)) return `No message ${msgId === undefined ? arg : trace.ref(msgId)} — check the ref`;
+  } else if (deps.replyTo) {
+    const { chatId, channelMsgId } = deps.replyTo;
+    msgId = ledger.messageByChannel(chatId, channelMsgId)?.id ?? ledger.routeCause(chatId, channelMsgId)?.msgId;
+    if (msgId === undefined) return "That message is not traced (it is older than tracing). Use /trace <ref>.";
+  } else return "Usage: /trace <ref> — or reply /trace to a Neo message.";
+  const tree = trace.tree(msgId);
+  if (!tree.thread && !tree.pruned) return `Message ${trace.ref(msgId)} has no thread (it is older than tracing).`;
+  return renderTrace(tree, trace.ref, { consoleUrl: deps.cfg?.publicUrl });
+}
+
+const UPDATES_USAGE = "Usage: /updates · /updates run · /updates apply <item> · /updates rollback <item>";
+
+/** /updates — read and steer the toolchain updater. Thin: the updater owns every rule. A run or a
+ *  rollback takes minutes, so it starts in the background; the updater sends its own report. */
+function updatesCommand(args: string, updater: CommandDeps["updates"]): string {
+  if (!updater) return "The updater is unavailable on this channel.";
+  const words = args.split(/\s+/).filter(Boolean);
+  const [verb = "", item = ""] = [words[0]?.toLowerCase(), words[1]];
+  const background = (p: Promise<unknown>, what: string) =>
+    void p.catch((e) => console.error(`[updates] ${what} failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`));
+  if (verb === "" && words.length === 0) return updater.status();
+  if (verb === "run" && words.length === 1) {
+    if (updater.running()) return "An update run is already in progress — its report follows when it ends.";
+    background(updater.run({ trigger: "manual" }), "run");
+    return "🔄 Update check started — the report follows when it ends.";
+  }
+  if ((verb === "apply" || verb === "rollback") && item && words.length === 2) {
+    if (verb === "rollback") {
+      background(updater.rollback(item), `rollback ${item}`);
+      return `↩ Rolling back ${item} — the result follows.`;
+    }
+    if (updater.running()) return "An update run is already in progress — try again when its report arrives.";
+    background(updater.run({ trigger: "manual", only: item, force: true }), `apply ${item}`);
+    return `⬆ Applying ${item} (held or not) — the result follows.`;
+  }
+  return UPDATES_USAGE;
 }
 
 function inboxCommand(deps: CommandDeps): CommandResult {
@@ -277,7 +471,7 @@ function trustCommand(args: string, chatId: number, deps: CommandDeps): CommandR
     return {
       text:
         mode === "on"
-          ? `🔓 trusting ${target.name} (${folder}) — actions auto-approve, no prompts.`
+          ? `🔓 trusting ${target.name} (${folder}) — actions auto-approve; writes outside the folder follow governor.outOfFolderWrites, never trust.`
           : `🔒 no longer trusting ${target.name} (${folder}) — actions will prompt again.`,
     };
   }
@@ -319,18 +513,19 @@ function sdkCommand(arg: string, cfg: CommandDeps["cfg"]): CommandResult {
   };
 }
 
-function statusIcon(status: SessionInfo["status"]): string {
-  return status === "running" ? "🟢" : status === "idle" ? "🟡" : "⚪️";
+/** The dot follows the DERIVED state, so the glance and the words agree: a session sitting between
+ *  turns is not a busy green dot, and the one row worth acting on is the only red one. */
+function stateIcon(state: SessionState): string {
+  if (state === "wedged") return "🔴";
+  if (state === "awaiting-operator") return "🟠";
+  if (state === "working" || state === "quiet") return "🟢";
+  if (state === "starting") return "🟡";
+  return "⚪️";
 }
 
-function renderList(
-  registry: Registry,
-  trust: CommandDeps["trust"],
-  now: number,
-  chatId: number,
-  signals?: CommandDeps["signals"],
-  windowTokensByModel?: Record<string, number>,
-): CommandResult {
+function renderList(deps: CommandDeps, now: number, chatId: number): CommandResult {
+  const { registry, trust, signals, ledger } = deps;
+  const windowTokensByModel = contextWindows(ledger, deps.windowTokensByModel);
   const sessions = registry.list();
   if (sessions.length === 0) return { text: "No open projects." };
   // The chat's focused project (if any) is the one messages currently address; mark it ▶ (one-shot,
@@ -349,19 +544,29 @@ function renderList(
       const star = s.id === activeId ? (focus!.mode === "pinned" ? "📌 " : "▶ ") : "";
       const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
-      const act = s.status === "running" && s.activity ? ` · ${s.activity.label} ${humanAge(now - s.activity.since)}` : "";
-      const q = registry.getControl(s.id)?.queued?.() ?? 0;
-      const queued = q > 0 ? ` · ${q} queued` : "";
+      // ONE vocabulary everywhere: the derived state + both clocks + the queue, exactly as the
+      // company's `sessions` tool and dispatch's busy replies render it. The registry `status` is
+      // lifecycle bookkeeping and is never shown — "running" for an idle session is the lie this
+      // whole surface was built on (ADR 0003).
+      const live = describeSession(registry, s, now);
+      const state = stateOf(registry, s, now);
       let ctx = "";
       if (s.sdkSessionId) {
         try {
           const sig = (signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel });
-          ctx = ` · ctx ${Math.round(sig.occupancy * 100)}%`;
+          if (sig.windowKnown !== false) ctx = ` · ${contextLabel(sig.occupancy, deps.contextPolicy)}`; // no % on a guessed window (ADR-0013)
         } catch {
           // skip on error
         }
       }
-      return `${star}${statusIcon(s.status)} ${lock}${s.name} · ${s.order.folder} · ${s.status}${act}${queued}${ctx} · ${humanAge(now - s.startedAt)} · "${task}"`;
+      let reset = "";
+      try {
+        const last = lastContextReset(ledger, s.order.folder);
+        if (last) reset = ` · ${resetLabel(last, now)}`;
+      } catch {
+        // skip on error
+      }
+      return `${star}${stateIcon(state)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"`;
     })
     .join("\n");
   return { text, select };

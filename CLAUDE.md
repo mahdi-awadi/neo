@@ -40,8 +40,10 @@ prompt:
 - **Budget guard:** background SDK work shares your subscription pool, so reserve interactive
   headroom — never drain the plan you use yourself (`subscriptionInteractiveReservePct`).
 - **Approval gate (hardened):** the governor is default-ESCALATE — unknown tools, foreign MCP
-  tools, WebFetch, and out-of-folder Write/Edit all ask Neo (autonomous paths auto-deny). File
-  writes are path-fenced to the session's project folder. Customer-tainted briefs (inbox
+  tools and WebFetch all ask Neo (autonomous paths auto-deny). Out-of-folder Write/Edit is
+  pre-approved for own work by operator order (`governor.outOfFolderWrites`, ADR-0012); customer
+  work stays path-fenced to the project folder. A pending approval reminds the operator, then
+  denies on timeout. Customer-tainted briefs (inbox
   drafting) run with **zero tools** (`TAINTED_DISALLOWED_TOOLS` + no MCP): customer email text
   never reaches a worker that can act. Operator-mediated drafting on Claude is own-work
   (Neo reviews/edits/sends every reply); direct customer I/O stays off the subscription.
@@ -51,7 +53,11 @@ prompt:
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
 customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
 rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
-down the daemon), one-shot session focus, and context-efficiency Phase 1
+down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), the toolchain auto-updater
+(ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011), pre-approved out-of-folder writes + approval
+reminders/timeout (ADR-0012),
+the Telegram flood gate, the trace spine (message ids, threads, causes, `/trace`; ADR-0015/0016; restart-gated), the plan
+registry (every plan sent once with Approve/Changes/Execute, `/plans`; ADR-0019; restart-gated), the context sweet spot (boundary handoffs + safe checkpoints, ADR-0021), and context-efficiency Phase 1
 (per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
 default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.
@@ -81,6 +87,23 @@ then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board).
   ... }`. The full shape is documented in `src/engine/session-runner.ts` (SDK findings:
   `docs/sdk-notes.md`).
 
+## Engineering baseline (operator hard rule, 2026-09-18 — every project, every dispatch brief)
+
+Code that is not industry-standard is a **failure / no-go**, even when it works:
+
+1. **Standard i18n translation files** (react-i18next or the stack's equivalent: one catalogue per
+   locale, namespaced keys, AR+EN complete). No literal user-facing strings in components, no
+   bespoke translation mechanism.
+2. **`.env` + environments**; everything **starts as dev** by default (fail closed to dev-safe
+   behaviour, never to prod).
+3. **Everything runs in Docker.**
+4. **No hardcoding** — values live in env/DB/config.
+5. **Read the existing code first and REUSE it** — extend what exists; never a second implementation.
+
+Every dispatched worker gets this automatically: the dispatch preamble (`briefWithProjectDocs` in
+`src/engine/dispatch.ts`) carries it, because a worker sent into another folder loads *that*
+project's CLAUDE.md, never this one. Don't re-type it into briefs.
+
 ## Conventions
 
 - **Secrets** in `.env` (gitignored, `chmod 600`). Runtime/tenant data under `company/` is
@@ -92,7 +115,13 @@ then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board).
   tool-generated instruction blocks in `CLAUDE.local.md`, never in tracked docs.
 - **No AI in the engine.** Determinism by default; AI only inside SDK workers + Gemini reads.
 - Operator is addressed as **Neo** (not "Mahdi" — that's only the repo-author handle).
-- End commit messages with: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- End commit messages with: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
+  **Name the model that actually wrote the commit** — if you are a different one, say so instead of
+  copying this line. It is a default for the current model, not a template to repeat blindly: this
+  line read "Opus 4.8" long after workers had moved on, so commits across several repos were signed
+  by a model that did not write them. (The worker pin lives in `config.models` — ADR-0005 — but that
+  governs *workers*, and a commit may be authored by an interactive session instead, so the two are
+  related, not the same. Don't update this line just because the pin moved.)
 
 ## Workflow patterns (field notes — only what fits Neo)
 
@@ -115,7 +144,9 @@ Greptile) are noted but not adopted; these principles are:
   reports progress, too.
 - **Parallelism needs isolation.** Many agents on one repo conflict → git worktrees per agent (Neo's
   concurrent sessions already isolate by folder). Agent-scale merge/deploy is genuinely unsolved —
-  batch and be patient.
+  batch and be patient. **Worktree folders are temporary** (operator, 2026-10-05): make one only when
+  it is needed or clearly the best option, and `git worktree remove` it as soon as the task is done.
+  The branch stays; the folder goes. `/home/neo` is the only permanent Neo folder.
 
 ## Why these decisions (so you don't relitigate them)
 
@@ -142,5 +173,8 @@ Greptile) are noted but not adopted; these principles are:
 - `/home/operant` — the predecessor. Mine it for proven code to port.
 - `docs/loops.md` — loops & automations reference (trigger → action → goal); the autonomy model for
   the company-engine scheduler.
+- `tools/create-loop.ts` — author or edit a loop from the CLI through the engine's own validated path
+  (the web CRUD is admin-session-gated, so an agent in this repo cannot use it). Never write
+  `loop_defs` by hand. Checked-in definitions live in `docs/loops/`.
 - `docs/HISTORY.md` — the phase-by-phase build narrative (moved out of this file to stay lean).
 - `docs/CONFIG.md` — full config reference (env vars + `config.json` knobs).

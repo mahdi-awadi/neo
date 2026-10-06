@@ -53,6 +53,14 @@ test("unregister removes a sink from future fan-out", () => {
   expect(web.lines).toEqual([]); // unregistered — no longer receives
 });
 
+test("a reply line carries its priority to other sinks", () => {
+  const bus = createOperatorBus();
+  const web = recorder("web");
+  bus.register(web);
+  bus.mirror("telegram", { kind: "reply", text: "which design?", priority: "decision" });
+  expect(web.lines[0]).toMatchObject({ kind: "reply", text: "which design?", priority: "decision" });
+});
+
 test("registering the same id twice replaces the prior sink (one surface, one sink)", () => {
   const bus = createOperatorBus();
   const first = recorder("web");

@@ -4,26 +4,71 @@
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
+import type { Priority } from "./priority";
+import { maturedAsk, questionSummary, MAX_OPTIONS, type StructuredAsk, type MaturedDecisionInput } from "./structured-question";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
-import type { Ledger } from "./ledger";
+import { PAGE_MAX, type Cause, type Ledger, type MessageKind } from "./ledger";
+import type { Trace } from "./trace";
 import type { Registry } from "./registry";
-import type { Meter } from "./budget";
+import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type WorkClass } from "./budget";
 import type { UsageMeter } from "./usage";
-import type { TrustStore } from "./trust";
+import { noteProjectStart, type TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
+import { createHash } from "node:crypto";
+import {
+  dispatchResultText,
+  formatStopPoint,
+  lastCommitIn,
+  liveCompanyLink,
+  flushDispatcherInbox,
+  progressDigest,
+  digestFingerprint,
+  createSpinWatch,
+  DISPATCH_SPIN_DIGESTS_DEFAULT,
+  TOOL_LOOP_LIMIT_DEFAULT,
+  TOOL_LOOP_EXEMPT_DEFAULT,
+  type DispatcherLink,
+  type StopPoint,
+} from "./dispatch-report";
 import { frontendBackend, teamLeadPreamble } from "./agent-teams";
 import { DEFAULT_PROJECT } from "./default-project";
-import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
-import { describeSessionStatus, sessionsReport } from "./session-status";
+import {
+  decideContext,
+  sessionContext,
+  contextWindows,
+  runHandoff,
+  completeHandoff,
+  effectiveCacheTtlMs,
+  CACHE_OBS_WINDOW,
+  windowTokensFor,
+  awaitHandoff,
+  trackHandoff,
+  handoffHoldMs,
+  handoffPreamble,
+  handoffDeferred,
+  continuationBrief,
+  describeContextReset,
+  noteStamp,
+  type ContextPolicyCfg,
+} from "./context-policy";
+import { faults } from "./fault";
+import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./context-checkpoint";
+import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
+import { knownProjects, projectDeps, projectSummaries, summaryLine } from "./project-view";
+import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
+import type { TodoQueue } from "./todo-queue";
 import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
+import { patientApproval } from "./escalation";
+import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { canResumeWith } from "./sdk-choice";
+import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import {
   apiFailureNotice,
@@ -32,7 +77,7 @@ import {
   apiRetryFollowUp,
   apiRetryNotice,
   shouldRetryApi,
-  MAX_API_RETRIES,
+  API_RETRY_DELAYS_MS,
   type ApiCooldown,
 } from "./api-retry";
 
@@ -46,6 +91,21 @@ export const SUB_CHAT = -2;
 /** Function-scoped scratch workspaces (research, dev, marketing, …) for work with no project home. */
 export const DESKS_DIR = join(DEFAULT_PROJECT.folder, "desks");
 
+/** Extra facts about one outbound line, for the trace (ADR-0015). Frontends ignore it. */
+export interface ReplyMeta {
+  /** What the line is. Absent → derived from the priority (progress by default). */
+  kind?: MessageKind;
+  /** The registry id of the session the line belongs to: its cause files the line. */
+  session?: string;
+  /** File the line under this cause (the run's final line, once the session may be gone). The
+   *  recording wrapper sets it to the cause it filed the line under. */
+  cause?: Cause;
+  /** The recorded row of this line, set by the recording wrapper: the channel binds its own id to it. */
+  msgId?: number;
+  /** The project folder the line worked in (default: the named project's live session's folder). */
+  folder?: string;
+}
+
 /** Everything dispatch needs — a structural subset of the pipeline's deps. */
 export interface DispatchDeps {
   ledger: Ledger;
@@ -53,20 +113,66 @@ export interface DispatchDeps {
   meter: Meter;
   usage?: UsageMeter;
   trust: TrustStore;
-  reply: (chatId: number, text: string, project?: string) => void | Promise<void>;
-  askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
+  /** `meta` files the line in the trace (the pipeline's recording reply reads it; frontends ignore it). */
+  reply: (chatId: number, text: string, project?: string, priority?: Priority, meta?: ReplyMeta) => void | Promise<void>;
+  /** `signal` aborts when the engine gives up waiting (approval timeout): drop the prompt. `cause`
+   *  files the prompt and the verdict in the thread of the run that asked. */
+  askApproval: (chatId: number, reason: string, signal?: AbortSignal, cause?: Cause) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
-  /** Default per-dispatch ceiling (ms) when the caller doesn't request one. Default DISPATCH_TIMEOUT_MS_DEFAULT. */
-  dispatchTimeoutMs?: number;
-  /** Hard cap (ms) on any caller-requested ceiling. Default DISPATCH_TIMEOUT_MAX_MS_DEFAULT (2h). */
-  dispatchTimeoutMaxMs?: number;
-  /** Abort a sub-run with NO activity for this long (ms) — a busy worker stays alive up to the
-   *  ceiling. Default DISPATCH_STALL_MS_DEFAULT (5m). */
+  /** Post a plan card (ADR-0019; frontend-supplied, operator surfaces only). Absent → no plan
+   *  detection at all (nothing is registered), and `send_file` of a plan is a plain file. */
+  postPlan?: PostPlan;
+  /** Config `plans` (paths, send, size cap, Execute brief). Absent → the shipped defaults. */
+  plans?: PlansCfg;
+  /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
+   *  message id (so a reply/edit can find it). The frontend supplies this — it builds the inline
+   *  keyboard from `options` (tappable answers) + an "other / type an answer" affordance. Its
+   *  PRESENCE gates the `ask_operator` tool: only operator surfaces (Telegram/web) wire it, so the
+   *  customer/ingress path never gets ask_operator — the firewall, by construction. */
+  postDecision?: (
+    /** `ref`: the ref of the decision's thread (trace only) — the card ends with it (spec §4.3). */
+    rec: { id: string; project?: string; folder?: string; ref?: string },
+    question: string,
+    options?: string[],
+    /** A structured multi-question / multi-select ask (Feature 1). When set, the frontend renders the
+     *  richer tappable keyboard from it instead of the flat `options`. */
+    spec?: StructuredAsk,
+  ) => Promise<{ chatId: number; messageId: number } | undefined>;
+  /** Abort a sub-run with NO activity for this long (ms) — the only automatic abort: a dispatch has
+   *  no wall-clock limit, so a busy worker runs until it finishes (ADR-0007). Default
+   *  DISPATCH_STALL_MS_DEFAULT (5m). */
   dispatchStallMs?: number;
+  /** Progress-digest interval (ms) for a running dispatch, to the operator and the live dispatcher;
+   *  sent only when there was activity since the last one. 0 turns digests off. Default
+   *  DISPATCH_PROGRESS_MS_DEFAULT (10m). */
+  dispatchProgressMs?: number;
+  /** Spinning dispatch (spec §8.1): this many digests in a row with the same fingerprint (label,
+   *  note, HEAD) alert the operator and the dispatcher once. Default DISPATCH_SPIN_DIGESTS_DEFAULT. */
+  dispatchSpinDigests?: number;
+  /** On a spin: "alert" only, or "wrapup" — also send the stall limit's wrap-up follow-up. */
+  dispatchSpinPolicy?: "alert" | "wrapup";
+  /** The same (tool, input) this many times in a row inside one turn → the same alert. Default
+   *  TOOL_LOOP_LIMIT_DEFAULT. */
+  toolLoopLimit?: number;
+  /** Tools whose repeats are waiting, not looping (polling a background job). Default
+   *  TOOL_LOOP_EXEMPT_DEFAULT. */
+  toolLoopExempt?: string[];
+  /** How a dispatch reaches its dispatcher (the company). The pipeline wires one that can also wake
+   *  an idle company; absent → `liveCompanyLink` (follow-up into a live company only). */
+  dispatcher?: DispatcherLink;
+  /** Thresholds behind the derived session state reported to the operator (wedged/quiet).
+   *  Absent → DEFAULT_LIVENESS_THRESHOLDS. */
+  liveness?: LivenessThresholds;
   /** Grace window (ms): on a limit, tell the worker to commit green work + write a WIP note,
    *  then hard-abort. Default DISPATCH_GRACE_MS_DEFAULT (75s). */
   dispatchGraceMs?: number;
+  /** API-throttle backoff ladder (ms/attempt) for a rate-limited sub-run — retry COUNT derives
+   *  from its length. Absent → the built-in default (config `apiRetryLadderMs`). */
+  apiRetryLadderMs?: number[];
+  /** Jitter magnitude (0-1) for retry waits. Absent → the built-in default (config
+   *  `apiRetryJitterFrac`). */
+  apiRetryJitterFrac?: number;
   /** When set, gate dispatch's session reuse through the same context policy the interactive
    *  pipeline uses — a resumed sub-project session must not grow unbounded (see
    *  docs/superpowers/specs/2026-07-08-context-policy-design.md, Boundaries #3). */
@@ -75,8 +181,17 @@ export interface DispatchDeps {
    *  sub-run and its handoff turn through config.json's `workers.dispatch` / `workers.handoff`.
    *  Absent → every path inherits today's behavior (see worker-profile.ts). */
   workers?: Record<WorkerPathName, WorkerProfile>;
+  /** The pinned worker model (config `models`) — routes the dispatched sub-run and its handoff turn
+   *  through `models.default` / `models.aliases`. MUST be threaded: without it a dispatched worker
+   *  silently inherits the SDK's own default, which is the whole defect ADR-0005 fixes, and dispatch
+   *  is the path nearly all project work takes. */
+  models?: NeoConfig["models"];
   /** Own-work provider choice, threaded into dispatched worker launches when present. */
   providers?: NeoConfig["providers"];
+  /** Governor knobs (ADR-0012): the out-of-folder write answer for the dispatched worker and the
+   *  approval reminder/timeout. Absent ⇒ writes "ask" (so the customer ingress path, which does not
+   *  thread it, keeps the fence) and the default approval patience. */
+  governor?: NeoConfig["governor"];
   /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
   workerEnv?: Record<string, string>;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
@@ -86,6 +201,12 @@ export interface DispatchDeps {
   cooldown?: ApiCooldown;
   /** Root under which the company `dispatch` tool resolves project names (config workRoot). Default "/home". */
   workRoot?: string;
+  /** Config `projects` (healthUrl etc.) — the `sessions` tool's project summaries read it (P6). */
+  projects?: NeoConfig["projects"];
+  /** Config `github` — the summaries judge a health probe stale against its scanEveryMs (P6). */
+  github?: NeoConfig["github"];
+  /** Neo's own repo, for the project summaries. Absent → the daemon's working folder. */
+  neoFolder?: string;
   /** Ensure the target folder is indexed in codebase-memory BEFORE the worker starts (engine side;
    *  the governor denies subagents the index tools, so the worker can't self-index). Best-effort —
    *  a failure here never blocks the dispatch. Absent → the step is skipped. */
@@ -100,18 +221,46 @@ export interface DispatchDeps {
    *  evaluate the `"company"` scope keyword. Absent ⇒ fail-closed: no injection even if `memory`
    *  is set (mirrors `memoryScopeEnabled`'s folder-vs-companyFolder comparison). */
   companyFolder?: string;
+  /** The per-project todo queue (ADR-0008). When set, the company's `dispatch` tool hands every
+   *  brief to it (a busy project queues it) and the company gets the `todo` tool. Absent → the
+   *  legacy direct dispatch (tests, paths without the queue). */
+  todo?: TodoQueue;
+  /** The cause seam (ADR-0015): thread state refreshes, `send_file` lines, tool actions and the
+   *  ref on the dispatcher's result. Absent → none of these, exactly as before. */
+  trace?: Trace;
+}
+
+/** Re-derive a thread's state; best-effort (ADR-0010). */
+function refreshThread(deps: Pick<DispatchDeps, "trace">, threadId: number | undefined): void {
+  if (deps.trace && threadId !== undefined) faults.guard("dispatch.refreshThread", () => deps.trace!.refreshThread(threadId), { threadId });
 }
 
 type RunFn = typeof runOrder;
 
-/** Default per-dispatch ceiling (ms) — 15 minutes. */
-export const DISPATCH_TIMEOUT_MS_DEFAULT = 900_000;
-/** Hard cap on any caller-requested ceiling (ms) — 2 hours. */
-export const DISPATCH_TIMEOUT_MAX_MS_DEFAULT = 7_200_000;
+/** The runs THIS module started (dispatch-owned). Only a brief delivered into one of them is
+ *  covered by that run's progress digests and final report; a brief pushed into an operator-opened
+ *  session is not, and the reply to the dispatcher must say so instead of promising a result. */
+const dispatchRuns = new WeakSet<object>();
+
 /** Liveness stall limit (ms) — 5 minutes of NO activity aborts a sub-run. */
 export const DISPATCH_STALL_MS_DEFAULT = 300_000;
 /** Wrap-up grace window (ms) — 75 seconds between the limit firing and the hard abort. */
 export const DISPATCH_GRACE_MS_DEFAULT = 75_000;
+
+/** The wrap-up follow-up: stop, commit green work, leave a WIP note. Used by the stall limit and by
+ *  the "wrapup" spin policy. */
+export function wrapUpBrief(why: string, graceMs: number): string {
+  return (
+    `⏱ Neo ${why} — stop working now. ` +
+    `Commit any green work and write a brief WIP note (plan doc or WIP.md) so a follow-up run can resume. ` +
+    `You have ~${Math.round(graceMs / 1000)}s before this session is aborted.`
+  );
+}
+/** Progress-digest interval (ms) — 10 minutes. */
+export const DISPATCH_PROGRESS_MS_DEFAULT = 600_000;
+/** Activity label for the window between "session registered" and "worker attached" (indexing +
+ *  context gate). Makes the `starting` state self-explaining wherever it is rendered. */
+export const PREPARING_LABEL = "preparing: indexing + context gate";
 
 /**
  * Resolve a project reference to a folder: an absolute path, else a repo under `root` (/home),
@@ -156,8 +305,19 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
  *  rest of a project's rule/docs .md files never reach it unless the brief says so. Every
  *  dispatched brief gets this preamble so the worker (1) reads its own rules, (2) uses the
  *  codebase-memory MCP FIRST for a structural map — REQUIRED, not optional — reading source files
- *  directly only for what the map doesn't cover, and (3) uses the superpowers skills for the shape
- *  of work at hand. (2) is made satisfiable by the engine: `ensureIndexed` (see codebase-memory.ts)
+ *  directly only for what the map doesn't cover, (3) works in two phases — DESIGN (sharpen the
+ *  domain model with domain-modeling/codebase-design into a CONTEXT.md glossary + ADRs, then a
+ *  spec) then BUILD (superpowers TDD → verify → code-review); the mattpocock design skills adopted
+ *  2026-09-10 are model-invocable, the interactive-only ones (grill-with-docs/to-spec/to-tickets)
+ *  are deliberately NOT told to workers — (4) meets the operator's **engineering baseline** (i18n
+ *  catalogues, `.env`/dev-by-default, Docker, no hardcoding, reuse what exists — stated in this
+ *  repo's CLAUDE.md, which a worker dispatched into ANOTHER folder never loads, so the preamble is
+ *  the only place it can't be forgotten by whoever writes the brief:
+ *  docs/adr/0002-engineering-baseline-lives-in-the-dispatch-preamble.md) — and (5) challenges itself BEFORE raising any operator question — root-cause the
+ *  real issue, reach for the industry-standard fix (not a patch), self-critique its options, and
+ *  only escalate a decision that is genuinely the operator's (mirrors the `ask_operator` precondition
+ *  so a worker can't turn a solvable bug into a shallow patch-menu). (2) is made satisfiable by the
+ *  engine: `ensureIndexed` (see codebase-memory.ts)
  *  indexes the folder before the worker starts, because the governor denies subagents the index
  *  tools so a worker can never self-index. The engine appends this automatically so the operator
  *  never has to and it can't be omitted. */
@@ -167,15 +327,79 @@ export function briefWithProjectDocs(task: string): string {
     "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
     "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
     "REQUIRED — use the `codebase-memory` MCP FIRST. The engine has already indexed this project for " +
-    "you, so the structural map is ready to query. Start every investigation there: get_architecture " +
-    "for the module layout, then search_code / query_graph to find the code that matters. Read source " +
-    "files directly ONLY for what the map doesn't cover — never as your default way in.\n\n" +
-    "REQUIRED — use the superpowers skills for the shape of work at hand: brainstorming → " +
-    "writing-plans for design, systematic-debugging to root-cause any bug, and test-driven-development " +
-    "for implementation (write the failing test first).\n\n" +
+    "you, so the structural map is ready to query. Call `list_projects` FIRST and pass the EXACT " +
+    "project name it returns whose `root_path` matches (or contains) your working directory — do NOT " +
+    "guess or construct the project name. Guessing yields \"project not found\": this repo may be " +
+    "indexed under a path-derived name, and its code can live in a subfolder indexed as its own " +
+    "project. Then get_architecture for the module layout with that name, then search_code / " +
+    "query_graph to find the code that matters. Read source files directly ONLY for what the map " +
+    "doesn't cover — never as your default way in.\n\n" +
+    "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
+    "  DESIGN — before writing code for any feature or non-trivial change, sharpen the domain model " +
+    "with the `domain-modeling` and `codebase-design` skills: define the real terms precisely and " +
+    "write/update this project's `CONTEXT.md` glossary, and record each genuine design decision as a " +
+    "short ADR (rejected alternatives included). Then synthesize a concise spec for the change — its " +
+    "acceptance criteria and edge cases — and design it as one clean seam (a lot of behavior behind a " +
+    "small, testable interface). Use `superpowers:brainstorming` → `writing-plans` for the plan itself. " +
+    "For a bug, `superpowers:systematic-debugging` to root-cause first. (Skip the CONTEXT.md/ADR step " +
+    "only for a trivial mechanical edit, and say you did.)\n" +
+    "  BUILD — implement against that spec with `superpowers:test-driven-development` (write the failing " +
+    "test first, per acceptance criterion), then `superpowers:verification-before-completion` and " +
+    "`requesting-code-review` before claiming done.\n\n" +
+    "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
+    "failure, even when it works. (1) i18n through standard per-locale catalogues (react-i18next or " +
+    "the stack's equivalent), namespaced keys, AR+EN complete — never literal user-facing strings in " +
+    "components, never a bespoke translation mechanism. (2) `.env` + environments, dev by default, " +
+    "failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
+    "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it: extend " +
+    "what is there, never a second implementation. Meet these in what you ship; a change that misses " +
+    "one is not done.\n\n" +
+    "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
+    "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
+    "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +
+    "ONLY a decision that is genuinely theirs: product/UX policy, cost, an irreversible or external " +
+    "action, or a real trade-off between two sound options. If there is one correct standard fix, " +
+    "do it and report it — do not ask. When you must ask (via ask_operator), show your work: the " +
+    "root cause you found, the standard fix you recommend, and why; every option you offer must be " +
+    "defensible on its own — no patch-level options.\n\n" +
+    "REQUIRED — stay alive; never park on a background wait. Neo watches your STREAMED tool/step " +
+    "activity to tell a working worker from a hung one, and ABORTS a sub-run after ~5 minutes with no " +
+    "such activity. A single step that blocks silently for minutes produces NO activity and is killed " +
+    "even though it is not hung — this includes a background wait or Monitor, a long `sleep`, " +
+    "`gh run watch`, tailing logs, or any \"wait for the CI/build/deploy to finish\" command. So NEVER " +
+    "use a background wait or Monitor: when you must wait on CI, a build, or a deploy, POLL in short " +
+    "FOREGROUND steps under 90 seconds each — check status (e.g. `gh run view`), a brief `sleep`, then " +
+    "check again — so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
+    "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
+    "poll to a terminal state here rather than \"standing by\" for a later event.\n\n" +
+    "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`. The engine " +
+    "sends it to the operator for review; you may also call `send_file` with it — the engine sends each " +
+    "version once.\n\n" +
     task
   );
 }
+
+/** How the todo queue (ADR-0008) follows one dispatch. All optional; absent → today's behaviour. */
+export interface DispatchHooks {
+  /** The brief was accepted: `run` = a fresh dispatch run started (its end calls `onEnd`), `delivered`
+   *  = pushed into an already-live session (no end the engine can observe). Called synchronously,
+   *  before dispatchToProject's first await, so the project reads busy at once. */
+  onLaunched?: (orderId: string, mode: "run" | "delivered") => void;
+  /** The brief was NOT accepted (the same reason recorded on `dispatch_refused`). */
+  onRefused?: (reason: string) => void;
+  /** Extra line for the dispatcher's final result (e.g. what the queue does next). `ok` is false
+   *  for any bad end: failure, stall abort, or a reload cut. */
+  resultNote?: (ok: boolean) => string | undefined;
+  /** The run is over and its result has reached the operator and the dispatcher inbox. A
+   *  `continuation` means the run was handed off at a safe checkpoint (ADR-0021): the task is NOT
+   *  finished, and this brief continues it in a fresh session. */
+  onEnd?: (end: { orderId: string; ok: boolean; summary: string; continuation?: string }) => void | Promise<void>;
+  /** Skip the "→ dispatching to …" line (the queue sends its own start line). */
+  quietStart?: boolean;
+}
+
+/** dispatchToProject's options (test seams + per-call choices). */
+export type DispatchOpts = NonNullable<Parameters<typeof dispatchToProject>[4]>;
 
 /**
  * Open `project` as a tracked Neo sub-project, run `task` to completion (single-shot), streaming
@@ -197,8 +421,8 @@ export async function dispatchToProject(
     /** Test seams for the context policy (default: real transcript measurement + handoff run). */
     signals?: typeof sessionContext;
     handoff?: typeof runHandoff;
-    /** Caller-requested per-dispatch ceiling (ms) — clamped to dispatchTimeoutMaxMs. */
-    timeoutMs?: number;
+    /** Test seam: read the folder's last commit for digests and stop points (default: git). */
+    lastCommit?: (folder: string) => string | undefined;
     /** Injectable wait for the API-retry backoff (tests pass a no-op). Defaults to a real timer. */
     sleep?: (ms: number) => Promise<void>;
     /** Injectable jitter source for the API-retry backoff. Defaults to Math.random. */
@@ -206,18 +430,39 @@ export async function dispatchToProject(
     /** Opt-in team mode for SDKs that support `agents`: run this brief with a lead-orchestrated
      *  subagent team. Codex falls back to the normal single-worker brief. */
     team?: "frontend-backend";
+    /** What TRIGGERED this dispatch — the operator's own turn (`interactive`) or the scheduler
+     *  (`background`). The `dispatch` tool passes the class of the worker that called it, so a
+     *  dispatch the company makes while servicing an operator message inherits `interactive` and is
+     *  never held by the interactive reserve. Omitted ⇒ DEFAULT_WORK_CLASS (background). */
+    workClass?: WorkClass;
+    /** The todo queue's view of this dispatch (ADR-0008). */
+    hooks?: DispatchHooks;
+    /** The operator message (and thread) this dispatch answers (ADR-0015): the sub-order, its todo,
+     *  its events, digests, final result and dispatcher-inbox row are all filed under it. */
+    cause?: Cause;
+    /** The company order that dispatched this one (`orders.parent_order_id`). */
+    parentOrderId?: string;
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
+  const hooks = opts.hooks ?? {};
+  const cause = opts.cause;
+  // Every event this dispatch writes carries its cause (events.msg_id); none → NULL, as before.
+  const event = (kind: string, input: { orderId?: string; sessionId?: string; folder?: string; data?: Record<string, unknown> } = {}) =>
+    deps.ledger.recordEvent(kind, { ...input, cause });
+  const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
   // Worker-profile view (model/effort/skills/env by path) — absent deps.workers/workerEnv means
   // every profileDeps() call below is a no-op (empty profile ?? {}), preserving today's behavior.
   const workerCfg: Pick<NeoConfig, "workers" | "workerEnv"> = {
     workers: deps.workers ?? ({} as Record<WorkerPathName, WorkerProfile>),
     workerEnv: deps.workerEnv ?? {},
   };
-  const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> & Partial<Pick<NeoConfig, "providers">> = {
+  const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> &
+    Partial<Pick<NeoConfig, "providers" | "models" | "governor">> = {
     ...workerCfg,
     providers: deps.providers,
+    models: deps.models,
+    governor: deps.governor,
   };
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.
@@ -226,18 +471,31 @@ export async function dispatchToProject(
       ? frontendBackend
       : undefined;
   if (deps.lifecycle?.draining()) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "draining" } });
+    event("dispatch_refused", { data: { project, workClass, reason: "draining" } });
+    hooks.onRefused?.("draining");
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
   }
   // The API is throttling us — starting another worker now just earns another 429.
   if (deps.cooldown?.activeAt(now())) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "cooldown" } });
+    event("dispatch_refused", { data: { project, workClass, reason: "cooldown" } });
+    hooks.onRefused?.("cooldown");
     return apiHoldMessage(deps.cooldown.remainingMs(now()));
   }
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, reason: "not_found" } });
+    event("dispatch_refused", { data: { project, workClass, reason: "not_found" } });
+    hooks.onRefused?.("not_found");
     return `No project or desk named "${project}" was found — check the name.`;
+  }
+  // The interactive reserve caps BACKGROUND work only, and a dispatch's class follows the trigger
+  // that originated it, not the fact that it is a dispatch: scheduler-fired work is held here, while
+  // a dispatch the operator asked for conversationally is their own turn continuing and runs (ADR
+  // 0001 + its follow-up). AFTER resolveProject on purpose: a typo'd project name must still report
+  // "not found" while over budget, not a hold that hides the real error.
+  if (heldByReserve(workClass, deps.meter, now())) {
+    event("dispatch_refused", { data: { project, workClass, reason: "budget" } });
+    hooks.onRefused?.("budget");
+    return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
   }
 
   // Build + record the order with its BASE task (project-docs preamble only — no memory snapshot
@@ -255,45 +513,115 @@ export async function dispatchToProject(
     chatId: SUB_CHAT,
     createdAt: now(),
   };
-  deps.ledger.recordOrder(order);
+  deps.ledger.recordOrder(order, { cause, parentOrderId: opts.parentOrderId });
+  // A project's first sight: trusted by default when `trustNewProjects` is on (the customer path
+  // passes denyAllTrust, whose noteProject never trusts).
+  noteProjectStart(deps, order);
   // Reuse an already-open session for this folder (resume it) instead of duplicating it as
   // "<name>-2"; only register a fresh entry when nothing is open for the folder.
   const existing = deps.registry.findByFolder(folder);
   const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now());
   const name = session.name;
-  // Busy guard. A folder's session runs ONE turn at a time, so a second concurrent run must never
-  // stack. But a live worker exposes a control whose input channel serializes messages — so instead
-  // of refusing, we QUEUE the brief behind the in-flight turn, exactly like an operator's direct
-  // reply does (pipeline.ts). This removes the asymmetry the operator hit: their replies queued and
-  // ran, while a company dispatch hard-refused the same available session as "busy". Only when the
-  // session is "running" with NO live control (e.g. control lost on a reload — a stale status) do we
-  // still refuse, rather than risk starting a second concurrent run onto the folder.
+  // The cause a line of this run is filed under: the newest brief delivered into the session (a
+  // later brief pushed into it brings its own), else this dispatch's own.
+  const liveCause = (): Cause | undefined => deps.registry.causeOf(session.id) ?? cause;
+  /** A line about this dispatch. With a cause it is filed in the trace under it, as `kind`; without
+   *  one the call is exactly what it was before. */
+  const say = (text: string, priority?: Priority, meta?: { kind?: MessageKind; cause?: Cause }) =>
+    meta?.cause
+      ? deps.reply(replyChat, text, name, priority, { cause: meta.cause, folder, ...(meta.kind ? { kind: meta.kind } : {}) })
+      : deps.reply(replyChat, text, name, priority);
+  // Reuse guard. A folder's session runs ONE turn at a time, so a second concurrent run must never
+  // stack onto it. But "reuse" is NOT the same as "busy": a live session's registry status stays
+  // "running" for its WHOLE lifetime (it flips back to "idle" only when the whole run ends), so
+  // status alone can't tell a worker mid-turn from one sitting idle between turns. The real signal
+  // is the control's active() — a turn genuinely in flight right now:
+  //   • idle (no turn in flight) → deliver the brief NOW into the warm session; its input channel
+  //     pulls it immediately, exactly like a fresh dispatch, so a free project is never parked
+  //     behind a false "busy".
+  //   • mid-turn → QUEUE behind the in-flight turn (like an operator's reply); the channel flushes
+  //     it the moment that turn yields.
+  //   • "running" but NO live control to accept a follow-up (a stale mark, e.g. control lost on a
+  //     reload) → refuse rather than enqueue into the void or start a second concurrent run.
   if (existing && wasRunning) {
     const control = deps.registry.getControl(existing.id);
-    const queued = control?.queued?.() ?? 0;
-    const status = describeSessionStatus(existing, now(), { queued });
-    if (control?.followUp) {
-      control.followUp(order.task);
-      deps.registry.touch(existing.id, now());
-      deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name } });
-      await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
+    // The SAME authoritative signal the operator's status line reads — state, both clocks, queue —
+    // so a busy/queued reply can never disagree with what `sessions` says about the same project.
+    const status = describeSession(deps.registry, existing, now(), deps.liveness);
+    const state = stateOf(deps.registry, existing, now(), deps.liveness);
+    // A control whose channel was already closed (the run is settling and about to end) would drop
+    // the brief without a word — the 2026-10-04 lost-brief bug. Refuse it out loud instead.
+    if (control?.followUp && control.closed?.() === true) {
+      event("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "closing", state } });
+      hooks.onRefused?.("closing");
       return (
-        `${name} is busy — I queued this brief behind its current turn (${status}). It runs when the ` +
-        `current work yields; its output streams to the operator as ${name}.`
+        `${name} is finishing its current run (its session is closing) — I did NOT queue this brief, so ` +
+        `nothing was lost. Retry in a moment; it will start a fresh run once the current one has ended.`
       );
     }
-    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, reason: "busy_no_control" } });
+    if (control?.followUp) {
+      const turnActive = control.active?.() === true; // the REAL "a turn is being processed" signal
+      // What the dispatcher will hear back: a dispatch-owned run reports progress + its result; an
+      // operator-opened session streams to the operator only.
+      const reportBack = dispatchRuns.has(control)
+        ? `its output streams to the operator as ${name}, and you get progress digests and the result when that run ends.`
+        : `its output streams to the operator as ${name}. It is a session the operator opened, so its result is NOT ` +
+          `sent back to you automatically — check it with \`sessions\` or ask the operator.`;
+      // The brief carries its cause into the session, so the turn that runs it is filed under it.
+      if (cause) control.followUp(order.task, cause);
+      else control.followUp(order.task);
+      hooks.onLaunched?.(order.id, "delivered");
+      deps.registry.touch(existing.id, now());
+      // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
+      // alone, since that one is still suspending the worker mid-tool.
+      clearDecisionBlock(deps.registry, existing.id);
+      if (turnActive) {
+        event("dispatch_queued", { orderId: order.id, folder, data: { project: name, workClass } });
+        await say(`→ queued for ${name} (busy): ${task}`, undefined, { kind: "ack", cause });
+        return (
+          `${name} is ${state} — I queued this brief behind its current turn (${status}). It runs when the ` +
+          `current work yields; ${reportBack} Unless that state is ` +
+          `"wedged" this is NORMAL and needs nothing from you` +
+          (state === "awaiting-operator" ? " EXCEPT the operator's answer to the question it raised." : ".")
+        );
+      }
+      // Alive but IDLE between turns: the follow-up is pulled and run immediately.
+      event("dispatch_delivered", { orderId: order.id, folder, data: { project: name, workClass, reuse: "idle" } });
+      await say(`→ dispatching to ${name}: ${task}`, undefined, { kind: "ack", cause });
+      return (
+        `dispatched to ${name} — it was idle, so this runs now; ${reportBack}`
+      );
+    }
+    // No live handle. Usually NOT a fault: the previous dispatch marked the session running and is
+    // still preparing it (ensureIndexed on a big repo takes minutes) — `stateOf` calls that
+    // `starting`. Say which it is instead of implying the project is broken.
+    event("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control", state } });
+    hooks.onRefused?.("stale_running_no_control");
     return (
-      `${name} is busy — ${status}. I did NOT start this dispatch; its current work must finish first. ` +
-      `Its result will arrive as a follow-up when it's done — tell the operator what ${name} is doing, or retry shortly.`
+      `${name} is ${state} — ${status} — and has no live handle to queue behind yet` +
+      (state === "starting"
+        ? " (the engine is still preparing it: indexing + context gate)"
+        : state === "awaiting-operator"
+          ? " (it is waiting on the operator's answer)"
+          : " (it may be mid-reload)") +
+      `. I did NOT start a second run; retry shortly and it will deliver once the session settles.`
     );
   }
   if (existing) {
     deps.registry.setStatus(existing.id, "running");
     deps.registry.touch(existing.id, now());
   }
-  await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
+  // The entry is marked running here but its worker is attached only at the end of the background
+  // continuation below, after ensureIndexed + the context gate. Label that gap so the gap explains
+  // itself in `sessions`/`/list` instead of showing as an unexplained handle-less "running".
+  deps.registry.noteActivity(session.id, PREPARING_LABEL, now());
+  // The run's first input carries this dispatch's cause: its thread reads as active work until the
+  // run ends (spec §5), and later briefs delivered into the run bring their own.
+  if (cause) deps.registry.setCause(session.id, cause);
+  hooks.onLaunched?.(order.id, "run");
+  refreshThread(deps, cause?.threadId);
+  if (!hooks.quietStart) await say(`→ dispatching to ${name}: ${task}`, undefined, { kind: "ack", cause });
 
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
   // versa) is rejected outright, and before the ownership check that read as an API failure.
@@ -303,38 +631,62 @@ export async function dispatchToProject(
     deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
     undefined;
   const start = opts.start ?? startOrder;
-  // Per-dispatch ceiling: the caller (the company knows if this is a 2-minute lookup or a
-  // 2-hour build) may request one, hard-capped so a dispatch can never run unbounded.
-  const maxMs = deps.dispatchTimeoutMaxMs ?? DISPATCH_TIMEOUT_MAX_MS_DEFAULT;
-  const ceilingMs = Math.min(opts.timeoutMs ?? deps.dispatchTimeoutMs ?? DISPATCH_TIMEOUT_MS_DEFAULT, maxMs);
+  // No wall-clock limit (ADR-0007): some tasks take hours. Only true silence (the stall limit) aborts.
   const stallMs = deps.dispatchStallMs ?? DISPATCH_STALL_MS_DEFAULT;
+  const progressMs = deps.dispatchProgressMs ?? DISPATCH_PROGRESS_MS_DEFAULT;
+  const readCommit = opts.lastCommit ?? lastCommitIn;
+  // The HEAD this run starts from: at its end, plan files changed since then are sent (ADR-0019).
+  const planStart = deps.postPlan ? headSha(folder) : undefined;
+  const dispatcher = deps.dispatcher ?? liveCompanyLink(deps.registry, deps.lifecycle);
   const graceMs = deps.dispatchGraceMs ?? DISPATCH_GRACE_MS_DEFAULT;
+  const retryLadder = deps.apiRetryLadderMs && deps.apiRetryLadderMs.length > 0 ? deps.apiRetryLadderMs : [...API_RETRY_DELAYS_MS];
+  const maxRetries = retryLadder.length;
 
-  // Background continuation: bounded await, then bookkeeping + report-back. NEVER awaited here —
+  // Background continuation: supervised await, then bookkeeping + report-back. NEVER awaited here —
   // the company's turn ends immediately (operator requirement: the main agent is always free).
   // The context-policy gate + start(...) + attachControl also live in here (not before it) so
   // the gate's occasional real await (the "handoff" verdict runs a bounded worker turn) never
   // delays the string this function returns to the calling company session.
   void (async () => {
+    const policy = deps.contextPolicy;
+    const notify = (t: string, pr?: "alert") => void say(t, pr, { cause: liveCause() });
+    // Never measure (or resume) a folder another gate is handing off — e.g. the previous dispatch's
+    // end-of-run handoff. Its resume id is read again AFTER the wait: the handoff clears it.
     let gatedResume = resume;
-    if (gatedResume && deps.contextPolicy) {
+    if (gatedResume && policy) {
+      // A handoff that outlived its hold may still own the session: start fresh, touch nothing.
+      const waited = await awaitHandoff(folder);
+      const current =
+        (canResumeWith(session.sdkProvider, worker) ? deps.registry.get(session.id)?.sdkSessionId : undefined) ||
+        deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
+        undefined;
+      gatedResume = waited === "timed-out" ? undefined : current;
+    }
+    if (gatedResume && policy) {
       try {
         const signals = opts.signals ?? sessionContext;
-        const sig = signals(folder, gatedResume, { windowTokensByModel: deps.contextPolicy.windowTokensByModel });
-        const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(CACHE_OBS_WINDOW), deps.contextPolicy);
-        const verdict = decideContext(sig, deps.contextPolicy, ttlMs);
-        if (verdict === "clear") {
-          gatedResume = undefined;
+        const sig = signals(folder, gatedResume, { windowTokensByModel: contextWindows(deps.ledger, policy.windowTokensByModel) });
+        const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
+        const decision = decideContext(sig, policy, ttlMs, { boundary: "resume" });
+        const deferred = decision.verdict !== "keep" && handoffDeferred(folder, decision, { ledger: deps.ledger, boundary: "resume", occupancy: sig.occupancy, sessionId: gatedResume });
+        if (deferred) {
+          // uncommitted work: keep resuming (ADR-0021)
+        } else if (decision.verdict === "clear") {
           deps.ledger.clearSessionsFor(folder);
-          deps.ledger.recordContextEvent(folder, "clear", sig.occupancy);
-        } else if (verdict === "handoff") {
+          deps.ledger.recordContextEvent(folder, "clear", sig.occupancy, undefined, { reason: decision.reason, boundary: "resume", sessionId: gatedResume });
+          notify(describeContextReset("clear", sig.occupancy, policy, decision.reason, "resume"), "alert");
+          gatedResume = undefined;
+        } else if (decision.verdict === "handoff") {
           const handoff = opts.handoff ?? runHandoff;
           const target: SessionInfo = { ...session, sdkSessionId: session.sdkSessionId || gatedResume };
-          await handoff(target, deps.contextPolicy, {
+          await handoff(target, policy, {
             registry: deps.registry,
             ledger: deps.ledger,
             runDeps: profileDeps(providerCfg, "handoff"),
             memoryFlush: !!memoryGate(deps, folder),
+            decision,
+            boundary: "resume",
+            notify,
           });
           gatedResume = undefined;
         }
@@ -360,14 +712,43 @@ export async function dispatchToProject(
       }
     }
 
+    // A fresh start after a context handoff begins FROM the note, inline (ADR-0021), and the probe
+    // measures how quickly it got going.
+    let probe: ResumeProbe | undefined;
+    if (gatedResume === undefined && policy) {
+      const pre = handoffPreamble(folder, deps.ledger, policy, now());
+      if (pre) {
+        order.task = `${pre.text}\n\n${order.task}`;
+        deps.ledger.recordOrder(order);
+        probe = createResumeProbe((r) => deps.ledger.updateContextEventDetail(pre.eventId, { ...r, success: r.steps <= policy.handoffOrientationMaxSteps }));
+      }
+    }
+    // Safe checkpoints (ADR-0021) need somewhere to continue: only a todo-queue dispatch has one
+    // (onEnd), and only a Claude worker can be steered (the PreToolUse hook).
+    let noteAtArm: string | undefined;
+    const watch =
+      policy && hooks.onEnd && worker !== "codex"
+        ? createCheckpointWatch({
+            folder,
+            cfg: policy,
+            windows: () => contextWindows(deps.ledger, policy.windowTokensByModel),
+            now,
+            onArm: (a) => {
+              noteAtArm = noteStamp(folder);
+              event("context_checkpoint_armed", { orderId: order.id, folder, data: { project: name, occupancy: a.occupancy, reason: a.decision.reason } });
+            },
+          })
+        : undefined;
+    let lastSessionId = gatedResume ?? "";
+
     // Guarantee the structural map the brief now REQUIRES: the worker can't self-index (the governor
     // denies subagents the codebase-memory index tools), so the engine does it here before the worker
     // starts. Best-effort — a failure never blocks the dispatch; the worker falls back to file reads.
-    // Placed before startedAt so a first-time index doesn't eat the dispatch stall/ceiling budget.
+    // Placed before startedAt so a first-time index doesn't eat the dispatch stall budget.
     if (deps.codebaseMemory) {
       try {
         await deps.codebaseMemory.ensureIndexed(folder, () =>
-          deps.reply(replyChat, `indexing ${name} into codebase-memory…`, name),
+          say(`indexing ${name} into codebase-memory…`, undefined, { cause: liveCause() }),
         );
       } catch {
         // ensureIndexed is itself best-effort; this guard belts-and-braces the dispatch path.
@@ -375,98 +756,241 @@ export async function dispatchToProject(
     }
 
     const startedAt = now();
-    deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, resume: !!gatedResume, ceilingMs, stallMs } });
+    event("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, stallMs, progressMs } });
+    // Every registry write below is pure observation: a failure in it must never surface into the
+    // worker's own path (the same contract the activity tracker has always had).
+    const noteRegistry = (fn: () => void) => {
+      try {
+        fn();
+      } catch {
+        /* observer only */
+      }
+    };
     let lastActivityAt = startedAt;
     let apiRetries = 0;
     let retryingUntil = 0; // while set in the future, the sub-run is waiting out an API throttle
-    let pausedMs = 0; // total backoff time — not the worker's time, so it doesn't eat the ceiling
-    // A dispatch is single-brief: a turn boundary with no queued follow-ups means the sub-run IS
+    let pausedMs = 0; // total backoff time — reported, never counted as the worker's silence
+    let retryPending = false; // an API retry will re-send the brief into this run — keep it open
+    // What the dispatcher needs to follow (digests) or resume (stop point) this run.
+    let lastNote: string | undefined; // the worker's latest prose line — never a tool line
+    let lastActivity: string | undefined; // the worker's latest activity label
+    let lastDigestAt = startedAt;
+    const stopPoint = (): StopPoint => ({ lastCommit: readCommit(folder), lastNote, lastActivity });
+    // Spinning (spec §8.1): active, but nothing changes — counted, never judged by AI.
+    const spinDigests = Math.max(2, deps.dispatchSpinDigests ?? DISPATCH_SPIN_DIGESTS_DEFAULT);
+    const loopLimit = Math.max(2, deps.toolLoopLimit ?? TOOL_LOOP_LIMIT_DEFAULT);
+    const loopExempt = new Set(deps.toolLoopExempt ?? TOOL_LOOP_EXEMPT_DEFAULT);
+    const spin = createSpinWatch({ digests: spinDigests, toolLoopLimit: loopLimit });
+    // A digest counts toward a spin only when the worker did real work since the last one (a tool
+    // call or a message) — heartbeats of one long tool call, or a wait on the operator or an API
+    // retry, refresh the activity clock but are not the worker repeating itself.
+    let workSinceDigest = false;
+    let spinMark: "digest" | "tool_loop" | undefined;
+    const clearSpin = (): void => {
+      spinMark = undefined;
+      noteRegistry(() => deps.registry.noteSpinning(session.id, undefined));
+    };
+    /** One spin: an event, the registry mark (the engine producer raises the attention item), one
+     *  alert to the operator and the dispatcher, and with policy "wrapup" the stall's wrap-up. */
+    const spinning = (text: string, label: string, data: { reason: "digest" | "tool_loop" } & Record<string, unknown>): void =>
+      void faults.guard("dispatch.spinning", () => spinAlert(text, label, data), { folder });
+    const spinAlert = (text: string, label: string, data: { reason: "digest" | "tool_loop" } & Record<string, unknown>): void => {
+      spinMark = data.reason;
+      event("dispatch_spinning", { orderId: order.id, folder, data: { project: name, label, ...data } });
+      noteRegistry(() => deps.registry.noteSpinning(session.id, { label, since: now() }));
+      void say(`🌀 ${text}`, "alert", { cause: liveCause() });
+      void Promise.resolve()
+        .then(() => dispatcher.deliver(`🌀 ${text}`, cause ? { wake: false, cause } : { wake: false }))
+        .catch(() => {}); // best-effort, like a digest
+      if (deps.dispatchSpinPolicy === "wrapup") runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs));
+    };
+    // A dispatch is single-brief: once the session is SETTLED with nothing queued, the sub-run IS
     // complete (the real SDK stream stays open waiting for input that will never come — awaiting
     // run.done alone would falsely "stall" out minutes after the worker already finished). Close
     // the channel gracefully so done resolves with the worker's own final result; the session
-    // stays resumable (idle bookkeeping below is unchanged).
+    // stays resumable (idle bookkeeping below is unchanged). Settled, not merely a turn boundary:
+    // a worker running background agents emits a `result` and keeps working (ADR-0007).
     let runRef: ReturnType<typeof startOrder> | undefined;
     const run = start(
       order,
       {
-        onMessage: (t) => {
+        onMessage: (t, kind) => {
           lastActivityAt = now();
-          void deps.reply(replyChat, t, name);
+          workSinceDigest = true;
+          if (kind !== "tool") lastNote = t;
+          noteRegistry(() => deps.registry.noteOutput(session.id, now()));
+          void say(t, undefined, { cause: liveCause() });
         },
         // Liveness pulse on ANY streamed SDK event (partial deltas, tool_use/tool_result, system):
         // a worker mid-generation (e.g. writing a huge file — one long turn, no completed message)
-        // keeps this clock fresh, so the stall abort fires only on TRUE silence (BUG 1).
+        // keeps this clock fresh, so the stall abort fires only on TRUE silence (BUG 1). It goes to
+        // the REGISTRY as well as the local clock — keeping the one true liveness signal private to
+        // this function is what left `sessions`, the watchdog and the idle sweep judging a busy
+        // worker from a coarser one (docs/adr/0003-…).
         onHeartbeat: () => {
           lastActivityAt = now();
+          noteRegistry(() => deps.registry.noteHeartbeat(session.id, now()));
         },
-        onEscalation: (reason) => deps.askApproval(replyChat, reason),
+        // An escalation SUSPENDS the worker mid-tool with no SDK events at all, so without marking
+        // it the stall monitor would abort a worker that is doing exactly what it was told to do.
+        onEscalation: async (reason, signal) => {
+          noteRegistry(() => deps.registry.noteBlocked(session.id, { kind: "approval", label: reason, since: now() }));
+          try {
+            const asking = liveCause();
+            return await patientApproval((signal) => deps.askApproval(replyChat, reason, signal, asking), reason, {
+              patience: deps.governor ?? DEFAULT_GOVERNOR_CFG,
+              say: (text, priority) => void say(text, priority, { cause: asking }),
+              record: (kind, data) => event(kind, { orderId: order.id, folder, data: { project: name, ...data } }),
+              signal,
+            });
+          } finally {
+            lastActivityAt = now(); // the wait was the operator's, not the worker's
+            noteRegistry(() => deps.registry.noteBlocked(session.id, undefined));
+          }
+        },
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
-        onEvent: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data }),
+        // A dispatched worker's native AskUserQuestion is serviced the same way (gated on postDecision).
+        onStructuredQuestion: deps.postDecision
+          ? async (ask) => {
+              // raiseOperatorDecision marks the session awaiting-operator (it is the one path
+              // behind every blocking ask), so nothing to do here but raise it.
+              await raiseOperatorDecision(deps, {
+                project: name,
+                folder,
+                orderId: order.id,
+                chatId: replyChat,
+                question: questionSummary(ask),
+                spec: ask,
+                now,
+                cause: liveCause(),
+              });
+            }
+          : undefined,
+        onEvent: (kind, data) => event(kind, { orderId: order.id, folder, data }),
+        onContextWindow: (model, tokens) => deps.ledger.recordModelWindow(model, tokens),
         autoApprove: () => deps.trust.isTrusted(folder),
         onAutoApprove: (reason) => {
           deps.ledger.recordAutoApproval(order.id, reason);
-          void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
+          void say(`🔓 auto-approved: ${reason}`, undefined, { cause: liveCause() });
         },
+        // One row per governed tool call, under the order and the cause (spec §3.4). Trace only.
+        onToolVerdict: deps.trace
+          ? (tool, label, verdict) =>
+              void faults.guard("dispatch.toolAction", () =>
+                deps.ledger.recordToolAction({ orderId: order.id, folder, tool, label, verdict, cause: liveCause(), at: now() }),
+              )
+          : undefined,
+        onUsage: (model, usage) => {
+          watch?.onUsage(model, usage);
+          probe?.onUsage();
+        },
+        onToolUse: (id, toolName, input) => {
+          workSinceDigest = true;
+          // Polling a background job with the same input is waiting, not looping.
+          if (!loopExempt.has(toolName) && spin.tool(toolName, createHash("sha256").update(JSON.stringify(input ?? null)).digest("hex"))) {
+            spinning(`${name} ran the same ${toolName} call ${loopLimit} times in a row in one turn`, toolName, { reason: "tool_loop", tool: toolName });
+          }
+          watch?.onToolUse(id, toolName, input);
+          probe?.onToolUse(id, toolName, input);
+        },
+        onToolResult: (id, isError) => watch?.onToolResult(id, isError),
+        contextSteer: watch ? (tool, input) => watch.steer(tool, input) : undefined,
         onTurnComplete: (result) => {
           lastActivityAt = now();
+          spin.turnEnd();
+          if (spinMark === "tool_loop") clearSpin(); // a tool loop is one turn's
+          if (result.sessionId) lastSessionId = result.sessionId;
           const kind = result.apiError;
           if (kind) {
             deps.cooldown?.note(kind, now()); // sibling dispatches/loops back off too
             const attempt = apiRetries + 1;
-            if (shouldRetryApi({ kind, attempt, draining: deps.lifecycle?.draining(), throttled: deps.meter.shouldThrottle() })) {
+            // Same rule as the gate above: the reserve may cut a BACKGROUND sub-run's retries
+            // short, never an operator-originated one — that retry is their own turn still trying.
+            if (shouldRetryApi({ kind, attempt, maxRetries, draining: deps.lifecycle?.draining(), throttled: heldByReserve(workClass, deps.meter, now()) })) {
               apiRetries = attempt;
               const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
                 attempt,
-                rateLimits: deps.usage?.snapshot(now()).rateLimits,
+                rateLimits: deps.usage?.rateLimits(),
                 now: now(),
                 rand: opts.rand,
+                ladder: retryLadder,
+                jitterFrac: deps.apiRetryJitterFrac,
               });
-              deps.ledger.recordEvent("api_retry", {
+              event("api_retry", {
                 orderId: order.id,
                 folder,
-                data: { scope: "dispatch", project: name, kind, attempt, max: MAX_API_RETRIES, delayMs, source, resetsAt },
+                data: { scope: "dispatch", project: name, kind, attempt, max: maxRetries, delayMs, source, resetsAt },
               });
-              // The wait is engine-driven, not the worker hanging: hold off the stall/ceiling
-              // clocks for exactly that long, then re-send the brief into the still-open run.
+              // The wait is engine-driven, not the worker hanging: hold off the stall clock for
+              // exactly that long, then re-send the brief into the still-open run.
               retryingUntil = now() + delayMs;
               pausedMs += delayMs;
-              void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs, resetsAt), name);
+              retryPending = true;
+              void say(apiRetryNotice(name, attempt, delayMs, resetsAt, maxRetries), undefined, { cause: liveCause() });
               void (opts.sleep ?? realSleep)(delayMs).then(() => {
                 lastActivityAt = now();
+                retryPending = false;
                 runRef?.followUp(apiRetryFollowUp(task));
               });
               return; // keep the sub-run open — it hasn't done the work yet
             }
-            deps.ledger.recordEvent("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
-            void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name);
+            event("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
+            void say(apiFailureNotice(name, kind, apiRetries), "alert", { cause: liveCause() });
           }
-          if ((runRef?.queued() ?? 1) === 0) runRef?.close?.();
+        },
+        // The brief is done only when the session is settled (no background work left) and nothing
+        // is queued — and not while an API retry is about to re-send it.
+        onSettled: () => {
+          lastActivityAt = now();
+          if (!retryPending && (runRef?.queued() ?? 1) === 0) runRef?.close?.();
         },
         onActivity: (label) => {
           lastActivityAt = now();
-          try {
-            deps.registry.noteActivity(session.id, label, now());
-            deps.registry.touch(session.id, now());
-          } catch {
-            /* observer only */
-          }
+          if (label !== "waiting" && label !== "replying") lastActivity = label;
+          noteRegistry(() => deps.registry.noteActivity(session.id, label, now()));
         },
       },
-      profileDeps(providerCfg, "dispatch", { resume: gatedResume, ...(teamAgents ? { agents: teamAgents } : {}) }),
+      profileDeps(providerCfg, "dispatch", {
+        resume: gatedResume,
+        // Attach the in-process "neo" MCP server so a dispatched sub-project worker gets the same
+        // operator-facing tools a directly-opened project does: `send_file` and — when the frontend
+        // wired `postDecision` — `ask_operator` (the ONE way it raises a blocking question). Without
+        // this the sub-worker (the most common path — the operator dispatches project work) had no
+        // way to ask the operator anything. `dispatch:false` (no recursive dispatch); memory tools
+        // stay gated by memoryGate (off unless the folder is in scope). The sub-worker inherits THIS
+        // dispatch's work class, so a sub-dispatch would follow the same originating trigger (inert
+        // while recursive dispatch stays off — the invariant holds by construction, not by memory).
+        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, orderId: order.id, cause: liveCause }),
+        ...(teamAgents ? { agents: teamAgents } : {}),
+      }),
     );
     runRef = run;
-    deps.registry.attachControl(session.id, run);
+    // The registry's handle delivers a brief's cause with it (spec §4.2), like the pipeline's own.
+    const control = {
+      ...run,
+      followUp: (text: string, c?: Cause) => {
+        if (c) {
+          deps.registry.deliver(session.id, c);
+          refreshThread(deps, c.threadId);
+        }
+        run.followUp(text);
+      },
+    };
+    dispatchRuns.add(control);
+    deps.registry.attachControl(session.id, control);
 
-    // Liveness monitor: the timeout protects against a HUNG worker, not a busy one. A dispatch
-    // is aborted when the sub-run has produced no activity for stallMs, OR when the per-dispatch
-    // ceiling is hit — a worker streaming output for 90 minutes stays alive (up to the ceiling).
+    // Liveness monitor: it protects against a HUNG worker, never a busy one. There is no wall-clock
+    // limit (ADR-0007): a dispatch is aborted only when the sub-run has produced no activity for
+    // stallMs. Every streamed SDK event counts — partial deltas, subagent messages, task progress,
+    // the CLI's tool_progress heartbeat during a long tool — so a worker busy for hours stays alive.
+    // The same tick sends the progress digest.
     const sleep = (ms: number) => new Promise<"tick">((res) => setTimeout(() => res("tick"), ms));
     const doneOrTick = (ms: number) => Promise.race([run.done.then((r) => ({ done: r })), sleep(ms)]);
-    const checkMs = Math.max(1, Math.floor(Math.min(stallMs, ceilingMs) / 4));
+    const checkMs = Math.max(1, Math.floor(Math.min(stallMs, progressMs > 0 ? progressMs : stallMs) / 4));
     let result: RunResult;
     let timedOut = false;
     try {
-      let limit: "stall" | "ceiling" | undefined;
+      let limit: "stall" | undefined;
       for (;;) {
         const settled = await doneOrTick(checkMs);
         if (settled !== "tick") {
@@ -474,22 +998,74 @@ export async function dispatchToProject(
           break;
         }
         const t = now();
+        // Progress digest: to the operator's project chat (default priority — the muted DM, never
+        // the Decisions group) and into the LIVE dispatcher (never waking it). Only when the worker
+        // did something since the last one, so a quiet run sends nothing.
+        if (progressMs > 0 && t - lastDigestAt >= progressMs) {
+          if (lastActivityAt > lastDigestAt) {
+            const lastCommit = readCommit(folder);
+            const counts = workSinceDigest && !deps.registry.get(session.id)?.blockedOn && t >= retryingUntil;
+            workSinceDigest = false;
+            const fp = counts ? spin.digest(digestFingerprint(lastActivity, lastNote, lastCommit)) : { changed: false, spinning: false };
+            if (fp.changed && spinMark === "digest") clearSpin();
+            if (fp.spinning) {
+              const mins = Math.max(1, Math.round((spinDigests * progressMs) / 60_000));
+              spinning(`${name} has repeated «${lastActivity ?? "the same step"}» for ${mins} min with no new commit or note`, lastActivity ?? "", { reason: "digest", digests: spinDigests });
+            }
+            const digest = progressDigest({ project: name, elapsedMs: t - startedAt, activity: lastActivity, lastNote, lastCommit });
+            void say(digest, undefined, { kind: "digest", cause });
+            try {
+              // Under the dispatch's cause: the company turn reading it is filed in this thread.
+              await dispatcher.deliver(digest, cause ? { wake: false, cause } : { wake: false });
+            } catch {
+              // best-effort: a digest that can't be delivered is simply skipped
+            }
+          }
+          lastDigestAt = t;
+        }
         // Waiting out an API throttle is a deliberate engine pause, not a hung worker — keep the
-        // stall clock fresh through it, and don't charge the wait against the dispatch ceiling.
+        // stall clock fresh through it.
         if (t < retryingUntil) {
           lastActivityAt = t;
           continue;
         }
-        if (t - startedAt - pausedMs >= ceilingMs) limit = "ceiling";
-        else if (t - lastActivityAt >= stallMs) limit = "stall";
+        // Waiting for the OPERATOR (a permission escalation, a raised decision) is not the worker
+        // being hung — it is the worker doing what it was told. Its clock is the operator's, so the
+        // stall window never runs while the block is set.
+        if (deps.registry.get(session.id)?.blockedOn) lastActivityAt = t;
+        if (t - lastActivityAt >= stallMs) limit = "stall";
         if (!limit) continue;
+        // State the evidence BEFORE acting on it, so a wrong abort is diagnosable from the log
+        // alone — including the cheap "this looks like a command sitting on an interactive prompt"
+        // read, which is how a `cp -i` hang becomes obvious instead of mysterious.
+        // Judge the evidence on THIS decision's own window (the dispatch stall limit), not the
+        // display thresholds — a recorded state that disagrees with the abort it explains is worse
+        // than none. quietAfterMs keeps its display meaning.
+        const evidence = sessionEvidence(deps.registry, session, t, {
+          wedgedAfterMs: stallMs,
+          quietAfterMs: deps.liveness?.quietAfterMs ?? DEFAULT_LIVENESS_THRESHOLDS.quietAfterMs,
+        });
+        event("dispatch_stall_evidence", {
+          orderId: order.id,
+          folder,
+          data: {
+            project: name,
+            limit,
+            state: evidence.state,
+            inTurn: evidence.inTurn,
+            queued: evidence.queued,
+            lastActivityMs: t - lastActivityAt,
+            lastOutputMs: evidence.lastOutputMs,
+            activity: evidence.activity ?? null,
+            stdinWait: evidence.stdinWait,
+            elapsedMs: t - startedAt,
+            pausedMs,
+            stallMs,
+          },
+        });
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave
         // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
-        run.followUp(
-          `⏱ Neo dispatch ${limit === "stall" ? "stall" : "time"} limit reached — stop working now. ` +
-            `Commit any green work and write a brief WIP note (plan doc or WIP.md) so a follow-up run can resume. ` +
-            `You have ~${Math.round(graceMs / 1000)}s before this session is aborted.`,
-        );
+        run.followUp(wrapUpBrief(`dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m)`, graceMs));
         const graced = await doneOrTick(graceMs);
         if (graced !== "tick") {
           result = graced.done; // wrapped up in time — keep the worker's own result
@@ -497,30 +1073,76 @@ export async function dispatchToProject(
         }
         timedOut = true;
         await run.interrupt();
-        deps.ledger.recordEvent("dispatch_abort", { orderId: order.id, folder, data: { project: name, limit } });
-        const detail =
-          limit === "stall"
-            ? `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`
-            : `hit the ${Math.round(ceilingMs / 60000)}m dispatch ceiling`;
+        event("dispatch_abort", { orderId: order.id, folder, data: { project: name, workClass, limit } });
+        const detail = `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`;
         result = { ok: false, sessionId: "", summary: `timed out: ${detail} — asked to wrap up, then aborted`, costUsd: 0 };
         break;
       }
     } catch (e) {
       result = { ok: false, sessionId: "", summary: e instanceof Error ? e.message : String(e), costUsd: 0 };
     }
+    // The final report is built FIRST and queued in the dispatcher inbox in the same synchronous step
+    // as `dispatch_end` — no await between them — so no crash or reload can leave a run that is
+    // marked ended but never reported (boot recovery only covers runs with no `dispatch_end`).
+    // An abnormal end (stall abort, error, crash, API give-up, interrupt) — or a run wrapped up early
+    // for an engine reload — says where it stopped, so the dispatcher can resume.
+    const reloading = deps.lifecycle?.draining() === true;
+    // Handed off at a safe checkpoint (ADR-0021)? Then the task is not done — it continues fresh.
+    const armed = watch?.armed();
+    const atCheckpoint =
+      !!armed && result.ok && !timedOut && !reloading &&
+      !handoffDeferred(folder, armed.decision, { ledger: deps.ledger, boundary: "checkpoint", occupancy: armed.occupancy, sessionId: result.sessionId || lastSessionId });
+    // Armed, but the checkpoint could not complete (work appeared after it): the worker was told to
+    // stop part-way, so this is NOT a finished task — it ends as a failure that says why.
+    const checkpointLost = !!armed && !atCheckpoint && result.ok && !timedOut && !reloading;
+    const ok = result.ok && !checkpointLost;
+    const stop = timedOut || !ok || reloading ? stopPoint() : undefined;
+    const summary = atCheckpoint
+      ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
+      : checkpointLost
+        ? `stopped at a context checkpoint (${Math.round(armed!.occupancy * 100)}%) that could not complete — uncommitted changes appeared after it; HANDOFF.md may be partial, dispatch it again to continue`
+        : reloading
+        ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — resume it after the restart)`
+        : result.summary;
+    const stopLine = stop ? formatStopPoint(stop) : "";
+    const line =
+      (ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
+      (stopLine ? `\n${stopLine}` : "");
+    // The run is over: every brief delivered into it is answered (spec §5). Read before the entry
+    // may be removed below.
+    const answered = new Set<number>(cause ? [cause.threadId] : []);
+    faults.guard("dispatch.endTurn", () => deps.registry.endTurn(session.id, { all: true }).forEach((c) => answered.add(c.threadId)));
+    clearSpin(); // the run is over: nothing is spinning any more
     try {
       if (result.sessionId) {
         deps.registry.setSdkSessionId(session.id, result.sessionId, worker);
         deps.ledger.recordSession(order.id, result.sessionId, worker);
       }
       deps.meter.note({ costUsd: result.costUsd }, now());
-      deps.ledger.recordOutcome(order.id, result.ok ? "done" : "error", result.summary);
-      deps.ledger.recordEvent("dispatch_end", {
+      deps.ledger.recordOutcome(order.id, ok ? "done" : "error", ok ? result.summary : summary);
+    } catch {
+      // observer/bookkeeping errors must not surface into the worker path
+    }
+    try {
+      event("dispatch_end", {
         orderId: order.id,
         sessionId: result.sessionId || undefined,
         folder,
-        data: { project: name, ok: result.ok, timedOut, costUsd: result.costUsd, apiError: result.apiError },
+        // workClass + costUsd together are what lets the meter report interactive vs background spend.
+        data: { project: name, workClass, ok, timedOut, costUsd: result.costUsd, apiError: result.apiError, ...(checkpointLost ? { checkpointLost: true } : {}) },
       });
+      let note: string | undefined;
+      try {
+        note = hooks.resultNote?.(ok && !timedOut && !reloading);
+      } catch {
+        note = undefined; // the queue's note is extra — the result itself must still be queued
+      }
+      const report = dispatchResultText({ project: name, ok, summary, stop, ref: resultRef(deps, cause) });
+      deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now(), cause);
+    } catch {
+      // observer only — never surfaces into the worker path
+    }
+    try {
       if (timedOut || !result.ok) {
         // A dead run must not linger: an "error" session is invisible to findByFolder (never
         // reused) and to sweepIdle (never reaped), so it would sit as a zombie and force the next
@@ -530,20 +1152,115 @@ export async function dispatchToProject(
       } else {
         deps.registry.setStatus(session.id, "idle");
         deps.registry.touch(session.id, now());
+        deps.registry.noteBlocked(session.id, undefined); // the run is over — nothing is blocked
         deps.registry.detachControl(session.id);
       }
-      const line = result.ok ? `✅ ${name} finished: ${result.summary || "done"}` : `⛔ ${name}: ${result.summary || "failed"}`;
-      await deps.reply(replyChat, line, name);
-      // Feed the result back into the live company session so it can act on it next turn.
-      const company = deps.registry.getDefault();
-      const control = company && company.id !== session.id ? deps.registry.getControl(company.id) : undefined;
-      control?.followUp(`[dispatch result] ${name}: ${result.summary || (result.ok ? "done" : "failed")}`);
     } catch {
       // observer/bookkeeping errors must not surface into the worker path
     }
-  })();
+    // The run ended at a task boundary: hand the session off now, while its cache is warm, if it is
+    // above the sweet spot — tracked, so the todo queue's next release waits for it (ADR-0021).
+    let continuation: string | undefined;
+    if (policy && !reloading && !timedOut) {
+      try {
+        const entry = deps.registry.get(session.id);
+        const sid = result.sessionId || lastSessionId;
+        const handoff = opts.handoff ?? runHandoff;
+        const handoffDeps = { registry: deps.registry, ledger: deps.ledger, runDeps: profileDeps(providerCfg, "handoff"), memoryFlush: !!memoryGate(deps, folder), notify };
+        let work: Promise<unknown> | undefined;
+        if (atCheckpoint && armed) {
+          const target: SessionInfo = { ...(entry ?? session), sdkSessionId: sid };
+          const at = { ...handoffDeps, decision: armed.decision, boundary: "checkpoint" as const };
+          // The worker wrote its note in its own context — no extra handoff turn, unless it did not.
+          work = noteStamp(folder) !== noteAtArm ? Promise.resolve(completeHandoff(target, policy, at, { before: noteAtArm, occupancy: armed.occupancy })) : handoff(target, policy, at);
+          continuation = continuationBrief(task);
+        } else if (entry && result.ok && sid) {
+          const signals = opts.signals ?? sessionContext;
+          const sig = signals(folder, sid, { windowTokensByModel: contextWindows(deps.ledger, policy.windowTokensByModel) });
+          const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
+          const decision = decideContext(sig, policy, ttlMs, { boundary: "settled" });
+          if (decision.verdict !== "keep" && !handoffDeferred(folder, decision, { ledger: deps.ledger, boundary: "settled", occupancy: sig.occupancy, sessionId: sid })) {
+            work = handoff({ ...entry, sdkSessionId: sid }, policy, { ...handoffDeps, decision, boundary: "settled" });
+          }
+        }
+        if (work) {
+          // Tracked, not awaited: the operator's result goes out now; the next dispatch's gate waits.
+          trackHandoff(folder, work, handoffHoldMs(policy));
+          faults.contain("dispatch.handoff", work, { project: name, orderId: order.id, folder });
+        }
+      } catch {
+        // observer only — the report below must still go out
+      }
+    }
+    // Plans the run wrote go to the operator (ADR-0019) — their own detached unit, so a slow card
+    // post never holds up the result below.
+    if (deps.postPlan) {
+      const run = { project: name, folder, startSha: planStart, cause, orderId: order.id, chatId: replyChat };
+      faults.contain("dispatch.plans", () => onRunEndPlans(planDepsFrom(deps, deps.plans), run), { project: name, orderId: order.id, folder });
+    }
+    try {
+      // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure
+      // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
+      // The frontend prepends the single priority accent (✅/🔴) — no per-call-site glyph (Feature 2).
+      await say(line, ok ? "result" : "alert", { kind: "result", cause });
+    } catch {
+      // the operator line is best-effort; the dispatcher report below must still go out
+    }
+    for (const threadId of answered) refreshThread(deps, threadId);
+    // The dispatcher ALWAYS gets the final result: deliver the inbox now (waking an idle company);
+    // whatever cannot be delivered yet stays queued for the next flush.
+    try {
+      await flushDispatcherInbox(deps.ledger, dispatcher, now());
+    } catch {
+      // observer only
+    }
+    // Last: the result is out, so the todo queue may release the project's next brief (ADR-0008).
+    try {
+      await hooks.onEnd?.({ orderId: order.id, ok: ok && !timedOut && !reloading, summary, ...(continuation ? { continuation } : {}) });
+    } catch {
+      // observer only
+    }
+  })().catch(async (e) => {
+    // A throw BEFORE the run produced a result (start() failing to launch the worker, a ledger write
+    // before the supervised wait). Every step after the result is guarded, so this runs at most once
+    // and never after onEnd. Without it the session stays "running" with no handle and the todo stays
+    // "running", so the project — and its whole queue — is wedged until a restart. Close it out as a
+    // failed run through the same exits a normal end uses.
+    const summary = `failed to start: ${e instanceof Error ? e.message : String(e)}`;
+    try {
+      deps.ledger.recordOutcome(order.id, "error", summary);
+      event("dispatch_end", { orderId: order.id, folder, data: { project: name, workClass, ok: false, timedOut: false, costUsd: 0 } });
+      deps.ledger.queueDispatcherReport(name, dispatchResultText({ project: name, ok: false, summary, ref: resultRef(deps, cause) }), now(), cause);
+    } catch {
+      // observer only
+    }
+    const answered = new Set<number>(cause ? [cause.threadId] : []);
+    try {
+      deps.registry.endTurn(session.id, { all: true }).forEach((c) => answered.add(c.threadId));
+      deps.registry.remove(session.id);
+    } catch {
+      // observer only
+    }
+    try {
+      await say(`${name}: ${summary}`, "alert", { kind: "result", cause });
+      await flushDispatcherInbox(deps.ledger, dispatcher, now());
+    } catch {
+      // observer only
+    }
+    for (const threadId of answered) refreshThread(deps, threadId);
+    try {
+      await hooks.onEnd?.({ orderId: order.id, ok: false, summary });
+    } catch {
+      // observer only
+    }
+  });
 
-  return `dispatched to ${name} — running in the background; its output streams to the operator and you will receive its result as a follow-up message when it finishes.`;
+  return `dispatched to ${name} — running in the background with no time limit; its output streams to the operator, you get a progress digest every few minutes, and you will receive its result as a follow-up message when it ends.`;
+}
+
+/** The ref of a result's thread, for the dispatcher's `[dispatch result · m4g2]` (trace only). */
+function resultRef(deps: Pick<DispatchDeps, "trace">, cause: Cause | undefined): string | undefined {
+  return cause && deps.trace ? deps.trace.ref(cause.threadId) : undefined;
 }
 
 /** Send a file the worker produced, but only if `path` is inside `folder`. Returns a status string. */
@@ -553,6 +1270,10 @@ export async function sendProjectFile(
   folder: string,
   path: string,
   caption?: string,
+  /** Called once the file was handed to the channel (the trace's `file` line). */
+  onSent?: () => void,
+  /** The plan registry (ADR-0019): a plan path is sent as its plan card, once per content version. */
+  plan?: { deps: PlanDeps; run: PlanRun },
 ): Promise<string> {
   let root: string;
   try {
@@ -572,12 +1293,94 @@ export async function sendProjectFile(
   }
   if (abs === root || !abs.startsWith(root + sep)) return `refused: ${path} is outside project`;
   if (!statSync(abs).isFile()) return `refused: ${path} is not a regular file`;
+  if (plan) {
+    const offered = await offerPlanFile(plan.deps, { ...plan.run, path: relative(root, abs) });
+    if (offered.handled) return offered.text;
+  }
   await deps.sendFile?.(chatId, abs, caption);
+  onSent?.();
   return `sent ${path}`;
+}
+
+/** Raise a blocking operator DECISION and post it to the Decisions channel, returning its id. The
+ *  ONE path behind every blocking-question gesture — the `ask_operator` MCP tool AND the serviced
+ *  native `AskUserQuestion` — so both enqueue a durable, tracked decision, post the tappable keyboard
+ *  the same way, and record the sent message id (so a plain reply resolves the exact decision). Pass
+ *  `spec` for a structured multi-question / multi-select ask, or `options` for a flat single choice.
+ *  When no `postDecision` is wired (customer/ingress path — the firewall), the decision is still
+ *  queued (surfaced by /decisions + the secretary digest), just not posted to a channel. */
+export async function raiseOperatorDecision(
+  deps: Pick<DispatchDeps, "ledger" | "postDecision"> & Partial<Pick<DispatchDeps, "registry" | "trace">>,
+  params: {
+    project?: string;
+    folder?: string;
+    orderId?: string;
+    chatId: number;
+    question: string;
+    options?: string[];
+    spec?: StructuredAsk;
+    /** Injectable clock for the blocked-since stamp (tests). */
+    now?: () => number;
+    /** The operator message (and thread) the raising work answers: the decision lands in that
+     *  thread, which then reads "waiting" (spec §5). */
+    cause?: Cause;
+  },
+): Promise<string> {
+  const id = deps.ledger.openDecision({
+    cause: params.cause,
+    kind: "decision",
+    project: params.project,
+    folder: params.folder,
+    orderId: params.orderId,
+    chatId: params.chatId,
+    question: params.question,
+    options: params.options,
+    spec: params.spec,
+  });
+  // The decision is a line of its thread (spec §4.3): recorded, its card carries the thread's ref, and
+  // the posted card is bound to the line so a reply to it joins the thread. Best-effort (ADR-0010).
+  const trace = deps.trace;
+  const cause = params.cause;
+  const lineId =
+    trace && cause
+      ? faults.guard("dispatch.decisionLine", () =>
+          trace.outbound({ chatId: params.chatId, text: params.question, cause, kind: "decision", project: params.project, folder: params.folder, orderId: params.orderId }),
+        )
+      : undefined;
+  const ref = trace && cause ? trace.ref(cause.threadId) : undefined;
+  const posted = await deps.postDecision?.({ id, project: params.project, folder: params.folder, ...(ref ? { ref } : {}) }, params.question, params.options, params.spec);
+  if (posted) deps.ledger.setDecisionMessage(id, posted.chatId, posted.messageId);
+  if (posted && trace && lineId !== undefined) faults.guard("dispatch.decisionBind", () => trace.bindChannel(lineId, posted.chatId, posted.messageId));
+  deps.ledger.recordEvent("decision_raised", {
+    orderId: params.orderId,
+    folder: params.folder,
+    cause: params.cause,
+    data: { project: params.project, id, structured: !!params.spec, options: params.options?.length ?? 0, posted: !!posted },
+  });
+  // The worker that raised this check-points and STOPS: it is awaiting the OPERATOR, not hung.
+  // Marked here — the one path behind every blocking-question gesture (`ask_operator` and the
+  // serviced native AskUserQuestion alike) — so no caller can raise a decision without the session
+  // reporting it. Cleared when a brief/answer is delivered back, or when the run ends.
+  if (deps.registry && params.folder) {
+    try {
+      const session = deps.registry.findByFolder(params.folder);
+      if (session) {
+        deps.registry.noteBlocked(session.id, { kind: "decision", label: params.question, since: (params.now ?? Date.now)() });
+      }
+    } catch {
+      // observer only — a registry hiccup must never break raising the decision
+    }
+  }
+  refreshThread(deps, params.cause?.threadId);
+  return id;
 }
 
 /** Google Stitch MCP server (HTTP transport) — design generation for operator workers. */
 export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
+
+/** The Playwright MCP launch every operator worker gets — one definition, also read by the toolchain
+ *  updater (ADR-0009) so the server it verifies after an update is the one workers start. */
+export const PLAYWRIGHT_MCP = { command: "playwright-mcp", args: ["--headless", "--isolated"] };
 
 /** Build the project's in-process MCP tools: `send_file` always; `dispatch` only for the company.
  *  When `opts.stitch` is set AND a `opts.stitchKey` is configured, the operator's Stitch HTTP MCP
@@ -587,11 +1390,29 @@ export function neoMcpServers(
   replyChat: number,
   opts: {
     dispatch: boolean;
+    /** What TRIGGERED the worker these tools are built for — an operator turn (`interactive`) or
+     *  the scheduler (`background`). Decided ONCE here, at launch, and captured in the `dispatch`
+     *  tool's closure, so every dispatch this worker makes (and every sub-worker it spawns)
+     *  inherits it. Omitted ⇒ DEFAULT_WORK_CLASS (background) — see budget.ts for why that default
+     *  is the safe one. */
+    workClass?: WorkClass;
     folder: string;
+    /** The project name + raising order id, recorded on any decision this worker raises (so the
+     *  digest/queue can show which project waits, and the answer can resume the right session). */
+    projectName?: string;
+    orderId?: string;
+    /** The cause of the turn calling a tool (ADR-0015), read at CALL time — never captured at
+     *  launch — so a dispatch, todo, decision or file is filed under the operator message the
+     *  worker is answering now, not its session's first order. Absent → no cause, as before. */
+    cause?: () => Cause | undefined;
     stitch?: boolean;
     stitchKey?: string;
     /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
     codebaseMemoryBin?: string;
+    /** Operator-only: attach the Playwright browser-automation MCP (headless chromium) so every
+     *  operator project worker can drive a real browser for web/UI testing. Never on the customer
+     *  path (browser automation there would let customer-tainted work reach arbitrary URLs). */
+    playwright?: boolean;
   },
 ): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -604,32 +1425,127 @@ export function neoMcpServers(
         caption: z.string().optional().describe("optional caption / note"),
       },
       async (args: { path: string; caption?: string }) => {
-        const out = await sendProjectFile(deps, replyChat, opts.folder, args.path, args.caption);
+        // A plan path goes through the registry (ADR-0019) — only where a plan card can be posted.
+        const plan = deps.postPlan
+          ? { deps: planDepsFrom(deps, deps.plans), run: { project: opts.projectName ?? basename(opts.folder), folder: opts.folder, cause: opts.cause?.(), orderId: opts.orderId, chatId: replyChat } }
+          : undefined;
+        const out = await sendProjectFile(deps, replyChat, opts.folder, args.path, args.caption, () => {
+          // The thread shows a file went out: its caption or name, never its bytes (trace only).
+          const trace = deps.trace;
+          if (!trace) return;
+          faults.guard("dispatch.sendFileLine", () =>
+            trace.outbound({ chatId: replyChat, text: args.caption || basename(args.path), cause: opts.cause?.(), kind: "file", project: opts.projectName, folder: opts.folder, orderId: opts.orderId }),
+          );
+        }, plan);
         return { content: [{ type: "text" as const, text: out }] };
       },
     ),
   ];
+  // `ask_operator` — the ONE structured way a worker raises a BLOCKING question/decision to the
+  // operator. Attached to ALL operator project workers (regardless of the dispatch flag), gated
+  // ONLY on `deps.postDecision` being wired: that closure exists only on the operator surfaces
+  // (Telegram/web), never on the customer/ingress path, so customer-tainted work can never raise a
+  // decision. It enqueues ONE tracked, matured DECISION (title + root-cause context + options-with-
+  // trade-offs + recommendation — the Zod schema makes a shapeless question impossible to raise),
+  // posts it to the Decisions channel with tappable option buttons, captures the message id, and tells
+  // the worker to check-point + stop — the operator's tap/reply resumes this session as a follow-up.
+  if (deps.postDecision) {
+    tools.push(
+      tool(
+        "ask_operator",
+        "Raise ONE matured decision the operator must make before this work can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). " +
+          "BEFORE you call this, challenge yourself: (1) trace the real root cause in the code, not the symptom; (2) determine the correct industry-standard fix, not the quickest patch; (3) criticize your own options and drop any that are only workarounds. " +
+          "Escalate ONLY a decision that is genuinely the operator's: product/UX policy, cost, an irreversible or external action, or a real trade-off between two sound options. If there is one correct standard fix, do it and report — do NOT ask. " +
+          "Raise exactly one decision per call: each call carries a crisp `title`, the `context` (what happened + the root cause), 2–5 `options` that each state what they mean + their trade-off (no patch-level options), and your `recommendation` (which + why). If you have several independent decisions, call ask_operator once per decision — never bundle several into one. " +
+          "It goes to the operator's high-priority Decisions channel and is tracked until they answer. Set `multiSelect: true` when the operator may pick SEVERAL of the options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
+        {
+          title: z.string().describe("one-line title of the SINGLE decision"),
+          context: z
+            .string()
+            .describe("1–3 plain lines: what happened + the ROOT CAUSE, so the operator sees WHY a decision is needed"),
+          options: z
+            .array(
+              z.object({
+                label: z.string().describe("short button label the operator taps"),
+                detail: z
+                  .string()
+                  .describe("what this option concretely means + its trade-off (cost/risk/effort) — never a patch-level option"),
+                recommended: z.boolean().optional().describe("set on the ONE option you recommend"),
+              }),
+            )
+            .min(2)
+            .max(MAX_OPTIONS)
+            .describe("2–5 defensible options, each carrying its own trade-off detail"),
+          recommendation: z
+            .string()
+            .describe("which option you advise + one line WHY (the decision still stays with the operator)"),
+          multiSelect: z
+            .boolean()
+            .optional()
+            .describe("set true when the operator may choose SEVERAL of the options (tap each, then Submit); default single choice"),
+          question: z
+            .string()
+            .optional()
+            .describe("optional crisp restatement of the question shown above the buttons; defaults to the title"),
+        },
+        async (args: MaturedDecisionInput) => {
+          // The Zod schema already guarantees the matured shape; `maturedAsk` normalizes it into the
+          // StructuredAsk that rides on the decision row (belt-and-suspenders: undefined on degenerate
+          // input). The crisp title becomes the row's question; context/options+details/recommendation
+          // live on the spec.
+          const spec = maturedAsk(args);
+          if (!spec) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text:
+                    "That decision was not well-formed — it needs a title, a root-cause context, 2+ options (each with a trade-off detail), " +
+                    "and a recommendation. Re-raise it as one fully matured decision.",
+                },
+              ],
+            };
+          }
+          const id = await raiseOperatorDecision(deps, {
+            project: opts.projectName,
+            folder: opts.folder,
+            orderId: opts.orderId,
+            chatId: replyChat,
+            question: spec.title ?? args.title,
+            spec,
+            cause: opts.cause?.(),
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `Raised with the operator (decision #${id.slice(0, 8)}). Check-point your work (commit green work / write a WIP note) and STOP — ` +
+                  `the operator's answer will resume this session as a follow-up. Do not assume a default.`,
+              },
+            ],
+          };
+        },
+      ),
+    );
+  }
   if (opts.dispatch) {
     tools.push(
       tool(
         "sessions",
-        "List the operator's live project sessions and what each is doing RIGHT NOW (idle / running-what / how long / how many follow-ups queued). Use this to answer the operator about a project's status, or — when a dispatch reports a project busy — to decide whether to wait for it or report back. Returns text.",
+        "List the operator's live project sessions and what each is doing RIGHT NOW. Each line gives a STATE plus two ages — `last activity` (any sign of life) and `last output` (what the operator can read). Read the state, not the ages: `idle` means healthy and free NO MATTER how old its ages are (a project can sit idle for days and still answer instantly), `working`/`quiet` mean it is busy, `starting` means the engine is still preparing it, `awaiting-operator` means it needs the OPERATOR's answer, and ONLY `wedged` means genuinely stuck. Never tell the operator a project is stuck, hung or in need of a restart unless its state is `wedged`. Use this to answer the operator about a project's status, or — when a dispatch reports a project busy — to decide whether to wait for it or report back. Returns text.",
         {},
-        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now()) }] }),
+        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now(), deps.liveness, companyProjectLines(deps, Date.now())) }] }),
       ),
       tool(
         "dispatch",
-        "Open one of the operator's projects and run a self-contained task in it, then return its result. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt. Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run.",
+        "Open one of the operator's projects and run a self-contained task in it. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt. " +
+          "If the project is busy (mid-task), the brief is QUEUED in that project's todo queue and the reply says \"queued as #N for <project>, position P\": it starts by itself when the current task is done, so confirm the number and position to the operator and never re-send or forward it. " +
+          "The run has NO time limit — it works until it is done, even for hours; only a worker that goes completely silent (hung) is stopped. While it runs you get a `[dispatch progress]` line every few minutes (FYI — no reply needed), and you ALWAYS get a `[dispatch result]` message when it ends — including when it was cut short, in which case the result says where it stopped (last commit / latest note) so you can dispatch a follow-up that resumes from there. " +
+          "Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run.",
         {
           project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
-          timeoutMinutes: z
-            .number()
-            .positive()
-            .optional()
-            .describe(
-              "expected ceiling for this task in minutes — size it to the task (2 for a quick lookup, 60–120 for a real build). Capped by the engine; a hung (silent) worker is still aborted early regardless.",
-            ),
           team: z
             .enum(["frontend-backend"])
             .optional()
@@ -637,16 +1553,69 @@ export function neoMcpServers(
               "opt-in: run the brief with a lead-orchestrated backend + frontend subagent team (the lead delegates by domain, enforces file-ownership boundaries, and coordinates via a shared contract file). Omit for a normal single-worker dispatch.",
             ),
         },
-        async (args: { project: string; task: string; timeoutMinutes?: number; team?: "frontend-backend" }) => {
-          const out = await dispatchToProject(args.project, args.task, deps, replyChat, {
-            root: deps.workRoot,
-            timeoutMs: args.timeoutMinutes ? Math.round(args.timeoutMinutes * 60_000) : undefined,
-            team: args.team,
-          });
+        async (args: { project: string; task: string; team?: "frontend-backend" }) => {
+          // The dispatch inherits the class of the worker calling the tool: the company session
+          // servicing an operator message dispatches as `interactive`, a scheduler-fired one as
+          // `background`. This is the whole of the "class follows the originating trigger" rule.
+          const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
+          // The cause of the turn making this call, and the order of the session making it.
+          const cause = opts.cause?.();
+          const out = deps.todo
+            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId }, deps, replyChat)
+            : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass, cause, parentOrderId: opts.orderId });
           return { content: [{ type: "text" as const, text: out }] };
         },
       ),
     );
+    const todo = deps.todo;
+    if (todo) {
+      tools.push(
+        tool(
+          "todo",
+          "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
+            "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued todos only — a running one is stopped by the operator with /kill), `pause` / `resume` (`project`). Returns text.",
+          {
+            action: z.enum(["list", "add", "reorder", "cancel", "pause", "resume"]),
+            project: z.string().optional().describe("project folder name, e.g. \"eticket-v3\""),
+            id: z.number().int().optional().describe("todo number (#N)"),
+            position: z.number().int().min(1).optional().describe("new 1-based queue position, for reorder"),
+            task: z.string().optional().describe("the brief, for add — a clear, self-contained prompt"),
+            team: z.enum(["frontend-backend"]).optional().describe("opt-in team mode, for add (as in dispatch)"),
+          },
+          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend" }) => {
+            const need = (what: string) => `todo ${args.action} needs ${what}.`;
+            const text = await (async () => {
+              switch (args.action) {
+                case "list":
+                  return todo.list(args.project);
+                case "add":
+                  if (!args.project || !args.task) return need("`project` and `task`");
+                  return todo.submit(
+                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause: opts.cause?.(), parentOrderId: opts.orderId },
+                    deps,
+                    replyChat,
+                  );
+                case "reorder":
+                  if (args.id === undefined || args.position === undefined) return need("`id` and `position`");
+                  return todo.move(args.id, args.position);
+                case "cancel":
+                  if (args.id === undefined) return need("`id`");
+                  return todo.cancel(args.id);
+                case "pause":
+                  if (!args.project) return need("`project`");
+                  return todo.pause(args.project);
+                case "resume":
+                  if (!args.project) return need("`project`");
+                  return todo.resume(args.project);
+                default:
+                  return `unknown todo action: ${args.action}`;
+              }
+            })();
+            return { content: [{ type: "text" as const, text }] };
+          },
+        ),
+      );
+    }
   }
   // Memory tools (`memory`, `memory_search`): attached ONLY through the same gate that guards the
   // frozen snapshot injection in dispatchToProject (memoryGate) — operator paths whose target
@@ -676,5 +1645,27 @@ export function neoMcpServers(
   if (opts.codebaseMemoryBin) {
     servers["codebase-memory"] = { type: "stdio", command: opts.codebaseMemoryBin, args: [], env: {} };
   }
+  // Operator-only: Playwright browser-automation MCP (headless chromium) for web/UI testing across
+  // all operator projects. Lazy — the browser only launches when a tool is actually called, so the
+  // per-worker cost is just a lightweight stdio process. Never attached on the customer/ingress path.
+  if (opts.playwright) {
+    servers.playwright = { type: "stdio", ...PLAYWRIGHT_MCP, env: {} };
+  }
   return servers;
+}
+
+/** The `sessions` tool's project block (P6, spec §9): one summary line per known project — health,
+ *  session state, queue, open attention — without the company itself (it knows its own state).
+ *  Contained (ADR-0010): a failed read leaves the block out, the session lines stay. */
+function companyProjectLines(deps: DispatchDeps, now: number): { lines: string[]; total: number } | undefined {
+  return faults.guard("sessions.projects", () => {
+    const folder = deps.registry.getDefault()?.order.folder;
+    const company = folder ? basename(folder) : undefined;
+    const d = projectDeps({ ledger: deps.ledger, registry: deps.registry, cfg: { github: deps.github, projects: deps.projects }, neoFolder: deps.neoFolder });
+    // One row past the page, so leaving the company out still fills it; the company is never counted.
+    const r = projectSummaries(d, now, PAGE_MAX + 1);
+    const rows = r.rows.filter((x) => x.name !== company).slice(0, PAGE_MAX);
+    const hidden = company !== undefined && knownProjects(d).includes(company) ? 1 : 0;
+    return { lines: rows.map(summaryLine), total: r.total - hidden };
+  });
 }

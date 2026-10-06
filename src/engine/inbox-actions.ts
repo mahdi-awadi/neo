@@ -147,25 +147,45 @@ export function replySubject(item: InboxItem): string {
   return item.subject && !item.subject.startsWith("Re:") ? "Re: " + item.subject : item.subject || "Re:";
 }
 
+/** How a send ended. `stale`: the approved draft version was edited or already sent — nothing was
+ *  sent. `busy`: a send for this item is already in flight (a double tap) — nothing was sent. */
+export type InboxSendOutcome = "sent" | "failed" | "stale" | "busy";
+
+/** Items with a send in flight. Module-level because the web console and Telegram share it: one
+ *  customer reply at a time per item, whichever channel pressed Send. */
+const sendsInFlight = new Set<string>();
+
 /** Send the operator-approved (possibly edited) reply to the customer via the gateway, then mark
  *  the item 'replied'. On any failure or empty/unknown input, the status is left untouched. The
- *  caller is responsible for the approval gate before invoking this (external action). */
+ *  caller is responsible for the approval gate before invoking this (external action).
+ *  Idempotency: an item already replied is `stale` (never re-sent, from any channel); with
+ *  `draftVersion` (the version the operator approved), a draft edited since is `stale` too; and a
+ *  second send for an item already in flight is `busy`. The
+ *  check and the claim are synchronous, so two presses cannot both pass. */
 export async function sendInboxReply(
   inbox: Inbox,
   id: string,
   reply: string,
   gateway: { url: string; secret: string },
   fetchImpl: FetchFn = fetch,
-): Promise<boolean> {
+  opts: { draftVersion?: number } = {},
+): Promise<InboxSendOutcome> {
   const item = inbox.get(id);
   const text = reply.trim();
-  if (!item || !text) return false;
-  const sent = await sendViaGateway(
-    gateway.url,
-    gateway.secret,
-    { to: item.from, subject: replySubject(item), text, inReplyTo: item.messageId },
-    fetchImpl,
-  );
-  if (sent) inbox.setStatus(item.id, "replied");
-  return sent;
+  if (!item || !text) return "failed";
+  if (sendsInFlight.has(item.id)) return "busy";
+  if (item.status === "replied" || (opts.draftVersion !== undefined && item.draftVersion !== opts.draftVersion)) return "stale";
+  sendsInFlight.add(item.id);
+  try {
+    const sent = await sendViaGateway(
+      gateway.url,
+      gateway.secret,
+      { to: item.from, subject: replySubject(item), text, inReplyTo: item.messageId },
+      fetchImpl,
+    );
+    if (sent) inbox.setStatus(item.id, "replied");
+    return sent ? "sent" : "failed";
+  } finally {
+    sendsInFlight.delete(item.id);
+  }
 }

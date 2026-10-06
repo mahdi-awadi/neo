@@ -1,0 +1,319 @@
+{
+  "meta": {
+    "title": "نيو · لوحة التحكم",
+    "loginTitle": "نيو · تسجيل الدخول"
+  },
+  "login": {
+    "sub": "لوحة المشغّل — سجّل الدخول للتحكم"
+  },
+  "brand": {
+    "sub": "لوحة المشغّل",
+    "langSwitch": "English",
+    "langSwitchTitle": "تحويل اللوحة إلى الإنجليزية"
+  },
+  "newProject": {
+    "section": "مشروع جديد",
+    "pickRepo": "— اختر مستودعًا —",
+    "taskPlaceholder": "ماذا يفعل نيو في هذا المشروع؟",
+    "open": "افتح المشروع",
+    "missing": "اختر مستودعًا واكتب المهمة."
+  },
+  "sdk": {
+    "section": "SDK العامل",
+    "claude": "Claude",
+    "codex": "Codex",
+    "claudeFoot": "Claude SDK",
+    "codexFoot": "Codex SDK",
+    "claudeLabel": "Claude Agent SDK",
+    "codexLabel": "OpenAI Codex SDK",
+    "switchFailed": "تعذّر تبديل SDK"
+  },
+  "projects": {
+    "section": "المشاريع",
+    "empty": "لا توجد مشاريع مفتوحة بعد.",
+    "emptyHint": "اختر مستودعًا من الأعلى وافتح مشروعًا.",
+    "noneActive": "لا يوجد مشروع نشط",
+    "active": "النشط · {{name}}",
+    "openNoneActive": "{{count}} مفتوح · لا يوجد نشط",
+    "kill": "إيقاف"
+  },
+  "ctx": {
+    "chip": "السياق {{pct}}%",
+    "chipNone": "السياق –",
+    "chipSuspect": "السياق ?%",
+    "reset": "إعادة ضبط قبل {{age}}",
+    "lastReset": "آخر إعادة ضبط: {{verdict}}",
+    "band": {
+      "healthy": "سليم",
+      "above": "فوق النطاق المثالي",
+      "heavy": "مرتفع",
+      "emergency": "طارئ"
+    }
+  },
+  "tabs": {
+    "activity": "النشاط",
+    "threads": "المحادثات",
+    "projects": "المشاريع",
+    "queue": "الطابور",
+    "loops": "الحلقات",
+    "usage": "الاستهلاك",
+    "recent": "الأخيرة",
+    "inbox": "الوارد"
+  },
+  "feed": {
+    "placeholder": "افتح مشروعًا، أو اختر واحدًا من القائمة — يظهر نشاطه هنا.",
+    "emptyFor": "لا يوجد نشاط بعد لـ {{project}}.",
+    "showing": "المعروض",
+    "showAll": "اعرض كل النشاط",
+    "compose": "راسل المشروع النشط — متابعة للذكاء الاصطناعي…",
+    "send": "إرسال",
+    "attach": "إرفاق ملف",
+    "uploadFailed": "فشل الرفع ({{status}})",
+    "allow": "سماح",
+    "deny": "رفض"
+  },
+  "loops": {
+    "newTitle": "حلقة جديدة",
+    "name": "الاسم (مثال: nightly-fmt)",
+    "summary": "الملخص",
+    "folder": "المجلد (داخل /home)",
+    "prompt": "ما يفعله العامل في كل تكرار",
+    "goalCommand": "الهدف: أمر (قابل للتحقق)",
+    "goalJudge": "الهدف: حَكَم (نموذج لغوي)",
+    "goalValue": "أمر shell، أو معايير الحَكَم",
+    "triggerManual": "التشغيل: يدوي",
+    "triggerInterval": "التشغيل: فاصل زمني",
+    "triggerCron": "التشغيل: cron",
+    "triggerValue": "دقائق الفاصل، أو تعبير cron (0 4 * * *)",
+    "maxIterations": "أقصى عدد للتكرارات",
+    "budget": "الميزانية بالدولار (اختياري)",
+    "create": "أنشئ الحلقة",
+    "invalid": "غير صالح",
+    "title": "الحلقات",
+    "none": "لا توجد حلقات مُعدّة.",
+    "custom": "مخصّصة",
+    "builtin": "مدمجة",
+    "run": "▶ شغّل",
+    "on": "مفعّلة",
+    "off": "متوقفة",
+    "delete": "احذف",
+    "confirmDelete": "حذف الحلقة {{name}}؟"
+  },
+  "usage": {
+    "title": "استهلاك الاشتراك",
+    "unavailable": "الاستهلاك غير متاح.",
+    "limits": "حدود الاشتراك",
+    "limitsLater": "تظهر حالة الحدود بعد التشغيل التالي.",
+    "fiveHour": "5 ساعات",
+    "sevenDay": "7 أيام",
+    "used": "{{name}}: مستهلك {{used}}% · متبقٍّ {{left}}%",
+    "within": "{{name}}: ضمن الحد",
+    "hourly": "بالساعة",
+    "daily": "يوميًا",
+    "weekly": "أسبوعيًا",
+    "tokens": "{{n}} رمز",
+    "weeklyResets": "يتجدد الأسبوعي في {{when}}",
+    "foot5h": "5 س ✓",
+    "foot7d": "7 أ ✓",
+    "live": "مباشر"
+  },
+  "queue": {
+    "title": "طوابير المهام",
+    "empty": "كل طوابير المشاريع فارغة.",
+    "paused": "{{project}} — متوقف مؤقتًا ({{reason}})",
+    "resume": "استئناف",
+    "pause": "إيقاف مؤقت",
+    "running": "▶ قيد التشغيل منذ {{age}}",
+    "moveUp": "تقديم",
+    "cancel": "إلغاء",
+    "confirmCancel": "إلغاء #{{id}}؟"
+  },
+  "recent": {
+    "title": "الطلبات الأخيرة",
+    "empty": "لم يُشغَّل شيء بعد.",
+    "ctxTitle": "إعادات ضبط السياق",
+    "ctxEmpty": "لا توجد إعادات ضبط للسياق بعد.",
+    "at": "{{verdict}} عند {{pct}}%",
+    "resumedClean": "استُؤنف بسلاسة في {{steps}} خطوات",
+    "slowResume": "استئناف بطيء: {{steps}} خطوات",
+    "noEdit": "{{steps}} خطوات، بلا تعديل",
+    "ago": "قبل {{age}}",
+    "verdict": {
+      "handoff": "تسليم",
+      "clear": "مسح",
+      "deferred": "مؤجَّل",
+      "resumed": "استُؤنف",
+      "fresh": "بداية جديدة"
+    }
+  },
+  "inbox": {
+    "titleEmpty": "الوارد — رسائل العملاء",
+    "empty": "لا توجد رسائل من العملاء بعد.",
+    "title": "الوارد — تراجع وترد بنفسك؛ لا يُرسل شيء تلقائيًا",
+    "delete": "🗑 احذف",
+    "deleteTitle": "احذف هذه الرسالة",
+    "noSubject": "(بلا عنوان)",
+    "instructions": "تعليمات اختيارية للوكيل…",
+    "sendToAgent": "▶ أرسل إلى الوكيل",
+    "drafting": "⏳ الشركة تصوغ ردًا…",
+    "draftHint": "مسودة — عدّلها ثم أرسلها (أو أعدها إلى الوكيل لمراجعتها):",
+    "sendToCustomer": "✓ أرسل إلى العميل",
+    "notes": "ملاحظات المراجعة…",
+    "redraft": "↩ أعدها إلى الوكيل",
+    "replied": "✓ تم الرد",
+    "confirmSend": "إرسال هذا الرد إلى العميل؟",
+    "sendFailed": "فشل الإرسال.",
+    "confirmDelete": "حذف هذه الرسالة؟ لا يمكن التراجع عن ذلك.",
+    "status": {
+      "new": "جديدة",
+      "with-agent": "لدى الوكيل",
+      "drafted": "مُسوّدة",
+      "replied": "تم الرد"
+    }
+  },
+  "threads": {
+    "projects": "المشاريع",
+    "allProjects": "الكل",
+    "search": "ابحث في الرسائل…",
+    "hits": "الرسائل المطابقة",
+    "state": {
+      "all": "أي حالة",
+      "open": "مفتوحة",
+      "waiting": "بانتظارك",
+      "done": "منتهية",
+      "failed": "فاشلة"
+    },
+    "origin": {
+      "all": "أي مصدر",
+      "operator": "المشغّل",
+      "loop": "حلقة",
+      "attention": "تنبيه",
+      "ingress": "وارد",
+      "legacy": "قديمة"
+    },
+    "since": {
+      "all": "أي وقت",
+      "day": "آخر 24 ساعة",
+      "week": "آخر 7 أيام",
+      "month": "آخر 30 يومًا"
+    },
+    "loadOlder": "حمّل الأقدم",
+    "empty": "لا توجد محادثات مطابقة.",
+    "pick": "اختر محادثة لترى عملها.",
+    "counts": "رسائل {{messages}} · قرارات {{decisions}} · مهام {{todos}}",
+    "untitled": "(بلا عنوان)",
+    "you": "أنت",
+    "neo": "نيو",
+    "olderMessages": "رسائل أقدم",
+    "decisions": "القرارات",
+    "todos": "المهام",
+    "plans": "الخطط",
+    "toolActions": "إجراءات الأدوات: {{count}}",
+    "reply": "رُدّ داخل هذه المحادثة…",
+    "planLine": "{{status}} · {{done}}/{{total}} · v{{version}}",
+    "changesHint": "لطلب تعديلات، رُدّ على بطاقة الخطة في تيليجرام.",
+    "loadFailed": "تعذّر التحميل — حاول مرة أخرى.",
+    "decisionStatus": {
+      "open": "مفتوح",
+      "answered": "مُجاب",
+      "dismissed": "مُغلق"
+    },
+    "todoStatus": {
+      "queued": "في الطابور",
+      "running": "قيد التشغيل",
+      "done": "منتهية",
+      "failed": "فاشلة",
+      "cancelled": "ملغاة"
+    },
+    "planStatus": {
+      "draft": "مسودة",
+      "sent": "مُرسلة",
+      "approved": "معتمدة",
+      "executing": "قيد التنفيذ",
+      "done": "منتهية",
+      "abandoned": "متروكة"
+    },
+    "planAction": {
+      "approve": "اعتمد",
+      "execute": "نفّذ",
+      "done": "تمت",
+      "drop": "اترك"
+    }
+  },
+  "age": {
+    "s": "{{n}} ث",
+    "m": "{{n}} د",
+    "h": "{{n}} س",
+    "d": "{{n}} ي"
+  },
+  "attention": {
+    "remove": "احذف مساحة العمل",
+    "todo": "#{{id}} ← مهمة",
+    "snooze": "تأجيل {{hours}} ساعة",
+    "dismiss": "تجاهل",
+    "failed": "لم يصل هذا الإجراء إلى نيو — حاول مرة أخرى."
+  },
+  "pj": {
+    "pick": "اختر مشروعًا لترى لوحته.",
+    "empty": "لا يعرف المحرك أي مشروع بعد.",
+    "more": "+{{n}} مشاريع أخرى",
+    "loadFailed": "تعذّر تحميل المشاريع — حاول مرة أخرى.",
+    "loading": "جارٍ التحميل…",
+    "unknown": "لا يوجد مشروع باسم {{name}}.",
+    "noSession": "لا جلسة مفتوحة",
+    "queueCount": "الطابور {{n}}",
+    "noAttention": "لا شيء يحتاجك",
+    "none": "لا شيء هنا",
+    "ago": "قبل {{age}}",
+    "running": "قيد التشغيل",
+    "queued": "في الطابور {{pos}}",
+    "planLine": "{{status}} · {{steps}} خطوات",
+    "fileMissing": "الملف مفقود",
+    "health": {
+      "ok": "سليم",
+      "attention": "يحتاج انتباهًا",
+      "down": "متوقف",
+      "unknown": "غير معروف"
+    },
+    "state": {
+      "starting": "يبدأ",
+      "working": "يعمل",
+      "quiet": "يعمل بصمت",
+      "idle": "خامل",
+      "awaiting-operator": "ينتظرك",
+      "wedged": "عالق"
+    },
+    "sev": {
+      "high": "{{n}} عالية",
+      "normal": "{{n}} عادية",
+      "low": "{{n}} منخفضة"
+    },
+    "sect": {
+      "now": "الآن",
+      "queue": "الطابور",
+      "git": "Git",
+      "github": "GitHub",
+      "decide": "قرارات",
+      "plans": "الخطط",
+      "attention": "الانتباه ({{n}})",
+      "threads": "المحادثات",
+      "restart": "ينتظر إعادة التشغيل"
+    },
+    "git": {
+      "unpushed": "{{n}} غير مدفوعة",
+      "noUpstream": "لا فرع بعيد — لا شيء يبيّن ما دُفع",
+      "dirty": "{{n}} غير محفوظة",
+      "worktrees": "{{n}} مساحات عمل أخرى",
+      "ahead": "متقدم بـ {{n}}",
+      "undeployed": "{{n}} إيداعات غير منشورة (المنشور الآن: {{branch}} @ {{sha}})",
+      "deployError": "تعذّرت قراءة النسخة المنشورة:",
+      "error": "تعذّرت قراءة جِت:"
+    },
+    "gh": {
+      "counts": "طلبات الدمج {{prs}} · فشل CI {{ci}} · المشكلات {{issues}} · التنبيهات {{alerts}}",
+      "scanned": "آخر فحص ناجح قبل {{age}}",
+      "never": "لم يُفحص بعد",
+      "error": "فشل آخر فحص:"
+    }
+  }
+}

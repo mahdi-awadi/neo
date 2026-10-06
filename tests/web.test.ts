@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { reconcile } from "../src/engine/attention";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,6 +12,7 @@ import { createMeter } from "../src/engine/budget";
 import { createSessionStore } from "../src/engine/web-session";
 import { openTrustStore } from "../src/engine/trust";
 import type { NeoConfig } from "../src/config";
+import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
@@ -46,18 +48,40 @@ function cfg(): NeoConfig {
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,
-    dispatchTimeoutMs: 900_000,
-    dispatchTimeoutMaxMs: 7_200_000,
     dispatchStallMs: 300_000,
     dispatchGraceMs: 75_000,
+    dispatchProgressMs: 600_000,
+    dispatchRecoverWindowMs: 86_400_000,
+    todoOnFailure: "continue",
+    apiRetryLadderMs: [30_000, 120_000, 480_000],
+    apiRetryJitterFrac: 0.2,
+    apiCooldownMs: 60_000,
+    routeKeep: 20_000,
+    eventsKeep: 50_000,
+    decisionsKeep: 5_000,
+    toolActionsKeep: 100_000,
+    secretaryCron: "0 8-22/2 * * *",
+    secretaryStaleHours: 24,
+    codebaseMemoryListTimeoutMs: 15_000,
+    inboxListDefault: 100,
+    webFeedWindow: 500,
+    messageRoutesCacheCap: 2_000,
     stuckAfterMs: 600_000,
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
-    contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
-    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {} },
+    trustNewProjects: false,
+    contextPolicy: { sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
+    models: DEFAULT_MODELS,
+    updates: DEFAULT_UPDATES,
+    faults: DEFAULT_FAULTS,
+    health: DEFAULT_HEALTH,
+    sqliteBusyTimeoutMs: 5_000,
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
+    telegramToolSteps: false,
+    telegramFloodMaxWaitMs: 30_000,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-webapp-"));
@@ -66,7 +90,7 @@ function fakeStart(onStart?: (h: RunHandlers) => void) {
   const done = new Promise<RunResult>(() => {});
   const start = (_o: Order, h: RunHandlers): SessionRun => {
     onStart?.(h);
-    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done };
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
   };
   return start;
 }
@@ -75,12 +99,14 @@ function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnTy
   const registry = createRegistry();
   const admin = over.admin ?? openAdminStore(":memory:");
   const config = cfg();
+  const ledger = openLedger(":memory:");
   return {
     registry,
     admin,
+    ledger,
     cfg: config,
     instance: createWebApp({
-      engine: { cfg: config, ledger: openLedger(":memory:"), registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
+      engine: { cfg: config, ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
       botToken: TOKEN,
       botUsername: "neo_bot",
       sessions: createSessionStore({ secret: "websecret", ttlSec: 100000 }),
@@ -200,5 +226,105 @@ test("GET / serves the login page when unauthenticated and the console when auth
   expect(await anon.text()).toContain("telegram-widget");
   const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
   const authed = await a.instance.fetch(new Request("http://neo.test/", { headers: { cookie } }));
-  expect(await authed.text()).toContain("Neo");
+  const page = await authed.text();
+  expect(page).toContain("NEO");
+  expect(page).toContain('<script type="module" src="/app.js"></script>');
+});
+
+// ADR-0014: /stream tags each feed event with an SSE id and resumes from Last-Event-ID.
+async function readStream(res: Response, want: number): Promise<string> {
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let text = "";
+  for (let i = 0; i < 20 && (text.match(/^data: /gm) ?? []).length < want; i++) {
+    const r = await Promise.race([reader.read(), Bun.sleep(100).then(() => ({ done: true, value: undefined }))]);
+    if (r.done) break;
+    text += dec.decode(r.value);
+  }
+  return text;
+}
+
+test("GET /stream sends an SSE id per event and resumes after Last-Event-ID", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const msg = (text: string) =>
+    a.instance.fetch(new Request("http://neo.test/msg", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ text }) }));
+  await msg("/help");
+  await msg("/help");
+
+  const ac = new AbortController();
+  const full = await readStream(await a.instance.fetch(new Request("http://neo.test/stream", { headers: { cookie }, signal: ac.signal })), 2);
+  ac.abort();
+  const ids = [...full.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]));
+  expect(ids.length).toBe(2);
+
+  const ac2 = new AbortController();
+  const resumed = await readStream(
+    await a.instance.fetch(new Request("http://neo.test/stream", { headers: { cookie, "last-event-id": String(ids[0]) }, signal: ac2.signal })),
+    1,
+  );
+  ac2.abort();
+  expect([...resumed.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]))).toEqual([ids[1]]);
+});
+
+// ADR-0019: the plan card's actions on the web console go through the same engine rules as a tap.
+test("POST /api/plan applies a plan action; a bad body is a 400", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const plan = a.ledger.upsertPlan({ project: "gold", folder: "/home/gold", path: "plans/a.md", title: "A", sha256: "s", status: "sent", stepsTotal: 0, stepsDone: 0, version: 1 });
+  const post = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/plan", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  expect(await (await post({ id: plan.id, action: "approve", version: 2 })).json()).toEqual({ ok: false, text: "this card is v2 — the newest is v1; use that card" });
+  const ok = await post({ id: plan.id, action: "approve", version: 1 });
+  expect(await ok.json()).toEqual({ ok: true, text: "Approved" });
+  expect(a.ledger.planById(plan.id)!.status).toBe("approved");
+  expect((await post({ id: plan.id, action: "explode" })).status).toBe(400);
+  expect((await post({ action: "drop" })).status).toBe(400);
+  // "Changes" needs the operator's text, which the console does not carry yet: refused, not guessed.
+  expect(await (await post({ id: plan.id, action: "changes" })).json()).toEqual({ ok: false, text: "reply to the plan card on Telegram with your changes" });
+});
+
+// ADR-0018: an attention item's one-tap actions on the web console use the same engine rules as a tap.
+test("POST /api/attention applies an attention action; a bad body is a 400", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const [id] = reconcile(a.ledger, "engine", "gold", [{ project: "gold", folder: "/home/gold", source: "engine", kind: "queue_paused", key: "/home/gold", title: "paused", severity: "normal" }], 100).opened;
+  const post = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/attention", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  expect(await (await post({ id, action: "snooze" })).json()).toMatchObject({ ok: true });
+  expect((await post({ id, action: "explode" })).status).toBe(400);
+  expect((await post({ action: "dismiss" })).status).toBe(400);
+});
+
+// P6 Task 6.2: the project dashboard on the web — the list and one project's view.
+test("GET /api/projects lists the known projects (bounded); GET /api/projects/:name is the view, 404 when unknown", async () => {
+  const a = app();
+  const root = mkdtempSync(join(tmpdir(), "neo-webpj-"));
+  const { mkdirSync } = await import("node:fs");
+  for (let i = 0; i < 105; i++) {
+    const f = join(root, `p${String(i).padStart(3, "0")}`);
+    mkdirSync(f);
+    a.ledger.recordOrder({ id: crypto.randomUUID(), source: "neo", folder: f, task: "t", chatId: 0, createdAt: 1 });
+  }
+  reconcile(a.ledger, "git", "p050", [{ project: "p050", folder: join(root, "p050"), source: "git", kind: "dirty", key: "k", title: "dirty", severity: "high" }], Date.now());
+  const get = (path: string, cookie?: string) => a.instance.fetch(new Request(`http://neo.test${path}`, cookie ? { headers: { cookie } } : {}));
+  expect((await get("/api/projects")).status).toBe(401);
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const list = await get("/api/projects", cookie);
+  expect(list.status).toBe(200);
+  expect(list.headers.get("cache-control")).toContain("no-store");
+  const body = (await list.json()) as { rows: Array<{ name: string; health: string; queue: number; attention: Record<string, number> }>; total: number };
+  expect(body.rows.length).toBe(100);
+  expect(body.total).toBeGreaterThan(100);
+  expect(body.rows[0]).toMatchObject({ name: "p050", health: "attention", queue: 0, attention: { high: 1, normal: 0, low: 0 } });
+  const one = await get("/api/projects/p050", cookie);
+  expect(one.status).toBe(200);
+  expect(one.headers.get("cache-control")).toContain("no-store");
+  const v = (await one.json()) as Record<string, unknown>;
+  expect(v).toMatchObject({ name: "p050", health: "attention", now: null, queue: [], decisions: [], plans: [], threads: [] });
+  expect((v.attention as unknown[]).length).toBe(1);
+  expect(typeof v.snoozeHours).toBe("number"); // the console's snooze button names its hours
+  expect((v.git as { error?: string }).error).toBeDefined(); // not a repo: named, never a 500
+  expect((await get("/api/projects/ghost", cookie)).status).toBe(404);
+  expect((await get("/api/projects/%2Fetc", cookie)).status).toBe(404);
 });

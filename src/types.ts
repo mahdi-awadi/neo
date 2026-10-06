@@ -1,4 +1,8 @@
 // Shared types for the Neo engine.
+import type { BlockedOn } from "./engine/liveness";
+import type { Cause } from "./engine/ledger";
+
+export type { BlockedOn };
 
 /** Where an order originated. Drives provider routing (the compliance firewall). */
 export type OrderSource = "neo" | "customer";
@@ -44,7 +48,8 @@ export interface RouteTarget {
  */
 export type Verdict =
   | { allow: true; updatedInput?: Record<string, unknown> }
-  | { escalate: string }
+  /** `fenced`: a fence escalation — only the operator may approve it, never trust (ADR-0011). */
+  | { escalate: string; fenced?: true }
   | { deny: string };
 
 /**
@@ -53,10 +58,21 @@ export type Verdict =
  * `SessionRun` (session-runner) is the concrete implementation.
  */
 export interface SessionControl {
-  followUp(text: string): void;
+  /** Push a brief behind the running turn. `cause`: the operator message it carries (ADR-0015) —
+   *  the pipeline's control files it in turn order; a control that does not trace ignores it. */
+  followUp(text: string, cause?: Cause): void;
   interrupt(): Promise<void>;
   /** Follow-ups waiting behind the in-flight turn (observability; optional for old fakes). */
   queued?(): number;
+  /** True while a turn is being processed RIGHT NOW, as opposed to the session sitting idle
+   *  between turns. A live session's registry `status` stays "running" for its whole lifetime (it
+   *  flips back to "idle" only when the whole run ends), so status alone cannot tell a worker
+   *  mid-turn from one waiting for the next brief — this is the signal that can. Optional for old
+   *  fakes (absent → treated as not-active, i.e. idle). */
+  active?(): boolean;
+  /** True once the input channel was closed (graceful close or interrupt): a follow-up pushed now
+   *  is dropped, so a caller must refuse to deliver instead. Optional for old fakes (absent → open). */
+  closed?(): boolean;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */
@@ -71,12 +87,27 @@ export interface SessionInfo {
    *  under a different worker SDK (`/sdk claude` after a Codex run) must start fresh instead. */
   sdkProvider?: Provider;
   order: Order;
+  /** LIFECYCLE of this registry entry — `running` while a run is open, `idle` once it ends. NOT
+   *  what the worker is doing: it stays `running` for the session's whole life, including while it
+   *  sits between turns. Never report it to the operator; report `sessionState()` (liveness.ts). */
   status: "running" | "idle" | "done" | "error";
   startedAt: number;
-  /** Last time the worker produced output or took input — drives idle-close. */
+  /** THE authoritative liveness clock: the last time ANY worker activity was seen — every streamed
+   *  SDK event, including partial generation deltas that produce no operator-visible line. Wedged /
+   *  stall / idle-close decisions read this and nothing else (docs/adr/0003-…). */
   lastActivityAt: number;
-  /** What the worker is doing right now (last tool/text), for /status + the stuck-watchdog. */
+  /** Last time the worker produced operator-VISIBLE output. Reported, never judged — a worker can
+   *  be busy for an hour without saying anything. Absent on entries that never emitted. */
+  lastOutputAt?: number;
+  /** What the worker is doing right now (last tool/text), for /status + the stuck-watchdog. NOTE
+   *  `since` is the age of this LABEL, not of the session's last sign of life — never judge on it. */
   activity?: { label: string; since: number };
+  /** Set while the operator owes this session an answer (a permission escalation or a raised
+   *  decision). Such a session is never wedged and is never stall-aborted. */
+  blockedOn?: BlockedOn;
+  /** Set while a dispatch repeats itself with nothing changing (spec §8.1): the same digest
+   *  fingerprint or the same tool call over and over. Cleared when its fingerprint changes. */
+  spinning?: { label: string; since: number };
   /** Last time the stuck-watchdog alerted about this session (dedup). */
   alertedAt?: number;
 }

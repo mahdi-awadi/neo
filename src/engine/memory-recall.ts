@@ -7,6 +7,7 @@
 // across machines/checkouts and doesn't leak the host filesystem layout back to a worker.
 
 import { Database } from "bun:sqlite";
+import { openSqlite } from "./sqlite";
 import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { memoryDir } from "./memory";
@@ -58,7 +59,7 @@ function toCitationPath(folder: string, absolutePath: string): string {
  * embedded quote, SQLite's own escape for a literal `"` inside a quoted string) and the quoted
  * tokens are joined with spaces, which FTS5 treats as an implicit AND over literal-string matches.
  * An empty/whitespace-only query becomes an empty quoted string, matching nothing. */
-function safeFtsQuery(query: string): string {
+export function safeFtsQuery(query: string): string {
   const tokens = query.trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return '""';
   return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
@@ -74,7 +75,7 @@ export function openMemoryIndex(folder: string): MemoryIndex {
 
   const dir = memoryDir(folder);
   mkdirSync(dir, { recursive: true });
-  const db = new Database(join(dir, "index.sqlite"));
+  const db = openSqlite(join(dir, "index.sqlite"));
   db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS mem USING fts5(content, file, day)`);
 
   const index: MemoryIndex = {

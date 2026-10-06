@@ -1,14 +1,25 @@
 // Neo engine — entry point. Loads config, opens the ledger, owns the shared live-session
 // registry + budget meter + idle watchdog + admin store, and starts the operator frontends:
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { openLedger } from "./engine/ledger";
+import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
+import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
+import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
+import { reconcileAll } from "./engine/attention";
+import { runScan } from "./engine/producers/scan";
+import { runDigest, type AttentionAction } from "./engine/attention-actions";
+import { DEFAULT_GITHUB_CFG } from "./engine/producers/github";
+import { createGitRead } from "./engine/git-read";
+import { restartNeededSince } from "./engine/updater";
+import type { BootRow } from "./engine/ledger";
+import { openLedger, LEDGER_PATH } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
+import { DEFAULT_GOVERNOR_CFG } from "./engine/governor";
 import { createMeter } from "./engine/budget";
 import { createUsageMeter } from "./engine/usage";
 import { openTrustStore } from "./engine/trust";
@@ -16,16 +27,23 @@ import { openInbox } from "./engine/inbox";
 import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
+import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } from "./engine/dispatch-report";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
-import { effectiveLoops, startScheduledLoop, resolveDreamLoop } from "./engine/loops";
+import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
-import { heartbeatMs, nextTickDelayMs, type HeartbeatLoop } from "./engine/heartbeat";
-import { startTelegram, sendOperatorLine, projectTagPrefix } from "./frontends/telegram";
+import { CRON_RESOLUTION_MS, heartbeatMs, nextTickDelayMs, runHeartbeatTick, type HeartbeatLoop } from "./engine/heartbeat";
+import { configureFaults, createFaultReporter, faults, installSafetyNet } from "./engine/fault";
+import { createHealthMonitor, startHealthTimer } from "./engine/health";
+import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster, attentionKeyboard } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
 import { makeLoopReply } from "./engine/loop-mirror";
+import { createTodoQueue } from "./engine/todo-queue";
+import { createTrace } from "./engine/trace";
+import { planDepsFrom } from "./engine/plans";
+import { createEngineUpdater, registryBusy } from "./engine/update-engine";
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
 // wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
@@ -43,16 +61,111 @@ async function resolveBotUsername(token: string, configured: string): Promise<st
 }
 
 async function main(): Promise<void> {
+  // ADR-0010: an error nobody caught is reported and the engine keeps running. Installed first, so
+  // nothing that starts below can take the process down; until configureFaults it logs to stderr.
+  installSafetyNet(process);
   const cfg = loadConfig();
+  for (const w of contextPolicyWarnings(cfg.contextPolicy)) console.log(`  WARN: ${w}`);
   mkdirSync("data", { recursive: true });
-  const ledger = openLedger("data/ledger.db");
-  const admin = openAdminStore("data/admin.db");
+  const busyTimeoutMs = cfg.sqliteBusyTimeoutMs;
+  const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep, toolActionsKeep: cfg.toolActionsKeep, busyTimeoutMs });
+  // A dispatch the previous daemon started but never finished (reload or crash) is reported to the
+  // company with where it stopped. Runs FIRST — before any frontend or the scheduler can start a
+  // new dispatch that would look unfinished. Queued in the dispatcher inbox, NOT delivered now: the
+  // company is not woken at boot; the operator's next message to it carries them (ADR-0007).
+  const interrupted = recoverInterruptedDispatches(ledger, { now: Date.now(), windowMs: cfg.dispatchRecoverWindowMs });
+  console.log(`  dispatch  -> ${interrupted} interrupted dispatch(es) queued for the company; no wall-clock limit, digest every ${cfg.dispatchProgressMs / 60_000}m`);
+  const admin = openAdminStore("data/admin.db", { busyTimeoutMs });
   const registry = createRegistry();
+  // The cause seam (ADR-0015): ONE trace per daemon, shared by Telegram, the web console, the todo
+  // queue (through the frontends' dispatch deps), scheduled loops and ingress — so every surface
+  // files its lines in the same threads.
+  const trace = createTrace({ ledger, registry, companyFolder: cfg.companyFolder });
+  // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
+  // above: fail it with its stop point (failure policy applies). Queued todos stay queued; the
+  // heartbeat tick releases them in order once the operator channel registers its launcher.
+  const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure });
+  const cutTodos = todo.recover({ now: Date.now() });
+  const engineProducerDeps: EngineProducerDeps = {
+    ledger,
+    registry,
+    cfg: { ...(cfg.attention ?? DEFAULT_ATTENTION_CFG), approvalRemindMs: (cfg.governor ?? DEFAULT_GOVERNOR_CFG).approvalRemindMs, companyFolder: cfg.companyFolder },
+  };
+  /** One engine-producer pass: the same context measure the gates and the console use, over the
+   *  SDK-reported windows (ADR-0013), read once per tick. */
+  const attentionEngineTick = (): void => {
+    const windowTokensByModel = contextWindows(ledger, cfg.contextPolicy.windowTokensByModel);
+    runEngineProducer({ ...engineProducerDeps, measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }) }, Date.now());
+  };
+  // The running build (spec §8.4): recorded once at boot, so the restart producer and /gated can say
+  // what is built but not running. The Neo repo is the daemon's working folder.
+  const neoFolder = process.cwd();
+  const configHashNow = (): string | undefined => {
+    try {
+      return createHash("sha256").update(readFileSync(join(neoFolder, "config.json"))).digest("hex");
+    } catch {
+      return undefined; // no config.json: nothing to compare
+    }
+  };
+  const thisBoot = faults.guard("boot.record", () => {
+    const facts = bootFacts(neoFolder);
+    if (!facts) return undefined;
+    let sdkVersion: string | undefined;
+    try {
+      sdkVersion = (JSON.parse(readFileSync(join(neoFolder, "node_modules/@anthropic-ai/claude-agent-sdk/package.json"), "utf8")) as { version?: string }).version;
+    } catch {
+      // not installed here: the boot record just has no SDK version
+    }
+    const boot: BootRow = { at: Date.now(), ...facts, ...(sdkVersion ? { sdkVersion } : {}), ...(configHashNow() ? { configHash: configHashNow() } : {}) };
+    ledger.recordBoot(boot);
+    return boot;
+  });
+  const restartDeps = (): RestartDeps => ({
+    folder: neoFolder,
+    boot: thisBoot,
+    branchPrefixes: (cfg.restart ?? DEFAULT_RESTART_CFG).branchPrefixes,
+    updates: thisBoot ? restartNeededSince(ledger, thisBoot.at) : [],
+    configHash: configHashNow(),
+  });
+  const gated = (): string => gatedText(restartDeps());
+  // The daily attention digest (AC5.5): a high item → the Decisions group, else the operator's DM.
+  const sendDigest = async (text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<{ chatId: number; messageId: number } | void> => {
+    const target = priority === "result" ? (cfg.decisionsChatId ?? admin.adminId()) : admin.adminId();
+    if (!operatorApi || target === undefined) return;
+    const hours = (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours;
+    const m = await operatorApi.sendMessage(target, text, buttons.length ? { reply_markup: attentionKeyboard(buttons, hours) } : {});
+    return { chatId: target, messageId: m.message_id };
+  };
+  // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
+  // time, in the background — a tick only starts it (single-flight).
+  let scanning = false;
+  let lastScanAt = 0;
+  const attentionScanTick = (): void => {
+    const gh = cfg.github ?? DEFAULT_GITHUB_CFG;
+    if (scanning || Date.now() - lastScanAt < gh.scanEveryMs) return;
+    scanning = true;
+    lastScanAt = Date.now();
+    const scan = runScan({
+      ledger, registry, read: createGitRead({ timeoutMs: gh.callTimeoutMs }), workRoot: cfg.workRoot, neoFolder,
+      attention: cfg.attention ?? DEFAULT_ATTENTION_CFG, projects: cfg.projects ?? {}, now: () => Date.now(),
+      probeTimeoutMs: gh.callTimeoutMs,
+    }).finally(() => void (scanning = false));
+    faults.contain("attention.scan", scan);
+  };
+  console.log(`  boot      -> ${thisBoot ? `${thisBoot.headSha.slice(0, 7)} on ${thisBoot.branch}` : "not recorded (git unreadable)"} (/gated)`);
+  console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
+  console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
   // operator conversation mirrors across both surfaces (engine/operator-bus.ts).
   const bus = createOperatorBus();
-  const trust = openTrustStore("data/trust.db");
-  const inbox = openInbox("data/inbox.db"); // customer messages — plain data, shown in the web
+  // Per-project trust. `knownFolders` (every folder the ledger has an order for) is read once, by
+  // the trust schema migration, so the new-projects default never trusts an existing project.
+  const trust = openTrustStore("data/trust.db", {
+    trustNewProjects: cfg.trustNewProjects,
+    knownFolders: () => ledger.folders(),
+    busyTimeoutMs,
+  });
+  const inbox = openInbox("data/inbox.db", { busyTimeoutMs }); // customer messages — plain data, shown in the web
   const meter = createMeter({
     windowBudgetUsd: cfg.budgetWindowUsd,
     reservePct: cfg.subscriptionInteractiveReservePct,
@@ -71,7 +184,7 @@ async function main(): Promise<void> {
   // One shared API-throttle gate for the whole engine: any worker that gets rate-limited/overloaded
   // arms it, and NEW background work (dispatches, loop fires) waits it out instead of earning
   // another 429. The operator's own interactive messages are never held — that's the headroom.
-  const cooldown = createApiCooldown();
+  const cooldown = createApiCooldown({ cooldownMs: cfg.apiCooldownMs });
   // Frontend stop hooks, run FIRST on shutdown. Telegram long polling only confirms an update on
   // the *next* getUpdates (grammy does it in bot.stop()), so exiting straight after the /reload
   // handler left that update unconfirmed — Telegram redelivered it on boot and the daemon reloaded
@@ -98,10 +211,63 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   const requestReload = (): void => shutdown("/reload");
 
+  // Post an ALERT-priority engine line (watchdog stalls, loop-failure) straight to the operator over
+  // the raw Bot API — these fire from the daemon tick, outside the pipeline/sink. Routes to the
+  // unmuted Decisions chat when configured (so a stall/crash is never lost in the muted DM), else
+  // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
+  // Every engine-side Bot API call goes through the same flood gate as the bot (installFloodGate).
+  const operatorApi = cfg.telegramToken ? createOperatorApi(cfg.telegramToken) : undefined;
+  const alertOperator = (text: string): void => {
+    const target = cfg.decisionsChatId ?? admin.adminId();
+    if (!operatorApi || target === undefined) return;
+    // A failed alert is logged (the API logs a refused call; this logs a network error) — never a
+    // fault of its own, because the fault reporter alerts through here.
+    operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
+  };
+  // The one plan poster (ADR-0019): every plan a run writes — from Telegram, the web console, a
+  // dispatch or a loop — reaches the operator as the same card, in the Decisions chat (else the DM).
+  const postPlan = operatorApi ? createPlanPoster(operatorApi, () => cfg.decisionsChatId ?? admin.adminId()) : undefined;
+
+  // The engine-wide fault reporter (ADR-0010): log with the stack, an `engine_fault` event, a
+  // deduplicated + capped operator alert, and a note queued for the company to investigate.
+  configureFaults(
+    createFaultReporter(
+      {
+        log: (line) => console.error(line),
+        record: (data) => ledger.recordEvent("engine_fault", { folder: typeof data.folder === "string" ? data.folder : undefined, orderId: typeof data.orderId === "string" ? data.orderId : undefined, data }),
+        alert: alertOperator,
+        toCompany: (text) => ledger.queueDispatcherReport("neo-engine", text),
+      },
+      cfg.faults,
+    ),
+  );
+
+  // The toolchain updater (ADR-0009): a deterministic engine job, not a loop. It never restarts the
+  // daemon — an SDK bump lands on master behind green tests and waits for the operator's restart.
+  // Plugin/MCP changes wait until no session is running (they replace files a session may read).
+  const updater = createEngineUpdater({
+    cfg: () => cfg,
+    ledger,
+    busy: () => registryBusy(registry),
+    report: (text) => {
+      console.log(`[updates] ${text}`);
+      alertOperator(text); // job outcome → the Decisions channel (or the DM if unset)
+    },
+    repo: process.cwd(),
+  });
+  const runScheduledUpdate = (): void => {
+    if (!updater.due(Date.now())) return;
+    faults.contain("updates.scheduled", () => updater.run({ trigger: "schedule" }).catch((e) => {
+      const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      console.error(`[updates] scheduled run failed: ${msg}`);
+      alertOperator(`⚠️ toolchain update run failed: ${e instanceof Error ? e.message : msg}`);
+    }));
+  };
+
   console.log("Neo engine");
   console.log(`  providers -> own:${cfg.providers.ownWork}  customer:${cfg.providers.customerWork}`);
   console.log("  usage     -> measured from ~/.claude transcripts (/usage); throttling opt-in via caps later");
-  console.log(`  ledger    -> data/ledger.db (${ledger.listRecent().length} prior orders)`);
+  console.log(`  ledger    -> ${LEDGER_PATH} (${ledger.listRecent().length} prior orders)`);
   console.log(`  admin     -> ${admin.adminId() ?? "unclaimed (first Telegram message becomes admin)"}`);
 
   // Loop scheduler — fire due cron/interval loops through the governed runProjectLoop. AI-free:
@@ -112,8 +278,8 @@ async function main(): Promise<void> {
   // Scheduled-loop output → Telegram (or stdout before an admin claims), AND mirrored to the web
   // console via the bus so a web-only operator also sees loop activity (loop-mirror.ts).
   const loopReply = makeLoopReply({
-    toTelegram: cfg.telegramToken
-      ? (chatId, text, project) => void sendOperatorLine(cfg.telegramToken, chatId, text, project)
+    toTelegram: operatorApi
+      ? (chatId, text, project) => faults.contain("loop.reply", () => sendOperatorLine(operatorApi, chatId, text, project, { toolSteps: cfg.telegramToolSteps }), { project })
       : undefined,
     toStdout: (text, project) => console.log(`[loop] ${projectTagPrefix(project)}${text}`),
     bus,
@@ -123,81 +289,124 @@ async function main(): Promise<void> {
   // tick — no fixed "poll every N seconds" knob (heartbeat.ts). It's re-derived every tick (via a
   // self-rescheduling setTimeout, not setInterval) from the loops enabled *right now*, so toggling
   // on a fast interval loop from the web console speeds the tick up with no daemon restart.
+  // Resolve a loop's sentinel folder + trigger from cfg BEFORE the scheduler/heartbeat read them —
+  // memory-dream's folder AND the secretary loop's folder + cadence (cfg.secretaryCron) come from
+  // config, not the static def. No ledger here → NO queue interpolation / reminder stamping (that
+  // happens once, at fire time, in the secretary branch of `start` below). A no-op for every other loop.
+  const resolveLoop = (l: LoopDef): LoopDef => resolveSecretaryLoop(resolveDreamLoop(l, cfg), cfg);
   const currentHeartbeatLoops = (): HeartbeatLoop[] =>
     effectiveLoops(ledger).map((l) => ({
       enabled: ledger.isEnabled(l.name) ?? l.enabledByDefault ?? false, // same resolution as tickScheduler
-      trigger: l.trigger,
+      trigger: resolveLoop(l).trigger, // secretaryCron-aware so the derived heartbeat samples the real cadence
     }));
+  const tickLoops = (): void => {
+    tickScheduler({
+      // built-in ∪ custom, re-read each tick (no restart for new loops) — folder-resolved
+      // (resolveDreamLoop) BEFORE scheduling so the busy-guard below checks the memory-dream
+      // loop's REAL company folder, not its unresolved "company" sentinel (a no-op for every
+      // other loop). def.name is untouched by resolution, so lastRun/enabled bookkeeping and
+      // the `start` callback both still key off the loop's real identity.
+      loops: effectiveLoops(ledger).map(resolveLoop),
+      store: ledger, // Ledger implements LoopStateStore
+      // Company-folder aware: the always-on default project is registered IDLE forever, so a
+      // plain presence check would starve any loop scheduled against the company folder — see
+      // scheduler.ts's folderBusy for the full reasoning.
+      isFolderBusy: (folder) => folderBusy(registry, folder, cfg.companyFolder),
+      // Skip this tick when the budget meter OR a fresh API throttle says stop.
+      throttled: () => meter.shouldThrottleBackground() || cooldown.activeAt(Date.now()),
+      now: Date.now(),
+      // Return the promise (NOT `void ...`) so tickScheduler can catch a rejecting loop run;
+      // discarding it here is exactly what let a crashing loop take down the daemon (2026-07-24).
+      start: (def) => {
+        // The secretary digest: a quiet queue means a quiet secretary (no worker run), and its
+        // digest routes to the unmuted Decisions channel (falls back to the DM when unset). The
+        // full fire-time resolve reads the queue + stamps a reminder on each open decision — done
+        // ONCE here (only when the loop actually fires), never in the folder/trigger pre-resolve.
+        if (def.secretary) {
+          const gate = secretaryGateOutcome(def, ledger);
+          if (gate) return Promise.resolve(gate); // empty queue → silent, no worker, no stamping
+          return startScheduledLoop(resolveSecretaryLoop(def, cfg, ledger), {
+            chatId: cfg.decisionsChatId ?? admin.adminId() ?? -1, // digest → the Decisions channel
+            reply: loopReply,
+            shouldStop: () => meter.shouldThrottleBackground(),
+            cfg,
+            store: ledger,
+            trace,
+          });
+        }
+        return startScheduledLoop(def, {
+          chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
+          reply: loopReply,
+          shouldStop: () => meter.shouldThrottleBackground(),
+          cfg,
+          store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
+          trace,
+          plans: postPlan ? planDepsFrom({ ledger, postPlan, trace, todo }, cfg.plans) : undefined,
+        });
+      },
+      // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
+      // engine — log it and alert the operator, but keep the daemon and other loops alive.
+      onError: (def, err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[loop] "${def.name}" failed: ${msg}`);
+        alertOperator(`⚠️ loop "${def.name}" failed and was skipped: ${msg}`); // ALERT → Decisions
+      },
+    });
+  };
   const scheduleHeartbeat = (): void => {
     // Align the timer to the NEXT tick boundary, not "now + hb" — the tick body below (sweeps +
     // tickScheduler) takes real time, and re-arming from "after the body ran" would drift the chain
     // by body-duration + timer lag each cycle. A drifted tick can sample the wrong minute and
     // silently skip a `30 3 * * *` cron's one matching minute for the day (heartbeat.ts
     // nextTickDelayMs).
-    const hb = heartbeatMs(currentHeartbeatLoops());
+    // Deriving the tick reads the ledger; if that read fails the chain must still re-arm, at cron's
+    // own resolution (ADR-0010) — a broken heartbeat would silently stop every sweep and loop.
+    const hb = faults.guard("heartbeat.derive", () => heartbeatMs(currentHeartbeatLoops())) ?? CRON_RESOLUTION_MS;
     const delay = nextTickDelayMs(Date.now(), hb);
     setTimeout(() => {
-      sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now(), memory: cfg.memory, companyFolder: cfg.companyFolder });
-      sweepStuck(registry, {
-        now: Date.now(),
-        stuckAfterMs: cfg.stuckAfterMs,
-        longTurnAlertMs: cfg.longTurnAlertMs,
-        alertRepeatMs: cfg.alertRepeatMs,
-        alert: (_s, text) => {
-          console.log(`[watchdog] ${text}`);
-          const adminId = admin.adminId();
-          if (cfg.telegramToken && adminId) {
-            void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ chat_id: adminId, text }),
-            }).catch(() => {});
-          }
-        },
-      });
-      if (cfg.loopSchedulerEnabled) {
-        tickScheduler({
-          // built-in ∪ custom, re-read each tick (no restart for new loops) — folder-resolved
-          // (resolveDreamLoop) BEFORE scheduling so the busy-guard below checks the memory-dream
-          // loop's REAL company folder, not its unresolved "company" sentinel (a no-op for every
-          // other loop). def.name is untouched by resolution, so lastRun/enabled bookkeeping and
-          // the `start` callback both still key off the loop's real identity.
-          loops: effectiveLoops(ledger).map((l) => resolveDreamLoop(l, cfg)),
-          store: ledger, // Ledger implements LoopStateStore
-          // Company-folder aware: the always-on default project is registered IDLE forever, so a
-          // plain presence check would starve any loop scheduled against the company folder — see
-          // scheduler.ts's folderBusy for the full reasoning.
-          isFolderBusy: (folder) => folderBusy(registry, folder, cfg.companyFolder),
-          // Skip this tick when the budget meter OR a fresh API throttle says stop.
-          throttled: () => meter.shouldThrottle() || cooldown.activeAt(Date.now()),
-          now: Date.now(),
-          // Return the promise (NOT `void ...`) so tickScheduler can catch a rejecting loop run;
-          // discarding it here is exactly what let a crashing loop take down the daemon (2026-07-24).
-          start: (def) =>
-            startScheduledLoop(def, {
-              chatId: admin.adminId() ?? -1, // resolved at fire time — the TOFU admin may claim later
-              reply: loopReply,
-              shouldStop: () => meter.shouldThrottle(),
-              cfg,
-              store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
-            }),
-          // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
-          // engine — log it and alert the operator, but keep the daemon and other loops alive.
-          onError: (def, err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error(`[loop] "${def.name}" failed: ${msg}`);
-            const adminId = admin.adminId();
-            if (cfg.telegramToken && adminId) {
-              void fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ chat_id: adminId, text: `⚠️ loop "${def.name}" failed and was skipped: ${msg}` }),
-              }).catch(() => {});
-            }
-          },
-        });
-      }
-      scheduleHeartbeat(); // re-derive next tick's interval from the loops enabled right now
+      runHeartbeatTick(
+        [
+          ["idle", () => sweepIdle(registry, ledger, { idleMs: cfg.idleCloseMs, now: Date.now(), memory: cfg.memory, companyFolder: cfg.companyFolder })],
+          // Retry dispatch results a busy moment turned away (company reopening/closing) — into a LIVE
+          // company only; an idle one gets them with the operator's next message (ADR-0007).
+          ["dispatcherInbox", () => flushDispatcherInbox(ledger, liveCompanyLink(registry, lifecycle), Date.now())],
+          // Release todo queues a hold, a resume or the restart left waiting (ADR-0008). Completions
+          // release their own project at once; this tick is the backstop.
+          ["todo", () => todo.pump()],
+          // The daily toolchain check (and the retry of items a busy session deferred).
+          ["updates", runScheduledUpdate],
+          [
+            "watchdog",
+            () =>
+              sweepStuck(registry, {
+                now: Date.now(),
+                stuckAfterMs: cfg.stuckAfterMs,
+                longTurnAlertMs: cfg.longTurnAlertMs,
+                alertRepeatMs: cfg.alertRepeatMs,
+                alert: (_s, text) => {
+                  console.log(`[watchdog] ${text}`);
+                  alertOperator(text); // ALERT → the Decisions channel (or the DM if unset)
+                },
+                // The evidence goes to the log BEFORE the alert, so a wrong alert (or a missing one) can be
+                // diagnosed from the ledger alone — ages, label, turn state, stdin-wait suspicion.
+                record: (kind, data) => {
+                  console.log(`[watchdog] ${kind} ${JSON.stringify(data)}`);
+                  ledger.recordEvent(kind, { folder: typeof data.folder === "string" ? data.folder : undefined, data });
+                },
+              }),
+          ],
+          // What the engine itself sees needs the operator (ADR-0018): stuck approvals, paused queues,
+          // failed/waiting threads, stale decisions, an impossible ctx%. Ledger + registry only.
+          ["attention.engine", attentionEngineTick],
+          ["attention.scan", attentionScanTick],
+          ["attention.digest", () => runDigest({ ledger, trace, digestAt: (cfg.attention ?? DEFAULT_ATTENTION_CFG).digestAt, maxLines: (cfg.attention ?? DEFAULT_ATTENTION_CFG).listLines, consoleUrl: cfg.publicUrl || undefined, send: sendDigest }, Date.now())],
+          // What is built but not running (spec §8.4): git + the boot record + the updater.
+          ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
+          ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
+        ],
+        scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed
+        faults,
+      );
     }, delay);
   };
   scheduleHeartbeat();
@@ -217,7 +426,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, neoFolder }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -229,7 +438,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown }, requestReload, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder },
       cfg.webPort,
       cfg.webHost,
     );
@@ -249,6 +458,28 @@ async function main(): Promise<void> {
   // entries — a follow-up or dispatch to their folder resumes them (fresh CLAUDE.md injection).
   const restored = restoreSessions(registry, ledger);
   console.log(`  sessions  -> restored ${restored.length} open session(s) from the last shutdown (idle, resumable)`);
+
+  // The self-health check (ADR-0010): event-loop lag, memory, ledger reachability — reported once on
+  // a change, never every minute.
+  startHealthTimer(
+    createHealthMonitor({
+      cfg: () => cfg.health,
+      rssBytes: () => process.memoryUsage.rss(),
+      dbPing: () => ledger.ping(),
+      report: (text) => {
+        console.error(`[health] ${text}`);
+        alertOperator(text);
+      },
+    }),
+    cfg.health.everyMs,
+  );
+  console.log(`  health    -> ${cfg.health.everyMs > 0 ? `every ${cfg.health.everyMs / 1000}s (lag ${cfg.health.lagWarnMs}ms · rss ${cfg.health.rssWarnMb}MB · ledger)` : "OFF"}; faults -> log + engine_fault + alert + company`);
 }
 
-void main();
+// Startup is the one place an error is an UNRECOVERABLE STATE (ADR-0010): the ledger cannot open or
+// the web port cannot bind. Running on half-started would be worse — log it and exit 1 so the
+// supervisor restarts us. After startup, every failure is contained and reported instead.
+main().catch((e) => {
+  console.error(`[startup] Neo could not start: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+  process.exit(1);
+});

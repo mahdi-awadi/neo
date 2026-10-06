@@ -4,7 +4,8 @@
 // Keyed by the stable order id; addressable by short name (for /kill) and by chat (for
 // follow-up routing). The unique-name scheme is ported from operant, trimmed.
 import { basename } from "node:path";
-import type { Order, Provider, SessionControl, SessionInfo } from "../types";
+import type { Cause } from "./ledger";
+import type { BlockedOn, Order, Provider, SessionControl, SessionInfo } from "../types";
 
 /** Statuses for a session that is still live (followable / killable). */
 const OPEN: ReadonlySet<SessionInfo["status"]> = new Set(["running", "idle"]);
@@ -38,6 +39,18 @@ export interface Registry {
    *  hands a Codex thread id to Claude or vice versa. */
   setSdkSessionId(id: string, sdkSessionId: string, provider?: Provider): void;
   touch(id: string, now?: number): void;
+  /** Liveness pulse: ANY streamed worker event. Advances the authoritative activity clock and
+   *  nothing else — the label is left alone, so "what is it doing" stays meaningful while
+   *  "is it alive" stays fresh. This is the ONLY signal wedged/stall/idle decisions read. */
+  noteHeartbeat(id: string, now?: number): void;
+  /** The worker produced an operator-VISIBLE line. Advances the output clock AND the activity
+   *  clock (output is activity); the reverse is deliberately not true. */
+  noteOutput(id: string, now?: number): void;
+  /** Record (or clear, with `undefined`) what the operator owes this session. While set, the
+   *  session is awaiting-operator: never wedged, never stall-aborted. */
+  noteBlocked(id: string, blocked: BlockedOn | undefined): void;
+  /** Mark (or clear) a session that repeats itself with nothing changing (spec §8.1). */
+  noteSpinning(id: string, mark: { label: string; since: number } | undefined): void;
   /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
   attachControl(id: string, control: SessionControl): void;
   /** Drop the control handle when a run ends, keeping the session (now resumable, not live). */
@@ -49,6 +62,28 @@ export interface Registry {
   getDefault(): SessionInfo | undefined;
   /** Record what the session is doing right now; `since` is kept while the label is unchanged. */
   noteActivity(id: string, label: string, now?: number): void;
+  /** One input was delivered to this session (a brief pushed, or a run started), with the cause of
+   *  the operator message it carries — none for engine input (a dispatcher report, a wrap-up). Inputs
+   *  keep their order, so a runner that reports what a turn consumed (startTurn) lines up with them. */
+  deliver(id: string, cause?: Cause): void;
+  /** `deliver` for an input that has a cause. */
+  setCause(id: string, cause: Cause): void;
+  /** A turn started and took the next `n` waiting inputs (the Codex loop takes one per turn). A
+   *  runner that cannot tell (the Claude SDK pulls input eagerly) never calls this. */
+  startTurn(id: string, n: number): void;
+  /** The cause output is attributed to (spec §4.2): the newest cause the current turn consumed; when
+   *  no runner reported a turn start, the newest delivered cause whose turn has not ended. */
+  causeOf(id: string): Cause | undefined;
+  /** Every delivered cause not yet answered, oldest first — the session's open work (spec §5). */
+  pendingCauses(id: string): Cause[];
+  /** The turn ended: the causes it consumed are answered (all delivered ones when no turn start was
+   *  reported, or with `all` — the run is over). Returns them, oldest first, and drops them. */
+  endTurn(id: string, opts?: { all?: boolean }): Cause[];
+  /** The newest cause a turn took or answered, kept after the turn ended: lines after the turn (the
+   *  run's final result) and the reload snapshot (spec §11.3) are filed under it. */
+  lastCauseOf(id: string): Cause | undefined;
+  /** Boot restore (spec §11.3): the session has no live cause, but its next output is filed under this. */
+  restoreCause(id: string, cause: Cause): void;
   /** Stamp the last stuck-alert time (watchdog dedup). */
   noteAlert(id: string, now?: number): void;
 }
@@ -57,6 +92,15 @@ export function createRegistry(): Registry {
   const sessions = new Map<string, SessionInfo>();
   const controls = new Map<string, SessionControl>();
   const focus = new Map<number, { id: string; mode: FocusMode }>(); // chatId -> focused project
+  // session id -> inputs delivered and not yet answered, in order; `consumed` = taken by the current turn
+  const inputs = new Map<string, Array<{ cause?: Cause; consumed: boolean }>>();
+  const lastCauses = new Map<string, Cause>(); // session id -> newest cause a turn took or answered
+  const newest = (list: Array<{ cause?: Cause }>): Cause | undefined => list.findLast((x) => x.cause)?.cause;
+  const deliver = (id: string, cause?: Cause): void => {
+    const list = inputs.get(id);
+    if (list) list.push({ cause, consumed: false });
+    else inputs.set(id, [{ cause, consumed: false }]);
+  };
   let defaultId: string | undefined; // the always-on default project (fallback target)
 
   function uniqueName(base: string): string {
@@ -87,6 +131,7 @@ export function createRegistry(): Registry {
         status: "running",
         startedAt: now,
         lastActivityAt: now,
+        lastOutputAt: now,
       };
       sessions.set(session.id, session);
       return session;
@@ -96,7 +141,36 @@ export function createRegistry(): Registry {
     remove: (id) => {
       sessions.delete(id);
       controls.delete(id);
+      inputs.delete(id);
+      lastCauses.delete(id);
     },
+    deliver,
+    setCause: (id, cause) => deliver(id, cause),
+    startTurn(id, n) {
+      const waiting = (inputs.get(id) ?? []).filter((x) => !x.consumed).slice(0, n);
+      for (const x of waiting) x.consumed = true;
+      const took = newest(waiting);
+      if (took) lastCauses.set(id, took);
+    },
+    causeOf(id) {
+      const list = inputs.get(id) ?? [];
+      const consumed = list.filter((x) => x.consumed);
+      return newest(consumed.length > 0 ? consumed : list);
+    },
+    pendingCauses: (id) => (inputs.get(id) ?? []).flatMap((x) => (x.cause ? [x.cause] : [])),
+    endTurn(id, opts) {
+      const list = inputs.get(id) ?? [];
+      const all = opts?.all === true || !list.some((x) => x.consumed);
+      const answered = all ? list : list.filter((x) => x.consumed);
+      const rest = all ? [] : list.filter((x) => !x.consumed);
+      if (rest.length > 0) inputs.set(id, rest);
+      else inputs.delete(id);
+      const last = newest(answered);
+      if (last) lastCauses.set(id, last);
+      return answered.flatMap((x) => (x.cause ? [x.cause] : []));
+    },
+    lastCauseOf: (id) => lastCauses.get(id),
+    restoreCause: (id, cause) => void lastCauses.set(id, cause),
     attachControl(id, control) {
       // Defensive against F5: /kill during a pending gate can remove the session before the
       // (possibly async) caller reaches attachControl. Storing it then would leak an orphan
@@ -136,9 +210,30 @@ export function createRegistry(): Registry {
       const s = sessions.get(id);
       if (s) s.lastActivityAt = now;
     },
+    noteHeartbeat(id, now = Date.now()) {
+      const s = sessions.get(id);
+      if (s) s.lastActivityAt = now;
+    },
+    noteOutput(id, now = Date.now()) {
+      const s = sessions.get(id);
+      if (!s) return;
+      s.lastOutputAt = now;
+      s.lastActivityAt = now;
+    },
+    noteBlocked(id, blockedOn) {
+      const s = sessions.get(id);
+      if (s) s.blockedOn = blockedOn;
+    },
+    noteSpinning(id, mark) {
+      const s = sessions.get(id);
+      if (s) s.spinning = mark;
+    },
     noteActivity(id, label, now = Date.now()) {
       const s = sessions.get(id);
       if (!s) return;
+      // A tool call IS a sign of life, even when it repeats the previous label — the clock must
+      // move even though `since` (the age of the LABEL) deliberately does not.
+      s.lastActivityAt = now;
       if (s.activity?.label !== label) s.activity = { label, since: now };
     },
     noteAlert(id, now = Date.now()) {

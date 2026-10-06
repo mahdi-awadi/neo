@@ -152,6 +152,10 @@ export function computeUsageSnapshot(
 
 export interface UsageMeter {
   snapshot(now?: number): UsageSnapshot;
+  /** The live rate-limit windows alone, straight from memory — NO transcript walk. `snapshot()`
+   *  re-reads every file under ~/.claude/projects, which is fine for `/usage` but far too heavy for
+   *  a path every operator message takes. */
+  rateLimits(): RateLimitInfo[];
   /** Record a rate_limit_event from a worker run (latest per window type is retained). */
   noteRateLimit(info: RateLimitInfo): void;
 }
@@ -235,6 +239,7 @@ export function createUsageMeter(opts: {
         rateLimits: [...rateLimits.values()],
       });
     },
+    rateLimits: () => [...rateLimits.values()],
     noteRateLimit(info) {
       if (info.rateLimitType) rateLimits.set(info.rateLimitType, info);
     },

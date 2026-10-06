@@ -14,11 +14,15 @@ import type { LoopOutcome } from "./loop-runner";
 import type { runOrder, RunDeps } from "./session-runner";
 import { validateLoopInput, type LoopInput } from "./loop-validate";
 import { profileDeps } from "./worker-profile";
-import { sessionContext, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor } from "./context-policy";
+import { sessionContext, contextWindows, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor } from "./context-policy";
 import { memoryDir, memoryScopeEnabled } from "./memory";
 import { memoryTools } from "./memory-tool";
-import type { NeoConfig } from "../config";
-import type { Ledger } from "./ledger";
+import { DEFAULT_TRACE, type NeoConfig } from "../config";
+import type { Ledger, DecisionRow } from "./ledger";
+import { faults } from "./fault";
+import { headSha, onRunEndPlans, type PlanDeps } from "./plans";
+import { refSuffix, type Cause, type Trace } from "./trace";
+import type { MessageKind } from "./ledger";
 
 /** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
 export interface LoopDefStore {
@@ -28,7 +32,10 @@ export interface LoopDefStore {
 }
 /** The ledger satisfies all three halves; commands/UX take the combined store. `listCacheObservations`
  *  feeds the LEARNED-cache-TTL resume gate in loopRunExtras (see context-policy.ts). */
-export type LoopStore = LoopDefStore & LoopStateStore & Pick<Ledger, "listCacheObservations">;
+export type LoopStore = LoopDefStore &
+  LoopStateStore &
+  Pick<Ledger, "listCacheObservations" | "modelWindows"> &
+  Partial<Pick<Ledger, "recordContextEvent">>;
 
 export interface LoopDef extends SchedulableLoop {
   name: string; // canonical key, e.g. "docs-sweep"
@@ -50,6 +57,13 @@ export interface LoopDef extends SchedulableLoop {
    *  the fire path pre-checks `memoryScopeEnabled` so a company folder that isn't in
    *  `cfg.memory.scopes` no-ops instead of burning a worker run (dreamGateOutcome). */
   dreamMemory?: boolean;
+  /** Marks the secretary digest loop (additive, optional — every other loop leaves this unset). Like
+   *  `dreamMemory`, the static `folder`/`prompt`/`trigger` are placeholders: the fire path
+   *  (resolveSecretaryLoop) rewrites `folder` to `cfg.companyFolder`, `trigger` to `cfg.secretaryCron`,
+   *  and interpolates the open-decisions queue into `prompt` (stamping a reminder on each). The fire
+   *  path pre-checks the queue so an empty queue no-ops instead of burning a worker run
+   *  (secretaryGateOutcome). Runs on the `workers.secretary` profile (the latest model). */
+  secretary?: boolean;
 }
 
 export interface LoopDeps {
@@ -58,7 +72,7 @@ export interface LoopDeps {
   run?: typeof runOrder;
   /** Injectable goal (tests); defaults to the loop's Goal. */
   check?: GoalCheck;
-  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottle). */
+  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottleBackground). */
   shouldStop?: () => boolean;
   /** Loop store (def CRUD + state) for /loop <name> on|off, custom-loop run, and schedule status. */
   store?: LoopStore;
@@ -66,6 +80,46 @@ export interface LoopDeps {
   /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
    *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */
   cfg?: NeoConfig;
+  /** The cause seam (ADR-0015): each fire roots its own `loop` thread and files its lines there.
+   *  Absent → no thread, exactly as before. */
+  trace?: Trace;
+  /** The plan registry (ADR-0019): a fire's end sends the plans it wrote. Absent → none. */
+  plans?: PlanDeps;
+}
+
+/** A loop fire is engine-started work: it gets its own thread (spec §4.2, background roots). Returns
+ *  a line writer filed under that root — it returns the ref suffix the line's channel copy ends with
+ *  (spec §4.3: a result carries its thread's ref; progress none) — or a no-op ("") when there is no
+ *  trace. Best-effort (ADR-0010): a trace fault never stops the loop. */
+function loopThread(
+  trace: Trace | undefined,
+  loop: LoopDef,
+  chatId: number,
+  cfg?: NeoConfig,
+): { line: (text: string, kind: MessageKind) => string; cause?: Cause } {
+  if (!trace) return { line: () => "" };
+  const project = basename(loop.folder);
+  const cause: Cause | undefined = faults.guard("loop.root", () => trace.root({ origin: "loop", title: `loop ${loop.name}`, project, folder: loop.folder }), {
+    loop: loop.name,
+  });
+  if (!cause) return { line: () => "" };
+  const mode = (cfg?.trace ?? DEFAULT_TRACE).showRefs;
+  return {
+    cause,
+    line: (text, kind) => {
+      void faults.guard("loop.line", () => trace.outbound({ chatId, text, cause, kind, project, folder: loop.folder }), { loop: loop.name });
+      return refSuffix(kind, false, trace.ref(cause.threadId), mode);
+    },
+  };
+}
+
+/** A loop fire is a run (ADR-0019): at its end, the plan files it changed since `startSha` are sent,
+ *  filed in the fire's thread. Its own unit (ADR-0010): a failure never changes the loop's outcome. */
+async function loopPlans(plans: PlanDeps | undefined, loop: LoopDef, chatId: number, startSha: string | undefined, cause: Cause | undefined): Promise<void> {
+  if (!plans) return;
+  await onRunEndPlans(plans, { project: basename(loop.folder), folder: loop.folder, startSha, cause, chatId }).catch((e) =>
+    faults.report("loop.plans", e, { loop: loop.name, folder: loop.folder }),
+  );
 }
 
 // The built-in loops are generic, deployment-neutral examples of the trigger → action → goal model.
@@ -198,7 +252,47 @@ const MEMORY_DREAM: LoopDef = {
   dreamMemory: true,
 };
 
-export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN, MEMORY_DREAM];
+// Placeholders in SECRETARY.prompt, interpolated at fire time (resolveSecretaryLoop) once the queue
+// is known — the static def is built before cfg/the ledger load (same reason `folder`/`trigger` below
+// are placeholders). The engine renders the queue DETERMINISTICALLY into {{OPEN_DECISIONS}}; the
+// worker only phrases + prioritises it (no AI in the engine; the worker never invents/mutates facts).
+const OPEN_DECISIONS_PLACEHOLDER = "{{OPEN_DECISIONS}}";
+const STALE_HOURS_PLACEHOLDER = "{{STALE_HOURS}}";
+const DEFAULT_STALE_HOURS = 24;
+
+// The secretary digest loop: a scheduled worker (latest model, `workers.secretary`) that reviews the
+// open-decisions queue and writes ONE consolidated digest to the operator's high-priority Decisions
+// channel, flagging stale items. SILENT when the queue is empty (secretaryGateOutcome no-ops before
+// spending a worker run). Read-only over the queue — only the operator (answer/dismiss) or the engine
+// changes decision state; the data reaches the worker through the prompt, not a tool.
+//
+// Fire-once, same "goal never met" shape as memory-dream/mywellbeing (docs/loops.md gotcha): the run
+// itself IS the point, so `sh -c false` (exit 1, never met) + maxIterations 1 fires exactly once.
+// `folder`/`trigger` are placeholders resolved from cfg at fire time (resolveSecretaryLoop), like the
+// dream loop — the real company path + cadence aren't known until cfg loads.
+export const SECRETARY: LoopDef = {
+  name: "secretary",
+  usage: "/loop secretary",
+  summary: "waking hours: digest the open-decisions queue to the Decisions channel; silent when empty",
+  folder: "company", // sentinel — resolveSecretaryLoop rewrites this to cfg.companyFolder at fire time
+  prompt:
+    "You are Neo's secretary. These blocking decisions are still waiting on the operator (READ-ONLY — " +
+    "the engine tracks them; do NOT try to answer, resolve, or change them):\n\n" +
+    `${OPEN_DECISIONS_PLACEHOLDER}\n\n` +
+    "Write ONE short, warm digest as your reply — the operator reads it on their high-priority " +
+    'Decisions channel. Lead with the headline count ("N decisions wait on you across M projects"). ' +
+    "Group by project, stalest first. For each, one line: what is blocked and the clear ask. Flag any " +
+    `item waiting longer than ${STALE_HOURS_PLACEHOLDER}h as an escalation (it has been reminded before). ` +
+    "Be concise — no preamble, no essay, plain English. Do not invent anything not in the list above.",
+  goal: { kind: "command", command: ["sh", "-c", "false"] }, // never met → fire-once with maxIterations 1
+  trigger: { kind: "cron", expr: "0 8-22/2 * * *" }, // resolveSecretaryLoop overrides expr from cfg.secretaryCron
+  bounds: { maxIterations: 1, budgetUsd: 2 },
+  enabledByDefault: false,
+  freshSession: true,
+  secretary: true,
+};
+
+export const LOOPS: LoopDef[] = [GREEN, ERROR_SWEEP, DOCS_SWEEP, MYWELLBEING_CHECKIN, MEMORY_DREAM, SECRETARY];
 
 export function isBuiltin(name: string): boolean {
   return LOOPS.some((l) => l.name === name);
@@ -325,6 +419,64 @@ function dreamGateOutcome(loop: LoopDef, cfg?: NeoConfig): LoopOutcome | undefin
   return { met: false, iterations: 0, reason: "stopped", lastDetail: "memory disabled (company not in memory.scopes)", spentUsd: 0 };
 }
 
+/** Render the open-decisions queue into a compact, factual list for the secretary prompt — one line
+ *  per decision (project · age · reminder count · question), stale items marked. Deterministic + AI-
+ *  free: the engine grounds the digest in real queue data; the worker only phrases and prioritises. */
+function renderOpenDecisions(rows: DecisionRow[], now: number, staleHours: number): string {
+  const staleMs = staleHours * 3_600_000;
+  return rows
+    .map((d) => {
+      const ageH = Math.max(0, Math.round((now - d.createdAt) / 3_600_000));
+      const stale = now - d.createdAt >= staleMs ? " ⚠️ STALE" : "";
+      const proj = d.project ? `[${d.project}] ` : "";
+      const reminded = d.reminderCount > 0 ? ` (reminded ${d.reminderCount}×)` : "";
+      return `- ${proj}${d.question} — waiting ${ageH}h${reminded}${stale}`;
+    })
+    .join("\n");
+}
+
+/** Fire-time resolution for the secretary loop (mirrors resolveDreamLoop). Rewrites the sentinel
+ *  `folder` to `cfg.companyFolder` and `trigger` to `cfg.secretaryCron` (both known only once cfg
+ *  loads). WITH a ledger it also does the full fire-time step: render the open-decisions queue into
+ *  the `{{OPEN_DECISIONS}}` placeholder and stamp a reminder on each open row (the operator keeps
+ *  being reminded). WITHOUT a ledger — the scheduler's folder/trigger pre-resolve — it leaves the
+ *  placeholder for the fire path to interpolate once, when the worker actually runs. A no-op for
+ *  every other loop (secretary unset). Idempotent on folder/trigger; the queue interpolation runs
+ *  only while the placeholder is still present, so a second (ledger) call won't double-stamp. */
+export function resolveSecretaryLoop(
+  loop: LoopDef,
+  cfg?: NeoConfig,
+  ledger?: Pick<Ledger, "listOpenDecisions" | "noteDecisionsReminded">,
+  now: number = Date.now(),
+): LoopDef {
+  if (!loop.secretary) return loop;
+  const resolved: LoopDef = {
+    ...loop,
+    folder: cfg ? cfg.companyFolder : loop.folder,
+    trigger: cfg ? { kind: "cron", expr: cfg.secretaryCron } : loop.trigger,
+  };
+  if (!ledger || !resolved.prompt.includes(OPEN_DECISIONS_PLACEHOLDER)) return resolved;
+  const staleHours = cfg?.secretaryStaleHours ?? DEFAULT_STALE_HOURS;
+  const open = ledger.listOpenDecisions();
+  resolved.prompt = resolved.prompt
+    .replace(OPEN_DECISIONS_PLACEHOLDER, renderOpenDecisions(open, now, staleHours))
+    .replace(STALE_HOURS_PLACEHOLDER, String(staleHours));
+  ledger.noteDecisionsReminded(
+    open.map((d) => d.id),
+    now,
+  );
+  return resolved;
+}
+
+/** Deterministic pre-check for the secretary loop: a quiet queue means a quiet secretary. Returns a
+ *  completed 0-iteration LoopOutcome (run NO worker) when there are no open decisions to digest, else
+ *  undefined (proceed). A no-op for every other loop (secretary unset). Mirrors dreamGateOutcome. */
+export function secretaryGateOutcome(loop: LoopDef, ledger: Pick<Ledger, "listOpenDecisions">): LoopOutcome | undefined {
+  if (!loop.secretary) return undefined;
+  if (ledger.listOpenDecisions().length > 0) return undefined;
+  return { met: false, iterations: 0, reason: "stopped", lastDetail: "no open decisions — nothing to digest", spentUsd: 0 };
+}
+
 /** Builds the dream-mode `memory` MCP server for one dream-loop run: dream-budgeted
  *  `memory`/`memory_search` tools (memory-tool.ts) scoped to `folder`, with a diary callback that
  *  appends every mutation ATTEMPT (applied or rejected) to `<folder>/memory/DREAMS.md`, engine-side
@@ -371,17 +523,30 @@ function loopRunExtras(
   check: GoalCheck;
 } {
   const cfg = deps.cfg;
-  const runDeps = cfg ? profileDeps(cfg, "loop") : undefined;
+  // The secretary digest runs on its own worker profile (the latest model, `workers.secretary`);
+  // every other loop uses the shared `loop` profile.
+  const runDeps = cfg ? profileDeps(cfg, loop.secretary ? "secretary" : "loop") : undefined;
   if (runDeps && cfg && loop.dreamMemory) runDeps.mcpServers = dreamMcpServers(loop.folder, cfg);
   return {
     runDeps,
     freshSession: loop.freshSession,
     gateResume: cfg
       ? async (id: string) => {
-          const ctx = await sessionContext(loop.folder, id, { windowTokensByModel: cfg.contextPolicy.windowTokensByModel });
-          const obs = deps.store?.listCacheObservations(CACHE_OBS_WINDOW) ?? [];
+          const ctx = await sessionContext(loop.folder, id, {
+            windowTokensByModel: deps.store ? contextWindows(deps.store, cfg.contextPolicy.windowTokensByModel) : cfg.contextPolicy.windowTokensByModel,
+          });
+          const obs = deps.store?.listCacheObservations(cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW) ?? [];
           const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
-          return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;
+          const decision = decideContext(ctx, cfg.contextPolicy, ttlMs, { boundary: "resume" });
+          if (decision.verdict === "keep") return id;
+          // A loop's standing brief is re-read every iteration, so a fresh start loses nothing — but
+          // it is still a context reset, recorded with its reason (ADR-0021).
+          try {
+            deps.store?.recordContextEvent?.(loop.folder, "fresh", ctx.occupancy, undefined, { reason: decision.reason, boundary: "resume", sessionId: id });
+          } catch {
+            // observer only
+          }
+          return undefined;
         }
       : undefined,
     check:
@@ -395,6 +560,21 @@ function loopRunExtras(
 }
 
 /** Run a loop end to end, streaming progress and a final outcome line to the channel. */
+/** Start an operator-requested loop in the background (Telegram `/loop <name>`, a run button, the web
+ *  console). The run is its own unit of work (ADR-0010): a crash is reported as an engine fault and the
+ *  operator's chat is told the loop failed — never an unhandled rejection, never silence. */
+export function launchLoop(loop: LoopDef, chatId: number, deps: LoopDeps): void {
+  faults.contain(
+    "loop.manual",
+    () =>
+      startLoop(loop, chatId, deps).catch((e) => {
+        faults.contain("loop.manual.reply", () => deps.reply(chatId, `🔁 ${loop.name}: ❌ failed — ${e instanceof Error ? e.message : String(e)}`));
+        throw e;
+      }),
+    { loop: loop.name, folder: loop.folder },
+  );
+}
+
 export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps): Promise<LoopOutcome> {
   const loop = resolveDreamLoop(loopIn, deps.cfg);
   const gated = dreamGateOutcome(loop, deps.cfg);
@@ -402,24 +582,28 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
     await deps.reply(chatId, `🔁 ${loop.name}: ⚠️ ${gated.lastDetail}`);
     return gated;
   }
+  const { line, cause } = loopThread(deps.trace, loop, chatId, deps.cfg);
   await deps.reply(chatId, `🔁 ${loop.name}: starting on ${loop.folder}…`);
   const { check, ...extras } = loopRunExtras(loop, deps);
+  const planStart = deps.plans ? headSha(loop.folder) : undefined;
   const out = await runProjectLoop(
     {
       folder: loop.folder,
       prompt: loop.prompt,
       goal: loop.goal,
       bounds: loop.bounds,
-      onProgress: (m) => void deps.reply(chatId, m.length > 220 ? `${m.slice(0, 220)}…` : m),
+      onProgress: (m) => {
+        const text = m.length > 220 ? `${m.slice(0, 220)}…` : m;
+        line(text, "progress");
+        void deps.reply(chatId, text);
+      },
       shouldStop: deps.shouldStop,
       ...extras,
     },
     { run: deps.run, check },
-  );
-  await deps.reply(
-    chatId,
-    `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`,
-  );
+  ).finally(() => loopPlans(deps.plans, loop, chatId, planStart, cause));
+  const outcome = `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`;
+  await deps.reply(chatId, outcome + line(outcome, "result"));
   return out;
 }
 
@@ -433,7 +617,7 @@ export interface ScheduledLoopDeps {
   run?: typeof runOrder;
   /** Injectable goal (tests); defaults to the loop's Goal. */
   check?: GoalCheck;
-  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottle). */
+  /** Throttle / kill-switch wired in by the daemon (meter.shouldThrottleBackground). */
   shouldStop?: () => boolean;
   /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
    *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */
@@ -441,6 +625,11 @@ export interface ScheduledLoopDeps {
   /** Loop store — only `listCacheObservations` is used here, to derive the LEARNED cache TTL for
    *  the resume gate. Omitted ⇒ the gate falls back to cacheTtlFallbackMs (no observations). */
   store?: LoopStore;
+  /** The cause seam (ADR-0015): each fire roots its own `loop` thread and files the worker's lines
+   *  there. Absent → no thread, exactly as before. */
+  trace?: Trace;
+  /** The plan registry (ADR-0019): a fire's end sends the plans it wrote. Absent → none. */
+  plans?: PlanDeps;
 }
 
 /** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/acme →
@@ -465,19 +654,26 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
     await deps.reply(deps.chatId, gated.lastDetail, project);
     return gated;
   }
+  const { line, cause } = loopThread(deps.trace, loop, deps.chatId, deps.cfg);
   const { check, ...extras } = loopRunExtras(loop, deps);
-  return runProjectLoop(
+  const planStart = deps.plans ? headSha(loop.folder) : undefined;
+  const out = await runProjectLoop(
     {
       folder: loop.folder,
       prompt: loop.prompt,
       goal: loop.goal,
       bounds: loop.bounds,
-      onMessage: (t) => void deps.reply(deps.chatId, t, project), // worker text only — no engine chrome
+      // worker text only — no engine chrome
+      onMessage: (t) => {
+        line(t, "text");
+        void deps.reply(deps.chatId, t, project);
+      },
       shouldStop: deps.shouldStop,
       ...extras,
     },
     { run: deps.run, check },
-  );
+  ).finally(() => loopPlans(deps.plans, loop, deps.chatId, planStart, cause));
+  return out;
 }
 
 /** Parse + dispatch a /loop command. Returns true if it was a /loop (handled), else false. */
@@ -511,6 +707,6 @@ export function handleLoop(text: string, chatId: number, deps: LoopDeps): boolea
     void deps.reply(chatId, `No loop "${args}".\n\n${formatLoops(deps.store)}`);
     return true;
   }
-  void startLoop(loop, chatId, deps); // background; streams via deps.reply
+  launchLoop(loop, chatId, deps); // background; streams via deps.reply
   return true;
 }

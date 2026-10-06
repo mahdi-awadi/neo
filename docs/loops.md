@@ -36,12 +36,39 @@ the last section maps it onto Neo.
 > fires). See `docs/CONFIG.md`'s "Memory system" section for the budget fields and
 > `docs/superpowers/sdd/` Phase 2 tasks for the store/inject/recall design.
 >
+> **`secretary` — decisions digest (disabled by default).** A scheduled worker (the latest model, the
+> `workers.secretary` profile) that keeps the operator reminded of everything blocking. At each fire
+> the engine reads the pending-decisions queue **deterministically**, renders it (project · age ·
+> reminder count · question) into the prompt, and stamps a reminder on each open row; the worker only
+> phrases and prioritises it into ONE warm digest — it never invents or mutates a decision. The digest
+> streams to the high-priority **Decisions** channel (`decisionsChatId`); items waiting longer than
+> `secretaryStaleHours` are flagged as escalations. A no-op gate (`secretaryGateOutcome`) refuses to
+> spend a run when the queue is empty — a quiet queue means a quiet secretary. Cadence is
+> `secretaryCron` (default every 2h, 08:00–22:00 server-local); `freshSession: true`, fire-once. Turn
+> it on with `/loop secretary on`. See `docs/CONFIG.md` for the knobs.
+>
 > **Data-driven loop CRUD — live (2026-06-28).** Loop *definitions* are data (ledger `loop_defs`),
 > merged with the built-in library by `effectiveLoops()` and re-read each tick, so an operator
 > authors/edits/deletes loops from the admin web console (Loops tab + `/api/loop/{create,update,delete,enable}`)
 > with no restart. Validated input + `/home` folder fence (`src/engine/loop-validate.ts`), admin-gated;
 > built-ins stay run/toggle-only. Spec/plan:
 > `docs/superpowers/specs/2026-06-27-loop-crud-design.md`, `docs/superpowers/plans/2026-06-28-loop-crud.md`.
+>
+> **Authoring a loop from the CLI — `tools/create-loop.ts` (2026-09-29).** The web CRUD is
+> admin-session-gated, so an agent working in this repo on the operator's behalf cannot use it.
+> `bun run tools/create-loop.ts <input.json> [--update] [--ledger <path>]` goes through the SAME
+> path — `validateLoopInput` → `createLoop` → `loop_defs` — never hand-written SQL, so the `/home`
+> folder fence and every validation rule apply identically. Because a loop's prompt is a **standing
+> brief** (ADR-0004) and therefore long, the input may set `promptFile` (relative to the input file)
+> instead of `prompt`, keeping the brief reviewable and diffable. Checked-in definitions live in
+> `docs/loops/`.
+>
+> **First operator-authored project loop: `waselni-store-readiness` (2026-09-29).** Daily
+> `0 6 * * *` (06:00 server-local/UTC ≈ 09:00 Asia/Baghdad), `/home/waselni`, judge goal, 30
+> iterations, $12 per fire, `freshSession: true`, enabled. It drives the parent and driver apps to
+> publishable state on both stores, keeping its state in `docs/store-readiness.md` in the waselni
+> repo — one row per requirement × target, so the FILE is the memory, not the session. Definition:
+> `docs/loops/waselni-store-readiness.json` + `.prompt.md`.
 >
 > **Scheduled-loop output → operator — live (2026-07-10).** A scheduled fire now streams **only** the
 > worker's real text to the operator's Telegram chat (the admin id, resolved at fire time so a late
@@ -131,3 +158,12 @@ nightly **docs-sweep** per active project · **error-sweep** over a project's lo
 loop that runs until green before a board task is marked done.
 
 This is the design backbone for the scheduler when we build the company engine.
+
+## Not everything scheduled is a loop
+
+A loop's action is an AI worker. A **fixed procedure** with no judgment in it must not depend on
+one, so it is an engine job on the same trigger code instead. The first one is the **toolchain
+updater** (ADR-0009, `src/engine/updater.ts`): an `interval` trigger (`updates.everyMs`, default
+24 h) checked on the daemon heartbeat with the loop runtime's own `isDue`. It uses no worker and
+no budget. Its last run is read from the ledger. It is steered with `/updates`, not `/loop`. See
+`docs/CONFIG.md` → "Toolchain updates".

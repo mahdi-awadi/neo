@@ -395,6 +395,48 @@ test("onActivity reports every tool_use and text block; queued() counts waiting 
   expect(labels).toContain("replying");
 });
 
+test("startOrder.active() tracks turn-in-flight, and a follow-up queued mid-turn flushes when the turn completes", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const received: string[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((r) => {
+    releaseFirst = r;
+  });
+  // Fake SDK: acks each user message, but HOLDS the first turn open on `firstGate` so the test can
+  // observe a turn genuinely in flight and queue a follow-up behind it.
+  const q = (args: { prompt: AsyncIterable<{ message: { content: string } }>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-1" };
+      let n = 0;
+      for await (const userMsg of args.prompt) {
+        n++;
+        received.push(userMsg.message.content);
+        if (n === 1) await firstGate; // first turn stays in flight until released
+        yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "sess-1" };
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  const run = startOrder(order("first brief"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+
+  await tick(); // let the SDK pull + start the first turn
+  expect(run.active()).toBe(true); // a turn is being processed right now
+  expect(received).toEqual(["first brief"]);
+
+  // A brief arriving mid-turn must QUEUE behind the in-flight turn, not be dropped or run concurrently.
+  run.followUp("second brief");
+  await tick();
+  expect(received).toEqual(["first brief"]); // still queued behind the live turn
+
+  releaseFirst(); // the first turn completes → the channel must FLUSH the queued brief
+  await tick();
+  await tick();
+  expect(received).toEqual(["first brief", "second brief"]); // flushed and ran
+  expect(run.active()).toBe(false); // both turns done → idle between turns
+
+  await run.interrupt(); // drain the still-open session so no generator outlives the test
+});
+
 // --- Turn-boundary completion (2026-07-08: dispatch never detected sub-run completion — the
 // input channel stays open forever, so run.done only resolved via interrupt, and every dispatch
 // ended as a false "stall" timeout losing the worker's real report). startOrder must signal each
@@ -583,7 +625,9 @@ test("onEvent fires session_interrupted when the SDK stream throws (interrupt/id
 
 test("runConfig forwards model/skills/maxTurns and merges env over process.env", () => {
   const c = runConfig({ model: "haiku", skills: [], maxTurns: 12, env: { NEO_TEST_FLAG: "1" } });
-  expect(c.model).toBe("haiku");
+  // The bare tier alias is pinned to its real id on the way out (ADR-0005): an alias means
+  // "whatever that family points at now", so the SDK must never be handed one.
+  expect(c.model).toBe("claude-haiku-4-5");
   expect(c.skills).toEqual([]);
   expect(c.maxTurns).toBe(12);
   const env = c.env as Record<string, string | undefined>;
@@ -758,4 +802,376 @@ test("startOrder queues follow-ups as sequential Codex SDK turns on the same thr
   expect(f.prompts).toEqual(["first", "second"]);
   expect(messages).toEqual(["ack:first", "ack:second"]);
   expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "ack:second" });
+});
+
+test("surfaces a concise result preview for Bash but stays quiet for navigation tools", async () => {
+  const q = () =>
+    (async function* () {
+      yield {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hi" } },
+            { type: "tool_use", id: "t2", name: "Read", input: { file_path: "/x" } },
+          ],
+        },
+      };
+      yield {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: "hello world output" },
+            { type: "tool_result", tool_use_id: "t2", content: "file body that should stay quiet" },
+          ],
+        },
+      };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  const msgs: string[] = [];
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  expect(msgs.some((m) => m.includes("🔧 Bash"))).toBe(true); // command milestone
+  expect(msgs.some((m) => m.startsWith("↳") && m.includes("hello world output"))).toBe(true); // its result
+  expect(msgs.some((m) => m.includes("file body that should stay quiet"))).toBe(false); // Read result stays quiet
+});
+
+test("truncates a long tool result and flags an errored one", async () => {
+  const long = "x".repeat(2000);
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "big" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: long, is_error: true }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  const msgs: string[] = [];
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  const preview = msgs.find((m) => m.includes("⚠️"));
+  expect(preview).toBeDefined();
+  expect(preview!.endsWith("…")).toBe(true); // truncated
+  expect(preview!.length).toBeLessThan(650); // ~600 cap + prefix, not the full 2000
+});
+
+// --- active() must never drift permanently out of true (2026-09-18). It used to be
+// `delivered > completed`: a turn that ends WITHOUT an SDK `result` — an interrupt, a stream error,
+// a resume-missing restart — bumps `delivered` only, so the session reported "busy" forever and
+// every later dispatch was refused with "busy — queued" against a healthy project. ---
+
+test("active() clears when a turn ends without a result message (stream error)", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const q = (args: { prompt: AsyncIterable<{ message: { content: string } }>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-err" };
+      for await (const _msg of args.prompt) {
+        throw new Error("stream closed mid-turn"); // no `result` ever arrives
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  const run = startOrder(order("brief"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+
+  await run.done;
+  await tick();
+  expect(run.active()).toBe(false); // the run is over — it cannot still be "processing a turn"
+});
+
+test("active() clears when the run is interrupted mid-turn", async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const q = (args: { prompt: AsyncIterable<{ message: { content: string } }>; options: unknown }) => {
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-int" };
+      for await (const _msg of args.prompt) {
+        await gate; // held open until the test interrupts
+        yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "sess-int" };
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => release() });
+  };
+  const run = startOrder(order("brief"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+
+  await tick();
+  expect(run.active()).toBe(true);
+  await run.interrupt();
+  await run.done;
+  await tick();
+  expect(run.active()).toBe(false);
+});
+
+// --- Settled vs turn boundary (ADR-0007, 2026-10-04): a worker that runs BACKGROUND subagents ends
+// its first turn (`result`) while the CLI keeps working on task notifications. That first `result`
+// is not the end of the brief. The SDK's `session_state_changed: idle` is (it fires only after the
+// background-agent loop exits), so `active()` and `onSettled` follow it. ---
+
+/** A fake SDK that replays a scripted list of messages for the first user message, then waits. */
+function scriptedQuery(script: Array<Record<string, unknown> | "pause">, gate: Promise<void>) {
+  const seenOptions: unknown[] = [];
+  const q = (args: { prompt: AsyncIterable<unknown>; options: unknown }) => {
+    seenOptions.push(args.options);
+    const gen = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "s-bg" };
+      for await (const _m of args.prompt) {
+        for (const step of script) {
+          if (step === "pause") await gate;
+          else yield { session_id: "s-bg", ...step };
+        }
+      }
+    })();
+    return Object.assign(gen, { interrupt: async () => {} });
+  };
+  return { q, seenOptions };
+}
+
+test("with SDK session-state events, a result while background work runs is NOT settled; idle is", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const { q } = scriptedQuery(
+    [
+      { type: "system", subtype: "session_state_changed", state: "running" },
+      { type: "result", subtype: "success", result: "launched task 1 in the background", total_cost_usd: 0 },
+      "pause", // background subagent still working — the CLI has not gone idle
+      { type: "result", subtype: "success", result: "all tasks done", total_cost_usd: 0 },
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ],
+    gate,
+  );
+  const turns: string[] = [];
+  let settled = 0;
+  const run = startOrder(
+    order("run the plan"),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnComplete: (r) => void turns.push(r.summary), onSettled: () => void settled++ },
+    { query: q as never },
+  );
+  while (turns.length === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(turns).toEqual(["launched task 1 in the background"]);
+  expect(settled).toBe(0); // a turn boundary, not the end of the brief
+  expect(run.active()).toBe(true); // still busy — a new brief must queue, not be "delivered idle"
+  release();
+  while (settled === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(turns).toEqual(["launched task 1 in the background", "all tasks done"]);
+  expect(run.active()).toBe(false);
+  run.close();
+  expect((await run.done).summary).toBe("all tasks done");
+});
+
+test("without session-state events (older CLI), each result is settled — the previous behaviour", async () => {
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  let settled = 0;
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onSettled: () => void settled++ }, { query: q as never });
+  while (settled === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(run.active()).toBe(false);
+  run.close();
+  await run.done;
+});
+
+test("closed() reports a graceful close, so a caller never pushes a brief into a dead channel", async () => {
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(run.closed()).toBe(false);
+  run.close();
+  expect(run.closed()).toBe(true);
+  await run.done;
+});
+
+test("a long-running Claude session asks the CLI for session-state events", async () => {
+  const { q, seenOptions } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  while (seenOptions.length === 0) await new Promise((r) => setTimeout(r, 1));
+  const env = (seenOptions[0] as { env?: Record<string, string> }).env;
+  expect(env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe("1");
+  run.close();
+  await run.done;
+});
+
+test("onMessage tags worker prose as text and tool milestones as tool", async () => {
+  const { q } = scriptedQuery(
+    [
+      { type: "assistant", message: { content: [{ type: "text", text: "Task 4 committed." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "git log -1" } }] } },
+      { type: "result", subtype: "success", result: "done", total_cost_usd: 0 },
+    ],
+    Promise.resolve(),
+  );
+  const got: Array<[string, string | undefined]> = [];
+  const run = startOrder(order("x"), { onMessage: (t, kind) => void got.push([t, kind]), onEscalation: async () => "deny" }, { query: q as never });
+  while (!got.some(([, k]) => k === "tool")) await new Promise((r) => setTimeout(r, 1));
+  expect(got.find(([t]) => t === "Task 4 committed.")?.[1]).toBe("text");
+  run.close();
+  await run.done;
+});
+
+// ADR-0013: the SDK reports the real context window on every result. The transcript only carries
+// the canonical id (`claude-opus-5-5`), so the window is reported under that id, never the tagged key.
+test("runOrder reports each model's SDK context window at the result, under its canonical id", async () => {
+  const q = () =>
+    (async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        result: "done",
+        total_cost_usd: 0,
+        session_id: "s",
+        modelUsage: {
+          "claude-opus-5-5[1m]": { contextWindow: 1_000_000, canonicalModel: "claude-opus-5-5" },
+          "claude-haiku-4-5-20251001": { contextWindow: 200_000 },
+          "broken-entry": { contextWindow: 0 },
+        },
+      };
+    })();
+  const seen: Array<[string, number]> = [];
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny", onContextWindow: (m, t) => seen.push([m, t]) },
+    { query: q as never },
+  );
+  expect(seen).toEqual([
+    ["claude-opus-5-5", 1_000_000],
+    ["claude-haiku-4-5-20251001", 200_000],
+  ]);
+});
+
+test("runOrder also reports the window under the de-tagged key when the canonical id differs", async () => {
+  const q = () =>
+    (async function* () {
+      yield {
+        type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s",
+        modelUsage: { "claude-opus-5-5-20261001[1m]": { contextWindow: 1_000_000, canonicalModel: "claude-opus-5-5" } },
+      };
+    })();
+  const seen: Array<[string, number]> = [];
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", onContextWindow: (m, t) => seen.push([m, t]) }, { query: q as never });
+  expect(seen).toEqual([
+    ["claude-opus-5-5", 1_000_000],
+    ["claude-opus-5-5-20261001", 1_000_000],
+  ]);
+});
+
+// ADR-0021: the checkpoint watch reads raw stream facts — each turn's usage and every tool call/result.
+test("the stream reports usage, tool uses and tool results to the raw callbacks, in order", async () => {
+  const seen: unknown[] = [];
+  const usage = { input_tokens: 5, cache_read_input_tokens: 600_000, cache_creation_input_tokens: 10, output_tokens: 3 };
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", session_id: "s", message: { model: "claude-opus-5-5", usage, content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "git commit -m x" } }] } };
+      yield { type: "user", session_id: "s", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "nothing to commit" }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  await runOrder(
+    order(),
+    {
+      onMessage: () => {},
+      onEscalation: async () => "deny",
+      onUsage: (model, u) => void seen.push(["usage", model, u.cache_read_input_tokens]),
+      onToolUse: (id, name, input) => void seen.push(["use", id, name, (input as { command: string }).command]),
+      onToolResult: (id, isError) => void seen.push(["result", id, isError]),
+    },
+    { query: q as never },
+  );
+  expect(seen).toEqual([
+    ["usage", "claude-opus-5-5", 600_000],
+    ["use", "t1", "Bash", "git commit -m x"],
+    ["result", "t1", true],
+  ]);
+});
+
+test("the SDK options carry the handlers' context steer into the governor hook", async () => {
+  let hooks: { PreToolUse: Array<{ hooks: Array<(i: unknown, id: string, o: { signal: AbortSignal }) => Promise<unknown>> }> } | undefined;
+  const q = (args: { options: { hooks?: typeof hooks } }) => {
+    hooks = args.options.hooks;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny", contextSteer: () => "write the note" }, { query: q as never });
+  const out = (await hooks!.PreToolUse[0].hooks[0]({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/tmp/a" } }, "t", { signal: new AbortController().signal })) as {
+    hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+  };
+  expect(out.hookSpecificOutput).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "write the note" });
+});
+
+// --- Turn end (Task 1.4, spec §4.2): the runner says when a turn is over, at the same place it
+// clears its in-turn flag, so the pipeline can answer every cause delivered during that turn. ---
+
+test("onTurnEnd: each result ends a turn without session-state events, and the run's end ends one too", async () => {
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  let ends = 0;
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnEnd: () => void ends++ }, { query: q as never });
+  while (ends === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(ends).toBe(1);
+  run.close();
+  await run.done;
+  expect(ends).toBe(2); // the run is over — any turn still open ends with it
+});
+
+test("onTurnEnd: with session-state events only idle ends the turn, never a mid-brief result", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const { q } = scriptedQuery(
+    [
+      { type: "system", subtype: "session_state_changed", state: "running" },
+      { type: "result", subtype: "success", result: "launched", total_cost_usd: 0 },
+      "pause",
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ],
+    gate,
+  );
+  let turns = 0;
+  let ends = 0;
+  const run = startOrder(
+    order("x"),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnComplete: () => void turns++, onTurnEnd: () => void ends++ },
+    { query: q as never },
+  );
+  while (turns === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(ends).toBe(0);
+  release();
+  while (ends === 0) await new Promise((r) => setTimeout(r, 1));
+  expect(ends).toBe(1);
+  run.close();
+  await run.done;
+});
+
+test("onTurnEnd: a live Codex session ends a turn after each one", async () => {
+  const f = fakeCodexFactory({
+    turns: (input) => [
+      { type: "item.completed", item: { id: "i", type: "agent_message", text: `re:${input}` } },
+      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } },
+    ],
+  });
+  let ends = 0;
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnEnd: () => void ends++ }, { provider: "codex", codexFactory: f.factory });
+  while (ends === 0) await new Promise((r) => setTimeout(r, 1));
+  run.followUp("y");
+  while (ends < 2) await new Promise((r) => setTimeout(r, 1));
+  run.close();
+  await run.done;
+  expect(ends).toBe(2);
+});
+
+test("onTurnStart: a live Codex session reports one consumed input per turn; Claude never reports", async () => {
+  const f = fakeCodexFactory({
+    turns: (input) => [
+      { type: "item.completed", item: { id: "i", type: "agent_message", text: `re:${input}` } },
+      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } },
+    ],
+  });
+  const seen: string[] = [];
+  const run = startOrder(
+    order("x"),
+    { onMessage: () => {}, onEscalation: async () => "deny", onTurnStart: (n) => void seen.push(`start:${n}`), onTurnEnd: () => void seen.push("end") },
+    { provider: "codex", codexFactory: f.factory },
+  );
+  while (seen.length < 2) await new Promise((r) => setTimeout(r, 1));
+  run.followUp("y");
+  while (seen.length < 4) await new Promise((r) => setTimeout(r, 1));
+  run.close();
+  await run.done;
+  expect(seen).toEqual(["start:1", "end", "start:1", "end"]);
+
+  const { q } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  let starts = 0;
+  const claude = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnStart: () => void starts++ }, { query: q as never });
+  claude.close();
+  await claude.done;
+  expect(starts).toBe(0); // the SDK pulls input eagerly: the pipeline falls back to "all delivered"
 });

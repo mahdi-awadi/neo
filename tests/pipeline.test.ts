@@ -2,14 +2,16 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { handleMessage } from "../src/engine/pipeline";
+import { handleMessage, deliverToCompany } from "../src/engine/pipeline";
 import { applyMemoryOp } from "../src/engine/memory";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter, type Meter } from "../src/engine/budget";
+import { createUsageMeter } from "../src/engine/usage";
 import { openTrustStore } from "../src/engine/trust";
-import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter } from "../src/engine/context-policy";
+import { encodeCwd, transcriptLineCount, firstAssistantCacheReadAfter, trackHandoff } from "../src/engine/context-policy";
 import type { NeoConfig } from "../src/config";
+import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 
@@ -37,16 +39,31 @@ function cfg(): NeoConfig {
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,
-    dispatchTimeoutMs: 900_000,
-    dispatchTimeoutMaxMs: 7_200_000,
     dispatchStallMs: 300_000,
     dispatchGraceMs: 75_000,
+    dispatchProgressMs: 600_000,
+    dispatchRecoverWindowMs: 86_400_000,
+    todoOnFailure: "continue",
+    apiRetryLadderMs: [30_000, 120_000, 480_000],
+    apiRetryJitterFrac: 0.2,
+    apiCooldownMs: 60_000,
+    routeKeep: 20_000,
+    eventsKeep: 50_000,
+    decisionsKeep: 5_000,
+    toolActionsKeep: 100_000,
+    secretaryCron: "0 8-22/2 * * *",
+    secretaryStaleHours: 24,
+    codebaseMemoryListTimeoutMs: 15_000,
+    inboxListDefault: 100,
+    webFeedWindow: 500,
+    messageRoutesCacheCap: 2_000,
     stuckAfterMs: 600_000,
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
+    trustNewProjects: false,
     contextPolicy: {
-      handoffPct: 0.65,
+      sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
       emergencyPct: 0.85,
       maxTurns: 200,
       maxAgeMs: 604_800_000,
@@ -55,9 +72,16 @@ function cfg(): NeoConfig {
       cacheTtlFallbackMs: 3_600_000,
       cacheTtlMinObservations: 5,
     },
-    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {} },
+    models: DEFAULT_MODELS,
+    updates: DEFAULT_UPDATES,
+    faults: DEFAULT_FAULTS,
+    health: DEFAULT_HEALTH,
+    sqliteBusyTimeoutMs: 5_000,
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
+    telegramToolSteps: false,
+    telegramFloodMaxWaitMs: 30_000,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));
@@ -75,7 +99,7 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, close: () => {}, done };
+    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
   };
   return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
 }
@@ -221,17 +245,121 @@ test("a free-text order with no active project routes to the default project", a
   expect(h.replies.some((r) => r.toLowerCase().includes("resum"))).toBe(true);
 });
 
-test("throttles a new order when the meter is over the reserve, and does not start it", async () => {
+// The interactive reserve exists to keep headroom FOR the operator against background work, so it
+// must never refuse the operator's own turn. (2026-09-13: `/open /home/waselni say hi back` was
+// answered "throttled: protecting interactive headroom" after background dispatches had spent
+// $42.39 against a $16 background allowance. See docs/adr/0001-*.md.)
+test("starts the operator's interactive turn even when background spend is far over the reserve", async () => {
   const dir = scratch();
-  const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // available $8
-  meter.note({ costUsd: 9 }); // over reserve
+  const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 }); // background allowance $8
+  meter.note({ costUsd: 42 }); // background work blew through it
   const f = fakeStart();
   const h = harness({ start: f.start, meter });
 
-  await handleMessage(`/open ${dir} do it`, 1, h.base);
+  await handleMessage(`/open ${dir} say hi back`, 1, h.base);
 
-  expect(h.replies.some((r) => r.toLowerCase().includes("throttle"))).toBe(true);
-  expect(h.registry.list().length).toBe(0);
+  expect(h.replies.some((r) => r.toLowerCase().includes("throttle"))).toBe(false);
+  expect(h.replies.some((r) => r.toLowerCase().includes("headroom"))).toBe(false);
+  expect(h.registry.list().length).toBe(1); // the turn actually started
+});
+
+test("does not suppress an interactive turn's API retry because background spend is over the reserve", async () => {
+  const dir = scratch();
+  const meter = createMeter({ windowBudgetUsd: 10, reservePct: 0.2 });
+  meter.note({ costUsd: 42 });
+  let handlers!: RunHandlers;
+  const f = fakeStart({ onStart: (hh) => (handlers = hh) });
+  const h = harness({ start: f.start, meter });
+  const base = { ...h.base, sleep: () => Promise.resolve(), now: () => 1000 };
+
+  await handleMessage(`/open ${dir} do it`, 5, base);
+  handlers.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+
+  expect(h.ledger.listEvents({ kind: "api_retry" }).length).toBe(1);
+  expect(h.ledger.listEvents({ kind: "api_giveup" }).length).toBe(0);
+});
+
+test("warns with the real reset time when a rate-limit window is rejecting us, and still starts the turn", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const now = 1_000_000;
+  const resetsAt = Math.floor(now / 1000) + 3600; // one hour out, epoch SECONDS
+  // `snapshot()` walks ~/.claude/projects and re-reads every transcript — far too heavy for a path
+  // every operator message takes. Throwing here pins that the interactive gate reads the cheap
+  // in-memory rate-limit state instead.
+  const base = {
+    ...h.base,
+    now: () => now,
+    usage: {
+      snapshot: () => {
+        throw new Error("snapshot() must not be called on the interactive path");
+      },
+      rateLimits: () => [{ status: "rejected", rateLimitType: "five_hour", resetsAt }],
+      noteRateLimit: () => {},
+    } as never,
+  };
+
+  await handleMessage(`/open ${dir} say hi back`, 1, base);
+
+  const warned = h.replies.find((r) => r.includes("rate-limit"));
+  expect(warned).toBeDefined();
+  expect(warned).toContain(new Date(resetsAt * 1000).toUTCString());
+  expect(h.replies.some((r) => r.toLowerCase().includes("headroom"))).toBe(false);
+  expect(h.registry.list().length).toBe(1); // warned, not refused
+});
+
+test("rateLimits() returns the latest window per type, straight from memory", () => {
+  const meter = createUsageMeter({ projectsDir: join(tmpdir(), "neo-no-such-projects-dir") });
+  expect(meter.rateLimits()).toEqual([]);
+
+  meter.noteRateLimit({ status: "rejected", rateLimitType: "five_hour", resetsAt: 42 });
+  meter.noteRateLimit({ status: "allowed", rateLimitType: "five_hour", resetsAt: 99 }); // latest wins
+
+  expect(meter.rateLimits()).toEqual([{ status: "allowed", rateLimitType: "five_hour", resetsAt: 99 }]);
+});
+
+// A rejected window lasts hours. The warning is advisory context for the turn the operator just
+// sent, so it belongs in their own conversation — routing it "alert" would repost an identical
+// line into the unmuted Decisions group on every message for the whole window.
+test("routes the rate-limit warning to the operator's own chat, not the Decisions channel", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const replies: Array<{ text: string; priority?: string }> = [];
+  const h = harness({ start: f.start });
+  const now = 1_000_000;
+  const base = {
+    ...h.base,
+    now: () => now,
+    reply: (_c: number, t: string, _p?: string, priority?: string) => void replies.push({ text: t, priority }),
+    usage: { rateLimits: () => [{ status: "rejected", rateLimitType: "five_hour", resetsAt: now / 1000 + 3600 }], noteRateLimit: () => {} } as never,
+  };
+
+  await handleMessage(`/open ${dir} say hi back`, 1, base);
+
+  const warned = replies.find((r) => r.text.includes("rate-limit"));
+  expect(warned).toBeDefined();
+  expect(warned!.priority).toBeUndefined(); // default (progress) → the operator's own chat
+});
+
+// Most operator messages are plain text into the live/company session, which returns from the
+// follow-up branch long before the order-parsing path. Warning only on `/open` misses them.
+test("warns about a rejecting rate-limit window on a plain-text follow-up too, and still delivers it", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const def = h.registry.add({ id: "def", source: "neo", folder: "/home/neo/agent", task: "init", chatId: -1, createdAt: 1 }, 1);
+  h.registry.setDefault(def.id);
+  h.registry.setStatus(def.id, "idle");
+  h.registry.setSdkSessionId(def.id, "sdk-def");
+  const now = 1_000_000;
+  const resetsAt = now / 1000 + 3600;
+  const usage = { rateLimits: () => [{ status: "rejected", rateLimitType: "five_hour", resetsAt }], noteRateLimit: () => {} } as never;
+
+  // plain text — never reaches the order-parsing path, it resumes the company session
+  await handleMessage("say hi back", 9, { ...h.base, now: () => now, usage });
+
+  expect(h.replies.some((r) => r.includes("rate-limit"))).toBe(true);
+  expect(f.resumeSeen()).toBe("sdk-def"); // warned, not swallowed — the turn still ran
 });
 
 test("a throttled turn records an api_retry event in the ledger (interactive scope)", async () => {
@@ -289,7 +417,9 @@ function routingStart(followed: string[]) {
     followUp: (t) => void followed.push(`${o.folder}:${t}`),
     interrupt: async () => {},
     queued: () => 0,
+    active: () => false,
     close: () => {},
+    closed: () => false,
     done: new Promise<RunResult>(() => {}),
   });
 }
@@ -362,20 +492,42 @@ test("a pinned project keeps receiving follow-ups until unpinned", async () => {
   expect(followed).toContain(`${companyDir}:three — back to company`);
 });
 
-test("a busy project's follow-up reply reports the real status, not an opaque 'busy'", async () => {
+test("a working project's follow-up reply reports the real state, not an opaque 'busy'", async () => {
   const dirA = scratch();
   const followed: string[] = [];
   const h = harness({ start: routingStart(followed) });
   await handleMessage(`/open ${dirA} a`, 5, h.base);
   const a = h.registry.list().find((s) => s.order.folder === dirA)!;
-  h.registry.noteActivity(a.id, "running tests", 0);
+  // A turn is genuinely in flight — that, not the registry's lifetime `status`, is what "busy" means.
+  h.registry.attachControl(a.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 1, active: () => true });
+  h.registry.noteActivity(a.id, "running tests", 110_000);
   h.registry.setFocus(5, a.id, "pinned");
 
   await handleMessage("status?", 5, { ...h.base, now: () => 120_000 });
 
   const line = h.replies.find((r) => r.includes("queued for"))!;
+  expect(line).toContain("working");
   expect(line).toContain("running tests");
-  expect(line).toContain("2m"); // activity age surfaced
+  expect(line).toContain("last activity 0s ago"); // delivering the brief is itself an interaction
+  expect(line).toContain("1 queued");
+  expect(line).not.toContain("wedged");
+});
+
+test("a follow-up into a project sitting between turns says idle, not busy or wedged", async () => {
+  const dirA = scratch();
+  const followed: string[] = [];
+  const h = harness({ start: routingStart(followed) }); // its control reports active() === false
+  await handleMessage(`/open ${dirA} a`, 5, h.base);
+  const a = h.registry.list().find((s) => s.order.folder === dirA)!;
+  h.registry.noteActivity(a.id, "waiting", 0);
+  h.registry.setFocus(5, a.id, "pinned");
+
+  await handleMessage("status?", 5, { ...h.base, now: () => 10 * 60 * 60 * 1000 });
+
+  const line = h.replies.find((r) => r.includes("queued for"))!;
+  expect(line).toContain("idle");
+  expect(line).toContain("nothing in flight");
+  expect(line).not.toContain("wedged");
 });
 
 test("resumes when a prior session id exists for the folder/chat", async () => {
@@ -495,24 +647,27 @@ test("pre-resume gate: a configured windowTokensByModel flips the verdict (real 
     }),
   );
   try {
-    // Default 200k facts-map window: 150_000 / 200_000 = 0.75 >= handoffPct (0.65) → "handoff".
+    // cfg says "big-model" has a 200k window: 150_000 / 200_000 = 0.75 >= sweetSpotPct (0.65) → "handoff".
+    // (A guessed window would drive no band rule at all — ADR-0021 — so both halves set the window.)
     const f1 = fakeStart();
     const h1 = harness({ start: f1.start });
     h1.ledger.recordOrder({ id: "d1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
     h1.ledger.recordSession("d1", sdkId);
     const calls: string[] = [];
+    const cfg1 = { ...h1.base.cfg, contextPolicy: { ...h1.base.cfg.contextPolicy, windowTokensByModel: { "big-model": 200_000 } } };
     await handleMessage(`/open ${dir} continue`, 9, {
       ...h1.base,
+      cfg: cfg1,
       handoff: async (s) => {
         calls.push("handoff");
         h1.ledger.clearSessionsFor(s.order.folder);
       },
     });
-    expect(calls).toEqual(["handoff"]); // default facts map (no override) → handoff, same transcript
+    expect(calls).toEqual(["handoff"]); // 200k override → handoff, same transcript
     expect(f1.resumeSeen()).toBeUndefined(); // fresh, not resumed
 
     // SAME transcript, but cfg now overrides "big-model"'s window to 1,000,000 tokens:
-    // 150_000 / 1_000_000 = 0.15 — well under handoffPct → "keep" instead.
+    // 150_000 / 1_000_000 = 0.15 — well under sweetSpotPct → "keep" instead.
     const f2 = fakeStart();
     const h2 = harness({ start: f2.start });
     h2.ledger.recordOrder({ id: "d2", source: "neo", folder: dir, task: "x", chatId: 10, createdAt: 0 });
@@ -523,6 +678,42 @@ test("pre-resume gate: a configured windowTokensByModel flips the verdict (real 
   } finally {
     rmSync(transcriptDir, { recursive: true, force: true });
   }
+});
+
+// ADR-0013 — the live bug: a 547k-token Opus 5.5 session (real window 1M) read as 274% of the 200k
+// default, so every resume gate returned `clear` and dropped the session with no handoff note.
+test("pre-resume gate: the SDK-reported window in the ledger keeps a 1M-window session (no config override)", async () => {
+  const dir = scratch();
+  const sdkId = "sdk-reported-window";
+  const transcriptDir = join(homedir(), ".claude", "projects", encodeCwd(dir));
+  mkdirSync(transcriptDir, { recursive: true });
+  writeFileSync(
+    join(transcriptDir, `${sdkId}.jsonl`),
+    JSON.stringify({
+      type: "assistant",
+      timestamp: new Date().toISOString(),
+      message: { model: "claude-opus-5-5", usage: { input_tokens: 2, cache_read_input_tokens: 546_145, cache_creation_input_tokens: 1_572 } },
+    }),
+  );
+  try {
+    const f = fakeStart();
+    const h = harness({ start: f.start });
+    h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+    h.ledger.recordOrder({ id: "d1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+    h.ledger.recordSession("d1", sdkId);
+    await handleMessage(`/open ${dir} continue`, 9, h.base);
+    expect(f.resumeSeen()).toBe(sdkId); // 0.55 of 1M → keep, resumed
+    expect(h.ledger.listContextEvents()).toEqual([]); // no clear recorded
+  } finally {
+    rmSync(transcriptDir, { recursive: true, force: true });
+  }
+});
+
+test("a session's SDK-reported context window is recorded in the ledger", async () => {
+  const f = fakeStart({ onStart: (hd) => hd.onContextWindow?.("claude-opus-5-5", 1_000_000) });
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${scratch()} go`, 9, h.base);
+  expect(h.ledger.modelWindows()).toEqual({ "claude-opus-5-5": 1_000_000 });
 });
 
 test("fresh start reads HANDOFF.md when it exists", async () => {
@@ -857,4 +1048,454 @@ test("startSession wires onActivity into registry.noteActivity", async () => {
   const session = h.registry.list()[0];
   captured?.onActivity?.("Bash: bun test");
   expect(h.registry.get(session.id)?.activity?.label).toBe("Bash: bun test");
+});
+
+// --- ADR-0007: dispatch results always reach the company (the dispatcher). ---
+
+function idleCompany(h: ReturnType<typeof harness>) {
+  const def = h.registry.add({ id: "def", source: "neo", folder: "/home/neo/agent", task: "init", chatId: -1, createdAt: 1 }, 1);
+  h.registry.setDefault(def.id);
+  h.registry.setStatus(def.id, "idle");
+  h.registry.setSdkSessionId(def.id, "sdk-def");
+  return def;
+}
+
+test("deliverToCompany with wake resumes an idle company with the report, quietly", async () => {
+  const seen: string[] = [];
+  const f = fakeStart();
+  const start = (o: Order, hh: RunHandlers, d?: { resume?: string }) => (seen.push(o.task), f.start(o, hh, d));
+  const h = harness({ start: start as never });
+  idleCompany(h);
+  const ok = await deliverToCompany("[dispatch result] eticket-v3: done", 9, h.base, { wake: true });
+  expect(ok).toBe(true);
+  expect(f.resumeSeen()).toBe("sdk-def");
+  expect(seen).toEqual(["[dispatch result] eticket-v3: done"]);
+  expect(h.replies).toHaveLength(0); // no "resuming…" chatter per report
+});
+
+test("deliverToCompany without wake does not start an idle company", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  idleCompany(h);
+  expect(await deliverToCompany("[dispatch progress] p", 9, h.base, { wake: false })).toBe(false);
+  expect(f.resumeSeen()).toBeUndefined();
+});
+
+test("deliverToCompany follows up into a live company, and refuses while draining", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const def = idleCompany(h);
+  const got: string[] = [];
+  h.registry.setStatus(def.id, "running");
+  h.registry.attachControl(def.id, { followUp: (t) => void got.push(t), interrupt: async () => {} });
+  expect(await deliverToCompany("r1", 9, h.base, { wake: true })).toBe(true);
+  expect(got).toEqual(["r1"]);
+  expect(await deliverToCompany("r2", 9, { ...h.base, lifecycle: { draining: () => true } }, { wake: true })).toBe(false);
+  expect(got).toEqual(["r1"]);
+});
+
+test("pending dispatch results are prepended to the operator's next message to the company, once", async () => {
+  const seen: string[] = [];
+  const f = fakeStart();
+  const start = (o: Order, hh: RunHandlers, d?: { resume?: string }) => (seen.push(o.task), f.start(o, hh, d));
+  const h = harness({ start: start as never });
+  idleCompany(h);
+  h.ledger.queueDispatcherReport("eticket-v3", "[dispatch result] eticket-v3: interrupted by engine restart", 1);
+  await handleMessage("what's the status?", 9, h.base);
+  expect(seen[0]).toContain("interrupted by engine restart");
+  expect(seen[0]).toContain("what's the status?");
+  expect(h.ledger.pendingDispatcherReports()).toHaveLength(0);
+});
+
+test("a message to a focused project never carries the company's pending reports", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  idleCompany(h);
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  const proj = h.registry.list().find((s) => s.order.folder === dir)!;
+  h.registry.setFocus(5, proj.id, "pinned");
+  h.ledger.queueDispatcherReport("x", "[dispatch result] x: done", 1);
+  await handleMessage("also write a README", 5, h.base);
+  expect(f.followUps()).toContain("also write a README");
+  expect(h.ledger.pendingDispatcherReports()).toHaveLength(1);
+});
+
+test("deliverToCompany never wakes a company something else is running (resume in flight, ingress brief)", async () => {
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  const def = idleCompany(h);
+  h.registry.setStatus(def.id, "running"); // running with no control: another path owns it right now
+  expect(await deliverToCompany("[dispatch result] p: done", 9, h.base, { wake: true })).toBe(false);
+  expect(f.resumeSeen()).toBeUndefined(); // no second resume of the same SDK session
+});
+
+test("a dispatcher wake during the operator's resume announcement does not resume the company twice", async () => {
+  let starts = 0;
+  const f = fakeStart();
+  const start = (o: Order, hh: RunHandlers, d?: { resume?: string }) => (starts++, f.start(o, hh, d));
+  const h = harness({ start: start as never });
+  idleCompany(h);
+  let woke: boolean | undefined;
+  // The operator's "resuming…" reply is where the old code yielded with no guard set.
+  const base = {
+    ...h.base,
+    reply: async (_c: number, t: string) => {
+      if (t.includes("resuming") && woke === undefined) woke = await deliverToCompany("[dispatch result] p: done", 9, h.base, { wake: true });
+    },
+  };
+  await handleMessage("status?", 9, base);
+  expect(woke).toBe(false);
+  expect(starts).toBe(1);
+});
+
+test("trustNewProjects: opening a never-seen project trusts it and records the default in the ledger", async () => {
+  let handlers: RunHandlers | undefined;
+  const fs = fakeStart({ onStart: (h) => (handlers = h) });
+  const folder = scratch();
+  const trust = openTrustStore(":memory:", { trustNewProjects: true });
+  const h = harness({ start: fs.start });
+
+  await handleMessage("/open " + folder + " do it", 7, { ...h.base, trust });
+
+  expect(trust.isTrusted(folder)).toBe(true);
+  expect(handlers!.autoApprove?.()).toBe(true);
+  expect(h.ledger.listEvents({ kind: "trust_default_on" })[0]?.folder).toBe(folder);
+});
+
+test("trustNewProjects: a project the operator turned off stays off when opened again", async () => {
+  let handlers: RunHandlers | undefined;
+  const fs = fakeStart({ onStart: (h) => (handlers = h) });
+  const folder = scratch();
+  const trust = openTrustStore(":memory:", { trustNewProjects: true });
+  trust.setTrust(folder, false);
+  const h = harness({ start: fs.start });
+
+  await handleMessage("/open " + folder + " do it", 7, { ...h.base, trust });
+
+  expect(handlers!.autoApprove?.()).toBe(false);
+  expect(h.ledger.listEvents({ kind: "trust_default_on" })).toEqual([]);
+});
+
+// ---- ADR-0021: the sweet spot on live sessions — settle handoffs, safe checkpoints, inline notes ----
+
+/** A live fake whose runs the test drives: it emits stream events through the handlers, and a run
+ *  ends only when the test finishes it (or on interrupt). close() marks it closed, like the real one. */
+function liveFake() {
+  const runs: Array<{ task: string; resume?: string; h: RunHandlers; closed: boolean; followUps: string[]; finish: (r: RunResult) => void }> = [];
+  const start = (o: Order, h: RunHandlers, d?: { resume?: string }): SessionRun => {
+    let finish!: (r: RunResult) => void;
+    const done = new Promise<RunResult>((res) => (finish = res));
+    const run = { task: o.task, resume: d?.resume, h, closed: false, followUps: [] as string[], finish };
+    runs.push(run);
+    return {
+      followUp: (t: string) => void run.followUps.push(t),
+      interrupt: async () => {
+        run.closed = true;
+        finish({ ok: false, sessionId: "", summary: "interrupted", costUsd: 0 });
+      },
+      queued: () => 0,
+      active: () => false,
+      close: () => void (run.closed = true),
+      closed: () => run.closed,
+      done,
+    } as SessionRun;
+  };
+  return { start, runs };
+}
+
+const tick = async (n = 5) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+/** A temp git repo with one commit: a clean tree. */
+function gitScratch(): string {
+  const d = scratch();
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
+  g("init", "-q");
+  writeFileSync(join(d, "a.txt"), "1");
+  g("add", ".");
+  g("commit", "-q", "-m", "first");
+  return d;
+}
+
+const ok = (sessionId: string): RunResult => ({ ok: true, sessionId, summary: "done", costUsd: 0 });
+type HandoffCall = { folder: string; reason?: string; boundary?: string };
+
+function sweetHarness(occupancy: number) {
+  const f = liveFake();
+  const h = harness({ start: f.start });
+  const handoffs: HandoffCall[] = [];
+  const base = {
+    ...h.base,
+    signals: () => ({ occupancy, turns: 10, ageMs: 0, idleMs: 0 }),
+    handoff: async (s: { order: { folder: string } }, _c: unknown, d: { decision?: { reason?: string }; boundary?: string }) => {
+      handoffs.push({ folder: s.order.folder, reason: d.decision?.reason, boundary: d.boundary });
+    },
+  };
+  return { f, h, base: base as typeof h.base, handoffs };
+}
+
+test("a session that settles above the sweet spot is closed and handed off once, while the cache is warm", async () => {
+  const dir = gitScratch();
+  const { f, base, handoffs } = sweetHarness(0.7); // harness sweet spot is 0.65
+  await handleMessage(`/open ${dir} work`, 9, base);
+  const run = f.runs[0];
+  run.h.onTurnComplete?.(ok("s1"));
+  run.h.onSettled?.();
+  expect(run.closed).toBe(true);
+  run.finish(ok("s1"));
+  await tick();
+  expect(handoffs).toEqual([{ folder: dir, reason: "above-sweet-spot", boundary: "settled" }]);
+});
+
+test("a session that settles inside the sweet spot is left alone", async () => {
+  const dir = gitScratch();
+  const { f, base, handoffs } = sweetHarness(0.3);
+  await handleMessage(`/open ${dir} work`, 9, base);
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.();
+  expect(f.runs[0].closed).toBe(false);
+  expect(handoffs).toEqual([]);
+});
+
+test("uncommitted work defers a settle handoff, recorded once per session", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "wip.ts"), "half done");
+  const { f, h, base, handoffs } = sweetHarness(0.7);
+  await handleMessage(`/open ${dir} work`, 9, base);
+  for (let i = 0; i < 2; i++) {
+    f.runs[0].h.onTurnComplete?.(ok("s1"));
+    f.runs[0].h.onSettled?.();
+  }
+  expect(f.runs[0].closed).toBe(false);
+  expect(handoffs).toEqual([]);
+  expect(h.ledger.listContextEvents().map((e) => [e.verdict, e.boundary])).toEqual([["deferred", "settled"]]);
+});
+
+test("a message sent while a session closes for its handoff reaches the fresh session, not the closed one", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const b = {
+    ...base,
+    handoff: async (s: { id: string; order: { folder: string } }) => {
+      await slow;
+      h.registry.setSdkSessionId(s.id, "");
+      h.ledger.clearSessionsFor(s.order.folder);
+    },
+  } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.(); // closes run 0 for the handoff
+  const sent = handleMessage("and then the README", 9, b);
+  await tick();
+  f.runs[0].finish(ok("s1")); // the closed run ends; its handoff is now in flight
+  await tick();
+  expect(f.runs).toHaveLength(1); // still waiting for the handoff
+  release();
+  await sent;
+  await tick();
+  expect(f.runs[0].followUps).toEqual([]); // never pushed into the closed channel
+  expect(h.replies.some((r) => r.includes("handing off"))).toBe(true); // told why it waits
+  expect(f.runs).toHaveLength(2);
+  expect(f.runs[1].resume).toBeUndefined(); // a fresh session
+  expect(f.runs[1].task).toContain("and then the README");
+});
+
+test("a fresh start after a handoff gets the note inline and measures its orientation", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship the cart\n");
+  const { f, h, base } = sweetHarness(0.1);
+  const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1, { reason: "above-sweet-spot", boundary: "settled" });
+  await handleMessage(`/open ${dir} carry on`, 9, base);
+  expect(f.runs[0].task).toContain("ship the cart");
+  expect(f.runs[0].task).not.toContain("Read HANDOFF.md first");
+  const resumed = h.ledger.listContextEvents()[0];
+  expect(resumed).toMatchObject({ verdict: "resumed", detail: { handoffId } });
+  f.runs[0].h.onUsage?.("claude-opus-5-5", { input_tokens: 1 });
+  f.runs[0].h.onUsage?.("claude-opus-5-5", { input_tokens: 1 });
+  f.runs[0].h.onToolUse?.("e1", "Edit", { file_path: join(dir, "a.txt") });
+  expect(h.ledger.listContextEvents()[0].detail).toEqual({ handoffId, productive: true, steps: 2, success: true });
+});
+
+test("a safe checkpoint in the heavy band steers the worker to its note, then a continuation starts fresh", async () => {
+  const dir = gitScratch();
+  const { f, h, base, handoffs } = sweetHarness(0.1);
+  h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  await handleMessage(`/open ${dir} build all five phases`, 9, base);
+  const run = f.runs[0].h;
+  run.onUsage?.("claude-opus-5-5", { input_tokens: 2, cache_read_input_tokens: 819_998 }); // 82% ≥ checkpoint 0.8
+  run.onToolUse?.("c1", "Bash", { command: "git commit -m 'phase 2'" });
+  run.onToolResult?.("c1", false);
+  expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toContain("Neo context checkpoint");
+  expect(run.contextSteer?.("Write", { file_path: join(dir, "HANDOFF.md") })).toBeUndefined();
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nfive phases\n## Next steps\n1. phase 3\n"); // the worker obeys
+  run.onTurnComplete?.(ok("s1"));
+  run.onSettled?.();
+  expect(f.runs[0].closed).toBe(true);
+  f.runs[0].finish(ok("s1"));
+  await tick(10);
+  expect(handoffs).toEqual([]); // the worker wrote the note in its own context: no extra handoff turn
+  const ev = h.ledger.listContextEvents().find((e) => e.verdict === "handoff")!;
+  expect(ev).toMatchObject({ boundary: "checkpoint", reason: "heavy", sessionId: "s1" });
+  expect(ev.detail).toMatchObject({ written: true });
+  expect(f.runs).toHaveLength(2);
+  expect(f.runs[1].resume).toBeUndefined();
+  expect(f.runs[1].task).toContain("phase 3"); // the note, inline
+  expect(f.runs[1].task).toContain("Continue this task in a fresh session");
+});
+
+test("an operator message to an armed session disarms the steer — the operator's turn is never blocked", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.1);
+  h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  await handleMessage(`/open ${dir} long task`, 9, base);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  const run = f.runs[0].h;
+  run.onUsage?.("claude-opus-5-5", { input_tokens: 820_000 });
+  run.onToolUse?.("c1", "Bash", { command: "git commit -m x" });
+  run.onToolResult?.("c1", false);
+  expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toBeDefined();
+  await handleMessage("actually, fix the login first", 9, base);
+  expect(f.runs[0].followUps).toContain("actually, fix the login first");
+  expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toBeUndefined();
+});
+
+test("the resume gate defers a handoff over uncommitted work, and an emergency clear alerts the operator", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "wip.ts"), "x");
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.ledger.recordOrder({ id: "g1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h.ledger.recordSession("g1", "fat-id");
+  await handleMessage(`/open ${dir} continue`, 9, { ...h.base, signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }) });
+  expect(f.resumeSeen()).toBe("fat-id"); // kept: never reset over uncommitted work
+  expect(h.ledger.listContextEvents()[0]).toMatchObject({ verdict: "deferred", boundary: "resume", reason: "above-sweet-spot" });
+
+  const f2 = fakeStart();
+  const h2 = harness({ start: f2.start });
+  const alerts: Array<[string, string | undefined]> = [];
+  h2.ledger.recordOrder({ id: "g2", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h2.ledger.recordSession("g2", "full-id");
+  await handleMessage(`/open ${dir} continue`, 9, {
+    ...h2.base,
+    reply: (_c: number, t: string, _p?: string, pr?: string) => void alerts.push([t, pr]),
+    signals: () => ({ occupancy: 0.9, turns: 10, ageMs: 0, idleMs: 0 }),
+  } as typeof h2.base);
+  expect(h2.ledger.listContextEvents()[0]).toMatchObject({ verdict: "clear", reason: "emergency", boundary: "resume" });
+  expect(alerts.some(([t, pr]) => pr === "alert" && t.includes("emergency context clear"))).toBe(true);
+});
+
+test("a resumed session that ends before any edit records how far it got, with no success verdict", async () => {
+  const dir = gitScratch();
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nx\n");
+  const { f, h, base } = sweetHarness(0.1);
+  const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1);
+  await handleMessage(`/open ${dir} just a question`, 9, base);
+  f.runs[0].h.onUsage?.("claude-opus-5-5", { input_tokens: 1 });
+  f.runs[0].finish(ok("s9"));
+  await tick();
+  expect(h.ledger.listContextEvents().find((e) => e.verdict === "resumed")?.detail).toEqual({ handoffId, productive: false, steps: 1 });
+});
+
+// ---- code review 2026-10-06 (ADR-0021 follow-ups) ----
+
+test("a message that arrives during the handoff turn starts ONE fresh session — no second, context-free handoff", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const calls: string[] = [];
+  const b = {
+    ...base,
+    handoff: async (s: { id: string; sdkSessionId: string; order: { folder: string } }) => {
+      calls.push(s.sdkSessionId);
+      await slow;
+      h.registry.setSdkSessionId(s.id, "");
+      h.ledger.clearSessionsFor(s.order.folder);
+    },
+  } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.();
+  f.runs[0].finish(ok("s1")); // run ended; the (slow) handoff turn is now running, the control detached
+  await tick();
+  const sent = handleMessage("next thing", 9, b);
+  await tick();
+  release();
+  await sent;
+  await tick();
+  expect(calls).toEqual(["s1"]);
+  expect(f.runs).toHaveLength(2);
+  expect(f.runs[1].resume).toBeUndefined();
+  expect(f.runs[1].task).toContain("next thing");
+});
+
+test("a settle while an API retry is pending never closes the run — the retried brief is not lost", async () => {
+  const dir = gitScratch();
+  const { f, base } = sweetHarness(0.7);
+  let wake!: () => void;
+  const b = { ...base, sleep: () => new Promise<void>((r) => (wake = r)) } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  const run = f.runs[0];
+  run.h.onTurnComplete?.({ ok: false, sessionId: "s1", summary: "", costUsd: 0, apiError: "rate_limit" });
+  run.h.onSettled?.();
+  expect(run.closed).toBe(false);
+  wake();
+  await tick();
+  expect(run.followUps.length).toBe(1); // the retry reached the open channel
+});
+
+test("a message for a closing run whose end never comes is answered, not left hanging", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  const b = { ...base, cfg: { ...base.cfg, contextPolicy: { ...base.cfg.contextPolicy, handoffTimeoutMs: 10 } } } as typeof base;
+  const replies: string[] = [];
+  const b2 = { ...b, reply: (_c: number, t: string) => void replies.push(t) } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b2);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.(); // closed; the test never finishes the run
+  await handleMessage("hello?", 9, b2);
+  expect(replies.some((r) => r.includes("still closing"))).toBe(true);
+  expect(f.runs[0].followUps).toEqual([]);
+});
+
+test("an armed checkpoint that cannot complete (work appeared) tells the operator", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.1);
+  const replies: string[] = [];
+  const b = { ...base, reply: (_c: number, t: string) => void replies.push(t) } as typeof base;
+  h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  await handleMessage(`/open ${dir} long task`, 9, b);
+  const run = f.runs[0].h;
+  run.onUsage?.("claude-opus-5-5", { input_tokens: 820_000 });
+  run.onToolUse?.("c1", "Bash", { command: "git commit -m x" });
+  run.onToolResult?.("c1", false);
+  writeFileSync(join(dir, "late.ts"), "written after the checkpoint");
+  run.onTurnComplete?.(ok("s1"));
+  run.onSettled?.();
+  expect(f.runs[0].closed).toBe(false);
+  expect(replies.some((r) => r.includes("could not complete"))).toBe(true);
+});
+
+test("a resume gate whose wait ended on the bound starts fresh and never hands off the possibly-live session", async () => {
+  const dir = gitScratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.ledger.recordOrder({ id: "t1", source: "neo", folder: dir, task: "x", chatId: 9, createdAt: 0 });
+  h.ledger.recordSession("t1", "old-id");
+  trackHandoff(dir, new Promise<void>(() => {}), 10); // a handoff whose worker never ends
+  let handedOff = false;
+  await handleMessage(`/open ${dir} continue`, 9, {
+    ...h.base,
+    signals: () => ({ occupancy: 0.7, turns: 10, ageMs: 0, idleMs: 0 }),
+    handoff: async () => void (handedOff = true),
+  });
+  expect(handedOff).toBe(false);
+  expect(f.resumeSeen()).toBeUndefined(); // fresh
 });

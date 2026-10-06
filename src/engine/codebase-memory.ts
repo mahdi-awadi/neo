@@ -178,7 +178,7 @@ export function sharedCodebaseMemoryIndexer(cfg: NeoConfig): CodebaseMemoryIndex
   if (!bin) return undefined;
   let ix = sharedByBin.get(bin);
   if (!ix) {
-    ix = makeIndexer(stdioCodebaseMemoryClient(bin, { indexTimeoutMs: cfg.codebaseMemoryIndexTimeoutMs }), {
+    ix = makeIndexer(stdioCodebaseMemoryClient(bin, { indexTimeoutMs: cfg.codebaseMemoryIndexTimeoutMs, listTimeoutMs: cfg.codebaseMemoryListTimeoutMs }), {
       log: (m) => console.log(`  ${m}`),
     });
     sharedByBin.set(bin, ix);

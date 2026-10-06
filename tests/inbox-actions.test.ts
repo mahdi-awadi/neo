@@ -153,7 +153,7 @@ test("sendInboxReply posts the reply to the gateway and marks the item 'replied'
   };
   const ok = await sendInboxReply(ib, item.id, "  Here is your quote: $20  ", { url: "https://gw/send", secret: "sek" }, fakeFetch as any);
 
-  expect(ok).toBe(true);
+  expect(ok).toBe("sent");
   expect(seen.url).toBe("https://gw/send");
   expect(seen.auth).toBe("Bearer sek");
   expect(seen.body).toEqual({ to: "a@x.com", subject: "Re: Quote?", text: "Here is your quote: $20", inReplyTo: "<orig>" });
@@ -166,10 +166,10 @@ test("sendInboxReply leaves status untouched on a gateway failure or empty/unkno
   ib.setDraft(item.id, "d"); // status 'drafted'
   const failFetch = async () => ({ ok: false }) as Response;
 
-  expect(await sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, failFetch as any)).toBe(false);
+  expect(await sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, failFetch as any)).toBe("failed");
   expect(ib.get(item.id)!.status).toBe("drafted"); // unchanged on failure
-  expect(await sendInboxReply(ib, item.id, "   ", { url: "u", secret: "s" }, failFetch as any)).toBe(false); // empty reply
-  expect(await sendInboxReply(ib, "nope", "hi", { url: "u", secret: "s" }, failFetch as any)).toBe(false); // unknown id
+  expect(await sendInboxReply(ib, item.id, "   ", { url: "u", secret: "s" }, failFetch as any)).toBe("failed"); // empty reply
+  expect(await sendInboxReply(ib, "nope", "hi", { url: "u", secret: "s" }, failFetch as any)).toBe("failed"); // unknown id
 });
 
 test("draftInboxReply runs the brief TAINTED (zero-tool worker)", async () => {
@@ -196,4 +196,52 @@ test("draftInboxReply runs the brief TAINTED (zero-tool worker)", async () => {
   expect(draft).toBe("Dear C, ...");
   expect(seenDeps?.disallowedTools).toContain("Bash");
   expect(seenDeps?.mcpServers).toBeUndefined();
+});
+
+// Review fix: Send is idempotent on the draft version. A double tap, or a draft edited / already sent
+// while the approval waited, must never send twice or send text the operator did not approve.
+test("sendInboxReply with a draftVersion: a changed or already-sent draft is 'stale' and nothing is sent", async () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", subject: "S", text: "?" });
+  ib.setDraft(item.id, "v1");
+  const approved = ib.get(item.id)!.draftVersion;
+  let posts = 0;
+  const okFetch = async () => (posts++, { ok: true }) as Response;
+  ib.setDraft(item.id, "v2"); // edited while the approval waited
+  expect(await sendInboxReply(ib, item.id, "v1", { url: "u", secret: "s" }, okFetch as any, { draftVersion: approved })).toBe("stale");
+  expect(posts).toBe(0);
+  const current = ib.get(item.id)!.draftVersion;
+  expect(await sendInboxReply(ib, item.id, "v2", { url: "u", secret: "s" }, okFetch as any, { draftVersion: current })).toBe("sent");
+  expect(await sendInboxReply(ib, item.id, "v2", { url: "u", secret: "s" }, okFetch as any, { draftVersion: current })).toBe("stale"); // already replied
+  expect(posts).toBe(1);
+});
+
+test("sendInboxReply: a second send for the same item while one is in flight is 'busy' (double tap), then free again", async () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", subject: "S", text: "?" });
+  let release!: () => void;
+  let posts = 0;
+  const slowFetch = async () => {
+    posts++;
+    await new Promise<void>((r) => (release = r));
+    return { ok: false } as Response;
+  };
+  const first = sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, slowFetch as any);
+  expect(await sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, slowFetch as any)).toBe("busy");
+  release();
+  expect(await first).toBe("failed");
+  const again = sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, slowFetch as any);
+  release();
+  expect(await again).toBe("failed"); // the in-flight claim was released after the failure
+  expect(posts).toBe(2);
+});
+
+test("sendInboxReply never re-sends an item already replied, with or without a draftVersion (web path)", async () => {
+  const ib = openInbox(":memory:");
+  const item = ib.record({ from: "a@x.com", subject: "S", text: "?" });
+  let posts = 0;
+  const okFetch = async () => (posts++, { ok: true }) as Response;
+  expect(await sendInboxReply(ib, item.id, "hi", { url: "u", secret: "s" }, okFetch as any)).toBe("sent");
+  expect(await sendInboxReply(ib, item.id, "hi again", { url: "u", secret: "s" }, okFetch as any)).toBe("stale");
+  expect(posts).toBe(1);
 });

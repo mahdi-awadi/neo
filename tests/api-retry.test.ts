@@ -5,6 +5,7 @@ import { test, expect } from "bun:test";
 import {
   API_RETRY_DELAYS_MS,
   MAX_API_RETRIES,
+  apiExhaustionWarning,
   apiFailureNotice,
   apiHoldMessage,
   apiRetryDelayMs,
@@ -60,6 +61,45 @@ test("each retry is jittered +/-20% so simultaneously-throttled sessions do not 
 
 test("an attempt past the table stays at the longest delay rather than overflowing", () => {
   expect(apiRetryDelayMs(99, () => 0.5)).toBe(480_000);
+});
+
+// --- the ladder + jitter are config, not baked-in --------------------------------------------------
+
+test("the backoff ladder is configurable, defaulting to the built-in policy", () => {
+  const ladder = [1000, 5000];
+  expect(apiRetryDelayMs(1, () => 0.5, ladder, 0)).toBe(1000);
+  expect(apiRetryDelayMs(2, () => 0.5, ladder, 0)).toBe(5000);
+  expect(apiRetryDelayMs(99, () => 0.5, ladder, 0)).toBe(5000); // clamp to the last configured step
+  // Omitting the ladder falls back to the built-in default — behavior preserved.
+  expect(apiRetryDelayMs(1, () => 0.5)).toBe(30_000);
+});
+
+test("the jitter fraction is configurable (default 0.2 = ±20%)", () => {
+  expect(apiRetryDelayMs(1, () => 0, [1000], 0.5)).toBe(500); // -50%
+  expect(apiRetryDelayMs(1, () => 1, [1000], 0.5)).toBe(1500); // +50%
+  expect(apiRetryDelayMs(1, () => 0, [1000], 0)).toBe(1000); // no jitter
+});
+
+test("resolveApiRetryDelayMs takes a configurable ladder + jitter for the fallback path", () => {
+  const now = 1_700_000_000_000;
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits: [], now, rand: () => 0.5, ladder: [7000], jitterFrac: 0 }))
+    .toMatchObject({ delayMs: 7000, source: "ladder" });
+  // Reset path honors the same configurable jitter fraction.
+  const rl = [{ status: "rejected", resetsAt: now / 1000 + 100 }];
+  expect(resolveApiRetryDelayMs({ attempt: 1, rateLimits: rl, now, rand: () => 1, jitterFrac: 0.5 }).delayMs).toBe(150_000); // 100_000 × 1.5
+});
+
+test("shouldRetryApi's cap follows the configured ladder length, not a fixed 3", () => {
+  const base = { kind: "rate_limit" as const };
+  expect(shouldRetryApi({ ...base, attempt: 2, maxRetries: 2 })).toBe(true);
+  expect(shouldRetryApi({ ...base, attempt: 3, maxRetries: 2 })).toBe(false);
+  // Omitting maxRetries keeps the default cap (built-in ladder length).
+  expect(shouldRetryApi({ ...base, attempt: MAX_API_RETRIES })).toBe(true);
+});
+
+test("the operator notices show the configured cap in the countdown", () => {
+  expect(apiRetryNotice("safari", 1, 1000, undefined, 2)).toContain("1/2");
+  expect(apiFailureNotice("safari", "rate_limit", 2)).toContain("2 retries");
 });
 
 // --- reset-aware backoff (smart, not a blind ladder) --------------------------------------------
@@ -175,4 +215,35 @@ test("only server-side throttles arm the gate — a billing error must not freez
 
 test("the hold message tells the operator how long the engine is pausing", () => {
   expect(apiHoldMessage(45_000)).toContain("45s");
+});
+
+// `allowed_warning` means "approaching the limit", NOT rejected (usage.ts RateLimitInfo, rendered
+// as "near limit" by /usage). Treating it as governing makes a retry wait out the whole window —
+// up to 7 days for a seven_day window — for a transient error the API never actually refused.
+test("a window that is only WARNING (not rejected) does not govern the retry wait", () => {
+  const now = 1_700_000_000_000;
+  const out = resolveApiRetryDelayMs({
+    attempt: 1,
+    rateLimits: [{ status: "allowed_warning", rateLimitType: "seven_day", resetsAt: now / 1000 + 5 * 86400 }],
+    now,
+    rand: () => 0,
+  });
+  expect(out.source).toBe("ladder");
+  expect(out.delayMs).toBeLessThan(60_000); // the 30s ladder step, not five days
+});
+
+test("apiExhaustionWarning names the soonest rejecting window and stays quiet otherwise", () => {
+  const now = 1_700_000_000_000;
+  expect(apiExhaustionWarning(undefined, now)).toBeUndefined();
+  expect(apiExhaustionWarning([], now)).toBeUndefined();
+  // only warning, or already reset → nothing to say
+  expect(apiExhaustionWarning([{ status: "allowed_warning", resetsAt: now / 1000 + 600 }], now)).toBeUndefined();
+  expect(apiExhaustionWarning([{ status: "rejected", resetsAt: now / 1000 - 600 }], now)).toBeUndefined();
+
+  const soon = now / 1000 + 600;
+  const msg = apiExhaustionWarning(
+    [{ status: "rejected", rateLimitType: "seven_day", resetsAt: now / 1000 + 86400 }, { status: "rejected", rateLimitType: "five_hour", resetsAt: soon }],
+    now,
+  );
+  expect(msg).toContain(new Date(soon * 1000).toUTCString());
 });

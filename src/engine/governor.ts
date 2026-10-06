@@ -1,14 +1,39 @@
 // Deterministic tool policy: allow a known-safe set, path-fence writes, escalate everything
 // else to a human. Default-ESCALATE: a tool this file doesn't recognize asks the operator.
 // This is half of the "AI orders, engine governs" boundary (the other half is the provider
-// firewall). Wired into the SDK via the `canUseTool` callback. Autonomous paths (loops,
+// firewall). Wired into the SDK twice, through this ONE function: a PreToolUse hook (runs before a
+// project's settings allow rules; ADR-0006) and the `canUseTool` callback. Autonomous paths (loops,
 // customer-driven briefs) auto-deny escalations, so for them default-escalate = default-deny.
 import { resolve, sep } from "node:path";
 import type { Verdict } from "../types";
 
+/** `governor.outOfFolderWrites`: the operator's standing answer to an out-of-folder file write
+ *  (ADR-0012). "allow" = no escalation; "ask" = a fence escalation (ADR-0011). */
+export type OutOfFolderWrites = "allow" | "ask";
+
+/** The `governor` config block. See docs/CONFIG.md. */
+export interface GovernorCfg {
+  /** OPERATOR ORDER (2026-10-06): "allow" — writes outside the project folder never ask, for any
+   *  project. Own work only: customer-sourced work and ingress keep the fence. */
+  outOfFolderWrites: OutOfFolderWrites;
+  /** Re-notify the operator about a still-pending approval this often (ms). 0 = never. */
+  approvalRemindMs: number;
+  /** Deny a pending approval nobody answered after this long (ms), so a run never waits forever.
+   *  0 = wait for the operator. */
+  approvalTimeoutMs: number;
+}
+
+export const DEFAULT_GOVERNOR_CFG: GovernorCfg = {
+  outOfFolderWrites: "allow",
+  approvalRemindMs: 30 * 60 * 1000,
+  approvalTimeoutMs: 2 * 60 * 60 * 1000,
+};
+
 /** Per-session context the governor judges against (the worker's project folder = SDK cwd). */
 export interface GovernorCtx {
   folder: string;
+  /** Absent or anything but "allow" = "ask" (fails closed). */
+  outOfFolderWrites?: OutOfFolderWrites;
 }
 
 /** Risky bash patterns that must never auto-run — they escalate to Neo. Defense-in-depth
@@ -30,7 +55,8 @@ export const SAFE_TOOLS = new Set([
   "Agent",
 ]);
 
-/** Tools that write files — allowed only inside the session's project folder. */
+/** Tools that write files — allowed inside the session's project folder; outside it, per
+ *  `outOfFolderWrites`. */
 const FENCED_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
 /** True iff `filePath` (absolute or folder-relative) resolves inside `folder`. Fails closed. */
@@ -64,8 +90,12 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
     const raw = tool === "NotebookEdit" ? input.notebook_path : input.file_path;
     const path = typeof raw === "string" ? raw : "";
     if (insideFolder(path, ctx.folder)) return { allow: true };
+    // The operator's standing approval (ADR-0012). Still needs a path: an empty one writes nothing.
+    if (path && ctx.outOfFolderWrites === "allow") return { allow: true };
+    // A fence escalation: the operator may approve it, but trust never does (ADR-0011).
     return {
       escalate: `file write outside the project folder: ${path || "(no path)"} (folder: ${ctx.folder || "(unset)"})`,
+      fenced: true,
     };
   }
 

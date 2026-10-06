@@ -7,14 +7,27 @@
 // its own output. So a mirrored line can never become an order or re-broadcast — structurally, not
 // by convention. `mirror(originId, …)` excludes the origin (which already displayed the line
 // locally): that exclusion is both the loop guard and the de-dupe.
+import type { Priority } from "./priority";
 
 /** One line to display across surfaces. `reply` = Neo output / worker progress; `echo` = the
  *  operator's own inbound message arriving from another surface; `notice` = display-only chrome
- *  (e.g. "approval pending on the other surface"). */
+ *  (e.g. "approval pending on the other surface"). A `reply` carries an optional `priority` so a
+ *  surface can style/route it (e.g. the web can badge a DECISION); absent = today's PROGRESS. */
 export type BusLine =
-  | { kind: "reply"; text: string; project?: string }
-  | { kind: "echo"; text: string }
+  | ({ kind: "reply"; text: string; project?: string; priority?: Priority } & LineIds)
+  | ({ kind: "echo"; text: string } & LineIds)
   | { kind: "notice"; text: string };
+
+/** The recorded line (its message ref) and its thread, when the engine traced it (ADR-0015). */
+export interface LineIds {
+  msgId?: number;
+  threadId?: number;
+}
+
+/** Only the ids that are known — an untraced line carries neither key. */
+export function knownIds(ids: LineIds): LineIds {
+  return { ...(ids.msgId !== undefined ? { msgId: ids.msgId } : {}), ...(ids.threadId !== undefined ? { threadId: ids.threadId } : {}) };
+}
 
 /** A connected operator surface. `id` is the origin tag ("telegram" | "web"); `deliver` renders the
  *  line on that surface and MUST NOT re-enter the pipeline. */

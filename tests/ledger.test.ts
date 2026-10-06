@@ -1,4 +1,8 @@
 import { test, expect } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { openLedger, EVENTS_KEEP, EVENTS_PRUNE_INTERVAL } from "../src/engine/ledger";
 import type { Order } from "../src/types";
 
@@ -149,6 +153,19 @@ test("recordEvent with no data reads back data: undefined and null columns as un
   expect(l.listEvents()[0]).toEqual({ kind: "session_interrupted", at: 5, orderId: undefined, sessionId: undefined, folder: undefined, data: undefined });
 });
 
+test("retention caps are configurable via openLedger opts (not hardcoded)", () => {
+  const l = openLedger(":memory:", { eventsKeep: 10, routeKeep: 3 });
+  // The prune fires exactly on the EVENTS_PRUNE_INTERVAL-th insert, trimming to the CONFIGURED
+  // cap of 10 (the built-in default of 50 000 would leave all 1000).
+  for (let i = 0; i < EVENTS_PRUNE_INTERVAL; i++) l.recordEvent("tick", { at: i });
+  expect(l.listEvents({ limit: 9999 }).length).toBe(10);
+  expect(l.listEvents({ limit: 1 })[0].at).toBe(EVENTS_PRUNE_INTERVAL - 1); // newest survives
+  // Routes prune on every insert; only the newest routeKeep=3 (messageIds 7,8,9) survive.
+  for (let m = 0; m < 10; m++) l.rememberRoute(1, m, { sessionId: "s", folder: "/f", project: "p" });
+  expect(l.routeFor(1, 9)).toBeDefined();
+  expect(l.routeFor(1, 6)).toBeUndefined();
+});
+
 test("events retention prunes to bound the table (never unbounded growth)", () => {
   const l = openLedger(":memory:");
   const total = EVENTS_KEEP + EVENTS_PRUNE_INTERVAL + 5;
@@ -160,4 +177,79 @@ test("events retention prunes to bound the table (never unbounded growth)", () =
   expect(count).toBeLessThan(total);
   // Newest rows are the ones kept (oldest pruned): the most recent event survives.
   expect(l.listEvents({ limit: 1 })[0].at).toBe(total - 1);
+});
+
+test("folders lists every distinct folder an order was ever recorded for", () => {
+  const led = openLedger(":memory:");
+  expect(led.folders()).toEqual([]);
+  led.recordOrder(order({ id: "a", folder: "/p/b" }));
+  led.recordOrder(order({ id: "b", folder: "/p/a" }));
+  led.recordOrder(order({ id: "c", folder: "/p/b" }));
+  expect(led.folders()).toEqual(["/p/a", "/p/b"]);
+});
+
+test("model windows: the newest SDK-reported window per model wins (ADR-0013)", () => {
+  const l = openLedger(":memory:");
+  expect(l.modelWindows()).toEqual({});
+  l.recordModelWindow("claude-opus-5-5", 200_000, 1);
+  l.recordModelWindow("claude-opus-5-5", 1_000_000, 2);
+  l.recordModelWindow("claude-haiku-4-5", 200_000, 3);
+  expect(l.modelWindows()).toEqual({ "claude-opus-5-5": 1_000_000, "claude-haiku-4-5": 200_000 });
+});
+
+// ADR-0021: every context reset is one row with its reason, the boundary it fired at, and detail.
+test("a context event records reason, boundary, session and detail, and returns its id", () => {
+  const l = openLedger(":memory:");
+  const id = l.recordContextEvent("/p/gold", "handoff", 0.52, 100, { reason: "above-sweet-spot", boundary: "settled", sessionId: "s1", detail: { written: true } });
+  expect(id).toBeGreaterThan(0);
+  expect(l.listContextEvents()[0]).toEqual({ id, folder: "/p/gold", verdict: "handoff", occupancy: 0.52, at: 100, reason: "above-sweet-spot", boundary: "settled", sessionId: "s1", detail: { written: true } });
+  l.recordContextEvent("/p/gold", "clear", 0.95, 50); // the pre-ADR-0021 four-argument call still works
+  expect(l.listContextEvents()[1]).toMatchObject({ verdict: "clear", reason: undefined, detail: undefined });
+});
+
+test("context events list per folder, newest first, capped", () => {
+  const l = openLedger(":memory:");
+  l.recordContextEvent("/p/a", "handoff", 0.5, 1);
+  l.recordContextEvent("/p/b", "handoff", 0.5, 2);
+  l.recordContextEvent("/p/a", "deferred", 0.5, 3);
+  expect(l.listContextEvents({ folder: "/p/a" }).map((e) => e.verdict)).toEqual(["deferred", "handoff"]);
+  expect(l.listContextEvents({ limit: 1 }).map((e) => e.at)).toEqual([3]);
+  expect(l.listContextEvents(2)).toHaveLength(2); // legacy numeric limit
+});
+
+test("updateContextEventDetail merges into the row's detail", () => {
+  const l = openLedger(":memory:");
+  const id = l.recordContextEvent("/p/a", "resumed", 0, 1, { detail: { handoffId: 7 } });
+  l.updateContextEventDetail(id, { steps: 12, success: true });
+  expect(l.listContextEvents()[0].detail).toEqual({ handoffId: 7, steps: 12, success: true });
+});
+
+test("pendingHandoff: the newest handoff of a folder until a resumed row follows it", () => {
+  const l = openLedger(":memory:");
+  expect(l.pendingHandoff("/p/a")).toBeUndefined();
+  const h = l.recordContextEvent("/p/a", "handoff", 0.5, 10, { reason: "above-sweet-spot" });
+  l.recordContextEvent("/p/a", "deferred", 0.5, 11); // other verdicts don't consume it
+  expect(l.pendingHandoff("/p/a")?.id).toBe(h);
+  expect(l.pendingHandoff("/p/b")).toBeUndefined();
+  l.recordContextEvent("/p/a", "resumed", 0, 12);
+  expect(l.pendingHandoff("/p/a")).toBeUndefined();
+});
+
+test("an old ledger's context_events table gains the new columns on open", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-ctxmig-"));
+  const path = join(dir, "l.db");
+  const old = new Database(path);
+  old.run(`CREATE TABLE context_events (folder TEXT NOT NULL, verdict TEXT NOT NULL, occupancy REAL NOT NULL, at INTEGER NOT NULL)`);
+  old.run(`INSERT INTO context_events VALUES ('/p/a', 'clear', 1.5, 1)`);
+  old.close();
+  const l = openLedger(path);
+  l.recordContextEvent("/p/a", "handoff", 0.5, 2, { reason: "heavy", boundary: "checkpoint" });
+  expect(l.listContextEvents().map((e) => [e.verdict, e.reason])).toEqual([["handoff", "heavy"], ["clear", undefined]]);
+});
+
+test("an emergency clear after a handoff consumes it — a stale note is never inlined", () => {
+  const l = openLedger(":memory:");
+  l.recordContextEvent("/p/a", "handoff", 0.5, 10);
+  l.recordContextEvent("/p/a", "clear", 0.95, 20);
+  expect(l.pendingHandoff("/p/a")).toBeUndefined();
 });

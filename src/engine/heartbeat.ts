@@ -5,6 +5,7 @@
 // its own period, so a fast interval loop takes effect immediately with no restart. Disabled loops
 // contribute nothing — matching the scheduler's own enabled resolution (isEnabled ?? enabledByDefault).
 import type { Trigger } from "./trigger";
+import type { FaultReporter } from "./fault";
 
 /** Cron's own resolution: a 5-field cron expression can't fire more than once a minute. This is a
  *  fact of cron, not tuning — the floor the derived heartbeat never goes below on its own. */
@@ -49,4 +50,20 @@ export function heartbeatMs(loops: HeartbeatLoop[]): number {
  *  never busy-loop. Deterministic: pure function of (nowMs, hbMs). */
 export function nextTickDelayMs(nowMs: number, hbMs: number): number {
   return hbMs - (nowMs % hbMs);
+}
+
+/** One heartbeat tick (ADR-0010): each named step is its own unit of work. A step that throws — or
+ *  returns a promise that rejects — is reported as an engine fault (`heartbeat.<name>`) and the
+ *  remaining steps still run, so one failure cannot stop the watchdog, the scheduler or the todo pump.
+ *  `rearm` runs last, always, so the tick chain itself never breaks. */
+export function runHeartbeatTick(
+  steps: Array<[name: string, step: () => unknown]>,
+  rearm: () => void,
+  r: Pick<FaultReporter, "contain">,
+): void {
+  try {
+    for (const [name, step] of steps) r.contain(`heartbeat.${name}`, step);
+  } finally {
+    rearm();
+  }
 }

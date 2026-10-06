@@ -1,7 +1,8 @@
 # Design: always-on company · 24h normal idle · per-project trust · file transfer
 
 **Date:** 2026-06-20
-**Status:** implemented; amended 2026-07-28 for explicit `/trust` targets
+**Status:** implemented; amended 2026-07-28 for explicit `/trust` targets; amended 2026-10-02 for
+trusting new projects by default
 
 ## Problem
 
@@ -27,6 +28,9 @@ Three operator pain points, plus one capability gap:
   (`provider-router`), and customer work never carries trust.
 - **Trust is per-project**, keyed by folder path.
 - **Trust is off by default**, turned on once via a command, and **persisted** across restarts.
+  *Amended 2026-10-02:* a **new** project (a folder Neo has never seen) now starts trusted when
+  `trustNewProjects` is on (default `true`, operator choice). Existing projects keep their state and
+  an explicit `/trust off` is remembered — see "Amendment 2026-10-02" in Part 3.
 - **Audit replaces the human gate.** Because trust removes the human approval, the engine *records*
   every auto-approved action (the "AI decides, engine records" invariant), and shows the operator a
   non-blocking FYI line.
@@ -95,6 +99,22 @@ export function openTrustStore(path: string): TrustStore; // bun:sqlite
 Backed by its own `data/trust.db` (`CREATE TABLE IF NOT EXISTS trust(folder TEXT PRIMARY KEY)`).
 `setTrust(folder, true)` = `INSERT OR IGNORE`; `setTrust(folder, false)` = `DELETE`. Untrusted is
 the absence of a row.
+
+**Amendment 2026-10-02 — new projects start trusted (operator choice).** The operator asked for
+`/trust` to be on by default for new projects. "No row" still means *not trusted*: changing that
+would have silently given full auto-approve to every existing project. Instead:
+
+- Each row is a folder Neo has **seen**, with `state` `on` or `off` (schema `user_version` 1). The
+  migration adds `state` with default `on` (every legacy row was trusted) and, once, records every
+  folder in the ledger's order history (`ledger.folders()`) as `off` — those are existing projects.
+- `setTrust(folder, false)` now writes an `off` row instead of deleting, so an explicit `/trust off`
+  is remembered. `isTrusted` and `list` read only `on` rows.
+- New `noteProject(folder)`: a never-seen folder gets a row — `on` when `trustNewProjects`
+  (config, default `true`), else `off`; a seen folder is left alone. `noteProjectStart(deps, order)`
+  calls it at the start of every operator session (`pipeline.ts` `startSession`, `dispatch.ts`
+  `dispatchToProject`) and records a `trust_default_on` ledger event when it trusts a folder.
+- Firewall unchanged: a `source:"customer"` order never seeds trust, and the customer path runs on
+  `denyAllTrust()`, whose `noteProject` never trusts.
 
 ### Enforcement (engine, frontend-agnostic)
 

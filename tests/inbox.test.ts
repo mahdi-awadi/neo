@@ -38,3 +38,28 @@ test("record defaults receivedAt and assigns a unique id; status starts 'new'", 
   expect(x.status).toBe("new");
   expect(x.fromName).toBe(""); // optional fields default to empty
 });
+
+test("draftVersion starts at 0 and bumps on every setDraft (the send idempotency key)", () => {
+  const ib = openInbox(":memory:");
+  const x = ib.record({ from: "a@x.com", subject: "s", text: "t" });
+  expect(x.draftVersion).toBe(0);
+  ib.setDraft(x.id, "one");
+  ib.setDraft(x.id, "one"); // same text, still a new version — an edit happened
+  expect(ib.get(x.id)?.draftVersion).toBe(2);
+});
+
+test("an inbox file from before draft_version gains the column (existing rows at 0)", () => {
+  const path = `${require("node:os").tmpdir()}/inbox-legacy-${crypto.randomUUID()}.db`;
+  const { Database } = require("bun:sqlite");
+  const legacy = new Database(path);
+  legacy.run(`CREATE TABLE inbox (id TEXT PRIMARY KEY, channel TEXT NOT NULL DEFAULT 'email', from_addr TEXT NOT NULL,
+    from_name TEXT NOT NULL DEFAULT '', to_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+    body_text TEXT NOT NULL DEFAULT '', body_html TEXT NOT NULL DEFAULT '', message_id TEXT NOT NULL DEFAULT '',
+    received_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'new', draft TEXT NOT NULL DEFAULT '')`);
+  legacy.run(`INSERT INTO inbox (id, from_addr, received_at, status, draft) VALUES ('old', 'a@x', 1, 'drafted', 'hi')`);
+  legacy.close();
+  const ib = openInbox(path);
+  expect(ib.get("old")).toMatchObject({ draft: "hi", draftVersion: 0 });
+  ib.setDraft("old", "edited");
+  expect(ib.get("old")?.draftVersion).toBe(1);
+});

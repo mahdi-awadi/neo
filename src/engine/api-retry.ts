@@ -23,51 +23,75 @@ export function isRetryableApiError(kind?: ApiErrorKind): boolean {
   return kind !== undefined && RETRYABLE.has(kind);
 }
 
-/** Second-tier backoff: the SDK already burned its own fast retries before we got here. */
+/** Second-tier backoff DEFAULTS: the SDK already burned its own fast retries before we got here.
+ *  These are the built-in fallback; the operator can override the ladder via config
+ *  (`apiRetryLadderMs`) — the number of retries is DERIVED from the ladder's length, so a longer
+ *  ladder means more retries with no separate knob to keep in sync. */
 export const API_RETRY_DELAYS_MS = [30_000, 120_000, 480_000] as const;
 export const MAX_API_RETRIES = API_RETRY_DELAYS_MS.length;
 
-/** Default hold on new background work after a throttle report. */
+/** Default hold on new background work after a throttle report (config: `apiCooldownMs`). */
 export const API_COOLDOWN_MS_DEFAULT = 60_000;
 
-/** Wait before retry `attempt` (1-based), jittered +/-20% so co-throttled sessions spread out. */
-export function apiRetryDelayMs(attempt: number, rand: () => number = Math.random): number {
-  const base = API_RETRY_DELAYS_MS[Math.min(Math.max(attempt, 1), MAX_API_RETRIES) - 1];
-  return Math.round(base * (0.8 + 0.4 * rand()));
+/** Default jitter magnitude (config: `apiRetryJitterFrac`): ladder waits get ±frac; a reset-based
+ *  wait gets +frac only (never *earlier* than the reported reset, or we just earn another 429). */
+export const API_RETRY_JITTER_FRAC_DEFAULT = 0.2;
+
+/** Wait before retry `attempt` (1-based), jittered ±`jitterFrac` so co-throttled sessions spread
+ *  out. `ladder`/`jitterFrac` default to the built-in policy — pass the config values to tune. */
+export function apiRetryDelayMs(
+  attempt: number,
+  rand: () => number = Math.random,
+  ladder: readonly number[] = API_RETRY_DELAYS_MS,
+  jitterFrac: number = API_RETRY_JITTER_FRAC_DEFAULT,
+): number {
+  const steps = ladder.length > 0 ? ladder : API_RETRY_DELAYS_MS;
+  const base = steps[Math.min(Math.max(attempt, 1), steps.length) - 1];
+  return Math.round(base * (1 - jitterFrac + 2 * jitterFrac * rand()));
 }
 
-/** Spread applied to a reset-based wait — one-sided (never *earlier* than the reported reset, or we
- *  just earn another 429), same 20% magnitude as the ladder's jitter so the two behave alike. */
-export const RESET_JITTER_FRAC = 0.2;
+/** @deprecated superseded by the configurable `apiRetryJitterFrac`; kept as the documented default. */
+export const RESET_JITTER_FRAC = API_RETRY_JITTER_FRAC_DEFAULT;
 
 /** Smart backoff. The subscription's rate_limit_event tells us the *actual* epoch-second `resetsAt`
  *  for each window; when a window is throttling us, wait until its real reset (jittered up only)
- *  instead of a blind 30s→2m→8m ladder that will just keep failing for the whole window. The ladder
- *  is the fallback for when the API told us nothing (or the reported reset already passed). */
+ *  instead of a blind ladder that will just keep failing for the whole window. The ladder is the
+ *  fallback for when the API told us nothing (or the reported reset already passed). `ladder`/
+ *  `jitterFrac` default to the built-in policy — pass the config values to tune. */
 export function resolveApiRetryDelayMs(opts: {
   attempt: number;
   rateLimits?: RateLimitInfo[];
   now: number; // epoch ms
   rand?: () => number;
+  ladder?: readonly number[];
+  jitterFrac?: number;
 }): { delayMs: number; source: "reset" | "ladder"; resetsAt?: number } {
   const rand = opts.rand ?? Math.random;
-  // A window is "governing" if it rejected us (or, lacking a status, simply carries a future reset).
+  const jitterFrac = opts.jitterFrac ?? API_RETRY_JITTER_FRAC_DEFAULT;
+  // A window is "governing" only if it actually REJECTED us. `allowed_warning` means we are merely
+  // approaching that window's limit — waiting out its full reset (up to 7 days for `seven_day`) for
+  // a transient error the API never refused parks the session for days. Lacking a status at all we
+  // still treat a future reset as governing: the SDK only reports a window when it is biting.
   const future = (opts.rateLimits ?? []).filter(
-    (r) => typeof r.resetsAt === "number" && r.resetsAt * 1000 > opts.now && r.status !== "allowed",
+    (r) => typeof r.resetsAt === "number" && r.resetsAt * 1000 > opts.now && (r.status === undefined || r.status === "rejected"),
   );
   if (future.length > 0) {
     const soonest = future.reduce((a, b) => (a.resetsAt! <= b.resetsAt! ? a : b));
     const base = soonest.resetsAt! * 1000 - opts.now;
-    return { delayMs: Math.round(base * (1 + RESET_JITTER_FRAC * rand())), source: "reset", resetsAt: soonest.resetsAt };
+    return { delayMs: Math.round(base * (1 + jitterFrac * rand())), source: "reset", resetsAt: soonest.resetsAt };
   }
-  return { delayMs: apiRetryDelayMs(opts.attempt, rand), source: "ladder" };
+  return { delayMs: apiRetryDelayMs(opts.attempt, rand, opts.ladder ?? API_RETRY_DELAYS_MS, jitterFrac), source: "ladder" };
 }
 
-/** Gate every automatic retry: bounded, and never fighting the operator, a reload or the budget. */
+/** Gate every automatic retry: bounded, and never fighting the operator, a reload or the budget.
+ *  `maxRetries` defaults to the built-in ladder length; pass the configured ladder's length so the
+ *  cap follows the operator's ladder instead of a fixed 3. */
 export function shouldRetryApi(opts: {
   kind?: ApiErrorKind;
   /** 1-based number of the retry being considered. */
   attempt: number;
+  /** Cap on automatic retries — defaults to the built-in ladder length. */
+  maxRetries?: number;
   /** Reload/drain in progress — the process is about to exit. */
   draining?: boolean;
   /** The operator interrupted or killed this session. */
@@ -76,7 +100,7 @@ export function shouldRetryApi(opts: {
   throttled?: boolean;
 }): boolean {
   if (!isRetryableApiError(opts.kind)) return false;
-  if (opts.attempt > MAX_API_RETRIES) return false;
+  if (opts.attempt > (opts.maxRetries ?? MAX_API_RETRIES)) return false;
   return !opts.draining && !opts.interrupted && !opts.throttled;
 }
 
@@ -104,12 +128,18 @@ export function apiRetryFollowUp(task: string): string {
 /** "⏳ safari hit an API rate limit — retrying in 30s (1/3)." When the wait comes from the API's
  *  real reset (`resetsAt`, epoch seconds), name the wall-clock resume time instead of a countdown to
  *  giving up — a reset-based retry isn't racing a cap, it's simply waiting out the window. */
-export function apiRetryNotice(project: string | undefined, attempt: number, delayMs: number, resetsAt?: number): string {
+export function apiRetryNotice(
+  project: string | undefined,
+  attempt: number,
+  delayMs: number,
+  resetsAt?: number,
+  maxRetries: number = MAX_API_RETRIES,
+): string {
   const who = project ? `${project} ` : "";
   if (resetsAt) {
     return `⏳ ${who}hit an API rate limit — auto-resuming at ${new Date(resetsAt * 1000).toUTCString()} (in ${humanDelay(delayMs)}).`;
   }
-  return `⏳ ${who}hit an API rate limit — retrying in ${humanDelay(delayMs)} (${attempt}/${MAX_API_RETRIES}).`;
+  return `⏳ ${who}hit an API rate limit — retrying in ${humanDelay(delayMs)} (${attempt}/${maxRetries}).`;
 }
 
 /** The give-up line. Says plainly that the work did NOT happen, so nothing is dropped in silence.
@@ -127,6 +157,24 @@ export function apiFailureNotice(project: string | undefined, kind: ApiErrorKind
         : "without retrying"
       : `after ${attempts} ${attempts === 1 ? "retry" : "retries"}`;
   return `✗ ${who}${why} ${ran} — the work is NOT done. Re-run it when you're ready.`;
+}
+
+/** The operator-facing warning when Anthropic is actively REJECTING a window (not merely warning),
+ *  with its real reset still ahead of us. Advisory only: the engine never refuses the operator's
+ *  own turn — only Anthropic can, and when it does the retry path above reports it honestly. This
+ *  exists so the operator learns the true reason and reset time up front instead of a misleading
+ *  engine-side "throttled" line. Returns undefined when nothing is rejecting us. */
+export function apiExhaustionWarning(rateLimits: RateLimitInfo[] | undefined, now: number): string | undefined {
+  const rejected = (rateLimits ?? []).filter(
+    (r) => r.status === "rejected" && typeof r.resetsAt === "number" && r.resetsAt * 1000 > now,
+  );
+  if (rejected.length === 0) return undefined;
+  const soonest = rejected.reduce((a, b) => (a.resetsAt! <= b.resetsAt! ? a : b));
+  const at = soonest.resetsAt! * 1000;
+  return (
+    `⚠ Anthropic is rate-limiting the subscription until ${new Date(at).toUTCString()} ` +
+    `(in ${humanDelay(at - now)}) — starting your turn anyway; it may fail until then.`
+  );
 }
 
 /** What a held dispatch/loop fire reports back. */

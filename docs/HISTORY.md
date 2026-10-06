@@ -53,7 +53,10 @@ window (`dispatchGraceMs`, 75s: commit green work + WIP note) before the hard ab
 stuck-watchdog alerts the admin when a running session goes silent. Every dispatched brief is
 auto-prefixed (`briefWithProjectDocs`) with a preamble telling the worker to read its own rule/doc
 `.md` files, use the `codebase-memory` MCP FIRST for a structural map (**REQUIRED**, not "if
-indexed" — read source files only for what the map misses), and use the superpowers skills — the
+indexed" — call `list_projects` first and pass the exact project name it returns for the working
+directory, never a guessed one, because a repo can be indexed under a path-derived name or in a
+subfolder as its own project; then read source files only for what the map misses), and use the
+superpowers skills — the
 engine appends it so the operator never has to and it can't be omitted. The "must use
 codebase-memory" instruction is made satisfiable in code: before a worker starts, the engine
 (`ensureIndexed` in `src/engine/codebase-memory.ts`) checks the target folder against
@@ -206,3 +209,661 @@ ladder), and restarts cold ONCE, replaying the brief plus anything queued so no 
 Ids with no recorded owner (written before this) are still tried — continuity is worth a round-trip,
 and recovery re-mints a tagged id — so the stuck company self-heals on its first message after
 reload. Verified against the real SDK end-to-end, not just fakes. TDD; full suite green (630).
+
+**Operational limits config-ified — live:** the last hardcoded operational bounds moved into `config`
+behind the usual env→file→default precedence, so tuning them is a `config.json` edit, not a code
+change (every default preserves today's behavior). API-throttle recovery is now data-driven:
+`apiRetryLadderMs` is the second-tier backoff ladder whose *length* also sets how many automatic
+retries run (no separate count knob), `apiRetryJitterFrac` adds per-wait jitter so co-throttled
+workers don't resync, and `apiCooldownMs` is an engine-wide hold on **new** background work after a
+throttle report so retries + the scheduler can't amplify a rate-limit storm. Ledger retention is
+capped by `routeKeep` (message→project routes) + `eventsKeep` (the `events` table), oldest rows
+pruned in amortised batches with the ledger still the source of truth. The remaining assumed bounds
+became knobs too — `codebaseMemoryListTimeoutMs`, `inboxListDefault`, `messageRoutesCacheCap`, and
+`contextPolicy.cacheObsWindow` (the learned-cache-TTL rolling sample size). Full reference in
+`docs/CONFIG.md`.
+
+**Telegram delivery robustness — fixed:** three gaps in how worker progress reached the operator.
+*(1) Long reports were silently dropped* — Telegram's `sendMessage` rejects any text over 4096 chars
+(verified empirically), and the single-shot send fell through to a silent catch, so long/table-heavy
+reports delivered only the short narration lines. `chunkText` + `deliverChunked` (`format.ts`) now
+split on line boundaries under the 4096 cap, send each chunk as rich HTML, and hard-split to plain
+text if the markup is rejected — never drop, only the first chunk is tagged. *(2) Tables broke across
+chunks* — a plain line-boundary split orphaned a table's body rows from the header+separator that
+`mdToHtml` needs to detect a table, so continuation chunks leaked raw `| … |` pipes. `chunkMarkdown`
+is table-aware: it keeps a table whole where it fits, or splits on row boundaries and re-emits the
+header+separator at the top of each piece, so every chunk is independently detectable and renders as
+an aligned `<pre>` (the web-console `tables:"html"` path is unchanged). *(3) Tool results were
+invisible* — the stream showed the `🔧 Bash: …` milestone but never the command's output.
+`session-runner.ts` now surfaces a concise `↳ <output>` preview (`⚠️ ↳` on error, truncated to 600
+chars) for the meaningful tools (Bash/web/MCP/Task), gated by a `tool_use` id→name map; navigation
+(Read/Glob/Grep) and boring writers (Write/Edit) stay result-silent so the stream isn't a firehose.
+Requires a daemon restart to activate. TDD; full suite green (655).
+
+**Dispatch false-busy → deliver to an idle session — fixed:** a company dispatch to a live project
+could report it "busy" and queue behind it even when the session sat idle between turns, because the
+guard decided on the registry `status`. But `status` stays `"running"` for a live session's whole
+lifetime — it flips to `"idle"` only when the entire run ends — so it can't tell a worker mid-turn
+from one waiting for the next brief. A new turn-in-flight signal, `SessionControl.active()`, reports
+the real state. The Claude runner counts turn boundaries: a message `delivered` to the SDK against
+its `result` `completed`, with monotonic counters in the run scope so they survive a resume-missing
+restart (which recreates the input channel). The Codex runner flips a flag around each
+`consumeCodexTurn` — the same contract, so the busy/idle decision is provider-neutral. `dispatch.ts`
+now branches on `active()`, not on `status`. An **idle** live session takes the brief **now** (its
+input channel pulls it immediately, exactly like a fresh dispatch, so a free project is never parked
+behind a false "busy"). A **mid-turn** session **queues** behind the in-flight turn, like an operator
+reply, and the channel flushes it the moment that turn yields. A session marked `"running"` with
+**no live control** — a stale mark, for example after control is lost on a reload — is **refused**
+rather than enqueued into the void or started as a second concurrent run. The three outcomes record
+distinct ledger events (`dispatch_delivered`, `dispatch_queued`, `dispatch_refused`). Requires a
+daemon restart to activate. TDD; full suite green (657).
+
+**Playwright browser MCP on every operator project worker:** operator project workers now get a
+headless-Chromium **Playwright MCP** (`playwright-mcp --headless --isolated`) so a project can drive a
+real browser for web and UI testing. `neoMcpServers` gained a `playwright` opt-in flag, and both
+operator call sites in `pipeline.ts` pass it. The customer/ingress path (`ingress.ts`) passes no flag,
+so browser automation never reaches customer-tainted work. The MCP is lazy — the browser launches only
+on first tool use, so the idle cost per worker is one light stdio process. This needs the
+`playwright-mcp` binary (`@playwright/mcp`) and a Chromium browser. The governor is unchanged:
+Playwright tools are foreign MCP tools, so they still default-escalate — an interactive operator
+dispatch asks for approval, and an autonomous path auto-denies. Needs a daemon restart to activate.
+`tsc` clean, full suite green (657).
+
+**Priority tags · decisions queue · secretary loop — nothing blocking is lost.** Neo runs many
+projects and sends a high volume of messages; the operator muted the bot, so blocking questions got
+lost in the noise. The engine now gives every outbound line a deterministic **priority** —
+`decision`, `alert`, `result`, `progress`, or `done` (`src/engine/priority.ts`, pure, AI-free) — and
+splits the output into two surfaces: a muted **firehose** (the admin DM) for `progress`/`done`, and a
+high-priority **Decisions** channel (`decisionsChatId`, kept unmuted) for `decision`/`alert`/`result`.
+The tag comes from intent the sender already has, never from reading prose: a worker raises a blocking
+question through the `ask_operator` MCP tool (options → tappable buttons); a governor escalation
+(Allow/Deny) is a decision too; dispatch/API/loop failures are alerts. Each is recorded in a durable
+`decisions` ledger table, so the queue survives a restart. **Answering resolves and unblocks:** a
+tapped option, a typed "Other" answer, or a plain Telegram **reply** to the decision message all mark
+the row answered and **resume the raising project's session** with the answer, reusing the
+reply-routing resume path (`deliverIntoFolder`/`answerDecision` in `reply-routing.ts`). An ignored
+escalation stays OPEN — surfaced later, never silently dropped. Finally a **secretary** loop
+(`src/engine/loops.ts`, opt-in, latest model) reviews the open queue on a cadence (`secretaryCron`,
+default every 2h in waking hours), writes ONE warm digest to the Decisions channel, and flags items
+past `secretaryStaleHours` as escalations; the engine renders the queue deterministically into the
+prompt and the worker only phrases it (no AI in the engine, and the worker never mutates a decision).
+The digest is silent when the queue is empty. The firewall holds by construction: `ask_operator`
+attaches only on operator paths, so customer-tainted work can never raise a decision. Config knobs:
+`decisionsChatId`, `decisionsKeep`, `secretaryCron`, `secretaryStaleHours`, `workers.secretary`
+(`docs/CONFIG.md`). Built phase by phase, TDD. Going live needs a daemon restart (operator-gated).
+`tsc` clean; full suite green (695).
+
+**Structured questions + styled/colored operator messages.** Two follow-ups to the decisions work,
+both about how operator Telegram messages look and how the engine asks. **(1) A first-class
+structured-question path**, reusing the decisions machinery — not a parallel system. The SDK's native
+`AskUserQuestion` tool used to hard-error ("Neo has no structured-question UI"); it is now SERVICED:
+`buildCanUseTool` parses it into a `StructuredAsk` (`src/engine/structured-question.ts`, pure) and
+raises a tracked decision with tappable buttons, then denies the tool with the same check-point +
+STOP steer `ask_operator` returns (the worker suspends; the operator's tap/reply resumes it). This is
+wired through a `RunHandlers.onStructuredQuestion` hook on the interactive + dispatched paths, gated
+on `postDecision` — the SAME firewall gate as `ask_operator`, so customer-tainted work still gets only
+the plain steer. The `ask_operator` MCP tool gains a `multiSelect` flag. A structured ask (1–4
+questions, each 2–5 options, optional multi-select, always an implicit free-form "Other") is stored on
+the decision row (`spec` column, migration-guarded) so it survives a restart; taps accumulate an
+ephemeral selection (single-select resolves on one tap as before; multi-select / multi-question show a
+`✅ Submit`), and answering resumes the raising session with the combined answer. The pure module owns
+all the logic (normalize, callback encode/decode — backward-compatible with the legacy
+`dec:<id>:<idx>` — selection reducer, keyboard spec); the frontend stays thin. **(2) Styled + colored
+messages.** Telegram has no text colors, so "color" = one data-driven accent-emoji map keyed by the
+existing priority (`PRIORITY_STYLES` in `priority.ts`: decision 🔵, alert 🔴, done 🟢; `progress` is
+the silent firehose default). The accent is applied once at each surface's formatting boundary —
+Telegram `sendFormatted` (`outboundTag` composes accent + `#project` tag) and the web mirror — so both
+render consistently and degrade to plain text where rich markup isn't supported; the redundant
+per-call-site ✓/✗ (pipeline) and ✅/⛔ (dispatch) glyphs are removed. Escaping is safe by construction
+(the HTML `parse_mode` path escapes bodies and falls back to plain text if Telegram rejects the
+markup — a metacharacter-heavy message still sends, proven by test). Built TDD, commit per piece.
+Going live needs a daemon restart (operator-gated). `tsc` clean; full suite green (730; one
+pre-existing env-only config test unrelated to this work).
+
+**Result routing — the Decisions group carries important outcomes, not just questions.** A follow-up
+on the same branch. The operator keeps the Decisions group unmuted and wants it high-signal: only
+decision questions and important **outcomes**. Before this, a job's completion was tagged `done`,
+which stayed in the muted DM firehose, so a finished dispatch was easy to miss. A new deterministic
+`result` priority (`priority.ts`) routes to the Decisions group, styled ✅ RESULT. The split is by
+**call site**, never by reading prose: a background **dispatch** completion (`dispatch.ts`, the
+`"<name> finished: …"` line) is a `result` → group; an **interactive-turn** completion (`pipeline.ts`)
+stays `done` → DM, because the operator is already in that conversation and an echo to the group would
+be noise. Routine `progress` can never be promoted, so the group never gets streamed chatter. Built
+TDD (result → decisions, progress → DM, group gets no routine progress). Going live needs a daemon
+restart (operator-gated). `tsc` clean; suite green (one pre-existing env-only config test unrelated).
+
+**Bug fix — answering a decision in the group no longer floods the group with progress.** Same branch.
+When the operator answered a tracked decision **in the unmuted Decisions group**, the raising project
+resumed but then streamed ALL its progress to the group instead of the DM. Root cause (two parts):
+(1) `answerDecision` (`reply-routing.ts`) seeded the resume against the chat the ANSWER arrived on
+(the group), so `deliverIntoFolder` homed the reopened Order + focus to the group. The decision row
+already stored the ORIGINAL raising chat (`chat_id`, the DM) separately from `decision_chat_id` (the
+group it was posted to). Fix: resume against `dec.chatId` (fall back to the answer chat), and return
+the resolved `homeChat` so the frontend runs the resumed turn on the DM too. The answer
+acknowledgement still lands in the chat the operator answered in. (2) Defense in depth: a new pure
+`routeChat(priority, {cid, adminDm, group})` (`priority.ts`) makes a firehose (`progress`/`done`) line
+divert to the DM even if a session's chat IS the group, so routine progress can NEVER reach the group
+regardless of where a session is homed; `surfaceChat` now delegates to it. Built TDD (answer-in-group
+→ resume-in-DM; group-homed progress → DM; decision/result still → group; both a tapped button and a
+typed reply). Needs a daemon restart (operator-gated). `tsc` clean; suite green (same pre-existing
+env-only config test unrelated).
+
+**Matured operator decisions — the schema makes a shapeless question impossible to raise.** Same
+branch. An `eticket_prod` worker raised a decision the operator called unclear: three separate
+questions ("Scope / Granularity / Ingestion") mashed into one message, flat option chips, no context,
+no recommendation. Root cause, in code: the `ask_operator` schema was `{ question: string, options?:
+string[], multiSelect? }` — `question` is free text, so a worker crams several decisions into one
+call; there is **no `context` field** for the root cause and **no `recommendation` field**; and
+`options: string[]` is a bare label with nothing behind it. Prose guidance in the tool description
+(the earlier self-challenge hardening — root-cause first, the industry-standard fix not a patch,
+self-critique) nudged but never guaranteed the shape. The fix is a **schema-enforced matured
+decision**: one `ask_operator` call now carries a crisp `title`, the `context` (what happened + the
+root cause), 2–5 `options` that each state what they mean + their trade-off, and a `recommendation`
+(which + why); the description adds *raise exactly ONE decision per call — never bundle several*. Zod
+`.min(2)` + required fields reject a shapeless or bundled question at the tool boundary, so the SDK
+hands the worker a validation error and forces a well-formed retry — that is the hard guarantee
+(depth is still only nudged, not proven). It **enriches, does not fork**: `StructuredQuestion` gains
+`optionDetails`/`recommended`, `StructuredAsk` gains `title`/`context`/`recommendation`, but `options`
+stays the index-addressed `string[]`, so every existing path (callbacks, `applyTap`, `answerText`,
+`keyboardRows`, the legacy flat form) is untouched; the new fields ride in the same `spec` JSON column
+and old rows degrade gracefully. `maturedAsk` (`structured-question.ts`, pure) normalizes the tool
+input into the single-question ask; `decisionBody` renders the title, the root cause, each option as
+`• label — detail` (⭐ on the recommended one), and a `Recommendation:` line; `fromAskUserQuestionInput`
+now keeps the SDK-native option `description` as its detail (it used to throw it away), so native
+structured questions render just as richly. AI stays out of the engine — it only validates shape,
+renders, and routes; any *writing* of context/recommendation is the worker's job. The **maturing
+reviewer** (a fresh worker that sharpens a shallow ask before it posts) is designed as the next phase
+on the same choke point (`raiseOperatorDecision`), not built. Design doc:
+`docs/superpowers/specs/2026-09-09-matured-decisions-design.md`. Built TDD (schema rejects the bare/
+bundled/contextless/recommendation-less forms; `maturedAsk` builds + aligns details and the
+recommended index; `decisionBody` renders + degrades). Going live needs a daemon restart
+(operator-gated; the tool schema + description are read at worker launch). `tsc` clean; full suite
+green (750).
+
+**Two-phase design→build worker flow — dispatched work is designed before it is built.** Same
+branch. The dispatch preamble (`briefWithProjectDocs`) told every worker to "use the superpowers
+skills for the shape of work at hand" — a flat list that let a worker go straight to code. It now
+steers the worker through **two phases**. **DESIGN** first: before writing code for any feature or
+non-trivial change, sharpen the domain model with the model-invocable **`domain-modeling`** and
+**`codebase-design`** skills — define the real terms and write/update the project's `CONTEXT.md`
+glossary, record each genuine design decision as a short ADR (rejected alternatives included), then
+synthesize a concise spec (acceptance criteria + edge cases) and design it as one clean seam (a lot
+of behavior behind a small, testable interface); use `brainstorming` → `writing-plans` for the plan
+and `systematic-debugging` to root-cause a bug first. **BUILD** second: implement against that spec
+with `test-driven-development` (the failing test first, per acceptance criterion), then
+`verification-before-completion` + `requesting-code-review` before claiming done. A trivial mechanical
+edit may skip the CONTEXT.md/ADR step but must say so. The two design skills are the model-invocable
+half of Matt Pocock's skill set, adopted 2026-09-10 and pinned into `~/.claude/skills` on the `user`
+settingSource with a `PINNED.txt` provenance note; the interactive-only ones
+(`grill-with-docs`/`to-spec`/`to-tickets`, all disable-model-invocation) are deliberately NOT named
+to workers — a governed autonomous worker cannot invoke them. Evaluated in a dev-desk trial (memory
+`mattpocock-skills-evaluation`): the design phase's highest-value output was making a "total order"
+tiebreak explicit — exactly the eticket Sindibad nondeterministic-group bug class. Built TDD (a new
+`dispatch.test.ts` assertion: the preamble names `domain-modeling`/`CONTEXT.md`/`codebase-design`
+before `test-driven-development` and omits the disable-model-invocation skills). Going live needs a
+daemon restart (operator-gated; the preamble is read at worker launch). `tsc` clean; full suite green
+(751).
+
+**Engine bug: dispatched workers killed while waiting on a background wait; "permission stream"
+hiccups are SDK-side, not ours.** Branch `fix/dispatch-stall-background-wait`. A waselni go-live
+worker reported the permission stream "erroring on repeated calls — a harness hiccup, not a CI
+problem," then went idle on a background Monitor and was aborted by the 5-minute stall detector
+(ledger `dispatch_abort` `limit:"stall"`, 2026-09-13 13:05 + 14:19 UTC). Root cause, two layers.
+**(1) The permission-stream errors are SDK-side.** Every tool call — even an auto-approved one — is
+routed through the SDK's `canUseTool` control-request protocol over the child `claude` process's
+stdio; on a long, high-volume session (hundreds of `gh run view`/`sleep` calls) that control stream
+transiently errors. Our governor never threw: **zero `approval_error` events all-time**, and waselni
+is a *trusted* folder, so `autoApprove` returns allow instantly with no escalation round-trip.
+`buildCanUseTool` is already hardened (stateless + try/catch fail-safe + self-heal), so the worker
+recovered — the "harness hiccup" it described. Pinned to SDK `0.3.270`; the mitigation is fewer,
+shorter calls per session (below). **(2) The stall abort of a non-hung worker is ours, by contract.**
+The dispatch liveness monitor bumps `lastActivityAt` only when the SDK generator yields an event
+(`onHeartbeat` fires on every streamed event; also `onMessage`/`onActivity`/`onTurnComplete`, and the
+clock is held through engine-driven API-retry waits), and aborts at `t - lastActivityAt >= stallMs`
+(default 5 min, `dispatch.ts`). A single step that blocks silently — a background wait/Monitor, a
+long `sleep`, `gh run watch`, tailing logs — yields no events for its whole duration, so a worker
+that is merely *waiting* looks identical to a hung one and is killed. The SDK exposes no in-tool-call
+progress signal (`includePartialMessages` streams assistant tokens, not tool execution), so the
+engine cannot observe liveness inside one opaque call. Rejected the engine-timer "fixes" — counting
+an in-flight tool as activity, or raising `stallMs` — because they blind the detector to genuinely
+hung tool calls, trading a precise guard for up-to-ceiling (2 h) hangs. The correct fix is the
+**behavioral contract**: the dispatch preamble (`briefWithProjectDocs`) now forbids background
+waits/Monitor and requires short FOREGROUND polling (status check → brief `sleep` → check again, each
+under 90 s) and finishing within the single-shot run — so tool-call boundaries keep the heartbeat
+fresh while the detector still catches true silence. What counts as "activity" is unchanged (any
+streamed SDK event); what changed is the worker contract that keeps those events flowing. Built TDD
+(a new `dispatch.test.ts` preamble assertion for the no-background-wait / poll-in-foreground /
+single-shot rule; an `approval-resilience.test.ts` guard that 300 repeated trusted calls auto-allow
+with no state leak, pinning that repeated-call robustness is ours-clean). No CONTEXT.md/ADR files (the
+repo has no ADR convention; this is a one-line contract + guard-test edit) — the decision and its
+rejected alternatives are recorded here and in memory. Going live needs a daemon restart
+(operator-gated; the preamble is read at worker launch). `tsc` clean; full suite green (752).
+
+**Engine bug: the interactive reserve was gating the wrong side — the operator's own turn was
+throttled while background dispatches ran unchecked.** On 2026-09-13 at 16:50 UTC the operator's
+`/open /home/waselni say hi back` was answered `throttled: protecting interactive headroom — try
+again shortly`. Root cause: `handleMessage` — the operator's interactive entry point — called
+`meter.shouldThrottle()` (`pipeline.ts:263`), the same class-blind predicate the loop scheduler
+uses for background work. The meter is a single in-memory pool over a rolling 5 h window
+(`budgetWindowUsd` 20 × `1 - subscriptionInteractiveReservePct` 0.2 = a $16 background allowance),
+and the daemon had been up since 06:37 UTC, so the window held every dispatch charge of the day:
+$0.76 + $11.89 + $15.56 + $4.35 + $9.82 = **$42.39 against $16**. Every one of those dollars was
+background dispatch work; the operator was refused by a guard whose entire purpose is to keep room
+*for* them. The mirror image was also true and is the other half of the bug: `dispatchToProject`
+checked `draining` and the API `cooldown` but **never** the meter, so background dispatches kept
+starting while over budget — the reserve was enforced against exactly the wrong party. Notably the
+API-cooldown gate next door had the invariant right all along and said so in a comment
+(`api-retry.ts:12-14`, `daemon.ts:70-73`: "the operator's own interactive messages are never held —
+that's the headroom"); the budget guard simply contradicted it.
+
+The fix makes **work class** a first-class domain term (`CONTEXT.md`): an order is either an
+*interactive turn* (the operator is waiting) or *background work* (dispatch, loop, scheduler,
+secretary, dream), orthogonal to `source`. `Meter.shouldThrottle` is renamed
+**`shouldThrottleBackground`** so the class is in the name and no call site can gate an operator
+turn without reading obviously wrong; the interactive gate at `pipeline.ts` is deleted outright, the
+matching gate is added to `dispatchToProject` (refusal recorded as `dispatch_refused` /
+`reason: "budget"`), and the interactive retry gate no longer passes `throttled` — the background
+reserve must not cut the operator's own retry short. Rejected: giving interactive turns a *higher*
+engine-side threshold (an interactive turn hitting any engine-local ceiling means the reserve
+failed), and keeping one predicate with a per-call-site flag (that is the shape that produced the
+bug — a flag defaults, a name cannot). The engine now has exactly one authority that may refuse an
+operator turn: Anthropic. When a rate-limit window is actively `rejected` with its real `resetsAt`
+still ahead, the turn is **warned** with the wall-clock reset time and started anyway
+(`apiExhaustionWarning`) rather than refused on a possibly stale snapshot — failing closed on the
+operator is precisely the failure being removed, and the existing retry path already reports a real
+refusal honestly. Background work is what gets held meanwhile. Built TDD (four failing tests first:
+an interactive turn starts at $42-over-$8; its API retry is not suppressed; the rejected-window
+warning names the reset time and still starts; and a background dispatch *is* held at that same
+usage, with a companion test that it still runs under the reserve). Self-review caught one thing the
+first cut got wrong: reading the windows via `usage.snapshot()` would have put a full walk of
+`~/.claude/projects` — every transcript re-read — on the path *every* operator message takes, so
+`UsageMeter` grew a cheap in-memory `rateLimits()` accessor and the interactive gate uses that;
+`snapshot()` stays for `/usage`. A review pass then caught five more: the warning fired only on
+`/open` (most operator messages are plain-text follow-ups that return from branch 1, so it moved to
+the top of `handleMessage`); it was sent at `"alert"` priority, which would repost an identical line
+into the unmuted Decisions channel on every message for the hours a window lasts (now default
+priority, the operator's own chat); it claimed "background work is held meanwhile", which is simply
+untrue (removed); the dispatch gate sat *before* `resolveProject`, so a typo'd project reported a
+budget hold instead of "not found" (reordered); and `budgetHoldMessage` claimed the dispatch would
+"go through after the window rolls off" when nothing queues or re-issues it — it now names the real
+spent-vs-allowance figures, says the work was dropped, and points at `/open`. The same pass found a
+pre-existing bug this change newly exposes: `resolveApiRetryDelayMs` treated any window that was not
+`allowed` as governing, so an `allowed_warning` (merely *approaching* a limit) made a retry wait out
+the full reset — up to 7 days on a `seven_day` window. Harmless while the interactive retry was
+short-circuited by the budget gate; reachable the moment that gate was removed, so it now governs
+only on `rejected` (or a bare future reset), with a test.
+
+**The calibration is the operator's call and is deliberately not guessed.** `dispatchToProject` has
+exactly one caller — the company session's `dispatch` tool — so a hold lands on work the operator
+just asked for conversationally, one hop from their message. At the `20` default the background
+allowance is $16 while real dispatches measured on this box cost $10–35 each, so one dispatch can
+arm the hold for the rest of the window. The gate is what was asked for and is correct; the dollar
+figure is a cost decision, so `docs/CONFIG.md` states the real cost range and leaves the number
+alone. Decision recorded in `docs/adr/0001-interactive-reserve-gates-background-work-only.md` — the
+repo's first ADR, which also notes the unbuilt follow-up (work class following the *originating
+trigger*, so an operator-requested dispatch inherits `interactive`). `tsc` clean; full suite green
+(761). Going live needs a daemon restart (operator-gated).
+
+**Work class now follows the originating trigger, so a conversational order is never held.** The
+operator took the follow-up the ADR above had left unbuilt, and closed the calibration question with
+it rather than with a bigger number. The reasoning: `dispatchToProject` has exactly one caller — the
+company session's `dispatch` tool — and that session is one hop from the operator's own message, so
+classifying by *mechanism* ("a dispatch is background work") meant the reserve would hold nearly
+every order the operator typed conversationally. At the `20` default that is a $16 allowance against
+real dispatches measured at $10–35 each; no dollar figure repairs a rule that counts the operator's
+own work against a reserve held *for* them. So the rule changed, not the number: work is
+`interactive` or `background` by **what triggered it**. `handleMessage` — the operator's only entry
+point, since every caller uses the default `source: "neo"` — launches `interactive` workers, the
+`dispatch` tool inherits the class of the worker calling it, and a sub-worker inherits it again;
+`background` is scheduler-fired work (loop fires, cron/automations, the secretary, the dream sweep)
+plus the customer-brief ingress run, where nobody is at the keyboard either. The class is decided
+ONCE per worker launch (`pipeline.ts` interactive, `ingress.ts` background) and captured in the
+tool's closure, so no call site re-derives it and no mechanism can imply it.
+
+The seam is one function: `heldByReserve(workClass, meter)` in `budget.ts` — the single answer to
+"does the interactive reserve apply to this work?" — used by both the dispatch gate and the sub-run's
+API-retry gate, which previously cut an operator-originated retry short on the same predicate. Beside
+it sits `DEFAULT_WORK_CLASS = "background"`, pinned by its own test: unclassified work is background
+on purpose, so a forgotten wiring can only ever *over*-protect the reserve (a visible hold that names
+its spent-vs-allowance numbers and that `/open` bypasses) and can never silently switch the guard off.
+That default is the one deliberate concession — making the class a required field would have touched
+~60 existing test call sites for no behavioural gain. Every `dispatch_*` event now carries
+`workClass`, so `dispatch_end`'s existing `costUsd` splits into interactive vs background spend with
+no new accounting. Rejected along the way: raising `budgetWindowUsd` (treats a classification bug as a
+calibration problem — the same refusal returns one busy day later), and gating on whether an operator
+session is live (liveness is not the question; the company sits registered and idle forever, so that
+rule would read "almost always interactive" by coincidence rather than by intent). Two honest limits
+are recorded in the ADR: loop workers hold no `dispatch` tool today, so a loop-originated dispatch is
+currently unreachable in production — it is wired and tested anyway, so the day a loop gets the tool
+it is background without anyone remembering to make it so; and because the class is captured per
+*launch*, a message that queues as a follow-up into an already-live worker inherits that worker's
+class, a seconds-wide window that only an operator message landing mid customer-brief run can hit.
+Built TDD (eight failing tests first: three on `heldByReserve`, one pinning the default, and four in
+`dispatch.test.ts` — an interactive dispatch starting at the very usage that holds a background one,
+the fail-safe default, the class riding on the events, and the `dispatch` tool inheriting its
+session's class, proven by invoking the real MCP handler against a mid-turn folder so the brief
+queues instead of spawning a worker). ADR 0001 amended with the new rule, its rejected alternatives
+and its consequences; `CONTEXT.md` gains **originating trigger** and re-scopes *interactive turn* /
+*background work* / *dispatch*; `docs/CONFIG.md` and `README.md` now say `budgetWindowUsd` governs
+background work alone. `tsc` clean; full suite green (769). Going live needs a daemon restart
+(operator-gated) — the running daemon still classes every dispatch as background.
+
+**Telegram group commands + SDK reproducibility:** `handleCommand` now accepts Telegram's
+group-chat command form (`/command@bot_username`) by stripping the bot suffix before command
+lookup; `/sdk@neo_bot codex` therefore switches the provider exactly like `/sdk codex` instead of
+falling through into ordinary work. The Claude Agent SDK dependency is now pinned to `0.3.270`
+rather than floating on `latest`, making installs reproducible while retaining the version in the
+lockfile. Built TDD (the suffixed `/sdk` path switches the configured provider).
+
+**The engineering baseline is now engine-carried, not brief-carried (2026-09-18).** The operator's
+hard rule — non-standard code is a failure even when it works (the five items are listed once, in
+`CLAUDE.md`) — lived only in this repo's `CLAUDE.md`. A dispatched worker loads the *target*
+folder's `CLAUDE.md`, never Neo's, so the baseline reached a worker only when whoever wrote the
+brief remembered to type it. `briefWithProjectDocs` now carries it alongside the other standing
+instructions (project docs, codebase-memory first, design→build, challenge yourself, stay alive),
+phrased tightly and stack-neutrally ("or the stack's equivalent") because targets range from an
+Expo app to a Go service to this engine. Rejected: copying the baseline into every project's
+`CLAUDE.md` (N copies drift; new projects start without it) and enforcing it in the governor (it
+gates tool calls, and "is this i18n'd?" is a judgment about a finished change, not a tool
+decision) — see `docs/adr/0002-engineering-baseline-lives-in-the-dispatch-preamble.md`;
+`CONTEXT.md` gains **dispatch preamble** and **engineering baseline**. The preamble grows 3627 →
+4311 chars (~1080 tokens, charged on every dispatch), so a second test pins a 5000-char ceiling —
+a new rule must be phrased tightly, not appended as prose. Built TDD (a preamble assertion per
+baseline item + the size ceiling). `tsc` clean; full suite green (772). Going live needs a daemon
+restart (operator-gated) — the preamble is read at worker launch.
+
+**Neo can tell a working session from a wedged one (2026-09-18).** The operator caught the engine
+lying in both directions on the same day: `sessions` reported `adminli · running · waiting for 10h ·
+up 1d` while adminli was healthy and answered the next brief 3.4 s later (the company read that as
+wedged and offered to restart a working project), a worker hung ~9 minutes on an interactive `cp -i`
+prompt with nothing noticing, and dispatch refused healthy projects as "busy — queued" / "busy but
+no live handle". One defect underneath all of it: the engine held several partial signals and no
+authoritative one. `status` is entry lifecycle and reads `running` for a session's whole life;
+`activity.since` is the age of a *label*, which between turns is `waiting`; `lastActivityAt` was fed
+only by completed tool calls; and `onHeartbeat` — the one handler that fires on *every* streamed SDK
+event — was wired solely to a local variable inside `dispatch.ts`, where nothing else could read it.
+`active()` was `delivered > completed`, so any turn ending without an SDK `result` (an interrupt, a
+stream error, the resume-missing restart) left a session reporting busy **forever**.
+
+The fix is one seam: `src/engine/liveness.ts` decides, purely, from two clocks — **last activity**
+(any streamed event; the only thing alive-or-wedged may read) and **last output** (reported, never
+judged) — plus whether a turn is in flight and whether the operator owes an answer. It yields one
+state: `starting` / `working` / `quiet` / `idle` / `awaiting-operator` / `wedged`, and every surface
+(`/list`, the `sessions` tool, the web console, dispatch's busy replies) renders that word and both
+ages. `running` is gone from operator text. A session between turns is `idle` at any age; the gap
+between "registered" and "worker attached" (folder indexing + the context gate — minutes on a big
+repo) is `starting`, not "appears busy". Escalations and raised decisions mark the session blocked,
+so the dispatch stall monitor pauses instead of aborting a worker that is waiting on the operator,
+and the watchdog swaps its blanket "label is `waiting` → never alert" exemption (which made a
+session wedged *at* a turn boundary undetectable) for the correct one. Every abort/alert records its
+evidence first — both ages, the label, the turn state, the queue depth, and a cheap `looksLikeStdinWait`
+read that names a `cp -i`-shaped hang. Thresholds are config (`liveness.wedgedAfterMs`,
+`quietAfterMs`). See `docs/adr/0003-one-activity-clock-one-derived-session-state.md`; `CONTEXT.md`
+gains the whole vocabulary. Built TDD (41 new assertions across liveness, registry, session-runner,
+session-status, watchdog, dashboard and the dispatch wiring). `tsc` clean; full suite green (813).
+Going live needs a daemon restart (operator-gated).
+
+**A loop can be authored from the CLI, and the first operator-authored project loop is live
+(2026-09-29).** Loop definitions have been data since 2026-06-28, but the only door was
+`/api/loop/*`, which is admin-session-gated. An agent working in this repo on the operator's behalf
+therefore could not author a loop, and the tempting shortcut was hand-written SQL into `loop_defs`.
+`tools/create-loop.ts` is the same engine one door down: `validateLoopInput` → `createLoop` → the
+ledger, so the `/home` folder fence and every validation rule apply exactly as they do from the
+console. `effectiveLoops()` re-reads `loop_defs` on every scheduler tick, so a loop written this way
+needs **no restart**. The input file may carry `promptFile` (resolved beside the input file) instead
+of `prompt`, because a loop prompt is long (see below) and a long brief belongs in reviewable
+markdown, not in one JSON string — one source of truth, not two. Two cleanups rode along:
+`LEDGER_PATH` moved into `ledger.ts` (the literal was repeated three times in `daemon.ts`, and
+`memory-bootstrap.ts` carried a "no shared constant exists yet" note), and `tools/` joined
+`tsconfig.json`'s `include`, so a tool without a test is still typechecked. Built TDD (8 assertions
+in `tests/create-loop-tool.test.ts`: the validated path the scheduler then sees, the folder fence
+writing nothing, `--update` refusing to clobber an existing loop, `promptFile`, and unreadable input
+reported rather than thrown).
+
+The first real project loop exposed what the loop path does **not** do. `waselni-store-readiness`
+fires daily `0 6 * * *` (06:00 server-local/UTC ≈ 09:00 Asia/Baghdad) on `/home/waselni` with a judge
+goal, 30 iterations, $12 per fire and `freshSession: true`; its state lives in
+`docs/store-readiness.md` in the waselni repo, so the FILE is the memory, not the session (definition
+checked in at `docs/loops/waselni-store-readiness.json` + `.prompt.md`). A loop's prompt is a
+**standing brief**: `runProjectLoop` puts `LoopDef.prompt` into `Order.task` verbatim
+(`project-loop.ts:60`), so there is no dispatch preamble — no engineering baseline, no
+read-the-project's-docs instruction — `loopRunExtras` attaches `mcpServers` only for the dream loop,
+so there is no `ask_operator`, and escalations are auto-denied rather than asked. Everything a
+dispatched brief gets for free, a loop prompt has to carry itself: the engineering baseline, the
+project's own rules, the reuse-the-existing-pipeline rule, the never-push/deploy/submit rule, an
+ask-once protocol for operator-blocked items, and the governance envelope the worker runs under. See
+`docs/adr/0004-a-loop-prompt-is-a-standing-brief.md`; `CONTEXT.md` gains **standing brief**.
+Rejected: wiring `neoMcpServers` + `briefWithProjectDocs` into the loop path. It is the better
+long-term answer, but it is an engine change needing a restart, and it silently re-prices every
+existing built-in loop.
+
+Two gaps stay open, each needing an engine change and therefore a restart. **Loop workers have no
+`ask_operator`**, so a blocked item can only leave as the worker's reply text — which does reach the
+operator's chat, tagged with the loop's `#project`, but is not a decision the engine tracks. **The
+declared budget is not the whole cost:** `runLoop` sums only `iterate()`'s `costUsd`
+(`loop-runner.ts:54`) and never the judge run between iterations, so real spend is roughly
+`budgetUsd` plus one judge run per iteration, and `Bounds.budgetUsd`'s "incl. judge runs" comment
+(`project-loop.ts:16`) is wrong today. Related and minor: `judgeGoal` accepts `timeoutMs` and never
+reads it (`goal.ts:73`), so a judge run is effectively unbounded. `tsc` clean; full suite green
+(826).
+
+**The governor runs before settings allow rules (2026-10-01).** Neo governed tools only through
+`canUseTool`. The SDK runs a project's `.claude/settings.json` allow rules *before* `canUseTool`, and
+workers load project settings. A live probe through the real `runOrder()` proved the bypass on SDK
+0.3.286: in a trusted folder that allows `Bash(git:*)` (as `/home/mirshad` does), `git push --dry-run`
+ran with zero governor calls. The probe also found that allow rules apply only in a *directly*
+trusted folder, which is why an untrusted `/tmp` scratch showed no bypass at first. The fix adds
+the governor as a `PreToolUse` hook (`buildGovernorHook`). Hooks run first. The hook shares
+`decide()` with `canUseTool`. It gives no opinion on an allowed call and returns `ask` on anything
+else, which sends the call to `canUseTool`, where escalation, trust, AskUserQuestion and the
+fail-safe deny live. It is synchronous and never throws, because a throwing hook fails open (also
+proven live). `permissionMode: "default"`, `canUseTool` and `hooks` now go last in `sdkOptions`, so
+no per-run field can replace them. One seam covers every Claude launch path. Re-run against the fix,
+the same probe saw `git push` escalated and denied, also inside a team subagent. See
+`docs/adr/0006-the-governor-runs-as-a-pretooluse-hook-first.md`. Built TDD (17 new tests). `tsc`
+clean; full suite green. Going live needs a daemon restart (operator-gated).
+
+**Dispatches have no time limit and always report to the company (2026-10-04).** A dispatch had a
+15-minute default ceiling, a per-call `timeoutMinutes`, and a 2-hour hard cap. The operator asked
+for no limits, because some tasks take hours. An eticket-v3 plan run also "stopped silently". The
+ledger and transcript showed the real cause. The worker ran its plan with background subagents.
+Dispatch read the first turn's `result` as the end of the brief and closed the worker's input
+channel. The company's next brief was then "delivered" into the closed channel and dropped without
+a word. The fix removes the wall clock (`dispatchTimeoutMs`, `dispatchTimeoutMaxMs`,
+`timeoutMinutes`). The only automatic abort is now the stall limit, which fires on true silence.
+"Done" now means settled: long-running Claude sessions set
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`, and the runner follows `session_state_changed: idle`, so
+`active()` stays true while background agents work. A closing session refuses a brief out loud. A
+progress digest (`dispatchProgressMs`, default 10m, engine-built, no AI) goes to the operator and
+the live company. Final results go through a durable dispatcher inbox (a ledger table). They are
+delivered to a live company, or wake an idle one. Undelivered results are prepended to the
+operator's next message to the company. An abnormal end says where it stopped (last commit, latest
+note, last activity). At boot, dispatches the previous daemon never finished are reported the same
+way. See `docs/adr/0007-a-dispatch-has-no-wall-clock-and-always-reports-to-its-dispatcher.md`.
+Built TDD. `tsc` clean; full suite green. Going live needs a daemon restart (operator-gated).
+
+**Per-project todo queue (2026-10-04, ADR-0008).** The operator asked for a todo list per project:
+when a project is busy, more tasks wait and run one by one after the current task completes.
+Before, a dispatch to a busy project pushed the brief into the running session's input channel. That
+queue was invisible, in memory only, lost on reload, and released at a turn boundary, not at task
+end. Now every brief the company dispatches is a durable todo in the ledger (`project_todos`). A
+brief for a busy project, or one whose queue is non-empty or paused, waits in order, and the company
+gets "queued as #N for <project>, position P" at once. The next todo starts when the current dispatch
+run ends (the SDK-settled end from ADR-0007), after its result reached the operator and the
+dispatcher. The dispatcher's result says what the queue does next. A bad end applies `todoOnFailure`
+(`continue` by default, or `pause`). At boot, a todo still marked running is failed with its stop
+point; queued todos resume in order from the heartbeat tick. Control: the company's `todo` tool,
+`/todo` for the operator (Telegram and the web compose box share it), and a Queue tab in the web
+console. Each release sends one line ("eticket-v3: done #12, starting #13 'fare step UI'").
+Built TDD. `tsc` clean; full suite green. Going live needs a daemon restart (operator-gated).
+Code-review pass fixed three things. (1) A dispatch run that threw before it had a result (for
+example, the worker failed to launch) left its session and its todo `running`, so that project's
+queue stopped until a restart. Dispatch now closes such a run as failed through the normal exits,
+and the next todo starts. (2) `cancel` of a running todo trusted the registry, which reads the
+session idle a moment before the run's end reaches the queue. The queue now tracks its own live
+runs, and clearing a really stale todo releases the next one at once. (3) `/todo` refuses loose
+input: ids must be plain digits (`0x2` and `2e0` were accepted), extra words give the usage line,
+and verbs ignore case.
+
+### Toolchain auto-updater (ADR-0009, 2026-10-04)
+
+Neo keeps its own toolchain current: the worker Agent SDK pin, the Claude Code plugins, and the MCP
+servers workers launch. It is a deterministic engine job on the heartbeat (`updates.everyMs`,
+default 24 h), not an AI loop. The SDK bump runs on its own branch and worktree and fast-forwards
+`master` only when `tsc` and the tests are green. Plugin and MCP changes wait until no session runs,
+are verified after the change (plugin validate; MCP `initialize` + `tools/list`), and roll back on a
+failed check. A release whose notes flag a breaking change is held for `/updates apply <item>`. A
+pin in another project's `.mcp.json` is reported, never edited. Nothing restarts the daemon. A
+scheduled run reports only what is new. `/updates` steers it from Telegram and the web console.
+Also: `@openai/codex-sdk` is now pinned to the exact `0.145.0` it was already resolving to, not
+`latest`. Built TDD; `tsc` clean, full suite green. Going live needs a daemon restart (operator-gated).
+
+**New projects start trusted (2026-10-02, operator choice).** The operator asked for `/trust` to be
+on by default for new projects. "No row" still means *not trusted*, because changing that would have
+given full auto-approve to every existing project at once. Instead each row in `data/trust.db` is a
+folder Neo has **seen**, with `state` `on` or `off` (schema `user_version` 1). The migration keeps
+legacy rows `on` and, once, records every folder in the ledger's order history (`ledger.folders()`)
+as `off`, so no existing project gains auto-approve. `/trust off` now writes an `off` row instead of
+deleting one, so the choice is remembered. The new `noteProject(folder)` gives a never-seen folder a
+row (`on` when the new `trustNewProjects` config key is set, default `true`) and leaves a seen folder
+alone. `noteProjectStart` calls it at every operator session start (`pipeline.ts` `startSession`,
+`dispatch.ts` `dispatchToProject`) and records a `trust_default_on` ledger event when it trusts a
+folder. The firewall does not move: a `source:"customer"` order never seeds trust, and the customer
+path's `denyAllTrust()` has a `noteProject` that never trusts. See the 2026-10-02 amendment in
+`docs/superpowers/specs/2026-06-20-trust-idle-and-files-design.md` and `trustNewProjects` in
+`docs/CONFIG.md`. Built TDD (new cases in `trust`, `pipeline`, `dispatch`, `ledger` and `config`
+tests). The trust store opens at daemon start, so going live needs a restart (operator-gated).
+
+**Tool-step lines stay off Telegram on every path (2026-10-02).** The flood-control change put the
+`telegramToolSteps` filter inside the session `send()` only. Tool lines reach Telegram through every
+worker `onMessage`, and three paths skipped `send()`: scheduled loops (`sendOperatorLine`), loops
+started from Telegram (`/loop`, the ▶ button: raw `sendMessage`), and company briefs
+(`sendFormatted`). The filter now lives once at the worker-output egress: `sendFormatted` and
+`sendOperatorLine` each take `toolSteps` and default to dropping tool lines. Every call in
+`startTelegram` goes through one `sendWorkerLine` with `cfg.telegramToolSteps`. The scheduled-loop
+mirror still sends tool lines to the web console. The test fixtures also gained the two flood-control
+fields that the base commit left out, which had made `tsc` red. Built TDD (7 new tests). `tsc` clean;
+full suite green (881). Going live needs a daemon restart (operator-gated).
+
+**Trust never lifts the fence (2026-10-04, ADR-0011).** Two branches built "new projects start
+trusted". `master` now has both, with one trust store: the store from `207aed4` (the schema the live
+`data/trust.db` uses) and the governor part of `4b7848c`. `decide` marks an out-of-folder
+Write/Edit as `fenced`. `buildCanUseTool` auto-approves only when the verdict is not fenced and the
+order source is not `customer`, so only the operator can approve a fence escalation. `/trust on` now
+says that writes outside the folder still ask. The store from `4b7848c` was rejected: it reads any
+row as trusted, so the eight live `off` rows would become trusted. Tests: `tests/trust-fence.test.ts`.
+Going live needs a daemon restart (operator-gated).
+
+**Out-of-folder writes pre-approved; approvals never wait forever (2026-10-06, ADR-0012).** The
+fence stalled gold for 4h+ and waselni for 7h on a worker's own memory or `/tmp` writes. The
+operator gave a standing approval. New `governor.outOfFolderWrites` (default `"allow"`) allows
+those writes for all own work. Customer work and ingress keep the fence, and tainted briefs keep zero
+tools. Every operator approval now goes through `patientApproval`: a reminder every 30 min and a deny
+after 2 h (`governor.approvalRemindMs` / `approvalTimeoutMs`). Tests:
+`tests/governor-out-of-folder.test.ts`, `tests/approval-patience.test.ts`. Going live needs a daemon
+restart (operator-gated).
+
+### Engine error containment (ADR-0010, 2026-10-04)
+
+One error no longer takes the engine down. An audit found no process error handlers, no grammy
+`bot.catch`, about 15 Telegram sends with no `.catch`, and SQLite with no `busy_timeout`. The log
+showed three crashes from them. Now every unit of work contains its own failure, and an engine fault
+goes to the log (with the stack), an `engine_fault` event, one deduplicated alert, and the company's
+queue to investigate. Each heartbeat step is isolated and the tick always re-arms. Every Bot API call
+(the bot, loop output, alerts) goes through the one Telegram flood gate, which logs failures. All SQLite
+stores use WAL + `busy_timeout`. A health check reports event-loop lag, memory and ledger reach once
+on a change. Only a startup failure exits. Also fixed: the Telegram inbox send waited for an
+Allow/Deny press that grammy could not deliver while the handler waited (a deadlock). Fault-injection
+tests cover every wired path. Going live needs a daemon restart (operator-gated).
+
+Code-review fixes (same day): the company handoff is capped at 3 an hour and fault signatures ignore
+digits, so a flood ban cannot loop through the company. Telegram polling exits only on 401/409; any
+other stop restarts polling. Inbox Send is idempotent on a new `draft_version` (double tap → busy,
+edited or already-sent draft → stale), for web and Telegram. The context handoff is contained. The
+branch's own 429 retry was dropped for the existing flood gate, and the Telegram tests now run
+through it (grammy `client.fetch`).
+
+### Web console freeze fixed (2026-10-06, ADR-0014)
+
+The web console froze after a day of uptime. The engine replayed every feed event since boot to
+each new connection (9,729 events, 3.6 MB), and the page rescanned all rows and forced a layout
+per event: a 46 s long task, then no response. The feed is now a bounded replay window
+(`webFeedWindow`, 500) with SSE ids, so a reconnect resumes after `Last-Event-ID`. The page keeps
+the same window and does O(1) work per event. `/api/state` no longer re-parses whole session
+transcripts (10–37 MB) on each poll: `sessionContext` parses only the appended bytes (0.6–0.9 s →
+~20 ms). Going live needs a daemon restart (operator-gated).
+
+### Context % over 100% fixed (2026-10-06, ADR-0013)
+
+The console showed 235–306% context for waselni, gold and eticket-v3. The sessions were at 47–71%.
+Transcripts report `claude-opus-5-5` (the SDK strips `[1m]`), and the window table only had a 200k
+default, so every Opus 5.5 session (1M window) read five times too full. The gates used the same
+number: 519 `clear` verdicts since 2026-07-08, only 2 of them truly at 85% of 1M. Each `clear`
+dropped a session with no handoff note. The window now comes from the SDK's
+`result.modelUsage[*].contextWindow`, kept per model in the ledger, with the operator override on
+top. Going live needs a daemon restart (operator-gated).
+
+### Context sweet spot (2026-10-06, ADR-0021)
+
+A live session was measured only when its run ended or at the next resume, so it grew without a
+check. Handoffs then ran lazily against a cold cache, and 8 of 47 fresh sessions told to read
+HANDOFF.md never did. Now the policy is asked at three boundaries: `resume`, `settled` and
+`checkpoint`. The band comes from transcript data: sweet spot 40%, checkpoint 60%, emergency 90%.
+A settled session above 40% is handed off at once, while its cache is warm. A heavy session is
+steered at a safe, committed checkpoint through the governor hook to write its note, and a
+continuation starts fresh with the note inline. The note has fixed sections plus engine facts from
+git. A resumed session's orientation (model calls to its first edit) is measured. A message sent
+while a session closes is no longer dropped. Going live needs a daemon restart (operator-gated).
+
+
+### Trace spine (2026-10-06, ADR-0015/0016)
+
+Neo could not answer "why did this happen?". Now every message has an id and a short ref (like
+`m4g2`), and messages join threads. A reply-to in Telegram, or the web composer's thread, joins
+that thread. Dispatches, todos, decisions, files, tool actions, loops and ingress all carry their
+cause. `/trace <ref>` and `GET /api/trace/:ref` show the chain. Refs show on acks, a turn's first
+reply and result lines (`trace.showRefs`). Tool calls are kept in a new `tool_actions` table
+(`toolActionsKeep`). The ledger now has numbered migrations (v1–v4). On first boot after the
+restart, the migration runs once (about 8 s on a 142 MB ledger). A backup, `ledger.db.bak-v<from>`,
+is written first. Going live needs a daemon restart (operator-gated).
+
+### Plan registry and auto-send (2026-10-06, ADR-0019)
+
+Plans used to reach the operator only when a brief said "send it". Now the engine does it. At every
+run end (a session turn, a dispatch, a loop fire) it lists the plan files the run changed under
+`plans.paths`, registers them (migration v5, `plans` table) and sends each new content version once
+as a card: the file, its caption (`📄 plan · gold · Fare list port · thread m4g2`) and buttons. A
+worker's own `send_file` of a plan goes through the same registry. Approve, Execute (one todo),
+Done and Drop move the status; Changes sends the operator's next message to the worker that wrote
+the plan. A plan that is executing is done when every checkbox is ticked. `/plans` lists them. The
+dispatch preamble tells workers where plans go. Going live needs a daemon restart (operator-gated).
+
+### Console threads, attention items and the repo scan (2026-10-06, ADR-0017/0018)
+
+The console has a Threads view (by project, state, search; Arabic and English, i18next catalogues).
+One table, `attention_items`, holds what needs the operator; producers reconcile it, and nothing an
+unreadable source reports is resolved. The engine producer (every tick) raises stuck approvals,
+spinning dispatches (the same digest fingerprint, or the same tool call, again and again), paused
+queues, failed or long-waiting threads, stale decisions and an impossible ctx %. A todo that leaves
+uncommitted files says so and raises a high item. The restart producer and `/gated` compute what is
+built but not running from git and the boot record (`engine_boots`). The repo scan (`github`,
+`projects`) reads every tracked repo with git and `gh` through `git-read.ts`. `/attention` lists it
+all with one-tap → todo / snooze / dismiss (and remove for a clean leftover worktree), on Telegram
+and in the console; a daily digest goes out at `attention.digestAt`. Migrations v6 (console
+indexes), v7 (attention, boots) and v8 (`meta`). Going live needs a daemon restart (operator-gated).
+
+### Project dashboard (2026-10-06, P6)
+
+One read model, `project-view.ts`, gives each project its view: now, queue, live git facts, GitHub
+scan counts, open decisions, plans, attention, threads, Neo's restart-gated work and a health rule.
+Three surfaces read it: the console's Projects tab (`GET /api/projects`, `GET /api/projects/:name`;
+its attention buttons use the same action path as the feed), `/project <name>` (alias `/p`) on
+Telegram with attention, threads and console buttons, and the company's `sessions` tool, which ends
+with one summary line per project. No new knob. Going live needs a daemon restart (operator-gated).
+
+Task 6.3 added two optional probes to the repo scan (`producers/probe.ts`). With
+`projects.<name>.healthUrl` set, the scan GETs it and a failed answer makes the project `down`. With
+`deployedVersionUrl` set, it reads the deployed sha from the JSON answer, checks it is a hex sha in the
+repo, and counts the commits on the deploy branch after it: the console DEPLOY line and `/project`
+show "N commits not deployed (branch @ sha live)", or the probe's error. Each call is bounded in
+time and size, only http(s), no redirects; old rows are ignored. Without config there is no call.

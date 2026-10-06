@@ -19,14 +19,17 @@ ones in `.env` (`chmod 600`).
 | `BOT_USERNAME` | env or `config.json` | *(auto via getMe)* | Bot `@username` (no `@`) for the web Telegram Login Widget. |
 | `WEB_HOST` | env or `config.json` | `127.0.0.1` | Interface the web console binds. Set to a bridge IP to let a proxy reach it. |
 | `WEB_PORT` | env or `config.json` | `3003` | Web console port. |
-| `PUBLIC_URL` | env or `config.json` | *(empty)* | Public HTTPS URL the console is reached at (behind your proxy). |
+| `PUBLIC_URL` | env or `config.json` | *(empty)* | Public HTTPS URL the console is reached at (behind your proxy). Also the base of the `/trace` link to a long thread (`<PUBLIC_URL>/api/trace/<ref>`); empty → the link is the bare path. |
 | `GATEWAY_SEND_URL` | env or `config.json` | *(empty)* | Customer-reply gateway `/send` endpoint. Off when empty. |
 | `MEETING_LINK` | env or `config.json` | *(empty)* | Booking link for the customer-reply CTA. |
 | `BUSINESS_NAME` | env or `config.json` | *(empty)* | Name customer replies sign off as (never "Neo"). |
+| `NEO_WORKER_MODEL` | env or `config.json` (`models.default`) | `claude-opus-5-5[1m]` | The model id every worker runs unless its path profile names one. A deployment escape hatch — the normal home for this is `models.default` in `config.json`. See "Worker models". |
 | `CODEBASE_MEMORY_BIN` | env or `config.json` | *(empty)* | Path to the codebase-memory MCP binary (code intelligence). Off when empty. |
 | `WORK_ROOT` | env or `config.json` | `/home` | Root holding your project repos (picker / dispatch / loop fence). |
 | `COMPANY_FOLDER` | env or `config.json` | `<repo>/agent` | The always-on "company" workspace folder. |
 | `NEO_LOOP_SCHEDULER` | env or `config.json` | `1` (on) | Set `0` to disable the loop scheduler. |
+| `DECISIONS_CHAT_ID` | env or `config.json` | *(unset)* | Telegram chat/group id for the high-priority **Decisions** channel — blocking questions, escalations, failures. Keep it unmuted; mute the normal DM (the firehose). Unset → decisions are still tagged, tracked, and reminded, but post to the admin DM. |
+| `SECRETARY_CRON` | env or `config.json` | `0 8-22/2 * * *` | Cron (server-local) for the secretary digest loop. The loop is still opt-in (`/loop secretary on`). |
 
 ## Structured knobs (`config.json`)
 
@@ -36,31 +39,126 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | --- | --- | --- |
 | `telegramAllowFrom` | `[]` | Numeric Telegram ids allowed to reach the bot / claim admin. Empty → first-come trust-on-first-use. |
 | `providers` | `{ ownWork: "subscription", customerWork: "gemini" }` | Provider routing (the compliance firewall). `ownWork` may be `"subscription"` (Claude Agent SDK, default) or `"codex"` (OpenAI Codex SDK). |
-| `subscriptionInteractiveReservePct` | `0.2` | Fraction of the subscription pool reserved for interactive use. |
-| `budgetWindowUsd` | `20` | Per-window USD budget for background SDK work. |
+| `subscriptionInteractiveReservePct` | `0.2` | Slice of `budgetWindowUsd` held back for the operator's own turns. It gates **background work only** — loop fires, scheduled jobs, and dispatches a *schedule* originated are held once *total* window spend reaches the rest (the background allowance, `budgetWindowUsd × (1 - pct)`). It is never a ceiling on an interactive turn, nor on a dispatch the operator asked for conversationally; those are what it reserves room for (ADR 0001). |
+| `budgetWindowUsd` | `20` | Total USD budget per rolling window. **Governs background work only:** work class follows the originating trigger, so anything one hop from an operator message runs regardless of this number, and only scheduler-fired work is measured against `× (1 - subscriptionInteractiveReservePct)` of it. Size it to what you want Neo to spend *while you are away* per window (for reference, a real dispatch on this box costs $10–35). |
 | `budgetWindowMs` | `18000000` (5h) | Rolling budget window, matching the subscription usage window. |
 | `idleCloseMs` | `86400000` (24h) | Idle-close threshold for normal projects (the company is exempt). |
-| `dispatchTimeoutMs` | `900000` (15m) | Default per-dispatch ceiling when the caller doesn't request one. |
-| `dispatchTimeoutMaxMs` | `7200000` (2h) | Hard cap on any per-dispatch ceiling a caller may request. |
-| `dispatchStallMs` | `300000` (5m) | Abort a dispatched sub-run that produces no activity for this long. |
-| `dispatchGraceMs` | `75000` (75s) | Grace window to commit green work + write a WIP note before a hard abort. |
+| `dispatchStallMs` | `300000` (5m) | Abort a dispatched sub-run that produces no activity (no streamed SDK event) for this long. Waiting on the operator and API backoff do not count as silence. This is the **only** automatic abort: a dispatch has **no wall-clock limit**, so a busy worker runs until it finishes, even for hours (ADR-0007). The old `dispatchTimeoutMs` / `dispatchTimeoutMaxMs` knobs and the tool's `timeoutMinutes` argument were removed. |
+| `dispatchGraceMs` | `75000` (75s) | Grace window to commit green work + write a WIP note before a stall abort. |
+| `dispatchProgressMs` | `600000` (10m) | Progress-digest interval for a running dispatch. One engine-built line (elapsed, current activity, latest note, last commit) goes to the operator's project chat (default priority, not the Decisions group) and into the live company session. It is sent only when there was activity since the last digest. It never wakes an idle company, but each digest into a live company is one low-effort company turn (and its short reply shows in your DM). `0` turns digests off. |
+| `dispatchSpinDigests` | `3` | Spinning dispatch (spec §8.1). When this many progress digests in a row have the same fingerprint — the activity label (numbers, hex ids and paths ignored), the latest note and the last commit — the worker did real work (a tool call or a message) but nothing changes. A digest while the worker waits on the operator or an API retry, or sits in one long tool call, does not count. The engine records a `dispatch_spinning` event, marks the session (a high attention item), and sends one alert to the operator (Decisions group) and one line to the dispatcher. A new commit, note or step resets the count. Needs digests on (`dispatchProgressMs` > 0). A whole number ≥ 2, else the default. |
+| `dispatchSpinPolicy` | `"alert"` | What a spin does: `"alert"` only alerts; `"wrapup"` also sends the stall limit's wrap-up follow-up (commit green work, write a WIP note). It never aborts the run. |
+| `toolLoopLimit` | `8` | The same tool call (tool + exact input) this many times in a row inside one turn of a dispatch → the same spin alert, once. A turn end resets the count and clears its mark. A whole number ≥ 2, else the default. |
+| `toolLoopExempt` | `["BashOutput", "TaskOutput"]` | Tools the tool-loop guard never counts: polling a background job with the same input is waiting, not looping. |
+| `todoOnFailure` | `"continue"` | What a project's todo queue does when a todo ends badly (failed, stall-aborted, killed, cut short by a reload or restart). `"continue"`: report the failure and start the next todo. `"pause"`: pause that project's queue; its todos wait until `/todo resume <project>`. Any other value falls back to `"continue"`. See ADR-0008. |
+| `dispatchRecoverWindowMs` | `86400000` (24h) | At boot, a dispatch started within this window with no recorded end was cut short by a reload or crash. Its end is recorded, and a report with where it stopped goes to the dispatcher inbox. The operator's next message to the company carries that report. |
+| `trustNewProjects` | `true` | **Operator choice (2026-10-02).** A project Neo sees for the first time starts trusted (full auto-approve), as if you had sent `/trust on` for it; an audit event `trust_default_on` is recorded. Projects that existed before (any folder in the ledger's order history when the trust store first migrated) keep their state, and `/trust off` is remembered, so a project you turned off is never re-trusted. Customer work never carries trust, and trust never approves a write outside the project folder (a fence escalation always asks — ADR-0011). Set `false` to go back to off-by-default. |
+| `apiRetryLadderMs` | `[30000, 120000, 480000]` (30s→2m→8m) | Second-tier backoff waits (ms/attempt) when a rate-limited turn gives no real reset time. The number of automatic retries is **derived from this array's length** — a longer ladder means more retries, no separate knob. |
+| `apiRetryJitterFrac` | `0.2` (±20%) | Jitter magnitude (0–1) on every retry wait so co-throttled workers don't sync up: ladder waits get ±frac, reset-based waits get +frac (upward only). |
+| `apiCooldownMs` | `60000` (60s) | Engine-wide hold on **new** background work after a throttle report, so retries + the scheduler can't amplify a rate-limit storm. |
+| `routeKeep` | `20000` | Reply-route retention cap: max persisted message→project routes (oldest pruned; the ledger stays the source of truth). |
+| `eventsKeep` | `50000` | Diagnostic event-log retention cap: max rows kept in the `events` table (pruned in amortised batches). |
+| `decisionsChatId` | *(unset)* | The Decisions channel chat id (also `DECISIONS_CHAT_ID`). See the `.env` table above. |
+| `decisionsKeep` | `5000` | Pending-decisions retention cap: max RESOLVED (answered/dismissed) decision rows kept. OPEN rows are never pruned. |
+| `toolActionsKeep` | `100000` | Tool-action retention cap: max rows kept in the `tool_actions` table (one row per governed tool call; pruned in amortised batches, separate from `events`). See ADR-0015. |
+| `secretaryCron` | `"0 8-22/2 * * *"` | Secretary digest cadence (also `SECRETARY_CRON`) — every 2h, 08:00–22:00, server-local. Opt-in (`/loop secretary on`). |
+| `secretaryStaleHours` | `24` | A decision waiting longer than this many hours is flagged **STALE** (an escalation) in the digest. |
 | `codebaseMemoryIndexTimeoutMs` | `300000` (5m) | Bounded wait for an engine-side codebase-memory `index_repository` before a dispatch proceeds anyway (best-effort). |
+| `codebaseMemoryListTimeoutMs` | `15000` (15s) | Bounded wait for a codebase-memory `list_projects` op (the sibling of the index timeout above). |
+| `inboxListDefault` | `100` | Default page size for the customer-inbox list in the web console when no explicit limit is given. |
+| `consoleLang` | `"en"` | The web console's language until the operator picks one with its EN / ع switch (remembered in a `neo_lang` cookie): `"en"` or `"ar"`. Arabic renders right-to-left. Every console string lives in `src/frontends/web/locales/{en,ar}/console.json` (i18next). |
+| `webFeedWindow` | `500` | Web console feed replay window (ADR-0014): the newest feed events kept for a console that opens or reconnects, and the rows the page keeps. Older lines drop out of the console only. |
+| `messageRoutesCacheCap` | `2000` | In-memory reply-route cache bound (oldest evicted first); the ledger backs it, so this only sizes the fast front cache. |
+| `telegramToolSteps` | `false` | Send each worker tool step (`🔧 Tool: …`, `↳ result`, `🔓 auto-approved: …`) to Telegram. Off by default: these lines were ~86% of outbound volume and caused a ~9h Telegram 429 ban. Applies on every Telegram path: project sessions, dispatches, scheduled loops, loops started from Telegram, and company briefs. The worker's own text, decisions, approval requests, stall/error alerts and the final result always go out. The web console always gets every line. |
+| `telegramFloodMaxWaitMs` | `30000` (30s) | Telegram flood gate: a 429 with `retry_after` up to this is waited out and retried once; a longer one holds sends to that chat until it lifts, logs it once, then posts how many messages were not delivered. Every failed send is logged to `/var/log/neo.log`. |
+| `trace` | `{ showRefs: "auto" }` | Message refs (spec §4.3). `"auto"`: an ack line, the first reply of a turn and every result/decision/alert line end with `` · `m4f2` `` (the message ref; `/trace m4f2` finds its thread). Streamed progress never carries one. `"off"`: no refs on any line (the ledger keeps the ids either way). See ADR-0016. |
+| `plans` | `{ paths: ["docs/**/plans/**/*.md", "docs/**/specs/**/*.md", "specs/**/*.md", "plans/**/*.md"], send: true, maxBytes: 1000000, executeBrief: "Execute the plan at {path} task by task. …", maxPerRun: 3 }` | The plan registry (ADR-0019). At every run end the engine finds the files under `paths` (globs relative to the project folder) that the run changed, or that are uncommitted, registers them, and sends each new content version once as a card (the file + Approve / Changes / Execute / Drop, later Done). Ticking checkboxes is progress, not a new version. At most `maxPerRun` cards go out per run end (a merge or pull can bring many); the last card says how many more wait in `/plans`. `send: false` keeps registering (`/plans`) but sends nothing. A file over `maxBytes` is skipped and logged. `executeBrief` is the todo an Execute tap queues; `{path}` is the plan's path. Detection is per run: a plan written outside a Neo run is found only at that project's next run end, and only while it is uncommitted. A field with the wrong type keeps its default; `paths` globs are also git pathspecs, so no `{a,b}` braces (use one glob per path). Needs a Telegram bot token (the cards are posted there); without one nothing is detected. |
+| `attention` | `{ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10, staleBranchDays: 21, worktreeIdleHours: 12, digestAt: "0 8 * * *" }` | Attention items (ADR-0018). Every heartbeat tick the engine producer raises what the engine itself sees: an approval pending longer than `governor.approvalRemindMs` (high), a todo queue paused longer than `queuePausedHours`, a thread `failed` in the last `failedLookbackHours`, a thread `waiting` with no new line for `waitingHours`, an open decision older than `decisionStaleHours`, and a ctx% over 100 (impossible: it names the model and the window used, and the console shows `ctx ?%`). An item resolves when its cause goes away (a `dirty` item raised when a todo leaves uncommitted files is resolved by the repo scan once the folder is clean); resolved items are deleted after `keepResolvedDays` (an item the operator dismissed is kept, so it stays closed). Items with no project are filed under the company. The repo scan uses `staleBranchDays` and `worktreeIdleHours` (see `github`). The daily digest goes out at `digestAt` (cron, server time): per project the count by severity and its top 3 high items with → todo — to the Decisions group when something is high, else your DM; one line when nothing is new and nothing is high; at most `listLines` lines, plus a `+N more` line and the console link. An invalid cron keeps the default. The digest is sent once per matching minute: if the daemon is down then, or the send fails, that day has none (`/attention` still shows everything). `/attention` shows at most `listLines` lines (plus a `+N more` line and the console link) with one-tap buttons (→ todo, snooze `snoozeHours`, dismiss) for the first `listButtons` items. A value that is not a positive number keeps its default. |
+| `restart` | `{ branchPrefixes: ["fix/", "feat/", "chore/"] }` | Restart-gated work (spec §8.4). At boot the daemon records its HEAD, branch, SDK version and a hash of `config.json` (`engine_boots`). Every heartbeat tick the restart producer lists, for the Neo repo: commits after the boot HEAD (live code differs from running code), local branches with one of `branchPrefixes` not merged into the running branch ("waiting to merge"), updater results that need a restart, and a changed `config.json`. `/gated` shows the same list, or "running build = HEAD". A list that is empty or holds a non-string keeps the default. |
+| `github` | `{ scanEveryMs: 1800000, callTimeoutMs: 20000 }` | The repo scan (spec §7). Every `scanEveryMs` the engine reads every tracked repo, one at a time: the repo folders it has worked in under `workRoot`, plus Neo. The git read raises `unpushed`, `no_upstream`, `dirty` (no session working there; a `dirty` left by a todo stays high and resolves here once clean), `stale_branch` (`attention.staleBranchDays`), `drift` (configured pairs) and `worktree` (a linked worktree idle for `attention.worktreeIdleHours`; a clean one whose branch is pushed or merged gets a one-tap **remove**: `git worktree remove`, never `--force`; git deletes ignored files such as a `.env`, so when there are any the first tap names them (on Telegram the full list is also posted in the chat, as a tap's toast holds 200 characters) and only a second tap within 5 minutes removes — if the ignored files changed since, it names them again; a worktree any session uses is never removed). The GitHub read (`gh … --json`, the logged-in account) raises `pr_open`, `pr_review_requested`, `ci_failed` (newest completed run of each workflow on a tracked branch, high), `issue_open` (assigned to you or labelled), `dependabot`, `code_scanning`, `secret_scanning` (critical/high alerts and leaked secrets are high). A read that fails — gh down, a rate limit, a timeout — changes nothing; the error and the last good scan time are kept (`meta` → `gh:<project>`) and one `github_scan_error` event is logged per project per hour. An alert feature that is off is no items. One git/gh call may take `callTimeoutMs`. Values under 1000 ms keep the default. |
+| `projects` | `{}` | Per-project scan settings, by project name (the folder name): `trackedBranches` (the branches that must have an upstream; CI is read on them; the first is the base for merged/stale — default: the remote's default branch, else the checked-out one), `driftPairs` (`[["dev", "main"]]` → "dev is N ahead of main"), `issueLabel` (default `"neo"`), `ignoreKinds` (kinds never raised for this project), `healthUrl` (P6: each repo scan GETs it; a 2xx answer is ok, anything else or no answer is a failed probe and the project dashboard shows `down`; meta `probe:<project>`), `deployedVersionUrl` + `deployedVersionPath` + `deployBranch` (P6: each repo scan GETs the URL, reads the deployed sha at the dot path — e.g. `"version"` or `"build.sha"`, default `"version"` — accepts only a 7–40 char hex sha, and counts the commits on `deployBranch` after it with `git rev-list --count`; `deployBranch` defaults to the git producer's base branch, the first of `trackedBranches`, else the remote's default branch, else the checked-out one; it is the local branch. The dashboard (console DEPLOY line, Telegram `/project`) shows "N commits not deployed (branch @ sha live)", or the probe's error; meta `deploy:<project>`). Without these fields there is no call and nothing about health/deployment is shown. Both probes run in the repo scan, every `github.scanEveryMs`, each call bounded by `github.callTimeoutMs` and each answer by 64 KB (`MAX_PROBE_BODY_BYTES`; a larger answer is a failed probe); a failed probe never guesses a count. Only `http`/`https` URLs are called (any other scheme is a failed probe, no call). Redirects are not followed: a 3xx answer is a failed probe ("redirected to …"), so point the URLs at the final address. Errors are stored with each URL's userinfo, query and fragment removed. A probe row older than 2 × `github.scanEveryMs` is ignored (the dashboard shows nothing rather than an old answer), and the rows of a configured project the scan no longer tracks are deleted. No repo, branch or label name is in code. A malformed field is dropped. |
 | `drainWindowMs` | `90000` (90s) | Graceful-reload wait for running turns to wrap up before interrupt. |
-| `stuckAfterMs` | `600000` (10m) | Alert when a running session has produced nothing for this long. |
-| `longTurnAlertMs` | `1200000` (20m) | Alert when one activity label has run this long. |
+| `liveness` | `{ wedgedAfterMs: 300000, quietAfterMs: 180000 }` | Thresholds behind the **derived session state** every surface reports (`working` / `quiet` / `idle` / `starting` / `awaiting-operator` / `wedged`). `wedgedAfterMs` = a turn is in flight and nothing at all has been seen for this long; `quietAfterMs` = alive, but nothing operator-visible for this long. See "Session liveness" below. |
+| `stuckAfterMs` | `600000` (10m) | Watchdog: alert when a session **with a turn in flight** shows NO activity for this long (any streamed SDK event counts as activity). A session sitting between turns, or waiting on the operator, is never alerted however old it is. |
+| `longTurnAlertMs` | `1200000` (20m) | Watchdog: an FYI when one activity label has run this long **while still pulsing** — explicitly not a "stuck" claim. |
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
-| `contextPolicy` | `{ handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5 }` | Session context-window lifecycle thresholds. See "Context policy: learned cache TTL + per-model window" below for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`windowTokensByModel`. |
-| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. |
+| `contextPolicy` | `{ sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9, handoffNoteMaxChars: 20000, handoffOrientationMaxSteps: 70, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context lifecycle. See "Context sweet spot" below for the band and the handoff knobs, and "Context policy: learned cache TTL + per-model window" for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
+| `models` | `{ default: "claude-opus-5-5[1m]", aliases: { opus: "claude-opus-5-5[1m]", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-4-5", fable: "claude-fable-5-1" } }` | Which model workers run. `default` applies to every launch path that does not name one itself; `aliases` maps a tier word to a pinned id. See "Worker models" below. |
+| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. A path that names no `model` takes `models.default`. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
 
 > **Note:** if you raise `drainWindowMs` past ~90s, also raise `TimeoutStopSec` in your service unit
 > (systemd's default stop timeout is 90s and would kill the process mid-drain).
 
+## Worker models (`models`)
+
+`models` is the one place Neo says which model a worker runs.
+
+```json
+"models": {
+  "default": "claude-opus-5-5[1m]",
+  "aliases": {
+    "opus": "claude-opus-5-5[1m]",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-4-5",
+    "fable": "claude-fable-5-1"
+  }
+}
+```
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `models.default` | `claude-opus-5-5[1m]` | The model id every launch path gets unless its `workers.<path>` profile names one. Also settable with the `NEO_WORKER_MODEL` env var, which wins over `config.json`. |
+| `models.aliases` | the four tiers above | Tier word → pinned model id. Entries **merge** over the built-in pins, so overriding one tier leaves the others alone. |
+
+**Pin ids, not tier aliases.** A bare tier alias (`opus`, `sonnet`, `haiku`, `fable`) means "whatever
+that family points at now", so it changes under you on a release. The SDK's own allowlist validator
+says the same: *"it names a different model depending on the release and settings. Name the model
+instead, for example `claude-opus-5-5`."* Tier aliases stay supported as a **spelling** — a profile or
+a brief may write `opus`, or `opus[1m]` for the 1M form — and the engine expands them to a pinned id
+before the SDK sees it, so no bare **tier** alias reaches a worker. The `[1m]` tag is carried onto the
+pinned id, so `sonnet[1m]` becomes `claude-sonnet-5-5[1m]` and the requested context size survives.
+
+Two Claude names are **not** tiers and are deliberately left alone: `best` (pick the best model
+available) and `opusplan` (switch model by phase). They depend on the release *and* the settings, so
+no single id expresses them — pinning them would change what they mean rather than fix anything. Neo
+does not use them. On Codex they are still dropped rather than forwarded, because neither is an
+OpenAI model.
+
+**Resolution order**, in `profileDeps` (`src/engine/worker-profile.ts`) — the one place this happens:
+
+1. a model the call site set on its `RunDeps`, else
+2. the path's `workers.<path>.model`, else
+3. `models.default`,
+
+then the winner is expanded through `models.aliases`. An unset or blank value falls to
+`models.default`. An id the alias map does not recognise is sent **as written**: the SDK decides
+whether an id is real and reports an unknown one as `model_not_found`, whereas quietly substituting
+the default would hide a typo.
+
+This applies to all eight launch paths including **dispatch**, which reaches `profileDeps` through
+`DispatchDeps.models` (`src/engine/dispatch.ts`). A caller that builds `DispatchDeps` by hand and
+omits `models` gets an unpinned worker, so thread `models: cfg.models` alongside `workers` and
+`providers` — `tests/dispatch.test.ts` asserts the pin on a real dispatch launch to keep that honest.
+
+`[1m]` is the 1M-context tag. It is valid on any canonical id and the SDK strips it from the model it
+reports back. The default carries it because that is the context size operator workers already run
+on; the cheap tiers stay plain, where 1M is cost with no benefit.
+
+**Codex (`providers.ownWork: "codex"`) gets no Claude pin.** These are Claude ids, so injecting one
+into a Codex run would only be dropped downstream as a foreign model, leaving the Codex default to
+apply invisibly. On Codex the model still comes from `workers.<path>.model`, and the SDK
+compatibility table maps a Claude tier to a reasoning effort — see the Codex table below.
+
+**Upgrading a tier** is a `config.json` edit plus a daemon reload. That is the point: before this
+existed, no key set a model anywhere, so every worker silently took whatever the subscription
+defaulted to — a cost and capability change with no config edit and no record (ADR-0005).
+
 ## Worker profiles (`workers`)
 
-Each of the seven launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
-`handoff` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
+Each of the eight launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
+`handoff`, `secretary` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
 `WorkerPathName` in `src/config.ts`). `profileDeps(cfg, path, base)` (`src/engine/worker-profile.ts`)
 looks up `cfg.workers[path]` and fills the configured own-work provider plus
 `model`/`effort`/`skills`/`maxTurns` onto the caller's `RunDeps` only where the caller didn't
@@ -79,7 +177,8 @@ existed). Changing a path's profile in `config.json` is opt-in and the only way 
 ### Economy mode (opt-in, measured)
 
 Eligible paths only (their output is not project work product): `handoff`, `judge`, `ingress`.
-Example: `"workers": { "handoff": { "model": "haiku", "effort": "low" }, "judge": { "model": "haiku", "effort": "low" } }`.
+Example: `"workers": { "handoff": { "model": "claude-haiku-4-5", "effort": "low" }, "judge": { "model": "claude-haiku-4-5", "effort": "low" } }`.
+(The tier word `"haiku"` also works and resolves to the same pinned id — see "Worker models" above.)
 `CLAUDE_CODE_SUBAGENT_MODEL` is the same trade for subagents inside workers — set it only after
 reading the guardrail. Guardrail: watch ledger loop `goal-met` rate, iterations-to-green, and
 whether resumed sessions recover from handoff notes without re-asking, for two weeks; any
@@ -112,7 +211,7 @@ message/activity/event hooks. Compatibility is table-driven in `src/engine/model
 
 | Run/profile setting | `subscription` (Claude Agent SDK) | `codex` (OpenAI Codex SDK) |
 | --- | --- | --- |
-| `model` | Forwarded. `haiku`, `sonnet`, and `opus` remain Claude tier aliases. | Provider-native model IDs pass through. Claude tier aliases map to Codex default model plus effort (`haiku`→`low`, `sonnet`→`medium`, `opus`→`high`). |
+| `model` | A tier alias (`haiku`, `sonnet`, `opus`, `fable`) is expanded to its pinned id; a full model id is forwarded unchanged. No bare alias reaches the SDK. | Provider-native model IDs pass through. A Claude tier — alias **or** pinned id — maps to Codex default model plus effort (`haiku`→`low`, `sonnet`→`medium`, `fable`→`medium`, `opus`→`high`). |
 | `effort` | Forwarded to the Claude adapter. | Forwarded as Codex reasoning effort (`max` becomes Codex `xhigh`). |
 | `skills` / `maxTurns` | Forwarded to Claude Code. | Dropped from worker profiles and omitted from Codex launch config; direct `RunDeps` usage records `worker_compat_warning`. |
 | `agents` / dispatch team mode | Forwarded to Claude Code; team dispatch adds the lead-agent preamble. | Unsupported. Team dispatch falls back to a normal single-worker brief; direct `agents` usage records `worker_compat_warning`. |
@@ -121,12 +220,36 @@ message/activity/event hooks. Compatibility is table-driven in `src/engine/model
 | `workerEnv` | Merged over `process.env` unchanged. | `CLAUDE_*`, `ANTHROPIC_*`, and `MAX_MCP_OUTPUT_TOKENS` are filtered before launch; other keys such as `CODEX_API_KEY` stay available. |
 
 Worker profile `model` values are resolved at the SDK boundary. Provider-native model IDs pass
-through unchanged, but Claude tier aliases do not leak into Codex: `haiku` maps to Codex default
-model + `low` effort, `sonnet` to default model + `medium` effort, and `opus` to default model +
-`high` effort. An explicit `effort` in the worker profile wins over the alias-derived effort.
+through unchanged, but a Claude tier does not leak into Codex: `haiku` maps to Codex default model +
+`low` effort, `sonnet` and `fable` to default model + `medium` effort, and `opus` to default model +
+`high` effort. The tier is matched as a substring, so the pinned ids behave identically to the bare
+aliases (`claude-sonnet-5-5` → `medium`, `claude-opus-5-5[1m]` → `high`). A Claude id with no tier
+word in it is dropped with no effort set, because no effort can be inferred from it. An explicit
+`effort` in the worker profile wins over the tier-derived effort.
 
 Codex SDK auth is handled by Codex itself: use your local Codex login or provide `CODEX_API_KEY` in
 the process environment. Neo does not read or store that key directly.
+
+## Context sweet spot (ADR-0021)
+
+Neo keeps each session's context in a sweet spot. It hands a session off only at a **task
+boundary** (the session settled after a task, or is about to resume for a new one) or at a **safe
+checkpoint** mid-task (a commit just succeeded or a plan step was marked done, and the tree is
+clean). A number crossing a line never interrupts work by itself.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `sweetSpotPct` | `0.4` | Above this occupancy, hand off at the next task boundary. Was `handoffPct` (0.65); a legacy `handoffPct` in config.json is still read as `sweetSpotPct`. |
+| `checkpointPct` | `0.6` | Above this, also hand off at the next safe checkpoint, mid-task. Set it to `1` or more to turn mid-task handoffs off. |
+| `emergencyPct` | `0.9` | The last resort. Hand off even with uncommitted work; at a cold resume, clear and alert. |
+| `handoffNoteMaxChars` | `20000` | Max characters of the handoff note put into the next session's first brief. |
+| `handoffOrientationMaxSteps` | `70` | A resumed session that reaches its first edit or commit within this many model calls counts as a clean resume. |
+
+The defaults come from 31,585 Opus turns (2026-07-08 → 2026-10-06). Quality (tool-error rate) is
+flat to ~65%. Cost per turn grows with occupancy: the 19% of turns above 40% read 41% of all cache
+tokens. The SDK auto-compacts at ~97%. The handoff never runs with uncommitted work, except in the
+emergency band. Every handoff, clear, deferral and resume is a `context_events` row with its reason,
+shown in `/status` and in the console's Recent tab.
 
 ## Context policy: learned cache TTL + per-model window
 
@@ -141,16 +264,93 @@ instead of a cold, unwarmed-cache resume.
 | `staleResumePct` | ratio | `0.35` | Occupancy above which a stale-past-TTL resume triggers handoff instead of keep. |
 | `cacheTtlFallbackMs` | provider-fact fallback | `3600000` (1h) | The provider-documented prompt-cache TTL, used until enough real observations exist to derive a learned TTL. |
 | `cacheTtlMinObservations` | operator choice | `5` | Minimum `(gapMs, hit)` observations required before the learned TTL is trusted over the fallback. |
+| `cacheObsWindow` | operator choice | `50` | Rolling sample size for the learned-TTL window — how many of the most recent `(gapMs, hit)` observations the learner keeps. |
 
 `contextPolicy.windowTokensByModel` (optional, `Record<string, number>`, unset by default) is an
-operator-choice override layered over the built-in context-window-size facts map
-(`windowTokensFor`'s `MODEL_WINDOW_TOKENS`, keyed by the model id Claude Code's own transcripts
-report). It is not a new fixed knob — the window is still derived from the model the transcript
-reports; this only lets you correct or extend the facts map (e.g. for a model id the built-in map
-doesn't know yet). It is threaded into every gate that measures context: `dispatch`'s gate,
-`pipeline`'s pre- and post-resume gates, the loop-resume gate, and `runHandoff`'s own
-re-measurement — so a configured override changes gate verdicts, not just the number shown for
-`/status` ctx%.
+operator-choice override of a model's context window, keyed by the model id the transcripts report
+(`claude-opus-5-5`, never the `[1m]`-tagged pin). You normally leave it unset: the SDK reports each
+model's real window on every completed turn and the ledger keeps the newest one per model
+(`model_windows`, ADR-0013). The window for a measurement is the override, then the SDK-reported
+window, then 200k for a model the SDK has not reported yet. On that 200k guess a gate never
+clears a session (it hands off instead), and the console shows no ctx%. The same windows reach every place that
+measures context: `dispatch`'s gate, `pipeline`'s pre- and post-resume gates, the loop-resume gate,
+`runHandoff`'s re-measurement, the web console and `/status` ctx%.
+
+## Governor (`governor`) — ADR-0012
+
+```json
+{ "governor": { "outOfFolderWrites": "allow", "approvalRemindMs": 1800000, "approvalTimeoutMs": 7200000 } }
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `outOfFolderWrites` | `"allow"` | Write/Edit/NotebookEdit outside the session's project folder. `"allow"` = no approval (operator order, 2026-10-06). `"ask"` = a fence escalation the operator must tap (ADR-0011). Any other value acts as `"ask"`. Own work only, loops included. Customer-sourced work and the ingress path always ask. Tainted briefs have no tools at all. |
+| `approvalRemindMs` | `1800000` (30m) | While an approval is pending, re-post a reminder to the Decisions surface this often. `0` = no reminders. |
+| `approvalTimeoutMs` | `7200000` (2h) | Deny an approval nobody answered after this long. The worker gets the deny, the operator gets an alert, and the ledger records `approval_timeout`. `0` = wait for the operator forever. |
+
+Per-key merge: setting one key keeps the defaults of the others. Restart-gated, like all config.
+
+## Toolchain updates (`updates`) — ADR-0009
+
+Neo keeps its own toolchain current: the worker Agent SDK pin, the Claude Code plugins, and the MCP
+servers workers launch. It is a deterministic engine job, not a loop (no AI worker, no budget). The
+daemon checks on its heartbeat whether a run is due. **It never restarts the daemon.** The ledger
+holds every result (`update_result`, `update_run` events), so a restart neither skips nor repeats a
+day.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `updates.enabled` | `true` | Run the scheduled check. `/updates run` works either way. |
+| `updates.everyMs` | `86400000` (24 h) | Interval between scheduled checks. |
+| `updates.autoApply` | `{ "sdk": true, "plugins": true, "mcp": true }` | Per category: apply what is newer, or only report it as `available`. Merged per key. |
+| `updates.holdBreaking` | `true` | A release whose notes say breaking / incompatible / migration / rebuild / removed is **held** until `/updates apply <item>`. |
+| `updates.retryDeferredMs` | `1800000` (30 min) | Plugin and MCP changes wait while a session is running (`deferred`). The retry runs this soon after, once no session runs. |
+| `updates.baseBranch` | `"master"` | The branch a green SDK bump fast-forwards (local only, never pushed). |
+| `updates.verifyTimeoutMs` | `60000` | Time an updated MCP server gets to answer `initialize` + `tools/list`. A failed probe rolls it back. |
+| `updates.npmGlobals` | `{ "playwright-mcp": "@playwright/mcp" }` | MCP launch command → the global npm package that installs it. Merged per key. |
+| `updates.codebaseMemory` | `{ "repo": "DeusData/codebase-memory-mcp", "asset": "codebase-memory-mcp-linux-amd64.tar.gz" }` | Where the `codebase-memory-mcp` binary (`CODEBASE_MEMORY_BIN`) is released. The download is checked against the release `checksums.txt`; the old binary is kept as `<bin>.bak`. |
+
+What each category does:
+
+- **sdk** — bumps the exact `@anthropic-ai/claude-agent-sdk` pin on a branch in its own git worktree,
+  runs `bunx tsc --noEmit` and `bun test`, and fast-forwards `baseBranch` only when both are green.
+  The live checkout and its `node_modules` are not touched: run `bun install` at the restart.
+- **plugins** — `claude plugin update` for each enabled user-scope plugin, then validates it. A
+  failed check restores the old entry in `installed_plugins.json`.
+- **mcp** — applies only what Neo owns: npm-global servers, the codebase-memory binary, and untagged
+  docker images. A floating `npx` server or a remote server resolves at launch. A version pinned in
+  another project's tracked `.mcp.json` is **report only** (change it in that project).
+
+A scheduled run reports to the Decisions channel only when something is new. The same hold every
+day stays quiet; `/updates` still shows it. Commands: `/updates` (status) · `/updates run` (check
+now) · `/updates apply <item>` (apply one item, held or not) · `/updates rollback <item>`.
+
+## Errors and engine health (`faults`, `health`) — ADR-0010
+
+One error never stops the engine. Each unit of work (a session turn, a Telegram update, a web
+request, a loop start, a heartbeat step) catches its own failure. An error that no unit handled is
+an **engine fault**. The engine logs it with its stack and context, records an `engine_fault` event
+(`/events engine_fault`), sends one alert to the Decisions channel, and queues a note for the
+company to investigate. Then the engine continues. Only a failure **at startup** exits the process
+(the ledger does not open, the web port does not bind). The supervisor then restarts it.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `faults.dedupeMs` | `900000` (15 min) | A fault with the same signature (component + first line of the message) in this window is counted, not sent again. The next alert says how many repeats there were. |
+| `faults.maxAlertsPerHour` | `6` | Distinct fault alerts per rolling hour. More faults are logged and recorded only. |
+| `faults.companyHandoff` | `true` | Queue each deduplicated fault for the company (as project `neo-engine`). The company gets it with its next delivery; a fault never wakes it. |
+| `faults.maxHandoffsPerHour` | `3` | Company handoffs per rolling hour. More are logged and recorded only. Fault signatures ignore digits, so one cause with a changing number (a 429's `retry_after`) is one fault. Together these stop a loop where the company's own reply fails and becomes the next fault. |
+| `health.everyMs` | `60000` | How often the daemon samples its health. `0` turns the check off. |
+| `health.lagWarnMs` | `2000` | Event-loop lag (how late the sample timer fired) above which the engine is degraded. |
+| `health.rssWarnMb` | `2048` | Resident memory (MB) above which the engine is degraded. |
+| `sqliteBusyTimeoutMs` | `5000` | How long a SQLite store waits on a locked database before the write fails. All stores open in WAL mode. |
+
+The health check reports a metric once when it crosses its limit and once when it recovers. It
+also does a `SELECT 1` on the ledger and reports when the ledger cannot be read.
+
+Telegram handles updates one at a time. A handler that must wait for a later update (the inbox
+send waits for an Allow/Deny press) runs that wait detached, so the press can arrive. An approval
+whose message cannot be posted is denied at once, so a worker never waits for a button nobody sees.
 
 ## Memory system (`memory`) — Phase 2: store / inject / recall
 
@@ -307,5 +507,43 @@ Point your proxy (Traefik/Caddy/nginx) at `WEB_HOST:WEB_PORT` and terminate TLS 
 2026-07-23 context-efficiency design spec) and `STITCH_API_KEY` for Stitch. They attach to operator
 workers only — never to the customer/ingress path.
 
+Operator workers also get a **Playwright browser MCP** (headless, isolated Chromium) for web/UI
+testing. This one needs no config — it attaches automatically on the operator path, never the
+customer/ingress path. It requires the `playwright-mcp` binary on `PATH` (`@playwright/mcp`) and a
+Chromium browser (`playwright install chromium`). If the binary is absent, the MCP does not start and
+the worker runs without it. The browser launches only on first tool use.
+
 **Point projects at a non-`/home` root.** Set `WORK_ROOT=/srv/projects` (and, if you keep the
 company workspace elsewhere, `COMPANY_FOLDER=/srv/projects/company`).
+
+## Session liveness
+
+Neo keeps **two** clocks per session and judges on exactly one of them:
+
+- **last activity** — the last time *any* streamed SDK event arrived (a partial generation delta, a
+  tool call, a tool result, a system event, a turn result). This is the only signal that decides
+  alive-or-wedged: the dispatch stall abort, the stuck watchdog, the idle sweep and every status
+  line read it and nothing else.
+- **last output** — the last operator-visible line. Always reported, never judged: a worker writing
+  one huge file for ten minutes is silent to you and perfectly alive.
+
+From those, plus whether a turn is in flight and whether the operator owes it an answer, the engine
+derives ONE state and shows that word everywhere (`/list`, the company's `sessions` tool, the web
+console, dispatch's busy replies):
+
+| State | Means | Action |
+|---|---|---|
+| `working` | A turn is in flight and activity is fresh. | Nothing. |
+| `quiet` | Alive, but nothing operator-visible for `quietAfterMs` (a long build, a big file). | Nothing. |
+| `idle` | Open, between turns. **Healthy and free at any age** — a project idle for two days answers instantly. | Nothing. |
+| `starting` | Registered, worker not attached yet (folder indexing + the context gate). | Retry shortly. |
+| `awaiting-operator` | Blocked on a permission escalation or a raised decision. Never stall-aborted; its clock is yours. | Answer it. |
+| `wedged` | A turn is in flight and there has been NO activity past the threshold. | The only state worth `/kill`. |
+
+The registry's own `status` (`running`/`idle`/`done`/`error`) is entry *lifecycle* bookkeeping — it
+reads `running` for a session's whole life — and is deliberately never shown as a status.
+
+Every abort or alert records its evidence to the event log first (`dispatch_stall_evidence`,
+`session_stuck`): both clock ages, the last activity label, the turn state, the queue depth, and a
+cheap "this command looks like it is waiting on stdin" read for interactive-prompt hangs such as
+`cp -i`. Read them with `/events dispatch_stall_evidence` or `/events session_stuck`.

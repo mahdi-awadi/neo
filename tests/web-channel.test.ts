@@ -9,8 +9,12 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import type { NeoConfig } from "../src/config";
+import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
+import { DEFAULT_GOVERNOR_CFG } from "../src/engine/governor";
+import { createTrace } from "../src/engine/trace";
+import { reconcile, listOpen } from "../src/engine/attention";
 
 function cfg(): NeoConfig {
   return {
@@ -36,18 +40,40 @@ function cfg(): NeoConfig {
     meetingLink: "",
     businessName: "",
     loopSchedulerEnabled: true,
-    dispatchTimeoutMs: 900_000,
-    dispatchTimeoutMaxMs: 7_200_000,
     dispatchStallMs: 300_000,
     dispatchGraceMs: 75_000,
+    dispatchProgressMs: 600_000,
+    dispatchRecoverWindowMs: 86_400_000,
+    todoOnFailure: "continue",
+    apiRetryLadderMs: [30_000, 120_000, 480_000],
+    apiRetryJitterFrac: 0.2,
+    apiCooldownMs: 60_000,
+    routeKeep: 20_000,
+    eventsKeep: 50_000,
+    decisionsKeep: 5_000,
+    toolActionsKeep: 100_000,
+    secretaryCron: "0 8-22/2 * * *",
+    secretaryStaleHours: 24,
+    codebaseMemoryListTimeoutMs: 15_000,
+    inboxListDefault: 100,
+    webFeedWindow: 500,
+    messageRoutesCacheCap: 2_000,
     stuckAfterMs: 600_000,
     longTurnAlertMs: 1_200_000,
     alertRepeatMs: 900_000,
     drainWindowMs: 90_000,
-    contextPolicy: { handoffPct: 0.65, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
-    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {} },
+    trustNewProjects: false,
+    contextPolicy: { sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70, emergencyPct: 0.85, maxTurns: 200, maxAgeMs: 604_800_000, handoffTimeoutMs: 180_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
+    models: DEFAULT_MODELS,
+    updates: DEFAULT_UPDATES,
+    faults: DEFAULT_FAULTS,
+    health: DEFAULT_HEALTH,
+    sqliteBusyTimeoutMs: 5_000,
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
+    telegramToolSteps: false,
+    telegramFloodMaxWaitMs: 30_000,
   };
 }
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-web-"));
@@ -57,7 +83,7 @@ function fakeStart(onStart?: (h: RunHandlers) => void) {
   const done = new Promise<RunResult>((r) => (resolveDone = r));
   const start = (_o: Order, h: RunHandlers): SessionRun => {
     onStart?.(h);
-    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, close: () => {}, done };
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
   };
   return { start, finish: (r: RunResult) => resolveDone(r) };
 }
@@ -383,4 +409,295 @@ test("sendFile emits a file event and registers a token getFile can resolve", ()
   expect(fileEvent.name).toBe("report.pdf");
   expect(fileEvent.url).toContain(encodeURIComponent(token));
   expect(ch.getFile(token)).toBe("/tmp/report.pdf");
+});
+
+test("todo(): the console's queue actions run the shared /todo command against the engine's queue", async () => {
+  const { createTodoQueue } = await import("../src/engine/todo-queue");
+  const eng = engine(fakeStart().start);
+  const todo = createTodoQueue({ ledger: eng.ledger, registry: eng.registry, onFailure: () => "continue" });
+  const ch = createWebChannel({ engine: { ...eng, todo }, chatId: 42 });
+  expect(ch.todo("").text).toContain("every project queue is empty");
+  expect(ch.todo("cancel 7").text).toContain("No todo #7");
+  expect(createWebChannel({ engine: eng, chatId: 42 }).todo("").text).toContain("unavailable");
+});
+
+// ADR-0014: the console feed is a bounded replay window, resumed by event id.
+function windowed(feedWindow: number, onStart?: (h: RunHandlers) => void) {
+  const eng = engine(fakeStart(onStart).start);
+  eng.cfg.webFeedWindow = feedWindow;
+  return { eng, ch: createWebChannel({ engine: eng, chatId: 42 }) };
+}
+const texts = (es: WebEvent[]) => es.filter((e) => e.type === "message").map((e) => (e as { text: string }).text);
+
+test("a new subscriber gets only the newest webFeedWindow events, oldest first", () => {
+  const { ch } = windowed(3);
+  for (let i = 1; i <= 5; i++) ch.notify(`line ${i}`);
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  expect(events.length).toBe(3);
+  expect(texts(events).map((t) => t.match(/line \d/)?.[0])).toEqual(["line 3", "line 4", "line 5"]);
+});
+
+test("every feed event carries an increasing id; a resume point replays only later events", () => {
+  const { ch } = windowed(10);
+  for (let i = 1; i <= 4; i++) ch.notify(`line ${i}`);
+  const ids: number[] = [];
+  ch.subscribe((_e, id) => ids.push(id));
+  expect(ids.length).toBe(4);
+  expect([...ids].sort((a, b) => a - b)).toEqual(ids);
+  expect(new Set(ids).size).toBe(4);
+
+  const resumed: WebEvent[] = [];
+  ch.subscribe((e) => resumed.push(e), { after: ids[2] });
+  expect(texts(resumed).length).toBe(1);
+  expect(texts(resumed)[0]).toContain("line 4");
+});
+
+test("a pending escalation older than the window is still replayed; an answered one is not", async () => {
+  const dir = scratch();
+  let h!: RunHandlers;
+  const { ch } = windowed(2, (x) => void (h = x));
+  await ch.send(`/open ${dir} go`);
+  void h.onEscalation("pending one");
+  const answeredP = h.onEscalation("answered one");
+  const first: WebEvent[] = [];
+  ch.subscribe((e) => first.push(e));
+  const answered = first.find((e) => e.type === "escalation" && e.reason.includes("answered")) as { id: string };
+  ch.resolveApproval(answered.id, "deny");
+  await answeredP;
+  for (let i = 0; i < 5; i++) ch.notify(`noise ${i}`); // pushes both escalations out of the window
+
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e));
+  const reasons = late.filter((e) => e.type === "escalation").map((e) => (e as { reason: string }).reason);
+  expect(reasons).toEqual(["pending one"]);
+});
+
+test("a resumed subscriber that already has a pending escalation does not get it again", async () => {
+  const dir = scratch();
+  let h!: RunHandlers;
+  const { ch } = windowed(2, (x) => void (h = x));
+  await ch.send(`/open ${dir} go`);
+  void h.onEscalation("pending one");
+  let last = 0;
+  ch.subscribe((_e, id) => (last = id));
+  for (let i = 0; i < 5; i++) ch.notify(`noise ${i}`);
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e), { after: last });
+  expect(late.filter((e) => e.type === "escalation").length).toBe(0);
+});
+
+test("feed ids keep increasing across a daemon restart, so an open console's stale resume point never hides new events", async () => {
+  const before = windowed(10).ch;
+  before.notify("old");
+  let staleId = 0;
+  before.subscribe((_e, id) => (staleId = id));
+  await Bun.sleep(2);
+  const after = windowed(10).ch; // a fresh channel = the daemon after a restart
+  after.notify("new");
+  const got: WebEvent[] = [];
+  after.subscribe((e) => got.push(e), { after: staleId });
+  expect(texts(got).some((t) => t.includes("new"))).toBe(true);
+});
+
+// The feed window (ADR-0014, console) meets the approval timeout (ADR-0012, governor): an escalation
+// the engine gave up on is denied AND no longer replayed — a console must not show a dead prompt.
+test("a timed-out escalation is not replayed to a console that connects later", async () => {
+  const dir = scratch();
+  let h!: RunHandlers;
+  const { eng, ch } = windowed(10, (x) => void (h = x));
+  eng.cfg.governor = { ...DEFAULT_GOVERNOR_CFG, approvalRemindMs: 0, approvalTimeoutMs: 20 };
+  await ch.send(`/open ${dir} go`);
+  const verdict = await h.onEscalation("nobody answers");
+  expect(verdict).toBe("deny");
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e));
+  expect(late.filter((e) => e.type === "escalation")).toEqual([]);
+});
+
+// ── the cause seam on the web (ADR-0015, spec §4.1 rule 2 + §6) ──────────────────────────────
+
+function traced(start = fakeStart().start) {
+  const eng = engine(start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  const bus = createOperatorBus();
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 0, bus });
+  const events: Array<{ e: WebEvent; id: number }> = [];
+  ch.subscribe((e, id) => events.push({ e, id }));
+  return { eng, trace, bus, ch, events };
+}
+type Ided = { msgId?: number; threadId?: number };
+
+test("a web message opens a thread; its reply event carries msgId and threadId; the composer inside a thread joins it", async () => {
+  const t = traced();
+  await t.ch.send("hello there"); // no project: the pipeline answers with its usage line
+  const reply = t.events.map((x) => x.e).find((e) => e.type === "message") as (WebEvent & Ided) | undefined;
+  expect(reply?.msgId).toBeGreaterThan(0);
+  const row = t.eng.ledger.messageById(reply!.msgId!)!;
+  expect(reply!.threadId).toBe(row.threadId!);
+  const root = t.eng.ledger.messageById(row.threadId!)!;
+  expect(root).toMatchObject({ role: "user", content: "hello there", surface: "web" });
+
+  await t.ch.send("and more", { threadId: reply!.threadId });
+  const inThread = t.eng.ledger.messagesInThread(reply!.threadId!, { limit: 10 }).filter((m) => m.role === "user");
+  expect(inThread.map((m) => m.content)).toEqual(["and more", "hello there"]);
+});
+
+test("the thread composer delivers to the thread's project, not to the focused one (AC3.4)", async () => {
+  const got: string[] = [];
+  const t = traced(((o: Order, h: RunHandlers) => {
+    const run = fakeStart().start(o, h);
+    return { ...run, followUp: (x: string) => void got.push(`${o.folder}:${x}`) };
+  }) as ReturnType<typeof fakeStart>["start"]);
+  const gold = scratch();
+  const acme = scratch();
+  await t.ch.send(`/open ${gold} start`);
+  await t.ch.send(`/open ${acme} start`);
+  const [g, a] = t.eng.registry.list();
+  for (const s of [g, a]) t.eng.registry.setStatus(s.id, "running");
+  t.eng.registry.setFocus(0, a.id, "pinned");
+  const cause = t.trace.inbound({ chatId: 0, text: "gold work", surface: "web" });
+  t.trace.outbound({ chatId: 0, text: "on it", cause, project: g.name, folder: gold });
+  await t.ch.send("next step", { threadId: cause.threadId });
+  expect(got).toEqual([`${gold}:next step`]);
+});
+
+test("a slash typed in a thread leaves no focus behind; a pin survives a thread message", async () => {
+  const got: string[] = [];
+  const t = traced(((o: Order, h: RunHandlers) => {
+    const run = fakeStart().start(o, h);
+    return { ...run, followUp: (x: string) => void got.push(`${o.folder}:${x}`) };
+  }) as ReturnType<typeof fakeStart>["start"]);
+  const gold = scratch();
+  const acme = scratch();
+  await t.ch.send(`/open ${gold} start`);
+  await t.ch.send(`/open ${acme} start`);
+  const [g, a] = t.eng.registry.list();
+  for (const s of [g, a]) t.eng.registry.setStatus(s.id, "running");
+  t.eng.registry.clearFocus(0);
+  const cause = t.trace.inbound({ chatId: 0, text: "gold work", surface: "web" });
+  t.trace.outbound({ chatId: 0, text: "on it", cause, project: g.name, folder: gold });
+  await t.ch.send("/frobnicate", { threadId: cause.threadId });
+  expect(t.eng.registry.getFocus(0)).toBeUndefined();
+  t.eng.registry.setFocus(0, a.id, "pinned");
+  await t.ch.send("next step", { threadId: cause.threadId });
+  expect(got).toEqual([`${gold}:next step`]);
+  expect(t.eng.registry.getFocus(0)).toMatchObject({ session: { id: a.id }, mode: "pinned" });
+});
+
+test("an engine command typed on the web opens no thread; /trace answers on the web", async () => {
+  const t = traced();
+  await t.ch.send("hello there");
+  const before = t.eng.ledger.conversation(0).length;
+  const reply = t.events.map((x) => x.e).find((e) => e.type === "message") as WebEvent & Ided;
+  await t.ch.send(`/trace ${t.trace.ref(reply.msgId!)}`);
+  await t.ch.send("/todo");
+  expect(t.eng.ledger.conversation(0).length).toBe(before);
+  const last = t.events.map((x) => x.e).filter((e) => e.type === "message").at(-2) as { text: string };
+  expect(last.text).toContain(t.trace.ref(reply.threadId!));
+});
+
+test("a Telegram echo and reply mirrored onto the web keep their msgId and threadId", () => {
+  const t = traced();
+  t.bus.mirror("telegram", { kind: "echo", text: "from the phone", msgId: 5, threadId: 4 });
+  t.bus.mirror("telegram", { kind: "reply", text: "worker line", msgId: 6, threadId: 4 });
+  const [echo, msg] = t.events.map((x) => x.e) as Array<WebEvent & Ided>;
+  expect(echo).toMatchObject({ type: "echo", msgId: 5, threadId: 4 });
+  expect(msg).toMatchObject({ type: "message", msgId: 6, threadId: 4 });
+});
+
+test("a trace that fails on inbound never blocks the operator's web message", async () => {
+  const t = traced();
+  const broken = { ...t.trace, inbound: () => { throw new Error("ledger is locked"); } };
+  const ch = createWebChannel({ engine: { ...t.eng, trace: broken }, chatId: 0 });
+  const got: WebEvent[] = [];
+  ch.subscribe((e) => got.push(e));
+  await ch.send("hello there");
+  expect(got.some((e) => e.type === "message")).toBe(true); // the pipeline still answered
+});
+
+// P3 Task 3.3 (ADR-0017): a thread that changes state is pushed to the console once, so the thread
+// list moves its row without a re-fetch; no change → no event.
+test("a thread state change is one `thread` event; an unchanged refresh is none", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry, now: () => 5000 });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  const cause = trace.inbound({ chatId: 42, text: "ship the fare list", surface: "web" });
+  trace.outbound({ chatId: 42, text: "on it", cause, project: "gold", folder: "/home/gold" });
+  const before = events.filter((e) => e.type === "thread").length;
+  trace.refreshThread(cause.threadId); // nothing changed
+  expect(events.filter((e) => e.type === "thread").length).toBe(before);
+  eng.ledger.openDecision({ kind: "decision", question: "ship?", cause });
+  trace.refreshThread(cause.threadId);
+  trace.refreshThread(cause.threadId);
+  const changes = events.filter((e) => e.type === "thread");
+  expect(changes.length).toBe(before + 1);
+  expect(changes.at(-1)).toMatchObject({ type: "thread", id: cause.threadId, state: "waiting", project: "gold", title: "ship the fare list", updatedAt: 5000 });
+});
+
+// P3 review minors 2-5: a live row keeps its counts and ref, moves on every new message, and the
+// events are live only (never replayed — the thread list re-fetches on open).
+test("a new line in a thread is a `thread` event with its ref and counts, even when the state holds", () => {
+  const eng = engine(fakeStart().start);
+  let clock = 1000;
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry, now: () => clock });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  const cause = trace.inbound({ chatId: 42, text: "ship it", surface: "web" });
+  clock = 2000;
+  trace.outbound({ chatId: 42, text: "on it", cause });
+  const last = events.filter((e) => e.type === "thread").at(-1);
+  expect(last).toMatchObject({ type: "thread", id: cause.threadId, state: "done", updatedAt: 2000, ref: trace.ref(cause.threadId), messages: 2, openDecisions: 0, activeTodos: 0 });
+});
+
+test("thread events are not replayed to a console that connects later", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  ch.subscribe(() => {});
+  trace.inbound({ chatId: 42, text: "ship it", surface: "web" });
+  const late: WebEvent[] = [];
+  ch.subscribe((e) => late.push(e));
+  expect(late.filter((e) => e.type === "thread")).toEqual([]);
+});
+
+test("a throwing thread listener is contained: the refresh still stores the state", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  trace.onThreadChange(() => {
+    throw new Error("listener broke");
+  });
+  const cause = trace.inbound({ chatId: 42, text: "x", surface: "web" });
+  eng.ledger.openDecision({ kind: "decision", question: "?", cause });
+  expect(() => trace.refreshThread(cause.threadId)).not.toThrow();
+  expect(eng.ledger.threadById(cause.threadId)!.state).toBe("waiting");
+});
+
+test("search hits reach the console as safe HTML with the match marked", () => {
+  const eng = engine(fakeStart().start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 42 });
+  const cause = trace.inbound({ chatId: 42, text: "fix <the> fare list", surface: "web" });
+  const r = ch.search("fare", { limit: 10 });
+  expect(r.rows[0]).toMatchObject({ threadId: cause.threadId, threadRef: trace.ref(cause.threadId) });
+  expect(r.rows[0]!.snippet).toBe("fix &lt;the&gt; <mark>fare</mark> list");
+});
+
+// P4 Task 4.6: /attention on the web is an `attention` event with its items; the one-tap actions run
+// the same engine rules as a Telegram tap.
+test("/attention emits an attention event; attentionAction applies the shared rules", async () => {
+  const eng = engine(fakeStart().start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  reconcile(eng.ledger, "engine", "gold", [{ project: "gold", folder: "/home/gold", source: "engine", kind: "queue_paused", key: "/home/gold", title: "todo queue paused 7h", severity: "normal" }], 100);
+  await ch.send("/attention");
+  const ev = events.find((e) => e.type === "attention") as { text: string; items: Array<{ id: number }> } | undefined;
+  expect(ev?.text).toContain("attention: 1 open");
+  expect(ev?.items.map((i) => i.id)).toEqual([1]);
+  expect(await ch.attentionAction(1, "dismiss")).toMatchObject({ ok: true });
+  expect(listOpen(eng.ledger, { now: Date.now() })).toEqual([]);
 });

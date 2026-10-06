@@ -40,12 +40,20 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
 - **Two operator frontends, one engine.** A Telegram bot and a web console both drive the same
   `source:"neo"` SDK pipeline — sharing the registry, budget meter, ledger, and admin. Plain
   messages stream as **follow-ups into the running worker**.
+- **Full-fidelity progress stream.** Worker progress streams back as it happens — tool milestones
+  plus a concise **result preview** (`↳ …`) for the meaningful tools (Bash / web / MCP / Task), so
+  you see a command's output, not just that it ran. Long reports are **chunked** to fit Telegram's
+  4096-char limit (never silently dropped), and the chunker is **table-aware** so a Markdown table
+  survives the split and renders as an aligned block instead of raw pipes.
 - **Compliance firewall, in code.** Your own work runs on the configured operator worker SDK
   (`subscription`/Claude by default, optionally `codex`); customer-direct work is refused onto the
   Claude subscription and routed to Gemini. Enforced by `provider-router.ts`, never a prompt.
 - **Governed workers.** A default-escalate governor path-fences file writes to the session's project
   folder and escalates unknown/foreign MCP tools, `WebFetch`, and out-of-folder writes to the
   operator (autonomous paths auto-deny). Customer-tainted briefs run with **zero tools**.
+- **Browser automation for web/UI testing.** Every operator project worker gets a headless Playwright
+  MCP (isolated Chromium). The browser launches only on first tool use, and the MCP never attaches on
+  the customer/ingress path.
 - **Budget & usage metering.** A rolling meter reserves interactive headroom and throttles
   background work; `/usage` reports measured subscription token usage and rate-limit status read
   from Claude Code's own transcripts.
@@ -56,15 +64,48 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   explicit and reverts after a single message (`/pin` to hold it), so stray messages never stick to a
   project. When a project is busy, the reply reports its **real status** — not an opaque "busy".
 - **The "company" — an always-on default project** that answers free-text orders when nothing else
-  is active, and can **dispatch** project work to governed sub-workers, bounded by a stall/liveness
-  monitor (abort on silence or a per-dispatch ceiling, with a graceful wrap-up window). A `sessions`
-  tool gives it live awareness of every project's state.
+  is active, and can **dispatch** project work to governed sub-workers. A dispatch has no time limit;
+  only a stall/liveness monitor aborts a truly silent (hung) worker, after a graceful wrap-up window.
+  The company gets a progress digest while a dispatch runs and always gets its final result,
+  including where an interrupted run stopped (ADR-0007). A `sessions`
+  tool gives it live awareness of every project's state. Every dispatched brief steers the worker
+  through a two-phase **design → build** flow: DESIGN — sharpen the domain model into a `CONTEXT.md`
+  glossary + ADRs and a spec (one clean seam) — then BUILD with TDD → verify → code-review. The same
+  engine-owned preamble carries the **engineering baseline** (see `CLAUDE.md`), so the rule reaches
+  every worker whatever the brief says — a worker sent into another folder never loads this repo's
+  `CLAUDE.md`.
+- **Per-project todo queue.** A brief for a busy project waits as a durable todo in the ledger and
+  starts when the current dispatch settles, one by one (ADR-0008). `/todo` and the web Queue tab
+  show and steer it.
+- **Priority routing + a decisions queue — nothing blocking is lost.** Every outbound line gets a
+  deterministic priority (`decision`/`alert`/`result`/`progress`/`done`, AI-free), rendered with a
+  consistent colored accent (decision 🔵, alert 🔴, result ✅, done 🟢; progress is the silent
+  firehose). Blocking questions, escalations, failures, and important **results** (a finished
+  dispatch — shipped/fixed/committed) route to a high-priority **Decisions** channel you keep
+  unmuted (`decisionsChatId`), while routine progress and interactive-turn `done` replies stay in
+  the muted firehose. The `result`/`done` split is by call site (a walked-away background job vs. a
+  reply in a live DM), never by reading prose, so the group stays high-signal. A worker raises ONE
+  **matured decision** with the `ask_operator` tool — a schema enforces the shape, so every decision
+  carries a crisp title, the problem + root cause, 2–5 options that each state their own trade-off, and
+  a recommendation (tappable buttons with the recommended one ⭐, optional `multiSelect`, always an
+  implicit free-form "Other"); a shapeless or bundled question is rejected at the tool boundary. The
+  SDK's native structured-question tool is serviced the same way; it's tracked in a durable queue that
+  survives a restart. **Answering** — a tapped button (or several,
+  then Submit), a typed answer, or a plain reply to the decision message — resolves it and **resumes
+  the raising project**. An opt-in **secretary** loop (latest model) digests the open queue to the
+  Decisions channel on a cadence and escalates stale items; silent when the queue is empty.
 - **Loop runtime (autonomy).** `trigger → action → goal` loops run autonomous work through the same
   governed worker; loop **definitions are data** — author, edit, and toggle them from the web
   console with no restart.
 - **Customer inbox.** Inbound customer mail queues as plain data (no auto-reply) for operator
   review — view, draft-with-agent, edit, approval-gated send, delete — from Telegram `/inbox` or the
   web console. The optional Go **gateway** (`gateway/`) bridges email/WhatsApp/voice into it.
+- **Toolchain auto-updater.** A deterministic heartbeat job (default every 24 h) keeps the Agent SDK
+  pin, Claude Code plugins and MCP servers current, verifies each change and rolls back on failure.
+  It holds breaking releases for `/updates apply` and never restarts the daemon (ADR-0009).
+- **Error containment.** Every unit of work contains its own failure. An engine fault goes to the
+  log, an `engine_fault` event, one deduplicated alert and the company's queue. Only a startup
+  failure or a final Telegram polling stop (401/409) exits (ADR-0010).
 - **Graceful reload.** `/reload` (or `SIGTERM`, e.g. `systemctl restart neo`) drains running
   sessions (commit green work + WIP note), snapshots them, and exits for the supervisor to restart —
   open projects reappear as idle + resumable.
@@ -135,13 +176,19 @@ then focus reverts to the company — so a stray next message never sticks to a 
 - **`/open <folder> <task>`** delivers its task to the project (that's the one message) and reverts to
   the company; `/pin` it if you want to keep working there.
 
-When a message or a company **dispatch** can't run because a project is occupied, the reply reports the
-**real status** — which project, what it's doing, how long, and how many follow-ups are queued — not a
-bare "busy". The company also has a `sessions` tool to see every project's live state at once.
+A company **dispatch** to an already-open project checks whether a turn is really in flight, not just
+whether the session is live. An **idle** project takes the brief right away. A **mid-turn** project
+**queues** it behind the current turn. A stale session with no live handle is refused. When a dispatch
+queues or refuses, the reply reports the **real status** — which project, what it's doing, how long,
+and how many follow-ups are queued — not a bare "busy". The company also has a `sessions` tool to see
+every project's live state at once.
 
 ### Operator commands
 
 The same commands work over Telegram and the web console.
+
+In a Telegram group, Telegram may address a command as `/command@your_bot_username`; Neo accepts
+that form too (for example, `/sdk@neo_bot codex`).
 
 | Command | Does |
 | --- | --- |
@@ -151,8 +198,15 @@ The same commands work over Telegram and the web console.
 | `/pin <name>` | Keep talking to a project across messages (until `/unpin`). |
 | `/unpin` (`/company`, `/main`) | Return focus to the company / main agent. |
 | `/kill <name>` | Stop a project session. |
-| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). |
+| `/trust [<project-or-folder>] [on\|off]` | Auto-approve actions for a project or folder (skip Allow/Deny prompts). New projects start trusted by default (`trustNewProjects`); `/trust off` is remembered. Trust never decides a write outside the project folder (`governor.outOfFolderWrites` does; default allow, ADR-0012) and never applies to customer work (ADR-0011). |
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
+| `/todo [<project>]` (`/queue`) | The per-project todo queues: what runs and what waits. `/todo cancel <id>` and `/todo up <id>` change one todo; `/todo pause\|resume <project>` holds or releases a queue. |
+| `/trace <ref>` | Show the thread behind a message ref (e.g. `m4g2`): who caused what, in order. Replying to a message in Telegram joins its thread. |
+| `/plans [<project>]` | Plans and specs the engine sent you: status, steps done (`3/12`), thread ref and path. Each plan arrives once per version as a file with Approve / Changes / Execute / Drop buttons (ADR-0019). |
+| `/attention [<project>]` | What needs you, by project, severity first (ADR-0018): stuck approvals, spinning dispatches, paused queues, failed or long-waiting threads, stale decisions, an impossible ctx %, work left uncommitted, restart-gated changes. Each item has → todo (queues a brief built from the item, once), snooze 1 day and dismiss — on Telegram and in the console. Items resolve by themselves when their cause goes away. Git and GitHub items come from the repo scan (every 30 min); a clean leftover worktree whose branch is pushed or merged also gets **remove** (when it holds ignored files, such as a `.env`, the first tap names them and a second tap within 5 minutes deletes them). A daily digest arrives at 08:00 (`attention.digestAt`). |
+| `/project [<name>]` (alias `/p`) | One project's dashboard (spec §9): what runs now, the queue, git (branch, last commit, unpushed or no upstream, uncommitted files, drift, worktrees; with `projects.<name>.deployedVersionUrl` set, "N commits not deployed (branch @ sha live)"), GitHub (PRs, CI, issues, alerts, the last good scan), open decisions, plans (a deleted plan file reads "file missing"), open attention and, for Neo, restart-gated work. Health is `down` when a configured `healthUrl` failed its last probe (see `docs/CONFIG.md` `projects`). Buttons: **attention (N)** (the same list as `/attention <name>`), **threads** (`/project <name> threads`) and **open console** (when `publicUrl` is set). With no name: one line per project — health, session state, queue, open attention. The console has the same dashboard in its **Projects** tab, and the company's `sessions` tool ends with the one-line summaries. |
+| `/gated` | What is built but not running yet: commits after the daemon's boot, work branches not merged into the running branch, updates that need a restart, a changed `config.json` — or "running build = HEAD". Computed from git and the boot record. |
+| `/updates` | Toolchain updates (Agent SDK, plugins, MCP servers): the last run and each item's state. `/updates run` checks now; `/updates apply <item>` applies one item, held or not; `/updates rollback <item>` restores the previous version. See `docs/CONFIG.md` → "Toolchain updates". |
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |
 | `/usage` | Subscription token usage + rate-limit status. |
@@ -186,6 +240,13 @@ Precedence is **environment variable → `config.json` → built-in default**. S
 | `WORK_ROOT` | `/home` | Root holding your project repos (picker / dispatch / loop fence). |
 | `COMPANY_FOLDER` | `<repo>/agent` | The always-on "company" workspace folder. |
 | `NEO_LOOP_SCHEDULER` | `1` | Set `0` to disable the autonomous loop scheduler. |
+| `DECISIONS_CHAT_ID` | *(unset)* | Telegram chat id for the unmuted **Decisions** channel (blocking questions/escalations/failures). Unset → decisions post to the admin DM but are still tracked + reminded. |
+
+**Session liveness.** Every surface reports one derived state — `working` · `quiet` · `idle` ·
+`starting` · `awaiting-operator` · `wedged` — plus two ages, `last activity` (any streamed SDK
+event) and `last output` (what you can read). Only `wedged` means something is wrong: a session
+between turns is `idle` and free at any age. Aborts and alerts log their evidence first
+(`/events dispatch_stall_evidence`, `/events session_stuck`). See `docs/CONFIG.md`.
 
 Structured knobs in `config.json` (budgets, dispatch/watchdog timeouts, context policy, provider
 routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CONFIG.md)**.
@@ -198,7 +259,12 @@ routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CON
 - **Customer-direct work → Gemini.** `provider-router.ts` refuses, in code, to route
   `source: "customer"` onto the subscription. Neo never offers a customer a Claude login.
 - **Budget guard.** Background SDK work shares your subscription pool, so the meter reserves
-  interactive headroom (`subscriptionInteractiveReservePct`) and throttles background work.
+  interactive headroom (`subscriptionInteractiveReservePct`) and throttles background work — and
+  only background work. Work class follows the **originating trigger**: your message launches an
+  `interactive` worker and the dispatches it makes inherit that class, so a conversational order is
+  never held; loop fires, the scheduler, and customer-brief runs are `background` and gated by
+  `heldByReserve()` (ADR 0001). When Anthropic itself is rejecting a window, an interactive turn is
+  warned with the real reset time and started anyway, never refused by the engine.
 - **Approval gate.** The governor is default-escalate: unknown/foreign MCP tools, `WebFetch`, and
   out-of-folder writes ask the operator on the Claude path (autonomous paths auto-deny). File writes
   are path-fenced to the session's project folder. The Codex path uses Codex sandbox/approval policy;
@@ -209,9 +275,13 @@ routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CON
 A **loop** is `trigger → repeated action → goal` — it runs until the goal is met (a verifiable
 command, or an LLM-judge). Triggers are manual / interval / cron. A few generic, deployment-neutral
 built-ins ship as examples (`green`, `error-sweep`, `docs-sweep`) that maintain the running repo;
-operators author their own project loops from the web console (persisted as data, no restart).
-`/loop` lists them, `/loop <name>` runs one, `/loop <name> on|off` toggles a schedule. See
-[docs/loops.md](docs/loops.md).
+operators author their own project loops from the web console (persisted as data, no restart), or
+from the CLI with `bun run tools/create-loop.ts <input.json> [--update]`, which goes through the same
+validated path and the same `/home` folder fence. A loop's prompt is a **standing brief** — the engine
+hands it to the worker verbatim, with no dispatch preamble — so it must carry the project's rules and
+the governance envelope itself; keep a long one in a sibling `promptFile`. Checked-in definitions live
+in [docs/loops/](docs/loops). `/loop` lists them, `/loop <name>` runs one, `/loop <name> on|off`
+toggles a schedule. See [docs/loops.md](docs/loops.md).
 
 ## Development
 
@@ -219,10 +289,14 @@ Stack: **Bun + TypeScript**, test-driven.
 
 ```bash
 bun install
-bun test              # run the suite (346 tests)
+bun test              # run the suite (818 tests)
 bunx tsc --noEmit     # typecheck
 bun run src/daemon.ts # run the engine
 ```
+
+`@anthropic-ai/claude-agent-sdk` is pinned to an exact version (`0.3.286`) in `package.json`, so
+every install of a given commit gets the same worker binary. Bump the pin deliberately, then restart
+the daemon: a worker reads its SDK at launch, so a new version reaches no running worker.
 
 Keep `bun test` and `bunx tsc --noEmit` green before anything is "done", and write the failing test
 first. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the workflow and commit style. The phased build
