@@ -82,3 +82,39 @@ test("consolePage shows each project's ctx% with its band and a Context resets t
   expect(html).toContain("Context resets");
   for (const band of ["healthy", "above", "heavy", "emergency"]) expect(html).toContain(`.ctx.${band}`);
 });
+
+// Paste-to-attach: an image pasted into the composer goes through the SAME /upload path as 📎.
+const consoleScript = () => consolePage().match(/<script>([\s\S]*?)<\/script>/)![1];
+const pastedImages = (): ((items: unknown, now: number) => File[]) => {
+  const src = consoleScript().match(/function pastedImages\([^)]*\)\{[\s\S]*?\n/)![0];
+  return new Function(`${src}; return pastedImages;`)();
+};
+const fileItem = (type: string, name = "image.png") => ({ kind: "file", type, getAsFile: () => new File([new Uint8Array([1, 2, 3])], name, { type }) });
+const textItem = (type = "text/plain") => ({ kind: "string", type, getAsFile: () => null });
+
+test("pastedImages: each image/* file item becomes a File named pasted-<timestamp>.<ext>", () => {
+  const files = pastedImages()([fileItem("image/png"), fileItem("image/jpeg", "x.jpg")], 1700000000000);
+  expect(files.map((f) => f.name)).toEqual(["pasted-1700000000000.png", "pasted-1700000000000-2.jpeg"]);
+  expect(files.map((f) => f.type)).toEqual(["image/png", "image/jpeg"]);
+  expect(files[0]!.size).toBe(3);
+});
+
+test("pastedImages: text-only paste yields nothing; text+image yields only the image; non-image files are skipped", () => {
+  const pick = pastedImages();
+  expect(pick([textItem(), textItem("text/html")], 1)).toEqual([]);
+  expect(pick([textItem(), fileItem("image/png")], 1).map((f) => f.name)).toEqual(["pasted-1.png"]);
+  expect(pick([fileItem("application/pdf", "a.pdf")], 1)).toEqual([]);
+  expect(pick(undefined, 1)).toEqual([]);
+});
+
+test("the composer attaches pasted images through the shared /upload sender and never blocks the text paste", () => {
+  const body = consoleScript();
+  expect(body).toContain("addEventListener('paste'");
+  const paste = body.match(/addEventListener\('paste'[\s\S]*?\n/)![0];
+  expect(paste).toContain("pastedImages(");
+  expect(paste).toContain("sendFile");
+  expect(paste).not.toContain("preventDefault");
+  // One upload mechanism: the 📎 picker and paste both go through sendFile → /upload.
+  expect(body.match(/fetch\('\/upload'/g)).toHaveLength(1);
+  expect(body).toMatch(/function uploadFile\(\)\{[^\n]*sendFile\(/);
+});

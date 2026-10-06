@@ -745,7 +745,12 @@ function pushFeed(node,kind,project){node._kind=kind;node._project=project||null
  if(v&&!tailQueued){tailQueued=true;requestAnimationFrame(function(){tailQueued=false;feed.scrollTop=feed.scrollHeight;});}}
 function feedMsg(html,kind,project){var d=document.createElement('div');d.className='row '+(kind==='me'?'me':'out');d.innerHTML=html;pushFeed(d,kind,project);return d;}
 function say(text){var v=(text||'').trim();if(!v)return;feedMsg('› '+esc(v),'me',filterProject);post('/msg',{text:v});}
-function uploadFile(){var i=document.getElementById('file');if(!i.files.length)return;var fd=new FormData();fd.append('file',i.files[0]);fetch('/upload',{method:'POST',body:fd}).then(function(r){if(!r.ok)alert('upload failed ('+r.status+')');});i.value='';}
+function sendFile(f){var fd=new FormData();fd.append('file',f);fetch('/upload',{method:'POST',body:fd}).then(function(r){if(!r.ok)alert('upload failed ('+r.status+')');});}
+function uploadFile(){var i=document.getElementById('file');if(!i.files.length)return;sendFile(i.files[0]);i.value='';}
+// Paste-to-attach: image items on the clipboard become files named pasted-<ms>[-n].<ext> and go
+// through the same /upload as 📎. The default paste is NOT cancelled, so pasted text still lands.
+function pastedImages(items,now){var out=[];for(var i=0;i<(items?items.length:0);i++){var it=items[i];if(it.kind!=='file'||(it.type||'').indexOf('image/')!==0)continue;var f=it.getAsFile();if(!f)continue;var ext=it.type.slice(6).replace(/[^a-z0-9]/gi,'')||'png';out.push(new File([f],'pasted-'+now+(out.length?'-'+(out.length+1):'')+'.'+ext,{type:it.type}));}return out;}
+document.getElementById('msg').addEventListener('paste',function(e){pastedImages(e.clipboardData&&e.clipboardData.items,Date.now()).forEach(sendFile);});
 
 var es=new EventSource('/stream');
 es.onmessage=function(ev){var e=JSON.parse(ev.data);
