@@ -33,7 +33,7 @@ import {
 } from "@openai/codex-sdk";
 import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
-import { decide } from "./governor";
+import { decide, expandWriteRoots } from "./governor";
 import { fromAskUserQuestionInput, type StructuredAsk } from "./structured-question";
 import {
   filterSdkEnv,
@@ -180,6 +180,9 @@ export interface RunDeps {
   agents?: Record<string, AgentDefinition>;
   /** Extra env for the spawned worker, merged over process.env after SDK-specific filtering. */
   env?: Record<string, string>;
+  /** `governor.writeRoots` entries (unexpanded) for an own-work run; the governor allows file
+   *  writes there too (ADR-0012). Never sent to the SDK; dropped for a customer-sourced order. */
+  writeRoots?: string[];
   /** Codex SDK controls. These are ignored by the Claude adapter. */
   codexSandboxMode?: CodexSandboxMode;
   codexApprovalPolicy?: CodexApprovalMode;
@@ -310,7 +313,7 @@ export const STRUCTURED_QUESTION_RAISED =
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
 // Exported for direct unit testing of the fail-safe/self-heal contract (approval-resilience.test.ts).
-export function buildCanUseTool(handlers: RunHandlers, folder: string, source: OrderSource) {
+export function buildCanUseTool(handlers: RunHandlers, folder: string, source: OrderSource, writeRoots: string[] = []) {
   return async (tool: string, input: Record<string, unknown>) => {
     // The whole decision path is wrapped so this callback can NEVER reject. A rejected canUseTool is
     // turned by the SDK into an ungoverned permission failure with no recovery — the worker surfaces
@@ -336,7 +339,7 @@ export function buildCanUseTool(handlers: RunHandlers, folder: string, source: O
         }
         // unparseable / empty → fall through to the plain steer below (never raise an empty ask)
       }
-      const verdict = decide(tool, input, { folder });
+      const verdict = decide(tool, input, { folder, writeRoots });
       if ("allow" in verdict) {
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
       }
@@ -382,12 +385,12 @@ type GovernorHookOutput = Record<string, never> | {
 // in one place. It is synchronous on purpose — the SDK FAILS OPEN when a hook throws (verified), and
 // presumably on a hook timeout, so it never awaits the operator and any error also returns "ask".
 // An allow verdict returns no opinion, so settings deny rules still apply.
-export function buildGovernorHook(folder: string) {
+export function buildGovernorHook(folder: string, writeRoots: string[] = []) {
   return async (input: HookInput, _toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
     let reason: string;
     try {
-      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder });
+      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, writeRoots });
       if ("allow" in verdict) return {};
       reason = "deny" in verdict ? verdict.deny : verdict.escalate;
     } catch (err) {
@@ -401,7 +404,10 @@ function sdkOptions(
   order: Order,
   handlers: RunHandlers,
   extra: Record<string, unknown> = {},
+  writeRootEntries: string[] = [],
 ): Record<string, unknown> {
+  // Write roots are own-work only (ADR-0012): a customer-sourced order keeps the bare folder fence.
+  const writeRoots = order.source === "customer" ? [] : expandWriteRoots(writeRootEntries, order.folder);
   return {
     cwd: order.folder,
     // "user" loads ~/.claude enabledPlugins (superpowers + workflow skills); "project" loads the folder's CLAUDE.md/.claude/.mcp.
@@ -419,9 +425,9 @@ function sdkOptions(
     // Governance goes LAST so no per-run field can replace it. permissionMode is explicit: from SDK
     // 0.3.286 an unset mode can start the session in auto mode, which skips canUseTool.
     permissionMode: "default",
-    canUseTool: buildCanUseTool(handlers, order.folder, order.source),
+    canUseTool: buildCanUseTool(handlers, order.folder, order.source, writeRoots),
     // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls.
-    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder)] }] },
+    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, writeRoots)] }] },
   };
 }
 
@@ -823,7 +829,7 @@ async function runClaudeOrder(
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const run = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d)) }), handlers);
+    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d), d.writeRoots) }), handlers);
   };
   const first = await run(deps);
   if (!first.resumeMissing || !deps.resume) return first;
@@ -920,7 +926,7 @@ function startClaudeOrder(
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
     // Long-running sessions need the CLI's settled signal (see tracked.onSessionState above).
     const withState: RunDeps = { ...d, env: { ...(d.env ?? {}), [SESSION_STATE_EVENTS_ENV]: "1" } };
-    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState)) });
+    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState), withState.writeRoots) });
     return consumeStream(queryObj, tracked);
   };
 

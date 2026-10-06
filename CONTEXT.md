@@ -339,8 +339,23 @@ _Avoid_: trust flag, known project
 
 **Fence escalation**:
 An escalation that only the operator can approve: a file write outside the session's project
-folder. **Trust** never approves it automatically; autonomous paths deny it.
+folder that is not in a **write root**. **Trust** never approves it automatically; autonomous
+paths deny it.
 _Avoid_: hard escalation, blocked write
+
+**Write root**:
+A directory outside the project folder where the governor allows file writes without asking:
+scratch (`/tmp`) and the session's **own memory dir**. Set by `governor.writeRoots`. Only
+own-work sessions get write roots; ingress (customer-driven) work never does. The real path of
+the target must be inside the real path of the root, and a root that is itself a symlink is
+ignored (ADR-0012).
+_Avoid_: allowlist, safe dir
+
+**Own memory dir**:
+The Claude Code auto-memory directory of the session's own folder:
+`<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<folder with each non-alphanumeric char as "-">/memory`.
+A session may write its own memory dir, never another project's.
+_Avoid_: memory folder, agent memory (Neo's `memory.scopes` system is a different thing)
 
 ### Errors that must not stop the engine
 

@@ -4,12 +4,73 @@
 // firewall). Wired into the SDK twice, through this ONE function: a PreToolUse hook (runs before a
 // project's settings allow rules; ADR-0006) and the `canUseTool` callback. Autonomous paths (loops,
 // customer-driven briefs) auto-deny escalations, so for them default-escalate = default-deny.
-import { resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Verdict } from "../types";
 
 /** Per-session context the governor judges against (the worker's project folder = SDK cwd). */
 export interface GovernorCtx {
   folder: string;
+  /** Absolute dirs outside the folder where file writes are also allowed (ADR-0012), already
+   *  expanded for this session by `expandWriteRoots`. Absent = the folder only. */
+  writeRoots?: string[];
+}
+
+/** The `governor.writeRoots` entry that stands for the session's own Claude auto-memory dir. */
+export const OWN_MEMORY_TOKEN = "{ownMemory}";
+
+type Env = Record<string, string | undefined>;
+
+/** The Claude Code auto-memory dir of `folder`: `<config dir>/projects/<encoded folder>/memory`.
+ *  Claude Code encodes the folder path by turning each non-alphanumeric char into `-`; its config
+ *  dir is `CLAUDE_CONFIG_DIR`, else `~/.claude`. Empty when no home dir is known. */
+export function ownMemoryDir(folder: string, env: Env = process.env): string {
+  const configDir = env.CLAUDE_CONFIG_DIR || (env.HOME ? join(env.HOME, ".claude") : "");
+  if (!configDir || !folder) return "";
+  return join(configDir, "projects", resolve(folder).replace(/[^a-zA-Z0-9]/g, "-"), "memory");
+}
+
+/** Expand `governor.writeRoots` for one session: the own-memory token becomes that session's own
+ *  memory dir; other entries must be absolute dirs. Anything else is dropped (fails closed). */
+export function expandWriteRoots(entries: readonly string[], folder: string, env: Env = process.env): string[] {
+  const roots: string[] = [];
+  for (const entry of entries) {
+    const root = entry === OWN_MEMORY_TOKEN ? ownMemoryDir(folder, env) : entry;
+    if (root && isAbsolute(root)) roots.push(resolve(root));
+  }
+  return roots;
+}
+
+/** The real path of `p` (already absolute and normalised): realpath of its nearest existing
+ *  ancestor, plus the part that does not exist yet. Throws only on unexpected fs errors. */
+function realPath(p: string): string {
+  let head = p;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...tail);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT" || head === dirname(head)) throw err;
+      tail.unshift(basename(head));
+      head = dirname(head);
+    }
+  }
+}
+
+/** True iff `target` (absolute) is strictly inside one of `roots`, on real paths. A root that is
+ *  itself reached through a symlink is skipped: a worker could repoint it (ADR-0012). */
+function insideWriteRoot(target: string, roots: readonly string[]): boolean {
+  if (!roots.length) return false;
+  try {
+    const real = realPath(target);
+    return roots.some((root) => {
+      if (realPath(root) !== root) return false;
+      const rel = relative(root, real);
+      return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+    });
+  } catch {
+    return false;
+  }
 }
 
 /** Risky bash patterns that must never auto-run — they escalate to Neo. Defense-in-depth
@@ -31,7 +92,7 @@ export const SAFE_TOOLS = new Set([
   "Agent",
 ]);
 
-/** Tools that write files — allowed only inside the session's project folder. */
+/** Tools that write files — allowed only inside the session's project folder or a write root. */
 const FENCED_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
 /** True iff `filePath` (absolute or folder-relative) resolves inside `folder`. Fails closed. */
@@ -65,6 +126,7 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
     const raw = tool === "NotebookEdit" ? input.notebook_path : input.file_path;
     const path = typeof raw === "string" ? raw : "";
     if (insideFolder(path, ctx.folder)) return { allow: true };
+    if (path && ctx.folder && insideWriteRoot(resolve(ctx.folder, path), ctx.writeRoots ?? [])) return { allow: true };
     // A fence escalation: the operator may approve it, but trust never does (ADR-0007).
     return {
       escalate: `file write outside the project folder: ${path || "(no path)"} (folder: ${ctx.folder || "(unset)"})`,

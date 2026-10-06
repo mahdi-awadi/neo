@@ -10,6 +10,7 @@ import type { UpdatesCfg } from "./engine/updater";
 import type { FaultCfg } from "./engine/fault";
 import type { HealthCfg } from "./engine/health";
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
+import { OWN_MEMORY_TOKEN } from "./engine/governor";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
@@ -65,6 +66,14 @@ export interface MemoryCfg {
   /** OPERATOR CHOICE — how many days of daily logs the dream loop reviews per run. Fallback 14 —
    *  Hermes measured default. */
   dreamLookbackDays: number;
+}
+
+/** The path fence's extra write roots (ADR-0012). See `src/engine/governor.ts`. */
+export interface GovernorCfg {
+  /** OPERATOR CHOICE (2026-10-04) — dirs outside the project folder where own-work sessions may
+   *  Write/Edit without asking: absolute dirs, plus `"{ownMemory}"` = the session's own Claude
+   *  auto-memory dir. `[]` = the bare folder fence. Ingress (customer-driven) work never gets them. */
+  writeRoots: string[];
 }
 
 export type WorkerPathName =
@@ -229,6 +238,9 @@ export interface NeoConfig {
   /** Memory system (Phase 2): scopes + ratio caps + dream-loop budgets. Default `scopes: []` — a
    *  total no-op until the operator opts a folder in. */
   memory: MemoryCfg;
+  /** The path fence's write roots (ADR-0012). Optional like `liveness`: absent ⇒ no write roots
+   *  (the bare folder fence); `loadConfig` always fills it with the defaults. */
+  governor?: GovernorCfg;
   /** The toolchain updater (ADR-0009): schedule, per-category auto-apply, breaking-change hold, and
    *  where each managed item comes from. Per-key merge over `DEFAULT_UPDATES`. */
   updates: UpdatesCfg;
@@ -354,6 +366,8 @@ const DEFAULTS = {
   // QUALITY INVARIANT: scopes:[] is the pin — the memory system is a total no-op until an
   // operator opts a folder in via config.json. The other fields are cold-start fallbacks
   // (Hermes measured defaults), documented on MemoryCfg above.
+  // Operator choice (2026-10-04): scratch + the session's own memory dir need no approval (ADR-0012).
+  governor: { writeRoots: ["/tmp", OWN_MEMORY_TOKEN] },
   memory: {
     scopes: [] as string[],
     snapshotMaxPct: 0.004,
@@ -463,6 +477,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     workers: { ...DEFAULTS.workers, ...(fileCfg.workers ?? {}) },
     workerEnv: fileCfg.workerEnv ?? DEFAULTS.workerEnv,
     memory: { ...DEFAULTS.memory, ...(fileCfg.memory ?? {}) },
+    governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     updates: {
       ...DEFAULT_UPDATES,
       ...(fileCfg.updates ?? {}),
