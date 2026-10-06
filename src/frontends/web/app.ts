@@ -834,7 +834,7 @@ function renderAttention(e: Any): void {
   for (const it of e.items as Any[]) {
     const row = document.createElement("div");
     row.className = "acts";
-    (["todo", "snooze", "dismiss"] as const).forEach((action) => {
+    ((it.actions as string[] | undefined) ?? ["todo", "snooze", "dismiss"]).forEach((action) => {
       const b = document.createElement("button");
       b.className = "chip";
       b.textContent = tx(`attention.${action}`, { id: it.id, hours: e.snoozeHours });

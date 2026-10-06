@@ -246,6 +246,7 @@
     "d": "{{n}}d"
   },
   "attention": {
+    "remove": "remove worktree",
     "todo": "#{{id}} → todo",
     "snooze": "snooze {{hours}}h",
     "dismiss": "dismiss",

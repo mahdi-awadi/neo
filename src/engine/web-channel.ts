@@ -422,8 +422,8 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       return r;
     },
     async attentionAction(id, action) {
-      const { ledger, todo, trace, cfg } = opts.engine;
-      const r = await applyAttentionAction({ ledger, todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 }, id, action, Date.now());
+      const { ledger, registry, todo, trace, cfg } = opts.engine;
+      const r = await applyAttentionAction({ ledger, registry, todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 }, id, action, Date.now());
       opts.bus?.mirror("web", { kind: "notice", text: `attention #${id}: ${r.text} (web console)` });
       return r;
     },

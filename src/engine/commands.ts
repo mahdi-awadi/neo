@@ -4,7 +4,7 @@
 // caller falls through to the order pipeline. `select` is the set of tappable projects for
 // /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
-import { renderAttention } from "./attention-actions";
+import { attentionActions, renderAttention, type AttentionAction } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
 import type { AttentionRow } from "./ledger";
 import { existsSync } from "node:fs";
@@ -84,7 +84,7 @@ export interface CommandResult {
   /** Updated worker-SDK state (for web UI controls). */
   sdk?: WorkerSdkState;
   /** One-tap attention items (for /attention) — frontends render → todo / snooze / dismiss per item. */
-  attention?: Array<Pick<AttentionRow, "id" | "project" | "title" | "severity">>;
+  attention?: Array<Pick<AttentionRow, "id" | "project" | "title" | "severity"> & { actions: AttentionAction[] }>;
 }
 
 interface CommandContext {
@@ -183,7 +183,7 @@ const COMMANDS: Command[] = [
     run: ({ deps, args, now }) => {
       const c = deps.cfg?.attention ?? DEFAULT_ATTENTION_CFG;
       const r = renderAttention(deps.ledger, { project: args.trim() || undefined, now, maxLines: c.listLines, maxButtons: c.listButtons, consoleUrl: deps.cfg?.publicUrl || undefined });
-      return { text: r.text, attention: r.buttons.map((b) => ({ id: b.id, project: b.project, title: b.title, severity: b.severity })) };
+      return { text: r.text, attention: r.buttons.map((b) => ({ id: b.id, project: b.project, title: b.title, severity: b.severity, actions: attentionActions(b) })) };
     },
   },
   {

@@ -75,3 +75,8 @@ test("tapping → todo without a todo queue is refused in the tap's answer", asy
   await r.press("att:1:todo");
   expect(r.calls.find((c) => c.method === "answerCallbackQuery")?.payload.text).toBe("the todo queue is unavailable — → todo needs it");
 });
+
+test("a removable worktree item gets a remove button first", () => {
+  const kb = attentionKeyboard([{ id: 3, actions: ["remove", "todo", "snooze", "dismiss"] }], 24);
+  expect(kb.inline_keyboard[0]!.map((b) => (b as { callback_data: string }).callback_data)).toEqual(["att:3:remove", "att:3:todo", "att:3:snooze", "att:3:dismiss"]);
+});

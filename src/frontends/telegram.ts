@@ -2,7 +2,7 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
-import { applyAttentionAction, isAttentionAction, attentionLabel } from "../engine/attention-actions";
+import { applyAttentionAction, isAttentionAction, attentionLabel, type AttentionAction } from "../engine/attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "../engine/producers/engine";
 import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ApiClientOptions } from "grammy";
@@ -272,7 +272,7 @@ export function createTelegramBot(
   // The plan registry (ADR-0019): plan taps, and the loops this bot starts (only where a card can be posted).
   const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, trace, todo: reload?.todo }, cfg.plans);
   const loopPlans = reload?.postPlan ? planDeps() : undefined;
-  const attentionDeps = () => ({ ledger, todo: reload?.todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 });
+  const attentionDeps = () => ({ ledger, registry, todo: reload?.todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 });
   /** Trace an operator line (spec §4.1). Contained (ADR-0010): a trace fault costs the thread, never
    *  the message — without a cause the pipeline records the line itself, as before. */
   const inbound = (chatId: number, text: string, msg?: TracedMessage, threadId?: number): Cause | undefined => {
@@ -1084,14 +1084,13 @@ function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefin
   return undefined;
 }
 
-/** One row per attention item: `#7 → todo`, `snooze 24h`, `dismiss` — `att:<id>:<action>` callbacks. */
-export function attentionKeyboard(items: Array<{ id: number }>, snoozeHours: number): InlineKeyboard {
+/** One row per attention item — its actions (`remove` for a clean leftover worktree, `#7 → todo`,
+ *  `snooze 24h`, `dismiss`) as `att:<id>:<action>` callbacks. */
+export function attentionKeyboard(items: Array<{ id: number; actions?: AttentionAction[] }>, snoozeHours: number): InlineKeyboard {
   const kb = new InlineKeyboard();
   items.forEach((it, i) => {
     if (i > 0) kb.row();
-    kb.text(`#${it.id} ${attentionLabel("todo", snoozeHours)}`, `att:${it.id}:todo`)
-      .text(attentionLabel("snooze", snoozeHours), `att:${it.id}:snooze`)
-      .text(attentionLabel("dismiss", snoozeHours), `att:${it.id}:dismiss`);
+    for (const a of it.actions ?? ["todo", "snooze", "dismiss"]) kb.text(a === "todo" ? `#${it.id} ${attentionLabel(a, snoozeHours)}` : attentionLabel(a, snoozeHours), `att:${it.id}:${a}`);
   });
   return kb;
 }

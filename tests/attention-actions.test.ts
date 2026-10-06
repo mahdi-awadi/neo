@@ -95,7 +95,7 @@ test("/attention [project] answers with the list and its one-tap items", () => {
   const deps = { registry: createRegistry(), ledger, trust: openTrustStore(":memory:"), now: () => 200 };
   const r = handleCommand("/attention gold", 1, deps)!;
   expect(r.text).toContain("#1 todo queue paused 7h");
-  expect(r.attention?.map((a) => a.id)).toEqual([1]);
+  expect(r.attention?.map((a) => [a.id, a.actions])).toEqual([[1, ["todo", "snooze", "dismiss"]]]);
   expect(handleCommand("/attention", 1, deps)!.text).toContain("gold:");
 });
 
