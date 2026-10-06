@@ -19,6 +19,7 @@ import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type 
 import type { UsageMeter } from "./usage";
 import { noteProjectStart, type TrustStore } from "./trust";
 import { runOrder, startOrder, type RunResult } from "./session-runner";
+import { createHash } from "node:crypto";
 import {
   dispatchResultText,
   formatStopPoint,
@@ -26,6 +27,10 @@ import {
   liveCompanyLink,
   flushDispatcherInbox,
   progressDigest,
+  digestFingerprint,
+  createSpinWatch,
+  DISPATCH_SPIN_DIGESTS_DEFAULT,
+  TOOL_LOOP_LIMIT_DEFAULT,
   type DispatcherLink,
   type StopPoint,
 } from "./dispatch-report";
@@ -140,6 +145,14 @@ export interface DispatchDeps {
    *  sent only when there was activity since the last one. 0 turns digests off. Default
    *  DISPATCH_PROGRESS_MS_DEFAULT (10m). */
   dispatchProgressMs?: number;
+  /** Spinning dispatch (spec §8.1): this many digests in a row with the same fingerprint (label,
+   *  note, HEAD) alert the operator and the dispatcher once. Default DISPATCH_SPIN_DIGESTS_DEFAULT. */
+  dispatchSpinDigests?: number;
+  /** On a spin: "alert" only, or "wrapup" — also send the stall limit's wrap-up follow-up. */
+  dispatchSpinPolicy?: "alert" | "wrapup";
+  /** The same (tool, input) this many times in a row inside one turn → the same alert. Default
+   *  TOOL_LOOP_LIMIT_DEFAULT. */
+  toolLoopLimit?: number;
   /** How a dispatch reaches its dispatcher (the company). The pipeline wires one that can also wake
    *  an idle company; absent → `liveCompanyLink` (follow-up into a live company only). */
   dispatcher?: DispatcherLink;
@@ -222,6 +235,16 @@ const dispatchRuns = new WeakSet<object>();
 export const DISPATCH_STALL_MS_DEFAULT = 300_000;
 /** Wrap-up grace window (ms) — 75 seconds between the limit firing and the hard abort. */
 export const DISPATCH_GRACE_MS_DEFAULT = 75_000;
+
+/** The wrap-up follow-up: stop, commit green work, leave a WIP note. Used by the stall limit and by
+ *  the "wrapup" spin policy. */
+export function wrapUpBrief(why: string, graceMs: number): string {
+  return (
+    `⏱ Neo ${why} — stop working now. ` +
+    `Commit any green work and write a brief WIP note (plan doc or WIP.md) so a follow-up run can resume. ` +
+    `You have ~${Math.round(graceMs / 1000)}s before this session is aborted.`
+  );
+}
 /** Progress-digest interval (ms) — 10 minutes. */
 export const DISPATCH_PROGRESS_MS_DEFAULT = 600_000;
 /** Activity label for the window between "session registered" and "worker attached" (indexing +
@@ -742,6 +765,21 @@ export async function dispatchToProject(
     let lastActivity: string | undefined; // the worker's latest activity label
     let lastDigestAt = startedAt;
     const stopPoint = (): StopPoint => ({ lastCommit: readCommit(folder), lastNote, lastActivity });
+    // Spinning (spec §8.1): active, but nothing changes — counted, never judged by AI.
+    const spinDigests = Math.max(1, deps.dispatchSpinDigests ?? DISPATCH_SPIN_DIGESTS_DEFAULT);
+    const spin = createSpinWatch({ digests: spinDigests, toolLoopLimit: Math.max(2, deps.toolLoopLimit ?? TOOL_LOOP_LIMIT_DEFAULT) });
+    const clearSpin = (): void => noteRegistry(() => deps.registry.noteSpinning(session.id, undefined));
+    /** One spin: an event, the registry mark (the engine producer raises the attention item), one
+     *  alert to the operator and the dispatcher, and with policy "wrapup" the stall's wrap-up. */
+    const spinning = (text: string, label: string, data: Record<string, unknown>): void => {
+      event("dispatch_spinning", { orderId: order.id, folder, data: { project: name, label, ...data } });
+      noteRegistry(() => deps.registry.noteSpinning(session.id, { label, since: now() }));
+      void say(`🌀 ${text}`, "alert", { cause: liveCause() });
+      void Promise.resolve()
+        .then(() => dispatcher.deliver(`🌀 ${text}`, cause ? { wake: false, cause } : { wake: false }))
+        .catch(() => {}); // best-effort, like a digest
+      if (deps.dispatchSpinPolicy === "wrapup") runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs));
+    };
     // A dispatch is single-brief: once the session is SETTLED with nothing queued, the sub-run IS
     // complete (the real SDK stream stays open waiting for input that will never come — awaiting
     // run.done alone would falsely "stall" out minutes after the worker already finished). Close
@@ -822,6 +860,9 @@ export async function dispatchToProject(
           probe?.onUsage();
         },
         onToolUse: (id, toolName, input) => {
+          if (spin.tool(toolName, createHash("sha256").update(JSON.stringify(input ?? null)).digest("hex"))) {
+            spinning(`${name} ran the same ${toolName} call ${deps.toolLoopLimit ?? TOOL_LOOP_LIMIT_DEFAULT} times in a row in one turn`, toolName, { reason: "tool_loop", tool: toolName });
+          }
           watch?.onToolUse(id, toolName, input);
           probe?.onToolUse(id, toolName, input);
         },
@@ -829,6 +870,7 @@ export async function dispatchToProject(
         contextSteer: watch ? (tool, input) => watch.steer(tool, input) : undefined,
         onTurnComplete: (result) => {
           lastActivityAt = now();
+          spin.turnEnd();
           if (result.sessionId) lastSessionId = result.sessionId;
           const kind = result.apiError;
           if (kind) {
@@ -933,7 +975,14 @@ export async function dispatchToProject(
         // did something since the last one, so a quiet run sends nothing.
         if (progressMs > 0 && t - lastDigestAt >= progressMs) {
           if (lastActivityAt > lastDigestAt) {
-            const digest = progressDigest({ project: name, elapsedMs: t - startedAt, activity: lastActivity, lastNote, lastCommit: readCommit(folder) });
+            const lastCommit = readCommit(folder);
+            const fp = spin.digest(digestFingerprint(lastActivity, lastNote, lastCommit));
+            if (fp.changed) clearSpin();
+            if (fp.spinning) {
+              const mins = Math.max(1, Math.round((spinDigests * progressMs) / 60_000));
+              spinning(`${name} has repeated «${lastActivity ?? "the same step"}» for ${mins} min with no new commit or note`, lastActivity ?? "", { reason: "digest", digests: spinDigests });
+            }
+            const digest = progressDigest({ project: name, elapsedMs: t - startedAt, activity: lastActivity, lastNote, lastCommit });
             void say(digest, undefined, { kind: "digest", cause });
             try {
               // Under the dispatch's cause: the company turn reading it is filed in this thread.
@@ -986,11 +1035,7 @@ export async function dispatchToProject(
         });
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave
         // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
-        run.followUp(
-          `⏱ Neo dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m) — stop working now. ` +
-            `Commit any green work and write a brief WIP note (plan doc or WIP.md) so a follow-up run can resume. ` +
-            `You have ~${Math.round(graceMs / 1000)}s before this session is aborted.`,
-        );
+        run.followUp(wrapUpBrief(`dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m)`, graceMs));
         const graced = await doneOrTick(graceMs);
         if (graced !== "tick") {
           result = graced.done; // wrapped up in time — keep the worker's own result
@@ -1037,6 +1082,7 @@ export async function dispatchToProject(
     // may be removed below.
     const answered = new Set<number>(cause ? [cause.threadId] : []);
     faults.guard("dispatch.endTurn", () => deps.registry.endTurn(session.id, { all: true }).forEach((c) => answered.add(c.threadId)));
+    clearSpin(); // the run is over: nothing is spinning any more
     try {
       if (result.sessionId) {
         deps.registry.setSdkSessionId(session.id, result.sessionId, worker);

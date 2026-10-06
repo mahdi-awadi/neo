@@ -105,6 +105,9 @@ export interface SessionInfo {
   /** Set while the operator owes this session an answer (a permission escalation or a raised
    *  decision). Such a session is never wedged and is never stall-aborted. */
   blockedOn?: BlockedOn;
+  /** Set while a dispatch repeats itself with nothing changing (spec §8.1): the same digest
+   *  fingerprint or the same tool call over and over. Cleared when its fingerprint changes. */
+  spinning?: { label: string; since: number };
   /** Last time the stuck-watchdog alerted about this session (dedup). */
   alertedAt?: number;
 }

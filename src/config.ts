@@ -13,6 +13,7 @@ import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
+import { DISPATCH_SPIN_DIGESTS_DEFAULT, TOOL_LOOP_LIMIT_DEFAULT } from "./engine/dispatch-report";
 import { isLang, type Lang } from "./frontends/web/langs";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
@@ -153,6 +154,15 @@ export interface NeoConfig {
    *  dispatcher (the company), only when there was activity since the last one. 0 turns digests
    *  off. Default 10 min. */
   dispatchProgressMs: number;
+  /** Spinning dispatch (spec §8.1): this many progress digests in a row with the same fingerprint
+   *  (activity, note, HEAD) alert the operator and the dispatcher once. Optional like `plans`;
+   *  `loadConfig` always fills it (default 3). */
+  dispatchSpinDigests?: number;
+  /** On a spin: "alert" (default) only alerts; "wrapup" also sends the stall limit's wrap-up. */
+  dispatchSpinPolicy?: "alert" | "wrapup";
+  /** The same tool call (tool + input) this many times in a row inside one turn → the spin alert.
+   *  Default 8. */
+  toolLoopLimit?: number;
   /** At boot, a dispatch started within this window (ms) that never recorded its end was cut short
    *  by the restart/crash: its end is recorded and the dispatcher gets a report with its stop
    *  point. Default 24 h. */
@@ -436,6 +446,11 @@ function contextPolicyFrom(file: (Partial<ContextPolicyCfg> & { handoffPct?: num
   return { ...DEFAULTS.contextPolicy, ...(handoffPct !== undefined ? { sweetSpotPct: handoffPct } : {}), ...rest };
 }
 
+/** A whole number at least `min`, else the default (a bad config value never disables a guard). */
+function wholeAtLeast(v: unknown, min: number, d: number): number {
+  return typeof v === "number" && Number.isInteger(v) && v >= min ? v : d;
+}
+
 export function loadConfig(dir: string = process.cwd()): NeoConfig {
   loadDotEnv(dir);
 
@@ -478,6 +493,9 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
       process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
     dispatchStallMs: fileCfg.dispatchStallMs ?? DEFAULTS.dispatchStallMs,
     dispatchGraceMs: fileCfg.dispatchGraceMs ?? DEFAULTS.dispatchGraceMs,
+    dispatchSpinDigests: wholeAtLeast(fileCfg.dispatchSpinDigests, 2, DISPATCH_SPIN_DIGESTS_DEFAULT),
+    dispatchSpinPolicy: fileCfg.dispatchSpinPolicy === "wrapup" ? "wrapup" : "alert",
+    toolLoopLimit: wholeAtLeast(fileCfg.toolLoopLimit, 2, TOOL_LOOP_LIMIT_DEFAULT),
     dispatchProgressMs: fileCfg.dispatchProgressMs ?? DEFAULTS.dispatchProgressMs,
     dispatchRecoverWindowMs: fileCfg.dispatchRecoverWindowMs ?? DEFAULTS.dispatchRecoverWindowMs,
     todoOnFailure: TODO_FAILURE_POLICIES.includes(fileCfg.todoOnFailure as TodoFailurePolicy)

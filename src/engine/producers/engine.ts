@@ -1,8 +1,8 @@
 /** The engine producer (ADR-0018, spec §7 + §8): what the engine itself knows needs the operator — a
- *  stuck approval, a paused queue, a failed or long-waiting thread, a stale decision, an impossible
- *  context %. It reads only the ledger and the registry (plus an injectable context measure), so it
- *  runs on every heartbeat tick. Plain code, no AI. `dispatch_spinning` is added with its detector
- *  (Task 4.3). */
+ *  stuck approval, a dispatch that repeats itself (the mark dispatch.ts sets, spec §8.1), a paused
+ *  queue, a failed or long-waiting thread, a stale decision, an impossible context %. It reads only
+ *  the ledger and the registry (plus an injectable context measure), so it runs on every heartbeat
+ *  tick. Plain code, no AI. */
 import { basename } from "node:path";
 import { PAGE_MAX, type AttentionDraft, type Ledger, type ThreadRow } from "../ledger";
 import type { Registry } from "../registry";
@@ -13,7 +13,7 @@ import { faults } from "../fault";
 const HOUR = 3_600_000;
 
 /** Every kind this producer raises (the attention briefs need one template per kind). */
-export const ENGINE_KINDS = ["approval_stuck", "queue_paused", "thread_failed", "thread_waiting", "decision_stale", "ctx_window_suspect"] as const;
+export const ENGINE_KINDS = ["approval_stuck", "dispatch_spinning", "queue_paused", "thread_failed", "thread_waiting", "decision_stale", "ctx_window_suspect"] as const;
 export type EngineKind = (typeof ENGINE_KINDS)[number];
 
 /** Config `attention` (config.json): how long a state may last before it needs the operator. */
@@ -89,6 +89,13 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
       const b = s.blockedOn;
       if (b?.kind !== "approval" || now - b.since <= cfg.approvalRemindMs) continue;
       draft({ ...at(s.order.folder), kind: "approval_stuck", key: s.id, severity: "high", title: `approval pending ${age(now - b.since)}: ${b.label}` });
+    }
+  });
+
+  kind("dispatch_spinning", () => {
+    for (const s of sessions) {
+      if (!s.spinning || s.status !== "running") continue;
+      draft({ ...at(s.order.folder), kind: "dispatch_spinning", key: s.id, severity: "high", title: `repeating itself for ${age(now - s.spinning.since)}: ${s.spinning.label}` });
     }
   });
 

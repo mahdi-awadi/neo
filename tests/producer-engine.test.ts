@@ -52,6 +52,19 @@ test("approval_stuck: an approval pending longer than approvalRemindMs is a high
   expect(kinds(deps, T0 + 31 * 60_000)).toEqual([]);
 });
 
+test("dispatch_spinning: a running session the dispatch marked as spinning is a high item; cleared → gone", () => {
+  const { ledger, registry, deps } = setup();
+  const s = session(registry, "/home/gold");
+  registry.noteSpinning(s.id, { label: "Bash: bun test", since: T0 });
+  const [d] = engineDrafts(deps, T0 + H);
+  expect(d).toMatchObject({ project: "gold", kind: "dispatch_spinning", key: s.id, severity: "high" });
+  expect(d!.title).toContain("Bash: bun test");
+  runEngineProducer(deps, T0 + H);
+  registry.noteSpinning(s.id, undefined);
+  expect(runEngineProducer(deps, T0 + 2 * H).resolved).toHaveLength(1);
+  expect(listOpen(ledger, { now: T0 + 2 * H })).toEqual([]);
+});
+
 test("queue_paused: a todo queue paused longer than queuePausedHours", () => {
   const { ledger, deps } = setup();
   ledger.setTodoPaused("/home/gold", "a todo failed", T0);
@@ -171,7 +184,7 @@ test("a new ctx_window_suspect item also records one event naming the model and 
 });
 
 test("every kind the producer emits is listed in ENGINE_KINDS", () => {
-  expect([...ENGINE_KINDS].sort()).toEqual(["approval_stuck", "ctx_window_suspect", "decision_stale", "queue_paused", "thread_failed", "thread_waiting"]);
+  expect([...ENGINE_KINDS].sort()).toEqual(["approval_stuck", "ctx_window_suspect", "decision_stale", "dispatch_spinning", "queue_paused", "thread_failed", "thread_waiting"]);
 });
 
 test("readAttentionCfg: defaults, and only well-typed positive numbers are kept", () => {

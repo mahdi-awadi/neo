@@ -390,3 +390,10 @@ test("attention thresholds default, and config.json overrides them (P4, ADR-0018
   writeFileSync(join(d, "config.json"), JSON.stringify({ attention: { waitingHours: 4 } }));
   expect(loadConfig(d).attention?.waitingHours).toBe(4);
 });
+
+test("spin guards default (3 digests, policy alert, tool loop 8); a bad value keeps the default", () => {
+  expect(loadConfig(dir())).toMatchObject({ dispatchSpinDigests: 3, dispatchSpinPolicy: "alert", toolLoopLimit: 8 });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ dispatchSpinDigests: 4, dispatchSpinPolicy: "wrapup", toolLoopLimit: 0 }));
+  expect(loadConfig(d)).toMatchObject({ dispatchSpinDigests: 4, dispatchSpinPolicy: "wrapup", toolLoopLimit: 8 });
+});

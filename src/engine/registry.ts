@@ -49,6 +49,8 @@ export interface Registry {
   /** Record (or clear, with `undefined`) what the operator owes this session. While set, the
    *  session is awaiting-operator: never wedged, never stall-aborted. */
   noteBlocked(id: string, blocked: BlockedOn | undefined): void;
+  /** Mark (or clear) a session that repeats itself with nothing changing (spec §8.1). */
+  noteSpinning(id: string, mark: { label: string; since: number } | undefined): void;
   /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
   attachControl(id: string, control: SessionControl): void;
   /** Drop the control handle when a run ends, keeping the session (now resumable, not live). */
@@ -221,6 +223,10 @@ export function createRegistry(): Registry {
     noteBlocked(id, blockedOn) {
       const s = sessions.get(id);
       if (s) s.blockedOn = blockedOn;
+    },
+    noteSpinning(id, mark) {
+      const s = sessions.get(id);
+      if (s) s.spinning = mark;
     },
     noteActivity(id, label, now = Date.now()) {
       const s = sessions.get(id);

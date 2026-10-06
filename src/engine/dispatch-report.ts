@@ -212,3 +212,54 @@ export function recoverInterruptedDispatches(
   }
   return runs.length;
 }
+
+/** Digests in a row with the same fingerprint before a dispatch counts as spinning (spec §8.1). */
+export const DISPATCH_SPIN_DIGESTS_DEFAULT = 3;
+/** The same tool call this many times in a row in one turn counts as a loop (spec §8.1). */
+export const TOOL_LOOP_LIMIT_DEFAULT = 8;
+
+/** A digest's fingerprint (spec §8.1): the activity label with absolute paths, hex runs and numbers
+ *  replaced by `#`, the latest note and the HEAD line. Two equal fingerprints: the worker was
+ *  active, but nothing it reports has changed. */
+export function digestFingerprint(label: string | undefined, note: string | undefined, head: string | undefined): string {
+  const norm = (label ?? "")
+    .replace(/(?:\/[^\s/]+)+\/?/g, "#") // absolute paths
+    .replace(/\b[0-9a-f]{7,}\b/gi, "#") // hex runs (shas, ids)
+    .replace(/\d+/g, "#")
+    .trim();
+  return [norm, note ?? "", head ?? ""].join("\u0000");
+}
+
+/** Counts repeats, no AI (spec §8.1). `digest`: spinning once when the same fingerprint came
+ *  `digests` times in a row (`changed`: it differs from the previous one). `tool`: true once when
+ *  the same (tool, input hash) came `toolLoopLimit` times in a row; `turnEnd` resets that count. */
+export function createSpinWatch(o: { digests: number; toolLoopLimit: number }) {
+  let fp: string | undefined;
+  let fpCount = 0;
+  let fpAlerted = false;
+  let call: string | undefined;
+  let callCount = 0;
+  let callAlerted = false;
+  return {
+    digest(next: string): { spinning: boolean; changed: boolean } {
+      const changed = next !== fp;
+      if (changed) (fp = next), (fpCount = 1), (fpAlerted = false);
+      else fpCount++;
+      const spinning = !fpAlerted && fpCount >= o.digests;
+      if (spinning) fpAlerted = true;
+      return { spinning, changed };
+    },
+    tool(name: string, inputHash: string): boolean {
+      const k = `${name}\u0000${inputHash}`;
+      if (k !== call) (call = k), (callCount = 1), (callAlerted = false);
+      else callCount++;
+      if (callAlerted || callCount < o.toolLoopLimit) return false;
+      return (callAlerted = true);
+    },
+    turnEnd(): void {
+      call = undefined;
+      callCount = 0;
+      callAlerted = false;
+    },
+  };
+}

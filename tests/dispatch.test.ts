@@ -1603,6 +1603,76 @@ test("a progress digest reaches the operator and the live company while the work
   ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
 });
 
+// P4 Task 4.3 (spec §8.1): active but nothing changes → one alert, one event, a registry mark.
+test("the same digest fingerprint dispatchSpinDigests times → one alert to operator and dispatcher, one event, a mark", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const sent: string[] = [];
+  d.dispatcher = { deliver: (text) => (sent.push(text), true) };
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 20, dispatchStallMs: 60_000, dispatchSpinDigests: 3 }, 1, {
+    start: start as never,
+    root,
+    lastCommit: () => "8694a46 feat: task 5",
+  });
+  while (!ctl.h) await settle(2); // the run starts in the background
+  const beat = setInterval(() => ctl.h!.onActivity!("Bash: bun test (run 3)"), 4);
+  await settle(200);
+  clearInterval(beat);
+  const alerts = replies.filter((r) => r.text.includes("no new commit or note"));
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]!.priority).toBe("alert");
+  expect(sent.filter((t) => t.includes("no new commit or note"))).toHaveLength(1);
+  expect(d.ledger.listEvents({ kind: "dispatch_spinning" })).toHaveLength(1);
+  const s = d.registry.list().find((x) => x.order.folder === join(root, "eticket-v3"))!;
+  expect(s.spinning?.label).toContain("Bash: bun test");
+  expect(ctl.followUps.some((f) => f.includes("stop working now"))).toBe(false); // policy "alert": no wrap-up
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
+test("dispatchSpinPolicy wrapup also sends the wrap-up follow-up; a new commit clears the mark", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const { ctl, start } = drivenStart();
+  let head = "8694a46 feat: task 5";
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 20, dispatchStallMs: 60_000, dispatchSpinDigests: 2, dispatchSpinPolicy: "wrapup" }, 1, {
+    start: start as never,
+    root,
+    lastCommit: () => head,
+  });
+  while (!ctl.h) await settle(2); // the run starts in the background
+  const beat = setInterval(() => ctl.h!.onActivity!("Bash: bun test"), 4);
+  await settle(120);
+  expect(ctl.followUps.filter((f) => f.includes("Commit any green work"))).toHaveLength(1);
+  const s = () => d.registry.list().find((x) => x.order.folder === join(root, "eticket-v3"))!;
+  expect(s().spinning).toBeDefined();
+  clearInterval(beat);
+  head = "9f1c2d0 feat: task 6";
+  ctl.h!.onActivity!("Bash: bun test"); // one digest with the new HEAD, then quiet
+  await settle(60);
+  expect(s().spinning).toBeUndefined();
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
+test("the same tool call toolLoopLimit times in one turn → the same alert once; a turn end resets", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d, replies } = makeDeps();
+  const { ctl, start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", { ...d, dispatchProgressMs: 0, dispatchStallMs: 60_000, toolLoopLimit: 3 }, 1, { start: start as never, root });
+  while (!ctl.h) await settle(2); // the run starts in the background
+  for (let i = 0; i < 4; i++) ctl.h!.onToolUse!(`t${i}`, "Bash", { command: "bun test" });
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "", costUsd: 0 });
+  for (let i = 0; i < 2; i++) ctl.h!.onToolUse!(`u${i}`, "Bash", { command: "bun test" });
+  const alerts = replies.filter((r) => r.text.includes("same Bash call"));
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]!.priority).toBe("alert");
+  expect(d.ledger.listEvents({ kind: "dispatch_spinning" })[0]?.data).toMatchObject({ reason: "tool_loop", tool: "Bash" });
+  ctl.resolve!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+});
+
 test("no digest is sent when the worker has shown no activity since the last one", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
