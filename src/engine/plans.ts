@@ -13,8 +13,8 @@ import type { TodoQueue } from "./todo-queue";
 /** Spec default for config `plans.paths`. */
 export const DEFAULT_PLAN_PATHS: string[] = ["docs/**/plans/**/*.md", "docs/**/specs/**/*.md", "specs/**/*.md", "plans/**/*.md"];
 
-/** One bounded git query in `folder`; undefined on failure. */
-export type GitRunner = (folder: string, args: string[]) => string | undefined;
+export type { GitRunner } from "./git-read";
+import type { GitRunner } from "./git-read";
 
 /** Plan files under `globs` (relative to `folder`) changed since `sinceSha` (committed), or modified
  *  or untracked in the working tree; deleted files are never listed. `folder` may be a subfolder of

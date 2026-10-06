@@ -9,7 +9,7 @@
 //     waking an idle company — so a reload, a crash or a closed company session cannot lose one.
 //     Whatever is still pending rides along with the next delivery, or is prepended to the
 //     operator's next message to the company (pipeline.ts).
-import { spawnSync } from "node:child_process";
+import { git } from "./git-read";
 import type { Cause, Ledger } from "./ledger";
 import type { Registry } from "./registry";
 
@@ -33,34 +33,15 @@ export interface DispatcherLink {
 
 /** Max chars of a worker note quoted in a digest / stop point — one line, never a wall of text. */
 const NOTE_MAX = 280;
-/** Bound on the `git log` read — it must never hold up a report. */
-const GIT_TIMEOUT_MS = 5_000;
 
 /** The folder's HEAD commit as `<sha> <subject> (<age>)`, or undefined (not a repo, git missing,
  *  timeout). Read-only and bounded. */
 export function lastCommitIn(folder: string): string | undefined {
-  try {
-    const r = spawnSync("git", ["-C", folder, "log", "-1", "--format=%h %s (%cr)"], {
-      encoding: "utf8",
-      timeout: GIT_TIMEOUT_MS,
-    });
-    const out = r.status === 0 ? r.stdout.trim() : "";
-    return out || undefined;
-  } catch {
-    return undefined;
-  }
+  return git(folder, ["log", "-1", "--format=%h %s (%cr)"])?.trim() || undefined;
 }
 
-/** One bounded, read-only git query in `folder`; undefined on any failure (not a repo, git missing,
- *  timeout). */
-export function git(folder: string, args: string[]): string | undefined {
-  try {
-    const r = spawnSync("git", ["-C", folder, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS });
-    return r.status === 0 ? r.stdout : undefined;
-  } catch {
-    return undefined;
-  }
-}
+/** One bounded, read-only git query (git-read.ts is the process boundary). */
+export { git } from "./git-read";
 
 /** The handoff note is written FOR a reset, so it never counts as uncommitted work (ADR-0021). */
 const HANDOFF_NOTE = "HANDOFF.md";

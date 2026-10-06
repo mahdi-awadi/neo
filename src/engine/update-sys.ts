@@ -13,10 +13,13 @@ const HEADERS = { "user-agent": "neo-updater", accept: "application/json, text/p
 /** The MCP protocol version the probe offers; servers answer with the one they speak. */
 const MCP_PROTOCOL = "2025-06-18";
 
-async function exec(cmd: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<ExecResult> {
+/** One bounded child process: never throws (a missing binary or cwd is code 127), killed past its
+ *  timeout (code 124). `env` adds to the daemon's environment. The engine's one async spawn (the
+ *  updater, and git/gh reads through git-read.ts). */
+export async function exec(cmd: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<ExecResult> {
   let proc: ReturnType<typeof Bun.spawn>;
   try {
-    proc = Bun.spawn(cmd, { cwd: opts.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
+    proc = Bun.spawn(cmd, { cwd: opts.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: opts.env ? { ...process.env, ...opts.env } : process.env });
   } catch (e) {
     return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) }; // missing binary / cwd
   }

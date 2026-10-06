@@ -1,8 +1,11 @@
-/** Read-only git queries (spec §7, ADR-0018): the one place the engine spawns `git` to READ a repo.
- *  Every call is bounded by a timeout and returns undefined on any failure (not a repo, git missing,
- *  timeout) — a caller treats undefined as "could not read", never as "nothing there". Writes (a
- *  worktree remove) are not here. P5 moves the remaining git spawns of the engine behind this module. */
+/** Read-only git and gh queries (spec §7, ADR-0018): the one place the engine spawns `git` or `gh` to
+ *  READ a repo. Two forms: `createGitRead` (async, for the scans — bounded by `github.callTimeoutMs`,
+ *  no prompts, no pager, never throws) and the small sync `git` (for the few reads inside sync code
+ *  paths — a digest line, a stop point — bounded by a short constant). Undefined / ok:false means
+ *  "could not read", never "nothing there". */
 import { spawnSync } from "node:child_process";
+import { exec as defaultExec } from "./update-sys";
+import type { ExecResult } from "./updater";
 
 /** Bound on one git read — it must never hold up a report or a heartbeat. */
 const GIT_TIMEOUT_MS = 5_000;
@@ -74,4 +77,31 @@ export function hasCommit(folder: string, sha: string, run: GitRunner = git): bo
 /** Is `ancestor` contained in `of`? Both must exist (see hasCommit). */
 export function isAncestor(folder: string, ancestor: string, of: string, run: GitRunner = git): boolean {
   return run(folder, ["merge-base", "--is-ancestor", ancestor, of]) !== undefined;
+}
+
+/** One async read: ok with its stdout, or not ok with stderr ("timeout" when it was killed). */
+export interface GitResult {
+  ok: boolean;
+  out: string;
+  err?: string;
+}
+
+/** The async read boundary the producers take (tests pass a fake). */
+export interface GitRead {
+  git(folder: string, args: string[]): Promise<GitResult>;
+  /** `gh` runs in the folder, so it finds the repo from its remote. */
+  gh(folder: string, args: string[]): Promise<GitResult>;
+}
+
+/** No terminal prompt (a missing credential fails at once), no pager, no colour codes in the output. */
+const READ_ENV = { GIT_TERMINAL_PROMPT: "0", GH_PAGER: "", NO_COLOR: "1" };
+
+export function createGitRead(o: { timeoutMs: number; exec?: (cmd: string[], opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }) => Promise<ExecResult> }): GitRead {
+  const run = o.exec ?? defaultExec;
+  const result = (r: ExecResult): GitResult =>
+    r.code === 0 ? { ok: true, out: r.out } : { ok: false, out: r.out, err: r.code === 124 ? "timeout" : r.err.trim() };
+  return {
+    git: async (folder, args) => result(await run(["git", "-C", folder, ...args], { timeoutMs: o.timeoutMs, env: READ_ENV })),
+    gh: async (folder, args) => result(await run(["gh", ...args], { cwd: folder, timeoutMs: o.timeoutMs, env: READ_ENV })),
+  };
 }
