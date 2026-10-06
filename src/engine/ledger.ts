@@ -341,6 +341,9 @@ export interface Ledger {
   /** The projects where one producer still has a live row (open, or dismissed and still seen) — the
    *  ones its next reconcile must visit even when it reports nothing there. */
   attentionProjects(source: AttentionSource): string[];
+  /** Small per-key engine state as JSON (`gh:<project>` → the last scan). */
+  getMeta(key: string): { value: unknown; updatedAt: number } | undefined;
+  setMeta(key: string, value: unknown, at: number): void;
   /** Record this daemon's start; only the newest 100 boots are kept. */
   recordBoot(b: BootRow): void;
   /** The newest boot record (the running build). */
@@ -941,6 +944,18 @@ export function openLedger(
       return (
         db.query(`SELECT DISTINCT project FROM attention_items WHERE source = ? AND (resolved_at IS NULL OR dismissed = 1)`).all(source) as Array<{ project: string }>
       ).map((r) => r.project);
+    },
+    getMeta(key) {
+      const r = db.query(`SELECT value, updated_at FROM meta WHERE key = ?`).get(key) as { value: string; updated_at: number } | null;
+      if (!r) return undefined;
+      try {
+        return { value: JSON.parse(r.value) as unknown, updatedAt: r.updated_at };
+      } catch {
+        return undefined; // unreadable: as if never written
+      }
+    },
+    setMeta(key, value, at) {
+      db.query(`INSERT INTO meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(key, JSON.stringify(value), at);
     },
     recordBoot(b) {
       db.transaction(() => {

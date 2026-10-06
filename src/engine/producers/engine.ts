@@ -7,7 +7,7 @@ import { basename } from "node:path";
 import { PAGE_MAX, type AttentionDraft, type Ledger, type ThreadRow } from "../ledger";
 import type { Registry } from "../registry";
 import type { SessionInfo } from "../../types";
-import { reconcileAll } from "../attention";
+import { liveDrafts, reconcileAll } from "../attention";
 import { faults } from "../fault";
 
 const HOUR = 3_600_000;
@@ -163,14 +163,7 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
  *  its live rows as they are — a failed read never resolves anything. */
 export function runEngineProducer(deps: EngineProducerDeps, now: number): { opened: number[]; resolved: number[] } {
   const { drafts, failed } = engineScan(deps, now);
-  if (failed.size) {
-    for (const project of deps.ledger.attentionProjects("engine")) {
-      for (const r of deps.ledger.attentionRows(project, "engine")) {
-        if (!failed.has(r.kind as EngineKind) || (r.resolvedAt !== undefined && !r.dismissed)) continue;
-        drafts.push({ project: r.project, folder: r.folder, source: "engine", kind: r.kind, key: r.key, title: r.title, detail: r.detail, url: r.url, severity: r.severity });
-      }
-    }
-  }
+  drafts.push(...liveDrafts(deps.ledger, "engine", failed));
   const r = reconcileAll(deps.ledger, "engine", drafts, now, { keepResolvedMs: deps.cfg.keepResolvedDays * 24 * HOUR });
   // An impossible ctx% is also an event (spec §8.5) — once, when its item opens.
   for (const id of r.opened) {

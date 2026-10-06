@@ -1,7 +1,7 @@
 // P4 Task 4.1 (ADR-0018, spec §7): one table, one reconcile for every producer.
 import { test, expect } from "bun:test";
 import { openLedger } from "../src/engine/ledger";
-import { reconcile, reconcileAll, raise, snooze, dismiss, listOpen, type AttentionDraft } from "../src/engine/attention";
+import { reconcile, reconcileAll, reconcileScan, raise, snooze, dismiss, listOpen, type AttentionDraft } from "../src/engine/attention";
 
 const draft = (over: Partial<AttentionDraft> = {}): AttentionDraft => ({
   project: "gold",
@@ -126,4 +126,19 @@ test("raise opens or refreshes ONE item and never resolves the source's others; 
   dismiss(l, id, 600);
   raise(l, draft({ kind: "dirty", key: "/home/gold", severity: "high", title: "again" }), 700);
   expect(l.attentionById(id)?.resolvedAt).toBe(600);
+});
+
+test("reconcileScan: a kind whose read failed keeps its live rows; the kinds that were read reconcile", () => {
+  const l = openLedger(":memory:");
+  reconcile(l, "github", "gold", [draft({ source: "github", kind: "pr_open", key: "12" }), draft({ source: "github", kind: "dependabot", key: "3" })], 100);
+  const r = reconcileScan(l, "github", "gold", [], new Set(["dependabot"]), 200);
+  expect(r.resolved).toHaveLength(1); // pr_open #12 is gone; dependabot could not be read
+  expect(listOpen(l, { now: 200 }).map((x) => x.kind)).toEqual(["dependabot"]);
+});
+
+test("meta: one small JSON value per key", () => {
+  const l = openLedger(":memory:");
+  expect(l.getMeta("gh:gold")).toBeUndefined();
+  l.setMeta("gh:gold", { lastGoodAt: 5, counts: { pr_open: 2 } }, 10);
+  expect(l.getMeta("gh:gold")).toEqual({ value: { lastGoodAt: 5, counts: { pr_open: 2 } }, updatedAt: 10 });
 });

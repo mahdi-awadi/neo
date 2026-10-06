@@ -97,6 +97,34 @@ export function reconcileAll(
   return { opened, resolved };
 }
 
+/** The live rows (open, or dismissed and still remembered) of `kinds` — carried into a reconcile as
+ *  drafts when their read failed, so a failed read never resolves them (spec §7). `project`
+ *  undefined: every project of the source. */
+export function liveDrafts(ledger: Ledger, source: AttentionSource, kinds: ReadonlySet<string>, project?: string): AttentionDraft[] {
+  if (!kinds.size) return [];
+  const out: AttentionDraft[] = [];
+  for (const p of project !== undefined ? [project] : ledger.attentionProjects(source)) {
+    for (const r of ledger.attentionRows(p, source)) {
+      if (!kinds.has(r.kind) || (r.resolvedAt !== undefined && !r.dismissed)) continue;
+      out.push({ project: r.project, folder: r.folder, source, kind: r.kind, key: r.key, title: r.title, detail: r.detail, url: r.url, severity: r.severity });
+    }
+  }
+  return out;
+}
+
+/** One project's scan: the kinds that were read reconcile; the kinds whose read failed keep their
+ *  live rows as they are. */
+export function reconcileScan(
+  ledger: Ledger,
+  source: AttentionSource,
+  project: string,
+  drafts: AttentionDraft[],
+  failedKinds: ReadonlySet<string>,
+  now: number,
+): { opened: number[]; resolved: number[] } {
+  return reconcile(ledger, source, project, [...drafts, ...liveDrafts(ledger, source, failedKinds, project)], now);
+}
+
 /** Hide an open item until `untilMs`. */
 export function snooze(ledger: Ledger, id: number, untilMs: number): void {
   ledger.updateAttention(id, { snoozedUntil: untilMs });

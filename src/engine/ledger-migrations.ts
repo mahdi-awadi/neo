@@ -362,6 +362,12 @@ function attention(db: Database): void {
   );
 }
 
+/** Version 8 — small per-key engine state as JSON (spec §3.5): `gh:<project>` holds a scan's last
+ *  time, last good time, counts and error for the dashboard. One row per key; naturally small. */
+function meta(db: Database): void {
+  db.run(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -370,6 +376,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 5, name: "plans", up: plans },
   { version: 6, name: "console indexes", up: consoleIndexes },
   { version: 7, name: "attention items and engine boots", up: attention },
+  { version: 8, name: "meta", up: meta },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good
