@@ -23,6 +23,7 @@ const WEB = join(import.meta.dir, "../src/frontends/web");
 const APP = readFileSync(join(WEB, "app.ts"), "utf8");
 const SHELL = readFileSync(join(WEB, "index.html"), "utf8");
 const LOGIN = readFileSync(join(WEB, "login.html"), "utf8");
+const OFFLINE = readFileSync(join(WEB, "offline.html"), "utf8");
 
 /** Every leaf key of a catalogue as a dotted path, with its text. */
 function leaves(o: Record<string, unknown>, prefix = ""): Map<string, string> {
@@ -101,7 +102,7 @@ test("no literal user-facing strings in the client module: text nodes and dialog
 });
 
 test("no literal user-facing text in the page shells, apart from the brand", () => {
-  for (const html of [SHELL, LOGIN]) {
+  for (const html of [SHELL, LOGIN, OFFLINE]) {
     const body = html.replace(/<style>[\s\S]*?<\/style>/g, "").replace(/<script[\s\S]*?<\/script>/g, "");
     const text = [...body.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((s) => LETTER.test(s) && !/^%[A-Z_]+%$/.test(s));
     expect(text).toEqual(["NEO"]);

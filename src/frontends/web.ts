@@ -22,6 +22,7 @@ import { isPlanAction } from "../engine/plans";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createConsoleI18n, isLang, type Lang } from "./web/i18n";
+import { BRAND, ICONS } from "./web/brand";
 import type { ThreadFilter, ThreadOrigin, ThreadState } from "../engine/ledger";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
@@ -108,6 +109,27 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store, must-revalidate" },
       });
+    }
+
+    // --- the installable app shell (ADR-0022): public, static, not personal ---
+    if (req.method === "GET" && path === "/manifest.webmanifest") {
+      return new Response(JSON.stringify(manifest(pageLang(req, deps.engine.cfg.consoleLang ?? "en"))), {
+        headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "no-cache" },
+      });
+    }
+    if (req.method === "GET" && path === "/sw.js") {
+      return new Response(await consoleSwJs(), { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" } });
+    }
+    if (req.method === "GET" && path === "/offline.html") {
+      return new Response(offlinePage(pageLang(req, deps.engine.cfg.consoleLang ?? "en")), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
+      });
+    }
+    if (req.method === "GET" && path.startsWith("/icons/")) {
+      // Only the listed files: the name is looked up, never joined into a path from the request.
+      const icon = ICONS.find((i) => i.file === path.slice("/icons/".length));
+      if (!icon) return new Response("not found", { status: 404 });
+      return new Response(Bun.file(join(WEB_DIR, "icons", icon.file)), { headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" } });
     }
 
     // --- machine-to-machine: POST /agent/ingress (bearer auth, no session cookie) ---
@@ -442,6 +464,7 @@ export function startWeb(deps: WebAppDeps, port: number, hostname = "0.0.0.0"): 
   const appHandler = createWebApp(deps);
   // Build the console bundle at start, so the first page load does not wait for it.
   faults.contain("web.bundle", () => consoleAppJs());
+  faults.contain("web.bundle", () => consoleSwJs());
   // idleTimeout 0 = no per-request idle drop; the SSE /stream is long-lived (kept warm by its
   // own 15s keepalive). Without this Bun closed connections after 10s, stalling live updates.
   return Bun.serve({ port, hostname, idleTimeout: 0, fetch: (req) => appHandler.fetch(req) });
@@ -452,6 +475,9 @@ export function startWeb(deps: WebAppDeps, port: number, hostname = "0.0.0.0"): 
 const WEB_DIR = join(import.meta.dir, "web");
 const CONSOLE_HTML = readFileSync(join(WEB_DIR, "index.html"), "utf8");
 const LOGIN_HTML = readFileSync(join(WEB_DIR, "login.html"), "utf8");
+const OFFLINE_HTML = readFileSync(join(WEB_DIR, "offline.html"), "utf8");
+/** The theme-color meta slots every page fills (ADR-0022). */
+const THEME_SLOTS = { THEME_DARK: BRAND.inkDark, THEME_LIGHT: BRAND.inkLight };
 
 function escHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -470,27 +496,56 @@ function pageLang(req: Request, fallback: Lang): Lang {
 
 export function loginPage(botUsername: string, lang: Lang = "en"): string {
   const i18n = createConsoleI18n(lang);
-  return fill(LOGIN_HTML, { LANG: lang, DIR: i18n.dir(lang), TITLE: escHtml(i18n.t("meta.loginTitle")), SUB: escHtml(i18n.t("login.sub")), BOT: escHtml(botUsername) });
+  return fill(LOGIN_HTML, { ...THEME_SLOTS, LANG: lang, DIR: i18n.dir(lang), TITLE: escHtml(i18n.t("meta.loginTitle")), SUB: escHtml(i18n.t("login.sub")), BOT: escHtml(botUsername) });
 }
 
 export function consolePage(opts: { feedWindow?: number; lang?: Lang } = {}): string {
   const lang = opts.lang ?? "en";
-  return fill(CONSOLE_HTML, { LANG: lang, DIR: createConsoleI18n(lang).dir(lang), FEED_WINDOW: String(opts.feedWindow ?? DEFAULT_WEB_FEED_WINDOW) });
+  return fill(CONSOLE_HTML, { ...THEME_SLOTS, LANG: lang, DIR: createConsoleI18n(lang).dir(lang), FEED_WINDOW: String(opts.feedWindow ?? DEFAULT_WEB_FEED_WINDOW) });
 }
 
-let consoleApp: Promise<string> | undefined;
-/** The console's browser bundle, built once per daemon from ./web/app.ts by Bun.build (no other
- *  build tool). A failed build is reported by the request that asked and retried by the next one. */
-export function consoleAppJs(): Promise<string> {
-  if (!consoleApp) {
-    const build = Bun.build({ entrypoints: [join(WEB_DIR, "app.ts")], target: "browser", format: "esm", minify: true }).then((r) => {
-      if (!r.success || !r.outputs[0]) throw new AggregateError(r.logs, "console bundle failed");
+/** The offline page the service worker shows when a navigation fails (localized, public). */
+export function offlinePage(lang: Lang = "en"): string {
+  const i18n = createConsoleI18n(lang);
+  return fill(OFFLINE_HTML, { ...THEME_SLOTS, LANG: lang, DIR: i18n.dir(lang), TITLE: escHtml(i18n.t("offline.title")), BODY: escHtml(i18n.t("offline.body")), RETRY: escHtml(i18n.t("offline.retry")) });
+}
+
+/** The web app manifest (AC11): strings from the catalogue, colours from brand.ts, icons from ICONS. */
+function manifest(lang: Lang) {
+  const i18n = createConsoleI18n(lang);
+  return {
+    id: "/", name: i18n.t("pwa.name"), short_name: i18n.t("pwa.shortName"), description: i18n.t("pwa.description"),
+    lang, dir: i18n.dir(lang), start_url: "/", scope: "/", display: "standalone",
+    background_color: BRAND.inkDark, theme_color: BRAND.inkDark,
+    icons: ICONS.flatMap((i) => ("purpose" in i ? [{ src: `/icons/${i.file}`, sizes: `${i.size}x${i.size}`, type: "image/png", purpose: i.purpose }] : [])),
+  };
+}
+
+const bundles = new Map<string, Promise<string>>();
+/** A browser bundle, built once per daemon from ./web/<entry> by Bun.build (no other build tool). A
+ *  failed build is reported by the request that asked and retried by the next one. */
+function bundle(entry: string): Promise<string> {
+  let built = bundles.get(entry);
+  if (!built) {
+    const build = Bun.build({ entrypoints: [join(WEB_DIR, entry)], target: "browser", format: "esm", minify: true }).then((r) => {
+      if (!r.success || !r.outputs[0]) throw new AggregateError(r.logs, `${entry} bundle failed`);
       return r.outputs[0].text();
     });
-    consoleApp = build;
+    bundles.set(entry, build);
     build.catch(() => {
-      if (consoleApp === build) consoleApp = undefined;
+      if (bundles.get(entry) === build) bundles.delete(entry);
     });
+    built = build;
   }
-  return consoleApp;
+  return built;
+}
+
+/** The console's browser bundle (/app.js, behind the session). */
+export function consoleAppJs(): Promise<string> {
+  return bundle("app.ts");
+}
+
+/** The service worker (/sw.js, public — ADR-0022). */
+export function consoleSwJs(): Promise<string> {
+  return bundle("sw.ts");
 }
