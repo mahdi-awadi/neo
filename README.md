@@ -161,6 +161,11 @@ else. To reset admin, delete `data/admin.db`. You can pre-restrict who may claim
   register your `PUBLIC_URL` domain in @BotFather (`/setdomain`), open it, and "Log in with
   Telegram". The console binds localhost by default and is meant to sit behind your proxy — don't
   expose the raw port publicly.
+- **On a phone:** the same console works at phone and tablet widths (a drawer for the sidebar, one
+  pane at a time for Threads and Projects, 44 px buttons, light or dark from your system setting).
+  Install it from the browser (the console's **Install app** button, or on iPhone: Share → Add to
+  Home Screen). The installed app keeps only its public shell (icons, manifest, offline page) on the
+  device; everything else, including login, comes live from the server (ADR-0022).
 
 ### Talking to projects — one-shot focus
 

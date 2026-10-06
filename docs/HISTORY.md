@@ -867,3 +867,17 @@ Task 6.3 added two optional probes to the repo scan (`producers/probe.ts`). With
 repo, and counts the commits on the deploy branch after it: the console DEPLOY line and `/project`
 show "N commits not deployed (branch @ sha live)", or the probe's error. Each call is bounded in
 time and size, only http(s), no redirects; old rows are ignored. Without config there is no call.
+
+### Console on phones and installable (2026-10-07, ADR-0022)
+
+The existing console now works from 360 px phones to tablets: below 1024 px the sidebar is a drawer
+(from the inline-start edge, so from the right in Arabic), below 768 px the top bar has two rows
+(the tabs get their own scroller) and Threads/Projects show the list or the detail with a back
+button that stays in step with the browser's back. Buttons are at least 44 px on touch, the app
+height follows the on-screen keyboard and the safe areas, and a light theme follows the system
+setting. The project kill button now needs two taps. The console is a PWA: a localized manifest,
+icons, an offline page, and a service worker (`sw.ts` → `/sw.js`) that caches only that public
+shell; `/`, `/app.js`, the API, the live feed, login and uploads are never cached or intercepted.
+An **Install app** chip appears when the browser offers it (on iPhone it shows the Add to Home
+Screen hint). Verified in Chromium at 360/390/412/820 px, EN+AR, light+dark. Going live needs a
+daemon restart (operator-gated).
