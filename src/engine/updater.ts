@@ -231,16 +231,18 @@ function isNews(r: ItemResult, prev: ItemResult | undefined): boolean {
   return !prev || prev.outcome !== r.outcome || prev.to !== r.to;
 }
 
-/** The items whose newest result since `since` needs a daemon restart (spec §8.4, the restart
- *  producer) — read from the updater's own events. */
+/** The items that still owe a daemon restart (spec §8.4, the restart producer), read from the
+ *  updater's own events since `since` (the boot): a result that needs a restart stays owed until a
+ *  later result for the same item rolls it back; a later "up to date" does not pay it. */
 export function restartNeededSince(ledger: Pick<Ledger, "listEvents">, since: number, limit = STATUS_SCAN): Array<{ id: string; from?: string; to?: string }> {
-  const newest = new Map<string, ItemResult>();
-  for (const e of ledger.listEvents({ kind: RESULT_EVENT, limit })) {
-    if (e.at < since) continue;
-    const r = e.data as unknown as ItemResult;
-    if (!newest.has(r.id)) newest.set(r.id, r); // newest first
+  const owed = new Map<string, ItemResult>();
+  const events = ledger.listEvents({ kind: RESULT_EVENT, limit }).filter((e) => e.at >= since);
+  for (const e of events.reverse()) {
+    const r = e.data as unknown as ItemResult; // oldest first
+    if (r.restartNeeded) owed.set(r.id, r);
+    else if (r.outcome === "rolled_back") owed.delete(r.id);
   }
-  return [...newest.values()].filter((r) => r.restartNeeded).map((r) => ({ id: r.id, ...(r.from ? { from: r.from } : {}), ...(r.to ? { to: r.to } : {}) }));
+  return [...owed.values()].map((r) => ({ id: r.id, ...(r.from ? { from: r.from } : {}), ...(r.to ? { to: r.to } : {}) }));
 }
 
 export function createUpdater(d: UpdaterDeps): Updater {

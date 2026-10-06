@@ -1,6 +1,6 @@
 // P4 Task 4.5 (spec §8.4): restart-gated work computed from git + the boot record, and /gated.
-import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { test, expect, afterAll } from "bun:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -8,14 +8,18 @@ import { openLedger, type BootRow } from "../src/engine/ledger";
 import { restartDrafts, gatedText, bootFacts, type RestartDeps } from "../src/engine/producers/restart";
 import { restartNeededSince } from "../src/engine/updater";
 
+const made: string[] = [];
+afterAll(() => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
 function sh(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const r = spawnSync("git", ["-c", "commit.gpgsign=false", "-C", dir, ...args], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(r.stderr);
   return r.stdout.trim();
 }
 
 function repo(): string {
   const dir = mkdtempSync(join(tmpdir(), "neo-restart-"));
+  made.push(dir);
   sh(dir, "init", "-q", "-b", "master");
   sh(dir, "config", "user.email", "t@t");
   sh(dir, "config", "user.name", "t");
@@ -76,11 +80,41 @@ test("updater results that need a restart and a changed config.json are items to
   expect((drafts as Array<{ key: string }>).map((d) => d.key)).toEqual(["update:@anthropic-ai/claude-agent-sdk", "config"]);
 });
 
-test("git that cannot be read is an error (nothing resolves); no boot record is no items", () => {
+test("git that cannot be read, or no boot record, is an error (nothing resolves)", () => {
   const notRepo = mkdtempSync(join(tmpdir(), "neo-norepo-"));
+  made.push(notRepo);
   expect(restartDrafts(deps(notRepo, { at: 1, headSha: "abc", branch: "master" }))).toBe("error");
-  expect(restartDrafts(deps(notRepo, undefined))).toEqual([]);
+  expect(restartDrafts(deps(repo(), undefined))).toBe("error");
   expect(gatedText(deps(notRepo, undefined))).toContain("no boot record");
+});
+
+test("a reset below the running build is never \"running build = HEAD\"", () => {
+  const dir = repo();
+  commit(dir, "b.txt", "feat: second");
+  const boot = bootOf(dir);
+  sh(dir, "reset", "-q", "--hard", "HEAD~1");
+  const [d] = restartDrafts(deps(dir, boot)) as Exclude<ReturnType<typeof restartDrafts>, "error">;
+  expect(d).toMatchObject({ key: "live-code" });
+  expect(d!.title).toContain("does not contain the running build");
+  expect(gatedText(deps(dir, boot))).not.toContain("running build = HEAD");
+});
+
+test("a running build that is gone from history (rewritten) is an item, not an error", () => {
+  const dir = repo();
+  const [d] = restartDrafts(deps(dir, { at: 1, headSha: "0123456789abcdef0123456789abcdef01234567", branch: "master" })) as Exclude<ReturnType<typeof restartDrafts>, "error">;
+  expect(d).toMatchObject({ key: "live-code" });
+  expect(d!.title).toContain("no longer in the repo");
+});
+
+test("a detached checkout says so; waiting-to-merge is judged against the running branch", () => {
+  const dir = repo();
+  const boot = bootOf(dir);
+  sh(dir, "checkout", "-q", "-b", "fix/y");
+  commit(dir, "y.txt", "fix: y");
+  sh(dir, "checkout", "-q", "--detach", "master");
+  const drafts = restartDrafts(deps(dir, boot)) as Exclude<ReturnType<typeof restartDrafts>, "error">;
+  expect(drafts.find((d) => d.key === "branch")!.title).toContain("detached at");
+  expect(drafts.map((d) => d.key)).toContain("merge:fix/y");
 });
 
 test("ledger boots: the newest is the running build; only 100 are kept", () => {
@@ -95,6 +129,8 @@ test("restartNeededSince: the latest result per item since the boot, only those 
   l.recordEvent("update_result", { at: 150, data: { category: "sdk", id: "sdk", outcome: "applied", from: "1", to: "2", restartNeeded: true } });
   l.recordEvent("update_result", { at: 160, data: { category: "plugins", id: "p", outcome: "applied" } });
   expect(restartNeededSince(l, 100)).toEqual([{ id: "sdk", from: "1", to: "2" }]);
-  l.recordEvent("update_result", { at: 170, data: { category: "sdk", id: "sdk", outcome: "rolled_back" } }); // newer: back to the running version
+  l.recordEvent("update_result", { at: 165, data: { category: "sdk", id: "sdk", outcome: "up_to_date", from: "2" } }); // the next run: pin == latest
+  expect(restartNeededSince(l, 100)).toEqual([{ id: "sdk", from: "1", to: "2" }]); // still owed
+  l.recordEvent("update_result", { at: 170, data: { category: "sdk", id: "sdk", outcome: "rolled_back" } }); // back to the running version
   expect(restartNeededSince(l, 100)).toEqual([]);
 });

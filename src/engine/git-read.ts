@@ -64,3 +64,14 @@ export function unmergedBranches(folder: string, into: string, run: GitRunner = 
       return { branch: branch!, subject: subject ?? "" };
     });
 }
+
+/** Does `sha` name a commit in this repo? Only meaningful once git is known to read the repo (a
+ *  failed read and a missing commit look alike). */
+export function hasCommit(folder: string, sha: string, run: GitRunner = git): boolean {
+  return run(folder, ["cat-file", "-e", `${sha}^{commit}`]) !== undefined;
+}
+
+/** Is `ancestor` contained in `of`? Both must exist (see hasCommit). */
+export function isAncestor(folder: string, ancestor: string, of: string, run: GitRunner = git): boolean {
+  return run(folder, ["merge-base", "--is-ancestor", ancestor, of]) !== undefined;
+}
