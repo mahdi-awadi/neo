@@ -7,7 +7,8 @@
 import { createConsoleI18n, isLang } from "./i18n";
 import { pastedImages } from "./paste";
 import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
-import { CONFIRM_WINDOW_MS, confirmTap } from "./confirm";
+import { CONFIRM_WINDOW_MS, armedFor, confirmTap } from "./confirm";
+import { type DetailView, backAction, enterAction, popDetail, staleOnLoad } from "./nav";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
 const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
@@ -187,6 +188,8 @@ function ctxChip(p: Any): string {
   const tip = tx(`ctx.band.${b}`) + (p.lastReset ? " — " + tx("ctx.lastReset", { verdict }) : "");
   return `<span class="ctx ${esc(b)}" title="${esc(tip)}">${esc(text)}</span>`;
 }
+/** Armed kill buttons by project id → when armed (two-tap confirm, ./confirm.ts). */
+const killArms = new Map<string | number, number>();
 function renderProjects(): void {
   const box = $("projects");
   $("pcount").textContent = S.projects.length || "";
@@ -213,25 +216,31 @@ function renderProjects(): void {
     k.innerHTML = KILL_ICON;
     k.title = tx("projects.kill");
     k.setAttribute("aria-label", tx("projects.kill"));
-    let armedAt: number | undefined;
+    // Two taps on every pointer (a destructive action; on a phone the button sits next to the row's own
+    // tap target). The arm lives in killArms, so a re-render inside the window keeps it.
+    const armed = (at: number): void => {
+      k.classList.add("arm");
+      k.textContent = tx("projects.killConfirm");
+      k.setAttribute("aria-label", tx("projects.killConfirm"));
+      setTimeout(() => {
+        if (killArms.get(p.id) !== at) return; // fired or re-armed since
+        killArms.delete(p.id);
+        k.classList.remove("arm");
+        k.innerHTML = KILL_ICON;
+        k.setAttribute("aria-label", tx("projects.kill"));
+      }, Math.max(0, at + CONFIRM_WINDOW_MS - Date.now()));
+    };
+    const live = armedFor(killArms, p.id, Date.now());
+    if (live !== undefined) armed(live);
     k.onclick = (ev) => {
       ev.stopPropagation();
-      // Two taps: on a phone the button is always visible next to the row's own tap target.
-      if (confirmTap(armedAt, Date.now()) === "arm") {
-        const at = (armedAt = Date.now());
-        k.classList.add("arm");
-        k.textContent = tx("projects.killConfirm");
-        k.setAttribute("aria-label", tx("projects.killConfirm"));
-        setTimeout(() => {
-          if (armedAt !== at) return; // fired or re-armed since
-          armedAt = undefined;
-          k.classList.remove("arm");
-          k.innerHTML = KILL_ICON;
-          k.setAttribute("aria-label", tx("projects.kill"));
-        }, CONFIRM_WINDOW_MS);
+      const now = Date.now();
+      if (confirmTap(armedFor(killArms, p.id, now), now) === "arm") {
+        killArms.set(p.id, now);
+        armed(now);
         return;
       }
-      armedAt = undefined;
+      killArms.delete(p.id);
       void post("/kill", { id: p.id }).then(loadState);
     };
     d.appendChild(k);
@@ -562,6 +571,10 @@ function setDrawer(open: boolean, moveFocus: boolean): void {
   menu.setAttribute("aria-expanded", String(open));
   menu.setAttribute("aria-label", tx(open ? "nav.close" : "nav.menu"));
   menu.title = tx(open ? "nav.close" : "nav.menu");
+  // While the drawer is open, the content behind the scrim is out of reach (Tab, screen readers).
+  (document.querySelector("main") as HTMLElement).inert = open;
+  // Focus inside a closing drawer goes to the menu button first, so it never drops to <body>.
+  if (!open && MEDIUM.matches && $("side").contains(document.activeElement)) $("menu").focus();
   ($("side") as HTMLElement & { inert: boolean }).inert = MEDIUM.matches && !open;
   if (!moveFocus || was === open) return;
   if (open) $("side").querySelector<HTMLElement>("select,textarea,button,[tabindex]")?.focus();
@@ -572,17 +585,21 @@ function closeDrawer(moveFocus = true): void {
 }
 /** Narrow master–detail (AC4): opening a thread or a project shows its pane full width. On a narrow
  *  screen the step is a history entry, so the browser's back (Android's back button) returns to the list. */
-function enterDetail(view: "vthreads" | "vprojects"): void {
-  const v = $(view);
-  if (v.classList.contains("detail")) return;
-  v.classList.add("detail");
-  if (NARROW.matches) history.pushState({ detail: view }, "");
+function enterDetail(view: DetailView): void {
+  $(view).classList.add("detail");
+  const act = enterAction(history.state, view, NARROW.matches); // ./nav.ts: push, replace or nothing
+  if (act === "push") history.pushState({ detail: view }, "");
+  else if (act === "replace") history.replaceState({ detail: view }, "");
 }
 function leaveDetail(): void {
   ["vthreads", "vprojects"].forEach((id) => $(id).classList.remove("detail"));
 }
+/** The master–detail view on screen (Threads or Projects), or null. */
+function detailView(): DetailView | null {
+  return (["vthreads", "vprojects"] as const).find((id) => $(id).classList.contains("on")) ?? null;
+}
 function back(): void {
-  if ((history.state as Any)?.detail) history.back(); // popstate leaves the detail view
+  if (backAction(history.state, detailView()) === "history") history.back(); // popstate leaves the detail view
   else leaveDetail();
 }
 /** The app height follows the visual viewport, so the composer stays above the on-screen keyboard (AC5).
@@ -1170,8 +1187,12 @@ document.addEventListener("keydown", (ev) => {
 // Back to a wide screen: the sidebar is a column again, never a stuck-open drawer.
 MEDIUM.addEventListener("change", () => setDrawer(false, false));
 window.addEventListener("popstate", () => {
-  if (!(history.state as Any)?.detail) leaveDetail();
+  leaveDetail();
+  const v = popDetail(history.state, detailView());
+  if (v) $(v).classList.add("detail");
 });
+// A detail entry that survived a reload names a view no longer in detail: clear it.
+if (staleOnLoad(history.state)) history.replaceState(null, "");
 setDrawer(false, false);
 fitViewport();
 $("attach").onclick = () => $("file").click();

@@ -121,6 +121,10 @@ test("reduced motion turns off the entry, pulse and drawer animations (AC9)", ()
 test("RTL: the stylesheet uses logical properties only — no physical left/right (AC1, AC10)", () => {
   const physical = /(?<![\w-])(left|right)\s*:|(margin|padding|border)-(left|right)\b|text-align:\s*(left|right)|float:\s*(left|right)/g;
   expect(CSS.match(physical)).toBeNull();
+  // The responsive rules (and the safe-area top bar) are logical on the block axis too.
+  const block = /(margin|padding|border)-(top|bottom)\b|(?<![\w-])(top|bottom)\s*:/g;
+  for (const q of ["(max-width:1024px)", "(max-width:768px)", "(pointer:coarse),(max-width:768px)"]) expect(media(q).match(block), q).toBeNull();
+  expect(CSS.match(/\.top\{[^}]*\}/)![0].match(block)).toBeNull();
   // Long words never push the page wide.
   expect(CSS).toMatch(/\.row\{[^}]*overflow-wrap:anywhere/);
   expect(CSS).toMatch(/\.tmsg\{[^}]*overflow-wrap:anywhere/);
@@ -144,4 +148,15 @@ test("narrow top bar: two rows — the tabs get their own full-width scroller; t
 
 test("the attach button is a secondary button, not a second primary Send", () => {
   expect(CSS).toMatch(/\.compose button\.chip\{[^}]*background:var\(--panel2\)/);
+});
+
+test("drawer focus: never dropped to <body>; content behind the open drawer is inert", () => {
+  const set = APP.match(/function setDrawer\([\s\S]*?\n\}\n/)![0];
+  // Main is inert while the drawer is open, and released before focus returns to it.
+  expect(set).toMatch(/main[^;\n]*\.inert = open/);
+  // Focus inside the closing drawer moves to the menu button BEFORE the drawer turns inert.
+  const focusAt = set.indexOf('$("side").contains(document.activeElement)');
+  const inertAt = set.indexOf('($("side") as');
+  expect(focusAt).toBeGreaterThan(-1);
+  expect(focusAt).toBeLessThan(inertAt);
 });
