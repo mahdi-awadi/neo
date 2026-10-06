@@ -1818,7 +1818,7 @@ test("the dispatch gate waits for the folder's in-flight handoff before it measu
   d.ledger.recordOrder({ id: "prev", source: "neo", folder, task: "x", chatId: SUB_CHAT, createdAt: 0 });
   d.ledger.recordSession("prev", "sid");
   let release!: () => void;
-  trackHandoff(folder, new Promise<void>((r) => (release = r)));
+  trackHandoff(folder, new Promise<void>((r) => (release = r)), 60_000);
   let started = false;
   const fakeStart = () => {
     started = true;
@@ -1899,4 +1899,31 @@ test("a fresh dispatch after a handoff starts from the note, inline", async () =
   expect(task).toContain("the cart");
   expect(task).toContain("carry on");
   expect(d.ledger.listContextEvents({ folder })[0]).toMatchObject({ verdict: "resumed", detail: { handoffId } });
+});
+
+test("a todo dispatch armed at a checkpoint that cannot complete ends as failed with the reason, not as done", async () => {
+  const { root, folder } = gitProject();
+  const { d } = makeDeps();
+  d.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  let finish!: (r: RunResult) => void;
+  const fakeStart = (_o: Order, h: RunHandlers) => {
+    h.onUsage?.("claude-opus-5-5", { input_tokens: 820_000 });
+    h.onToolUse?.("c1", "Bash", { command: "git commit -m 'phase 2'" });
+    h.onToolResult?.("c1", false);
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: new Promise<RunResult>((r) => (finish = r)) };
+  };
+  let end: { continuation?: string; ok: boolean; summary: string } | undefined;
+  await dispatchToProject("eticket-v3", "build all phases", { ...d, contextPolicy: TEST_CONTEXT_POLICY }, 1, {
+    start: fakeStart as never,
+    root,
+    signals: () => ({ occupancy: 0.82, turns: 5, ageMs: 0, idleMs: 0 }),
+    hooks: { onEnd: (e) => void (end = e) },
+  });
+  await tick();
+  writeFileSync(join(folder, "late.ts"), "work after the checkpoint");
+  finish(finished("s1"));
+  await tick();
+  expect(end?.ok).toBe(false);
+  expect(end?.continuation).toBeUndefined();
+  expect(end?.summary).toContain("could not complete");
 });

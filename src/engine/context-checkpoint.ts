@@ -43,7 +43,8 @@ const COMMIT_RE = /\bgit\b[^|;&\n]*\bcommit\b/;
 const NOTE_SAFE_TOOLS = new Set(["Read", "Glob", "Grep", "TodoWrite"]);
 const NOTE_WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit"]);
 const PRODUCTIVE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
-const GIT_NOTE_SEGMENT = /^git\s+(status|diff|log|show|add|commit|rev-parse|branch)\b/;
+// `branch` is left out (it can delete); `--output` is refused (log/diff/show can write files with it).
+const GIT_NOTE_SEGMENT = /^git\s+(status|diff|log|show|add|commit|rev-parse)\b/;
 
 const commandOf = (input: unknown): string => {
   const c = (input as { command?: unknown } | undefined)?.command;
@@ -62,8 +63,8 @@ export function steerAllows(folder: string, toolName: string, input: unknown): b
   }
   if (toolName !== "Bash") return false;
   const cmd = commandOf(input);
-  if (!cmd.trim() || /[`$<>]/.test(cmd)) return false; // no substitution or redirection
-  return cmd.split(/&&|\|\||;|\||\n/).every((seg) => GIT_NOTE_SEGMENT.test(seg.trim()));
+  if (!cmd.trim() || /[`$<>]|--output/.test(cmd)) return false; // no substitution, redirection or file output
+  return cmd.split(/&&|\|\||;|\||&|\n/).every((seg) => GIT_NOTE_SEGMENT.test(seg.trim()));
 }
 
 interface PlanState {

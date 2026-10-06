@@ -33,6 +33,7 @@ import {
   CACHE_OBS_WINDOW,
   awaitHandoff,
   trackHandoff,
+  handoffHoldMs,
   handoffPreamble,
   handoffDeferred,
   continuationBrief,
@@ -147,9 +148,14 @@ async function applyContextPolicy(
   resumeId: string,
   deps: PipelineDeps,
   notify: (text: string, priority?: "alert") => void,
+  /** The resume id as it is NOW. Read again after waiting out an in-flight handoff: that handoff
+   *  clears the id, and measuring the stale one would run a second, context-free handoff. */
+  current: () => string | undefined,
 ): Promise<{ resumeId: string; idleMs: number; preLines?: number }> {
   if (!resumeId) return { resumeId: "", idleMs: 0 };
   await awaitHandoff(folder);
+  resumeId = current() ?? "";
+  if (!resumeId) return { resumeId: "", idleMs: 0 };
   try {
     const policy = deps.cfg.contextPolicy;
     const signals = deps.signals ?? sessionContext;
@@ -250,7 +256,11 @@ export async function handleMessage(
   const addressed = focus?.session ?? registry.getDefault();
   if (addressed && !text.trim().startsWith("/")) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
-    const live = await pastClose(registry, addressed);
+    const live = await pastClose(registry, addressed, handoffHoldMs(deps.cfg.contextPolicy));
+    if (!live) {
+      await deps.reply(chatId, `⏳ ${addressed.name} is still closing — send that again in a moment`);
+      return null;
+    }
     const control = registry.getControl(live.id);
     // A message to the company carries any dispatch results still waiting in the dispatcher inbox
     // (e.g. runs cut short by a reload), so the dispatcher sees them before it acts (ADR-0007).
@@ -311,7 +321,9 @@ export async function handleMessage(
   // 5. Resume a prior session for this folder/chat, if one was recorded.
   const priorResume = ledger.lastSessionFor(parsed.folder, parsed.chatId, deps.cfg.providers?.ownWork);
   const gate = priorResume
-    ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps, (t, pr) => void deps.reply(chatId, t, undefined, pr))
+    ? await applyContextPolicy(parsed.folder, undefined, priorResume, deps, (t, pr) => void deps.reply(chatId, t, undefined, pr), () =>
+        ledger.lastSessionFor(parsed.folder, parsed.chatId, deps.cfg.providers?.ownWork),
+      )
     : { resumeId: "", idleMs: 0 };
   const resume = gate.resumeId;
 
@@ -339,10 +351,14 @@ export async function handleMessage(
 /** The entry as it is once any CLOSE in progress is over. A run whose channel is already closed (a
  *  context handoff, an idle-close) drops a pushed follow-up silently, so a message for it waits for
  *  the run to end and the folder's handoff to finish, then goes down the resume path (ADR-0014). */
-async function pastClose(registry: Registry, s: SessionInfo): Promise<SessionInfo> {
+async function pastClose(registry: Registry, s: SessionInfo, maxMs: number): Promise<SessionInfo | undefined> {
   if (registry.getControl(s.id)?.closed?.() !== true) return s;
-  await runEnded.get(s.id);
-  await awaitHandoff(s.order.folder);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<"limit">((res) => (timer = setTimeout(() => res("limit"), maxMs)));
+  const ended = await Promise.race([runEnded.get(s.id)?.then(() => "ended" as const) ?? Promise.resolve("ended" as const), limit]);
+  clearTimeout(timer);
+  if (ended === "limit") return undefined; // the run never ended: the caller answers instead of hanging
+  await awaitHandoff(s.order.folder); // bounded by trackHandoff
   return registry.get(s.id) ?? s;
 }
 
@@ -374,7 +390,7 @@ async function resumeSession(
     // vice versa) is not a resume target, it is a dead session that kills the run.
     const resumable = live.sdkSessionId && canResumeWith(live.sdkProvider, deps.cfg.providers?.ownWork);
     const gate = resumable
-      ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps, (t, pr) => void deps.reply(chatId, t, live.name, pr))
+      ? await applyContextPolicy(live.order.folder, live, live.sdkSessionId, deps, (t, pr) => void deps.reply(chatId, t, live.name, pr), () => registry.get(live.id)?.sdkSessionId)
       : { resumeId: "", idleMs: 0 };
     const run = startSession(
       resumed,
@@ -545,6 +561,8 @@ function startSession(
           },
         });
   let lastSessionId = runDeps.resume ?? "";
+  // An API retry is waiting to push the brief back in: the session must not be closed under it.
+  let retryPending = false;
   // Set when the settle check closes the run for a handoff; consumed by the run.done handler.
   let pendingClose: PendingClose | undefined;
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
@@ -653,6 +671,7 @@ function startSession(
           return;
         }
         apiRetries = attempt;
+        retryPending = true;
         const { delayMs, resetsAt, source } = resolveApiRetryDelayMs({
           attempt,
           rateLimits: deps.usage?.rateLimits(),
@@ -666,6 +685,7 @@ function startSession(
         faults.contain(
           "pipeline.apiRetry",
           (deps.sleep ?? realSleep)(delayMs).then(() => {
+            retryPending = false;
             registry.touch(registryId, now());
             runRef?.followUp(apiRetryFollowUp(order.task));
           }),
@@ -690,12 +710,15 @@ function startSession(
   /** The settled boundary (ADR-0014): hand off now, while the cache is warm, if the session is above
    *  the sweet spot — or complete an armed checkpoint. Closes the run; run.done does the rest. */
   const settleCheck = (): void => {
-    if (pendingClose || run.closed?.() === true || (run.queued?.() ?? 0) > 0) return;
+    if (pendingClose || retryPending || run.closed?.() === true || (run.queued?.() ?? 0) > 0) return;
     const armed = watch?.armed();
     let next: Omit<PendingClose, "release">;
     if (armed) {
       if (handoffDeferred(folder, armed.decision, { ledger, boundary: "checkpoint", occupancy: armed.occupancy, sessionId: lastSessionId })) {
-        watch?.disarm(); // work appeared after the checkpoint: no longer a safe point
+        // Work appeared after the checkpoint: no longer a safe point. The worker was told to stop,
+        // so say so — the operator decides how it goes on (the next settle decides afresh).
+        watch?.disarm();
+        void deps.reply(chatId, `⏸ context checkpoint at ${Math.round(armed.occupancy * 100)}% could not complete — uncommitted changes appeared after it; the session stays open (tell it to continue)`, project, "alert");
         return;
       }
       next = { kind: "checkpoint", decision: armed.decision, occupancy: armed.occupancy };
@@ -712,16 +735,20 @@ function startSession(
     // Hold the folder as "handing off" from NOW, so a message arriving before run.done waits for the
     // handoff instead of racing it. Bounded: a run that never ends cannot wedge the folder.
     let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    const guard = setTimeout(() => release(), 2 * policy.handoffTimeoutMs);
-    trackHandoff(folder, held.finally(() => clearTimeout(guard)));
+    trackHandoff(folder, new Promise<void>((r) => (release = r)), handoffHoldMs(policy));
     pendingClose = { ...next, release };
     run.close?.();
   };
 
   // The run's completion bookkeeping is part of the run's unit of work (ADR-0010): a throw here (a
   // locked ledger) is reported with the project + order, never an unhandled rejection.
+  // The hold a settle close put on the folder (if any). Taken FIRST, so a throw anywhere in the
+  // completion below still releases it (see `ended` rejection) — never only via the hold's bound.
+  let closing: PendingClose | undefined;
   const ended = run.done.then((result) => {
+    const pc = pendingClose;
+    pendingClose = undefined;
+    closing = pc;
     if (result.sessionId) {
       // Tag the id with the SDK that minted it — a later resume under a different worker SDK must
       // start fresh instead of feeding it an id it has never heard of.
@@ -758,8 +785,6 @@ function startSession(
     if (result.sessionId) lastSessionId = result.sessionId;
     // The session ended before any edit or commit: record how far it got (success unknown).
     if (probe && resumedEventId !== undefined && !probe.report().productive) ledger.updateContextEventDetail(resumedEventId, probe.report());
-    const pc = pendingClose;
-    pendingClose = undefined;
     const notify = (t: string, pr?: "alert") => void deps.reply(chatId, t, project, pr);
     const info = registry.get(registryId);
     let handoffWork: Promise<unknown> = Promise.resolve();
@@ -817,6 +842,7 @@ function startSession(
     void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert");
   });
   faults.contain("pipeline.runDone", ended, ctx);
+  void ended.catch(() => closing?.release()); // release() is idempotent
   const endedQuietly = ended.then(
     () => undefined,
     () => undefined,

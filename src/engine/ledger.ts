@@ -93,8 +93,8 @@ export interface Ledger {
   listContextEvents(opts?: number | { folder?: string; limit?: number }): ContextEventRow[];
   /** Merge `detail` into a context event's detail (e.g. a resumed session's orientation). */
   updateContextEventDetail(id: number, detail: Record<string, unknown>): void;
-  /** The folder's newest `handoff` that no `resumed` row has followed yet — the note a fresh
-   *  session there must start from. */
+  /** The folder's newest `handoff` that no `resumed` (or later `clear`) row has followed yet — the
+   *  note a fresh session there must start from. */
   pendingHandoff(folder: string): ContextEventRow | undefined;
   /** LEARNED cache-TTL input: one (idle gap before a resume, was the prompt cache still warm?)
    *  observation, so the effective staleness TTL can be derived from real behavior instead of a
@@ -700,7 +700,7 @@ export function openLedger(
     },
     pendingHandoff(folder) {
       const row = db
-        .query(`SELECT rowid AS id, * FROM context_events WHERE folder = ? AND verdict IN ('handoff', 'resumed') ORDER BY at DESC, rowid DESC LIMIT 1`)
+        .query(`SELECT rowid AS id, * FROM context_events WHERE folder = ? AND verdict IN ('handoff', 'resumed', 'clear') ORDER BY at DESC, rowid DESC LIMIT 1`)
         .get(folder) as ContextEventDbRow | null;
       return row && row.verdict === "handoff" ? contextEventRow(row) : undefined;
     },

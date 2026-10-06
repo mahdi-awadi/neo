@@ -246,3 +246,10 @@ test("an old ledger's context_events table gains the new columns on open", () =>
   l.recordContextEvent("/p/a", "handoff", 0.5, 2, { reason: "heavy", boundary: "checkpoint" });
   expect(l.listContextEvents().map((e) => [e.verdict, e.reason])).toEqual([["handoff", "heavy"], ["clear", undefined]]);
 });
+
+test("an emergency clear after a handoff consumes it — a stale note is never inlined", () => {
+  const l = openLedger(":memory:");
+  l.recordContextEvent("/p/a", "handoff", 0.5, 10);
+  l.recordContextEvent("/p/a", "clear", 0.95, 20);
+  expect(l.pendingHandoff("/p/a")).toBeUndefined();
+});

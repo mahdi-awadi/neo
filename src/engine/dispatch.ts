@@ -41,6 +41,7 @@ import {
   windowTokensFor,
   awaitHandoff,
   trackHandoff,
+  handoffHoldMs,
   handoffPreamble,
   handoffDeferred,
   continuationBrief,
@@ -931,15 +932,21 @@ export async function dispatchToProject(
     const atCheckpoint =
       !!armed && result.ok && !timedOut && !reloading &&
       !handoffDeferred(folder, armed.decision, { ledger: deps.ledger, boundary: "checkpoint", occupancy: armed.occupancy, sessionId: result.sessionId || lastSessionId });
-    const stop = timedOut || !result.ok || reloading ? stopPoint() : undefined;
+    // Armed, but the checkpoint could not complete (work appeared after it): the worker was told to
+    // stop part-way, so this is NOT a finished task — it ends as a failure that says why.
+    const checkpointLost = !!armed && !atCheckpoint && result.ok && !timedOut && !reloading;
+    const ok = result.ok && !checkpointLost;
+    const stop = timedOut || !ok || reloading ? stopPoint() : undefined;
     const summary = atCheckpoint
       ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
-      : reloading
+      : checkpointLost
+        ? `stopped at a context checkpoint (${Math.round(armed!.occupancy * 100)}%) that could not complete — uncommitted changes appeared after it; HANDOFF.md may be partial, dispatch it again to continue`
+        : reloading
         ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — resume it after the restart)`
         : result.summary;
     const stopLine = stop ? formatStopPoint(stop) : "";
     const line =
-      (result.ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
+      (ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
       (stopLine ? `\n${stopLine}` : "");
     try {
       if (result.sessionId) {
@@ -961,11 +968,11 @@ export async function dispatchToProject(
       });
       let note: string | undefined;
       try {
-        note = hooks.resultNote?.(result.ok && !timedOut && !reloading);
+        note = hooks.resultNote?.(ok && !timedOut && !reloading);
       } catch {
         note = undefined; // the queue's note is extra — the result itself must still be queued
       }
-      const report = dispatchResultText({ project: name, ok: result.ok, summary, stop });
+      const report = dispatchResultText({ project: name, ok, summary, stop });
       deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now());
     } catch {
       // observer only — never surfaces into the worker path
@@ -996,8 +1003,8 @@ export async function dispatchToProject(
         const handoff = opts.handoff ?? runHandoff;
         const handoffDeps = { registry: deps.registry, ledger: deps.ledger, runDeps: profileDeps(providerCfg, "handoff"), memoryFlush: !!memoryGate(deps, folder), notify };
         let work: Promise<unknown> | undefined;
-        if (atCheckpoint && entry && armed) {
-          const target: SessionInfo = { ...entry, sdkSessionId: sid };
+        if (atCheckpoint && armed) {
+          const target: SessionInfo = { ...(entry ?? session), sdkSessionId: sid };
           const at = { ...handoffDeps, decision: armed.decision, boundary: "checkpoint" as const };
           // The worker wrote its note in its own context — no extra handoff turn, unless it did not.
           work = noteStamp(folder) !== noteAtArm ? Promise.resolve(completeHandoff(target, policy, at, { before: noteAtArm, occupancy: armed.occupancy })) : handoff(target, policy, at);
@@ -1013,7 +1020,7 @@ export async function dispatchToProject(
         }
         if (work) {
           // Tracked, not awaited: the operator's result goes out now; the next dispatch's gate waits.
-          trackHandoff(folder, work);
+          trackHandoff(folder, work, handoffHoldMs(policy));
           faults.contain("dispatch.handoff", work, { project: name, orderId: order.id, folder });
         }
       } catch {
@@ -1024,7 +1031,7 @@ export async function dispatchToProject(
       // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure
       // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
       // The frontend prepends the single priority accent (✅/🔴) — no per-call-site glyph (Feature 2).
-      await deps.reply(replyChat, line, name, result.ok ? "result" : "alert");
+      await deps.reply(replyChat, line, name, ok ? "result" : "alert");
     } catch {
       // the operator line is best-effort; the dispatcher report below must still go out
     }
@@ -1037,7 +1044,7 @@ export async function dispatchToProject(
     }
     // Last: the result is out, so the todo queue may release the project's next brief (ADR-0008).
     try {
-      await hooks.onEnd?.({ orderId: order.id, ok: result.ok && !timedOut && !reloading, summary, ...(continuation ? { continuation } : {}) });
+      await hooks.onEnd?.({ orderId: order.id, ok: ok && !timedOut && !reloading, summary, ...(continuation ? { continuation } : {}) });
     } catch {
       // observer only
     }

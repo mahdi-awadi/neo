@@ -109,6 +109,10 @@ test("steerAllows: only what writing and committing the note needs", () => {
   expect(ok("Bash", { command: "git commit -m $(rm -rf y)" })).toBe(false);
   expect(ok("Bash", { command: "npm test" })).toBe(false);
   expect(ok("Bash", { command: "git push" })).toBe(false);
+  expect(ok("Bash", { command: "git status & rm -rf src" })).toBe(false); // a lone & runs both
+  expect(ok("Bash", { command: "git log --output=src/a.ts" })).toBe(false); // log can write files
+  expect(ok("Bash", { command: "git branch -D main" })).toBe(false); // branch can delete
+  expect(ok("Bash", { command: "git rev-parse --abbrev-ref HEAD" })).toBe(true);
   expect(ok("mcp__neo__dispatch", {})).toBe(false);
   expect(ok("Task", { prompt: "go on" })).toBe(false);
 });

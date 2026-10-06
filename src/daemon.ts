@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
+import { contextPolicyWarnings } from "./engine/context-policy";
 import { openLedger, LEDGER_PATH } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   // nothing that starts below can take the process down; until configureFaults it logs to stderr.
   installSafetyNet(process);
   const cfg = loadConfig();
+  for (const w of contextPolicyWarnings(cfg.contextPolicy)) console.log(`  WARN: ${w}`);
   mkdirSync("data", { recursive: true });
   const busyTimeoutMs = cfg.sqliteBusyTimeoutMs;
   const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep, busyTimeoutMs });

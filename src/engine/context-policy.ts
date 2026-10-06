@@ -165,6 +165,20 @@ export function contextBand(
 /** The three lines a band is read against. */
 export type BandCfg = Pick<ContextPolicyCfg, "sweetSpotPct" | "checkpointPct" | "emergencyPct">;
 
+/** Lines that make a band unreachable (e.g. a legacy `handoffPct` 0.65 above the 0.60 checkpoint).
+ *  The daemon prints them at boot; the policy still runs (fail open). A checkpointPct ≥ 1 is the
+ *  documented "mid-task handoffs off" and is never flagged. */
+export function contextPolicyWarnings(cfg: BandCfg): string[] {
+  const out: string[] = [];
+  if (cfg.checkpointPct < 1) {
+    if (cfg.sweetSpotPct >= cfg.checkpointPct) out.push(`contextPolicy: sweetSpotPct ${cfg.sweetSpotPct} ≥ checkpointPct ${cfg.checkpointPct} — the "above" band can never be reached`);
+    if (cfg.checkpointPct >= cfg.emergencyPct) out.push(`contextPolicy: checkpointPct ${cfg.checkpointPct} ≥ emergencyPct ${cfg.emergencyPct} — the "heavy" band can never be reached`);
+  } else if (cfg.sweetSpotPct >= cfg.emergencyPct) {
+    out.push(`contextPolicy: sweetSpotPct ${cfg.sweetSpotPct} ≥ emergencyPct ${cfg.emergencyPct} — boundary handoffs never fire before the emergency line`);
+  }
+  return out;
+}
+
 /** `ctx 52% above` — the one ctx% label (/status, console). Inside the sweet spot, just the number. */
 export function contextLabel(occupancy: number, cfg?: BandCfg): string {
   const label = `ctx ${Math.round(occupancy * 100)}%`;
@@ -392,7 +406,8 @@ export function checkpointSteer(occupancy: number): string {
     "and your work so far is committed. A fresh session will finish this task. Do NOT start the next step. " +
     "Now overwrite HANDOFF.md in the project root with exactly these sections:\n" +
     NOTE_SHAPE +
-    "\nYou may read files and commit HANDOFF.md. Then end your turn — every other tool is blocked until you do."
+    "\nYou may read files and commit HANDOFF.md with a plain one-line `git commit -m` message (no $(...), heredoc, " +
+    "`;` or `&`). Then end your turn — every other tool is blocked until you do."
   );
 }
 
@@ -490,7 +505,7 @@ export function handoffPreamble(
     const path = join(folder, "HANDOFF.md");
     let note = existsSync(path) ? readFileSync(path, "utf8").trim() : "(the handoff note is missing — check the git log)";
     if (note.length > cfg.handoffNoteMaxChars) note = `${note.slice(0, cfg.handoffNoteMaxChars)}\n\n(note truncated — read HANDOFF.md for the rest)`;
-    const eventId = ledger.recordContextEvent(folder, "resumed", 0, now, { detail: { handoffId: pending.id } });
+    const eventId = ledger.recordContextEvent(folder, "resumed", 0, now, { reason: pending.reason, boundary: "resume", detail: { handoffId: pending.id } });
     const why = `${pending.reason ?? "context policy"}, ${Math.round(pending.occupancy * 100)}%`;
     const text =
       `This session continues earlier work: Neo handed the previous session off (${why}). Its handoff note ` +
@@ -502,15 +517,27 @@ export function handoffPreamble(
   }
 }
 
+/** The longest a folder is held as "handing off": the handoff turn's own bound, twice. */
+export function handoffHoldMs(cfg: Pick<ContextPolicyCfg, "handoffTimeoutMs">): number {
+  return 2 * cfg.handoffTimeoutMs;
+}
+
 // One handoff per folder at a time (ADR-0014). A gate about to reuse or replace a folder's session
 // first awaits the folder's in-flight handoff, so a settle-time handoff and an incoming message (or a
 // dispatch end and the todo queue's next release) can never run two handoffs on one folder at once.
 const handoffsInFlight = new Map<string, Promise<void>>();
 
-/** Register `p` as the folder's in-flight handoff (chained after any earlier one). */
-export function trackHandoff(folder: string, p: Promise<unknown>): void {
+/** Register `p` as the folder's in-flight handoff (chained after any earlier one). It holds the folder
+ *  for at most `maxMs`: a handoff whose worker never ends (a hung interrupt) must not wedge every
+ *  later gate on the folder. */
+export function trackHandoff(folder: string, p: Promise<unknown>, maxMs: number): void {
   const prev = handoffsInFlight.get(folder) ?? Promise.resolve();
-  const next: Promise<void> = prev.then(() => p).then(
+  const bounded = (): Promise<unknown> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<void>((res) => (timer = setTimeout(res, maxMs)));
+    return Promise.race([p, limit]).finally(() => clearTimeout(timer));
+  };
+  const next: Promise<void> = prev.then(bounded).then(
     () => undefined,
     () => undefined, // a failed handoff still releases its waiters
   );
@@ -526,7 +553,9 @@ export async function awaitHandoff(folder: string): Promise<void> {
 }
 
 // One `deferred` row per (session, boundary): a session sitting on uncommitted work settles many times.
+// Bounded: the oldest key is forgotten past DEFERRED_SEEN_MAX (worst case, one repeated row).
 const deferredSeen = new Set<string>();
+const DEFERRED_SEEN_MAX = 1_000;
 
 /** "Never with uncommitted work" (ADR-0014): true when a handoff the policy wants must wait because
  *  the folder has uncommitted changes (HANDOFF.md aside) — except in the emergency band, which goes
@@ -547,9 +576,10 @@ export function handoffDeferred(
     if (decision.band === "emergency") return false;
     const dirty = (ctx.uncommitted ?? uncommittedIn)(folder);
     if (!dirty || dirty.length === 0) return false;
-    const key = `${ctx.sessionId ?? folder}:${ctx.boundary}`;
+    const key = `${folder}\0${ctx.sessionId ?? ""}\0${ctx.boundary}`;
     if (!deferredSeen.has(key)) {
       deferredSeen.add(key);
+      if (deferredSeen.size > DEFERRED_SEEN_MAX) deferredSeen.delete(deferredSeen.values().next().value!);
       ctx.ledger.recordContextEvent(folder, "deferred", ctx.occupancy, undefined, {
         reason: decision.reason,
         boundary: ctx.boundary,
@@ -670,7 +700,7 @@ export interface HandoffDeps {
  *  handoff for its whole length (awaitHandoff). */
 export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
   const work = handoffTurnThenComplete(session, cfg, deps);
-  trackHandoff(session.order.folder, work);
+  trackHandoff(session.order.folder, work, handoffHoldMs(cfg));
   await work;
 }
 

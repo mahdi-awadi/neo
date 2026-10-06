@@ -1398,3 +1398,85 @@ test("a resumed session that ends before any edit records how far it got, with n
   await tick();
   expect(h.ledger.listContextEvents().find((e) => e.verdict === "resumed")?.detail).toEqual({ handoffId, productive: false, steps: 1 });
 });
+
+// ---- code review 2026-10-06 (ADR-0014 follow-ups) ----
+
+test("a message that arrives during the handoff turn starts ONE fresh session — no second, context-free handoff", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  const calls: string[] = [];
+  const b = {
+    ...base,
+    handoff: async (s: { id: string; sdkSessionId: string; order: { folder: string } }) => {
+      calls.push(s.sdkSessionId);
+      await slow;
+      h.registry.setSdkSessionId(s.id, "");
+      h.ledger.clearSessionsFor(s.order.folder);
+    },
+  } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.();
+  f.runs[0].finish(ok("s1")); // run ended; the (slow) handoff turn is now running, the control detached
+  await tick();
+  const sent = handleMessage("next thing", 9, b);
+  await tick();
+  release();
+  await sent;
+  await tick();
+  expect(calls).toEqual(["s1"]);
+  expect(f.runs).toHaveLength(2);
+  expect(f.runs[1].resume).toBeUndefined();
+  expect(f.runs[1].task).toContain("next thing");
+});
+
+test("a settle while an API retry is pending never closes the run — the retried brief is not lost", async () => {
+  const dir = gitScratch();
+  const { f, base } = sweetHarness(0.7);
+  let wake!: () => void;
+  const b = { ...base, sleep: () => new Promise<void>((r) => (wake = r)) } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  const run = f.runs[0];
+  run.h.onTurnComplete?.({ ok: false, sessionId: "s1", summary: "", costUsd: 0, apiError: "rate_limit" });
+  run.h.onSettled?.();
+  expect(run.closed).toBe(false);
+  wake();
+  await tick();
+  expect(run.followUps.length).toBe(1); // the retry reached the open channel
+});
+
+test("a message for a closing run whose end never comes is answered, not left hanging", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.7);
+  const b = { ...base, cfg: { ...base.cfg, contextPolicy: { ...base.cfg.contextPolicy, handoffTimeoutMs: 10 } } } as typeof base;
+  const replies: string[] = [];
+  const b2 = { ...b, reply: (_c: number, t: string) => void replies.push(t) } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b2);
+  h.registry.setFocus(9, h.registry.list()[0].id, "pinned");
+  f.runs[0].h.onTurnComplete?.(ok("s1"));
+  f.runs[0].h.onSettled?.(); // closed; the test never finishes the run
+  await handleMessage("hello?", 9, b2);
+  expect(replies.some((r) => r.includes("still closing"))).toBe(true);
+  expect(f.runs[0].followUps).toEqual([]);
+});
+
+test("an armed checkpoint that cannot complete (work appeared) tells the operator", async () => {
+  const dir = gitScratch();
+  const { f, h, base } = sweetHarness(0.1);
+  const replies: string[] = [];
+  const b = { ...base, reply: (_c: number, t: string) => void replies.push(t) } as typeof base;
+  h.ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  await handleMessage(`/open ${dir} long task`, 9, b);
+  const run = f.runs[0].h;
+  run.onUsage?.("claude-opus-5-5", { input_tokens: 820_000 });
+  run.onToolUse?.("c1", "Bash", { command: "git commit -m x" });
+  run.onToolResult?.("c1", false);
+  writeFileSync(join(dir, "late.ts"), "written after the checkpoint");
+  run.onTurnComplete?.(ok("s1"));
+  run.onSettled?.();
+  expect(f.runs[0].closed).toBe(false);
+  expect(replies.some((r) => r.includes("could not complete"))).toBe(true);
+});

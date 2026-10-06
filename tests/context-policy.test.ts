@@ -21,6 +21,7 @@ import {
   handoffPreamble,
   trackHandoff,
   awaitHandoff,
+  contextPolicyWarnings,
   idleStateNote,
   writeIdleStateNote,
   effectiveCacheTtlMs,
@@ -515,8 +516,8 @@ test("handoffPreamble inlines a pending handoff's note once, capped, and records
 test("awaitHandoff waits for a tracked handoff of the same folder only, and never throws", async () => {
   let release!: () => void;
   const order: string[] = [];
-  trackHandoff("/p/a", new Promise<void>((r) => (release = r)).then(() => void order.push("handoff")));
-  trackHandoff("/p/b", Promise.reject(new Error("boom")));
+  trackHandoff("/p/a", new Promise<void>((r) => (release = r)).then(() => void order.push("handoff")), 60_000);
+  trackHandoff("/p/b", Promise.reject(new Error("boom")), 60_000);
   await awaitHandoff("/p/b"); // a failed handoff still releases its waiters
   await awaitHandoff("/p/none");
   const waiting = awaitHandoff("/p/a").then(() => void order.push("next"));
@@ -569,4 +570,30 @@ test("runHandoff alerts the operator for an emergency handoff", async () => {
     notify: (_t, p) => void notes.push(p),
   });
   expect(notes).toEqual(["alert"]);
+});
+
+// ---- code review 2026-10-06 ----
+
+test("a tracked handoff that never settles holds its folder only up to its bound", async () => {
+  trackHandoff("/p/wedged", new Promise<void>(() => {}), 20);
+  const t0 = Date.now();
+  await awaitHandoff("/p/wedged");
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(15);
+  expect(Date.now() - t0).toBeLessThan(2_000);
+});
+
+test("handoffPreamble records the resumed row with the handoff's reason and the resume boundary", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-pre-"));
+  const ledger = openLedger(":memory:");
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nx");
+  ledger.recordContextEvent(dir, "handoff", 0.52, 1, { reason: "above-sweet-spot", boundary: "settled" });
+  handoffPreamble(dir, ledger, CFG, 5);
+  expect(ledger.listContextEvents()[0]).toMatchObject({ verdict: "resumed", reason: "above-sweet-spot", boundary: "resume" });
+});
+
+test("contextPolicyWarnings flags lines out of order, and is quiet for the defaults or a disabled checkpoint", () => {
+  expect(contextPolicyWarnings(CFG)).toEqual([]);
+  expect(contextPolicyWarnings({ ...CFG, checkpointPct: 1 })).toEqual([]); // mid-task handoffs off
+  expect(contextPolicyWarnings({ ...CFG, sweetSpotPct: 0.65 })[0]).toContain("sweetSpotPct 0.65 ≥ checkpointPct 0.6");
+  expect(contextPolicyWarnings({ ...CFG, checkpointPct: 0.95 })[0]).toContain("checkpointPct 0.95 ≥ emergencyPct 0.9");
 });
