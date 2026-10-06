@@ -68,8 +68,8 @@ new rules, light token set exists, reduced-motion block exists).
       412 × 915 (Android), 820 × 1180 (tablet); EN + AR; light + dark. Check AC1–AC10 by eye and by
       `scrollWidth <= clientWidth`; check the worker registers and `/stream` + `/api/*` are not served
       from cache. Fix what fails (commit `fix(console): …`).
-- [ ] Screenshots → `docs/superpowers/evidence/2026-10-07-console-mobile/` (gitignored path or left
-      uncommitted; reported).
+- [ ] Screenshots → `/home/neo/.superpowers/evidence/2026-10-07-console-mobile/` (gitignored, outside
+      the temporary worktree; reported).
 
 ## Task 5 — Review, docs, merge
 

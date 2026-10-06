@@ -97,4 +97,4 @@ Push notifications, background sync, offline use of the console, a manual theme 
 `bunx tsc --noEmit`, `bun test`, the bundle builds (`app.js` and `sw.js`). Playwright on a throwaway
 local server with sample data: iPhone (390 × 844) and Android (412 × 915) sizes, plus a 360 px phone
 and a tablet (820 × 1180); EN + AR; light + dark. Screenshots saved under
-`docs/superpowers/evidence/2026-10-07-console-mobile/` (not committed; path reported).
+`/home/neo/.superpowers/evidence/2026-10-07-console-mobile/` (gitignored, outside the temporary worktree; path reported).
