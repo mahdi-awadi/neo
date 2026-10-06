@@ -33,6 +33,7 @@ import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 import type { Cause } from "./trace";
 import { faults } from "./fault";
 import { applyPlanAction, planDepsFrom, type PlanAction } from "./plans";
+import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -51,6 +52,18 @@ export type WebEvent =
   | { type: "loops"; items: LoopInfo[] }
   | { type: "sdk"; sdk: WorkerSdkState }
   | { type: "file"; name: string; url: string; project?: string };
+
+/** One thread as the console shows it (spec §6). `next` is the cursor for the older messages. */
+export interface ThreadView {
+  thread: ThreadRow & { ref?: string };
+  messages: MessageRow[];
+  next?: number;
+  orders: ThreadArtifacts["orders"];
+  todos: ThreadArtifacts["todos"];
+  decisions: ThreadArtifacts["decisions"];
+  plans: PlanRow[];
+  toolActions: number;
+}
 
 export interface WebChannel {
   /** Operator sent a message — drive the pipeline; streamed output arrives as events. `threadId`:
@@ -85,6 +98,12 @@ export interface WebChannel {
   /** A Queue-tab action (`cancel 12`, `up 12`, `pause eticket-v3`, `resume eticket-v3`, or "" to
    *  list) — runs the shared /todo command, so the console and Telegram share one set of rules. */
   todo(args: string): { ok: boolean; text: string };
+  /** The thread list (ADR-0017): newest-updated first, filtered, keyset-paged; each row has its ref. */
+  threads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: Array<ThreadListRow & { ref?: string }>; next?: string };
+  /** One thread: a page of its messages (newest first) and what it produced. Undefined: no such thread. */
+  thread(id: number, page: { before?: number; limit: number }): ThreadView | undefined;
+  /** FTS5 search over every message, newest first, keyset-paged by id. */
+  search(q: string, f: { project?: string; before?: number; limit: number }): { rows: Array<SearchHit & { ref?: string; threadRef?: string }>; next?: number };
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
    *  operator's text, which the console does not carry yet, so it is refused here. */
   planAction(id: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }>;
@@ -307,6 +326,41 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         sdkProvider: opts.engine.cfg.providers.ownWork,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
+    },
+    threads(f, page) {
+      const trace = opts.engine.trace;
+      const r = opts.engine.ledger.listThreads(f, page);
+      return { ...r, rows: r.rows.map((t) => ({ ...t, ...(trace ? { ref: trace.ref(t.id) } : {}) })) };
+    },
+    thread(id, page) {
+      const { ledger, trace } = opts.engine;
+      const t = ledger.threadById(id);
+      if (!t) return undefined;
+      const limit = Math.max(1, Math.min(PAGE_MAX, Math.floor(page.limit) || PAGE_MAX));
+      // One row past the page tells whether an older page exists.
+      const rows = ledger.messagesInThread(id, { before: page.before, limit: limit + 1 });
+      const messages = rows.slice(0, limit);
+      const art = ledger.threadArtifacts(id, PAGE_MAX);
+      return {
+        thread: { ...t, ...(trace ? { ref: trace.ref(id) } : {}) },
+        messages,
+        ...(rows.length > limit ? { next: messages.at(-1)!.id } : {}),
+        orders: art.orders,
+        todos: art.todos,
+        decisions: art.decisions,
+        plans: ledger.plansInThread(id, PAGE_MAX),
+        toolActions: art.toolActions,
+      };
+    },
+    search(q, f) {
+      const trace = opts.engine.trace;
+      const limit = Math.max(1, Math.min(PAGE_MAX, Math.floor(f.limit) || PAGE_MAX));
+      const hits = opts.engine.ledger.searchMessages(q, { ...f, limit: limit + 1 });
+      const rows = hits.slice(0, limit).map((h) => ({
+        ...h,
+        ...(trace ? { ref: trace.ref(h.id), ...(h.threadId !== undefined ? { threadRef: trace.ref(h.threadId) } : {}) } : {}),
+      }));
+      return { rows, ...(hits.length > limit ? { next: rows.at(-1)!.id } : {}) };
     },
     async planAction(id, action, version) {
       if (action === "changes") return { ok: false, text: "reply to the plan card on Telegram with your changes" };

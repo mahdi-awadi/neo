@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import { openSqlite } from "./sqlite";
 import { migrate } from "./ledger-migrations";
+import { safeFtsQuery } from "./memory-recall";
 import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
 import type { StructuredAsk } from "./structured-question";
@@ -80,6 +81,38 @@ export interface ThreadRow extends NewThread {
   updatedAt: number;
   lastMsgId?: number;
 }
+
+/** What the console's thread list filters on (spec §6); every field optional. `q` keeps the threads
+ *  with a message matching the FTS5 search. */
+export interface ThreadFilter {
+  project?: string;
+  state?: ThreadState;
+  origin?: ThreadOrigin;
+  /** Updated at or after this time (ms). */
+  since?: number;
+  q?: string;
+}
+
+/** A thread-list row: the thread and its counts. */
+export interface ThreadListRow extends ThreadRow {
+  messages: number;
+  openDecisions: number;
+  activeTodos: number;
+}
+
+/** One message search hit (FTS5), with a short snippet around the match. */
+export interface SearchHit {
+  id: number;
+  threadId?: number;
+  project?: string;
+  at: number;
+  role: string;
+  kind: MessageKind;
+  snippet: string;
+}
+
+/** The most rows one console read returns (spec §6). */
+export const PAGE_MAX = 100;
 
 /** The ledger's facts about one thread, for deriveThreadState (spec §5). Registry facts (pending
  *  approvals, sessions in a turn) are added by the caller. */
@@ -234,8 +267,16 @@ export interface Ledger {
   todoForPlan(planId: number): TodoRow | undefined;
   /** Newest-updated first, bounded (default 50, max 100); `project` filters. */
   listPlans(project?: string, limit?: number): PlanRow[];
+  /** The plans filed in a thread, oldest first, bounded. */
+  plansInThread(threadId: number, limit: number): PlanRow[];
+  /** The console's thread list (spec §6): newest-updated first, filtered, keyset-paged. `before` is
+   *  the previous page's `next` (opaque); `limit` is clamped to 1..PAGE_MAX. */
+  listThreads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: ThreadListRow[]; next?: string };
+  /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
+   *  are quoted (never a syntax error); any failure is an empty list. */
+  searchMessages(q: string, f: { project?: string; before?: number; limit: number }): SearchHit[];
   /** TEST-ONLY seam: the EXPLAIN QUERY PLAN text of a named hot query (spec §11.11). */
-  _explain(query: "messagesInThread"): string;
+  _explain(query: "messagesInThread" | "threadsByProject" | "threadsByState" | "threadsRecent"): string;
   /** The full transcript for a chat, oldest-first; `limit` keeps only the most recent N. */
   conversation(chatId: number, limit?: number): ConversationMessage[];
   /** Loop scheduler state — last fire time + explicit enable override (implements LoopStateStore). */
@@ -757,7 +798,62 @@ export function openLedger(
       ) as PlanDbRow[];
       return rows.map(mapPlanRow);
     },
+    plansInThread(threadId, limit) {
+      const rows = db.query(`SELECT * FROM plans WHERE thread_id = ? ORDER BY id LIMIT ?`).all(threadId, clampPage(limit)) as PlanDbRow[];
+      return rows.map(mapPlanRow);
+    },
+    listThreads(f, page) {
+      const limit = clampPage(page.limit);
+      const q = threadListQuery(f, parseThreadCursor(page.before), limit);
+      let rows: ThreadListDbRow[];
+      try {
+        rows = db.query(q.sql).all(...q.params) as ThreadListDbRow[];
+      } catch {
+        return { rows: [] }; // an FTS5 query it cannot read (q) — no rows, never a throw
+      }
+      const out = rows.slice(0, limit).map(mapThreadListRow);
+      const last = out.at(-1);
+      return { rows: out, ...(rows.length > limit && last ? { next: `${last.updatedAt}.${last.id}` } : {}) };
+    },
+    searchMessages(q, f) {
+      const where = ["messages_fts MATCH ?"];
+      const params: Array<string | number> = [safeFtsQuery(q)];
+      if (f.project !== undefined) {
+        where.push("m.project = ?");
+        params.push(f.project);
+      }
+      if (f.before !== undefined) {
+        where.push("messages_fts.rowid < ?");
+        params.push(f.before);
+      }
+      params.push(clampPage(f.limit));
+      try {
+        const rows = db
+          .query(
+            `SELECT m.id, m.thread_id, m.project, m.at, m.role, m.kind, snippet(messages_fts, 0, '[', ']', '…', 12) AS snippet
+             FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
+             WHERE ${where.join(" AND ")} ORDER BY messages_fts.rowid DESC LIMIT ?`,
+          )
+          .all(...params) as Array<{ id: number; thread_id: number | null; project: string | null; at: number; role: string; kind: string; snippet: string }>;
+        return rows.map((r) => ({
+          id: r.id,
+          ...(r.thread_id !== null ? { threadId: r.thread_id } : {}),
+          ...(r.project !== null ? { project: r.project } : {}),
+          at: r.at,
+          role: r.role,
+          kind: r.kind as MessageKind,
+          snippet: r.snippet,
+        }));
+      } catch {
+        return [];
+      }
+    },
     _explain(query) {
+      if (query !== "messagesInThread") {
+        const f: ThreadFilter = query === "threadsByProject" ? { project: "p" } : query === "threadsByState" ? { state: "open" } : {};
+        const q = threadListQuery(f, undefined, 10);
+        return (db.query(`EXPLAIN QUERY PLAN ${q.sql}`).all(...q.params) as Array<{ detail: string }>).map((r) => r.detail).join("\n");
+      }
       const sql = { messagesInThread: SQL_THREAD_PAGE_BEFORE }[query];
       const rows = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(0, 0, 1) as Array<{ detail: string }>;
       return rows.map((r) => r.detail).join("\n");
@@ -1242,6 +1338,42 @@ function mapPlanRow(r: PlanDbRow): PlanRow {
   };
 }
 
+/** A requested page size, clamped to 1..PAGE_MAX (a bad value is one page of PAGE_MAX). */
+function clampPage(limit: number): number {
+  return Number.isFinite(limit) ? Math.max(1, Math.min(PAGE_MAX, Math.floor(limit))) : PAGE_MAX;
+}
+
+/** A thread-list cursor `<updatedAt>.<id>`; anything else is no cursor (the first page). */
+function parseThreadCursor(s: string | undefined): { at: number; id: number } | undefined {
+  const m = s ? /^(\d+)\.(\d+)$/.exec(s) : null;
+  return m ? { at: Number(m[1]), id: Number(m[2]) } : undefined;
+}
+
+/** The thread-list query (one builder, so `_explain` checks the SQL the console runs). Only the
+ *  filters that are set become conditions, so SQLite can pick the matching index; one extra row
+ *  tells the caller there is a next page. */
+function threadListQuery(f: ThreadFilter, cursor: { at: number; id: number } | undefined, limit: number): { sql: string; params: Array<string | number> } {
+  const where: string[] = [];
+  const params: Array<string | number> = [];
+  if (f.project !== undefined) (where.push("t.project = ?"), params.push(f.project));
+  if (f.state !== undefined) (where.push("t.state = ?"), params.push(f.state));
+  if (f.origin !== undefined) (where.push("t.origin = ?"), params.push(f.origin));
+  if (f.since !== undefined) (where.push("t.updated_at >= ?"), params.push(f.since));
+  if (cursor) (where.push("(t.updated_at, t.id) < (?, ?)"), params.push(cursor.at, cursor.id));
+  if (f.q !== undefined) {
+    where.push("t.id IN (SELECT m.thread_id FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid WHERE messages_fts MATCH ?)");
+    params.push(safeFtsQuery(f.q));
+  }
+  params.push(limit + 1);
+  const sql = `SELECT t.*,
+      (SELECT count(*) FROM messages m WHERE m.thread_id = t.id) AS messages,
+      (SELECT count(*) FROM decisions d WHERE d.thread_id = t.id AND d.status = 'open') AS open_decisions,
+      (SELECT count(*) FROM project_todos p WHERE p.thread_id = t.id AND p.status IN ('queued', 'running')) AS active_todos
+    FROM threads t${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY t.updated_at DESC, t.id DESC LIMIT ?`;
+  return { sql, params };
+}
+
 /** A thread page below a keyset cursor — the hot path `_explain` checks uses idx_messages_thread. */
 const SQL_THREAD_PAGE_BEFORE = `${MESSAGE_COLS} WHERE thread_id = ? AND id < ? ORDER BY id DESC LIMIT ?`;
 
@@ -1303,6 +1435,16 @@ function mapThreadRow(r: ThreadDbRow): ThreadRow {
   if (r.folder !== null) row.folder = r.folder;
   if (r.last_msg_id !== null) row.lastMsgId = r.last_msg_id;
   return row;
+}
+
+interface ThreadListDbRow extends ThreadDbRow {
+  messages: number;
+  open_decisions: number;
+  active_todos: number;
+}
+
+function mapThreadListRow(r: ThreadListDbRow): ThreadListRow {
+  return { ...mapThreadRow(r), messages: r.messages, openDecisions: r.open_decisions, activeTodos: r.active_todos };
 }
 
 /** Both cause columns set → the cause; otherwise none (legacy rows, uncaused work). */

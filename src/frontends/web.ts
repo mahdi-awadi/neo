@@ -19,6 +19,7 @@ import { basename } from "node:path";
 import { faults } from "../engine/fault";
 import { DEFAULT_WEB_FEED_WINDOW } from "../config";
 import { isPlanAction } from "../engine/plans";
+import type { ThreadFilter, ThreadOrigin, ThreadState } from "../engine/ledger";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
 const COOKIE = "neo_session";
@@ -190,6 +191,28 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       if (!id || !deps.inbox) return Response.json({ ok: false }, { status: 404, headers: { "cache-control": "no-store" } });
       deps.inbox.delete(id);
       return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+    }
+
+    // Console history (ADR-0017): paged JSON from the ledger, never a replay of the live feed.
+    if (req.method === "GET" && path === "/api/threads") {
+      const p = url.searchParams;
+      const f: ThreadFilter = {
+        ...(p.get("project") ? { project: p.get("project")! } : {}),
+        ...(THREAD_STATES.has(p.get("state") ?? "") ? { state: p.get("state") as ThreadState } : {}),
+        ...(THREAD_ORIGINS.has(p.get("origin") ?? "") ? { origin: p.get("origin") as ThreadOrigin } : {}),
+        ...(intParam(p, "since") !== undefined ? { since: intParam(p, "since") } : {}),
+        ...(p.get("q") ? { q: p.get("q")! } : {}),
+      };
+      return Response.json(channel.threads(f, { before: p.get("before") ?? undefined, limit: intParam(p, "limit") ?? PAGE_DEFAULT }), NO_STORE);
+    }
+    if (req.method === "GET" && /^\/api\/threads\/\d+$/.test(path)) {
+      const view = channel.thread(Number(path.slice("/api/threads/".length)), { before: intParam(url.searchParams, "before"), limit: intParam(url.searchParams, "limit") ?? PAGE_DEFAULT });
+      return view ? Response.json(view, NO_STORE) : Response.json({ ok: false, error: "no such thread" }, { status: 404, ...NO_STORE });
+    }
+    if (req.method === "GET" && path === "/api/search") {
+      const p = url.searchParams;
+      const r = channel.search(p.get("q") ?? "", { ...(p.get("project") ? { project: p.get("project")! } : {}), before: intParam(p, "before"), limit: intParam(p, "limit") ?? PAGE_DEFAULT });
+      return Response.json(r, NO_STORE);
     }
 
     // The thread tree behind a message ref (spec §4.4) — the same tree /trace renders, as JSON.
@@ -367,6 +390,20 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 
 /** Bun.serve bind for the daemon (e2e-verified). Binds the docker-bridge IP by default so
  * only Traefik (TLS front door) can reach it — never exposed publicly bypassing HTTPS. */
+/** Console list pages default to this many rows; the ledger clamps every page to PAGE_MAX. */
+const PAGE_DEFAULT = 50;
+const NO_STORE = { headers: { "cache-control": "no-store" } };
+const THREAD_STATES = new Set<string>(["open", "waiting", "done", "failed"]);
+const THREAD_ORIGINS = new Set<string>(["operator", "loop", "attention", "ingress", "legacy"]);
+
+/** A non-negative integer query parameter, else undefined (a bad value is ignored, never a 500). */
+function intParam(p: URLSearchParams, name: string): number | undefined {
+  const v = p.get(name);
+  if (v === null || !/^\d+$/.test(v)) return undefined;
+  const n = Number(v);
+  return Number.isSafeInteger(n) ? n : undefined;
+}
+
 export function startWeb(deps: WebAppDeps, port: number, hostname = "0.0.0.0"): ReturnType<typeof Bun.serve> {
   const appHandler = createWebApp(deps);
   // idleTimeout 0 = no per-request idle drop; the SSE /stream is long-lived (kept warm by its

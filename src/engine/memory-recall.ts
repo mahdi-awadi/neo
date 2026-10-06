@@ -59,7 +59,7 @@ function toCitationPath(folder: string, absolutePath: string): string {
  * embedded quote, SQLite's own escape for a literal `"` inside a quoted string) and the quoted
  * tokens are joined with spaces, which FTS5 treats as an implicit AND over literal-string matches.
  * An empty/whitespace-only query becomes an empty quoted string, matching nothing. */
-function safeFtsQuery(query: string): string {
+export function safeFtsQuery(query: string): string {
   const tokens = query.trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return '""';
   return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
