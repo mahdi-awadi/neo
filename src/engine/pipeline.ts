@@ -4,7 +4,7 @@
 // owns the logic + the live-session registry + the budget meter, so it's all testable
 // without any channel.
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { Order, OrderSource, SessionInfo } from "../types";
 import type { Cause, Ledger, MessageKind } from "./ledger";
@@ -51,6 +51,7 @@ import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { refSuffix, type Trace } from "./trace";
 import { faults } from "./fault";
+import { headSha, onRunEndPlans, planDepsFrom, type PostPlan } from "./plans";
 import {
   apiExhaustionWarning,
   apiFailureNotice,
@@ -106,6 +107,9 @@ export interface PipelineDeps {
   usage?: UsageMeter;
   /** Deliver a worker-produced file back to the channel (the `send_file` tool calls this). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
+  /** Post a plan card (ADR-0019): the one Telegram poster the daemon builds, shared by every
+   *  operator surface. Absent → plans are registered, never sent. */
+  postPlan?: PostPlan;
   /** Per-project trust — when a folder is trusted, risky tools auto-approve. */
   trust: TrustStore;
   /** Send a line to the channel. `project` (a session's short name) tags worker output so a
@@ -584,6 +588,7 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     workerEnv: deps.cfg.workerEnv,
     memory: deps.cfg.memory,
     companyFolder: deps.cfg.companyFolder,
+    plans: deps.cfg.plans,
     ...(chatId !== undefined ? { dispatcher: companyLink(deps, chatId) } : {}),
   };
 }
@@ -712,6 +717,14 @@ function startSession(
   deliverInput(initialCause);
   /** The cause this run's work is filed under now: the current turn's, else the last answered one. */
   const runCause = (): Cause | undefined => registry.causeOf(registryId) ?? registry.lastCauseOf(registryId) ?? runLast;
+  // Plans (ADR-0019): the HEAD this run started from. Each turn's end (and the run's) sends the plan
+  // files changed since; a version already sent is never sent again, so the repeats cost one git read.
+  const planStart = deps.postPlan ? headSha(folder) : undefined;
+  const sendPlans = (cause: Cause | undefined): void => {
+    if (!deps.postPlan) return;
+    const run = { project: project ?? basename(folder), folder, startSha: planStart, cause, orderId: order.id, chatId };
+    faults.contain("pipeline.plans", () => onRunEndPlans(planDepsFrom(deps, deps.cfg.plans), run), ctx);
+  };
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
   // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
   // follow-up into a live worker). Default `scopes: []` → memoryEnabledFor is always false.
@@ -729,7 +742,11 @@ function startSession(
       // A turn took its inputs (Codex: one each); attribution follows what it consumed.
       onTurnStart: (n) => faults.guard("pipeline.turnStart", () => registry.startTurn(registryId, n), ctx),
       // The turn is over: every cause it consumed is answered (spec §4.2).
-      onTurnEnd: () => faults.guard("pipeline.turnEnd", () => answerTurn(deps, registryId), ctx),
+      onTurnEnd: () => {
+        const turnCause = runCause(); // read before answerTurn clears the turn
+        faults.guard("pipeline.turnEnd", () => answerTurn(deps, registryId), ctx);
+        sendPlans(turnCause);
+      },
       // Liveness pulse on ANY streamed SDK event — the authoritative clock the watchdog, the idle
       // sweep and every status line read. Without it a worker mid-generation (a long turn writing
       // one huge file) reads as silent and is alerted on / swept as idle (docs/adr/0003-…).
@@ -1003,6 +1020,7 @@ function startSession(
     // spam the group). A failed one is an ALERT the operator must see (Decisions). The frontend
     // prepends the single priority accent (🟢/🔴) — no per-call-site glyph here (Feature 2).
     void deps.reply(chatId, result.ok ? result.summary || "done" : result.summary || "failed", project, result.ok ? "done" : "alert", { cause: finalCause });
+    sendPlans(finalCause);
     // The run is over: whatever it was given and never answered is answered now (spec §5).
     refShown.delete(registryId);
     registry.endTurn(registryId, { all: true });

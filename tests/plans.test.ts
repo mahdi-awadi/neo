@@ -1,10 +1,10 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { test, expect, spyOn } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { openLedger } from "../src/engine/ledger";
-import { changedPlanFiles, registerPlan, countSteps, DEFAULT_PLAN_PATHS } from "../src/engine/plans";
+import { changedPlanFiles, registerPlan, countSteps, DEFAULT_PLAN_PATHS, type GitRunner } from "../src/engine/plans";
 
 const sh = (cwd: string, ...args: string[]) => {
   const r = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -115,4 +115,52 @@ test("listPlans is bounded and filters by project", () => {
   for (let i = 0; i < 5; i++) registerPlan(led, { project: i % 2 ? "a" : "b", folder: "/f", path: `plans/${i}.md`, content: `# ${i}` });
   expect(led.listPlans("a").length).toBe(2);
   expect(led.listPlans(undefined, 3).length).toBe(3);
+});
+
+// Task 2.1 carry-overs (fixed in Task 2.2).
+
+test("a committed Arabic-named plan is found (git -z, no quoted paths)", () => {
+  const dir = repo();
+  const start = sh(dir, "rev-parse", "HEAD");
+  put(dir, "docs/superpowers/plans/خطة-التذاكر.md", "# خطة");
+  sh(dir, "add", "."); sh(dir, "commit", "-qm", "ar");
+  put(dir, "plans/مسودة.md", "# draft");
+  expect(changedPlanFiles(dir, start, DEFAULT_PLAN_PATHS)).toEqual(["docs/superpowers/plans/خطة-التذاكر.md", "plans/مسودة.md"]);
+});
+
+test("deleted plans are not listed (committed or working-tree deletion)", () => {
+  const dir = repo();
+  put(dir, "plans/gone.md", "# g");
+  put(dir, "plans/also.md", "# a");
+  sh(dir, "add", "."); sh(dir, "commit", "-qm", "two");
+  const start = sh(dir, "rev-parse", "HEAD");
+  sh(dir, "rm", "-q", "plans/gone.md"); sh(dir, "commit", "-qm", "rm");
+  rmSync(join(dir, "plans/also.md"));
+  expect(changedPlanFiles(dir, start, DEFAULT_PLAN_PATHS)).toEqual([]);
+});
+
+test("a project folder that is a subfolder of its repo: paths are relative to the folder, siblings ignored", () => {
+  const dir = repo();
+  const start = sh(dir, "rev-parse", "HEAD");
+  put(dir, "app/docs/superpowers/plans/in.md", "# in");
+  put(dir, "other/plans/out.md", "# out");
+  sh(dir, "add", "."); sh(dir, "commit", "-qm", "sub");
+  put(dir, "app/plans/new.md", "# new");
+  const app = join(dir, "app");
+  expect(changedPlanFiles(app, start, DEFAULT_PLAN_PATHS)).toEqual(["docs/superpowers/plans/in.md", "plans/new.md"]);
+});
+
+test("a git failure inside a repo is logged, not silent; a non-repo folder stays quiet", () => {
+  const dir = repo();
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const failing: GitRunner = (folder, args) => (args[0] === "rev-parse" ? "\n" : undefined);
+    expect(changedPlanFiles(dir, "abc", DEFAULT_PLAN_PATHS, failing)).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockClear();
+    expect(changedPlanFiles(mkdtempSync(join(tmpdir(), "neo-nogit-")), "abc", DEFAULT_PLAN_PATHS)).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
 });

@@ -37,9 +37,10 @@ export interface TodoQueueDeps {
 export interface TodoQueue {
   /** Hand a brief to a project: run now when it is free, else queue it. Returns the text for the caller.
    *  `cause` (ADR-0015) is the operator message the brief answers — the todo, and the dispatch that
-   *  runs it, are filed under it; `parentOrderId` is the company order that made it. */
+   *  runs it, are filed under it; `parentOrderId` is the company order that made it; `planId` the plan
+   *  an Execute tap queued it for (ADR-0019). */
   submit(
-    p: { project: string; brief: string; team?: "frontend-backend"; workClass: WorkClass; cause?: Cause; parentOrderId?: string },
+    p: { project: string; brief: string; team?: "frontend-backend"; workClass: WorkClass; cause?: Cause; parentOrderId?: string; planId?: number },
     deps: DispatchDeps,
     replyChat: number,
   ): Promise<string>;
@@ -269,7 +270,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         return dispatchToProject(folder, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass, ...traced });
       }
       const t = ledger.addTodo(
-        { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause },
+        { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause, planId: p.planId },
         now(),
       );
       if (p.parentOrderId) parents.set(t.id, p.parentOrderId);

@@ -36,6 +36,8 @@ import { openEscalationDecision, patientApproval, resolveEscalationDecision } fr
 import { DEFAULT_GOVERNOR_CFG } from "../engine/governor";
 import type { ApiCooldown } from "../engine/api-retry";
 import { faults } from "../engine/fault";
+import { applyPlanAction, isPlanAction, planActions, planDepsFrom, PLAN_LABELS, type PostPlan } from "../engine/plans";
+import type { PlanStatus } from "../engine/ledger";
 import {
   keyboardRows,
   parseDecisionCallback,
@@ -223,7 +225,8 @@ export function createTelegramBot(
   gatewaySendUrl?: string,
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; trace?: Trace },
+  /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; trace?: Trace; postPlan?: PostPlan },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -264,6 +267,9 @@ export function createTelegramBot(
   const routes = createMessageRoutes({ ledger, cacheCap: cfg.messageRoutesCacheCap });
   // The cause seam (ADR-0015), shared with every other surface. Absent → nothing is traced.
   const trace = reload?.trace;
+  // The plan registry (ADR-0019): plan taps, and the loops this bot starts (only where a card can be posted).
+  const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, trace, todo: reload?.todo }, cfg.plans);
+  const loopPlans = reload?.postPlan ? planDeps() : undefined;
   /** Trace an operator line (spec §4.1). Contained (ADR-0010): a trace fault costs the thread, never
    *  the message — without a cause the pipeline records the line itself, as before. */
   const inbound = (chatId: number, text: string, msg?: TracedMessage, threadId?: number): Cause | undefined => {
@@ -486,6 +492,7 @@ export function createTelegramBot(
       bus?.mirror("telegram", { kind: "reply", text, project, priority, ...ids }); // + mirror to the web console
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
+    postPlan: reload?.postPlan, // plans the run writes reach the operator as cards (ADR-0019)
     askApproval: (cid, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
@@ -622,6 +629,7 @@ export function createTelegramBot(
         shouldStop: () => meter.shouldThrottleBackground(),
         cfg,
         trace,
+        plans: loopPlans,
       })
     )
       return;
@@ -873,6 +881,7 @@ export function createTelegramBot(
           shouldStop: () => meter.shouldThrottleBackground(),
           cfg,
           trace,
+          plans: loopPlans,
         });
       return;
     }
@@ -884,6 +893,40 @@ export function createTelegramBot(
     const tap = parseDecisionCallback(cb);
     if (tap) {
       await handleDecisionTap(ctx, tap);
+      return;
+    }
+
+    // Tap on a plan card (ADR-0019). The engine owns every rule; this answers the tap and redraws the
+    // card's buttons for the plan's new status. "Changes" takes the next message as the review answer
+    // (the same path as a decision's "✏️ Other"), which resumes the worker that wrote the plan.
+    const planTap = /^plan:(\d+):([a-z]+)$/.exec(cb);
+    if (planTap && isPlanAction(planTap[2]!)) {
+      const planId = Number(planTap[1]);
+      const action = planTap[2];
+      const chatId = ctx.chat?.id ?? 0;
+      if (action === "changes") {
+        const plan = ledger.planById(planId);
+        const dec = plan?.decisionId ? ledger.decisionById(plan.decisionId) : undefined;
+        if (dec?.status !== "open") {
+          await ctx.answerCallbackQuery("This plan's review is closed.");
+          return;
+        }
+        pendingDecisionAnswer.set(chatId, dec.id);
+        await ctx.answerCallbackQuery();
+        await bot.api.sendMessage(chatId, "✏️ Send your changes as your next message — I'll deliver them to the worker that wrote the plan.");
+        return;
+      }
+      const r = await applyPlanAction(planDeps(), planId, action);
+      await ctx.answerCallbackQuery(r.text.slice(0, 200));
+      const after = ledger.planById(planId);
+      if (after) {
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: planKeyboard(planId, after.status) });
+        } catch {
+          // "not modified" — ignore
+        }
+      }
+      bus?.mirror("telegram", { kind: "notice", text: `plan #${planId}: ${r.text}` });
       return;
     }
 
@@ -1005,6 +1048,32 @@ function inboxItemKeyboard(id: string, status: string): InlineKeyboard | undefin
       .row()
       .text("↩ Re-draft", `inbox-draft:${id}`);
   return undefined;
+}
+
+/** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<action>` tap. */
+export function planKeyboard(planId: number, status: PlanStatus): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const a of planActions(status)) kb.text(PLAN_LABELS[a], `plan:${planId}:${a}`);
+  return kb;
+}
+
+/** The one plan poster (ADR-0019): the plan file as a document with its caption and buttons, in the
+ *  Decisions channel (else the admin DM; `target` is read at send time). The daemon builds it once
+ *  over the operator Bot API, so a plan from any surface, dispatch or loop reaches the operator the
+ *  same way. A failed send is reported and returns undefined (the next run end tries again). */
+export function createPlanPoster(api: Api, target: () => number | undefined): PostPlan {
+  return async (rec, path, caption) => {
+    const chatId = target();
+    if (chatId === undefined) return undefined;
+    try {
+      // Telegram caps a document caption at 1024 characters.
+      const m = await api.sendDocument(chatId, new InputFile(path), { caption: caption.slice(0, 1024), reply_markup: planKeyboard(rec.planId, rec.status) });
+      return { chatId, messageId: m.message_id };
+    } catch (e) {
+      faults.report("telegram.plan", e, { project: rec.project, chatId });
+      return undefined;
+    }
+  };
 }
 
 /** A stop of long polling that no retry can fix: a revoked token (401) or another poller on the same

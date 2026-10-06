@@ -165,10 +165,14 @@ export interface PlanRow {
   createdAt: number;
   updatedAt: number;
   sentAt?: number;
+  /** How many content versions reached the operator (0 = never sent); the card says "v2" from the second. */
+  version: number;
+  /** The content hash last sent — a run end or `send_file` sends only a hash it has not sent. */
+  sentSha256?: string;
 }
 
 /** What `upsertPlan` takes: a row without its id (a new row gets one) and timestamps default to now. */
-export type PlanDraft = Omit<PlanRow, "id" | "createdAt" | "updatedAt"> & { id?: number; createdAt?: number; updatedAt?: number };
+export type PlanDraft = Omit<PlanRow, "id" | "createdAt" | "updatedAt" | "version"> & { id?: number; createdAt?: number; updatedAt?: number; version?: number };
 
 export interface Ledger {
   /** `cause` links the order to the message that started it; `parentOrderId` is the company order
@@ -224,8 +228,10 @@ export interface Ledger {
   recordToolAction(a: NewToolAction): void;
   planByPath(folder: string, path: string): PlanRow | undefined;
   planById(id: number): PlanRow | undefined;
-  /** Insert, or update the row for (folder, path); returns the stored row. */
+  /** Insert, or update the row for (folder, path); returns the stored row. An omitted `version` keeps the stored one. */
   upsertPlan(p: PlanDraft): PlanRow;
+  /** The newest todo an Execute made for this plan. */
+  todoForPlan(planId: number): TodoRow | undefined;
   /** Newest-updated first, bounded (default 50, max 100); `project` filters. */
   listPlans(project?: string, limit?: number): PlanRow[];
   /** TEST-ONLY seam: the EXPLAIN QUERY PLAN text of a named hot query (spec §11.11). */
@@ -346,6 +352,8 @@ export interface NewTodo {
   createdBy: "operator" | "company";
   /** The message (and thread) this todo came from, when known. */
   cause?: Cause;
+  /** The plan an Execute tap made this todo for (ADR-0019). */
+  planId?: number;
 }
 
 export interface TodoRow extends NewTodo {
@@ -721,19 +729,24 @@ export function openLedger(
     upsertPlan(p) {
       const now = Date.now();
       db.query(
-        `INSERT INTO plans (project, folder, path, title, sha256, status, steps_total, steps_done, thread_id, order_id, todo_id, decision_id, created_at, updated_at, sent_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO plans (project, folder, path, title, sha256, status, steps_total, steps_done, thread_id, order_id, todo_id, decision_id, created_at, updated_at, sent_at, sent_sha256, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (folder, path) DO UPDATE SET
            project = excluded.project, title = excluded.title, sha256 = excluded.sha256, status = excluded.status,
            steps_total = excluded.steps_total, steps_done = excluded.steps_done, thread_id = excluded.thread_id,
            order_id = excluded.order_id, todo_id = excluded.todo_id, decision_id = excluded.decision_id,
-           updated_at = excluded.updated_at, sent_at = excluded.sent_at`,
+           updated_at = excluded.updated_at, sent_at = excluded.sent_at, sent_sha256 = excluded.sent_sha256,
+           version = COALESCE(?, plans.version)`,
       ).run(
         p.project, p.folder, p.path, p.title, p.sha256, p.status, p.stepsTotal, p.stepsDone,
         p.threadId ?? null, p.orderId ?? null, p.todoId ?? null, p.decisionId ?? null,
-        p.createdAt ?? now, p.updatedAt ?? now, p.sentAt ?? null,
+        p.createdAt ?? now, p.updatedAt ?? now, p.sentAt ?? null, p.sentSha256 ?? null, p.version ?? 0, p.version ?? null,
       );
       return mapPlanRow(db.query(`SELECT * FROM plans WHERE folder = ? AND path = ?`).get(p.folder, p.path) as PlanDbRow);
+    },
+    todoForPlan(planId) {
+      const r = db.query(`SELECT * FROM project_todos WHERE plan_id = ? ORDER BY id DESC LIMIT 1`).get(planId) as TodoDbRow | null;
+      return r ? mapTodoRow(r) : undefined;
     },
     listPlans(project, limit = 50) {
       const n = Math.max(1, Math.min(100, Math.floor(limit)));
@@ -1108,12 +1121,12 @@ export function openLedger(
         .get(rec.folder) as { next: number };
       const r = db
         .query(
-          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?) RETURNING id`,
+          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?) RETURNING id`,
         )
         .get(
           rec.project, rec.folder, rec.brief, rec.team ?? null, rec.workClass, rec.createdBy, at, next,
-          rec.cause?.msgId ?? null, rec.cause?.threadId ?? null,
+          rec.cause?.msgId ?? null, rec.cause?.threadId ?? null, rec.planId ?? null,
         ) as { id: number };
       return todoById(r.id)!;
     },
@@ -1211,6 +1224,7 @@ interface PlanDbRow {
   id: number; project: string; folder: string; path: string; title: string; sha256: string; status: string;
   steps_total: number; steps_done: number; thread_id: number | null; order_id: string | null;
   todo_id: number | null; decision_id: string | null; created_at: number; updated_at: number; sent_at: number | null;
+  version: number; sent_sha256: string | null;
 }
 
 function mapPlanRow(r: PlanDbRow): PlanRow {
@@ -1223,6 +1237,8 @@ function mapPlanRow(r: PlanDbRow): PlanRow {
     ...(r.decision_id !== null ? { decisionId: r.decision_id } : {}),
     createdAt: r.created_at, updatedAt: r.updated_at,
     ...(r.sent_at !== null ? { sentAt: r.sent_at } : {}),
+    version: r.version,
+    ...(r.sent_sha256 !== null ? { sentSha256: r.sent_sha256 } : {}),
   };
 }
 
@@ -1312,6 +1328,7 @@ interface TodoDbRow {
   ended_at: number | null;
   cause_msg_id: number | null;
   thread_id: number | null;
+  plan_id: number | null;
 }
 
 function mapTodoRow(r: TodoDbRow): TodoRow {
@@ -1331,6 +1348,7 @@ function mapTodoRow(r: TodoDbRow): TodoRow {
     startedAt: r.started_at ?? undefined,
     endedAt: r.ended_at ?? undefined,
     cause: causeOf(r.cause_msg_id, r.thread_id),
+    ...(r.plan_id !== null ? { planId: r.plan_id } : {}),
   };
 }
 

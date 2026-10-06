@@ -18,6 +18,7 @@ import type { OperatorBus } from "../engine/operator-bus";
 import { basename } from "node:path";
 import { faults } from "../engine/fault";
 import { DEFAULT_WEB_FEED_WINDOW } from "../config";
+import { isPlanAction } from "../engine/plans";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
 const COOKIE = "neo_session";
@@ -307,6 +308,15 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const arg = typeof body.id === "number" ? String(body.id) : typeof body.project === "string" ? body.project.trim() : "";
       if (!action || !arg) return Response.json({ ok: false, error: "action + id/project required" }, { status: 400 });
       return Response.json(channel.todo(`${action} ${arg}`), { headers: { "cache-control": "no-store" } });
+    }
+
+    if (req.method === "POST" && path === "/api/plan") {
+      // A plan card action (ADR-0019): { id, action } → the shared engine rules.
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown; action?: unknown };
+      if (typeof body.id !== "number" || typeof body.action !== "string" || !isPlanAction(body.action)) {
+        return Response.json({ ok: false, error: "id + action (approve|changes|execute|done|drop) required" }, { status: 400 });
+      }
+      return Response.json(await channel.planAction(body.id, body.action), { headers: { "cache-control": "no-store" } });
     }
 
     if (req.method === "POST" && path === "/api/loop/enable") {

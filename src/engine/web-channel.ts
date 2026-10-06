@@ -32,6 +32,7 @@ import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 import type { Cause } from "./trace";
 import { faults } from "./fault";
+import { applyPlanAction, planDepsFrom, type PlanAction } from "./plans";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -84,6 +85,9 @@ export interface WebChannel {
   /** A Queue-tab action (`cancel 12`, `up 12`, `pause eticket-v3`, `resume eticket-v3`, or "" to
    *  list) — runs the shared /todo command, so the console and Telegram share one set of rules. */
   todo(args: string): { ok: boolean; text: string };
+  /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
+   *  operator's text, which the console does not carry yet, so it is refused here. */
+  planAction(id: number, action: PlanAction): Promise<{ ok: boolean; text: string }>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
   notify(text: string, project?: string): void;
   /** Resolve a token issued by an outbound file event to its on-disk path (for GET /file). */
@@ -128,6 +132,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       else emit({ type: "notice", text: line.text });
     },
   });
+
+  // Loops started here send the plans they wrote (ADR-0019) — only where a card can be posted.
+  const loopPlans = opts.engine.postPlan ? planDepsFrom(opts.engine, opts.engine.cfg.plans) : undefined;
 
   const files = new Map<string, string>(); // token -> absolute path
 
@@ -182,7 +189,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace })) return;
+      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace, plans: loopPlans })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
@@ -264,7 +271,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     runLoop(name) {
       const loop = matchLoop(name, opts.engine.ledger);
-      if (loop) launchLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace });
+      if (loop) launchLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace, plans: loopPlans });
     },
     createLoop(input) {
       const r = defCreateLoop(input, opts.engine.ledger, opts.engine.cfg.workRoot);
@@ -300,6 +307,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         sdkProvider: opts.engine.cfg.providers.ownWork,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
       });
+    },
+    async planAction(id, action) {
+      if (action === "changes") return { ok: false, text: "reply to the plan card on Telegram with your changes" };
+      const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action);
+      opts.bus?.mirror("web", { kind: "notice", text: `plan #${id}: ${r.text} (web console)` });
+      return r;
     },
     todo(args) {
       const r = handleCommand(`/todo ${args}`.trim(), opts.chatId, {

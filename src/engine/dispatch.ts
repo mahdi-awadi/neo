@@ -4,7 +4,7 @@
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
@@ -61,6 +61,7 @@ import { profileDeps } from "./worker-profile";
 import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { canResumeWith } from "./sdk-choice";
+import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import {
   apiFailureNotice,
@@ -112,6 +113,11 @@ export interface DispatchDeps {
   askApproval: (chatId: number, reason: string, signal?: AbortSignal, cause?: Cause) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
+  /** Post a plan card (ADR-0019; frontend-supplied, operator surfaces only). Absent → plans are
+   *  registered but never sent, and `send_file` of a plan is a plain file. */
+  postPlan?: PostPlan;
+  /** Config `plans` (paths, send, size cap, Execute brief). Absent → the shipped defaults. */
+  plans?: PlansCfg;
   /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
    *  message id (so a reply/edit can find it). The frontend supplies this — it builds the inline
    *  keyboard from `options` (tappable answers) + an "other / type an answer" affordance. Its
@@ -592,6 +598,8 @@ export async function dispatchToProject(
   const stallMs = deps.dispatchStallMs ?? DISPATCH_STALL_MS_DEFAULT;
   const progressMs = deps.dispatchProgressMs ?? DISPATCH_PROGRESS_MS_DEFAULT;
   const readCommit = opts.lastCommit ?? lastCommitIn;
+  // The HEAD this run starts from: at its end, plan files changed since then are sent (ADR-0019).
+  const planStart = deps.postPlan ? headSha(folder) : undefined;
   const dispatcher = deps.dispatcher ?? liveCompanyLink(deps.registry, deps.lifecycle);
   const graceMs = deps.dispatchGraceMs ?? DISPATCH_GRACE_MS_DEFAULT;
   const retryLadder = deps.apiRetryLadderMs && deps.apiRetryLadderMs.length > 0 ? deps.apiRetryLadderMs : [...API_RETRY_DELAYS_MS];
@@ -1105,6 +1113,12 @@ export async function dispatchToProject(
         // observer only — the report below must still go out
       }
     }
+    // Plans the run wrote reach the operator before its result line (ADR-0019); their own unit.
+    if (deps.postPlan) {
+      await onRunEndPlans(planDepsFrom(deps, deps.plans), { project: name, folder, startSha: planStart, cause, orderId: order.id, chatId: replyChat }).catch((e) =>
+        faults.report("dispatch.plans", e, { project: name, orderId: order.id, folder }),
+      );
+    }
     try {
       // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure
       // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
@@ -1179,6 +1193,8 @@ export async function sendProjectFile(
   caption?: string,
   /** Called once the file was handed to the channel (the trace's `file` line). */
   onSent?: () => void,
+  /** The plan registry (ADR-0019): a plan path is sent as its plan card, once per content version. */
+  plan?: { deps: PlanDeps; run: PlanRun },
 ): Promise<string> {
   let root: string;
   try {
@@ -1198,6 +1214,10 @@ export async function sendProjectFile(
   }
   if (abs === root || !abs.startsWith(root + sep)) return `refused: ${path} is outside project`;
   if (!statSync(abs).isFile()) return `refused: ${path} is not a regular file`;
+  if (plan) {
+    const offered = await offerPlanFile(plan.deps, { ...plan.run, path: relative(root, abs) });
+    if (offered.handled) return offered.text;
+  }
   await deps.sendFile?.(chatId, abs, caption);
   onSent?.();
   return `sent ${path}`;
@@ -1326,6 +1346,10 @@ export function neoMcpServers(
         caption: z.string().optional().describe("optional caption / note"),
       },
       async (args: { path: string; caption?: string }) => {
+        // A plan path goes through the registry (ADR-0019) — only where a plan card can be posted.
+        const plan = deps.postPlan
+          ? { deps: planDepsFrom(deps, deps.plans), run: { project: opts.projectName ?? basename(opts.folder), folder: opts.folder, cause: opts.cause?.(), orderId: opts.orderId, chatId: replyChat } }
+          : undefined;
         const out = await sendProjectFile(deps, replyChat, opts.folder, args.path, args.caption, () => {
           // The thread shows a file went out: its caption or name, never its bytes (trace only).
           const trace = deps.trace;
@@ -1333,7 +1357,7 @@ export function neoMcpServers(
           faults.guard("dispatch.sendFileLine", () =>
             trace.outbound({ chatId: replyChat, text: args.caption || basename(args.path), cause: opts.cause?.(), kind: "file", project: opts.projectName, folder: opts.folder, orderId: opts.orderId }),
           );
-        });
+        }, plan);
         return { content: [{ type: "text" as const, text: out }] };
       },
     ),

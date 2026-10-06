@@ -20,6 +20,7 @@ import { memoryTools } from "./memory-tool";
 import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "./ledger";
 import { faults } from "./fault";
+import { headSha, onRunEndPlans, type PlanDeps } from "./plans";
 import { refSuffix, type Cause, type Trace } from "./trace";
 import type { MessageKind } from "./ledger";
 
@@ -82,24 +83,43 @@ export interface LoopDeps {
   /** The cause seam (ADR-0015): each fire roots its own `loop` thread and files its lines there.
    *  Absent → no thread, exactly as before. */
   trace?: Trace;
+  /** The plan registry (ADR-0019): a fire's end sends the plans it wrote. Absent → none. */
+  plans?: PlanDeps;
 }
 
 /** A loop fire is engine-started work: it gets its own thread (spec §4.2, background roots). Returns
  *  a line writer filed under that root — it returns the ref suffix the line's channel copy ends with
  *  (spec §4.3: a result carries its thread's ref; progress none) — or a no-op ("") when there is no
  *  trace. Best-effort (ADR-0010): a trace fault never stops the loop. */
-function loopThread(trace: Trace | undefined, loop: LoopDef, chatId: number, cfg?: NeoConfig): (text: string, kind: MessageKind) => string {
-  if (!trace) return () => "";
+function loopThread(
+  trace: Trace | undefined,
+  loop: LoopDef,
+  chatId: number,
+  cfg?: NeoConfig,
+): { line: (text: string, kind: MessageKind) => string; cause?: Cause } {
+  if (!trace) return { line: () => "" };
   const project = basename(loop.folder);
   const cause: Cause | undefined = faults.guard("loop.root", () => trace.root({ origin: "loop", title: `loop ${loop.name}`, project, folder: loop.folder }), {
     loop: loop.name,
   });
-  if (!cause) return () => "";
+  if (!cause) return { line: () => "" };
   const mode = (cfg?.trace ?? DEFAULT_TRACE).showRefs;
-  return (text, kind) => {
-    void faults.guard("loop.line", () => trace.outbound({ chatId, text, cause, kind, project, folder: loop.folder }), { loop: loop.name });
-    return refSuffix(kind, false, trace.ref(cause.threadId), mode);
+  return {
+    cause,
+    line: (text, kind) => {
+      void faults.guard("loop.line", () => trace.outbound({ chatId, text, cause, kind, project, folder: loop.folder }), { loop: loop.name });
+      return refSuffix(kind, false, trace.ref(cause.threadId), mode);
+    },
   };
+}
+
+/** A loop fire is a run (ADR-0019): at its end, the plan files it changed since `startSha` are sent,
+ *  filed in the fire's thread. Its own unit (ADR-0010): a failure never changes the loop's outcome. */
+async function loopPlans(plans: PlanDeps | undefined, loop: LoopDef, chatId: number, startSha: string | undefined, cause: Cause | undefined): Promise<void> {
+  if (!plans) return;
+  await onRunEndPlans(plans, { project: basename(loop.folder), folder: loop.folder, startSha, cause, chatId }).catch((e) =>
+    faults.report("loop.plans", e, { loop: loop.name, folder: loop.folder }),
+  );
 }
 
 // The built-in loops are generic, deployment-neutral examples of the trigger → action → goal model.
@@ -562,9 +582,10 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
     await deps.reply(chatId, `🔁 ${loop.name}: ⚠️ ${gated.lastDetail}`);
     return gated;
   }
-  const line = loopThread(deps.trace, loop, chatId, deps.cfg);
+  const { line, cause } = loopThread(deps.trace, loop, chatId, deps.cfg);
   await deps.reply(chatId, `🔁 ${loop.name}: starting on ${loop.folder}…`);
   const { check, ...extras } = loopRunExtras(loop, deps);
+  const planStart = deps.plans ? headSha(loop.folder) : undefined;
   const out = await runProjectLoop(
     {
       folder: loop.folder,
@@ -581,6 +602,7 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
     },
     { run: deps.run, check },
   );
+  await loopPlans(deps.plans, loop, chatId, planStart, cause);
   const outcome = `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`;
   await deps.reply(chatId, outcome + line(outcome, "result"));
   return out;
@@ -607,6 +629,8 @@ export interface ScheduledLoopDeps {
   /** The cause seam (ADR-0015): each fire roots its own `loop` thread and files the worker's lines
    *  there. Absent → no thread, exactly as before. */
   trace?: Trace;
+  /** The plan registry (ADR-0019): a fire's end sends the plans it wrote. Absent → none. */
+  plans?: PlanDeps;
 }
 
 /** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/acme →
@@ -631,9 +655,10 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
     await deps.reply(deps.chatId, gated.lastDetail, project);
     return gated;
   }
-  const line = loopThread(deps.trace, loop, deps.chatId, deps.cfg);
+  const { line, cause } = loopThread(deps.trace, loop, deps.chatId, deps.cfg);
   const { check, ...extras } = loopRunExtras(loop, deps);
-  return runProjectLoop(
+  const planStart = deps.plans ? headSha(loop.folder) : undefined;
+  const out = await runProjectLoop(
     {
       folder: loop.folder,
       prompt: loop.prompt,
@@ -649,6 +674,8 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
     },
     { run: deps.run, check },
   );
+  await loopPlans(deps.plans, loop, deps.chatId, planStart, cause);
+  return out;
 }
 
 /** Parse + dispatch a /loop command. Returns true if it was a /loop (handled), else false. */

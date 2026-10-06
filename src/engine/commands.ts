@@ -20,6 +20,7 @@ import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } fro
 import type { TodoQueue } from "./todo-queue";
 import type { Updater } from "./updater";
 import { renderTrace, type Trace } from "./trace";
+import { renderPlans } from "./plans";
 
 export interface CommandDeps {
   registry: Registry;
@@ -154,6 +155,12 @@ const COMMANDS: Command[] = [
     usage: "/trace <ref> (or reply /trace to a Neo message)",
     summary: "show everything a message caused",
     run: ({ deps, args }) => ({ text: traceCommand(args.trim(), deps) }),
+  },
+  {
+    name: "plans",
+    usage: "/plans [<project>]",
+    summary: "plans and specs the engine sent you: status, steps done, thread",
+    run: ({ deps, args }) => ({ text: renderPlans(deps.ledger, deps.trace, args.trim() || undefined) }),
   },
   {
     name: "updates",

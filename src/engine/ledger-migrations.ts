@@ -320,6 +320,7 @@ function plans(db: Database): void {
        steps_total INTEGER NOT NULL DEFAULT 0, steps_done INTEGER NOT NULL DEFAULT 0,
        thread_id INTEGER, order_id TEXT, todo_id INTEGER, decision_id TEXT,
        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, sent_at INTEGER,
+       version INTEGER NOT NULL DEFAULT 0, sent_sha256 TEXT,
        UNIQUE (folder, path)
      )`,
   );

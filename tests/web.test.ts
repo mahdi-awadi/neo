@@ -98,12 +98,14 @@ function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnTy
   const registry = createRegistry();
   const admin = over.admin ?? openAdminStore(":memory:");
   const config = cfg();
+  const ledger = openLedger(":memory:");
   return {
     registry,
     admin,
+    ledger,
     cfg: config,
     instance: createWebApp({
-      engine: { cfg: config, ledger: openLedger(":memory:"), registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
+      engine: { cfg: config, ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
       botToken: TOKEN,
       botUsername: "neo_bot",
       sessions: createSessionStore({ secret: "websecret", ttlSec: 100000 }),
@@ -260,4 +262,20 @@ test("GET /stream sends an SSE id per event and resumes after Last-Event-ID", as
   );
   ac2.abort();
   expect([...resumed.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]))).toEqual([ids[1]]);
+});
+
+// ADR-0019: the plan card's actions on the web console go through the same engine rules as a tap.
+test("POST /api/plan applies a plan action; a bad body is a 400", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const plan = a.ledger.upsertPlan({ project: "gold", folder: "/home/gold", path: "plans/a.md", title: "A", sha256: "s", status: "sent", stepsTotal: 0, stepsDone: 0 });
+  const post = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/plan", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const ok = await post({ id: plan.id, action: "approve" });
+  expect(await ok.json()).toEqual({ ok: true, text: "Approved" });
+  expect(a.ledger.planById(plan.id)!.status).toBe("approved");
+  expect((await post({ id: plan.id, action: "explode" })).status).toBe(400);
+  expect((await post({ action: "drop" })).status).toBe(400);
+  // "Changes" needs the operator's text, which the console does not carry yet: refused, not guessed.
+  expect(await (await post({ id: plan.id, action: "changes" })).json()).toEqual({ ok: false, text: "reply to the plan card on Telegram with your changes" });
 });
