@@ -9,7 +9,9 @@ import type { Cause, Ledger, TodoRow } from "./ledger";
 import type { Registry } from "./registry";
 import { heldByReserve, type WorkClass } from "./budget";
 import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts, type ReplyMeta } from "./dispatch";
-import { lastCommitIn } from "./dispatch-report";
+import { lastCommitIn, uncommittedIn } from "./dispatch-report";
+import { raise } from "./attention";
+import { msgRef } from "./trace";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 
@@ -32,6 +34,8 @@ export interface TodoQueueDeps {
   now?: () => number;
   /** Test seams passed through to dispatchToProject (start, now, …). */
   dispatchOpts?: Partial<DispatchOpts>;
+  /** The folder's uncommitted paths, read when a todo ends (spec §8.6). Default: git status. */
+  uncommitted?: (folder: string) => string[] | undefined;
 }
 
 export interface TodoQueue {
@@ -196,6 +200,23 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     }
   };
 
+  /** Work a finished todo left uncommitted (spec §8.6): a high `dirty` item for the git producer to
+   *  resolve once it is committed, and the count for the todo's line. A handoff is not an end: its
+   *  continuation goes on with the same files. Contained: a git or ledger fault costs the line its
+   *  suffix, never the queue. */
+  const leftUncommitted = (t: TodoRow): number | undefined =>
+    faults.guard("todo.uncommitted", () => {
+      const files = (q.uncommitted ?? uncommittedIn)(t.folder);
+      if (!files?.length) return undefined;
+      const shown = files.slice(0, 10).join(", ") + (files.length > 10 ? ` (+${files.length - 10} more)` : "");
+      raise(ledger, {
+        project: basename(t.folder), folder: t.folder, source: "git", kind: "dirty", key: t.folder, severity: "high",
+        title: `${files.length} uncommitted file${files.length === 1 ? "" : "s"} after todo #${t.id}`,
+        detail: `${t.cause ? `thread ${msgRef(t.cause.threadId)} · ` : ""}files: ${shown}`,
+      }, now());
+      return files.length;
+    }, { folder: t.folder, todo: t.id });
+
   /** A dispatch run of a todo ended: record it, apply the failure policy, release the next one,
    *  and send the operator ONE line about the transition (none when the queue is empty). */
   const finish = async (end: { orderId: string; ok: boolean; summary: string; continuation?: string }, l: TodoLauncher): Promise<void> => {
@@ -214,11 +235,13 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     if (!end.ok && q.onFailure() === "pause" && queued(t.folder).length > 0) {
       ledger.setTodoPaused(t.folder, `#${t.id} failed`, now());
     }
-    const head = cont
-      ? `${t.project}: #${t.id} handed off at a safe checkpoint, continuing as #${cont.id}`
-      : end.ok
-        ? `${t.project}: done #${t.id}`
-        : `${t.project}: #${t.id} failed`;
+    const left = cont ? undefined : leftUncommitted(t);
+    const head =
+      (cont
+        ? `${t.project}: #${t.id} handed off at a safe checkpoint, continuing as #${cont.id}`
+        : end.ok
+          ? `${t.project}: done #${t.id}`
+          : `${t.project}: #${t.id} failed`) + (left ? ` — left ${left} uncommitted file${left === 1 ? "" : "s"}` : "");
     const r = await release(t.folder, launcher() ?? l, true);
     const line = r.started
       ? `${head}, starting ${tag(r.started)}`
@@ -228,7 +251,9 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           ? `${head} — queue paused, ${queued(t.folder).length} waiting (/todo resume ${t.project})`
           : r.waits && queued(t.folder).length > 0
             ? `${head}; next waits (${r.waits})`
-            : undefined;
+            : left
+              ? head // nothing queued, but the work left behind must be said
+              : undefined;
     // A todo line (spec §4.3): filed under the todo's cause, so it carries its thread's ref.
     if (line) await (launcher() ?? l).deps.reply((launcher() ?? l).replyChat, line, t.project, undefined, todoLine(t));
   };

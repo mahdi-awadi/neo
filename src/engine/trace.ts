@@ -125,6 +125,9 @@ export function renderTrace(tree: TraceTree, ref: (id: number) => string, opts: 
   return [...head, ...body, ...tail].join("\n");
 }
 
+/** A message's compact ref: base36 of its id with an `m` prefix (`m4f2`) — the one encoding. */
+export const msgRef = (msgId: number): string => `m${msgId.toString(36)}`;
+
 export function createTrace(deps: {
   ledger: Ledger;
   registry: Registry;
@@ -231,7 +234,7 @@ export function createTrace(deps: {
       bookkeep("trace.root", { msgId, threadId: msgId }, at);
       return { msgId, threadId: msgId };
     },
-    ref: (msgId) => `m${msgId.toString(36)}`,
+    ref: msgRef,
     parseRef(s) {
       const m = /^(#?m|#)?([0-9a-z]+)$/.exec(s.trim().toLowerCase());
       if (!m) return undefined;

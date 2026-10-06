@@ -11,6 +11,7 @@ import type { DispatchDeps } from "../src/engine/dispatch";
 import type { RunHandlers, RunResult } from "../src/engine/session-runner";
 import { continuationBrief } from "../src/engine/context-policy";
 import { createTodoQueue, projectBusy, todoTitle } from "../src/engine/todo-queue";
+import { listOpen } from "../src/engine/attention";
 
 const settle = () => new Promise((r) => setTimeout(r, 25));
 
@@ -26,7 +27,7 @@ function fakeRuns() {
   return { runs, start };
 }
 
-function setup(opts: { onFailure?: "continue" | "pause" } = {}) {
+function setup(opts: { onFailure?: "continue" | "pause"; uncommitted?: (folder: string) => string[] | undefined } = {}) {
   const root = mkdtempSync(join(tmpdir(), "neo-todo-"));
   mkdirSync(join(root, "eticket-v3"));
   mkdirSync(join(root, "waselni"));
@@ -48,6 +49,7 @@ function setup(opts: { onFailure?: "continue" | "pause" } = {}) {
     registry,
     onFailure: () => opts.onFailure ?? "continue",
     dispatchOpts: { start: start as never, now: () => 1_000 },
+    ...(opts.uncommitted ? { uncommitted: opts.uncommitted } : {}),
   });
   queue.setLauncher(() => ({ deps, replyChat: 1 }));
   return { root, replies, ledger, registry, deps, queue, runs };
@@ -168,6 +170,29 @@ test("a completion with an empty queue sends no extra queue line", async () => {
   runs[0].finish(ok());
   await settle();
   expect(replies.some((r) => r.text.includes("done #1"))).toBe(false);
+});
+
+// P4 Task 4.4 (spec §8.6): work left uncommitted after a todo is said once and becomes an item.
+test("a todo that leaves uncommitted files says so in its line and raises a high `dirty` item", async () => {
+  const { queue, runs, replies, ledger, root } = setup({ uncommitted: () => ["src/a.ts", "src/b.ts", "README.md"] });
+  await queue.submit({ project: "eticket-v3", brief: "only", workClass: "interactive" }, queue.launcher()!.deps, 1);
+  runs[0].finish(ok());
+  await settle();
+  expect(replies.some((r) => r.text === "eticket-v3: done #1 — left 3 uncommitted files")).toBe(true);
+  const [item] = listOpen(ledger, { now: 2_000 });
+  expect(item).toMatchObject({ project: "eticket-v3", folder: join(root, "eticket-v3"), source: "git", kind: "dirty", key: join(root, "eticket-v3"), severity: "high" });
+  expect(item!.detail).toContain("src/a.ts");
+});
+
+test("a clean end or an unreadable git raises nothing", async () => {
+  for (const uncommitted of [() => [], () => undefined]) {
+    const { queue, runs, replies, ledger } = setup({ uncommitted });
+    await queue.submit({ project: "eticket-v3", brief: "only", workClass: "interactive" }, queue.launcher()!.deps, 1);
+    runs[0].finish(ok());
+    await settle();
+    expect(replies.some((r) => r.text.includes("uncommitted"))).toBe(false);
+    expect(listOpen(ledger, { now: 2_000 })).toEqual([]);
+  }
 });
 
 test("failure policy continue: a failed todo is reported and the next one starts", async () => {

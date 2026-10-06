@@ -1,7 +1,7 @@
 // P4 Task 4.1 (ADR-0018, spec §7): one table, one reconcile for every producer.
 import { test, expect } from "bun:test";
 import { openLedger } from "../src/engine/ledger";
-import { reconcile, reconcileAll, snooze, dismiss, listOpen, type AttentionDraft } from "../src/engine/attention";
+import { reconcile, reconcileAll, raise, snooze, dismiss, listOpen, type AttentionDraft } from "../src/engine/attention";
 
 const draft = (over: Partial<AttentionDraft> = {}): AttentionDraft => ({
   project: "gold",
@@ -112,4 +112,18 @@ test("reconcileAll prunes resolved rows older than keepResolvedMs; dismissed and
   reconcileAll(l, "engine", [draft({ source: "engine", key: "b" })], 10_000, { keepResolvedMs: 1_000 });
   expect(l.attentionById(a!)).toBeUndefined();
   expect(l.attentionById(b!)?.dismissed).toBe(true);
+});
+
+test("raise opens or refreshes ONE item and never resolves the source's others; a resolved one reopens, a dismissed one stays closed", () => {
+  const l = openLedger(":memory:");
+  const [other] = reconcile(l, "git", "gold", [draft({ key: "dev" })], 100).opened;
+  const id = raise(l, draft({ kind: "dirty", key: "/home/gold", severity: "high", title: "3 uncommitted files" }), 200);
+  expect(raise(l, draft({ kind: "dirty", key: "/home/gold", severity: "high", title: "4 uncommitted files" }), 300)).toBe(id);
+  expect(listOpen(l, { now: 300 }).map((r) => [r.id, r.title])).toEqual([[id, "4 uncommitted files"], [other, "dev is 2 commits ahead of origin/dev"]]);
+  reconcile(l, "git", "gold", [draft({ key: "dev" })], 400); // the git scan no longer sees it: resolved
+  expect(raise(l, draft({ kind: "dirty", key: "/home/gold", severity: "high", title: "again" }), 500)).toBe(id);
+  expect(l.attentionById(id)?.resolvedAt).toBeUndefined();
+  dismiss(l, id, 600);
+  raise(l, draft({ kind: "dirty", key: "/home/gold", severity: "high", title: "again" }), 700);
+  expect(l.attentionById(id)?.resolvedAt).toBe(600);
 });

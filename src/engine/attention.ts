@@ -27,15 +27,8 @@ export function reconcile(
       const k = `${d.kind}\0${d.key}`;
       if (seen.has(k)) continue; // a producer that reports a key twice: the first wins
       seen.add(k);
-      const row = rows.get(k);
-      const fields = { folder: d.folder, title: d.title, detail: d.detail ?? null, url: d.url ?? null, severity: d.severity, lastSeen: now };
-      if (!row) opened.push(ledger.insertAttention({ ...d, project, source }, now));
-      else if (row.resolvedAt === undefined) ledger.updateAttention(row.id, fields);
-      else if (row.dismissed) ledger.updateAttention(row.id, { lastSeen: now }); // closed by the operator: stays closed while it is still there
-      else {
-        ledger.updateAttention(row.id, { ...fields, resolvedAt: null, snoozedUntil: null });
-        opened.push(row.id);
-      }
+      const r = upsert(ledger, rows.get(k), { ...d, project, source }, now);
+      if (r.opened) opened.push(r.id);
     }
     for (const [k, row] of rows) {
       if (seen.has(k)) continue;
@@ -46,6 +39,30 @@ export function reconcile(
     }
   });
   return { opened, resolved };
+}
+
+/** One draft against its row (if any): new → insert; open → refresh; resolved → reopen (the same row);
+ *  dismissed by the operator → stays closed while it is still there. */
+function upsert(ledger: Ledger, row: AttentionRow | undefined, d: AttentionDraft, now: number): { id: number; opened: boolean } {
+  if (!row) return { id: ledger.insertAttention(d, now), opened: true };
+  const fields = { folder: d.folder, title: d.title, detail: d.detail ?? null, url: d.url ?? null, severity: d.severity, lastSeen: now };
+  if (row.resolvedAt === undefined) ledger.updateAttention(row.id, fields);
+  else if (row.dismissed) ledger.updateAttention(row.id, { lastSeen: now });
+  else {
+    ledger.updateAttention(row.id, { ...fields, resolvedAt: null, snoozedUntil: null });
+    return { id: row.id, opened: true };
+  }
+  return { id: row.id, opened: false };
+}
+
+/** Raise ONE finding seen at a moment (not by a scan) — e.g. files left uncommitted when a todo ended.
+ *  Opens or refreshes its item and leaves the source's other items alone; the source's own producer
+ *  resolves it later, when its scan no longer sees it. Returns the item id. */
+export function raise(ledger: Ledger, d: AttentionDraft, now: number): number {
+  return ledger.transaction(() => {
+    const row = ledger.attentionRows(d.project, d.source).find((r) => r.kind === d.kind && r.key === d.key);
+    return upsert(ledger, row, d, now).id;
+  });
 }
 
 /** Reconcile one producer's drafts across every project it reports, plus every project where it still
