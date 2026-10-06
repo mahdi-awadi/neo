@@ -826,3 +826,14 @@ reply and result lines (`trace.showRefs`). Tool calls are kept in a new `tool_ac
 (`toolActionsKeep`). The ledger now has numbered migrations (v1–v4). On first boot after the
 restart, the migration runs once (about 8 s on a 142 MB ledger). A backup, `ledger.db.bak-v<from>`,
 is written first. Going live needs a daemon restart (operator-gated).
+
+### Plan registry and auto-send (2026-10-06, ADR-0019)
+
+Plans used to reach the operator only when a brief said "send it". Now the engine does it. At every
+run end (a session turn, a dispatch, a loop fire) it lists the plan files the run changed under
+`plans.paths`, registers them (migration v5, `plans` table) and sends each new content version once
+as a card: the file, its caption (`📄 plan · gold · Fare list port · thread m4g2`) and buttons. A
+worker's own `send_file` of a plan goes through the same registry. Approve, Execute (one todo),
+Done and Drop move the status; Changes sends the operator's next message to the worker that wrote
+the plan. A plan that is executing is done when every checkbox is ticked. `/plans` lists them. The
+dispatch preamble tells workers where plans go. Going live needs a daemon restart (operator-gated).

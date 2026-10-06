@@ -731,6 +731,16 @@ test("dispatchToProject sends ONLY the crafted brief to the sub-session (isolati
   expect(seen!.chatId).toBe(-2); // SUB_CHAT — isolated from the operator's routing
 });
 
+// ADR-0019, spec §10: workers know where plans go and that the engine sends them (each version once).
+test("preamble tells workers where plans go and that the engine sends them", () => {
+  const brief = briefWithProjectDocs("X");
+  expect(brief).toContain("docs/superpowers/plans/");
+  expect(brief).toContain("docs/superpowers/specs/");
+  expect(brief).toContain("sends it to the operator");
+  expect(brief).toContain("send_file");
+  expect(brief.endsWith("\n\nX")).toBe(true); // the task still comes last
+});
+
 test("preamble wires the two-phase design→build flow: domain-modeling (CONTEXT.md/ADR) before superpowers TDD", () => {
   const brief = briefWithProjectDocs("X");
   // Design phase: the mattpocock design skills adopted 2026-09-10 (model-invocable only).

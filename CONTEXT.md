@@ -513,6 +513,12 @@ _Avoid_: plan folder, docs
 it), `done`, or `abandoned`. Moves only on an operator tap or a fact the engine can read.
 _Avoid_: plan state, phase
 
+**Plan card**:
+One version of a plan as the operator receives it: the file, a caption with its project, title,
+version and thread ref, and the buttons its status offers. It is a tracked decision, so it is
+reminded, and a reply to it is the operator's change request.
+_Avoid_: plan message, plan notification
+
 ### The running engine
 
 **Running build**:

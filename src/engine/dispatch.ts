@@ -338,6 +338,9 @@ export function briefWithProjectDocs(task: string): string {
     "check again — so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
     "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
     "poll to a terminal state here rather than \"standing by\" for a later event.\n\n" +
+    "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`. The engine " +
+    "sends it to the operator for review; you may also call `send_file` with it — the engine sends each " +
+    "version once.\n\n" +
     task
   );
 }

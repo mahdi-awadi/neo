@@ -202,6 +202,7 @@ that form too (for example, `/sdk@neo_bot codex`).
 | `/loop [<name>]` | List loops; `/loop <name>` runs one; `/loop <name> on\|off` toggles its schedule. |
 | `/todo [<project>]` (`/queue`) | The per-project todo queues: what runs and what waits. `/todo cancel <id>` and `/todo up <id>` change one todo; `/todo pause\|resume <project>` holds or releases a queue. |
 | `/trace <ref>` | Show the thread behind a message ref (e.g. `m4g2`): who caused what, in order. Replying to a message in Telegram joins its thread. |
+| `/plans [<project>]` | Plans and specs the engine sent you: status, steps done (`3/12`), thread ref and path. Each plan arrives once per version as a file with Approve / Changes / Execute / Drop buttons (ADR-0019). |
 | `/updates` | Toolchain updates (Agent SDK, plugins, MCP servers): the last run and each item's state. `/updates run` checks now; `/updates apply <item>` applies one item, held or not; `/updates rollback <item>` restores the previous version. See `docs/CONFIG.md` → "Toolchain updates". |
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |
