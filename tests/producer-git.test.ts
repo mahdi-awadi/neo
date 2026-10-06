@@ -140,5 +140,6 @@ test("while a session works in the folder, an open dirty item is kept as it is (
   writeFileSync(join(dir, "wip.txt"), "wip");
   const r = await gitDrafts(read, input(dir, { sessionIn: (f) => f === dir }));
   expect(r.drafts.map((d) => d.kind)).not.toContain("dirty");
-  expect(r.failed.has("dirty")).toBe(true);
+  expect(r.kept.has("dirty")).toBe(true);
+  expect(r.failed.has("dirty")).toBe(false); // on purpose, not a failed read: no scan error
 });

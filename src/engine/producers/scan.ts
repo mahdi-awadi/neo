@@ -94,7 +94,7 @@ async function scanProject(d: ScanDeps, folder: string, project: string): Promis
     dirtyHigh: openDirty?.severity === "high",
     ...(openDirty?.severity === "high" ? { dirtyKeep: { title: openDirty.title, ...(openDirty.detail ? { detail: openDirty.detail } : {}) } } : {}),
   });
-  reconcileScan(d.ledger, "git", project, git.drafts, git.failed, now);
+  reconcileScan(d.ledger, "git", project, git.drafts, new Set([...git.failed, ...git.kept]), now);
   const gh = await githubDrafts(d.read, { folder, project, cfg, tracked: git.tracked });
   reconcileScan(d.ledger, "github", project, gh.drafts, new Set([...gh.failed, ...gh.partial, ...gh.unavailable]), now);
   const counts: Record<string, number> = {};

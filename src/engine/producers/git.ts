@@ -52,9 +52,11 @@ interface Ref {
   at: number;
 }
 
-export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ drafts: AttentionDraft[]; failed: Set<GitKind>; tracked: string[] }> {
+export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ drafts: AttentionDraft[]; failed: Set<GitKind>; kept: Set<GitKind>; tracked: string[] }> {
   const drafts: AttentionDraft[] = [];
   const failed = new Set<GitKind>();
+  /** Not judged this time on purpose (not a failure): their live rows are kept as they are. */
+  const kept = new Set<GitKind>();
   const at = { project: i.project, folder: i.folder, source: "git" as const, severity: "normal" as const };
   const draft = (d: Omit<AttentionDraft, "project" | "folder" | "source" | "severity" | "kind"> & { kind: GitKind; severity?: AttentionDraft["severity"] }): void =>
     void drafts.push({ ...at, ...d });
@@ -106,7 +108,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
   }
 
   // While a session works here its changes are work in progress: an open item is kept as it is.
-  if (i.sessionIn(i.folder)) fail("dirty");
+  if (i.sessionIn(i.folder)) kept.add("dirty");
   else {
     const status = await read.git(i.folder, ["status", "--porcelain", "--untracked-files=all"]);
     const prefix = await read.git(i.folder, ["rev-parse", "--show-prefix"]);
@@ -162,7 +164,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
   }
 
   const ignore = new Set(i.cfg.ignoreKinds ?? []);
-  return { drafts: drafts.filter((d) => !ignore.has(d.kind)), failed, tracked };
+  return { drafts: drafts.filter((d) => !ignore.has(d.kind)), failed, kept, tracked };
 }
 
 /** Config `projects` (config.json): per-project scan settings by project name; malformed fields drop. */
