@@ -1,0 +1,60 @@
+# Neo custom rules — Python. Test fixtures: rules/tests/neo-python.py (semgrep --test).
+rules:
+  - id: neo-py-mass-assignment
+    languages: [python]
+    severity: ERROR
+    message: Request body unpacked straight into a model (mass assignment, OWASP A01). Validate with a pydantic schema and pick fields.
+    metadata:
+      category: security
+      owasp: "A01:2021"
+      impact: HIGH
+      confidence: MEDIUM
+    pattern-either:
+      - pattern: '$M(**request.json)'
+      - pattern: '$M(**request.get_json())'
+      - pattern: '$M(**request.data)'
+      - pattern: '$M(**request.POST)'
+      - pattern: '$M.objects.create(**request.data)'
+
+  - id: neo-py-secret-in-log
+    languages: [python]
+    severity: WARNING
+    message: A secret/credential/OTP value is logged (OWASP A09). Never log tokens, passwords, OTPs or keys.
+    metadata:
+      category: security
+      owasp: "A09:2021"
+      impact: HIGH
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: '$LOG.$L(..., $V, ...)'
+          - pattern: '$LOG.$L(..., $O.$V, ...)'
+          - pattern: 'print(..., $V, ...)'
+      - metavariable-regex:
+          metavariable: '$V'
+          regex: '(?i)^(password|passwd|secret|token|access_token|refresh_token|api_key|otp|otp_code|private_key|authorization)$'
+
+  - id: neo-py-llm-output-to-sink
+    languages: [python]
+    severity: ERROR
+    message: Model output reaches code execution, a shell or a query without validation (prompt injection, OWASP LLM01/LLM02).
+    metadata:
+      category: security
+      owasp: "A03:2021"
+      impact: HIGH
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern: '$R.choices[$I].message.content'
+      - pattern: '$R.content[$I].text'
+      - pattern: '$R.text'
+      - pattern: '$R.output_text'
+    pattern-sanitizers:
+      - pattern: '$S.model_validate_json(...)'
+      - pattern: '$S.model_validate(...)'
+    pattern-sinks:
+      - pattern: 'eval(...)'
+      - pattern: 'exec(...)'
+      - pattern: 'os.system(...)'
+      - pattern: 'subprocess.$F(...)'
+      - pattern: '$C.execute(...)'

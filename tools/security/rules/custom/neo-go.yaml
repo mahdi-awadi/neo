@@ -1,0 +1,88 @@
+# Neo custom rules — Go. Test fixtures: rules/tests/neo-go.go (semgrep --test).
+rules:
+  - id: neo-go-insecure-random-secret
+    languages: [go]
+    severity: ERROR
+    message: math/rand used for a token/OTP/secret (OWASP A02). Use crypto/rand.
+    metadata:
+      category: security
+      owasp: "A02:2021"
+      impact: HIGH
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: '$V := <... rand.$F(...) ...>'
+          - pattern: '$V = <... rand.$F(...) ...>'
+      - pattern-inside: |
+          import "math/rand"
+          ...
+      - metavariable-regex:
+          metavariable: '$V'
+          regex: '(?i).*(token|otp|code|secret|password|salt|nonce|key|session|reset|pin).*'
+
+  - id: neo-go-secret-in-log
+    languages: [go]
+    severity: WARNING
+    message: A secret/credential/OTP value is logged (OWASP A09). Never log tokens, passwords, OTPs or keys.
+    metadata:
+      category: security
+      owasp: "A09:2021"
+      impact: HIGH
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: '$LOG.$L(..., $V, ...)'
+          - pattern: '$LOG.$L(..., $O.$V, ...)'
+      - metavariable-regex:
+          metavariable: '$L'
+          regex: '^(Print|Printf|Println|Info|Infof|Infow|Warn|Warnf|Warnw|Error|Errorf|Errorw|Debug|Debugf|Debugw|Fatal|Fatalf)$'
+      - metavariable-regex:
+          metavariable: '$V'
+          regex: '(?i)^(password|passwd|secret|token|accesstoken|refreshtoken|apikey|otp|otpcode|privatekey|authorization)$'
+
+  - id: neo-go-cookie-missing-flags
+    languages: [go]
+    severity: WARNING
+    message: http.Cookie without HttpOnly + Secure (OWASP A07). Set HttpOnly, Secure and SameSite.
+    metadata:
+      category: security
+      owasp: "A07:2021"
+      impact: HIGH
+      confidence: MEDIUM
+    patterns:
+      - pattern: 'http.Cookie{...}'
+      - pattern-not: 'http.Cookie{..., HttpOnly: true, ...}'
+
+  - id: neo-go-cors-wildcard-credentials
+    languages: [go]
+    severity: ERROR
+    message: CORS allows all origins together with credentials (OWASP A05). Use an origin allowlist from config.
+    metadata:
+      category: security
+      owasp: "A05:2021"
+      impact: HIGH
+      confidence: HIGH
+    pattern-either:
+      - pattern: '$P{..., AllowAllOrigins: true, ..., AllowCredentials: true, ...}'
+      - pattern: '$P{..., AllowCredentials: true, ..., AllowAllOrigins: true, ...}'
+      - pattern: '$P{..., AllowedOrigins: []string{"*"}, ..., AllowCredentials: true, ...}'
+      - pattern: '$P{..., AllowCredentials: true, ..., AllowedOrigins: []string{"*"}, ...}'
+
+  - id: neo-go-client-trusted-price
+    languages: [go]
+    severity: WARNING
+    message: Price/amount/balance read from the client (OWASP A04). Compute money server-side from the database.
+    metadata:
+      category: security
+      owasp: "A04:2021"
+      impact: HIGH
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: '$R.FormValue("$F")'
+          - pattern: '$R.URL.Query().Get("$F")'
+          - pattern: '$C.Query("$F")'
+          - pattern: '$C.PostForm("$F")'
+      - metavariable-regex:
+          metavariable: '$F'
+          regex: '(?i)^(price|amount|total|subtotal|balance|discount|fee|cost|commission)$'
