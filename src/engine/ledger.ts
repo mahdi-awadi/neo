@@ -137,6 +137,14 @@ export interface DecisionRow extends NewDecision {
   reminderCount: number;
 }
 
+/** What one thread produced, oldest first and bounded (spec §4.4). Counts for tool actions only. */
+export interface ThreadArtifacts {
+  orders: Array<{ id: string; folder: string; createdAt: number; status?: string }>;
+  todos: TodoRow[];
+  decisions: DecisionRow[];
+  toolActions: number;
+}
+
 export interface Ledger {
   /** `cause` links the order to the message that started it; `parentOrderId` is the company order
    *  that dispatched it (spec §3.3). Both optional: an order without them stores NULL. */
@@ -164,10 +172,13 @@ export interface Ledger {
   insertMessage(m: NewMessage): number;
   /** One page of a thread, newest first. `before` is a keyset cursor: only ids below it. */
   messagesInThread(threadId: number, opts: { before?: number; limit: number }): MessageRow[];
+  messageById(id: number): MessageRow | undefined;
   /** The message posted as Telegram `channelMsgId` in `chatId`, if we recorded it. */
   messageByChannel(chatId: number, channelMsgId: number): MessageRow | undefined;
   /** Remember the channel's id for a posted message. Only binds when the row is in `chatId`. */
   setChannelMsg(msgId: number, chatId: number, channelMsgId: number): void;
+  /** File an already-written message under a thread (a root is written before its own id is known). */
+  setMessageThread(msgId: number, threadId: number): void;
   insertThread(t: NewThread): void;
   threadById(id: number): ThreadRow | undefined;
   setThreadState(id: number, state: ThreadState, at: number): void;
@@ -175,6 +186,10 @@ export interface Ledger {
   touchThread(id: number, lastMsgId: number, at: number): void;
   /** The ledger's facts about one thread (spec §5), for deriveThreadState. */
   threadFacts(id: number): ThreadFacts;
+  /** The message a Telegram reply target was routed under (`message_routes.msg_id/thread_id`), if recorded. */
+  routeCause(chatId: number, messageId: number): Cause | undefined;
+  /** Orders, todos, decisions and the tool-action count linked to a thread; each list ≤ `limit`. */
+  threadArtifacts(threadId: number, limit: number): ThreadArtifacts;
   /** Append one governed tool call (single INSERT; retention amortised — see TOOL_ACTIONS_KEEP). */
   recordToolAction(a: NewToolAction): void;
   /** TEST-ONLY seam: the EXPLAIN QUERY PLAN text of a named hot query (spec §11.11). */
@@ -535,6 +550,10 @@ export function openLedger(
       ) as MessageDbRow[];
       return rows.map(mapMessageRow);
     },
+    messageById(id) {
+      const r = db.query(`${MESSAGE_COLS} WHERE id = ?`).get(id) as MessageDbRow | null;
+      return r ? mapMessageRow(r) : undefined;
+    },
     messageByChannel(chatId, channelMsgId) {
       const r = db
         .query(`${MESSAGE_COLS} WHERE chat_id = ? AND channel_msg_id = ? ORDER BY id DESC LIMIT 1`)
@@ -543,6 +562,9 @@ export function openLedger(
     },
     setChannelMsg(msgId, chatId, channelMsgId) {
       db.query(`UPDATE messages SET channel_msg_id = ? WHERE id = ? AND chat_id = ?`).run(channelMsgId, msgId, chatId);
+    },
+    setMessageThread(msgId, threadId) {
+      db.query(`UPDATE messages SET thread_id = ? WHERE id = ?`).run(threadId, msgId);
     },
     insertThread(t) {
       db.query(
@@ -587,6 +609,32 @@ export function openLedger(
         activeTodos: f.active_todos,
         ...(end ? { lastEnd: end.ok ? ("ok" as const) : ("failed" as const) } : {}),
         closedByOperator: f.closed === 1,
+      };
+    },
+    routeCause(chatId, messageId) {
+      const r = db
+        .query(`SELECT msg_id, thread_id FROM message_routes WHERE chat_id = ? AND message_id = ?`)
+        .get(chatId, messageId) as { msg_id: number | null; thread_id: number | null } | null;
+      return r && r.msg_id !== null && r.thread_id !== null ? { msgId: r.msg_id, threadId: r.thread_id } : undefined;
+    },
+    threadArtifacts(threadId, limit) {
+      const orders = db
+        .query(
+          `SELECT ord.id AS id, ord.folder AS folder, ord.created_at AS created_at,
+                  (SELECT o.status FROM outcomes o WHERE o.order_id = ord.id ORDER BY o.at DESC LIMIT 1) AS status
+           FROM orders ord WHERE ord.thread_id = ? ORDER BY ord.created_at ASC, ord.rowid ASC LIMIT ?`,
+        )
+        .all(threadId, limit) as Array<{ id: string; folder: string; created_at: number; status: string | null }>;
+      const todos = db.query(`SELECT * FROM project_todos WHERE thread_id = ? ORDER BY id ASC LIMIT ?`).all(threadId, limit) as TodoDbRow[];
+      const decisions = db
+        .query(`SELECT * FROM decisions WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?`)
+        .all(threadId, limit) as DecisionDbRow[];
+      const n = db.query(`SELECT count(*) AS n FROM tool_actions WHERE thread_id = ?`).get(threadId) as { n: number };
+      return {
+        orders: orders.map((r) => ({ id: r.id, folder: r.folder, createdAt: r.created_at, ...(r.status ? { status: r.status } : {}) })),
+        todos: todos.map(mapTodoRow),
+        decisions: decisions.map(mapDecisionRow),
+        toolActions: n.n,
       };
     },
     recordToolAction(a) {

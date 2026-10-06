@@ -190,3 +190,19 @@ test("the clock helpers ignore an unknown id instead of throwing (observer-only 
   expect(() => r.noteOutput("gone", 1)).not.toThrow();
   expect(() => r.noteBlocked("gone", undefined)).not.toThrow();
 });
+
+test("cause bookkeeping: newest delivered cause wins, endTurn answers all and clears", () => {
+  const reg = createRegistry();
+  const o = order();
+  reg.add(o);
+  expect(reg.causeOf(o.id)).toBeUndefined();
+  reg.setCause(o.id, { msgId: 1, threadId: 1 });
+  reg.setCause(o.id, { msgId: 2, threadId: 1 });
+  expect(reg.causeOf(o.id)).toEqual({ msgId: 2, threadId: 1 });
+  expect(reg.endTurn(o.id)).toEqual([{ msgId: 1, threadId: 1 }, { msgId: 2, threadId: 1 }]);
+  expect(reg.causeOf(o.id)).toBeUndefined();
+  expect(reg.endTurn(o.id)).toEqual([]);
+  reg.setCause(o.id, { msgId: 3, threadId: 3 });
+  reg.remove(o.id);
+  expect(reg.causeOf(o.id)).toBeUndefined();
+});

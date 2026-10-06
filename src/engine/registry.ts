@@ -4,6 +4,7 @@
 // Keyed by the stable order id; addressable by short name (for /kill) and by chat (for
 // follow-up routing). The unique-name scheme is ported from operant, trimmed.
 import { basename } from "node:path";
+import type { Cause } from "./ledger";
 import type { BlockedOn, Order, Provider, SessionControl, SessionInfo } from "../types";
 
 /** Statuses for a session that is still live (followable / killable). */
@@ -59,6 +60,12 @@ export interface Registry {
   getDefault(): SessionInfo | undefined;
   /** Record what the session is doing right now; `since` is kept while the label is unchanged. */
   noteActivity(id: string, label: string, now?: number): void;
+  /** A message was delivered to this session (a brief pushed, or a run started): remember its cause. */
+  setCause(id: string, cause: Cause): void;
+  /** The cause output is attributed to: the newest delivered cause whose turn has not ended. */
+  causeOf(id: string): Cause | undefined;
+  /** The turn ended: every cause delivered so far is answered. Returns them (oldest first) and clears them. */
+  endTurn(id: string): Cause[];
   /** Stamp the last stuck-alert time (watchdog dedup). */
   noteAlert(id: string, now?: number): void;
 }
@@ -67,6 +74,7 @@ export function createRegistry(): Registry {
   const sessions = new Map<string, SessionInfo>();
   const controls = new Map<string, SessionControl>();
   const focus = new Map<number, { id: string; mode: FocusMode }>(); // chatId -> focused project
+  const causes = new Map<string, Cause[]>(); // session id -> causes delivered, turn not yet ended
   let defaultId: string | undefined; // the always-on default project (fallback target)
 
   function uniqueName(base: string): string {
@@ -107,6 +115,18 @@ export function createRegistry(): Registry {
     remove: (id) => {
       sessions.delete(id);
       controls.delete(id);
+      causes.delete(id);
+    },
+    setCause(id, cause) {
+      const list = causes.get(id);
+      if (list) list.push(cause);
+      else causes.set(id, [cause]);
+    },
+    causeOf: (id) => causes.get(id)?.at(-1),
+    endTurn(id) {
+      const list = causes.get(id) ?? [];
+      causes.delete(id);
+      return list;
     },
     attachControl(id, control) {
       // Defensive against F5: /kill during a pending gate can remove the session before the
