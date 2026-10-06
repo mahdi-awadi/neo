@@ -837,3 +837,17 @@ worker's own `send_file` of a plan goes through the same registry. Approve, Exec
 Done and Drop move the status; Changes sends the operator's next message to the worker that wrote
 the plan. A plan that is executing is done when every checkbox is ticked. `/plans` lists them. The
 dispatch preamble tells workers where plans go. Going live needs a daemon restart (operator-gated).
+
+### Console threads, attention items and the repo scan (2026-10-06, ADR-0017/0018)
+
+The console has a Threads view (by project, state, search; Arabic and English, i18next catalogues).
+One table, `attention_items`, holds what needs the operator; producers reconcile it, and nothing an
+unreadable source reports is resolved. The engine producer (every tick) raises stuck approvals,
+spinning dispatches (the same digest fingerprint, or the same tool call, again and again), paused
+queues, failed or long-waiting threads, stale decisions and an impossible ctx %. A todo that leaves
+uncommitted files says so and raises a high item. The restart producer and `/gated` compute what is
+built but not running from git and the boot record (`engine_boots`). The repo scan (`github`,
+`projects`) reads every tracked repo with git and `gh` through `git-read.ts`. `/attention` lists it
+all with one-tap → todo / snooze / dismiss (and remove for a clean leftover worktree), on Telegram
+and in the console; a daily digest goes out at `attention.digestAt`. Migrations v6 (console
+indexes), v7 (attention, boots) and v8 (`meta`). Going live needs a daemon restart (operator-gated).
