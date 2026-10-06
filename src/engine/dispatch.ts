@@ -30,7 +30,7 @@ import {
 } from "./dispatch-report";
 import { frontendBackend, teamLeadPreamble } from "./agent-teams";
 import { DEFAULT_PROJECT } from "./default-project";
-import { decideContext, sessionContext, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
+import { decideContext, sessionContext, contextWindows, runHandoff, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor, type ContextPolicyCfg } from "./context-policy";
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
@@ -526,7 +526,7 @@ export async function dispatchToProject(
     if (gatedResume && deps.contextPolicy) {
       try {
         const signals = opts.signals ?? sessionContext;
-        const sig = signals(folder, gatedResume, { windowTokensByModel: deps.contextPolicy.windowTokensByModel });
+        const sig = signals(folder, gatedResume, { windowTokensByModel: contextWindows(deps.ledger, deps.contextPolicy.windowTokensByModel) });
         const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(deps.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.contextPolicy);
         const verdict = decideContext(sig, deps.contextPolicy, ttlMs);
         if (verdict === "clear") {
@@ -656,6 +656,7 @@ export async function dispatchToProject(
             }
           : undefined,
         onEvent: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data }),
+        onContextWindow: (model, tokens) => deps.ledger.recordModelWindow(model, tokens),
         autoApprove: () => deps.trust.isTrusted(folder),
         onAutoApprove: (reason) => {
           deps.ledger.recordAutoApproval(order.id, reason);

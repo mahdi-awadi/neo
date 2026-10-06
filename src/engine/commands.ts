@@ -13,7 +13,7 @@ import type { UsageMeter, RateLimitInfo } from "./usage";
 import type { TrustStore } from "./trust";
 import type { Inbox } from "./inbox";
 import { renderInboxList, type InboxListEntry } from "./inbox-actions";
-import { sessionContext, type ContextSignals } from "./context-policy";
+import { sessionContext, contextWindows, type ContextSignals } from "./context-policy";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
@@ -96,7 +96,7 @@ const COMMANDS: Command[] = [
     aliases: ["ls", "status"],
     usage: "/list",
     summary: "open projects (★ = active · tap a name to switch)",
-    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel),
+    run: ({ deps, now, chatId }) => renderList(deps.registry, deps.trust, now, chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel)),
   },
   {
     name: "use",
@@ -261,7 +261,7 @@ export function handleCommand(text: string, chatId: number, deps: CommandDeps): 
  * tapped project receives the next message, then focus reverts to the company (use /pin to hold). */
 export function selectProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   deps.registry.setFocus(chatId, id, "once");
-  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals, deps.windowTokensByModel);
+  return renderList(deps.registry, deps.trust, (deps.now ?? (() => Date.now()))(), chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel));
 }
 
 /** Kill a project by id (from a tapped ✕) and return the refreshed list. Shared by both
@@ -269,14 +269,14 @@ export function selectProject(id: string, chatId: number, deps: CommandDeps): Co
 export function killProject(id: string, chatId: number, deps: CommandDeps): CommandResult {
   const now = (deps.now ?? (() => Date.now()))();
   if (deps.registry.getDefault()?.id === id) {
-    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel).select };
+    return { text: "🔒 the company is always-on and can't be stopped.", select: renderList(deps.registry, deps.trust, now, chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel)).select };
   }
   if (deps.registry.get(id)) {
     void deps.registry.getControl(id)?.interrupt();
     deps.registry.setStatus(id, "done");
     deps.registry.remove(id);
   }
-  return renderList(deps.registry, deps.trust, now, chatId, deps.signals, deps.windowTokensByModel);
+  return renderList(deps.registry, deps.trust, now, chatId, deps.signals, contextWindows(deps.ledger, deps.windowTokensByModel));
 }
 
 const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo pause <project> · /todo resume <project>";

@@ -234,14 +234,13 @@ instead of a cold, unwarmed-cache resume.
 | `cacheObsWindow` | operator choice | `50` | Rolling sample size for the learned-TTL window — how many of the most recent `(gapMs, hit)` observations the learner keeps. |
 
 `contextPolicy.windowTokensByModel` (optional, `Record<string, number>`, unset by default) is an
-operator-choice override layered over the built-in context-window-size facts map
-(`windowTokensFor`'s `MODEL_WINDOW_TOKENS`, keyed by the model id Claude Code's own transcripts
-report). It is not a new fixed knob — the window is still derived from the model the transcript
-reports; this only lets you correct or extend the facts map (e.g. for a model id the built-in map
-doesn't know yet). It is threaded into every gate that measures context: `dispatch`'s gate,
-`pipeline`'s pre- and post-resume gates, the loop-resume gate, and `runHandoff`'s own
-re-measurement — so a configured override changes gate verdicts, not just the number shown for
-`/status` ctx%.
+operator-choice override of a model's context window, keyed by the model id the transcripts report
+(`claude-opus-5-5`, never the `[1m]`-tagged pin). You normally leave it unset: the SDK reports each
+model's real window on every completed turn and the ledger keeps the newest one per model
+(`model_windows`, ADR-0013). The window for a measurement is the override, then the SDK-reported
+window, then 200k for a model the SDK has not reported yet. The same windows reach every place that
+measures context: `dispatch`'s gate, `pipeline`'s pre- and post-resume gates, the loop-resume gate,
+`runHandoff`'s re-measurement, the web console and `/status` ctx%.
 
 ## Toolchain updates (`updates`) — ADR-0009
 

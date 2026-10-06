@@ -7,6 +7,7 @@ import {
   sessionContext,
   encodeCwd,
   windowTokensFor,
+  contextWindows,
   runHandoff,
   HANDOFF_PROMPT,
   MEMORY_FLUSH_SENTENCE,
@@ -329,4 +330,34 @@ test("runHandoff's task is byte-identical to HANDOFF_PROMPT when memoryFlush is 
   };
   await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never });
   expect(sawTask).toBe(HANDOFF_PROMPT);
+});
+
+// ADR-0013 — the live bug: transcripts report `claude-opus-5-5` (the SDK strips `[1m]`), the code
+// table only knew `default: 200_000`, so a 547k-token Opus turn read as 274% and tripped `clear`.
+test("contextWindows: operator override beats the SDK-reported window, which beats the default", () => {
+  const ledger = openLedger(":memory:");
+  ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+  ledger.recordModelWindow("claude-sonnet-5-5", 200_000);
+  const w = contextWindows(ledger, { "claude-sonnet-5-5": 1_000_000 });
+  expect(windowTokensFor("claude-opus-5-5", w)).toBe(1_000_000); // SDK-reported
+  expect(windowTokensFor("claude-sonnet-5-5", w)).toBe(1_000_000); // operator override wins
+  expect(windowTokensFor("never-seen", w)).toBe(200_000); // default fact
+  expect(contextWindows(ledger)).toEqual({ "claude-opus-5-5": 1_000_000, "claude-sonnet-5-5": 200_000 });
+});
+
+test("sessionContext measures an Opus 5.5 transcript against the SDK-reported 1M window", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-ctxwin-"));
+  try {
+    const folder = "/p/waselni";
+    mkdirSync(join(dir, encodeCwd(folder)), { recursive: true });
+    const turn = { type: "assistant", message: { model: "claude-opus-5-5", usage: { input_tokens: 2, cache_read_input_tokens: 546_145, cache_creation_input_tokens: 1_572 } } };
+    writeFileSync(join(dir, encodeCwd(folder), "s-opus.jsonl"), `${JSON.stringify(turn)}\n`);
+    const ledger = openLedger(":memory:");
+    ledger.recordModelWindow("claude-opus-5-5", 1_000_000);
+    const sig = sessionContext(folder, "s-opus", { projectsDir: dir, windowTokensByModel: contextWindows(ledger) });
+    expect(sig.occupancy).toBeCloseTo(0.547719, 6); // was 2.738595 against the 200k default
+    expect(sig.occupancy).toBeLessThan(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

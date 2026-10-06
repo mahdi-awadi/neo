@@ -23,6 +23,7 @@ import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import {
   sessionContext,
+  contextWindows,
   decideContext,
   runHandoff,
   effectiveCacheTtlMs,
@@ -120,7 +121,7 @@ async function applyContextPolicy(
   if (!resumeId) return { resumeId: "", idleMs: 0 };
   try {
     const signals = deps.signals ?? sessionContext;
-    const sig = signals(folder, resumeId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
+    const sig = signals(folder, resumeId, { windowTokensByModel: contextWindows(deps.ledger, deps.cfg.contextPolicy.windowTokensByModel) });
     const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
     const verdict = decideContext(sig, deps.cfg.contextPolicy, ttlMs);
     if (verdict === "keep") {
@@ -519,6 +520,7 @@ function startSession(
         : undefined,
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       onEvent: (kind, data) => ledger.recordEvent(kind, { orderId: order.id, folder: order.folder, data }),
+      onContextWindow: (model, tokens) => ledger.recordModelWindow(model, tokens),
       autoApprove: () => deps.trust.isTrusted(order.folder),
       onAutoApprove: (reason) => {
         ledger.recordAutoApproval(order.id, reason);
@@ -612,7 +614,7 @@ function startSession(
     try {
       if (result.sessionId) {
         const signals = deps.signals ?? sessionContext;
-        const sig = signals(order.folder, result.sessionId, { windowTokensByModel: deps.cfg.contextPolicy.windowTokensByModel });
+        const sig = signals(order.folder, result.sessionId, { windowTokensByModel: contextWindows(ledger, deps.cfg.contextPolicy.windowTokensByModel) });
         const ttlMs = effectiveCacheTtlMs(ledger.listCacheObservations(deps.cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW), deps.cfg.contextPolicy);
         if (decideContext(sig, deps.cfg.contextPolicy, ttlMs) !== "keep") {
           const handoff = deps.handoff ?? runHandoff;

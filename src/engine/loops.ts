@@ -14,7 +14,7 @@ import type { LoopOutcome } from "./loop-runner";
 import type { runOrder, RunDeps } from "./session-runner";
 import { validateLoopInput, type LoopInput } from "./loop-validate";
 import { profileDeps } from "./worker-profile";
-import { sessionContext, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor } from "./context-policy";
+import { sessionContext, contextWindows, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor } from "./context-policy";
 import { memoryDir, memoryScopeEnabled } from "./memory";
 import { memoryTools } from "./memory-tool";
 import type { NeoConfig } from "../config";
@@ -29,7 +29,7 @@ export interface LoopDefStore {
 }
 /** The ledger satisfies all three halves; commands/UX take the combined store. `listCacheObservations`
  *  feeds the LEARNED-cache-TTL resume gate in loopRunExtras (see context-policy.ts). */
-export type LoopStore = LoopDefStore & LoopStateStore & Pick<Ledger, "listCacheObservations">;
+export type LoopStore = LoopDefStore & LoopStateStore & Pick<Ledger, "listCacheObservations" | "modelWindows">;
 
 export interface LoopDef extends SchedulableLoop {
   name: string; // canonical key, e.g. "docs-sweep"
@@ -486,7 +486,9 @@ function loopRunExtras(
     freshSession: loop.freshSession,
     gateResume: cfg
       ? async (id: string) => {
-          const ctx = await sessionContext(loop.folder, id, { windowTokensByModel: cfg.contextPolicy.windowTokensByModel });
+          const ctx = await sessionContext(loop.folder, id, {
+            windowTokensByModel: deps.store ? contextWindows(deps.store, cfg.contextPolicy.windowTokensByModel) : cfg.contextPolicy.windowTokensByModel,
+          });
           const obs = deps.store?.listCacheObservations(cfg.contextPolicy.cacheObsWindow ?? CACHE_OBS_WINDOW) ?? [];
           const ttlMs = effectiveCacheTtlMs(obs, cfg.contextPolicy);
           return decideContext(ctx, cfg.contextPolicy, ttlMs) === "keep" ? id : undefined;

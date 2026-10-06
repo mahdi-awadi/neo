@@ -10,12 +10,20 @@ import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
 
-/** Context-window size is a FACT about the model, not a tuning knob — one global constant would be
- *  wrong the moment two different models are in play. Keyed by the model id Claude Code's own
- *  transcripts report (`message.model`); `default` is the conservative fallback for an unknown or
- *  absent model. Config may override per model (operator choice over facts) via
- *  ContextPolicyCfg.windowTokensByModel — see windowTokensFor. */
+/** Context-window size is a FACT about the model, not a tuning knob. The SDK reports it on every
+ *  result and the ledger keeps it per model (ADR-0013) — see contextWindows. This table holds only
+ *  the fallback for a model the SDK has not reported yet. */
 const MODEL_WINDOW_TOKENS: Record<string, number> = { default: 200_000 };
+
+/** The known window per model for a measurement (ADR-0013): the SDK-reported windows from the
+ *  ledger, with the operator's `contextPolicy.windowTokensByModel` overrides on top. Pass the result
+ *  as `windowTokensByModel` to sessionContext / windowTokensFor. */
+export function contextWindows(
+  ledger: Pick<Ledger, "modelWindows">,
+  overrides?: Record<string, number>,
+): Record<string, number> {
+  return { ...ledger.modelWindows(), ...overrides };
+}
 
 /** The context-window size (tokens) for `model`, from the facts map, with `overrides` (config)
  *  winning per model. `model === undefined` (no model found in the transcript yet) falls back to
@@ -334,7 +342,7 @@ export interface HandoffDeps {
  *  with a subsequent fresh session on the same folder. */
 export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
   const now = deps.now ?? (() => Date.now());
-  const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: cfg.windowTokensByModel });
+  const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: contextWindows(deps.ledger, cfg.windowTokensByModel) });
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",

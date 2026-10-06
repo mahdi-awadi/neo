@@ -123,6 +123,9 @@ export interface RunHandlers {
    *  monitor bumps its last-activity clock here so a worker mid-generation (e.g. writing a huge
    *  file — one long turn with no completed message) is never counted as silent (BUG 1). */
   onHeartbeat?: () => void;
+  /** Reports the context window the SDK gives for each model at a result (ADR-0013), keyed by the
+   *  canonical model id — the id the transcript names. The engine wires it to the ledger. */
+  onContextWindow?: (model: string, tokens: number) => void;
   /** Fires at each SDK "result" message (turn boundary) with that turn's result. A single-brief
    *  caller (dispatch) uses this to detect completion — the stream itself stays open. */
   onTurnComplete?: (result: RunResult) => void;
@@ -509,6 +512,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
             : undefined;
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
         handlers.onCost?.(costUsd);
+        reportContextWindows(msg.modelUsage, handlers.onContextWindow);
         // Turn boundary: the worker is waiting for the next input, not mid-turn — the
         // watchdog must not treat this as silence or a grinding activity (F1).
         handlers.onActivity?.("waiting");
@@ -531,6 +535,19 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
   }
 
   return { ok, sessionId, summary, costUsd, apiError: lastApiError, resumeMissing: resumeMissing || undefined };
+}
+
+/** Report each `modelUsage` entry's `contextWindow` under its canonical model id. The key is the
+ *  requested id and may carry the `[1m]` tag; the transcript never does, so the tag is dropped when
+ *  the SDK gives no `canonicalModel`. Entries without a positive window are skipped. */
+function reportContextWindows(modelUsage: unknown, report?: (model: string, tokens: number) => void): void {
+  if (!report || !modelUsage || typeof modelUsage !== "object") return;
+  for (const [key, u] of Object.entries(modelUsage as Record<string, { contextWindow?: unknown; canonicalModel?: unknown }>)) {
+    const tokens = u?.contextWindow;
+    if (typeof tokens !== "number" || !(tokens > 0)) continue;
+    const model = typeof u.canonicalModel === "string" && u.canonicalModel ? u.canonicalModel : key.replace(/\[1m\]$/i, "");
+    report(model, tokens);
+  }
 }
 
 // A pushable async-iterable input channel: yields queued user messages, parks until the
