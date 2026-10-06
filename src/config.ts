@@ -12,6 +12,7 @@ import type { HealthCfg } from "./engine/health";
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
+import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { isLang, type Lang } from "./frontends/web/langs";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
@@ -223,6 +224,9 @@ export interface NeoConfig {
   /** The plan registry (ADR-0019): where plans live, whether new versions are sent, the size cap and
    *  the Execute brief. Optional like `trace`; `loadConfig` always fills it. */
   plans?: PlansCfg;
+  /** Attention items (ADR-0018): how long a paused queue, a waiting thread or an open decision may
+   *  last before it needs the operator. Optional like `plans`; `loadConfig` always fills it. */
+  attention?: AttentionCfg;
   /** The web console's language when the operator has not picked one (its EN | ع switch sets a
    *  cookie): "en" or "ar". Optional like `trace`; `loadConfig` always fills it. */
   consoleLang?: Lang;
@@ -498,6 +502,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
     plans: readPlansCfg(fileCfg.plans),
+    attention: readAttentionCfg(fileCfg.attention),
     consoleLang: isLang(fileCfg.consoleLang) ? fileCfg.consoleLang : "en",
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,

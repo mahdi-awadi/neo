@@ -27,6 +27,7 @@ import {
   effectiveCacheTtlMs,
   transcriptLineCount,
   firstAssistantCacheReadAfter,
+  contextLabel,
 } from "../src/engine/context-policy";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
@@ -262,6 +263,7 @@ test("sessionContext divides occupancy by the model's window when the transcript
   writeFileSync(join(dir, "sess-model.jsonl"), line);
   const sig = sessionContext("/p/model-window", "sess-model", { projectsDir, windowTokensByModel: { "weird-model": 500_000 } });
   expect(sig.occupancy).toBeCloseTo(100_000 / 500_000, 5);
+  expect(sig).toMatchObject({ model: "weird-model", windowTokens: 500_000 }); // what it divided by (spec §8.5)
 });
 
 // The console polls this for every live session, and the transcripts grow to tens of MB. A call
@@ -604,4 +606,9 @@ test("awaitHandoff says when its wait ended on the bound rather than on the hand
   expect(await awaitHandoff("/p/done")).toBe("clear");
   trackHandoff("/p/hung", new Promise<void>(() => {}), 10);
   expect(await awaitHandoff("/p/hung")).toBe("timed-out");
+});
+
+test("contextLabel: an occupancy over 1 reads `ctx ?%` (impossible — spec §8.5), never a number", () => {
+  expect(contextLabel(2.35)).toBe("ctx ?%");
+  expect(contextLabel(0.42)).toBe("ctx 42%");
 });

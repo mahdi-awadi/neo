@@ -182,3 +182,20 @@ test("dashboard rows carry the context band and the last reset; the snapshot lis
   expect(snap.contextEvents.map((e) => [e.project, e.verdict])).toEqual([["waselni", "clear"], ["gold", "resumed"], ["gold", "handoff"]]);
   expect(snap.contextEvents[1]).toMatchObject({ steps: 12, success: true });
 });
+
+// AC4.7 (spec §8.5): ctx% over 100 is impossible — the dashboard shows "?" (ctxSuspect), never the number.
+test("an occupancy over 1 is no percentage: ctxSuspect instead of ctxPct", () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "d5", folder: "/p/gold", task: "t" }), 0);
+  registry.setSdkSessionId(s.id, "sess-x");
+  const rows = dashboardSnapshot({
+    registry,
+    ledger: openLedger(":memory:"),
+    chatId: 0,
+    now: 10_000,
+    signals: () => ({ occupancy: 2.35, turns: 3, ageMs: 0, idleMs: 0 }),
+  }).projects;
+  const row = rows.find((r) => r.id === "d5")!;
+  expect(row.ctxPct).toBeUndefined();
+  expect(row.ctxSuspect).toBe(true);
+});

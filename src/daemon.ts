@@ -6,10 +6,12 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config";
-import { contextPolicyWarnings } from "./engine/context-policy";
+import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
+import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
 import { openLedger, LEDGER_PATH } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
+import { DEFAULT_GOVERNOR_CFG } from "./engine/governor";
 import { createMeter } from "./engine/budget";
 import { createUsageMeter } from "./engine/usage";
 import { openTrustStore } from "./engine/trust";
@@ -76,6 +78,13 @@ async function main(): Promise<void> {
   // heartbeat tick releases them in order once the operator channel registers its launcher.
   const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure });
   const cutTodos = todo.recover({ now: Date.now() });
+  const engineProducerDeps: EngineProducerDeps = {
+    ledger,
+    registry,
+    cfg: { ...(cfg.attention ?? DEFAULT_ATTENTION_CFG), approvalRemindMs: (cfg.governor ?? DEFAULT_GOVERNOR_CFG).approvalRemindMs, companyFolder: cfg.companyFolder },
+    // The same measure the gates and the console use, over the SDK-reported windows (ADR-0013).
+    measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel: contextWindows(ledger, cfg.contextPolicy.windowTokensByModel) }),
+  };
   console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
   console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
@@ -318,6 +327,9 @@ async function main(): Promise<void> {
                 },
               }),
           ],
+          // What the engine itself sees needs the operator (ADR-0018): stuck approvals, paused queues,
+          // failed/waiting threads, stale decisions, an impossible ctx%. Ledger + registry only.
+          ["attention.engine", () => runEngineProducer(engineProducerDeps, Date.now())],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed

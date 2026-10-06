@@ -1,7 +1,7 @@
 // P4 Task 4.1 (ADR-0018, spec §7): one table, one reconcile for every producer.
 import { test, expect } from "bun:test";
 import { openLedger } from "../src/engine/ledger";
-import { reconcile, snooze, dismiss, listOpen, type AttentionDraft } from "../src/engine/attention";
+import { reconcile, reconcileAll, snooze, dismiss, listOpen, type AttentionDraft } from "../src/engine/attention";
 
 const draft = (over: Partial<AttentionDraft> = {}): AttentionDraft => ({
   project: "gold",
@@ -82,4 +82,17 @@ test("listOpen is bounded", () => {
   reconcile(l, "git", "gold", Array.from({ length: 150 }, (_, i) => draft({ key: `b${i}` })), 100);
   expect(listOpen(l, { now: 100 })).toHaveLength(100);
   expect(listOpen(l, { now: 100, limit: 5 })).toHaveLength(5);
+});
+
+test("reconcileAll: one producer's drafts across projects; a project whose items all went away is resolved too", () => {
+  const l = openLedger(":memory:");
+  const a = reconcileAll(l, "engine", [draft({ source: "engine", kind: "queue_paused", key: "/home/gold" }), draft({ project: "acme", folder: "/home/acme", source: "engine", kind: "queue_paused", key: "/home/acme" })], 100);
+  expect(a.opened).toHaveLength(2);
+  const b = reconcileAll(l, "engine", [draft({ source: "engine", kind: "queue_paused", key: "/home/gold" })], 200);
+  expect(b).toEqual({ opened: [], resolved: [a.opened[1]!] });
+  // Another source's items in the same project are never touched.
+  reconcile(l, "git", "acme", [draft({ project: "acme", folder: "/home/acme" })], 200);
+  expect(reconcileAll(l, "engine", [], 300).resolved).toEqual([a.opened[0]!]);
+  expect(listOpen(l, { now: 300 }).map((r) => r.source)).toEqual(["git"]);
+  expect(reconcileAll(l, "engine", "error", 400)).toEqual({ opened: [], resolved: [] });
 });

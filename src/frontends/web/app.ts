@@ -172,9 +172,10 @@ function setSdk(provider: string): void {
 
 // ctx% against the sweet spot (ADR-0021): the band colours the chip; the last reset rides along.
 function ctxChip(p: Any): string {
-  if (p.ctxPct == null && !p.lastReset) return "";
+  if (p.ctxPct == null && !p.ctxSuspect && !p.lastReset) return "";
   const b = p.ctxBand || "healthy";
-  const text = (p.ctxPct != null ? tx("ctx.chip", { pct: p.ctxPct }) : tx("ctx.chipNone")) + (p.lastReset ? " · " + tx("ctx.reset", { age: age(Date.now() - p.lastReset.at) }) : "");
+  const pct = p.ctxSuspect ? tx("ctx.chipSuspect") : p.ctxPct != null ? tx("ctx.chip", { pct: p.ctxPct }) : tx("ctx.chipNone");
+  const text = pct + (p.lastReset ? " · " + tx("ctx.reset", { age: age(Date.now() - p.lastReset.at) }) : "");
   const verdict = p.lastReset ? p.lastReset.verdict + (p.lastReset.reason ? ` (${p.lastReset.reason})` : "") : "";
   const tip = tx(`ctx.band.${b}`) + (p.lastReset ? " — " + tx("ctx.lastReset", { verdict }) : "");
   return `<span class="ctx ${esc(b)}" title="${esc(tip)}">${esc(text)}</span>`;

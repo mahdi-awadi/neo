@@ -47,6 +47,29 @@ export function reconcile(
   return { opened, resolved };
 }
 
+/** Reconcile one producer's drafts across every project it reports, plus every project where it still
+ *  has a live row — so an item whose project now reports nothing is resolved too. `"error"` changes
+ *  nothing anywhere. */
+export function reconcileAll(
+  ledger: Ledger,
+  source: AttentionSource,
+  drafts: AttentionDraft[] | "error",
+  now: number,
+): { opened: number[]; resolved: number[] } {
+  const opened: number[] = [];
+  const resolved: number[] = [];
+  if (drafts === "error") return { opened, resolved };
+  const byProject = new Map<string, AttentionDraft[]>();
+  for (const p of ledger.attentionProjects(source)) byProject.set(p, []);
+  for (const d of drafts) byProject.set(d.project, [...(byProject.get(d.project) ?? []), d]);
+  for (const [project, list] of byProject) {
+    const r = reconcile(ledger, source, project, list, now);
+    opened.push(...r.opened);
+    resolved.push(...r.resolved);
+  }
+  return { opened, resolved };
+}
+
 /** Hide an open item until `untilMs`. */
 export function snooze(ledger: Ledger, id: number, untilMs: number): void {
   ledger.updateAttention(id, { snoozedUntil: untilMs });

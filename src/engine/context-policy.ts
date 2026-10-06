@@ -52,6 +52,10 @@ export interface ContextSignals {
   /** `false` when a turn was measured but its model's window is only the default guess — no window
    *  reported or overridden yet (ADR-0013). Unset means known, or nothing measured. */
   windowKnown?: boolean;
+  /** The model of the last measured turn and the window `occupancy` was divided by — so an impossible
+   *  occupancy (> 1) can name both (spec §8.5). Set once a turn was measured. */
+  model?: string;
+  windowTokens?: number;
 }
 
 export type ContextVerdict = "keep" | "handoff" | "clear";
@@ -181,6 +185,7 @@ export function contextPolicyWarnings(cfg: BandCfg): string[] {
 
 /** `ctx 52% above` — the one ctx% label (/status, console). Inside the sweet spot, just the number. */
 export function contextLabel(occupancy: number, cfg?: BandCfg): string {
+  if (occupancy > 1) return "ctx ?%"; // impossible by definition: a wrong window, not a full context (spec §8.5)
   const label = `ctx ${Math.round(occupancy * 100)}%`;
   const band = cfg ? contextBand(occupancy, cfg) : "healthy";
   return band === "healthy" ? label : `${label} ${band === "emergency" ? "EMERGENCY" : band}`;
@@ -299,9 +304,11 @@ export function sessionContext(
     // A last line with no newline yet still counts now, but is not committed: it is re-read when completed.
     const view = tail ? { ...t } : t;
     if (tail) foldLines(view, tail);
+    const windowTokens = windowTokensFor(view.lastModel, opts.windowTokensByModel);
     return {
-      occupancy: view.lastInputSide / windowTokensFor(view.lastModel, opts.windowTokensByModel),
+      occupancy: view.lastInputSide / windowTokens,
       ...(view.turns > 0 && knownWindowFor(view.lastModel, opts.windowTokensByModel) === undefined ? { windowKnown: false } : {}),
+      ...(view.turns > 0 ? { windowTokens, ...(view.lastModel ? { model: view.lastModel } : {}) } : {}),
       turns: view.turns,
       ageMs: view.firstTs ? Math.max(0, now() - view.firstTs) : 0,
       idleMs: Math.max(0, now() - st.mtimeMs),

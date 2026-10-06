@@ -33,6 +33,8 @@ export interface DashProject {
   ctxPct?: number;
   /** Where ctxPct sits against the sweet spot (ADR-0021). */
   ctxBand?: ContextBand;
+  /** The measured occupancy is over 100% — impossible, so the window is wrong: show "?" (spec §8.5). */
+  ctxSuspect?: boolean;
   /** The project's newest context reset. */
   lastReset?: { verdict: string; reason?: string; at: number };
 }
@@ -121,11 +123,13 @@ export function dashboardSnapshot(opts: {
   const projects: DashProject[] = opts.registry.list().map((s) => {
     let ctxPct: number | undefined;
     let ctxBand: ContextBand | undefined;
+    let ctxSuspect = false;
     if (s.sdkSessionId) {
       try {
         const sig = (opts.signals ?? sessionContext)(s.order.folder, s.sdkSessionId, { windowTokensByModel: windows });
         // A guessed window gives a meaningless % (ADR-0013) — show none until the SDK reports one.
-        if (sig.windowKnown !== false) {
+        if (sig.occupancy > 1) ctxSuspect = true; // impossible: show "?", never the number (spec §8.5)
+        else if (sig.windowKnown !== false) {
           ctxPct = Math.round(sig.occupancy * 100);
           if (opts.contextPolicy) ctxBand = contextBand(sig.occupancy, opts.contextPolicy);
         }
@@ -154,6 +158,7 @@ export function dashboardSnapshot(opts: {
       queued: opts.registry.getControl(s.id)?.queued?.() ?? 0,
       ctxPct,
       ctxBand,
+      ...(ctxSuspect ? { ctxSuspect } : {}),
       lastReset,
     };
   });

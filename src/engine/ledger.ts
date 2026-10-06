@@ -326,6 +326,9 @@ export interface Ledger {
   updateAttention(id: number, patch: AttentionPatch): void;
   /** Open, not snoozed at `now`: severity first (high, normal, low), then newest seen; ≤ PAGE_MAX. */
   listOpenAttention(f: { project?: string; now: number; limit?: number }): AttentionRow[];
+  /** The projects where one producer still has a live row (open, or dismissed and still seen) — the
+   *  ones its next reconcile must visit even when it reports nothing there. */
+  attentionProjects(source: AttentionSource): string[];
   /** The projects that have threads and how many, most recently active first (bounded). */
   threadProjects(limit: number): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
@@ -435,6 +438,8 @@ export interface Ledger {
   /** Pause (`reason`) or resume (`null`) a project's queue. */
   setTodoPaused(folder: string, reason: string | null, at?: number): void;
   todoPaused(folder: string): { reason: string; at: number } | undefined;
+  /** Every paused todo queue (bounded by the folders the engine knows — a handful). */
+  listTodoPaused(): Array<{ folder: string; reason: string; at: number }>;
 }
 
 export type TodoStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -905,6 +910,11 @@ export function openLedger(
         params.push(typeof v === "boolean" ? (v ? 1 : 0) : v);
       }
       if (sets.length) db.query(`UPDATE attention_items SET ${sets.join(", ")} WHERE id = ?`).run(...params, id);
+    },
+    attentionProjects(source) {
+      return (
+        db.query(`SELECT DISTINCT project FROM attention_items WHERE source = ? AND (resolved_at IS NULL OR dismissed = 1)`).all(source) as Array<{ project: string }>
+      ).map((r) => r.project);
     },
     listOpenAttention(f) {
       const where = ["resolved_at IS NULL", "(snoozed_until IS NULL OR snoozed_until <= ?)"];
@@ -1408,6 +1418,9 @@ export function openLedger(
     },
     todoPaused(folder) {
       return (db.query(`SELECT reason, at FROM todo_paused WHERE folder = ?`).get(folder) as { reason: string; at: number } | null) ?? undefined;
+    },
+    listTodoPaused() {
+      return db.query(`SELECT folder, reason, at FROM todo_paused ORDER BY at LIMIT ?`).all(PAGE_MAX) as Array<{ folder: string; reason: string; at: number }>;
     },
   };
 
