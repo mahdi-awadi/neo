@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { openLedger } from "../src/engine/ledger";
 import { todoTitle } from "../src/engine/todo-queue";
@@ -174,7 +174,10 @@ test("threadFacts counts open decisions and active todos, and reads the newest e
 });
 
 test("tool actions prune to toolActionsKeep in batches", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "neo-trace-")), "ledger.db");
+  // 2000 single-row commits: on a disk-backed WAL file each one syncs (seconds in total), so use
+  // tmpfs when the host has it. The 30s timeout is the backstop on a host without it.
+  const base = existsSync("/dev/shm") ? "/dev/shm" : tmpdir();
+  const path = join(mkdtempSync(join(base, "neo-trace-")), "ledger.db");
   const led = openLedger(path, { toolActionsKeep: 1000 });
   for (let i = 0; i < 2000; i++)
     led.recordToolAction({ orderId: "o1", tool: "Bash", label: `ls ${i}`, verdict: "allow", at: i, cause: { msgId: 3, threadId: 2 }, folder: "/f" });
@@ -186,7 +189,8 @@ test("tool actions prune to toolActionsKeep in batches", () => {
   });
   expect(db.query(`SELECT count(*) AS n FROM tool_actions WHERE label = 'ls 0'`).get()).toEqual({ n: 0 });
   db.close();
-});
+  rmSync(dirname(path), { recursive: true, force: true });
+}, 30_000);
 
 test("EXPLAIN QUERY PLAN for messagesInThread uses idx_messages_thread", () => {
   const led = openLedger(":memory:");
@@ -202,5 +206,33 @@ test("migration reaches user_version 4 with the new tables", () => {
   const names = (db.query(`SELECT name FROM sqlite_master`).all() as Array<{ name: string }>).map((r) => r.name);
   for (const n of ["threads", "messages_fts", "tool_actions", "idx_messages_thread", "idx_messages_channel", "idx_threads_project", "idx_threads_state", "idx_tool_actions_thread", "idx_orders_thread", "idx_project_todos_thread", "idx_decisions_thread", "idx_events_msg"])
     expect(names).toContain(n);
+  db.close();
+});
+
+test("re-recording an order without a cause keeps its cause; a new cause replaces it", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "neo-trace-")), "ledger.db");
+  const led = openLedger(path);
+  const order = { id: "o1", source: "neo" as const, folder: "/f", task: "t", chatId: 7, createdAt: 1 };
+  led.recordOrder(order, { cause: { msgId: 11, threadId: 10 }, parentOrderId: "o0" });
+  led.recordOrder({ ...order, task: "memory + t" }); // dispatch re-records after prepending memory
+  const db = new Database(path, { readonly: true });
+  const row = () => db.query(`SELECT task, cause_msg_id, thread_id, parent_order_id FROM orders WHERE id = 'o1'`).get();
+  expect(row()).toEqual({ task: "memory + t", cause_msg_id: 11, thread_id: 10, parent_order_id: "o0" });
+  led.recordOrder(order, { cause: { msgId: 21, threadId: 20 }, parentOrderId: "p1" });
+  expect(row()).toEqual({ task: "t", cause_msg_id: 21, thread_id: 20, parent_order_id: "p1" });
+  db.close();
+});
+
+test("re-remembering a route without a cause keeps its cause; a new cause replaces it", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "neo-trace-")), "ledger.db");
+  const led = openLedger(path);
+  const target = { sessionId: "s", folder: "/f", project: "p" };
+  led.rememberRoute(7, 500, target, { msgId: 21, threadId: 20 });
+  led.rememberRoute(7, 500, { ...target, sessionId: "s2" });
+  const db = new Database(path, { readonly: true });
+  const row = () => db.query(`SELECT session_id, msg_id, thread_id FROM message_routes`).get();
+  expect(row()).toEqual({ session_id: "s2", msg_id: 21, thread_id: 20 });
+  led.rememberRoute(7, 500, target, { msgId: 31, threadId: 30 });
+  expect(row()).toEqual({ session_id: "s", msg_id: 31, thread_id: 30 });
   db.close();
 });

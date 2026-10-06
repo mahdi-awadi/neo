@@ -440,9 +440,19 @@ export function openLedger(
 
   return {
     recordOrder(o, opts = {}) {
+      // An upsert with the old replace semantics for every column (the SDK session is cleared, as
+      // INSERT OR REPLACE did), except the cause: dispatch re-records an order after prepending
+      // memory/handoff text, and that must not drop the trace link set at the first record.
       db.query(
-        `INSERT OR REPLACE INTO orders (id, source, folder, task, chat_id, created_at, cause_msg_id, thread_id, parent_order_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO orders (id, source, folder, task, chat_id, created_at, cause_msg_id, thread_id, parent_order_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           source = excluded.source, folder = excluded.folder, task = excluded.task,
+           chat_id = excluded.chat_id, created_at = excluded.created_at,
+           sdk_session_id = NULL, sdk_provider = NULL,
+           cause_msg_id = COALESCE(excluded.cause_msg_id, cause_msg_id),
+           thread_id = COALESCE(excluded.thread_id, thread_id),
+           parent_order_id = COALESCE(excluded.parent_order_id, parent_order_id)`,
       ).run(
         o.id, o.source, o.folder, o.task, o.chatId, o.createdAt,
         opts.cause?.msgId ?? null, opts.cause?.threadId ?? null, opts.parentOrderId ?? null,
@@ -808,7 +818,7 @@ export function openLedger(
          ON CONFLICT(chat_id, message_id) DO UPDATE SET
            session_id = excluded.session_id, folder = excluded.folder,
            project = excluded.project, at = excluded.at,
-           msg_id = excluded.msg_id, thread_id = excluded.thread_id`,
+           msg_id = COALESCE(excluded.msg_id, msg_id), thread_id = COALESCE(excluded.thread_id, thread_id)`,
       ).run(chatId, messageId, target.sessionId, target.folder, target.project, Date.now(), cause?.msgId ?? null, cause?.threadId ?? null);
       // Bound the table: drop the oldest rows past a generous keep-window (source of truth stays intact).
       db.query(
