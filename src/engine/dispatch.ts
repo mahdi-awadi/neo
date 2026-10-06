@@ -94,6 +94,8 @@ export interface ReplyMeta {
   cause?: Cause;
   /** The recorded row of this line, set by the recording wrapper: the channel binds its own id to it. */
   msgId?: number;
+  /** The project folder the line worked in (default: the named project's live session's folder). */
+  folder?: string;
 }
 
 /** Everything dispatch needs — a structural subset of the pipeline's deps. */
@@ -116,7 +118,8 @@ export interface DispatchDeps {
    *  PRESENCE gates the `ask_operator` tool: only operator surfaces (Telegram/web) wire it, so the
    *  customer/ingress path never gets ask_operator — the firewall, by construction. */
   postDecision?: (
-    rec: { id: string; project?: string; folder?: string },
+    /** `ref`: the ref of the decision's thread (trace only) — the card ends with it (spec §4.3). */
+    rec: { id: string; project?: string; folder?: string; ref?: string },
     question: string,
     options?: string[],
     /** A structured multi-question / multi-select ask (Feature 1). When set, the frontend renders the
@@ -484,7 +487,7 @@ export async function dispatchToProject(
    *  one the call is exactly what it was before. */
   const say = (text: string, priority?: Priority, meta?: { kind?: MessageKind; cause?: Cause }) =>
     meta?.cause
-      ? deps.reply(replyChat, text, name, priority, { cause: meta.cause, ...(meta.kind ? { kind: meta.kind } : {}) })
+      ? deps.reply(replyChat, text, name, priority, { cause: meta.cause, folder, ...(meta.kind ? { kind: meta.kind } : {}) })
       : deps.reply(replyChat, text, name, priority);
   // Reuse guard. A folder's session runs ONE turn at a time, so a second concurrent run must never
   // stack onto it. But "reuse" is NOT the same as "busy": a live session's registry status stays
@@ -920,7 +923,7 @@ export async function dispatchToProject(
         if (progressMs > 0 && t - lastDigestAt >= progressMs) {
           if (lastActivityAt > lastDigestAt) {
             const digest = progressDigest({ project: name, elapsedMs: t - startedAt, activity: lastActivity, lastNote, lastCommit: readCommit(folder) });
-            void say(digest, undefined, { kind: "progress", cause });
+            void say(digest, undefined, { kind: "digest", cause });
             try {
               // Under the dispatch's cause: the company turn reading it is filed in this thread.
               await dispatcher.deliver(digest, cause ? { wake: false, cause } : { wake: false });
@@ -1235,8 +1238,20 @@ export async function raiseOperatorDecision(
     options: params.options,
     spec: params.spec,
   });
-  const posted = await deps.postDecision?.({ id, project: params.project, folder: params.folder }, params.question, params.options, params.spec);
+  // The decision is a line of its thread (spec §4.3): recorded, its card carries the thread's ref, and
+  // the posted card is bound to the line so a reply to it joins the thread. Best-effort (ADR-0010).
+  const trace = deps.trace;
+  const cause = params.cause;
+  const lineId =
+    trace && cause
+      ? faults.guard("dispatch.decisionLine", () =>
+          trace.outbound({ chatId: params.chatId, text: params.question, cause, kind: "decision", project: params.project, folder: params.folder, orderId: params.orderId }),
+        )
+      : undefined;
+  const ref = trace && cause ? trace.ref(cause.threadId) : undefined;
+  const posted = await deps.postDecision?.({ id, project: params.project, folder: params.folder, ...(ref ? { ref } : {}) }, params.question, params.options, params.spec);
   if (posted) deps.ledger.setDecisionMessage(id, posted.chatId, posted.messageId);
+  if (posted && trace && lineId !== undefined) faults.guard("dispatch.decisionBind", () => trace.bindChannel(lineId, posted.chatId, posted.messageId));
   deps.ledger.recordEvent("decision_raised", {
     orderId: params.orderId,
     folder: params.folder,

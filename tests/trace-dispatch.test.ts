@@ -54,13 +54,15 @@ function setup(opts: { progressMs?: number } = {}) {
   const path = join(dir, "ledger.db");
   const ledger = openLedger(path);
   const registry = createRegistry();
-  const trace = createTrace({ ledger, registry });
   const cfg = loadConfig(dir);
   cfg.trustNewProjects = false;
   cfg.workRoot = root;
+  cfg.companyFolder = join(root, "agent");
+  const trace = createTrace({ ledger, registry, companyFolder: cfg.companyFolder });
   if (opts.progressMs !== undefined) cfg.dispatchProgressMs = opts.progressMs;
   const sent: Array<{ text: string; priority?: string }> = [];
   const files: string[] = [];
+  const posts: Array<{ id: string; project?: string; folder?: string; ref?: string }> = [];
   const { runs, start } = fakeRuns();
   const queue = createTodoQueue({ ledger, registry, onFailure: () => "continue", dispatchOpts: { start: start as never, root } });
   const pipeline: PipelineDeps = {
@@ -71,7 +73,10 @@ function setup(opts: { progressMs?: number } = {}) {
     trust: openTrustStore(":memory:"),
     reply: (_c, text, _p, priority) => void sent.push({ text, priority }),
     askApproval: async () => "deny",
-    postDecision: async () => ({ chatId: 99, messageId: 1 }),
+    postDecision: async (rec) => {
+      posts.push(rec);
+      return { chatId: 99, messageId: 1 };
+    },
     sendFile: (_c, p) => void files.push(p),
     todo: queue,
     trace,
@@ -81,7 +86,7 @@ function setup(opts: { progressMs?: number } = {}) {
   queue.setLauncher(() => ({ deps, replyChat: 7 }));
   const db = () => new Database(path, { readonly: true });
   const inbound = (text: string): Cause => trace.inbound({ chatId: 7, text, surface: "telegram" });
-  return { dir, root, ledger, registry, trace, cfg, pipeline, deps, queue, runs, sent, files, db, inbound };
+  return { dir, root, ledger, registry, trace, cfg, pipeline, deps, queue, runs, sent, files, posts, db, inbound };
 }
 
 type Handler = (a: Record<string, unknown>, e: unknown) => Promise<{ content: Array<{ text?: string }> }>;
@@ -151,10 +156,13 @@ test("the todo, dispatch_start/dispatch_end events, progress digest and final re
   const lines = s.ledger.messagesInThread(c.threadId, { limit: 100 }).reverse();
   const digest = lines.find((m) => m.content.startsWith("[dispatch progress]"));
   const result = lines.find((m) => m.content.includes("finished: seat map shipped"));
-  expect(digest).toMatchObject({ kind: "progress", causeId: c.msgId });
+  expect(digest).toMatchObject({ kind: "digest", causeId: c.msgId });
   expect(result).toMatchObject({ kind: "result", causeId: c.msgId });
-  // The channel copy of the result carries the thread ref; the digest (progress) carries none.
+  // The channel copies of the result and of the digest carry the thread ref (spec §4.3).
   expect(s.sent.find((l) => l.text.includes("finished"))!.text).toContain(s.trace.ref(c.threadId));
+  expect(s.sent.find((l) => l.text.startsWith("[dispatch progress]"))!.text).toContain(s.trace.ref(c.threadId));
+  // A streamed worker line carries no ref.
+  expect(s.sent.find((l) => l.text === "working on it")).toBeDefined();
   // The company gets the digest AND the result under the dispatch's cause, never its own last one.
   const digests = toCompany.filter((m) => m.text.startsWith("[dispatch progress]"));
   expect(digests.length).toBeGreaterThan(0);
@@ -361,4 +369,109 @@ test("a todo that never runs (cancelled, or its folder gone at release) drops it
   await settle();
   expect(s.ledger.todoById(3)?.status).toBe("failed");
   expect(s.queue._pendingParents()).toBe(0);
+});
+
+// ── P1 final-review fixes (I1–I4) ────────────────────────────────────────────────────────────
+
+test("todo lines are filed in the todo's thread: the queued ack carries its message ref; done/starting lines carry the thread ref", async () => {
+  const s = setup();
+  const root = s.inbound("ship the fares work");
+  // A later message in the same thread: its ref (the message) differs from the thread's.
+  const c = s.trace.inbound({ chatId: 7, text: "three briefs", surface: "web", threadId: root.threadId });
+  expect(c.msgId).not.toBe(c.threadId);
+  const servers = neoMcpServers({ ...s.deps }, 7, { dispatch: true, workClass: "interactive", folder: join(s.root, "agent"), orderId: "co-1", cause: () => c });
+  const dispatch = tool(servers, "dispatch");
+  await dispatch({ project: "eticket-v3", task: "first" }); // runs (#1)
+  await dispatch({ project: "eticket-v3", task: "second" }); // queued (#2)
+  await dispatch({ project: "eticket-v3", task: "third" }); // queued (#3)
+  const line = (start: string) => s.ledger.messagesInThread(c.threadId, { limit: 200 }).find((m) => m.content.startsWith(start));
+  const sentLine = (start: string) => s.sent.find((l) => l.text.startsWith(start))?.text;
+
+  expect(line("→ queued #2")).toMatchObject({ kind: "ack", causeId: c.msgId, threadId: c.threadId });
+  expect(sentLine("→ queued #2")).toContain(s.trace.ref(c.msgId));
+
+  // #1 ends: "done #1, starting #2" — a todo line, filed under the todo's cause, with the thread ref.
+  s.runs[0]!.finish({ ok: true, sessionId: "s1", summary: "first done", costUsd: 0 });
+  await settle();
+  expect(line("eticket-v3: done #1, starting #2")).toMatchObject({ kind: "result", causeId: c.msgId, threadId: c.threadId });
+  expect(sentLine("eticket-v3: done #1, starting #2")).toContain(s.trace.ref(c.threadId));
+
+  // #2 ends while the queue is paused; resume releases #3 through the launcher ("from the queue").
+  s.queue.pause("eticket-v3");
+  s.runs[1]!.finish({ ok: true, sessionId: "s1", summary: "second done", costUsd: 0 });
+  await settle();
+  expect(line("eticket-v3: done #2 — queue paused")).toMatchObject({ kind: "result", causeId: c.msgId });
+  s.queue.resume("eticket-v3");
+  await until(() => !!sentLine("eticket-v3: starting #3"));
+  expect(line("eticket-v3: starting #3")).toMatchObject({ kind: "result", causeId: c.msgId, threadId: c.threadId });
+  expect(sentLine("eticket-v3: starting #3")).toContain(s.trace.ref(c.threadId));
+});
+
+test("a raised decision is a 'decision' line in its thread; the posted card gets the thread ref and is bound to the line", async () => {
+  const s = setup();
+  const c = s.inbound("pick a db for the fares");
+  const servers = neoMcpServers({ ...s.deps }, 7, { dispatch: true, workClass: "interactive", folder: join(s.root, "agent"), orderId: "co-1", cause: () => c });
+  await tool(servers, "dispatch")({ project: "eticket-v3", task: "pick a db" });
+  await tool(s.runs[0]!.runDeps.mcpServers, "ask_operator")({
+    title: "Postgres or Mongo?",
+    context: "The fares store needs a database.",
+    options: [{ label: "Postgres", detail: "existing infra", recommended: true }, { label: "Mongo", detail: "new infra" }],
+    recommendation: "Postgres.",
+  });
+  expect(s.posts).toHaveLength(1);
+  expect(s.posts[0]!.ref).toBe(s.trace.ref(c.threadId));
+  const decision = s.ledger.messagesInThread(c.threadId, { limit: 100 }).find((m) => m.kind === "decision");
+  expect(decision).toMatchObject({ causeId: c.msgId, threadId: c.threadId });
+  expect(decision!.content).toContain("Postgres or Mongo?");
+  // The card the channel posted is bound to the line: a reply to it joins the thread.
+  const reply = s.trace.inbound({ chatId: 99, text: "Postgres", surface: "telegram", channelMsgId: 2, replyTo: { chatId: 99, channelMsgId: 1 } });
+  expect(reply.threadId).toBe(c.threadId);
+  expect(s.ledger.messageById(reply.msgId)?.causeId).toBe(decision!.id);
+});
+
+test("a decision raised with no cause (or no trace) posts no ref and writes no line", async () => {
+  const s = setup();
+  const before = s.ledger.conversation(7).length;
+  const { raiseOperatorDecision } = await import("../src/engine/dispatch");
+  await raiseOperatorDecision({ ledger: s.ledger, postDecision: s.pipeline.postDecision, trace: s.trace }, { chatId: 7, question: "which?" });
+  expect(s.posts[0]!.ref).toBeUndefined();
+  expect(s.ledger.conversation(7).length).toBe(before);
+});
+
+test("a manual loop's outcome line on the channel carries its loop thread's ref", async () => {
+  const s = setup();
+  const loop: LoopDef = {
+    name: "nightly-docs", usage: "/loop nightly-docs", summary: "docs", folder: join(s.root, "agent"), prompt: "sync docs",
+    goal: { kind: "command", command: ["true"] }, trigger: { kind: "manual" }, bounds: { maxIterations: 1 },
+  };
+  let checks = 0;
+  const check = async () => ({ met: checks++ > 0, detail: "docs in sync" });
+  const run = (async () => ({ ok: true, sessionId: "s1", summary: "ok", costUsd: 0 })) as never;
+  const said: string[] = [];
+  await startLoop(loop, 7, { reply: (_c, t) => void said.push(t), run, check, trace: s.trace });
+  const thread = (s.db().query(`SELECT id FROM threads WHERE origin = 'loop'`).get() as { id: number }).id;
+  const outcome = said.find((t) => t.includes("goal met"))!;
+  expect(outcome).toEndWith(` · \`${s.trace.ref(thread)}\``);
+  // Streamed/start lines carry none.
+  expect(said.find((t) => t.includes("starting on"))).not.toContain(s.trace.ref(thread));
+  // showRefs off: no ref.
+  said.length = 0;
+  checks = 0;
+  const cfg = { ...s.cfg, trace: { showRefs: "off" as const } };
+  await startLoop(loop, 7, { reply: (_c, t) => void said.push(t), run, check, trace: s.trace, cfg });
+  expect(said.some((t) => t.includes(" · `m"))).toBe(false);
+});
+
+test("a thread the company dispatched from learns the project it dispatched to; the company's own lines teach nothing", async () => {
+  const s = setup();
+  const company = s.registry.add({ id: "co-0", source: "neo", folder: join(s.root, "agent"), task: "company", chatId: 7, createdAt: 0 });
+  s.registry.setDefault(company.id);
+  s.registry.setStatus(company.id, "idle");
+  const c = s.inbound("fix the seat map");
+  await handleMessage("fix the seat map", 7, s.pipeline, "neo", c);
+  const companyRun = s.runs[0]!;
+  companyRun.h.onMessage("looking into it");
+  expect(s.ledger.threadById(c.threadId)?.project).toBeUndefined();
+  await tool(companyRun.runDeps.mcpServers, "dispatch")({ project: "eticket-v3", task: "fix the seat map" });
+  expect(s.ledger.threadById(c.threadId)).toMatchObject({ project: "eticket-v3", folder: join(s.root, "eticket-v3") });
 });

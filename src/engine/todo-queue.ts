@@ -8,7 +8,7 @@ import { basename } from "node:path";
 import type { Cause, Ledger, TodoRow } from "./ledger";
 import type { Registry } from "./registry";
 import { heldByReserve, type WorkClass } from "./budget";
-import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts } from "./dispatch";
+import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts, type ReplyMeta } from "./dispatch";
 import { lastCommitIn } from "./dispatch-report";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
@@ -106,6 +106,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   const runningTodo = (folder: string) => ledger.listTodos({ folder, statuses: ["running"], limit: 1 })[0];
   const busy = (folder: string) => !!runningTodo(folder) || projectBusy(registry, folder);
   const tag = (t: TodoRow) => `#${t.id} '${todoTitle(t.brief)}'`;
+  /** A line about a todo's run: a result-like line under the todo's own cause (its thread's ref). */
+  const todoLine = (t: TodoRow): ReplyMeta => ({ kind: "result", folder: t.folder, ...(t.cause ? { cause: t.cause } : {}) });
 
   const findFolder = (project: string, deps?: DispatchDeps): string | undefined => {
     const known = ledger.listTodos({ limit: 200 }).find((t) => t.project === project || t.folder === project);
@@ -226,7 +228,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           : r.waits && queued(t.folder).length > 0
             ? `${head}; next waits (${r.waits})`
             : undefined;
-    if (line) await (launcher() ?? l).deps.reply((launcher() ?? l).replyChat, line, t.project);
+    // A todo line (spec §4.3): filed under the todo's cause, so it carries its thread's ref.
+    if (line) await (launcher() ?? l).deps.reply((launcher() ?? l).replyChat, line, t.project, undefined, todoLine(t));
   };
 
   const describePosition = (t: TodoRow): number => queued(t.folder).findIndex((x) => x.id === t.id) + 1;
@@ -274,7 +277,11 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (mustWait) {
         const position = describePosition(t);
         ledger.recordEvent("todo_queued", { folder, data: { project, id: t.id, position, paused: !!paused }, cause: p.cause });
-        await deps.reply(replyChat, `→ queued #${t.id} for ${project} (position ${position}): ${todoTitle(p.brief)}`, project);
+        await deps.reply(replyChat, `→ queued #${t.id} for ${project} (position ${position}): ${todoTitle(p.brief)}`, project, undefined, {
+          kind: "ack",
+          folder,
+          ...(p.cause ? { cause: p.cause } : {}),
+        });
         return (
           `queued as #${t.id} for ${project}, position ${position}` +
           (paused
@@ -300,7 +307,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         try {
           const r = await release(folder, l, true);
           const t = r.started ?? r.delivered;
-          if (t) await l.deps.reply(l.replyChat, `${t.project}: starting ${tag(t)} (from the queue)`, t.project);
+          if (t) await l.deps.reply(l.replyChat, `${t.project}: starting ${tag(t)} (from the queue)`, t.project, undefined, todoLine(t));
         } catch {
           // one project's release must never stop the others
         }

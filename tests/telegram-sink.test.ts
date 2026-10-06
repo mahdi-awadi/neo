@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { makeTelegramSink, decisionKeyboard, createTelegramBot } from "../src/frontends/telegram";
+import { makeTelegramSink, decisionKeyboard, decisionCard, createTelegramBot } from "../src/frontends/telegram";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -259,4 +259,15 @@ test("the operator's typed decision answer is bound to its Telegram message, in 
   await r.press(`deco:${id}`);
   const mid = await r.text("Postgres");
   expect(r.ledger.messageByChannel(ADMIN, mid)).toMatchObject({ role: "user", content: "Postgres", threadId: root.threadId });
+});
+
+test("the Decisions-group card ends with its thread ref in monospace; showRefs off or no ref leaves it as before", () => {
+  const plain = decisionCard({ project: "gold" }, "Postgres or Mongo?", "auto");
+  expect(plain.text.endsWith("#gold Postgres or Mongo?")).toBe(true);
+  expect(plain.entities).toBeUndefined();
+  const card = decisionCard({ project: "gold", ref: "m4g2" }, "Postgres or Mongo?", "auto");
+  expect(card.text).toBe(`${plain.text} · m4g2`);
+  // The ref is a code entity (tap to copy), counted in UTF-16 units like Telegram.
+  expect(card.entities).toEqual([{ type: "code", offset: card.text.length - 4, length: 4 }]);
+  expect(decisionCard({ project: "gold", ref: "m4g2" }, "Postgres or Mongo?", "off")).toEqual(plain);
 });

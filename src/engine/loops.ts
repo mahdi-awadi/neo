@@ -17,10 +17,10 @@ import { profileDeps } from "./worker-profile";
 import { sessionContext, contextWindows, decideContext, effectiveCacheTtlMs, CACHE_OBS_WINDOW, windowTokensFor } from "./context-policy";
 import { memoryDir, memoryScopeEnabled } from "./memory";
 import { memoryTools } from "./memory-tool";
-import type { NeoConfig } from "../config";
+import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "./ledger";
 import { faults } from "./fault";
-import type { Cause, Trace } from "./trace";
+import { refSuffix, type Cause, type Trace } from "./trace";
 import type { MessageKind } from "./ledger";
 
 /** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
@@ -85,17 +85,21 @@ export interface LoopDeps {
 }
 
 /** A loop fire is engine-started work: it gets its own thread (spec §4.2, background roots). Returns
- *  a line writer filed under that root, or a no-op when there is no trace. Best-effort (ADR-0010): a
- *  trace fault never stops the loop. */
-function loopThread(trace: Trace | undefined, loop: LoopDef, chatId: number): (text: string, kind: MessageKind) => void {
-  if (!trace) return () => {};
+ *  a line writer filed under that root — it returns the ref suffix the line's channel copy ends with
+ *  (spec §4.3: a result carries its thread's ref; progress none) — or a no-op ("") when there is no
+ *  trace. Best-effort (ADR-0010): a trace fault never stops the loop. */
+function loopThread(trace: Trace | undefined, loop: LoopDef, chatId: number, cfg?: NeoConfig): (text: string, kind: MessageKind) => string {
+  if (!trace) return () => "";
   const project = basename(loop.folder);
   const cause: Cause | undefined = faults.guard("loop.root", () => trace.root({ origin: "loop", title: `loop ${loop.name}`, project, folder: loop.folder }), {
     loop: loop.name,
   });
-  if (!cause) return () => {};
-  return (text, kind) =>
+  if (!cause) return () => "";
+  const mode = (cfg?.trace ?? DEFAULT_TRACE).showRefs;
+  return (text, kind) => {
     void faults.guard("loop.line", () => trace.outbound({ chatId, text, cause, kind, project, folder: loop.folder }), { loop: loop.name });
+    return refSuffix(kind, false, trace.ref(cause.threadId), mode);
+  };
 }
 
 // The built-in loops are generic, deployment-neutral examples of the trigger → action → goal model.
@@ -558,7 +562,7 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
     await deps.reply(chatId, `🔁 ${loop.name}: ⚠️ ${gated.lastDetail}`);
     return gated;
   }
-  const line = loopThread(deps.trace, loop, chatId);
+  const line = loopThread(deps.trace, loop, chatId, deps.cfg);
   await deps.reply(chatId, `🔁 ${loop.name}: starting on ${loop.folder}…`);
   const { check, ...extras } = loopRunExtras(loop, deps);
   const out = await runProjectLoop(
@@ -578,8 +582,7 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
     { run: deps.run, check },
   );
   const outcome = `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`;
-  line(outcome, "result");
-  await deps.reply(chatId, outcome);
+  await deps.reply(chatId, outcome + line(outcome, "result"));
   return out;
 }
 
@@ -628,7 +631,7 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
     await deps.reply(deps.chatId, gated.lastDetail, project);
     return gated;
   }
-  const line = loopThread(deps.trace, loop, deps.chatId);
+  const line = loopThread(deps.trace, loop, deps.chatId, deps.cfg);
   const { check, ...extras } = loopRunExtras(loop, deps);
   return runProjectLoop(
     {

@@ -185,8 +185,10 @@ export interface Ledger {
   insertThread(t: NewThread): void;
   threadById(id: number): ThreadRow | undefined;
   setThreadState(id: number, state: ThreadState, at: number): void;
-  /** A new line joined the thread: record it as the newest and bump `updated_at`. */
-  touchThread(id: number, lastMsgId: number, at: number): void;
+  /** A new line joined the thread: record it as the newest and bump `updated_at`. `learn`: the
+   *  project the line worked in fills the thread's project/folder when it has none yet — set once,
+   *  never overwritten (spec §3.2). One UPDATE either way. */
+  touchThread(id: number, lastMsgId: number, at: number, learn?: { project: string; folder: string }): void;
   /** The ledger's facts about one thread (spec §5), for deriveThreadState. */
   threadFacts(id: number): ThreadFacts;
   /** The message a Telegram reply target was routed under (`message_routes.msg_id/thread_id`), if recorded. */
@@ -601,8 +603,15 @@ export function openLedger(
     setThreadState(id, state, at) {
       db.query(`UPDATE threads SET state = ?, updated_at = ? WHERE id = ?`).run(state, at, id);
     },
-    touchThread(id, lastMsgId, at) {
-      db.query(`UPDATE threads SET last_msg_id = ?, updated_at = ? WHERE id = ?`).run(lastMsgId, at, id);
+    touchThread(id, lastMsgId, at, learn) {
+      // SET expressions read the row as it was: `project IS NULL` is the pre-update value, so the
+      // folder moves with the project only when the project is filled here.
+      db.query(
+        `UPDATE threads SET last_msg_id = ?1, updated_at = ?2,
+           folder = CASE WHEN project IS NULL AND ?4 IS NOT NULL THEN ?5 ELSE folder END,
+           project = COALESCE(project, ?4)
+         WHERE id = ?3`,
+      ).run(lastMsgId, at, id, learn?.project ?? null, learn?.folder ?? null);
     },
     threadFacts(id) {
       const f = db

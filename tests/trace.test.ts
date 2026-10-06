@@ -190,3 +190,25 @@ test("engine-started roots live in their own reserved chat, apart from the web c
   const c = t.root({ origin: "loop", title: "loop docs-sweep" });
   expect(led.messageById(c.msgId)?.chatId).toBe(-4);
 });
+
+test("a thread learns its project from the first line that names a project folder; it is never overwritten", () => {
+  const led = openLedger(":memory:");
+  const t = createTrace({ ledger: led, registry: createRegistry(), companyFolder: "/home/neo/agent" });
+  const c = t.inbound({ chatId: 7, text: "fix gold", surface: "telegram" });
+  // The company's own lines (its folder) and a line with no folder teach nothing (spec §3.2: NULL
+  // while only the company has touched it).
+  t.outbound({ chatId: 7, text: "on it", cause: c, project: "agent", folder: "/home/neo/agent" });
+  t.outbound({ chatId: 7, text: "thinking", cause: c, project: "gold" });
+  expect(led.threadById(c.threadId)?.project).toBeUndefined();
+  expect(led.threadById(c.threadId)?.folder).toBeUndefined();
+  // The first project line fills it…
+  t.outbound({ chatId: 7, text: "→ dispatching to gold", cause: c, kind: "ack", project: "gold", folder: "/home/gold" });
+  expect(led.threadById(c.threadId)).toMatchObject({ project: "gold", folder: "/home/gold" });
+  // …and a later project never overwrites it.
+  t.outbound({ chatId: 7, text: "→ dispatching to silver", cause: c, kind: "ack", project: "silver", folder: "/home/silver" });
+  expect(led.threadById(c.threadId)).toMatchObject({ project: "gold", folder: "/home/gold" });
+  // A root's own project is kept as it was.
+  const r = t.root({ origin: "loop", title: "loop x", project: "neo", folder: "/home/neo" });
+  t.outbound({ chatId: 7, text: "line", cause: r, project: "gold", folder: "/home/gold" });
+  expect(led.threadById(r.threadId)).toMatchObject({ project: "neo", folder: "/home/neo" });
+});

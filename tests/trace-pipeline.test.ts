@@ -331,3 +331,15 @@ test("the approval verdict row uses the injected clock and is the thread's newes
   expect(newest).toMatchObject({ role: "user", content: "approval: allow", at: 4242 });
   expect(h.ledger.threadById(cause.threadId)?.lastMsgId).toBe(newest.id);
 });
+
+test("an operator message that opens a project: its thread reads that project, and /trace shows it", async () => {
+  const h = harness();
+  const dir = scratch();
+  const cause = inbound(h, `/open ${dir} build x`);
+  await handleMessage(`/open ${dir} build x`, 7, h.deps, "neo", cause);
+  h.f.h().onMessage("working on it");
+  const name = h.registry.findByFolder(dir)!.name;
+  expect(h.ledger.threadById(cause.threadId)).toMatchObject({ project: name, folder: dir });
+  const { renderTrace } = await import("../src/engine/trace");
+  expect(renderTrace(h.trace.tree(cause.msgId), h.trace.ref).split("\n")[1]).toContain(name);
+});

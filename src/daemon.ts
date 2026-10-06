@@ -69,7 +69,7 @@ async function main(): Promise<void> {
   // The cause seam (ADR-0015): ONE trace per daemon, shared by Telegram, the web console, the todo
   // queue (through the frontends' dispatch deps), scheduled loops and ingress — so every surface
   // files its lines in the same threads.
-  const trace = createTrace({ ledger, registry });
+  const trace = createTrace({ ledger, registry, companyFolder: cfg.companyFolder });
   // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
   // above: fail it with its stop point (failure policy applies). Queued todos stay queued; the
   // heartbeat tick releases them in order once the operator channel registers its launcher.

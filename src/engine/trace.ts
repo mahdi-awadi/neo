@@ -113,7 +113,13 @@ export function renderTrace(tree: TraceTree, ref: (id: number) => string, opts: 
   return [...head, ...body, ...tail].join("\n");
 }
 
-export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: () => number }): Trace {
+export function createTrace(deps: {
+  ledger: Ledger;
+  registry: Registry;
+  now?: () => number;
+  /** The company's folder: its own lines never name a thread's project (spec §3.2). */
+  companyFolder?: string;
+}): Trace {
   const { ledger, registry } = deps;
   const now = deps.now ?? Date.now;
 
@@ -140,9 +146,9 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
 
   /** A line joined a thread: mark it the newest and re-derive the state. Best-effort (ADR-0010): the
    *  line is already written, so a fault here is reported, never thrown at the operator's line. */
-  function bookkeep(component: string, line: Cause, at: number): void {
+  function bookkeep(component: string, line: Cause, at: number, learn?: { project: string; folder: string }): void {
     faults.guard(component, () => {
-      ledger.touchThread(line.threadId, line.msgId, at);
+      ledger.touchThread(line.threadId, line.msgId, at, learn);
       refreshThread(line.threadId);
     }, { msgId: line.msgId, threadId: line.threadId });
   }
@@ -182,7 +188,9 @@ export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: ()
         threadId: p.cause?.threadId, causeId: p.cause?.msgId,
         project: p.project, folder: p.folder, orderId: p.orderId, priority: p.priority,
       });
-      if (p.cause) bookkeep("trace.outbound", { msgId, threadId: p.cause.threadId }, at);
+      // A line that worked in a project (not the company) teaches its thread that project, once.
+      const learn = p.project && p.folder && p.folder !== deps.companyFolder ? { project: p.project, folder: p.folder } : undefined;
+      if (p.cause) bookkeep("trace.outbound", { msgId, threadId: p.cause.threadId }, at, learn);
       return msgId;
     },
     bindChannel(msgId, chatId, channelMsgId) {

@@ -220,7 +220,9 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
       let msgId: number | undefined;
       const suffix =
         faults.guard("pipeline.recordReply", () => {
-          msgId = trace.outbound({ chatId: c, text: t, cause, kind, project, priority, at: now() });
+          // The folder the line worked in: named by the caller, else the project's live session's.
+          const folder = meta?.folder ?? (project !== undefined ? registry.findByName(project)?.order.folder : undefined);
+          msgId = trace.outbound({ chatId: c, text: t, cause, kind, project, folder, priority, at: now() });
           if (!cause) return "";
           const ref = trace.ref(THREAD_REF_KINDS.has(kind) ? cause.threadId : cause.msgId);
           return refSuffix(kind, kind === "text" && firstOfTurn(session, cause), ref, mode);

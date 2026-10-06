@@ -4,9 +4,9 @@
 // file is I/O wiring, verified at the daemon e2e step.
 import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ApiClientOptions } from "grammy";
-import type { UserFromGetMe } from "grammy/types";
+import type { MessageEntity, UserFromGetMe } from "grammy/types";
 import { saveInbound } from "../engine/files";
-import type { NeoConfig } from "../config";
+import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "../engine/ledger";
 import type { Registry } from "../engine/registry";
 import type { Meter } from "../engine/budget";
@@ -29,7 +29,7 @@ import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
 import { knownIds, type LineIds, type OperatorBus, type OperatorSink } from "../engine/operator-bus";
-import type { Cause, Trace } from "../engine/trace";
+import { refSuffix, type Cause, type Trace } from "../engine/trace";
 import type { ReplyMeta } from "../engine/pipeline";
 import { surfaceFor, routeChat, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
 import { openEscalationDecision, patientApproval, resolveEscalationDecision } from "../engine/escalation";
@@ -54,6 +54,20 @@ import {
  *  text — never wrapped in <code>/<pre> — so Telegram auto-links it under parse_mode HTML too. */
 export function projectTagPrefix(project?: string): string {
   return project ? `${projectHashtag(project)} ` : "";
+}
+
+/** The Decisions-group card (plain text): badge, #project tag, the question, then — when the decision
+ *  has a thread and refs are on — its thread's ref (spec §4.3) as a code entity (tap to copy). Offsets
+ *  are UTF-16 units, as Telegram counts them. Pure. */
+export function decisionCard(
+  rec: { project?: string; ref?: string },
+  question: string,
+  mode: "auto" | "off",
+): { text: string; entities?: MessageEntity[] } {
+  const body = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${question}`;
+  if (!rec.ref || !refSuffix("decision", false, rec.ref, mode)) return { text: body };
+  const text = `${body} · ${rec.ref}`;
+  return { text, entities: [{ type: "code", offset: text.length - rec.ref.length, length: rec.ref.length }] };
 }
 
 /** The full first-chunk prefix for an outbound line: the priority's single colored accent (🟢/🔴/…
@@ -300,19 +314,19 @@ export function createTelegramBot(
   // decision row (a tap/reply then resolves that exact decision). Best-effort — a send failure just
   // means the decision stays queued (surfaced by the secretary digest / /decisions) with no channel post.
   async function postDecision(
-    rec: { id: string; project?: string; folder?: string },
+    rec: { id: string; project?: string; folder?: string; ref?: string },
     question: string,
     options?: string[],
     spec?: StructuredAsk,
   ): Promise<{ chatId: number; messageId: number } | undefined> {
     const target = cfg.decisionsChatId ?? admin.adminId();
     if (target === undefined) return undefined; // no operator claimed yet — the queue still holds it
-    const body = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${question}`;
+    const card = decisionCard(rec, question, (cfg.trace ?? DEFAULT_TRACE).showRefs);
     // A structured ask (multi-select / multi-question) renders the richer keyboard; a flat single
     // choice keeps the legacy one-tap keyboard so its UX is unchanged.
     const keyboard = spec ? structuredKeyboard(rec.id, spec) : decisionKeyboard(rec.id, options);
     try {
-      const m = await bot.api.sendMessage(target, body, { reply_markup: keyboard });
+      const m = await bot.api.sendMessage(target, card.text, { reply_markup: keyboard, ...(card.entities ? { entities: card.entities } : {}) });
       // Wire a plain reply to this message back into the raising project (routeReply), when its
       // session is still around; if it's closed, the decision-answer path re-registers from the ledger.
       if (rec.folder) {
