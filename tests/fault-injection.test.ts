@@ -414,3 +414,21 @@ test("telegram inbox: a draft edited while the approval waited is not sent on Al
   const reshown = t.calls.filter((c) => c.method === "sendMessage" && String(c.payload.text).includes("Version two."));
   expect(reshown.at(-1)?.payload.reply_markup).toBeDefined();
 });
+
+test("telegram: an untapped approval times out to deny, closes its row, and a late tap is told it expired (ADR-0012)", async () => {
+  const t = telegramRig({ config: { governor: { outOfFolderWrites: "allow", approvalRemindMs: 0, approvalTimeoutMs: 20 } } });
+  const item = t.inbox.record({ from: "customer@example.com", text: "hi" });
+  t.inbox.setDraft(item.id, "Thanks.");
+  await within(t.press(`inbox-send:${item.id}`), 500, "the inbox-send handler");
+  await tick(60);
+  expect(t.sent()).toContain("Send cancelled.");
+  expect(t.sent().some((s) => s.includes("no answer in"))).toBe(true);
+  expect(t.ledger.listOpenDecisions()).toEqual([]);
+  const ask = t.calls.find((c) => c.method === "sendMessage" && String(c.payload.text).includes("Approve this action?"));
+  const allow = ask!.payload.reply_markup.inline_keyboard[0][0].callback_data as string;
+  await within(t.press(allow), 500, "the late Allow press");
+  await tick();
+  const answer = t.calls.filter((c) => c.method === "answerCallbackQuery").at(-1);
+  expect(String(answer?.payload.text)).toContain("No longer pending");
+  expect(faults).toEqual([]);
+});

@@ -125,7 +125,7 @@ for (const [name, deps] of SHAPES) {
 // ADR-0014: at an armed context checkpoint the hook DENIES (not "ask") — the reason tells the worker
 // to write its handoff note and end the turn. No steer opinion → the governor's own verdict, unchanged.
 test("a context steer reason denies the call with that reason", async () => {
-  const hook = buildGovernorHook(FOLDER, (tool) => (tool === "Edit" ? "stop: write HANDOFF.md" : undefined));
+  const hook = buildGovernorHook(FOLDER, "ask", (tool) => (tool === "Edit" ? "stop: write HANDOFF.md" : undefined));
   const out = (await hook(pre("Edit", { file_path: `${FOLDER}/a.ts`, old_string: "a", new_string: "b" }) as never, "t1", { signal: new AbortController().signal })) as {
     hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
   };
@@ -135,7 +135,7 @@ test("a context steer reason denies the call with that reason", async () => {
 });
 
 test("a throwing context steer never breaks the hook — the governor's verdict stands", async () => {
-  const hook = buildGovernorHook(FOLDER, () => {
+  const hook = buildGovernorHook(FOLDER, "ask", () => {
     throw new Error("boom");
   });
   const out = (await hook(pre("Bash", { command: "git push --force origin main" }) as never, "t1", { signal: new AbortController().signal })) as {

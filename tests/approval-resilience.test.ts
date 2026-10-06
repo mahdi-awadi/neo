@@ -91,3 +91,15 @@ test("the approval bridge self-heals — the next call escalates normally once t
   const second = await canUse("Bash", { command: "git push" });
   expect(second.behavior).toBe("allow"); // governance resumes — no permanent wedge
 });
+
+test("canUseTool hands the SDK's abort signal to the escalation, so a killed run stops waiting", async () => {
+  let got: AbortSignal | undefined;
+  const canUse = buildCanUseTool(
+    handlers({ onEscalation: async (_reason, signal) => { got = signal; return "deny"; } }),
+    "/tmp",
+    "neo",
+  );
+  const run = new AbortController();
+  await canUse("Bash", { command: "git push origin main" }, { signal: run.signal });
+  expect(got).toBe(run.signal);
+});

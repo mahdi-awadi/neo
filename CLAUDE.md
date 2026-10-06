@@ -40,8 +40,10 @@ prompt:
 - **Budget guard:** background SDK work shares your subscription pool, so reserve interactive
   headroom — never drain the plan you use yourself (`subscriptionInteractiveReservePct`).
 - **Approval gate (hardened):** the governor is default-ESCALATE — unknown tools, foreign MCP
-  tools, WebFetch, and out-of-folder Write/Edit all ask Neo (autonomous paths auto-deny). File
-  writes are path-fenced to the session's project folder. Customer-tainted briefs (inbox
+  tools and WebFetch all ask Neo (autonomous paths auto-deny). Out-of-folder Write/Edit is
+  pre-approved for own work by operator order (`governor.outOfFolderWrites`, ADR-0012); customer
+  work stays path-fenced to the project folder. A pending approval reminds the operator, then
+  denies on timeout. Customer-tainted briefs (inbox
   drafting) run with **zero tools** (`TAINTED_DISALLOWED_TOOLS` + no MCP): customer email text
   never reaches a worker that can act. Operator-mediated drafting on Claude is own-work
   (Neo reviews/edits/sends every reply); direct customer I/O stays off the subscription.
@@ -52,7 +54,8 @@ Phases 1-3 (skeleton → live sessions → operator web console) are done. Also 
 customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
 rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
 down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), the toolchain auto-updater
-(ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011),
+(ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011), pre-approved out-of-folder writes + approval
+reminders/timeout (ADR-0012),
 the Telegram flood gate, the context sweet spot (boundary handoffs + safe checkpoints, ADR-0014), and context-efficiency Phase 1
 (per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;

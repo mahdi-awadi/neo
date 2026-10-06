@@ -56,6 +56,8 @@ import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import type { TodoQueue } from "./todo-queue";
 import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
+import { patientApproval } from "./escalation";
+import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { canResumeWith } from "./sdk-choice";
 import { supportsRunConfigField } from "./model-resolver";
 import {
@@ -87,7 +89,8 @@ export interface DispatchDeps {
   usage?: UsageMeter;
   trust: TrustStore;
   reply: (chatId: number, text: string, project?: string, priority?: Priority) => void | Promise<void>;
-  askApproval: (chatId: number, reason: string) => Promise<"allow" | "deny">;
+  /** `signal` aborts when the engine gives up waiting (approval timeout): drop the prompt. */
+  askApproval: (chatId: number, reason: string, signal?: AbortSignal) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
   /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
@@ -141,6 +144,10 @@ export interface DispatchDeps {
   models?: NeoConfig["models"];
   /** Own-work provider choice, threaded into dispatched worker launches when present. */
   providers?: NeoConfig["providers"];
+  /** Governor knobs (ADR-0012): the out-of-folder write answer for the dispatched worker and the
+   *  approval reminder/timeout. Absent ⇒ writes "ask" (so the customer ingress path, which does not
+   *  thread it, keeps the fence) and the default approval patience. */
+  governor?: NeoConfig["governor"];
   /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
   workerEnv?: Record<string, string>;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
@@ -371,10 +378,11 @@ export async function dispatchToProject(
     workerEnv: deps.workerEnv ?? {},
   };
   const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> &
-    Partial<Pick<NeoConfig, "providers" | "models">> = {
+    Partial<Pick<NeoConfig, "providers" | "models" | "governor">> = {
     ...workerCfg,
     providers: deps.providers,
     models: deps.models,
+    governor: deps.governor,
   };
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.
@@ -697,10 +705,15 @@ export async function dispatchToProject(
         },
         // An escalation SUSPENDS the worker mid-tool with no SDK events at all, so without marking
         // it the stall monitor would abort a worker that is doing exactly what it was told to do.
-        onEscalation: async (reason) => {
+        onEscalation: async (reason, signal) => {
           noteRegistry(() => deps.registry.noteBlocked(session.id, { kind: "approval", label: reason, since: now() }));
           try {
-            return await deps.askApproval(replyChat, reason);
+            return await patientApproval((signal) => deps.askApproval(replyChat, reason, signal), reason, {
+              patience: deps.governor ?? DEFAULT_GOVERNOR_CFG,
+              say: (text, priority) => void deps.reply(replyChat, text, name, priority),
+              record: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data: { project: name, ...data } }),
+              signal,
+            });
           } finally {
             lastActivityAt = now(); // the wait was the operator's, not the worker's
             noteRegistry(() => deps.registry.noteBlocked(session.id, undefined));

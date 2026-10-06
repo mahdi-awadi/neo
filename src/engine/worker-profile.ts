@@ -5,7 +5,7 @@ import type { RunDeps } from "./session-runner";
 import { filterSdkEnv, sdkProvider, supportsRunConfigField, withLongContext } from "./model-resolver";
 
 type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> &
-  Partial<Pick<NeoConfig, "providers" | "models">>;
+  Partial<Pick<NeoConfig, "providers" | "models" | "governor">>;
 
 /** Which model this launch gets, in precedence order: the call site, then the path's profile, then
  *  the pinned default — and whichever wins, a tier alias is expanded to its real id so no
@@ -49,6 +49,11 @@ export function profileDeps(
   if (supportsRunConfigField(d.provider, "effort") && p.effort && d.effort === undefined) d.effort = p.effort;
   if (supportsRunConfigField(d.provider, "skills") && p.skills !== undefined && d.skills === undefined) d.skills = p.skills;
   if (supportsRunConfigField(d.provider, "maxTurns") && p.maxTurns && d.maxTurns === undefined) d.maxTurns = p.maxTurns;
+  // The operator's standing out-of-folder write approval is own work only (ADR-0012): ingress runs
+  // customer-driven briefs, so it keeps the fence.
+  if (path !== "ingress" && cfg.governor && d.outOfFolderWrites === undefined) {
+    d.outOfFolderWrites = cfg.governor.outOfFolderWrites;
+  }
   const env = filterSdkEnv(d.provider, { ...cfg.workerEnv, ...(base.env ?? {}) });
   if (Object.keys(env).length) d.env = env;
   return d;

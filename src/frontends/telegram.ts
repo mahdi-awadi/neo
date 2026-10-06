@@ -30,7 +30,8 @@ import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
 import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
 import { surfaceFor, routeChat, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
-import { openEscalationDecision, resolveEscalationDecision } from "../engine/escalation";
+import { openEscalationDecision, patientApproval, resolveEscalationDecision } from "../engine/escalation";
+import { DEFAULT_GOVERNOR_CFG } from "../engine/governor";
 import type { ApiCooldown } from "../engine/api-retry";
 import { faults } from "../engine/fault";
 import {
@@ -440,7 +441,7 @@ export function createTelegramBot(
       bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
-    askApproval: (cid, reason) =>
+    askApproval: (cid, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
         // Track the escalation as a DECISION so an ignored allow/deny still shows in /decisions + the
@@ -449,6 +450,13 @@ export function createTelegramBot(
         const sess = registry.findByChat(cid);
         const decisionId = openEscalationDecision(ledger, { reason, project: sess?.name, folder: sess?.order.folder, chatId: cid });
         pending.set(token, { resolve, decisionId });
+        // The engine gave up waiting (approval timeout, ADR-0012): it already denied, so drop the
+        // prompt and close the tracked decision row — a late tap then finds nothing to resolve.
+        signal?.addEventListener("abort", () => {
+          if (!pending.delete(token)) return;
+          faults.guard("telegram.approval", () => resolveEscalationDecision(ledger, decisionId, "deny"));
+          resolve("deny");
+        }, { once: true });
         const kb = new InlineKeyboard().text("Allow", `a:${token}`).text("Deny", `d:${token}`);
         // Route the blocking approval to the unmuted Decisions channel (falls back to the DM when
         // decisionsChatId is unset — today's behavior). The Allow/Deny buttons stay actionable here;
@@ -770,7 +778,15 @@ export function createTelegramBot(
         "telegram.inboxSend",
         async () => {
           try {
-            const decision = await pipelineDeps().askApproval(chatId, `Send this reply to ${view.item.from}?\n\n${approved.draft}`);
+            const deps = pipelineDeps();
+            const question = `Send this reply to ${view.item.from}?\n\n${approved.draft}`;
+            // Same patience as every approval (ADR-0012): reminders, then a deny, so an untapped
+            // Send never holds this item "busy" until a restart.
+            const decision = await patientApproval((signal) => deps.askApproval(chatId, question, signal), question, {
+              patience: cfg.governor ?? DEFAULT_GOVERNOR_CFG,
+              say: (text, priority) => void deps.reply(chatId, text, undefined, priority),
+              record: (kind, data) => ledger.recordEvent(kind, { data: { inboxItem: id, ...data } }),
+            });
             // The Send tap removed the item's buttons, so an outcome that did not send re-shows the item
             // (current draft + buttons) for the operator's next move.
             const reshow = async () => {
@@ -829,7 +845,10 @@ export function createTelegramBot(
       await ctx.answerCallbackQuery(verdict === "allow" ? "Allowed" : "Denied");
       await ctx.editMessageReplyMarkup(); // drop the buttons
     } else {
-      await ctx.answerCallbackQuery();
+      // No waiting resolver: it timed out (ADR-0012) or a restart dropped it. Say so and drop the
+      // stale buttons, so a late Allow never looks like it worked.
+      await ctx.answerCallbackQuery("No longer pending — this approval timed out or expired.");
+      await ctx.editMessageReplyMarkup().catch(() => {});
     }
   });
 

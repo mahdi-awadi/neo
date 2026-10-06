@@ -754,6 +754,15 @@ says that writes outside the folder still ask. The store from `4b7848c` was reje
 row as trusted, so the eight live `off` rows would become trusted. Tests: `tests/trust-fence.test.ts`.
 Going live needs a daemon restart (operator-gated).
 
+**Out-of-folder writes pre-approved; approvals never wait forever (2026-10-06, ADR-0012).** The
+fence stalled gold for 4h+ and waselni for 7h on a worker's own memory or `/tmp` writes. The
+operator gave a standing approval. New `governor.outOfFolderWrites` (default `"allow"`) allows
+those writes for all own work. Customer work and ingress keep the fence, and tainted briefs keep zero
+tools. Every operator approval now goes through `patientApproval`: a reminder every 30 min and a deny
+after 2 h (`governor.approvalRemindMs` / `approvalTimeoutMs`). Tests:
+`tests/governor-out-of-folder.test.ts`, `tests/approval-patience.test.ts`. Going live needs a daemon
+restart (operator-gated).
+
 ### Engine error containment (ADR-0010, 2026-10-04)
 
 One error no longer takes the engine down. An audit found no process error handlers, no grammy
