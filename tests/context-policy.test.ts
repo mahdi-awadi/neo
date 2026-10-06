@@ -17,6 +17,7 @@ import {
   continuationBrief,
   missingSections,
   finalizeHandoffNote,
+  noteStamp,
   handoffPreamble,
   trackHandoff,
   awaitHandoff,
@@ -435,6 +436,7 @@ test("sessionContext says whether the window was reported or guessed", () => {
 // ---- ADR-0014: the handoff note, its engine facts, the continuation, one handoff per folder ----
 
 const NOTE = HANDOFF_SECTIONS.map((h) => `## ${h}\nx`).join("\n\n");
+const again0 = (dir: string) => readFileSync(join(dir, "HANDOFF.md"), "utf8") + "\nmore";
 
 test("HANDOFF_PROMPT and the checkpoint steer both ask for every required section", () => {
   for (const h of HANDOFF_SECTIONS) {
@@ -459,7 +461,7 @@ test("continuationBrief carries the original brief once, however often a task is
 test("finalizeHandoffNote appends git facts to a fresh note and reports missing sections", () => {
   const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
   writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship it\n");
-  const r = finalizeHandoffNote(dir, { branch: "feat/x", head: "abc1234 add cart", uncommitted: [], occupancy: 0.52, at: 0, boundary: "settled", reason: "above-sweet-spot" }, { since: 0, fallback: () => "unused" });
+  const r = finalizeHandoffNote(dir, { branch: "feat/x", head: "abc1234 add cart", uncommitted: [], occupancy: 0.52, at: 0, boundary: "settled", reason: "above-sweet-spot" }, { before: undefined, fallback: () => "unused" });
   expect(r).toEqual({ written: true, missing: ["Done", "Next steps", "Branch / commit", "Open decisions", "Gotchas"] });
   const note = readFileSync(join(dir, "HANDOFF.md"), "utf8");
   expect(note.startsWith("## Goal\nship it")).toBe(true);
@@ -468,7 +470,10 @@ test("finalizeHandoffNote appends git facts to a fresh note and reports missing 
   expect(note).toContain("abc1234 add cart");
   expect(note).toContain("52%");
   // run twice (a second handoff on the same note): ONE facts block, the newest
-  finalizeHandoffNote(dir, { branch: "feat/y", occupancy: 0.6, at: 0, boundary: "settled" }, { since: 0, fallback: () => "unused" });
+  const stamp = noteStamp(dir);
+  writeFileSync(join(dir, "HANDOFF.md"), again0(dir)); // the second handoff's worker rewrites the note
+  expect(noteStamp(dir)).not.toBe(stamp);
+  finalizeHandoffNote(dir, { branch: "feat/y", occupancy: 0.6, at: 0, boundary: "settled" }, { before: stamp, fallback: () => "unused" });
   const again = readFileSync(join(dir, "HANDOFF.md"), "utf8");
   expect(again.split("## Engine facts").length).toBe(2);
   expect(again).toContain("feat/y");
@@ -476,11 +481,21 @@ test("finalizeHandoffNote appends git facts to a fresh note and reports missing 
 
 test("finalizeHandoffNote writes the fallback when the turn left no fresh note", () => {
   const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
-  const r = finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { since: 0, fallback: () => "# fallback" });
+  const r = finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { before: undefined, fallback: () => "# fallback" });
   expect(r.written).toBe(false);
   expect(readFileSync(join(dir, "HANDOFF.md"), "utf8")).toStartWith("# fallback");
-  writeFileSync(join(dir, "HANDOFF.md"), "old note"); // a note OLDER than the handoff is stale
-  expect(finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { since: Date.now() + 60_000, fallback: () => "# fallback" }).written).toBe(false);
+  writeFileSync(join(dir, "HANDOFF.md"), "old note");
+  // the note the turn found and did not touch is stale, however recent its mtime
+  expect(finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { before: noteStamp(dir), fallback: () => "# fallback" }).written).toBe(false);
+});
+
+test("noteStamp is undefined without a note and changes when the note is rewritten", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-stamp-"));
+  expect(noteStamp(dir)).toBeUndefined();
+  writeFileSync(join(dir, "HANDOFF.md"), "a");
+  const a = noteStamp(dir);
+  writeFileSync(join(dir, "HANDOFF.md"), "bb");
+  expect(noteStamp(dir)).not.toBe(a);
 });
 
 test("handoffPreamble inlines a pending handoff's note once, capped, and records the resume", () => {

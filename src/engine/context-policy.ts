@@ -416,17 +416,30 @@ export function engineFactsBlock(f: HandoffFacts): string {
   ].join("\n");
 }
 
-/** After a handoff: make sure HANDOFF.md exists and is fresh (written at or after `since`) — else
- *  write `fallback()` — then append the engine facts, replacing an older facts block. Best-effort:
- *  never throws. */
+/** The note's identity right now (mtime + size), or undefined when there is none. Taken BEFORE a
+ *  handoff turn and compared after it: comparing the mtime with the wall clock is wrong, because file
+ *  times come from a coarse kernel clock that can lag `Date.now()` by milliseconds. */
+export function noteStamp(folder: string): string | undefined {
+  try {
+    const st = statSync(join(folder, "HANDOFF.md"));
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** After a handoff: make sure HANDOFF.md was (re)written since `before` (its noteStamp when the
+ *  handoff began) — else write `fallback()` — then append the engine facts, replacing an older facts
+ *  block. Best-effort: never throws. */
 export function finalizeHandoffNote(
   folder: string,
   facts: HandoffFacts,
-  opts: { since: number; fallback: () => string },
+  opts: { before: string | undefined; fallback: () => string },
 ): { written: boolean; missing: string[] } {
   const path = join(folder, "HANDOFF.md");
   try {
-    const written = existsSync(path) && statSync(path).mtimeMs >= opts.since;
+    const now = noteStamp(folder);
+    const written = now !== undefined && now !== opts.before;
     const body = written ? readFileSync(path, "utf8") : opts.fallback();
     const cut = body.indexOf(FACTS_HEAD);
     const note = (cut >= 0 ? body.slice(0, cut) : body).trimEnd();
@@ -602,7 +615,7 @@ export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, de
 async function handoffTurnThenComplete(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
   const now = deps.now ?? (() => Date.now());
   const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: contextWindows(deps.ledger, cfg.windowTokensByModel) });
-  const since = Date.now(); // file mtimes are wall-clock, whatever clock the caller injects
+  const before = noteStamp(session.order.folder);
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",
@@ -631,7 +644,7 @@ async function handoffTurnThenComplete(session: SessionInfo, cfg: ContextPolicyC
   } catch {
     // completing the handoff below is the point; a failed handoff turn must not prevent it
   }
-  completeHandoff(session, cfg, deps, { since, occupancy: sig.occupancy });
+  completeHandoff(session, cfg, deps, { before, occupancy: sig.occupancy });
 }
 
 /** The end of every handoff, with or without a handoff turn (a safe checkpoint's worker already
@@ -642,7 +655,7 @@ export function completeHandoff(
   session: SessionInfo,
   cfg: ContextPolicyCfg,
   deps: Pick<HandoffDeps, "registry" | "ledger" | "now" | "decision" | "boundary" | "notify" | "facts">,
-  opts: { since: number; occupancy: number },
+  opts: { before: string | undefined; occupancy: number },
 ): void {
   const now = deps.now ?? (() => Date.now());
   const folder = session.order.folder;
@@ -655,7 +668,7 @@ export function completeHandoff(
     const note = finalizeHandoffNote(
       folder,
       { ...git, occupancy: opts.occupancy, at: now(), boundary, reason },
-      { since: opts.since, fallback: () => idleStateNote(session, now(), "the handoff turn wrote no note") },
+      { before: opts.before, fallback: () => idleStateNote(session, now(), "the handoff turn wrote no note") },
     );
     detail = { ...note, branch: git.branch, head: git.head, uncommitted: git.uncommitted?.length };
   } catch {
