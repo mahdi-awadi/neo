@@ -432,3 +432,23 @@ test("telegram: an untapped approval times out to deny, closes its row, and a la
   expect(String(answer?.payload.text)).toContain("No longer pending");
   expect(faults).toEqual([]);
 });
+
+// A tap made while Neo was down is redelivered after the restart; Telegram refuses to answer a
+// callback that old. The answer is a best-effort ack — the stale buttons must still be dropped.
+const STALE_QUERY = { ok: false, error_code: 400, description: "Bad Request: query is too old and response timeout expired or query ID is invalid" };
+
+test("telegram: a stale approval tap (answer refused as too old) still drops the buttons and raises no fault", async () => {
+  const t = telegramRig({ respond: (method) => (method === "answerCallbackQuery" ? STALE_QUERY : undefined) });
+  await within(t.press("a:gone-after-restart"), 500, "the stale press");
+  await tick();
+  expect(t.calls.some((c) => c.method === "answerCallbackQuery")).toBe(true);
+  expect(t.calls.some((c) => c.method === "editMessageReplyMarkup")).toBe(true);
+  expect(faults).toEqual([]);
+});
+
+test("telegram: any other answerCallbackQuery failure still surfaces as an engine fault", async () => {
+  const t = telegramRig({ fail: (method) => method === "answerCallbackQuery" });
+  await t.press("a:gone-after-restart").catch(() => {});
+  await tick();
+  expect(reported("telegram.update")[0]?.message).toContain("injected");
+});
