@@ -9,6 +9,7 @@ import type { Order, SessionInfo } from "../types";
 import type { Registry } from "./registry";
 import type { Ledger } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
+import { gitFacts } from "./dispatch-report";
 
 /** Context-window size is a FACT about the model, not a tuning knob. The SDK reports it on every
  *  result and the ledger keeps it per model (ADR-0013) — see contextWindows. This table holds only
@@ -339,9 +340,173 @@ export function firstAssistantCacheReadAfter(
   }
 }
 
+/** The sections every handoff note carries (CONTEXT.md "Handoff note"). */
+export const HANDOFF_SECTIONS = ["Goal", "Done", "Next steps", "Branch / commit", "Open decisions", "Gotchas"] as const;
+
+const SECTION_GUIDE: Record<(typeof HANDOFF_SECTIONS)[number], string> = {
+  Goal: "what this work is for, in one or two lines",
+  Done: "what is finished, with commit hashes",
+  "Next steps": "numbered, concrete, the next one first; say so if anything is uncommitted",
+  "Branch / commit": "the branch and the last commit",
+  "Open decisions": "what waits on the operator or is still undecided",
+  Gotchas: "traps, failed approaches, facts that took effort to find",
+};
+
+const NOTE_SHAPE = HANDOFF_SECTIONS.map((h) => `## ${h} — ${SECTION_GUIDE[h]}`).join("\n");
+
 export const HANDOFF_PROMPT =
-  "Write a concise state-of-work handoff to HANDOFF.md in the project root: what is in flight, " +
-  "decisions made, blockers, and next steps. Overwrite any existing HANDOFF.md. Then stop — do not continue other work.";
+  "Write the state-of-work handoff for the fresh session that takes over from you. Overwrite HANDOFF.md " +
+  "in the project root with exactly these sections:\n" +
+  NOTE_SHAPE +
+  "\nKeep it short and factual. Then stop — do not continue other work.";
+
+/** The governor-hook deny reason at an armed safe checkpoint (ADR-0014): the worker writes the note in
+ *  its own warm context, then ends its turn; every other tool is denied until it does. */
+export function checkpointSteer(occupancy: number): string {
+  return (
+    `Neo context checkpoint: this session is at ${Math.round(occupancy * 100)}% of its context window, ` +
+    "and your work so far is committed. A fresh session will finish this task. Do NOT start the next step. " +
+    "Now overwrite HANDOFF.md in the project root with exactly these sections:\n" +
+    NOTE_SHAPE +
+    "\nYou may read files and commit HANDOFF.md. Then end your turn — every other tool is blocked until you do."
+  );
+}
+
+const CONTINUATION_HEAD =
+  "Continue this task in a fresh session. Neo handed the previous session off at a safe checkpoint; its " +
+  "handoff note (above) says what is done and what is next. Do not redo work it lists as done.";
+
+/** The first brief of a CONTINUATION. Carries the original brief (when there is one) exactly once,
+ *  however many times a task is continued. */
+export function continuationBrief(task?: string): string {
+  const original = task?.startsWith(CONTINUATION_HEAD) ? task.slice(CONTINUATION_HEAD.length).replace(/^\n\nOriginal brief:\n/, "") : task;
+  return original?.trim() ? `${CONTINUATION_HEAD}\n\nOriginal brief:\n${original}` : CONTINUATION_HEAD;
+}
+
+/** The required sections a note does not have as a `## ` heading. */
+export function missingSections(note: string): string[] {
+  const heads = new Set(note.split("\n").filter((l) => l.startsWith("## ")).map((l) => l.slice(3).trim().toLowerCase()));
+  return HANDOFF_SECTIONS.filter((h) => !heads.has(h.toLowerCase()));
+}
+
+export interface HandoffFacts {
+  branch?: string;
+  head?: string;
+  uncommitted?: string[];
+  occupancy: number;
+  at: number;
+  boundary: ContextBoundary;
+  reason?: ContextReason;
+}
+
+const FACTS_HEAD = "## Engine facts";
+const UNCOMMITTED_SHOWN = 20;
+
+/** The block of facts the engine itself vouches for (git + its own measurement), never the worker. */
+export function engineFactsBlock(f: HandoffFacts): string {
+  const files = f.uncommitted ?? [];
+  const dirty = files.length === 0 ? "none" : files.slice(0, UNCOMMITTED_SHOWN).join(", ") + (files.length > UNCOMMITTED_SHOWN ? ` (+${files.length - UNCOMMITTED_SHOWN} more)` : "");
+  return [
+    FACTS_HEAD,
+    "_Written by Neo from git and its own measurement, not by the worker._",
+    `- Branch: ${f.branch ?? "(not a git repo)"}`,
+    `- HEAD: ${f.head ?? "(none)"}`,
+    `- Uncommitted: ${f.uncommitted === undefined ? "(unknown)" : dirty}`,
+    `- Handed off: ${new Date(f.at).toISOString()} at ${Math.round(f.occupancy * 100)}% of the context window (${f.reason ?? "policy"}, ${f.boundary})`,
+  ].join("\n");
+}
+
+/** After a handoff: make sure HANDOFF.md exists and is fresh (written at or after `since`) — else
+ *  write `fallback()` — then append the engine facts, replacing an older facts block. Best-effort:
+ *  never throws. */
+export function finalizeHandoffNote(
+  folder: string,
+  facts: HandoffFacts,
+  opts: { since: number; fallback: () => string },
+): { written: boolean; missing: string[] } {
+  const path = join(folder, "HANDOFF.md");
+  try {
+    const written = existsSync(path) && statSync(path).mtimeMs >= opts.since;
+    const body = written ? readFileSync(path, "utf8") : opts.fallback();
+    const cut = body.indexOf(FACTS_HEAD);
+    const note = (cut >= 0 ? body.slice(0, cut) : body).trimEnd();
+    writeFileSync(path, `${note}\n\n${engineFactsBlock(facts)}\n`);
+    return { written, missing: missingSections(note) };
+  } catch {
+    return { written: false, missing: [...HANDOFF_SECTIONS] };
+  }
+}
+
+/** For a fresh start in `folder`: when a handoff is pending there, the note itself (capped at
+ *  `handoffNoteMaxChars`) to put at the top of the first brief, and a `resumed` row recording that
+ *  this session started from it. A pointer line is not enough — 8 of 47 measured sessions told to
+ *  "Read HANDOFF.md first" never did (ADR-0014). undefined when nothing is pending. Never throws. */
+export function handoffPreamble(
+  folder: string,
+  ledger: Pick<Ledger, "pendingHandoff" | "recordContextEvent">,
+  cfg: Pick<ContextPolicyCfg, "handoffNoteMaxChars">,
+  now: number,
+): { text: string; eventId: number } | undefined {
+  try {
+    const pending = ledger.pendingHandoff(folder);
+    if (!pending) return undefined;
+    const path = join(folder, "HANDOFF.md");
+    let note = existsSync(path) ? readFileSync(path, "utf8").trim() : "(the handoff note is missing — check the git log)";
+    if (note.length > cfg.handoffNoteMaxChars) note = `${note.slice(0, cfg.handoffNoteMaxChars)}\n\n(note truncated — read HANDOFF.md for the rest)`;
+    const eventId = ledger.recordContextEvent(folder, "resumed", 0, now, { detail: { handoffId: pending.id } });
+    const why = `${pending.reason ?? "context policy"}, ${Math.round(pending.occupancy * 100)}%`;
+    const text =
+      `This session continues earlier work: Neo handed the previous session off (${why}). Its handoff note ` +
+      "follows. It is your starting point — do not redo what it lists as done.\n\n" +
+      `--- HANDOFF.md ---\n${note}\n--- end of handoff note ---`;
+    return { text, eventId };
+  } catch {
+    return undefined;
+  }
+}
+
+// One handoff per folder at a time (ADR-0014). A gate about to reuse or replace a folder's session
+// first awaits the folder's in-flight handoff, so a settle-time handoff and an incoming message (or a
+// dispatch end and the todo queue's next release) can never run two handoffs on one folder at once.
+const handoffsInFlight = new Map<string, Promise<void>>();
+
+/** Register `p` as the folder's in-flight handoff (chained after any earlier one). */
+export function trackHandoff(folder: string, p: Promise<unknown>): void {
+  const prev = handoffsInFlight.get(folder) ?? Promise.resolve();
+  const next: Promise<void> = prev.then(() => p).then(
+    () => undefined,
+    () => undefined, // a failed handoff still releases its waiters
+  );
+  handoffsInFlight.set(folder, next);
+  void next.then(() => {
+    if (handoffsInFlight.get(folder) === next) handoffsInFlight.delete(folder);
+  });
+}
+
+/** Resolves once the folder has no handoff in flight. Never rejects. */
+export async function awaitHandoff(folder: string): Promise<void> {
+  for (let p = handoffsInFlight.get(folder); p; p = handoffsInFlight.get(folder)) await p;
+}
+
+const REASON_TEXT: Record<ContextReason, (cfg: ContextPolicyCfg) => string> = {
+  emergency: (c) => `EMERGENCY — past ${pct(c.emergencyPct)}`,
+  "above-sweet-spot": (c) => `above the ${pct(c.sweetSpotPct)} sweet spot`,
+  heavy: (c) => `heavy — past ${pct(c.checkpointPct)}`,
+  "projected-overflow": () => "the plan would overflow the window",
+  "stale-resume": () => "idle past the prompt-cache lifetime",
+  "max-turns": (c) => `${c.maxTurns}+ model calls`,
+  "max-age": () => "session too old",
+};
+const BOUNDARY_TEXT: Record<ContextBoundary, string> = { resume: "before resuming", settled: "task done", checkpoint: "at a safe checkpoint" };
+const pct = (r: number) => `${Math.round(r * 100)}%`;
+
+/** One operator line for a context reset: what, how full, why, where. */
+export function describeContextReset(kind: "handoff" | "clear", occupancy: number, cfg: ContextPolicyCfg, reason?: ContextReason, boundary?: ContextBoundary): string {
+  const why = [reason ? REASON_TEXT[reason](cfg) : undefined, boundary ? BOUNDARY_TEXT[boundary] : undefined].filter(Boolean).join(", ");
+  return kind === "clear"
+    ? `⚠️ emergency context clear at ${pct(occupancy)}${why ? ` (${why})` : ""} — no handoff note; the next session starts cold`
+    : `🔁 context handoff at ${pct(occupancy)}${why ? ` (${why})` : ""} — the next session starts from HANDOFF.md`;
+}
 
 /** Prepended to HANDOFF_PROMPT (never merged into it — HANDOFF_PROMPT stays byte-identical for
  *  the Phase-1 fence) when a handoff fires for a memory-scoped folder, so the worker captures
@@ -357,12 +522,12 @@ export const MEMORY_FLUSH_SENTENCE =
  *  handoff (the richer, worker-written HANDOFF_PROMPT above) fired. Reuses the SAME single HANDOFF.md
  *  file that the fresh-start path already tells a worker to "Read first" (pipeline.startSession) and
  *  that the dispatch preamble surfaces as a root-level .md — so it's discoverable with no extra wiring. */
-export function idleStateNote(session: SessionInfo, now: number): string {
+export function idleStateNote(session: SessionInfo, now: number, cause = "this session was idle-closed"): string {
   const activity = session.activity?.label;
   return [
     `# HANDOFF — ${session.name}`,
     "",
-    "_Auto-written by Neo when this session was idle-closed (a deterministic engine note, not a",
+    `_Auto-written by Neo when ${cause} (a deterministic engine note, not a`,
     "worker turn). It records where the session left off so the next run can pick up; it is",
     "overwritten each time the session is closed._",
     "",
@@ -413,15 +578,31 @@ export interface HandoffDeps {
    *  memory before writing HANDOFF.md. Absent/false → task is HANDOFF_PROMPT, byte-identical to
    *  before this field existed. */
   memoryFlush?: boolean;
+  /** The policy decision that called this handoff (its reason + band are recorded and reported). */
+  decision?: ContextDecision;
+  /** Where the decision was taken (ADR-0014). */
+  boundary?: ContextBoundary;
+  /** Tell the operator (the caller binds chat + project). `"alert"` for an emergency. */
+  notify?: (text: string, priority?: "alert") => void;
+  /** Test seam: git facts for the note (default: gitFacts). */
+  facts?: (folder: string) => ReturnType<typeof gitFacts>;
 }
 
-/** Run the handoff turn against the fat session (bounded), then ALWAYS clear its resume state.
- *  If the turn doesn't finish within `cfg.handoffTimeoutMs`, it is INTERRUPTED (not abandoned) —
- *  an abandoned handoff would leave an unbounded worker running on the folder, which could race
- *  with a subsequent fresh session on the same folder. */
+/** Run the handoff turn against the fat session (bounded), then ALWAYS complete the handoff (see
+ *  completeHandoff). If the turn doesn't finish within `cfg.handoffTimeoutMs`, it is INTERRUPTED (not
+ *  abandoned) — an abandoned handoff would leave an unbounded worker running on the folder, which
+ *  could race with a subsequent fresh session on the same folder. Tracked as the folder's in-flight
+ *  handoff for its whole length (awaitHandoff). */
 export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
+  const work = handoffTurnThenComplete(session, cfg, deps);
+  trackHandoff(session.order.folder, work);
+  await work;
+}
+
+async function handoffTurnThenComplete(session: SessionInfo, cfg: ContextPolicyCfg, deps: HandoffDeps): Promise<void> {
   const now = deps.now ?? (() => Date.now());
   const sig = sessionContext(session.order.folder, session.sdkSessionId, { windowTokensByModel: contextWindows(deps.ledger, cfg.windowTokensByModel) });
+  const since = Date.now(); // file mtimes are wall-clock, whatever clock the caller injects
   const order: Order = {
     id: crypto.randomUUID(),
     source: "neo",
@@ -448,14 +629,49 @@ export async function runHandoff(session: SessionInfo, cfg: ContextPolicyCfg, de
       clearTimeout(timer);
     }
   } catch {
-    // the clear below is the point; a failed handoff turn must not prevent it
+    // completing the handoff below is the point; a failed handoff turn must not prevent it
+  }
+  completeHandoff(session, cfg, deps, { since, occupancy: sig.occupancy });
+}
+
+/** The end of every handoff, with or without a handoff turn (a safe checkpoint's worker already
+ *  wrote its note): make the note complete (fallback + engine facts), forget the session's resume
+ *  id, record the handoff with its reason, and tell the operator — an emergency as an alert.
+ *  Never throws. */
+export function completeHandoff(
+  session: SessionInfo,
+  cfg: ContextPolicyCfg,
+  deps: Pick<HandoffDeps, "registry" | "ledger" | "now" | "decision" | "boundary" | "notify" | "facts">,
+  opts: { since: number; occupancy: number },
+): void {
+  const now = deps.now ?? (() => Date.now());
+  const folder = session.order.folder;
+  const boundary = deps.boundary ?? "resume";
+  const reason = deps.decision?.reason;
+  const sessionId = session.sdkSessionId || undefined; // read before the reset below clears the entry
+  let detail: Record<string, unknown> = {};
+  try {
+    const git = (deps.facts ?? gitFacts)(folder);
+    const note = finalizeHandoffNote(
+      folder,
+      { ...git, occupancy: opts.occupancy, at: now(), boundary, reason },
+      { since: opts.since, fallback: () => idleStateNote(session, now(), "the handoff turn wrote no note") },
+    );
+    detail = { ...note, branch: git.branch, head: git.head, uncommitted: git.uncommitted?.length };
+  } catch {
+    // the note is best-effort — the reset below must still happen
   }
   try {
     deps.registry.setSdkSessionId(session.id, "");
-    deps.ledger.clearSessionsFor(session.order.folder);
-    deps.ledger.recordContextEvent(session.order.folder, "handoff", sig.occupancy, now());
+    deps.ledger.clearSessionsFor(folder);
+    deps.ledger.recordContextEvent(folder, "handoff", opts.occupancy, now(), { reason, boundary, sessionId, detail });
   } catch {
     // observer-grade bookkeeping — never throw into a worker path
+  }
+  try {
+    deps.notify?.(describeContextReset("handoff", opts.occupancy, cfg, reason, boundary), deps.decision?.band === "emergency" ? "alert" : undefined);
+  } catch {
+    // a failed notice never undoes the handoff
   }
 }
 

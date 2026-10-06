@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import {
@@ -12,6 +12,14 @@ import {
   runHandoff,
   HANDOFF_PROMPT,
   MEMORY_FLUSH_SENTENCE,
+  HANDOFF_SECTIONS,
+  checkpointSteer,
+  continuationBrief,
+  missingSections,
+  finalizeHandoffNote,
+  handoffPreamble,
+  trackHandoff,
+  awaitHandoff,
   idleStateNote,
   writeIdleStateNote,
   effectiveCacheTtlMs,
@@ -356,7 +364,7 @@ test("runHandoff prepends the memory flush sentence before HANDOFF_PROMPT when m
   expect(sawTask).toContain(HANDOFF_PROMPT);
 });
 
-test("runHandoff's task is byte-identical to HANDOFF_PROMPT when memoryFlush is absent (Phase-1 fence pin)", async () => {
+test("runHandoff's task is exactly HANDOFF_PROMPT when memoryFlush is absent", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
   const s = registry.add({ id: "h6", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
@@ -422,4 +430,128 @@ test("sessionContext says whether the window was reported or guessed", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- ADR-0014: the handoff note, its engine facts, the continuation, one handoff per folder ----
+
+const NOTE = HANDOFF_SECTIONS.map((h) => `## ${h}\nx`).join("\n\n");
+
+test("HANDOFF_PROMPT and the checkpoint steer both ask for every required section", () => {
+  for (const h of HANDOFF_SECTIONS) {
+    expect(HANDOFF_PROMPT).toContain(`## ${h}`);
+    expect(checkpointSteer(0.63)).toContain(`## ${h}`);
+  }
+  expect(checkpointSteer(0.63)).toContain("63%");
+});
+
+test("missingSections names the required sections a note lacks", () => {
+  expect(missingSections("## Goal\nship\n## Done\n- a")).toEqual(["Next steps", "Branch / commit", "Open decisions", "Gotchas"]);
+  expect(missingSections(NOTE)).toEqual([]);
+});
+
+test("continuationBrief carries the original brief once, however often a task is continued", () => {
+  const once = continuationBrief("build the cart");
+  expect(once).toContain("build the cart");
+  expect(continuationBrief(once)).toBe(once);
+  expect(continuationBrief()).not.toContain("Original brief");
+});
+
+test("finalizeHandoffNote appends git facts to a fresh note and reports missing sections", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
+  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship it\n");
+  const r = finalizeHandoffNote(dir, { branch: "feat/x", head: "abc1234 add cart", uncommitted: [], occupancy: 0.52, at: 0, boundary: "settled", reason: "above-sweet-spot" }, { since: 0, fallback: () => "unused" });
+  expect(r).toEqual({ written: true, missing: ["Done", "Next steps", "Branch / commit", "Open decisions", "Gotchas"] });
+  const note = readFileSync(join(dir, "HANDOFF.md"), "utf8");
+  expect(note.startsWith("## Goal\nship it")).toBe(true);
+  expect(note).toContain("## Engine facts");
+  expect(note).toContain("feat/x");
+  expect(note).toContain("abc1234 add cart");
+  expect(note).toContain("52%");
+  // run twice (a second handoff on the same note): ONE facts block, the newest
+  finalizeHandoffNote(dir, { branch: "feat/y", occupancy: 0.6, at: 0, boundary: "settled" }, { since: 0, fallback: () => "unused" });
+  const again = readFileSync(join(dir, "HANDOFF.md"), "utf8");
+  expect(again.split("## Engine facts").length).toBe(2);
+  expect(again).toContain("feat/y");
+});
+
+test("finalizeHandoffNote writes the fallback when the turn left no fresh note", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
+  const r = finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { since: 0, fallback: () => "# fallback" });
+  expect(r.written).toBe(false);
+  expect(readFileSync(join(dir, "HANDOFF.md"), "utf8")).toStartWith("# fallback");
+  writeFileSync(join(dir, "HANDOFF.md"), "old note"); // a note OLDER than the handoff is stale
+  expect(finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { since: Date.now() + 60_000, fallback: () => "# fallback" }).written).toBe(false);
+});
+
+test("handoffPreamble inlines a pending handoff's note once, capped, and records the resume", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-pre-"));
+  const ledger = openLedger(":memory:");
+  expect(handoffPreamble(dir, ledger, CFG, 5)).toBeUndefined(); // nothing pending
+  writeFileSync(join(dir, "HANDOFF.md"), "N".repeat(30_000));
+  const h = ledger.recordContextEvent(dir, "handoff", 0.52, 1, { reason: "above-sweet-spot", boundary: "settled" });
+  const pre = handoffPreamble(dir, ledger, CFG, 5)!;
+  expect(pre.text).toContain("N".repeat(20_000));
+  expect(pre.text).not.toContain("N".repeat(20_001));
+  expect(pre.text).toContain("truncated");
+  expect(ledger.listContextEvents()[0]).toMatchObject({ id: pre.eventId, verdict: "resumed", detail: { handoffId: h } });
+  expect(handoffPreamble(dir, ledger, CFG, 6)).toBeUndefined(); // consumed
+});
+
+test("awaitHandoff waits for a tracked handoff of the same folder only, and never throws", async () => {
+  let release!: () => void;
+  const order: string[] = [];
+  trackHandoff("/p/a", new Promise<void>((r) => (release = r)).then(() => void order.push("handoff")));
+  trackHandoff("/p/b", Promise.reject(new Error("boom")));
+  await awaitHandoff("/p/b"); // a failed handoff still releases its waiters
+  await awaitHandoff("/p/none");
+  const waiting = awaitHandoff("/p/a").then(() => void order.push("next"));
+  await Promise.resolve();
+  expect(order).toEqual([]);
+  release();
+  await waiting;
+  expect(order).toEqual(["handoff", "next"]);
+});
+
+test("runHandoff records reason and boundary, appends facts, and tells the operator", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-rh-"));
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h9", source: "neo", folder: dir, task: "t", chatId: 1, createdAt: 0 }, 0);
+  registry.setSdkSessionId(s.id, "fat-9");
+  const notes: Array<[string, string | undefined]> = [];
+  const fakeRun = async () => {
+    writeFileSync(join(dir, "HANDOFF.md"), NOTE);
+    return { ok: true, sessionId: "fat-9", summary: "written", costUsd: 0 };
+  };
+  await runHandoff(s, { ...CFG }, {
+    registry,
+    ledger,
+    run: fakeRun as never,
+    decision: { verdict: "handoff", reason: "above-sweet-spot", band: "above" },
+    boundary: "settled",
+    notify: (text, priority) => void notes.push([text, priority]),
+  });
+  const ev = ledger.listContextEvents()[0];
+  expect(ev).toMatchObject({ verdict: "handoff", reason: "above-sweet-spot", boundary: "settled", sessionId: "fat-9" });
+  expect(ev.detail).toMatchObject({ written: true, missing: [] });
+  expect(readFileSync(join(dir, "HANDOFF.md"), "utf8")).toContain("## Engine facts");
+  expect(notes).toHaveLength(1);
+  expect(notes[0][1]).toBeUndefined(); // an ordinary handoff is a muted progress line
+  expect(notes[0][0]).toContain("sweet spot");
+});
+
+test("runHandoff alerts the operator for an emergency handoff", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const s = registry.add({ id: "h10", source: "neo", folder: mkdtempSync(join(tmpdir(), "neo-rh-")), task: "t", chatId: 1, createdAt: 0 }, 0);
+  const notes: Array<string | undefined> = [];
+  await runHandoff(s, { ...CFG }, {
+    registry,
+    ledger,
+    run: (async () => ({ ok: true, sessionId: "", summary: "", costUsd: 0 })) as never,
+    decision: { verdict: "handoff", reason: "emergency", band: "emergency" },
+    boundary: "settled",
+    notify: (_t, p) => void notes.push(p),
+  });
+  expect(notes).toEqual(["alert"]);
 });
