@@ -448,3 +448,31 @@ test("startLoop no-ops the memory-dream loop (no worker started) when the compan
     rmSync(companyFolder, { recursive: true, force: true });
   }
 });
+
+// ADR-0014: a loop iteration that starts fresh instead of resuming is a context reset — recorded with
+// its reason, like every other one.
+test("a loop resume dropped by the context gate is recorded as a fresh start with its reason", async () => {
+  const folder = "/home/neo-loop-fresh-fixture";
+  const sdkId = "sdk-loop-fresh";
+  const transcriptDir = join(homedir(), ".claude", "projects", encodeCwd(folder));
+  mkdirSync(transcriptDir, { recursive: true });
+  writeFileSync(
+    join(transcriptDir, `${sdkId}.jsonl`),
+    JSON.stringify({ type: "assistant", timestamp: new Date().toISOString(), message: { usage: { input_tokens: 150_000 } } }) + "\n",
+  );
+  const store = openLedger(":memory:");
+  try {
+    let n = 0;
+    await startScheduledLoop({ ...remLoop(folder), bounds: { maxIterations: 5 } }, {
+      chatId: 1,
+      reply: () => {},
+      cfg: loopCfg({ contextPolicy: { ...loopCfg().contextPolicy, windowTokensByModel: { default: 200_000 } } }),
+      store,
+      run: async () => okRun(sdkId),
+      check: async () => ({ met: n++ >= 2, detail: "" }), // the goal is checked before the first iteration too
+    });
+    expect(store.listContextEvents({ folder })[0]).toMatchObject({ verdict: "fresh", reason: "above-sweet-spot", boundary: "resume", sessionId: sdkId });
+  } finally {
+    rmSync(transcriptDir, { recursive: true, force: true });
+  }
+});
