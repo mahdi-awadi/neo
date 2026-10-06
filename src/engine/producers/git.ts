@@ -5,7 +5,7 @@
  *  scan keeps their rows (no false resolve). No repo or branch name is in code (AC5.6). */
 import type { AttentionDraft } from "../ledger";
 import { existsSync } from "node:fs";
-import { uncommittedFrom, type GitRead } from "../git-read";
+import { aheadOf, parseWorktrees, uncommittedFrom, type GitRead } from "../git-read";
 
 export const GIT_KINDS = ["unpushed", "no_upstream", "dirty", "stale_branch", "drift", "worktree"] as const;
 export type GitKind = (typeof GIT_KINDS)[number];
@@ -84,7 +84,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
   else {
     refs = refsOut.out.split("\n").filter(Boolean).map((l) => {
       const [branch, upstream, track, at] = l.split(SEP);
-      return { branch: branch!, upstream: upstream ?? "", ahead: Number(/ahead (\d+)/.exec(track ?? "")?.[1] ?? 0), gone: (track ?? "").includes("gone"), at: Number(at) * 1000 };
+      return { branch: branch!, upstream: upstream ?? "", ahead: aheadOf(track ?? ""), gone: (track ?? "").includes("gone"), at: Number(at) * 1000 };
     });
     for (const r of refs) {
       if (r.upstream && r.ahead > 0) draft({ kind: "unpushed", key: r.branch, title: `${r.branch} is ${r.ahead} commit(s) ahead of ${r.upstream}` });
@@ -147,11 +147,8 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
   const wl = await read.git(i.folder, ["worktree", "list", "--porcelain"]);
   if (!wl.ok) fail("worktree");
   else {
-    const blocks = wl.out.split("\n\n").map((b) => b.trim()).filter(Boolean).slice(1); // the first is the main checkout
-    for (const b of blocks) {
-      const path = /^worktree (.+)$/m.exec(b)?.[1];
-      const sha = /^HEAD (\w+)$/m.exec(b)?.[1];
-      const branch = /^branch refs\/heads\/(.+)$/m.exec(b)?.[1];
+    for (const w of parseWorktrees(wl.out).slice(1)) { // the first is the main checkout
+      const { path, head: sha, branch } = w;
       if (!path || !sha || i.sessionIn(path) || !existsSync(path)) continue; // deleted by hand: nothing left on disk
       const ct = await read.git(i.folder, ["log", "-1", "--format=%ct", sha]);
       const last = Math.max(i.lastWorkAt(path) ?? 0, ct.ok ? Number(ct.out.trim()) * 1000 : 0);

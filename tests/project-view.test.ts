@@ -77,8 +77,8 @@ test("now: the project's open session — its state, its line and the thread it 
   const v = (await projectView(s.deps, "gold", NOW))!;
   expect(v.name).toBe("gold");
   expect(v.folder).toBe(s.dir);
-  expect(v.now?.state).toBeDefined();
-  expect(typeof v.now?.line).toBe("string");
+  expect(v.now?.state).toBe("starting"); // registered, no worker attached yet
+  expect(v.now?.line).toStartWith("starting");
   expect(v.now?.thread).toMatchObject({ id: 77, ref: "m25", title: "fix the fare list", state: "waiting" });
 });
 
@@ -255,8 +255,8 @@ test("projectSummary: name, folder, state/line, queue count, open attention by s
   ], NOW);
   const sum = projectSummary(s.deps, "gold", NOW)!;
   expect(sum).toMatchObject({ name: "gold", folder: s.dir, queue: 1, attention: { high: 1, normal: 2, low: 0 }, health: "attention" });
-  expect(typeof sum.state).toBe("string");
-  expect(typeof sum.line).toBe("string");
+  expect(sum.state).toBe("starting");
+  expect(sum.line).toStartWith("starting");
   expect("git" in sum).toBe(false);
 });
 
@@ -267,4 +267,103 @@ test("readProjectsCfg keeps healthUrl, deployedVersionUrl, deployedVersionPath, 
   });
   expect(cfg.gold).toEqual({ healthUrl: "https://h", deployedVersionUrl: "https://v", deployedVersionPath: "version", deployBranch: "main" });
   expect(cfg.bad).toEqual({});
+});
+
+const commit = (dir: string, file: string, msg: string) => {
+  writeFileSync(join(dir, file), file);
+  git(dir, "add", file);
+  git(dir, "commit", "-q", "-m", msg);
+};
+
+test("git: a never-pushed branch → unpushed left out, noUpstream set (never a false 0)", async () => {
+  const s = setup({ projects: {} });
+  s.ledger.recordOrder(order(s.dir));
+  git(s.dir, "checkout", "-q", "-b", "feat/new");
+  for (let i = 0; i < 5; i++) commit(s.dir, `n${i}.txt`, `new ${i}`);
+  const g = (await projectView(s.deps, "gold", NOW))!.git;
+  expect(g.branch).toBe("feat/new");
+  expect("unpushed" in g).toBe(false);
+  expect(g.noUpstream).toBe(true);
+  expect(g.error).toBeUndefined();
+});
+
+test("git: an upstream that is gone → noUpstream, unpushed left out; a detached HEAD → unpushed 0", async () => {
+  const s = setup({ projects: {} });
+  s.ledger.recordOrder(order(s.dir));
+  git(s.dir, "checkout", "-q", "-b", "feat/gone");
+  git(s.dir, "push", "-q", "-u", "origin", "feat/gone");
+  git(s.dir, "push", "-q", "origin", "--delete", "feat/gone");
+  git(s.dir, "fetch", "-q", "--prune");
+  const g = (await projectView(s.deps, "gold", NOW))!.git;
+  expect(g.noUpstream).toBe(true);
+  expect("unpushed" in g).toBe(false);
+  git(s.dir, "checkout", "-q", "--detach");
+  const d = (await projectView(s.deps, "gold", NOW))!.git;
+  expect(d.branch).toBe("HEAD");
+  expect(d.unpushed).toBe(0);
+  expect("noUpstream" in d).toBe(false);
+});
+
+test("git: an empty for-each-ref answer (an ambiguous branch name) is 'not read', never 0", async () => {
+  const real = createGitRead({ timeoutMs: 10_000 });
+  const read: GitRead = {
+    git: async (f, a) => (a.join(" ") === "rev-parse --abbrev-ref HEAD" ? { ok: true, out: "heads/main\n" } : real.git(f, a)),
+    gh: real.gh,
+  };
+  const s = setup({ read, projects: {} });
+  s.ledger.recordOrder(order(s.dir));
+  const g = (await projectView(s.deps, "gold", NOW))!.git;
+  expect("unpushed" in g).toBe(false);
+  expect("noUpstream" in g).toBe(false);
+  expect(g.error).toContain("unpushed");
+});
+
+test("git: worktrees count neither the main checkout, nor the folder itself, nor a prunable one", async () => {
+  const s = setup({ projects: {} });
+  s.ledger.recordOrder(order(s.dir));
+  const tmp = join(s.root, "gold-tmp");
+  git(s.dir, "worktree", "add", "-q", "-b", "feat/tmp", tmp);
+  rmSync(tmp, { recursive: true, force: true }); // deleted by hand: git marks it prunable
+  expect((await projectView(s.deps, "gold", NOW))!.git.worktrees).toBe(1);
+  const ota = join(s.root, "gold-ota");
+  s.ledger.recordOrder(order(ota));
+  const g = (await projectView(s.deps, "gold-ota", NOW))!.git;
+  expect(g.branch).toBe("feat/ota");
+  expect(g.worktrees).toBe(0); // the linked worktree is the project: the main and itself are not "other worktrees"
+});
+
+test("health: a probe:<project> meta row alone is data (not unknown)", async () => {
+  const s = setup({ projects: { gold: { healthUrl: "https://h" } } });
+  s.ledger.recordOrder(order(s.dir));
+  s.ledger.setMeta("probe:gold", { at: NOW, ok: true }, NOW);
+  expect((await projectView(s.deps, "gold", NOW))!.health).toBe("ok");
+});
+
+test("plans: an old open plan still shows behind 60 newer finished ones", async () => {
+  const s = setup();
+  s.ledger.recordOrder(order(s.dir));
+  const base = { project: "gold", folder: s.dir, sha256: "x", stepsTotal: 1, stepsDone: 0 };
+  const open = s.ledger.upsertPlan({ ...base, path: "docs/plans/open.md", title: "still open", status: "sent", updatedAt: 1 });
+  for (let i = 0; i < 60; i++) s.ledger.upsertPlan({ ...base, path: `docs/plans/d${i}.md`, title: `d${i}`, status: i % 2 ? "done" : "abandoned" });
+  expect((await projectView(s.deps, "gold", NOW))!.plans.map((p) => p.id)).toEqual([open.id]);
+});
+
+test("decisions: matched by the project's folder too; ledger reads stay bounded", async () => {
+  const s = setup();
+  s.ledger.recordOrder(order(s.dir));
+  const id = s.ledger.openDecision({ kind: "alert", folder: s.dir, question: "build failed" }, NOW - 10);
+  expect((await projectView(s.deps, "gold", NOW))!.decisions.map((x) => x.id)).toEqual([id]);
+  expect(s.ledger.openDecisionsFor("gold", s.dir, 1000).length).toBe(1);
+});
+
+test("folderNamed: exact basename only; LIKE wildcards in the name match nothing else", () => {
+  const ledger = openLedger(":memory:");
+  ledger.recordOrder(order("/home/gold_x"));
+  ledger.recordOrder(order("/home/Gold"));
+  ledger.recordOrder(order("/home/sub/gold"));
+  expect(ledger.folderNamed("gold")).toBe("/home/sub/gold");
+  expect(ledger.folderNamed("gold%")).toBeUndefined();
+  expect(ledger.folderNamed("gold_x")).toBe("/home/gold_x");
+  ledger.addTodo({ project: "new", folder: "/home/new", brief: "b", workClass: "interactive", createdBy: "operator" }, 1);
+  expect(ledger.folderNamed("new")).toBe("/home/new");
 });

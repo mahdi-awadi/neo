@@ -163,6 +163,9 @@ export interface AttentionPatch {
   dismissed?: boolean;
 }
 
+/** Candidate folders one `folderNamed` read looks at. */
+const FOLDER_CANDIDATES = 20;
+
 /** The most rows one console read returns (spec §6). */
 export const PAGE_MAX = 100;
 
@@ -277,6 +280,9 @@ export interface Ledger {
   listRecent(limit?: number): Order[];
   /** Every distinct folder an order was ever recorded for, sorted (the projects Neo has seen). */
   folders(): string[];
+  /** A folder named `name` (its basename) that the ledger has orders for, else a queued or running
+   *  todo's — bounded; undefined when there is none. */
+  folderNamed(name: string): string | undefined;
   /** When Neo last started work in a folder (its newest order), if ever. */
   lastOrderAt(folder: string): number | undefined;
   /** Audit: a risky action that trust auto-approved (the compensating control for the bypassed gate). */
@@ -322,6 +328,8 @@ export interface Ledger {
   todoForPlan(planId: number): TodoRow | undefined;
   /** Newest-updated first, bounded (default 50, max 100); `project` filters. */
   listPlans(project?: string, limit?: number): PlanRow[];
+  /** A project's plans that are not over (not done/abandoned), newest first, at most `limit` (≤100). */
+  openPlans(project: string, limit: number): PlanRow[];
   /** The plans filed in a thread, oldest first, bounded. */
   plansInThread(threadId: number, limit: number): PlanRow[];
   /** The console's thread list (spec §6): newest-updated first, filtered, keyset-paged. `before` is
@@ -424,6 +432,8 @@ export interface Ledger {
   setDecisionMessage(id: string, chatId: number, messageId: number): void;
   /** Open (unanswered) decisions/alerts, oldest-first — the secretary digest + /decisions read this. */
   listOpenDecisions(): DecisionRow[];
+  /** One project's open decisions (by project name or folder), oldest first, at most `limit` (≤100). */
+  openDecisionsFor(project: string, folder: string, limit: number): DecisionRow[];
   /** The decision a replied-to channel message belongs to (the operator answered by replying). */
   decisionByMessage(chatId: number, messageId: number): DecisionRow | undefined;
   /** A decision by its id (the tappable-answer callback carries the id directly). */
@@ -688,6 +698,19 @@ export function openLedger(
     lastOrderAt(folder) {
       return (db.query(`SELECT max(created_at) AS at FROM orders WHERE folder = ?`).get(folder) as { at: number | null }).at ?? undefined;
     },
+    folderNamed(name) {
+      // LIKE finds the candidates (case-insensitive, `%`/`_` escaped); the exact basename is checked here.
+      const pattern = `%/${name.replace(/[\\%_]/g, (c) => `\\${c}`)}`;
+      const pick = (rows: Array<{ folder: string }>) => rows.map((r) => r.folder).find((f) => f.split("/").pop() === name);
+      return (
+        pick(db.query(`SELECT folder FROM orders WHERE folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`).all(pattern, FOLDER_CANDIDATES) as Array<{ folder: string }>) ??
+        pick(
+          db
+            .query(`SELECT folder FROM project_todos WHERE status IN ('queued', 'running') AND folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`)
+            .all(pattern, FOLDER_CANDIDATES) as Array<{ folder: string }>,
+        )
+      );
+    },
     folders() {
       return (db.query(`SELECT DISTINCT folder FROM orders ORDER BY folder`).all() as Array<{ folder: string }>).map(
         (r) => r.folder,
@@ -879,6 +902,12 @@ export function openLedger(
     todoForPlan(planId) {
       const r = db.query(`SELECT * FROM project_todos WHERE plan_id = ? ORDER BY id DESC LIMIT 1`).get(planId) as TodoDbRow | null;
       return r ? mapTodoRow(r) : undefined;
+    },
+    openPlans(project, limit) {
+      const rows = db
+        .query(`SELECT * FROM plans WHERE project = ? AND status NOT IN ('done', 'abandoned') ORDER BY updated_at DESC, id DESC LIMIT ?`)
+        .all(project, clampPage(limit)) as PlanDbRow[];
+      return rows.map(mapPlanRow);
     },
     listPlans(project, limit = 50) {
       const n = Math.max(1, Math.min(100, Math.floor(limit)));
@@ -1328,6 +1357,12 @@ export function openLedger(
         messageId,
         id,
       );
+    },
+    openDecisionsFor(project, folder, limit) {
+      const rows = db
+        .query(`SELECT * FROM decisions WHERE status = 'open' AND (project = ? OR folder = ?) ORDER BY created_at ASC, rowid ASC LIMIT ?`)
+        .all(project, folder, clampPage(limit)) as DecisionDbRow[];
+      return rows.map(mapDecisionRow);
     },
     listOpenDecisions() {
       const rows = db

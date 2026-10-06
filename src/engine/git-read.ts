@@ -108,6 +108,38 @@ export function createGitRead(o: { timeoutMs: number; exec?: (cmd: string[], opt
   };
 }
 
+/** Commits ahead in a `%(upstream:track,nobracket)` value ("ahead 3, behind 1" → 3; "" → 0). */
+export function aheadOf(track: string): number {
+  return Number(/ahead (\d+)/.exec(track)?.[1] ?? 0);
+}
+
+/** One entry of `git worktree list --porcelain`. */
+export interface WorktreeEntry {
+  path: string;
+  head?: string;
+  /** The short branch name; absent when detached. */
+  branch?: string;
+  /** git says it can be pruned (its folder is gone). */
+  prunable: boolean;
+  bare: boolean;
+}
+
+/** `git worktree list --porcelain` → its entries, in git's order: the main worktree first (git lists
+ *  it first even when run from a linked one), then the linked ones. The one parser. */
+export function parseWorktrees(porcelain: string): WorktreeEntry[] {
+  return porcelain
+    .split("\n\n")
+    .map((b) => b.trim())
+    .filter(Boolean)
+    .flatMap((b) => {
+      const path = /^worktree (.+)$/m.exec(b)?.[1];
+      if (!path) return [];
+      const head = /^HEAD (\w+)$/m.exec(b)?.[1];
+      const branch = /^branch refs\/heads\/(.+)$/m.exec(b)?.[1];
+      return [{ path, ...(head ? { head } : {}), ...(branch ? { branch } : {}), prunable: /^prunable\b/m.test(b), bare: /^bare$/m.test(b) }];
+    });
+}
+
 /** The handoff note is written FOR a reset, so it never counts as uncommitted work (ADR-0021). */
 const HANDOFF_NOTE = "HANDOFF.md";
 

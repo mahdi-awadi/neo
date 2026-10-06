@@ -4,13 +4,13 @@
  *  tool all read it. Git facts are read LIVE through git-read (bounded, never throws); everything else
  *  comes from the ledger and the registry. Each part is its own unit (ADR-0010): a part that fails is
  *  reported and left empty — projectView never throws. Plain code, no AI. */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { Ledger, PlanStatus, ThreadState, AttentionSeverity, AttentionSource } from "./ledger";
 import type { Registry } from "./registry";
 import type { SessionInfo } from "../types";
 import type { SessionState } from "./liveness";
-import { uncommittedFrom, type GitRead, type GitResult } from "./git-read";
+import { aheadOf, parseWorktrees, uncommittedFrom, type GitRead, type GitResult } from "./git-read";
 import type { ProjectCfg } from "./producers/git";
 import type { ScanMeta } from "./producers/scan";
 import { activeTodos, type DashTodo } from "./dashboard";
@@ -24,10 +24,8 @@ import { faults } from "./fault";
 const THREADS_SHOWN = 10;
 /** Plans a project view lists (open ones, newest first). */
 const PLANS_SHOWN = 10;
-/** Plans read to find them (the ledger's own cap on one read). */
-const PLANS_READ = 50;
-/** Plans that are over: the dashboard shows what still needs the operator. */
-const PLANS_OVER: ReadonlySet<PlanStatus> = new Set<PlanStatus>(["done", "abandoned"]);
+/** Open decisions a project view lists. */
+const DECISIONS_SHOWN = 20;
 
 const SEP = "\u001f";
 
@@ -74,13 +72,15 @@ export interface ProjectGit {
   /** Short sha and subject of HEAD. */
   lastCommit?: string;
   lastCommitAt?: number;
-  /** Commits on the checked-out branch ahead of its upstream (0 with no upstream or detached). */
+  /** Commits on the checked-out branch ahead of its upstream (0 when detached; absent with no upstream). */
   unpushed?: number;
+  /** The checked-out branch has no upstream, or its upstream is gone: nothing says what is pushed. */
+  noUpstream?: true;
   /** Uncommitted files (the one rule: HANDOFF.md is not work). */
   dirty?: number;
   /** The first configured drift pair (`projects.<name>.driftPairs`). */
   drift?: { from: string; to: string; ahead: number };
-  /** Linked worktrees (the main checkout not counted). */
+  /** Other linked worktrees: not the main checkout, not this folder, not prunable (folder gone). */
   worktrees?: number;
   /** Only when `deployedVersionUrl` is configured (filled by the 6.3 probe). */
   undeployed?: number;
@@ -162,7 +162,7 @@ export function projectFolder(d: Pick<ProjectViewDeps, "ledger" | "registry" | "
   if (basename(d.neoFolder) === name) return d.neoFolder;
   const s = d.registry.list().find((x) => basename(x.order.folder) === name);
   if (s) return s.order.folder;
-  return d.ledger.folders().find((f) => basename(f) === name) ?? d.ledger.listTodos({ statuses: ["running", "queued"] }).find((t) => basename(t.folder) === name)?.folder;
+  return d.ledger.folderNamed(name);
 }
 
 /** One part of a view, contained: a throw is reported and the part falls back. */
@@ -181,15 +181,16 @@ function common(d: Omit<ProjectViewDeps, "read">, name: string, folder: string, 
   const queue = part("queue", name, () => activeTodos(d.ledger, folder), []);
   const open = part("attention", name, () => listOpen(d.ledger, { project: name, now }), []);
   const threads = part("threads", name, () => d.ledger.listThreads({ project: name }, { limit: THREADS_SHOWN }).rows.map(threadSummary), []);
-  const scan = part("github", name, () => d.ledger.getMeta(`gh:${name}`)?.value as ScanMeta | undefined, undefined);
+  const scan = part("scanMeta", name, () => d.ledger.getMeta(`gh:${name}`)?.value as ScanMeta | undefined, undefined);
   const health = part(
     "health",
     name,
     () => {
-      const raw = d.ledger.getMeta(`probe:${name}`)?.value as ProbeMeta | undefined;
+      const probeRow = d.ledger.getMeta(`probe:${name}`);
+      const raw = probeRow?.value as ProbeMeta | undefined;
       const probe = raw && typeof raw.ok === "boolean" ? raw : undefined;
       const anyTodo = queue.length > 0 || d.ledger.listTodos({ folder, limit: 1 }).length > 0;
-      const hasData = !!session || anyTodo || open.length > 0 || !!scan || threads.length > 0;
+      const hasData = !!session || anyTodo || open.length > 0 || !!scan || !!probeRow || threads.length > 0;
       return projectHealth({ healthUrl: d.projects[name]?.healthUrl, probe, high: open.filter((r) => r.severity === "high").length, hasData });
     },
     "unknown" as ProjectHealth,
@@ -242,7 +243,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
   }
 
   const github = part(
-    "github",
+    "githubView",
     name,
     (): ProjectGithub => {
       const n = (k: string) => c.scan?.counts?.[k] ?? 0;
@@ -263,8 +264,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     name,
     () =>
       d.ledger
-        .listOpenDecisions()
-        .filter((x) => x.project === name || (x.folder !== undefined && resolve(x.folder) === resolve(folder)))
+        .openDecisionsFor(name, folder, DECISIONS_SHOWN)
         .map((x) => ({ id: x.id, question: x.question, ageMs: now - x.createdAt, ...(x.cause ? { ref: msgRef(x.cause.threadId) } : {}) })),
     [],
   );
@@ -274,9 +274,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     name,
     () =>
       d.ledger
-        .listPlans(name, PLANS_READ)
-        .filter((p) => !PLANS_OVER.has(p.status))
-        .slice(0, PLANS_SHOWN)
+        .openPlans(name, PLANS_SHOWN)
         .map((p): ProjectPlan => {
           const missing = !existsSync(join(p.folder, p.path));
           const steps = `${p.stepsDone}/${p.stepsTotal}`;
@@ -380,8 +378,13 @@ export async function gitFacts(read: GitRead, folder: string, cfg: ProjectCfg): 
   if (branch === "HEAD") out.unpushed = 0; // detached: nothing to push from
   else if (branch) {
     const t = await g(["for-each-ref", `--format=%(upstream:short)${SEP}%(upstream:track,nobracket)`, `refs/heads/${branch}`]);
-    if (t.ok) out.unpushed = Number(/ahead (\d+)/.exec(t.out.split(SEP)[1] ?? "")?.[1] ?? 0);
-    else fail("unpushed", t);
+    const line = t.ok ? t.out.split("\n").find(Boolean) : undefined;
+    if (line === undefined) fail("unpushed", t); // no such ref (e.g. an ambiguous name): not read, never 0
+    else {
+      const [upstream, track] = line.split(SEP);
+      if (!upstream || (track ?? "").includes("gone")) out.noUpstream = true;
+      else out.unpushed = aheadOf(track ?? "");
+    }
   } else fail("unpushed", head);
 
   if (status.ok && prefix.ok) out.dirty = uncommittedFrom(status.out, prefix.out.trim()).length;
@@ -393,8 +396,19 @@ export async function gitFacts(read: GitRead, folder: string, cfg: ProjectCfg): 
     else fail("drift", drift);
   }
 
-  if (wl.ok) out.worktrees = Math.max(0, wl.out.split("\n\n").map((b) => b.trim()).filter(Boolean).length - 1);
-  else fail("worktrees", wl);
+  if (wl.ok) {
+    const real = (p: string) => {
+      try {
+        return realpathSync(p); // git prints real paths; a symlinked folder must still match itself
+      } catch {
+        return resolve(p);
+      }
+    };
+    const self = real(folder);
+    out.worktrees = parseWorktrees(wl.out)
+      .slice(1) // the main checkout (git lists it first, from any worktree)
+      .filter((w) => !w.prunable && !w.bare && existsSync(w.path) && real(w.path) !== self).length;
+  } else fail("worktrees", wl);
 
   if (failed.length) out.error = `could not read: ${failed.join(", ")}${firstErr ? ` (${firstErr})` : ""}`;
   return out;
