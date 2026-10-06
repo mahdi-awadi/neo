@@ -160,3 +160,10 @@ test("drawer focus: never dropped to <body>; content behind the open drawer is i
   expect(focusAt).toBeGreaterThan(-1);
   expect(focusAt).toBeLessThan(inertAt);
 });
+
+// The touch rule `.chip{display:inline-flex}` beat the browser's own `[hidden]{display:none}`, so the
+// install chip showed on every phone even when installMode() said "none". `hidden` must always win.
+test("the hidden attribute always hides, whatever display an author rule sets", () => {
+  expect(CSS).toMatch(/(^|[}\s])\[hidden\]\{display:none\s*!important\}/);
+  expect(SHELL).toMatch(/<button class="chip" id="install" hidden /);
+});

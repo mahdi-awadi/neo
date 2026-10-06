@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, createHmac } from "node:crypto";
-import { createWebApp } from "../src/frontends/web";
+import { consoleAppJs, consoleAppJsVersion, createWebApp } from "../src/frontends/web";
 import { openLedger } from "../src/engine/ledger";
 import { openAdminStore } from "../src/engine/admin";
 import { createRegistry } from "../src/engine/registry";
@@ -228,7 +228,28 @@ test("GET / serves the login page when unauthenticated and the console when auth
   const authed = await a.instance.fetch(new Request("http://neo.test/", { headers: { cookie } }));
   const page = await authed.text();
   expect(page).toContain("NEO");
-  expect(page).toContain('<script type="module" src="/app.js"></script>');
+  expect(page).toContain(`<script type="module" src="/app.js?v=${await consoleAppJsVersion()}"></script>`);
+});
+
+// ADR-0023: a CDN in front of the console (Cloudflare) rewrote `no-cache` on /app.js to max-age=14400,
+// so a phone ran a four-hour-old bundle under a new page shell (raw "pwa.install", a dead menu). The
+// page now loads the bundle by its content version; only that URL is cacheable, and only privately.
+test("GET /app.js: the versioned URL is private + immutable; any other URL is private + no-cache", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const get = (q: string) => a.instance.fetch(new Request(`http://neo.test/app.js${q}`, { headers: { cookie } }));
+  const v = await consoleAppJsVersion();
+  expect(v).toMatch(/^[0-9a-f]{16}$/);
+  const current = await get(`?v=${v}`);
+  expect(current.status).toBe(200);
+  expect(current.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+  expect(await current.text()).toBe(await consoleAppJs());
+  for (const q of ["", "?v=0000000000000000"]) {
+    const other = await get(q);
+    expect(other.status, q).toBe(200);
+    expect(other.headers.get("cache-control"), q).toBe("private, no-cache");
+  }
+  expect((await a.instance.fetch(new Request(`http://neo.test/app.js?v=${v}`))).status).toBe(401);
 });
 
 // ADR-0014: /stream tags each feed event with an SSE id and resumes from Last-Event-ID.

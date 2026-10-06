@@ -607,6 +607,11 @@ manifest, the icons and the offline page (ADR-0022). Never the page at `/`, the 
 the live feed or anything from login.
 _Avoid_: cache, offline app, bundle
 
+**Bundle version**:
+The content hash of the console's browser bundle. The page loads `/app.js?v=<bundle version>`, so a
+new bundle is a new URL and no cached copy of an old one can run under a new page (ADR-0023).
+_Avoid_: build number, release, cache-buster
+
 **Installed console**:
 The same web console, added to a phone's home screen from the browser (a PWA). It opens without the
 browser's address bar and uses the same session cookie. It is not a second app.

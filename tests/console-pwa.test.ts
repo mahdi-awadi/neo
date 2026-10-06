@@ -161,7 +161,7 @@ test("shellRule (AC14): shell → cache; navigations → network then offline; e
   for (const i of ICONS) expect(SHELL).toContain(`/icons/${i.file}`);
   expect(r("/", "GET", "navigate")).toBe("network-then-offline");
   expect(r("/?x=1", "GET", "navigate")).toBe("network-then-offline");
-  for (const p of ["/", "/app.js", "/sw.js", "/api/x", "/api/state?_=1", "/stream", "/auth/telegram?id=1", "/upload", "/file?token=a", "/msg"]) expect(r(p), p).toBe("ignore");
+  for (const p of ["/", "/app.js", "/app.js?v=0123abcd", "/sw.js", "/api/x", "/api/state?_=1", "/stream", "/auth/telegram?id=1", "/upload", "/file?token=a", "/msg"]) expect(r(p), p).toBe("ignore");
   // The never-touch list wins over navigation: the login redirect and downloads are the browser's.
   for (const p of ["/auth/telegram?id=1", "/file?token=a", "/api/x", "/stream", "/app.js"]) expect(r(p, "GET", "navigate"), p).toBe("ignore");
   expect(r("/manifest.webmanifest", "POST")).toBe("ignore");

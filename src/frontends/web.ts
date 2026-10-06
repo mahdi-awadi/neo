@@ -19,6 +19,7 @@ import type { OperatorBus } from "../engine/operator-bus";
 import { faults } from "../engine/fault";
 import { DEFAULT_WEB_FEED_WINDOW } from "../config";
 import { isPlanAction } from "../engine/plans";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createConsoleI18n, isLang, LANGS, type Lang } from "./web/i18n";
@@ -103,7 +104,10 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     if (req.method === "GET" && path === "/") {
       const uid = sessionUser(req);
       const lang = pageLang(req, deps.engine.cfg.consoleLang ?? "en");
-      const html = uid === undefined ? loginPage(deps.botUsername, lang) : consolePage({ feedWindow: deps.engine.cfg.webFeedWindow, lang });
+      // The console loads its bundle by content version (ADR-0023); a failed build still serves the page.
+      const html = uid === undefined
+        ? loginPage(deps.botUsername, lang)
+        : consolePage({ feedWindow: deps.engine.cfg.webFeedWindow, lang, appJs: await consoleAppJsVersion().then((v) => `/app.js?v=${v}`, () => "/app.js") });
       // never cache: the login page embeds the bot username, and a stale copy (e.g. an old
       // bot handle behind Cloudflare/browser cache) silently breaks Telegram login.
       return new Response(html, {
@@ -181,7 +185,11 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     if (sessionUser(req) === undefined) return new Response("unauthorized", { status: 401 });
 
     if (req.method === "GET" && path === "/app.js") {
-      return new Response(await consoleAppJs(), { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" } });
+      // Only the current versioned URL may be kept, and only by the browser (`private`: never a CDN,
+      // the bundle is behind the session). A CDN rewrote plain `no-cache` to hours (ADR-0023).
+      const js = await consoleAppJs();
+      const current = url.searchParams.get("v") === (await consoleAppJsVersion());
+      return new Response(js, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": current ? "private, max-age=31536000, immutable" : "private, no-cache" } });
     }
 
     // Inbox list for the dashboard (operator-only).
@@ -501,9 +509,9 @@ export function loginPage(botUsername: string, lang: Lang = "en"): string {
   return fill(LOGIN_HTML, { ...THEME_SLOTS, LANG: lang, DIR: i18n.dir(lang), TITLE: escHtml(i18n.t("meta.loginTitle")), SUB: escHtml(i18n.t("login.sub")), BOT: escHtml(botUsername) });
 }
 
-export function consolePage(opts: { feedWindow?: number; lang?: Lang } = {}): string {
+export function consolePage(opts: { feedWindow?: number; lang?: Lang; appJs?: string } = {}): string {
   const lang = opts.lang ?? "en";
-  return fill(CONSOLE_HTML, { ...THEME_SLOTS, LANG: lang, DIR: createConsoleI18n(lang).dir(lang), FEED_WINDOW: String(opts.feedWindow ?? DEFAULT_WEB_FEED_WINDOW) });
+  return fill(CONSOLE_HTML, { ...THEME_SLOTS, LANG: lang, DIR: createConsoleI18n(lang).dir(lang), FEED_WINDOW: String(opts.feedWindow ?? DEFAULT_WEB_FEED_WINDOW), APP_JS: escHtml(opts.appJs ?? "/app.js") });
 }
 
 /** The offline page the service worker shows when a navigation fails (localized, public). */
@@ -556,6 +564,12 @@ function bundle(entry: string): Promise<string> {
 /** The console's browser bundle (/app.js, behind the session). */
 export function consoleAppJs(): Promise<string> {
   return bundle("app.ts");
+}
+
+/** The bundle's content version (ADR-0023): the page asks for `/app.js?v=<version>`, so a changed
+ *  bundle is a new URL that no browser or CDN copy of the old one can answer. */
+export async function consoleAppJsVersion(): Promise<string> {
+  return createHash("sha256").update(await consoleAppJs()).digest("hex").slice(0, 16);
 }
 
 /** The service worker (/sw.js, public — ADR-0022). */

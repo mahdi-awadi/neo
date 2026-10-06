@@ -14,7 +14,7 @@
 :root[dir=rtl]{--slide:12px;--drawer-x:100%;--sans:'IBM Plex Sans Arabic','Manrope',system-ui,sans-serif;--mono:'IBM Plex Sans Arabic','JetBrains Mono',ui-monospace,monospace}
 /* Light theme (AC8): the same look on a light ink; the system setting decides. Ink = BRAND.inkLight. */
 @media (prefers-color-scheme:light){:root{--ink:#f4f7f9;--panel:#fbfcfd;--panel2:#eef2f5;--border:#d5dee6;--fg:#0f1720;--muted:#4f5e72;--faint:#7d8ca0;--accent:#0b7f58;--accent-dim:#7fcfb0;--glow:rgba(11,127,88,.16);--warn:#a8670a;--danger:#c63b3b;--info:#1f6fc5;--accent-fill:#1fbf86;--on-accent:#06241a;--topbar:rgba(251,252,253,.8);--scrim:rgba(15,23,32,.35);--glow-a:rgba(31,191,134,.05);--glow-b:rgba(31,111,197,.04);--grid-op:.25}}
-*{box-sizing:border-box}html{height:100%}
+*{box-sizing:border-box}[hidden]{display:none !important}html{height:100%}
 body{margin:0;height:var(--app-h,100dvh);background:var(--ink);color:var(--fg);font-family:var(--sans);font-size:14px;display:flex;overflow:hidden;background-image:radial-gradient(900px 520px at 82% -12%,var(--glow-a),transparent 60%),radial-gradient(680px 420px at -8% 112%,var(--glow-b),transparent 60%)}
 body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:var(--grid-op);background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:46px 46px;mask-image:radial-gradient(circle at 30% 0,rgba(0,0,0,.16),transparent 72%)}
 .app{display:flex;width:100%;height:var(--app-h,100dvh);position:relative;z-index:1}
@@ -287,5 +287,5 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
   <div class="view" id="vinbox"></div>
  </main>
 </div>
-<script type="module" src="/app.js"></script>
+<script type="module" src="%APP_JS%"></script>
 </body></html>

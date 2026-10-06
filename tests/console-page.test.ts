@@ -22,8 +22,9 @@ test("the console bundle builds and parses as JavaScript", async () => {
 });
 
 test("the page shell loads the bundle and embeds the configured feed window", () => {
-  const html = consolePage({ feedWindow: 37 });
-  expect(html).toContain('<script type="module" src="/app.js"></script>');
+  const html = consolePage({ feedWindow: 37, appJs: "/app.js?v=abc123" });
+  expect(html).toContain('<script type="module" src="/app.js?v=abc123"></script>');
+  expect(consolePage()).toContain('<script type="module" src="/app.js"></script>');
   expect(html).toContain('data-feed-window="37"');
   expect(APP).toContain("root.dataset.feedWindow");
 });
