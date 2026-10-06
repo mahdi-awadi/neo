@@ -7,16 +7,18 @@
 // a fresh process after reload) falls through to the ledger instead of silently losing the route
 // (which is what mis-sent a project reply to the company).
 import type { RouteTarget } from "../types";
+import type { Cause } from "./ledger";
 
 /** The ledger subset MessageRoutes persists through (openLedger satisfies it). */
 export interface RouteLedger {
-  rememberRoute(chatId: number, messageId: number, target: RouteTarget): void;
+  rememberRoute(chatId: number, messageId: number, target: RouteTarget, cause?: Cause): void;
   routeFor(chatId: number, messageId: number): RouteTarget | undefined;
 }
 
 export interface MessageRoutes {
-  /** Remember that channel message (`chatId`,`messageId`) was produced by `target`'s project. */
-  remember(chatId: number, messageId: number, target: RouteTarget): void;
+  /** Remember that channel message (`chatId`,`messageId`) was produced by `target`'s project. `cause`
+   *  (the line's own message and thread, ADR-0015) lets a reply to it join that thread. */
+  remember(chatId: number, messageId: number, target: RouteTarget, cause?: Cause): void;
   /** The project a replied-to message belongs to (cache → ledger), or undefined if untracked. */
   lookup(chatId: number, messageId: number): RouteTarget | undefined;
 }
@@ -30,10 +32,10 @@ export function createMessageRoutes(opts: { ledger?: RouteLedger; cacheCap?: num
   const key = (chatId: number, messageId: number) => `${chatId}:${messageId}`;
 
   return {
-    remember(chatId, messageId, target) {
+    remember(chatId, messageId, target, cause) {
       cache.set(key(chatId, messageId), target);
       while (cache.size > cap) cache.delete(cache.keys().next().value as string);
-      opts.ledger?.rememberRoute(chatId, messageId, target);
+      opts.ledger?.rememberRoute(chatId, messageId, target, cause);
     },
     lookup(chatId, messageId) {
       const hit = cache.get(key(chatId, messageId));

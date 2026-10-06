@@ -31,6 +31,7 @@ import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
 import { makeLoopReply } from "./engine/loop-mirror";
 import { createTodoQueue } from "./engine/todo-queue";
+import { createTrace } from "./engine/trace";
 import { createEngineUpdater, registryBusy } from "./engine/update-engine";
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
@@ -65,6 +66,10 @@ async function main(): Promise<void> {
   console.log(`  dispatch  -> ${interrupted} interrupted dispatch(es) queued for the company; no wall-clock limit, digest every ${cfg.dispatchProgressMs / 60_000}m`);
   const admin = openAdminStore("data/admin.db", { busyTimeoutMs });
   const registry = createRegistry();
+  // The cause seam (ADR-0015): ONE trace per daemon, shared by Telegram, the web console, the todo
+  // queue (through the frontends' dispatch deps), scheduled loops and ingress — so every surface
+  // files its lines in the same threads.
+  const trace = createTrace({ ledger, registry });
   // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
   // above: fail it with its stop point (failure policy applies). Queued todos stay queued; the
   // heartbeat tick releases them in order once the operator channel registers its launcher.
@@ -245,6 +250,7 @@ async function main(): Promise<void> {
             shouldStop: () => meter.shouldThrottleBackground(),
             cfg,
             store: ledger,
+            trace,
           });
         }
         return startScheduledLoop(def, {
@@ -253,6 +259,7 @@ async function main(): Promise<void> {
           shouldStop: () => meter.shouldThrottleBackground(),
           cfg,
           store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
+          trace,
         });
       },
       // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
@@ -330,7 +337,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, trace }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -342,7 +349,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo }, requestReload, updates: updater, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace }, requestReload, updates: updater, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus },
       cfg.webPort,
       cfg.webHost,
     );

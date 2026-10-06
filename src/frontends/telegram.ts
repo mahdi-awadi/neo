@@ -28,7 +28,9 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry, 
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
-import type { OperatorBus, OperatorSink } from "../engine/operator-bus";
+import type { LineIds, OperatorBus, OperatorSink } from "../engine/operator-bus";
+import type { Cause, Trace } from "../engine/trace";
+import type { ReplyMeta } from "../engine/pipeline";
 import { surfaceFor, routeChat, priorityBadge, accentPrefix, type Priority } from "../engine/priority";
 import { openEscalationDecision, patientApproval, resolveEscalationDecision } from "../engine/escalation";
 import { DEFAULT_GOVERNOR_CFG } from "../engine/governor";
@@ -74,7 +76,8 @@ export function makeTelegramSink(deps: {
    *  PROGRESS/DONE reply stays in the admin DM (the muted firehose). Unset/undefined → decisions
    *  degrade safely to the DM. Optional so tests/older call sites that don't split surfaces work. */
   decisionsChatId?: () => number | undefined;
-  reply: (chatId: number, text: string, project?: string, priority?: Priority) => void;
+  /** `ids`: the mirrored line's recorded message and thread (ADR-0015), when traced. */
+  reply: (chatId: number, text: string, project?: string, priority?: Priority, ids?: LineIds) => void;
   plain: (chatId: number, text: string) => void;
 }): OperatorSink {
   return {
@@ -86,11 +89,16 @@ export function makeTelegramSink(deps: {
         // Two-surface routing: DECISION/ALERT → the notified Decisions chat (fall back to the DM
         // when it isn't configured); PROGRESS/DONE → the muted DM firehose. Deterministic (surfaceFor).
         const target = surfaceFor(line.priority ?? "progress") === "decisions" ? (deps.decisionsChatId?.() ?? dm) : dm;
-        deps.reply(target, line.text, line.project, line.priority);
+        deps.reply(target, line.text, line.project, line.priority, { msgId: line.msgId, threadId: line.threadId });
       } else if (line.kind === "echo") deps.plain(dm, `🌐 you (web): ${line.text}`);
       else deps.plain(dm, line.text);
     },
   };
+}
+
+/** A line's recorded row and thread from the pipeline's reply meta — only the ids that are known. */
+function lineIds(meta?: Pick<ReplyMeta, "msgId" | "cause">): LineIds {
+  return { ...(meta?.msgId !== undefined ? { msgId: meta.msgId } : {}), ...(meta?.cause ? { threadId: meta.cause.threadId } : {}) };
 }
 
 async function downloadTelegramFile(token: string, filePath: string): Promise<Uint8Array> {
@@ -203,7 +211,7 @@ export function createTelegramBot(
   gatewaySendUrl?: string,
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"] },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; trace?: Trace },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -242,6 +250,19 @@ export function createTelegramBot(
   // message routes the follow-up back to that project (see send() + the reply handling below).
   // Ledger-backed so a mapping survives /reload — a lost route used to misroute the reply to the company.
   const routes = createMessageRoutes({ ledger, cacheCap: cfg.messageRoutesCacheCap });
+  // The cause seam (ADR-0015), shared with every other surface. Absent → nothing is traced.
+  const trace = reload?.trace;
+  /** Trace an operator line (spec §4.1). Contained (ADR-0010): a trace fault costs the thread, never
+   *  the message — without a cause the pipeline records the line itself, as before. */
+  const inbound = (chatId: number, text: string, msg?: { message_id: number; reply_to_message?: { message_id: number; chat?: { id: number } } }, threadId?: number): Cause | undefined => {
+    if (!trace) return undefined;
+    const r = msg?.reply_to_message;
+    return faults.guard("telegram.inbound", () =>
+      trace.inbound({
+        chatId, text, surface: "telegram", channelMsgId: msg?.message_id, threadId,
+        ...(r ? { replyTo: { chatId: r.chat?.id ?? chatId, channelMsgId: r.message_id } } : {}),
+      }), { chatId });
+  };
 
   // Every worker-output line this bot sends goes through here, so `telegramToolSteps` applies on
   // every path (sessions, Telegram-started loops, company briefs, web mirrors) — not just send().
@@ -253,11 +274,17 @@ export function createTelegramBot(
   // a normal message, not a quote-reply. `chatId` is already the resolved TARGET surface (the
   // caller applied surfaceFor); the route is recorded on whichever chat the message actually
   // lands in, so a reply to it (in the DM or the Decisions chat) routes back to the right project.
-  async function send(chatId: number, text: string, project?: string, priority?: Priority): Promise<void> {
+  // `ids` names the line's recorded row and thread (ADR-0015): the posted message is bound to the row,
+  // so a reply to it joins the thread (spec §4.1 rule 1). The bind is best-effort (ADR-0010).
+  async function send(chatId: number, text: string, project?: string, priority?: Priority, ids: LineIds = {}): Promise<void> {
     const messageId = await sendWorkerLine(chatId, text, { project, priority });
-    if (messageId !== undefined && project) {
+    if (messageId === undefined) return;
+    const { msgId, threadId } = ids;
+    if (trace && msgId !== undefined) faults.guard("telegram.bind", () => trace.bindChannel(msgId, chatId, messageId), { chatId });
+    if (project) {
       const session = registry.findByName(project);
-      if (session) routes.remember(chatId, messageId, { sessionId: session.id, folder: session.order.folder, project });
+      const cause = msgId !== undefined && threadId !== undefined ? { msgId, threadId } : undefined;
+      if (session) routes.remember(chatId, messageId, { sessionId: session.id, folder: session.order.folder, project }, cause);
     }
   }
 
@@ -307,7 +334,7 @@ export function createTelegramBot(
     makeTelegramSink({
       adminId: () => admin.adminId(),
       decisionsChatId: () => cfg.decisionsChatId,
-      reply: (cid, text, project, priority) => faults.contain("telegram.send", () => send(cid, text, project, priority), { project }),
+      reply: (cid, text, project, priority, ids) => faults.contain("telegram.send", () => send(cid, text, project, priority, ids), { project }),
       plain: (cid, text) => faults.contain("telegram.send", () => sendWorkerLine(cid, text)),
     }),
   );
@@ -334,7 +361,8 @@ export function createTelegramBot(
     // so they see confirmation where they acted. But the RESUME runs on the decision's ORIGINAL chat
     // (the DM) so the reopened session's progress flows to the muted firehose, never floods the group.
     await bot.api.sendMessage(chatId, `✅ answered — resuming ${dec.project ?? "the project"}.`);
-    if (resumed) await handleMessage(resumed.brief, resumed.homeChat, pipelineDeps());
+    // The answer is an operator line in the decision's thread (when it has one).
+    if (resumed) await handleMessage(resumed.brief, resumed.homeChat, pipelineDeps(), "neo", inbound(resumed.homeChat, answer, undefined, dec.cause?.threadId));
   }
 
   // Handle a tap on a raised decision's keyboard: an option, a Submit (structured), or "✏️ Other".
@@ -436,9 +464,11 @@ export function createTelegramBot(
     cooldown: reload?.cooldown,
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
     todo: reload?.todo,
-    reply: (cid, text, project, priority) => {
-      faults.contain("telegram.send", () => send(surfaceChat(cid, priority), text, project, priority), { project }); // routed + styled by priority
-      bus?.mirror("telegram", { kind: "reply", text, project, priority }); // + mirror to the web console
+    trace,
+    reply: (cid, text, project, priority, meta?: ReplyMeta) => {
+      const ids = lineIds(meta);
+      faults.contain("telegram.send", () => send(surfaceChat(cid, priority), text, project, priority, ids), { project }); // routed + styled by priority
+      bus?.mirror("telegram", { kind: "reply", text, project, priority, ...ids }); // + mirror to the web console
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
     askApproval: (cid, reason, signal) =>
@@ -497,6 +527,7 @@ export function createTelegramBot(
     // operator's chat (the web path likewise ignores the cid and notifies its own channel).
     reply: (_cid, text, project) => faults.contain("telegram.send", () => sendWorkerLine(chatId, text, { project }), { project }),
     askApproval: async () => "deny",
+    trace, // a tainted (customer) brief is never rooted — ingress decides; an untainted one gets its root
   });
 
   // Receive a document or photo from the operator: save to the active project's inbox,
@@ -527,11 +558,8 @@ export function createTelegramBot(
     const file = await ctx.getFile();
     const bytes = await downloadTelegramFile(cfg.telegramToken, file.file_path!);
     const path = saveInbound(target.order.folder, name, bytes);
-    await handleMessage(
-      `📎 operator attached \`${name}\` at \`${path}\`\n${routing.deliver}`,
-      chatId,
-      pipelineDeps(),
-    );
+    const text = `📎 operator attached \`${name}\` at \`${path}\`\n${routing.deliver}`;
+    await handleMessage(text, chatId, pipelineDeps(), "neo", inbound(chatId, text, ctx.message));
   }
 
   on.on("message:text", async (ctx) => {
@@ -578,6 +606,7 @@ export function createTelegramBot(
         store: ledger,
         shouldStop: () => meter.shouldThrottleBackground(),
         cfg,
+        trace,
       })
     )
       return;
@@ -596,7 +625,11 @@ export function createTelegramBot(
       contextPolicy: cfg.contextPolicy,
       todo: reload?.todo,
       updates: reload?.updates,
+      trace,
+      // A bare /trace replied to a Neo line traces that line's thread (spec §4.4).
+      ...(ctx.message.reply_to_message ? { replyTo: { chatId: ctx.message.reply_to_message.chat?.id ?? chatId, channelMsgId: ctx.message.reply_to_message.message_id } } : {}),
     });
+    // Engine commands open no thread (spec §4.1 rule 3): they are answered here, never traced as work.
     if (command !== null) {
       if (command.select?.length) {
         say(chatId, command.text, { reply_markup: projectKeyboard(command.select) });
@@ -638,8 +671,10 @@ export function createTelegramBot(
     // Echo the operator's own message to the web console so both surfaces show the thread. Only
     // real conversation/orders reach here — commands returned above. Telegram already shows the
     // sent message, so origin "telegram" is excluded from the fan-out.
-    bus?.mirror("telegram", { kind: "echo", text: ctx.message.text });
-    await handleMessage(routing.deliver, chatId, pipelineDeps());
+    // Traced BEFORE the pipeline runs: the reply target (rule 1) or a new thread (rule 4).
+    const cause = inbound(chatId, ctx.message.text, ctx.message);
+    bus?.mirror("telegram", { kind: "echo", text: ctx.message.text, ...lineIds({ msgId: cause?.msgId, cause }) });
+    await handleMessage(routing.deliver, chatId, pipelineDeps(), "neo", cause);
   });
 
   on.on("message:document", (ctx) =>
@@ -820,6 +855,7 @@ export function createTelegramBot(
           store: ledger,
           shouldStop: () => meter.shouldThrottleBackground(),
           cfg,
+          trace,
         });
       return;
     }

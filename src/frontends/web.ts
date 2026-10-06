@@ -112,7 +112,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       }
       const result = await runCompanyBrief(body.brief.trim(), {
         cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
-        meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage,
+        meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage, trace: deps.engine.trace,
         reply: (_c, text, project) => channel.notify(text, project),
         askApproval: async () => "deny",
       });
@@ -161,7 +161,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       // Shared with the Telegram /inbox loop — single source of truth for the brief (inbox-actions).
       const draft = await draftInboxReply(deps.inbox, item.id, instr, {
         cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
-        meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage,
+        meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage, trace: deps.engine.trace,
         reply: (_c, text, project) => channel.notify(text, project),
         askApproval: async () => "deny",
       });
@@ -191,10 +191,22 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
     }
 
+    // The thread tree behind a message ref (spec §4.4) — the same tree /trace renders, as JSON.
+    if (req.method === "GET" && path.startsWith("/api/trace/")) {
+      const trace = deps.engine.trace;
+      const id = trace?.parseRef(decodeURIComponent(path.slice("/api/trace/".length)));
+      if (!trace || id === undefined || !deps.engine.ledger.messageById(id)) {
+        return Response.json({ ok: false, error: "no such message" }, { status: 404, headers: { "cache-control": "no-store" } });
+      }
+      return Response.json({ ref: trace.ref(id), ...trace.tree(id) }, { headers: { "cache-control": "no-store" } });
+    }
+
     if (req.method === "POST" && path === "/msg") {
-      const body = (await req.json().catch(() => ({}))) as { text?: unknown };
+      const body = (await req.json().catch(() => ({}))) as { text?: unknown; threadId?: unknown };
       const text = typeof body.text === "string" ? body.text.trim() : "";
-      if (text) faults.contain("web.send", () => channel.send(text));
+      // The composer opened inside a thread names it (spec §4.1 rule 2); anything else starts a new one.
+      const threadId = typeof body.threadId === "number" && Number.isSafeInteger(body.threadId) ? body.threadId : undefined;
+      if (text) faults.contain("web.send", () => channel.send(text, threadId === undefined ? undefined : { threadId }));
       return Response.json({ ok: true });
     }
 

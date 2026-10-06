@@ -13,6 +13,7 @@ import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from 
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
 import { DEFAULT_GOVERNOR_CFG } from "../src/engine/governor";
+import { createTrace } from "../src/engine/trace";
 
 function cfg(): NeoConfig {
   return {
@@ -511,4 +512,63 @@ test("a timed-out escalation is not replayed to a console that connects later", 
   const late: WebEvent[] = [];
   ch.subscribe((e) => late.push(e));
   expect(late.filter((e) => e.type === "escalation")).toEqual([]);
+});
+
+// ── the cause seam on the web (ADR-0015, spec §4.1 rule 2 + §6) ──────────────────────────────
+
+function traced(start = fakeStart().start) {
+  const eng = engine(start);
+  const trace = createTrace({ ledger: eng.ledger, registry: eng.registry });
+  const bus = createOperatorBus();
+  const ch = createWebChannel({ engine: { ...eng, trace }, chatId: 0, bus });
+  const events: Array<{ e: WebEvent; id: number }> = [];
+  ch.subscribe((e, id) => events.push({ e, id }));
+  return { eng, trace, bus, ch, events };
+}
+type Ided = { msgId?: number; threadId?: number };
+
+test("a web message opens a thread; its reply event carries msgId and threadId; the composer inside a thread joins it", async () => {
+  const t = traced();
+  await t.ch.send("hello there"); // no project: the pipeline answers with its usage line
+  const reply = t.events.map((x) => x.e).find((e) => e.type === "message") as (WebEvent & Ided) | undefined;
+  expect(reply?.msgId).toBeGreaterThan(0);
+  const row = t.eng.ledger.messageById(reply!.msgId!)!;
+  expect(reply!.threadId).toBe(row.threadId!);
+  const root = t.eng.ledger.messageById(row.threadId!)!;
+  expect(root).toMatchObject({ role: "user", content: "hello there", surface: "web" });
+
+  await t.ch.send("and more", { threadId: reply!.threadId });
+  const inThread = t.eng.ledger.messagesInThread(reply!.threadId!, { limit: 10 }).filter((m) => m.role === "user");
+  expect(inThread.map((m) => m.content)).toEqual(["and more", "hello there"]);
+});
+
+test("an engine command typed on the web opens no thread; /trace answers on the web", async () => {
+  const t = traced();
+  await t.ch.send("hello there");
+  const before = t.eng.ledger.conversation(0).length;
+  const reply = t.events.map((x) => x.e).find((e) => e.type === "message") as WebEvent & Ided;
+  await t.ch.send(`/trace ${t.trace.ref(reply.msgId!)}`);
+  await t.ch.send("/todo");
+  expect(t.eng.ledger.conversation(0).length).toBe(before);
+  const last = t.events.map((x) => x.e).filter((e) => e.type === "message").at(-2) as { text: string };
+  expect(last.text).toContain(t.trace.ref(reply.threadId!));
+});
+
+test("a Telegram echo and reply mirrored onto the web keep their msgId and threadId", () => {
+  const t = traced();
+  t.bus.mirror("telegram", { kind: "echo", text: "from the phone", msgId: 5, threadId: 4 });
+  t.bus.mirror("telegram", { kind: "reply", text: "worker line", msgId: 6, threadId: 4 });
+  const [echo, msg] = t.events.map((x) => x.e) as Array<WebEvent & Ided>;
+  expect(echo).toMatchObject({ type: "echo", msgId: 5, threadId: 4 });
+  expect(msg).toMatchObject({ type: "message", msgId: 6, threadId: 4 });
+});
+
+test("a trace that fails on inbound never blocks the operator's web message", async () => {
+  const t = traced();
+  const broken = { ...t.trace, inbound: () => { throw new Error("ledger is locked"); } };
+  const ch = createWebChannel({ engine: { ...t.eng, trace: broken }, chatId: 0 });
+  const got: WebEvent[] = [];
+  ch.subscribe((e) => got.push(e));
+  await ch.send("hello there");
+  expect(got.some((e) => e.type === "message")).toBe(true); // the pipeline still answered
 });

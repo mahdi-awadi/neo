@@ -19,6 +19,7 @@ import type { SessionState } from "./liveness";
 import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import type { TodoQueue } from "./todo-queue";
 import type { Updater } from "./updater";
+import { renderTrace, type Trace } from "./trace";
 
 export interface CommandDeps {
   registry: Registry;
@@ -46,12 +47,17 @@ export interface CommandDeps {
   contextPolicy?: BandCfg;
   /** Graceful reload (/reload): the daemon injects drain-then-exit; channels without it can't reload. */
   requestReload?: () => void;
-  /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. */
-  cfg?: Pick<NeoConfig, "providers">;
+  /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. `publicUrl` is the
+   *  console base the /trace link points at. */
+  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl">>;
   /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
   todo?: TodoQueue;
   /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
   updates?: Pick<Updater, "status" | "run" | "rollback" | "running">;
+  /** The cause seam (for /trace, ADR-0015). Absent → /trace says it is unavailable. */
+  trace?: Trace;
+  /** The Telegram message this command replied to: a bare `/trace` traces that message's thread. */
+  replyTo?: { chatId: number; channelMsgId: number };
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -142,6 +148,12 @@ const COMMANDS: Command[] = [
     usage: "/todo [<project>] · /todo cancel|up <id> · /todo pause|resume <project>",
     summary: "per-project todo queues: list, cancel, move up, pause, resume",
     run: ({ deps, args }) => ({ text: todoCommand(args.trim(), deps.todo) }),
+  },
+  {
+    name: "trace",
+    usage: "/trace <ref> (or reply /trace to a Neo message)",
+    summary: "show everything a message caused",
+    run: ({ deps, args }) => ({ text: traceCommand(args.trim(), deps) }),
   },
   {
     name: "updates",
@@ -307,6 +319,24 @@ function todoCommand(args: string, todo: TodoQueue | undefined): string {
       if (arg) return TODO_USAGE;
       return todo.list(first);
   }
+}
+
+/** /trace — a message's thread and everything it produced (spec §4.4). Thin: the trace owns the tree. */
+function traceCommand(arg: string, deps: CommandDeps): string {
+  const { trace, ledger } = deps;
+  if (!trace) return "Tracing is unavailable on this channel.";
+  let msgId: number | undefined;
+  if (arg) {
+    msgId = trace.parseRef(arg);
+    if (msgId === undefined || !ledger.messageById(msgId)) return `No message ${msgId === undefined ? arg : trace.ref(msgId)} — check the ref`;
+  } else if (deps.replyTo) {
+    const { chatId, channelMsgId } = deps.replyTo;
+    msgId = ledger.messageByChannel(chatId, channelMsgId)?.id ?? ledger.routeCause(chatId, channelMsgId)?.msgId;
+    if (msgId === undefined) return "That message is not traced (it is older than tracing). Use /trace <ref>.";
+  } else return "Usage: /trace <ref> — or reply /trace to a Neo message.";
+  const tree = trace.tree(msgId);
+  if (!tree.thread && !tree.pruned) return `Message ${trace.ref(msgId)} has no thread (it is older than tracing).`;
+  return renderTrace(tree, trace.ref, { consoleUrl: deps.cfg?.publicUrl });
 }
 
 const UPDATES_USAGE = "Usage: /updates · /updates run · /updates apply <item> · /updates rollback <item>";

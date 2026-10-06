@@ -28,17 +28,21 @@ import { dashboardSnapshot, type DashState } from "./dashboard";
 import { mdToHtml } from "./format";
 import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
-import type { OperatorBus } from "./operator-bus";
+import type { LineIds, OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
+import type { Cause } from "./trace";
+import { faults } from "./fault";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
 
+// A feed line names its recorded message and thread when the engine traced it (spec §6), so the
+// console can open the thread a line belongs to.
 export type WebEvent =
-  | { type: "message"; text: string; project?: string }
+  | ({ type: "message"; text: string; project?: string } & LineIds)
   // The operator's own message typed on the OTHER surface (Telegram), mirrored here so both
   // surfaces show the full thread. Rendered as a `me` row (raw text, escaped client-side).
-  | { type: "echo"; text: string }
+  | ({ type: "echo"; text: string } & LineIds)
   // Display-only chrome mirrored from the other surface (e.g. "approval pending on Telegram").
   | { type: "notice"; text: string }
   | { type: "escalation"; id: string; reason: string }
@@ -48,8 +52,9 @@ export type WebEvent =
   | { type: "file"; name: string; url: string; project?: string };
 
 export interface WebChannel {
-  /** Operator sent a message — drive the pipeline; streamed output arrives as events. */
-  send(text: string): Promise<void>;
+  /** Operator sent a message — drive the pipeline; streamed output arrives as events. `threadId`:
+   *  the composer was opened inside that thread, so the message joins it (spec §4.1 rule 2). */
+  send(text: string, opts?: { threadId?: number }): Promise<void>;
   /** Subscribe an SSE listener. The replay window is replayed first, then events go live; each
    *  event carries an increasing id. With `after` (a resume point), only later events replay. A
    *  pending escalation older than the window is replayed too (ADR-0014). */
@@ -87,6 +92,11 @@ export interface WebChannel {
   _testSendFile(path: string, caption?: string): string;
 }
 
+/** Only the ids that are known — an untraced line carries neither key. */
+function knownIds(ids: LineIds): LineIds {
+  return { ...(ids.msgId !== undefined ? { msgId: ids.msgId } : {}), ...(ids.threadId !== undefined ? { threadId: ids.threadId } : {}) };
+}
+
 export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"] }): WebChannel {
   // The replay window (ADR-0014): only the newest cfg.webFeedWindow feed events are kept. The
   // feed is a live view — the ledger and Telegram keep the record — so older events just drop out.
@@ -107,7 +117,8 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   }
   // Worker/engine lines are Markdown — render to safe HTML once, here, so the feed shows
   // formatting (bold, code, bullets) instead of raw ** and #.
-  const message = (text: string, project?: string): void => void emit({ type: "message", text: mdToHtml(text), project });
+  const message = (text: string, project?: string, ids: LineIds = {}): void =>
+    void emit({ type: "message", text: mdToHtml(text), project, ...knownIds(ids) });
 
   // Register this surface as an operator sink: lines mirrored from the OTHER surface (Telegram)
   // render here. Output-only — deliver never re-enters the pipeline, so no mirrored line can become
@@ -117,8 +128,8 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     deliver: (line) => {
       // Feature 2: a mirrored reply keeps the same single colored accent the other surface shows.
       // The accent is plain emoji text, so it degrades gracefully through mdToHtml (no rich markup).
-      if (line.kind === "reply") message(styleLine(line.text, line.priority), line.project);
-      else if (line.kind === "echo") emit({ type: "echo", text: line.text });
+      if (line.kind === "reply") message(styleLine(line.text, line.priority), line.project, line);
+      else if (line.kind === "echo") emit({ type: "echo", text: line.text, ...knownIds(line) });
       else emit({ type: "notice", text: line.text });
     },
   });
@@ -137,9 +148,10 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     ...opts.engine,
     usage: opts.usage,
     codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg),
-    reply: (_chatId, text, project, priority) => {
-      message(styleLine(text, priority), project); // local delivery, styled by priority (Feature 2)
-      opts.bus?.mirror("web", { kind: "reply", text, project, priority }); // + mirror to Telegram
+    reply: (_chatId, text, project, priority, meta) => {
+      const ids = { msgId: meta?.msgId, threadId: meta?.cause?.threadId };
+      message(styleLine(text, priority), project, ids); // local delivery, styled by priority (Feature 2)
+      opts.bus?.mirror("web", { kind: "reply", text, project, priority, ...knownIds(ids) }); // + mirror to Telegram
     },
     askApproval: (_chatId, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
@@ -159,15 +171,23 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     sendFile: (_chatId, path, caption) => void deliverFile(path, caption),
   };
 
+  /** Trace an operator line (ADR-0015). Contained (ADR-0010): a trace fault costs the thread, never the
+   *  message — without a cause the pipeline records the line itself, as before. */
+  const inbound = (text: string, threadId?: number): Cause | undefined => {
+    const trace = opts.engine.trace;
+    if (!trace) return undefined;
+    return faults.guard("web.inbound", () => trace.inbound({ chatId: opts.chatId, text, surface: "web", threadId }));
+  };
+
   return {
-    send: async (text) => {
+    send: async (text, sendOpts) => {
       // Bare /loop → a loops event the UI renders as run buttons (vs Telegram's text list).
       if (text.trim() === "/loop") {
         emit({ type: "loops", items: listLoops(opts.engine.ledger) });
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg })) return;
+      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
@@ -181,6 +201,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         cfg: opts.engine.cfg,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
         todo: opts.engine.todo,
+        trace: opts.engine.trace,
       });
       if (command !== null) {
         if (command.sdk) emit({ type: "sdk", sdk: command.sdk });
@@ -194,8 +215,10 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       // Echo the operator's own inbound to the OTHER surface (Telegram) so both show the thread.
       // Only real conversation/orders echo — synchronous commands returned above already emitted
       // their own reply. The web UI shows this message optimistically, so origin "web" is excluded.
-      opts.bus?.mirror("web", { kind: "echo", text });
-      await handleMessage(text, opts.chatId, deps);
+      // Commands returned above: they open no thread (spec §4.1 rule 3). Everything else is traced first.
+      const cause = inbound(text, sendOpts?.threadId);
+      opts.bus?.mirror("web", { kind: "echo", text, ...knownIds({ msgId: cause?.msgId, threadId: cause?.threadId }) });
+      await handleMessage(text, opts.chatId, deps, "neo", cause);
     },
     subscribe(listener, sub) {
       const after = sub?.after ?? 0;
@@ -241,11 +264,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     openProject(folder, task) {
       // The user used a form; we construct the order. Reuses the governed pipeline.
-      return handleMessage(`/open ${folder} ${task}`, opts.chatId, deps).then(() => undefined);
+      const text = `/open ${folder} ${task}`;
+      return handleMessage(text, opts.chatId, deps, "neo", inbound(text)).then(() => undefined);
     },
     runLoop(name) {
       const loop = matchLoop(name, opts.engine.ledger);
-      if (loop) launchLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg });
+      if (loop) launchLoop(loop, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace });
     },
     createLoop(input) {
       const r = defCreateLoop(input, opts.engine.ledger, opts.engine.cfg.workRoot);

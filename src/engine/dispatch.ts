@@ -89,8 +89,11 @@ export interface ReplyMeta {
   kind?: MessageKind;
   /** The registry id of the session the line belongs to: its cause files the line. */
   session?: string;
-  /** File the line under this cause (the run's final line, once the session may be gone). */
+  /** File the line under this cause (the run's final line, once the session may be gone). The
+   *  recording wrapper sets it to the cause it filed the line under. */
   cause?: Cause;
+  /** The recorded row of this line, set by the recording wrapper: the channel binds its own id to it. */
+  msgId?: number;
 }
 
 /** Everything dispatch needs — a structural subset of the pipeline's deps. */

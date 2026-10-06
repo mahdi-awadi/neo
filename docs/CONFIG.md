@@ -19,7 +19,7 @@ ones in `.env` (`chmod 600`).
 | `BOT_USERNAME` | env or `config.json` | *(auto via getMe)* | Bot `@username` (no `@`) for the web Telegram Login Widget. |
 | `WEB_HOST` | env or `config.json` | `127.0.0.1` | Interface the web console binds. Set to a bridge IP to let a proxy reach it. |
 | `WEB_PORT` | env or `config.json` | `3003` | Web console port. |
-| `PUBLIC_URL` | env or `config.json` | *(empty)* | Public HTTPS URL the console is reached at (behind your proxy). |
+| `PUBLIC_URL` | env or `config.json` | *(empty)* | Public HTTPS URL the console is reached at (behind your proxy). Also the base of the `/trace` link to a long thread (`<PUBLIC_URL>/api/trace/<ref>`); empty → the link is the bare path. |
 | `GATEWAY_SEND_URL` | env or `config.json` | *(empty)* | Customer-reply gateway `/send` endpoint. Off when empty. |
 | `MEETING_LINK` | env or `config.json` | *(empty)* | Booking link for the customer-reply CTA. |
 | `BUSINESS_NAME` | env or `config.json` | *(empty)* | Name customer replies sign off as (never "Neo"). |

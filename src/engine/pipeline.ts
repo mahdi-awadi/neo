@@ -217,14 +217,16 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
       const kind = meta?.kind ?? kindOf(priority);
       // An ack always answers the message that came in; any other line, its session's turn.
       const cause = meta?.cause ?? (kind === "ack" && inbound ? inbound : causeFor(session));
+      let msgId: number | undefined;
       const suffix =
         faults.guard("pipeline.recordReply", () => {
-          trace.outbound({ chatId: c, text: t, cause, kind, project, priority, at: now() });
+          msgId = trace.outbound({ chatId: c, text: t, cause, kind, project, priority, at: now() });
           if (!cause) return "";
           const ref = trace.ref(THREAD_REF_KINDS.has(kind) ? cause.threadId : cause.msgId);
           return refSuffix(kind, kind === "text" && firstOfTurn(session, cause), ref, mode);
         }, { project }) ?? "";
-      return rawReply(c, t + suffix, project, priority);
+      // The channel learns which row it is posting (to bind its own id) and the line's thread.
+      return rawReply(c, t + suffix, project, priority, { ...meta, kind, ...(cause ? { cause } : {}), ...(msgId !== undefined ? { msgId } : {}) });
     },
     askApproval: async (c, reason, signal, asking) => {
       const cause = asking ?? causeFor(target());

@@ -66,6 +66,52 @@ export function refSuffix(kind: MessageKind, firstOfTurn: boolean, ref: string, 
   return show ? ` · \`${ref}\`` : "";
 }
 
+/** /trace shows every child up to this many; over it, the head and tail below and a console link (spec §4.4). */
+const RENDER_ALL_MAX = 40;
+const RENDER_HEAD = 10;
+const RENDER_TAIL = 25;
+
+/** Where the console serves a thread's full tree (GET /api/trace/:ref), under the configured base URL. */
+export function traceUrl(consoleUrl: string, ref: string): string {
+  return `${consoleUrl.replace(/\/+$/, "")}/api/trace/${ref}`;
+}
+
+/**
+ * A thread tree as /trace text (spec §4.4): the root line, its state and project, then every child
+ * (messages, orders, todos, decisions) in time order with its ref, kind and status. Over 40 children
+ * it shows the first 10, "… N more …", the last 25 and a link to the console. A pruned thread says so
+ * and lists what still exists. Pure.
+ */
+export function renderTrace(tree: TraceTree, ref: (id: number) => string, opts: { consoleUrl?: string } = {}): string {
+  const rootId = tree.thread?.id;
+  const children: Array<{ at: number; line: string }> = [
+    ...tree.messages
+      .filter((m) => m.id !== rootId)
+      .map((m) => ({ at: m.at, line: `${ref(m.id)} · ${m.kind} · ${m.role === "user" ? "you: " : ""}${todoTitle(m.content)}` })),
+    ...tree.orders.map((o) => ({ at: o.createdAt, line: `${o.id.slice(0, 8)} · order · ${o.status ?? "running"} · ${o.folder}` })),
+    ...tree.todos.map((t) => ({ at: t.createdAt, line: `#${t.id} · todo · ${t.status} · ${todoTitle(t.brief)}` })),
+    ...tree.decisions.map((d) => ({ at: d.createdAt, line: `${d.id.slice(0, 8)} · ${d.kind} · ${d.status} · ${todoTitle(d.question)}` })),
+  ].sort((a, b) => a.at - b.at); // stable: equal times keep their kind order
+
+  const head = tree.thread
+    ? [`🧵 ${ref(tree.thread.id)} · ${tree.thread.title}`, `${tree.thread.state} · ${tree.thread.project ?? "no project"} · ${tree.thread.origin}`]
+    : [tree.pruned ? "🧵 thread pruned — what still exists:" : "🧵 no thread"];
+  const body =
+    children.length <= RENDER_ALL_MAX
+      ? children.map((c) => c.line)
+      : [
+          ...children.slice(0, RENDER_HEAD).map((c) => c.line),
+          `… ${children.length - RENDER_HEAD - RENDER_TAIL} more …`,
+          ...children.slice(-RENDER_TAIL).map((c) => c.line),
+        ];
+  if (tree.pruned && children.length === 0) body.push("(nothing left)");
+  const tail: string[] = [];
+  if (tree.toolActions > 0) tail.push(`tool actions: ${tree.toolActions}`);
+  if (tree.truncated) tail.push("(only the newest messages are listed)");
+  if (tree.thread && (children.length > RENDER_ALL_MAX || tree.truncated)) tail.push(`full thread: ${traceUrl(opts.consoleUrl ?? "", ref(tree.thread.id))}`);
+  return [...head, ...body, ...tail].join("\n");
+}
+
 export function createTrace(deps: { ledger: Ledger; registry: Registry; now?: () => number }): Trace {
   const { ledger, registry } = deps;
   const now = deps.now ?? Date.now;
