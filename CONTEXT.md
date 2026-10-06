@@ -601,6 +601,27 @@ The id of the last feed event a console received. A reconnecting console sends i
 later events, so a dropped connection never shows a line twice.
 _Avoid_: cursor, offset, checkpoint
 
+**App shell**:
+The public, static, non-personal files the installed console may keep on the device: the web app
+manifest, the icons and the offline page (ADR-0022). Never the page at `/`, the bundle, API answers,
+the live feed or anything from login.
+_Avoid_: cache, offline app, bundle
+
+**Installed console**:
+The same web console, added to a phone's home screen from the browser (a PWA). It opens without the
+browser's address bar and uses the same session cookie. It is not a second app.
+_Avoid_: mobile app, APK, native app
+
+**Narrow layout**:
+The console's layout on a phone (≤ 768 px wide). The sidebar is a drawer (from 1024 px down) and a
+list and its detail never show side by side.
+_Avoid_: mobile version, mobile site
+
+**Detail view**:
+In the narrow layout, the full-width pane of one thread or one project, opened from its list and
+left with a back button.
+_Avoid_: modal, page
+
 **Draft version**:
 A counter on an inbox item, bumped by every change to its draft reply. A Send names the version the
 operator approved. The send is refused (*stale*) when the draft changed since, or the item was
