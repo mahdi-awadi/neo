@@ -30,9 +30,13 @@ export interface AttentionCfg {
   /** `/attention`: at most this many lines, and one-tap buttons for the first `listButtons` items. */
   listLines: number;
   listButtons: number;
+  /** The git scan: an unmerged branch with no commit this long is stale. */
+  staleBranchDays: number;
+  /** The git scan: a linked worktree nobody worked in this long is left over. */
+  worktreeIdleHours: number;
 }
 
-export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10 };
+export const DEFAULT_ATTENTION_CFG: AttentionCfg = { queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10, staleBranchDays: 21, worktreeIdleHours: 12 };
 
 /** Config `attention` from config.json: each positive number is kept, anything else is the default. */
 export function readAttentionCfg(raw: unknown): AttentionCfg {
@@ -48,6 +52,8 @@ export function readAttentionCfg(raw: unknown): AttentionCfg {
     snoozeHours: positive(r.snoozeHours, d.snoozeHours),
     listLines: Math.floor(positive(r.listLines, d.listLines)),
     listButtons: Math.floor(positive(r.listButtons, d.listButtons)),
+    staleBranchDays: positive(r.staleBranchDays, d.staleBranchDays),
+    worktreeIdleHours: positive(r.worktreeIdleHours, d.worktreeIdleHours),
   };
 }
 

@@ -10,6 +10,9 @@ import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
 import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
+import { runScan } from "./engine/producers/scan";
+import { DEFAULT_GITHUB_CFG } from "./engine/producers/github";
+import { createGitRead } from "./engine/git-read";
 import { restartNeededSince } from "./engine/updater";
 import type { BootRow } from "./engine/ledger";
 import { openLedger, LEDGER_PATH } from "./engine/ledger";
@@ -124,6 +127,21 @@ async function main(): Promise<void> {
     configHash: configHashNow(),
   });
   const gated = (): string => gatedText(restartDeps());
+  // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
+  // time, in the background — a tick only starts it (single-flight).
+  let scanning = false;
+  let lastScanAt = 0;
+  const attentionScanTick = (): void => {
+    const gh = cfg.github ?? DEFAULT_GITHUB_CFG;
+    if (scanning || Date.now() - lastScanAt < gh.scanEveryMs) return;
+    scanning = true;
+    lastScanAt = Date.now();
+    const scan = runScan({
+      ledger, registry, read: createGitRead({ timeoutMs: gh.callTimeoutMs }), workRoot: cfg.workRoot, neoFolder,
+      attention: cfg.attention ?? DEFAULT_ATTENTION_CFG, projects: cfg.projects ?? {}, now: () => Date.now(),
+    }).finally(() => void (scanning = false));
+    faults.contain("attention.scan", scan);
+  };
   console.log(`  boot      -> ${thisBoot ? `${thisBoot.headSha.slice(0, 7)} on ${thisBoot.branch}` : "not recorded (git unreadable)"} (/gated)`);
   console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
   console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
@@ -370,6 +388,7 @@ async function main(): Promise<void> {
           // What the engine itself sees needs the operator (ADR-0018): stuck approvals, paused queues,
           // failed/waiting threads, stale decisions, an impossible ctx%. Ledger + registry only.
           ["attention.engine", attentionEngineTick],
+          ["attention.scan", attentionScanTick],
           // What is built but not running (spec §8.4): git + the boot record + the updater.
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],

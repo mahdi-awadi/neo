@@ -14,6 +14,8 @@ import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
+import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
+import { readProjectsCfg, type ProjectCfg } from "./engine/producers/git";
 import { DISPATCH_SPIN_DIGESTS_DEFAULT, TOOL_LOOP_EXEMPT_DEFAULT, TOOL_LOOP_LIMIT_DEFAULT } from "./engine/dispatch-report";
 import { isLang, type Lang } from "./frontends/web/langs";
 
@@ -244,6 +246,12 @@ export interface NeoConfig {
   /** Restart-gated work (spec §8.4, `/gated`): the branch prefixes that count as work waiting to
    *  merge. Optional like `plans`; `loadConfig` always fills it. */
   restart?: RestartCfg;
+  /** The repo scan (spec §7): how often git + GitHub are read for every tracked repo, and how long one
+   *  git/gh call may take. Optional like `plans`; `loadConfig` always fills it. */
+  github?: GithubCfg;
+  /** Per-project scan settings by project name (spec §7): trackedBranches, driftPairs, issueLabel,
+   *  ignoreKinds, deployedVersionUrl, healthUrl. No repo, branch or label name is in code. */
+  projects?: Record<string, ProjectCfg>;
   /** The web console's language when the operator has not picked one (its EN | ع switch sets a
    *  cookie): "en" or "ar". Optional like `trace`; `loadConfig` always fills it. */
   consoleLang?: Lang;
@@ -530,6 +538,8 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     plans: readPlansCfg(fileCfg.plans),
     attention: readAttentionCfg(fileCfg.attention),
     restart: readRestartCfg(fileCfg.restart),
+    github: readGithubCfg(fileCfg.github),
+    projects: readProjectsCfg(fileCfg.projects),
     consoleLang: isLang(fileCfg.consoleLang) ? fileCfg.consoleLang : "en",
     stuckAfterMs: fileCfg.stuckAfterMs ?? DEFAULTS.stuckAfterMs,
     longTurnAlertMs: fileCfg.longTurnAlertMs ?? DEFAULTS.longTurnAlertMs,

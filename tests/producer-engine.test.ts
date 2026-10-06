@@ -188,6 +188,6 @@ test("every kind the producer emits is listed in ENGINE_KINDS", () => {
 });
 
 test("readAttentionCfg: defaults, and only well-typed positive numbers are kept", () => {
-  expect(readAttentionCfg(undefined)).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10 });
+  expect(readAttentionCfg(undefined)).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10, staleBranchDays: 21, worktreeIdleHours: 12 });
   expect(readAttentionCfg({ waitingHours: 2, decisionStaleHours: "x", queuePausedHours: -1 })).toMatchObject({ waitingHours: 2, decisionStaleHours: 24, queuePausedHours: 6 });
 });

@@ -385,7 +385,7 @@ test("trace.showRefs defaults to auto; config.json can turn it off", () => {
 });
 
 test("attention thresholds default, and config.json overrides them (P4, ADR-0018)", () => {
-  expect(loadConfig(dir()).attention).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10 });
+  expect(loadConfig(dir()).attention).toEqual({ queuePausedHours: 6, waitingHours: 12, decisionStaleHours: 24, failedLookbackHours: 72, keepResolvedDays: 30, snoozeHours: 24, listLines: 30, listButtons: 10, staleBranchDays: 21, worktreeIdleHours: 12 });
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ attention: { waitingHours: 4 } }));
   expect(loadConfig(d).attention?.waitingHours).toBe(4);
@@ -403,4 +403,13 @@ test("restart.branchPrefixes defaults to fix/ feat/ chore/; a bad list keeps the
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ restart: { branchPrefixes: [""] } }));
   expect(loadConfig(d).restart?.branchPrefixes).toEqual(["fix/", "feat/", "chore/"]);
+});
+
+test("github scan defaults and per-project settings from config.json (bad fields drop)", () => {
+  expect(loadConfig(dir()).github).toEqual({ scanEveryMs: 1_800_000, callTimeoutMs: 20_000 });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ github: { scanEveryMs: 600_000 }, projects: { gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], issueLabel: 7, ignoreKinds: ["dirty"] } } }));
+  const c = loadConfig(d);
+  expect(c.github).toEqual({ scanEveryMs: 600_000, callTimeoutMs: 20_000 });
+  expect(c.projects).toEqual({ gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], ignoreKinds: ["dirty"] } });
 });

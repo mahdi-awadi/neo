@@ -277,6 +277,8 @@ export interface Ledger {
   listRecent(limit?: number): Order[];
   /** Every distinct folder an order was ever recorded for, sorted (the projects Neo has seen). */
   folders(): string[];
+  /** When Neo last started work in a folder (its newest order), if ever. */
+  lastOrderAt(folder: string): number | undefined;
   /** Audit: a risky action that trust auto-approved (the compensating control for the bypassed gate). */
   recordAutoApproval(orderId: string, reason: string): void;
   autoApprovalsFor(orderId: string): string[];
@@ -678,6 +680,9 @@ export function openLedger(
         )
         .get(folder, chatId, provider ?? null) as { sdk_session_id: string } | null;
       return row?.sdk_session_id ?? undefined;
+    },
+    lastOrderAt(folder) {
+      return (db.query(`SELECT max(created_at) AS at FROM orders WHERE folder = ?`).get(folder) as { at: number | null }).at ?? undefined;
     },
     folders() {
       return (db.query(`SELECT DISTINCT folder FROM orders ORDER BY folder`).all() as Array<{ folder: string }>).map(
