@@ -5,12 +5,13 @@
 // and the dispatcher — and on every daemon tick, for queues a hold or a restart left waiting.
 // Deterministic: no AI decides anything here.
 import { basename } from "node:path";
-import type { Ledger, TodoRow } from "./ledger";
+import type { Cause, Ledger, TodoRow } from "./ledger";
 import type { Registry } from "./registry";
 import { heldByReserve, type WorkClass } from "./budget";
 import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts } from "./dispatch";
 import { lastCommitIn } from "./dispatch-report";
 import { todoTitle } from "./todo-title";
+import { faults } from "./fault";
 
 import type { TodoFailurePolicy } from "../config";
 
@@ -34,8 +35,14 @@ export interface TodoQueueDeps {
 }
 
 export interface TodoQueue {
-  /** Hand a brief to a project: run now when it is free, else queue it. Returns the text for the caller. */
-  submit(p: { project: string; brief: string; team?: "frontend-backend"; workClass: WorkClass }, deps: DispatchDeps, replyChat: number): Promise<string>;
+  /** Hand a brief to a project: run now when it is free, else queue it. Returns the text for the caller.
+   *  `cause` (ADR-0015) is the operator message the brief answers — the todo, and the dispatch that
+   *  runs it, are filed under it; `parentOrderId` is the company order that made it. */
+  submit(
+    p: { project: string; brief: string; team?: "frontend-backend"; workClass: WorkClass; cause?: Cause; parentOrderId?: string },
+    deps: DispatchDeps,
+    replyChat: number,
+  ): Promise<string>;
   /** Release every free, unpaused project's next todo (the daemon tick; also after resume). */
   pump(): Promise<void>;
   /** Boot: a todo still `running` was cut short by the restart — fail it with its stop point. */
@@ -84,6 +91,14 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
    *  live" signal: the registry reads the session idle a moment before the run's end reaches the
    *  queue, and a row left `running` by a crash is never in here. */
   const live = new Set<string>();
+  /** Todo id → the company order that submitted it, for the sub-order's `parent_order_id`. In memory:
+   *  a todo released after a restart has no parent (its cause is durable on the row). */
+  const parents = new Map<number, string>();
+  /** Re-derive a todo's thread state after its status changed; best-effort (ADR-0010). */
+  const refresh = (deps: DispatchDeps | undefined, cause: Cause | undefined): void => {
+    const trace = deps?.trace;
+    if (trace && cause) faults.guard("todo.refreshThread", () => trace.refreshThread(cause.threadId), { threadId: cause.threadId });
+  };
 
   const queued = (folder: string) => ledger.listTodos({ folder, statuses: ["queued"] });
   const runningTodo = (folder: string) => ledger.listTodos({ folder, statuses: ["running"], limit: 1 })[0];
@@ -121,6 +136,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       root: l.deps.workRoot ?? q.dispatchOpts?.root,
       team: t.team,
       workClass: t.workClass,
+      cause: t.cause,
+      parentOrderId: parents.get(t.id),
       hooks: {
         quietStart: quiet,
         onLaunched: (orderId, mode) => {
@@ -144,6 +161,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         onEnd: (end) => finish(end, l),
       },
     });
+    parents.delete(t.id);
     const o = outcome as "run" | "delivered" | undefined; // set inside the hook, so TS cannot see it
     if (o === "run") return { kind: "run", text };
     if (o === "delivered") return { kind: "delivered", text };
@@ -165,6 +183,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (r.kind === "delivered") return { delivered: ledger.todoById(next.id) };
       if (r.reason === "not_found") {
         ledger.updateTodo(next.id, { status: "failed", endedAt: now(), result: "the project folder was not found at release" });
+        refresh(l.deps, next.cause);
         continue;
       }
       return { waits: r.reason }; // busy/closing/held after all — the next tick retries
@@ -181,10 +200,11 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     // the HEAD of the project's queue, so the release below starts it before anything else.
     const cont =
       end.ok && end.continuation
-        ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation, team: t.team, workClass: t.workClass, createdBy: t.createdBy }, now())
+        ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause }, now())
         : undefined;
     if (cont) ledger.moveTodo(cont.id, 1);
     ledger.updateTodo(t.id, { status: end.ok ? "done" : "failed", result: cont ? `${end.summary} → continuing as #${cont.id}` : end.summary, endedAt: now() });
+    refresh(launcher()?.deps ?? l.deps, t.cause);
     if (!end.ok && q.onFailure() === "pause" && queued(t.folder).length > 0) {
       ledger.setTodoPaused(t.folder, `#${t.id} failed`, now());
     }
@@ -232,22 +252,25 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       lastSeen = { deps, replyChat };
       const folder = resolveProject(p.project, deps.workRoot ?? q.dispatchOpts?.root, q.dispatchOpts?.desks ?? DESKS_DIR);
       // Unknown project: dispatch reports it exactly as before, and no todo is created.
-      if (!folder) return dispatchToProject(p.project, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass });
+      const traced = { cause: p.cause, parentOrderId: p.parentOrderId };
+      if (!folder) return dispatchToProject(p.project, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass, ...traced });
       const project = basename(folder);
       const paused = ledger.todoPaused(folder);
       const mustWait = busy(folder) || queued(folder).length > 0 || !!paused;
       // A free project under a hold (reload, cooldown, reserve) is refused exactly as before, by
       // dispatch itself, and no todo is created — the queue never turns a refusal into a promise.
       if (!mustWait && holdReason(deps, p.workClass, now())) {
-        return dispatchToProject(folder, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass });
+        return dispatchToProject(folder, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass, ...traced });
       }
       const t = ledger.addTodo(
-        { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company" },
+        { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause },
         now(),
       );
+      if (p.parentOrderId) parents.set(t.id, p.parentOrderId);
+      refresh(deps, p.cause); // a queued todo is the thread's open work
       if (mustWait) {
         const position = describePosition(t);
-        ledger.recordEvent("todo_queued", { folder, data: { project, id: t.id, position, paused: !!paused } });
+        ledger.recordEvent("todo_queued", { folder, data: { project, id: t.id, position, paused: !!paused }, cause: p.cause });
         await deps.reply(replyChat, `→ queued #${t.id} for ${project} (position ${position}): ${todoTitle(p.brief)}`, project);
         return (
           `queued as #${t.id} for ${project}, position ${position}` +
@@ -261,6 +284,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (r.kind === "refused") {
         // Held (cooldown, reserve, reload): refused exactly as before — this brief is not kept.
         ledger.updateTodo(t.id, { status: "cancelled", endedAt: now(), result: `refused: ${r.reason}` });
+        refresh(deps, p.cause);
         return r.text;
       }
       return `${r.text} (todo #${t.id})`;
@@ -291,7 +315,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           result: `interrupted by an engine restart before it finished${head ? ` — stopped at: folder HEAD now ${head}` : ""}`,
         });
         if (q.onFailure() === "pause" && queued(t.folder).length > 0) ledger.setTodoPaused(t.folder, `#${t.id} cut short by a restart`, opts.now);
-        ledger.recordEvent("todo_interrupted", { folder: t.folder, orderId: t.orderId, data: { project: t.project, id: t.id } });
+        ledger.recordEvent("todo_interrupted", { folder: t.folder, orderId: t.orderId, data: { project: t.project, id: t.id }, cause: t.cause });
+        refresh(launcher()?.deps, t.cause);
       }
       return cut.length;
     },
@@ -318,12 +343,14 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           return `#${id} is running — stop it with /kill ${t.project}; cancel only removes queued todos.`;
         }
         ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cleared: no live run" });
+        refresh(launcher()?.deps, t.cause);
         void this.pump();
         return `cancelled #${id} (it was marked running but ${t.project} has no live run).`;
       }
       if (t.status !== "queued") return `#${id} is already ${t.status}.`;
       ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cancelled" });
-      ledger.recordEvent("todo_cancelled", { folder: t.folder, data: { project: t.project, id } });
+      ledger.recordEvent("todo_cancelled", { folder: t.folder, data: { project: t.project, id }, cause: t.cause });
+      refresh(launcher()?.deps, t.cause);
       return `cancelled #${id} for ${t.project}: ${todoTitle(t.brief)}`;
     },
 

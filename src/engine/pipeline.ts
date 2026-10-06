@@ -15,7 +15,7 @@ import { noteProjectStart, type TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { neoMcpServers, raiseOperatorDecision, type DispatchDeps } from "./dispatch";
+import { neoMcpServers, raiseOperatorDecision, type DispatchDeps, type ReplyMeta } from "./dispatch";
 import type { TodoQueue } from "./todo-queue";
 import { flushDispatcherInbox, liveCompanyLink, takeDispatcherInbox, type DispatcherLink } from "./dispatch-report";
 import { questionSummary } from "./structured-question";
@@ -93,15 +93,7 @@ const runEnded = new Map<string, Promise<void>>();
 // Cleared at the turn's end and the run's end.
 const refShown = new Map<string, number>();
 
-/** Extra facts about one outbound line, for the trace (ADR-0015). Frontends ignore it. */
-export interface ReplyMeta {
-  /** What the line is. Absent → derived from the priority (progress by default). */
-  kind?: MessageKind;
-  /** The registry id of the session the line belongs to: its cause files the line. */
-  session?: string;
-  /** File the line under this cause (the run's final line, once the session may be gone). */
-  cause?: Cause;
-}
+export type { ReplyMeta };
 
 export interface PipelineDeps {
   cfg: NeoConfig;
@@ -121,8 +113,9 @@ export interface PipelineDeps {
    *  PROGRESS) routes the line to a surface: DECISION/ALERT → the notified Decisions channel,
    *  PROGRESS/DONE → the muted firehose (see engine/priority.ts + the frontend). */
   reply: (chatId: number, text: string, project?: string, priority?: Priority, meta?: ReplyMeta) => void | Promise<void>;
-  /** `signal` aborts when the engine gives up waiting (approval timeout): drop the prompt. */
-  askApproval: (chatId: number, reason: string, signal?: AbortSignal) => Promise<"allow" | "deny">;
+  /** `signal` aborts when the engine gives up waiting (approval timeout): drop the prompt. `cause`
+   *  files the prompt in the asking run's thread (a dispatched run is not the chat's session). */
+  askApproval: (chatId: number, reason: string, signal?: AbortSignal, cause?: Cause) => Promise<"allow" | "deny">;
   /** Post a raised decision to the operator's Decisions channel (frontend-supplied; builds the
    *  inline keyboard). Threaded into neoMcpServers so the `ask_operator` tool can post — and its
    *  presence gates that tool (operator surfaces only; never the customer/ingress path). */
@@ -153,6 +146,8 @@ export interface PipelineDeps {
   /** The cause seam (ADR-0015): every recorded line is filed under its cause and the channel copy
    *  carries the ref. Absent → lines are recorded without ids or refs, exactly as before. */
   trace?: Trace;
+  /** Set by `recorded()`: `reply`/`askApproval` already record every line, so nothing wraps them twice. */
+  recordsLines?: boolean;
 }
 
 /** The kind of a line the caller did not name: from its priority. A finished run's `done` line is
@@ -191,6 +186,7 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
   if (!trace) {
     return {
       ...deps,
+      recordsLines: true,
       reply: (c, t, project, priority) => {
         ledger.recordMessage(c, "assistant", t);
         return rawReply(c, t, project, priority);
@@ -215,6 +211,7 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
   };
   return {
     ...deps,
+    recordsLines: true,
     reply: (c, t, project, priority, meta) => {
       const session = meta?.session ?? target();
       const kind = meta?.kind ?? kindOf(priority);
@@ -229,8 +226,8 @@ function recorded(deps: PipelineDeps, inbound: Cause | undefined, target: () => 
         }, { project }) ?? "";
       return rawReply(c, t + suffix, project, priority);
     },
-    askApproval: async (c, reason, signal) => {
-      const cause = causeFor(target());
+    askApproval: async (c, reason, signal, asking) => {
+      const cause = asking ?? causeFor(target());
       const askId = faults.guard("pipeline.recordApproval", () =>
         trace.outbound({ chatId: c, text: `⚠ approve? ${reason}`, cause, kind: "approval", at: now() }),
       );
@@ -450,7 +447,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, cause: turnCause(registry, session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -512,7 +509,7 @@ async function resumeSession(
       deps,
       now,
       start,
-      runConfigFor(live.id, registry, deps, chatId, gate.resumeId),
+      runConfigFor(live.id, registry, deps, chatId, gate.resumeId, resumed.id),
       gate.idleMs,
       gate.preLines,
       cause,
@@ -536,7 +533,7 @@ export async function deliverToCompany(
   text: string,
   chatId: number,
   deps: PipelineDeps,
-  opts: { wake: boolean },
+  opts: { wake: boolean; cause?: Cause },
 ): Promise<boolean> {
   const { registry } = deps;
   const now = deps.now ?? (() => Date.now());
@@ -545,7 +542,9 @@ export async function deliverToCompany(
   const control = registry.getControl(company.id);
   if (control) {
     if (control.closed?.() === true) return false;
-    control.followUp(text);
+    // A dispatch result carries its thread: the company's turn that reads it is filed there.
+    if (opts.cause) control.followUp(text, opts.cause);
+    else control.followUp(text);
     registry.touch(company.id, now());
     return true;
   }
@@ -553,7 +552,7 @@ export async function deliverToCompany(
   // it right now — a resume in progress, an ingress brief's one-shot run — and a second resume of
   // the same SDK session would race it. The report stays in the inbox for a later flush.
   if (!opts.wake || company.status === "running" || resuming.has(company.id)) return false;
-  await resumeSession(company, text, chatId, deps, now, deps.start ?? startOrder);
+  await resumeSession(company, text, chatId, deps, now, deps.start ?? startOrder, undefined, opts.cause);
   return true;
 }
 
@@ -562,6 +561,9 @@ export async function deliverToCompany(
  *  company through `companyLink` (it can wake an idle company); without it, dispatch falls back to
  *  the live-only link. The ONE place this mapping lives. */
 export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchDeps {
+  // With a trace, dispatch lines (digests, results, a released todo's whole run) are filed in their
+  // thread through the one recording wrapper — added here when the caller passed raw frontend deps.
+  if (deps.trace && !deps.recordsLines) deps = recorded(deps, undefined, () => undefined);
   return {
     ...deps,
     workRoot: deps.cfg.workRoot,
@@ -582,6 +584,11 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
   };
 }
 
+/** The cause a session's tool call is filed under (ADR-0015): its current turn's, read at call time. */
+function turnCause(registry: Registry, id: string): () => Cause | undefined {
+  return () => registry.causeOf(id) ?? registry.lastCauseOf(id);
+}
+
 /** The dispatcher link the company's own `dispatch` tool reports through (see dispatch-report.ts). */
 function companyLink(deps: PipelineDeps, chatId: number): DispatcherLink {
   return { deliver: (text, opts) => deliverToCompany(text, chatId, deps, opts) };
@@ -597,13 +604,15 @@ function runConfigFor(
   deps: PipelineDeps,
   chatId: number,
   sdkSessionId: string,
+  /** The order this run serves (a resume mints a new one); default the session's first order. */
+  orderId?: string,
 ): RunDeps {
   const info = registry.get(id);
   const folder = info?.order.folder ?? "/nonexistent-neo-session";
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: info?.order.id, stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }
@@ -697,6 +706,8 @@ function startSession(
     refreshThread(deps, cause.threadId);
   };
   deliverInput(initialCause);
+  /** The cause this run's work is filed under now: the current turn's, else the last answered one. */
+  const runCause = (): Cause | undefined => registry.causeOf(registryId) ?? registry.lastCauseOf(registryId) ?? runLast;
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
   // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
   // follow-up into a live worker). Default `scopes: []` → memoryEnabledFor is always false.
@@ -759,8 +770,8 @@ function startSession(
             // check-points and STOPS after raising) — raiseOperatorDecision owns that, as the one
             // path behind every blocking ask.
             await raiseOperatorDecision(
-              { ledger, postDecision: deps.postDecision, registry },
-              { project, folder: order.folder, orderId: order.id, chatId, question: questionSummary(ask), spec: ask, now },
+              { ledger, postDecision: deps.postDecision, registry, trace: deps.trace },
+              { project, folder: order.folder, orderId: order.id, chatId, question: questionSummary(ask), spec: ask, now, cause: runCause() },
             );
           }
         : undefined,
@@ -772,6 +783,11 @@ function startSession(
         ledger.recordAutoApproval(order.id, reason);
         void deps.reply(chatId, `🔓 auto-approved: ${reason}`, project);
       },
+      // One row per governed tool call, under the order and the turn's cause (spec §3.4). Trace only.
+      onToolVerdict: deps.trace
+        ? (tool, label, verdict) =>
+            void faults.guard("pipeline.toolAction", () => ledger.recordToolAction({ orderId: order.id, folder: order.folder, tool, label, verdict, cause: runCause(), at: now() }), ctx)
+        : undefined,
       onActivity: (label) => {
         try {
           registry.noteActivity(registryId, label, now()); // advances the activity clock too

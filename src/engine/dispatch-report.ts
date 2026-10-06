@@ -10,7 +10,7 @@
 //     Whatever is still pending rides along with the next delivery, or is prepended to the
 //     operator's next message to the company (pipeline.ts).
 import { spawnSync } from "node:child_process";
-import type { Ledger } from "./ledger";
+import type { Cause, Ledger } from "./ledger";
 import type { Registry } from "./registry";
 
 /** Where an interrupted dispatch stopped — what the dispatcher needs to resume it. */
@@ -25,9 +25,10 @@ export interface StopPoint {
 
 /** How the dispatch module reaches the dispatcher. `wake` asks to resume an idle company; a link
  *  that cannot deliver (no live company, draining, reopening) returns false and the caller keeps
- *  the report. */
+ *  the report. `cause` is the thread the report belongs to: the company's turn that reads it is
+ *  filed there (spec §3.3, "the result goes back to its thread"). */
 export interface DispatcherLink {
-  deliver(text: string, opts: { wake: boolean }): boolean | Promise<boolean>;
+  deliver(text: string, opts: { wake: boolean; cause?: Cause }): boolean | Promise<boolean>;
 }
 
 /** Max chars of a worker note quoted in a digest / stop point — one line, never a wall of text. */
@@ -125,9 +126,10 @@ export function formatStopPoint(s: StopPoint): string {
   return parts.length ? `stopped at — ${parts.join(" · ")}` : "";
 }
 
-/** The final-result text the dispatcher receives. */
-export function dispatchResultText(p: { project: string; ok: boolean; summary: string; stop?: StopPoint }): string {
-  const head = `[dispatch result] ${p.project}: ${p.summary || (p.ok ? "done" : "failed")}`;
+/** The final-result text the dispatcher receives. `ref` (the thread's ref, e.g. `m4g2`) tells the
+ *  company which operator thread the result answers: `[dispatch result · m4g2]`. */
+export function dispatchResultText(p: { project: string; ok: boolean; summary: string; stop?: StopPoint; ref?: string }): string {
+  const head = `[dispatch result${p.ref ? ` · ${p.ref}` : ""}] ${p.project}: ${p.summary || (p.ok ? "done" : "failed")}`;
   const stop = p.stop ? formatStopPoint(p.stop) : "";
   return stop ? `${head}\n${stop}` : head;
 }
@@ -137,19 +139,21 @@ export function dispatchResultText(p: { project: string; ok: boolean; summary: s
  *  or a draining engine, where a pushed follow-up would be lost. */
 export function liveCompanyLink(registry: Registry, lifecycle?: { draining(): boolean }): DispatcherLink {
   return {
-    deliver(text) {
+    deliver(text, opts) {
       if (lifecycle?.draining()) return false;
       const company = registry.getDefault();
       const control = company ? registry.getControl(company.id) : undefined;
       if (!control || control.closed?.() === true) return false;
-      control.followUp(text);
+      if (opts.cause) control.followUp(text, opts.cause);
+      else control.followUp(text);
       return true;
     },
   };
 }
 
 /** Deliver every pending inbox report in one message (oldest first). Rows are marked delivered
- *  BEFORE the attempt — so a concurrent flush can't send them twice — and put back on failure. */
+ *  BEFORE the attempt — so a concurrent flush can't send them twice — and put back on failure. The
+ *  message carries the newest report's cause (one input has one cause, spec §4.2). */
 export async function flushDispatcherInbox(ledger: Ledger, link: DispatcherLink, now: number): Promise<boolean> {
   const pending = ledger.pendingDispatcherReports();
   if (pending.length === 0) return true;
@@ -157,7 +161,8 @@ export async function flushDispatcherInbox(ledger: Ledger, link: DispatcherLink,
   ledger.setDispatcherReportsDelivered(ids, now);
   let ok = false;
   try {
-    ok = await link.deliver(pending.map((r) => r.text).join("\n\n"), { wake: true });
+    const cause = pending.findLast((r) => r.cause)?.cause;
+    ok = await link.deliver(pending.map((r) => r.text).join("\n\n"), cause ? { wake: true, cause } : { wake: true });
   } catch {
     ok = false;
   }

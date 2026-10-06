@@ -4,7 +4,7 @@
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
@@ -12,7 +12,8 @@ import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../con
 import type { Priority } from "./priority";
 import { maturedAsk, questionSummary, MAX_OPTIONS, type StructuredAsk, type MaturedDecisionInput } from "./structured-question";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
-import type { Ledger } from "./ledger";
+import type { Cause, Ledger, MessageKind } from "./ledger";
+import type { Trace } from "./trace";
 import type { Registry } from "./registry";
 import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type WorkClass } from "./budget";
 import type { UsageMeter } from "./usage";
@@ -82,6 +83,16 @@ export const SUB_CHAT = -2;
 /** Function-scoped scratch workspaces (research, dev, marketing, …) for work with no project home. */
 export const DESKS_DIR = join(DEFAULT_PROJECT.folder, "desks");
 
+/** Extra facts about one outbound line, for the trace (ADR-0015). Frontends ignore it. */
+export interface ReplyMeta {
+  /** What the line is. Absent → derived from the priority (progress by default). */
+  kind?: MessageKind;
+  /** The registry id of the session the line belongs to: its cause files the line. */
+  session?: string;
+  /** File the line under this cause (the run's final line, once the session may be gone). */
+  cause?: Cause;
+}
+
 /** Everything dispatch needs — a structural subset of the pipeline's deps. */
 export interface DispatchDeps {
   ledger: Ledger;
@@ -89,9 +100,11 @@ export interface DispatchDeps {
   meter: Meter;
   usage?: UsageMeter;
   trust: TrustStore;
-  reply: (chatId: number, text: string, project?: string, priority?: Priority) => void | Promise<void>;
-  /** `signal` aborts when the engine gives up waiting (approval timeout): drop the prompt. */
-  askApproval: (chatId: number, reason: string, signal?: AbortSignal) => Promise<"allow" | "deny">;
+  /** `meta` files the line in the trace (the pipeline's recording reply reads it; frontends ignore it). */
+  reply: (chatId: number, text: string, project?: string, priority?: Priority, meta?: ReplyMeta) => void | Promise<void>;
+  /** `signal` aborts when the engine gives up waiting (approval timeout): drop the prompt. `cause`
+   *  files the prompt and the verdict in the thread of the run that asked. */
+  askApproval: (chatId: number, reason: string, signal?: AbortSignal, cause?: Cause) => Promise<"allow" | "deny">;
   /** Deliver a worker-produced file back to the operator's channel (Telegram/web). */
   sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void>;
   /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
@@ -176,6 +189,14 @@ export interface DispatchDeps {
    *  brief to it (a busy project queues it) and the company gets the `todo` tool. Absent → the
    *  legacy direct dispatch (tests, paths without the queue). */
   todo?: TodoQueue;
+  /** The cause seam (ADR-0015): thread state refreshes, `send_file` lines, tool actions and the
+   *  ref on the dispatcher's result. Absent → none of these, exactly as before. */
+  trace?: Trace;
+}
+
+/** Re-derive a thread's state; best-effort (ADR-0010). */
+function refreshThread(deps: Pick<DispatchDeps, "trace">, threadId: number | undefined): void {
+  if (deps.trace && threadId !== undefined) faults.guard("dispatch.refreshThread", () => deps.trace!.refreshThread(threadId), { threadId });
 }
 
 type RunFn = typeof runOrder;
@@ -367,10 +388,19 @@ export async function dispatchToProject(
     workClass?: WorkClass;
     /** The todo queue's view of this dispatch (ADR-0008). */
     hooks?: DispatchHooks;
+    /** The operator message (and thread) this dispatch answers (ADR-0015): the sub-order, its todo,
+     *  its events, digests, final result and dispatcher-inbox row are all filed under it. */
+    cause?: Cause;
+    /** The company order that dispatched this one (`orders.parent_order_id`). */
+    parentOrderId?: string;
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
   const hooks = opts.hooks ?? {};
+  const cause = opts.cause;
+  // Every event this dispatch writes carries its cause (events.msg_id); none → NULL, as before.
+  const event = (kind: string, input: { orderId?: string; sessionId?: string; folder?: string; data?: Record<string, unknown> } = {}) =>
+    deps.ledger.recordEvent(kind, { ...input, cause });
   const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
   // Worker-profile view (model/effort/skills/env by path) — absent deps.workers/workerEnv means
   // every profileDeps() call below is a no-op (empty profile ?? {}), preserving today's behavior.
@@ -392,19 +422,19 @@ export async function dispatchToProject(
       ? frontendBackend
       : undefined;
   if (deps.lifecycle?.draining()) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "draining" } });
+    event("dispatch_refused", { data: { project, workClass, reason: "draining" } });
     hooks.onRefused?.("draining");
     return "Neo is reloading — dispatch refused; retry after the restart (open sessions are preserved).";
   }
   // The API is throttling us — starting another worker now just earns another 429.
   if (deps.cooldown?.activeAt(now())) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "cooldown" } });
+    event("dispatch_refused", { data: { project, workClass, reason: "cooldown" } });
     hooks.onRefused?.("cooldown");
     return apiHoldMessage(deps.cooldown.remainingMs(now()));
   }
   const folder = resolveProject(project, opts.root, opts.desks);
   if (!folder) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "not_found" } });
+    event("dispatch_refused", { data: { project, workClass, reason: "not_found" } });
     hooks.onRefused?.("not_found");
     return `No project or desk named "${project}" was found — check the name.`;
   }
@@ -414,7 +444,7 @@ export async function dispatchToProject(
   // 0001 + its follow-up). AFTER resolveProject on purpose: a typo'd project name must still report
   // "not found" while over budget, not a hold that hides the real error.
   if (heldByReserve(workClass, deps.meter, now())) {
-    deps.ledger.recordEvent("dispatch_refused", { data: { project, workClass, reason: "budget" } });
+    event("dispatch_refused", { data: { project, workClass, reason: "budget" } });
     hooks.onRefused?.("budget");
     return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
   }
@@ -434,7 +464,7 @@ export async function dispatchToProject(
     chatId: SUB_CHAT,
     createdAt: now(),
   };
-  deps.ledger.recordOrder(order);
+  deps.ledger.recordOrder(order, { cause, parentOrderId: opts.parentOrderId });
   // A project's first sight: trusted by default when `trustNewProjects` is on (the customer path
   // passes denyAllTrust, whose noteProject never trusts).
   noteProjectStart(deps, order);
@@ -444,6 +474,15 @@ export async function dispatchToProject(
   const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now());
   const name = session.name;
+  // The cause a line of this run is filed under: the newest brief delivered into the session (a
+  // later brief pushed into it brings its own), else this dispatch's own.
+  const liveCause = (): Cause | undefined => deps.registry.causeOf(session.id) ?? cause;
+  /** A line about this dispatch. With a cause it is filed in the trace under it, as `kind`; without
+   *  one the call is exactly what it was before. */
+  const say = (text: string, priority?: Priority, meta?: { kind?: MessageKind; cause?: Cause }) =>
+    meta?.cause
+      ? deps.reply(replyChat, text, name, priority, { cause: meta.cause, ...(meta.kind ? { kind: meta.kind } : {}) })
+      : deps.reply(replyChat, text, name, priority);
   // Reuse guard. A folder's session runs ONE turn at a time, so a second concurrent run must never
   // stack onto it. But "reuse" is NOT the same as "busy": a live session's registry status stays
   // "running" for its WHOLE lifetime (it flips back to "idle" only when the whole run ends), so
@@ -465,7 +504,7 @@ export async function dispatchToProject(
     // A control whose channel was already closed (the run is settling and about to end) would drop
     // the brief without a word — the 2026-10-04 lost-brief bug. Refuse it out loud instead.
     if (control?.followUp && control.closed?.() === true) {
-      deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "closing", state } });
+      event("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "closing", state } });
       hooks.onRefused?.("closing");
       return (
         `${name} is finishing its current run (its session is closing) — I did NOT queue this brief, so ` +
@@ -480,15 +519,17 @@ export async function dispatchToProject(
         ? `its output streams to the operator as ${name}, and you get progress digests and the result when that run ends.`
         : `its output streams to the operator as ${name}. It is a session the operator opened, so its result is NOT ` +
           `sent back to you automatically — check it with \`sessions\` or ask the operator.`;
-      control.followUp(order.task);
+      // The brief carries its cause into the session, so the turn that runs it is filed under it.
+      if (cause) control.followUp(order.task, cause);
+      else control.followUp(order.task);
       hooks.onLaunched?.(order.id, "delivered");
       deps.registry.touch(existing.id, now());
       // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
       // alone, since that one is still suspending the worker mid-tool.
       clearDecisionBlock(deps.registry, existing.id);
       if (turnActive) {
-        deps.ledger.recordEvent("dispatch_queued", { orderId: order.id, folder, data: { project: name, workClass } });
-        await deps.reply(replyChat, `→ queued for ${name} (busy): ${task}`, name);
+        event("dispatch_queued", { orderId: order.id, folder, data: { project: name, workClass } });
+        await say(`→ queued for ${name} (busy): ${task}`, undefined, { kind: "ack", cause });
         return (
           `${name} is ${state} — I queued this brief behind its current turn (${status}). It runs when the ` +
           `current work yields; ${reportBack} Unless that state is ` +
@@ -497,8 +538,8 @@ export async function dispatchToProject(
         );
       }
       // Alive but IDLE between turns: the follow-up is pulled and run immediately.
-      deps.ledger.recordEvent("dispatch_delivered", { orderId: order.id, folder, data: { project: name, workClass, reuse: "idle" } });
-      await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
+      event("dispatch_delivered", { orderId: order.id, folder, data: { project: name, workClass, reuse: "idle" } });
+      await say(`→ dispatching to ${name}: ${task}`, undefined, { kind: "ack", cause });
       return (
         `dispatched to ${name} — it was idle, so this runs now; ${reportBack}`
       );
@@ -506,7 +547,7 @@ export async function dispatchToProject(
     // No live handle. Usually NOT a fault: the previous dispatch marked the session running and is
     // still preparing it (ensureIndexed on a big repo takes minutes) — `stateOf` calls that
     // `starting`. Say which it is instead of implying the project is broken.
-    deps.ledger.recordEvent("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control", state } });
+    event("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "stale_running_no_control", state } });
     hooks.onRefused?.("stale_running_no_control");
     return (
       `${name} is ${state} — ${status} — and has no live handle to queue behind yet` +
@@ -526,8 +567,12 @@ export async function dispatchToProject(
   // continuation below, after ensureIndexed + the context gate. Label that gap so the gap explains
   // itself in `sessions`/`/list` instead of showing as an unexplained handle-less "running".
   deps.registry.noteActivity(session.id, PREPARING_LABEL, now());
+  // The run's first input carries this dispatch's cause: its thread reads as active work until the
+  // run ends (spec §5), and later briefs delivered into the run bring their own.
+  if (cause) deps.registry.setCause(session.id, cause);
   hooks.onLaunched?.(order.id, "run");
-  if (!hooks.quietStart) await deps.reply(replyChat, `→ dispatching to ${name}: ${task}`, name);
+  refreshThread(deps, cause?.threadId);
+  if (!hooks.quietStart) await say(`→ dispatching to ${name}: ${task}`, undefined, { kind: "ack", cause });
 
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
   // versa) is rejected outright, and before the ownership check that read as an API failure.
@@ -553,7 +598,7 @@ export async function dispatchToProject(
   // delays the string this function returns to the calling company session.
   void (async () => {
     const policy = deps.contextPolicy;
-    const notify = (t: string, pr?: "alert") => void deps.reply(replyChat, t, name, pr);
+    const notify = (t: string, pr?: "alert") => void say(t, pr, { cause: liveCause() });
     // Never measure (or resume) a folder another gate is handing off — e.g. the previous dispatch's
     // end-of-run handoff. Its resume id is read again AFTER the wait: the handoff clears it.
     let gatedResume = resume;
@@ -639,7 +684,7 @@ export async function dispatchToProject(
             now,
             onArm: (a) => {
               noteAtArm = noteStamp(folder);
-              deps.ledger.recordEvent("context_checkpoint_armed", { orderId: order.id, folder, data: { project: name, occupancy: a.occupancy, reason: a.decision.reason } });
+              event("context_checkpoint_armed", { orderId: order.id, folder, data: { project: name, occupancy: a.occupancy, reason: a.decision.reason } });
             },
           })
         : undefined;
@@ -652,7 +697,7 @@ export async function dispatchToProject(
     if (deps.codebaseMemory) {
       try {
         await deps.codebaseMemory.ensureIndexed(folder, () =>
-          deps.reply(replyChat, `indexing ${name} into codebase-memory…`, name),
+          say(`indexing ${name} into codebase-memory…`, undefined, { cause: liveCause() }),
         );
       } catch {
         // ensureIndexed is itself best-effort; this guard belts-and-braces the dispatch path.
@@ -660,7 +705,7 @@ export async function dispatchToProject(
     }
 
     const startedAt = now();
-    deps.ledger.recordEvent("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, stallMs, progressMs } });
+    event("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, stallMs, progressMs } });
     // Every registry write below is pure observation: a failure in it must never surface into the
     // worker's own path (the same contract the activity tracker has always had).
     const noteRegistry = (fn: () => void) => {
@@ -694,7 +739,7 @@ export async function dispatchToProject(
           lastActivityAt = now();
           if (kind !== "tool") lastNote = t;
           noteRegistry(() => deps.registry.noteOutput(session.id, now()));
-          void deps.reply(replyChat, t, name);
+          void say(t, undefined, { cause: liveCause() });
         },
         // Liveness pulse on ANY streamed SDK event (partial deltas, tool_use/tool_result, system):
         // a worker mid-generation (e.g. writing a huge file — one long turn, no completed message)
@@ -711,10 +756,11 @@ export async function dispatchToProject(
         onEscalation: async (reason, signal) => {
           noteRegistry(() => deps.registry.noteBlocked(session.id, { kind: "approval", label: reason, since: now() }));
           try {
-            return await patientApproval((signal) => deps.askApproval(replyChat, reason, signal), reason, {
+            const asking = liveCause();
+            return await patientApproval((signal) => deps.askApproval(replyChat, reason, signal, asking), reason, {
               patience: deps.governor ?? DEFAULT_GOVERNOR_CFG,
-              say: (text, priority) => void deps.reply(replyChat, text, name, priority),
-              record: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data: { project: name, ...data } }),
+              say: (text, priority) => void say(text, priority, { cause: asking }),
+              record: (kind, data) => event(kind, { orderId: order.id, folder, data: { project: name, ...data } }),
               signal,
             });
           } finally {
@@ -736,16 +782,24 @@ export async function dispatchToProject(
                 question: questionSummary(ask),
                 spec: ask,
                 now,
+                cause: liveCause(),
               });
             }
           : undefined,
-        onEvent: (kind, data) => deps.ledger.recordEvent(kind, { orderId: order.id, folder, data }),
+        onEvent: (kind, data) => event(kind, { orderId: order.id, folder, data }),
         onContextWindow: (model, tokens) => deps.ledger.recordModelWindow(model, tokens),
         autoApprove: () => deps.trust.isTrusted(folder),
         onAutoApprove: (reason) => {
           deps.ledger.recordAutoApproval(order.id, reason);
-          void deps.reply(replyChat, `🔓 auto-approved: ${reason}`, name);
+          void say(`🔓 auto-approved: ${reason}`, undefined, { cause: liveCause() });
         },
+        // One row per governed tool call, under the order and the cause (spec §3.4). Trace only.
+        onToolVerdict: deps.trace
+          ? (tool, label, verdict) =>
+              void faults.guard("dispatch.toolAction", () =>
+                deps.ledger.recordToolAction({ orderId: order.id, folder, tool, label, verdict, cause: liveCause(), at: now() }),
+              )
+          : undefined,
         onUsage: (model, usage) => {
           watch?.onUsage(model, usage);
           probe?.onUsage();
@@ -775,7 +829,7 @@ export async function dispatchToProject(
                 ladder: retryLadder,
                 jitterFrac: deps.apiRetryJitterFrac,
               });
-              deps.ledger.recordEvent("api_retry", {
+              event("api_retry", {
                 orderId: order.id,
                 folder,
                 data: { scope: "dispatch", project: name, kind, attempt, max: maxRetries, delayMs, source, resetsAt },
@@ -785,7 +839,7 @@ export async function dispatchToProject(
               retryingUntil = now() + delayMs;
               pausedMs += delayMs;
               retryPending = true;
-              void deps.reply(replyChat, apiRetryNotice(name, attempt, delayMs, resetsAt, maxRetries), name);
+              void say(apiRetryNotice(name, attempt, delayMs, resetsAt, maxRetries), undefined, { cause: liveCause() });
               void (opts.sleep ?? realSleep)(delayMs).then(() => {
                 lastActivityAt = now();
                 retryPending = false;
@@ -793,8 +847,8 @@ export async function dispatchToProject(
               });
               return; // keep the sub-run open — it hasn't done the work yet
             }
-            deps.ledger.recordEvent("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
-            void deps.reply(replyChat, apiFailureNotice(name, kind, apiRetries), name, "alert");
+            event("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
+            void say(apiFailureNotice(name, kind, apiRetries), "alert", { cause: liveCause() });
           }
         },
         // The brief is done only when the session is settled (no background work left) and nothing
@@ -819,13 +873,24 @@ export async function dispatchToProject(
         // stay gated by memoryGate (off unless the folder is in scope). The sub-worker inherits THIS
         // dispatch's work class, so a sub-dispatch would follow the same originating trigger (inert
         // while recursive dispatch stays off — the invariant holds by construction, not by memory).
-        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, orderId: order.id }),
+        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, orderId: order.id, cause: liveCause }),
         ...(teamAgents ? { agents: teamAgents } : {}),
       }),
     );
     runRef = run;
-    dispatchRuns.add(run);
-    deps.registry.attachControl(session.id, run);
+    // The registry's handle delivers a brief's cause with it (spec §4.2), like the pipeline's own.
+    const control = {
+      ...run,
+      followUp: (text: string, c?: Cause) => {
+        if (c) {
+          deps.registry.deliver(session.id, c);
+          refreshThread(deps, c.threadId);
+        }
+        run.followUp(text);
+      },
+    };
+    dispatchRuns.add(control);
+    deps.registry.attachControl(session.id, control);
 
     // Liveness monitor: it protects against a HUNG worker, never a busy one. There is no wall-clock
     // limit (ADR-0007): a dispatch is aborted only when the sub-run has produced no activity for
@@ -852,7 +917,7 @@ export async function dispatchToProject(
         if (progressMs > 0 && t - lastDigestAt >= progressMs) {
           if (lastActivityAt > lastDigestAt) {
             const digest = progressDigest({ project: name, elapsedMs: t - startedAt, activity: lastActivity, lastNote, lastCommit: readCommit(folder) });
-            void deps.reply(replyChat, digest, name);
+            void say(digest, undefined, { kind: "progress", cause });
             try {
               await dispatcher.deliver(digest, { wake: false });
             } catch {
@@ -883,7 +948,7 @@ export async function dispatchToProject(
           wedgedAfterMs: stallMs,
           quietAfterMs: deps.liveness?.quietAfterMs ?? DEFAULT_LIVENESS_THRESHOLDS.quietAfterMs,
         });
-        deps.ledger.recordEvent("dispatch_stall_evidence", {
+        event("dispatch_stall_evidence", {
           orderId: order.id,
           folder,
           data: {
@@ -915,7 +980,7 @@ export async function dispatchToProject(
         }
         timedOut = true;
         await run.interrupt();
-        deps.ledger.recordEvent("dispatch_abort", { orderId: order.id, folder, data: { project: name, workClass, limit } });
+        event("dispatch_abort", { orderId: order.id, folder, data: { project: name, workClass, limit } });
         const detail = `no activity for ${Math.round(stallMs / 60000)}m (stall limit)`;
         result = { ok: false, sessionId: "", summary: `timed out: ${detail} — asked to wrap up, then aborted`, costUsd: 0 };
         break;
@@ -950,6 +1015,10 @@ export async function dispatchToProject(
     const line =
       (ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
       (stopLine ? `\n${stopLine}` : "");
+    // The run is over: every brief delivered into it is answered (spec §5). Read before the entry
+    // may be removed below.
+    const answered = new Set<number>(cause ? [cause.threadId] : []);
+    faults.guard("dispatch.endTurn", () => deps.registry.endTurn(session.id, { all: true }).forEach((c) => answered.add(c.threadId)));
     try {
       if (result.sessionId) {
         deps.registry.setSdkSessionId(session.id, result.sessionId, worker);
@@ -961,7 +1030,7 @@ export async function dispatchToProject(
       // observer/bookkeeping errors must not surface into the worker path
     }
     try {
-      deps.ledger.recordEvent("dispatch_end", {
+      event("dispatch_end", {
         orderId: order.id,
         sessionId: result.sessionId || undefined,
         folder,
@@ -974,8 +1043,8 @@ export async function dispatchToProject(
       } catch {
         note = undefined; // the queue's note is extra — the result itself must still be queued
       }
-      const report = dispatchResultText({ project: name, ok, summary, stop });
-      deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now());
+      const report = dispatchResultText({ project: name, ok, summary, stop, ref: resultRef(deps, cause) });
+      deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now(), cause);
     } catch {
       // observer only — never surfaces into the worker path
     }
@@ -1033,10 +1102,11 @@ export async function dispatchToProject(
       // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure
       // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
       // The frontend prepends the single priority accent (✅/🔴) — no per-call-site glyph (Feature 2).
-      await deps.reply(replyChat, line, name, ok ? "result" : "alert");
+      await say(line, ok ? "result" : "alert", { kind: "result", cause });
     } catch {
       // the operator line is best-effort; the dispatcher report below must still go out
     }
+    for (const threadId of answered) refreshThread(deps, threadId);
     // The dispatcher ALWAYS gets the final result: deliver the inbox now (waking an idle company);
     // whatever cannot be delivered yet stays queued for the next flush.
     try {
@@ -1059,22 +1129,25 @@ export async function dispatchToProject(
     const summary = `failed to start: ${e instanceof Error ? e.message : String(e)}`;
     try {
       deps.ledger.recordOutcome(order.id, "error", summary);
-      deps.ledger.recordEvent("dispatch_end", { orderId: order.id, folder, data: { project: name, workClass, ok: false, timedOut: false, costUsd: 0 } });
-      deps.ledger.queueDispatcherReport(name, dispatchResultText({ project: name, ok: false, summary }), now());
+      event("dispatch_end", { orderId: order.id, folder, data: { project: name, workClass, ok: false, timedOut: false, costUsd: 0 } });
+      deps.ledger.queueDispatcherReport(name, dispatchResultText({ project: name, ok: false, summary, ref: resultRef(deps, cause) }), now(), cause);
     } catch {
       // observer only
     }
+    const answered = new Set<number>(cause ? [cause.threadId] : []);
     try {
+      deps.registry.endTurn(session.id, { all: true }).forEach((c) => answered.add(c.threadId));
       deps.registry.remove(session.id);
     } catch {
       // observer only
     }
     try {
-      await deps.reply(replyChat, `${name}: ${summary}`, name, "alert");
+      await say(`${name}: ${summary}`, "alert", { kind: "result", cause });
       await flushDispatcherInbox(deps.ledger, dispatcher, now());
     } catch {
       // observer only
     }
+    for (const threadId of answered) refreshThread(deps, threadId);
     try {
       await hooks.onEnd?.({ orderId: order.id, ok: false, summary });
     } catch {
@@ -1085,6 +1158,11 @@ export async function dispatchToProject(
   return `dispatched to ${name} — running in the background with no time limit; its output streams to the operator, you get a progress digest every few minutes, and you will receive its result as a follow-up message when it ends.`;
 }
 
+/** The ref of a result's thread, for the dispatcher's `[dispatch result · m4g2]` (trace only). */
+function resultRef(deps: Pick<DispatchDeps, "trace">, cause: Cause | undefined): string | undefined {
+  return cause && deps.trace ? deps.trace.ref(cause.threadId) : undefined;
+}
+
 /** Send a file the worker produced, but only if `path` is inside `folder`. Returns a status string. */
 export async function sendProjectFile(
   deps: { sendFile?: (chatId: number, path: string, caption?: string) => void | Promise<void> },
@@ -1092,6 +1170,8 @@ export async function sendProjectFile(
   folder: string,
   path: string,
   caption?: string,
+  /** Called once the file was handed to the channel (the trace's `file` line). */
+  onSent?: () => void,
 ): Promise<string> {
   let root: string;
   try {
@@ -1112,6 +1192,7 @@ export async function sendProjectFile(
   if (abs === root || !abs.startsWith(root + sep)) return `refused: ${path} is outside project`;
   if (!statSync(abs).isFile()) return `refused: ${path} is not a regular file`;
   await deps.sendFile?.(chatId, abs, caption);
+  onSent?.();
   return `sent ${path}`;
 }
 
@@ -1123,7 +1204,7 @@ export async function sendProjectFile(
  *  When no `postDecision` is wired (customer/ingress path — the firewall), the decision is still
  *  queued (surfaced by /decisions + the secretary digest), just not posted to a channel. */
 export async function raiseOperatorDecision(
-  deps: Pick<DispatchDeps, "ledger" | "postDecision"> & Partial<Pick<DispatchDeps, "registry">>,
+  deps: Pick<DispatchDeps, "ledger" | "postDecision"> & Partial<Pick<DispatchDeps, "registry" | "trace">>,
   params: {
     project?: string;
     folder?: string;
@@ -1134,9 +1215,13 @@ export async function raiseOperatorDecision(
     spec?: StructuredAsk;
     /** Injectable clock for the blocked-since stamp (tests). */
     now?: () => number;
+    /** The operator message (and thread) the raising work answers: the decision lands in that
+     *  thread, which then reads "waiting" (spec §5). */
+    cause?: Cause;
   },
 ): Promise<string> {
   const id = deps.ledger.openDecision({
+    cause: params.cause,
     kind: "decision",
     project: params.project,
     folder: params.folder,
@@ -1151,6 +1236,7 @@ export async function raiseOperatorDecision(
   deps.ledger.recordEvent("decision_raised", {
     orderId: params.orderId,
     folder: params.folder,
+    cause: params.cause,
     data: { project: params.project, id, structured: !!params.spec, options: params.options?.length ?? 0, posted: !!posted },
   });
   // The worker that raised this check-points and STOPS: it is awaiting the OPERATOR, not hung.
@@ -1167,6 +1253,7 @@ export async function raiseOperatorDecision(
       // observer only — a registry hiccup must never break raising the decision
     }
   }
+  refreshThread(deps, params.cause?.threadId);
   return id;
 }
 
@@ -1196,6 +1283,10 @@ export function neoMcpServers(
      *  digest/queue can show which project waits, and the answer can resume the right session). */
     projectName?: string;
     orderId?: string;
+    /** The cause of the turn calling a tool (ADR-0015), read at CALL time — never captured at
+     *  launch — so a dispatch, todo, decision or file is filed under the operator message the
+     *  worker is answering now, not its session's first order. Absent → no cause, as before. */
+    cause?: () => Cause | undefined;
     stitch?: boolean;
     stitchKey?: string;
     /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
@@ -1216,7 +1307,14 @@ export function neoMcpServers(
         caption: z.string().optional().describe("optional caption / note"),
       },
       async (args: { path: string; caption?: string }) => {
-        const out = await sendProjectFile(deps, replyChat, opts.folder, args.path, args.caption);
+        const out = await sendProjectFile(deps, replyChat, opts.folder, args.path, args.caption, () => {
+          // The thread shows a file went out: its caption or name, never its bytes (trace only).
+          const trace = deps.trace;
+          if (!trace) return;
+          faults.guard("dispatch.sendFileLine", () =>
+            trace.outbound({ chatId: replyChat, text: args.caption || basename(args.path), cause: opts.cause?.(), kind: "file", project: opts.projectName, folder: opts.folder, orderId: opts.orderId }),
+          );
+        });
         return { content: [{ type: "text" as const, text: out }] };
       },
     ),
@@ -1293,6 +1391,7 @@ export function neoMcpServers(
             chatId: replyChat,
             question: spec.title ?? args.title,
             spec,
+            cause: opts.cause?.(),
           });
           return {
             content: [
@@ -1337,9 +1436,11 @@ export function neoMcpServers(
           // servicing an operator message dispatches as `interactive`, a scheduler-fired one as
           // `background`. This is the whole of the "class follows the originating trigger" rule.
           const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
+          // The cause of the turn making this call, and the order of the session making it.
+          const cause = opts.cause?.();
           const out = deps.todo
-            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass }, deps, replyChat)
-            : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass });
+            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId }, deps, replyChat)
+            : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass, cause, parentOrderId: opts.orderId });
           return { content: [{ type: "text" as const, text: out }] };
         },
       ),
@@ -1367,7 +1468,11 @@ export function neoMcpServers(
                   return todo.list(args.project);
                 case "add":
                   if (!args.project || !args.task) return need("`project` and `task`");
-                  return todo.submit({ project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS }, deps, replyChat);
+                  return todo.submit(
+                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause: opts.cause?.(), parentOrderId: opts.orderId },
+                    deps,
+                    replyChat,
+                  );
                 case "reorder":
                   if (args.id === undefined || args.position === undefined) return need("`id` and `position`");
                   return todo.move(args.id, args.position);

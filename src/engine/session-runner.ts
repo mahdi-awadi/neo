@@ -91,6 +91,14 @@ function toolDetail(input: unknown): string {
   return "";
 }
 
+/** The short activity label of a tool call — "Tool: target", MCP names shortened to the bare tool.
+ *  The one label for both the activity line and a recorded tool action (never the full input). */
+export function activityLabel(name: string, input: unknown): string {
+  const short = name.startsWith("mcp__") ? name.split("__").pop() ?? name : name;
+  const detail = toolDetail(input);
+  return `${short}${detail ? `: ${detail}` : ""}`;
+}
+
 /** Turn a tool_use block into a concise "🔧 Tool: target" milestone, or undefined to stay quiet.
  *  MCP tool names (mcp__server__tool) are shortened to the bare tool name. */
 function toolMilestone(name: string, input: unknown): string | undefined {
@@ -119,6 +127,12 @@ export interface RunHandlers {
   onAutoApprove?: (reason: string) => void;
   /** Reports what the worker is doing (each tool_use as "Tool: detail", each text as "replying"). */
   onActivity?: (label: string) => void;
+  /** The governor decided one tool call (spec §3.4), reported once per call from canUseTool: `allow`
+   *  (the governor allowed it), `deny` (refused outright), `auto` (a trusted project auto-approved an
+   *  escalation) or `escalate` (sent to the operator — their answer is recorded as the approval line).
+   *  `label` is the activity label (`activityLabel`), never the full input. Calls the SDK allows
+   *  without asking canUseTool are not seen here. Claude only. */
+  onToolVerdict?: (tool: string, label: string, verdict: "allow" | "auto" | "escalate" | "deny") => void;
   /** Liveness pulse: fires on EVERY streamed SDK event (partial deltas, tool_use, tool_result,
    *  system, result), regardless of whether it produces an operator message. The dispatch stall
    *  monitor bumps its last-activity clock here so a worker mid-generation (e.g. writing a huge
@@ -343,6 +357,14 @@ export function buildCanUseTool(
   // Customer work never gets the operator's standing write approval (ADR-0012).
   const writes: OutOfFolderWrites = source === "customer" ? "ask" : outOfFolderWrites;
   return async (tool: string, input: Record<string, unknown>, sdk?: { signal?: AbortSignal }) => {
+    // An observer: a throwing handler must never change the decision.
+    const report = (verdict: "allow" | "auto" | "escalate" | "deny"): void => {
+      try {
+        handlers.onToolVerdict?.(tool, activityLabel(tool, input), verdict);
+      } catch {
+        /* observer only */
+      }
+    };
     // The whole decision path is wrapped so this callback can NEVER reject. A rejected canUseTool is
     // turned by the SDK into an ungoverned permission failure with no recovery — the worker surfaces
     // it as `Tool permission request failed: Error: …` and, because the callback keeps rejecting,
@@ -369,19 +391,23 @@ export function buildCanUseTool(
       }
       const verdict = decide(tool, input, { folder, outOfFolderWrites: writes });
       if ("allow" in verdict) {
+        report("allow");
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
       }
       // deny verdict — refuse outright (never escalate, never auto-approve); the message reaches
       // the worker as the tool result, steering it (e.g. AskUserQuestion → ask in plain text).
       if ("deny" in verdict) {
+        report("deny");
         return { behavior: "deny", message: verdict.deny };
       }
       // escalate verdict — auto-approve if this project is trusted (read the thunk NOW, not at start).
       // Trust never lifts a fence escalation and never applies to customer work (ADR-0011).
       if (!verdict.fenced && source !== "customer" && handlers.autoApprove?.()) {
+        report("auto");
         handlers.onAutoApprove?.(verdict.escalate);
         return { behavior: "allow", updatedInput: input };
       }
+      report("escalate");
       const decision = await handlers.onEscalation(verdict.escalate, sdk?.signal);
       if (decision === "allow") return { behavior: "allow", updatedInput: input };
       return { behavior: "deny", message: `denied by Neo: ${verdict.escalate}` };
@@ -515,8 +541,7 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
               observe(() => handlers.onToolUse?.(b.id, name, b.input));
               const short = b.name.startsWith("mcp__") ? b.name.split("__").pop() ?? b.name : b.name;
               if (typeof b.id === "string") toolShortById.set(b.id, short);
-              const detail = toolDetail(b.input);
-              handlers.onActivity?.(`${short}${detail ? `: ${detail}` : ""}`);
+              handlers.onActivity?.(activityLabel(name, b.input));
               const line = toolMilestone(b.name, b.input);
               if (line) handlers.onMessage(line, "tool");
             }

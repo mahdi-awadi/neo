@@ -332,6 +332,8 @@ export interface DispatcherReport {
   project: string;
   text: string;
   at: number;
+  /** The thread the result belongs to, when known. */
+  cause?: Cause;
 }
 
 /** One structured engine event (diagnostic trail). `data` is small structured metadata —
@@ -981,9 +983,13 @@ export function openLedger(
       return r.id;
     },
     pendingDispatcherReports() {
-      return db
-        .query(`SELECT id, project, text, at FROM dispatcher_inbox WHERE delivered_at IS NULL ORDER BY id`)
-        .all() as DispatcherReport[];
+      const rows = db
+        .query(`SELECT id, project, text, at, cause_msg_id, thread_id FROM dispatcher_inbox WHERE delivered_at IS NULL ORDER BY id`)
+        .all() as Array<{ id: number; project: string; text: string; at: number; cause_msg_id: number | null; thread_id: number | null }>;
+      return rows.map((r) => {
+        const cause = causeOf(r.cause_msg_id, r.thread_id);
+        return { id: r.id, project: r.project, text: r.text, at: r.at, ...(cause ? { cause } : {}) };
+      });
     },
     setDispatcherReportsDelivered(ids, at) {
       const q = db.query(`UPDATE dispatcher_inbox SET delivered_at = ? WHERE id = ?`);

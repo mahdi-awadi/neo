@@ -20,6 +20,8 @@ import { memoryTools } from "./memory-tool";
 import type { NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "./ledger";
 import { faults } from "./fault";
+import type { Cause, Trace } from "./trace";
+import type { MessageKind } from "./ledger";
 
 /** Persistence of operator-authored (custom) loop defs — opaque JSON keyed by name. */
 export interface LoopDefStore {
@@ -77,6 +79,23 @@ export interface LoopDeps {
   /** Config for per-path worker profiles (loop/judge via profileDeps) + context-policy resume
    *  gating. Omitted (e.g. in tests that don't care) ⇒ today's behavior: no profile, no gate. */
   cfg?: NeoConfig;
+  /** The cause seam (ADR-0015): each fire roots its own `loop` thread and files its lines there.
+   *  Absent → no thread, exactly as before. */
+  trace?: Trace;
+}
+
+/** A loop fire is engine-started work: it gets its own thread (spec §4.2, background roots). Returns
+ *  a line writer filed under that root, or a no-op when there is no trace. Best-effort (ADR-0010): a
+ *  trace fault never stops the loop. */
+function loopThread(trace: Trace | undefined, loop: LoopDef, chatId: number): (text: string, kind: MessageKind) => void {
+  if (!trace) return () => {};
+  const project = basename(loop.folder);
+  const cause: Cause | undefined = faults.guard("loop.root", () => trace.root({ origin: "loop", title: `loop ${loop.name}`, project, folder: loop.folder }), {
+    loop: loop.name,
+  });
+  if (!cause) return () => {};
+  return (text, kind) =>
+    void faults.guard("loop.line", () => trace.outbound({ chatId, text, cause, kind, project, folder: loop.folder }), { loop: loop.name });
 }
 
 // The built-in loops are generic, deployment-neutral examples of the trigger → action → goal model.
@@ -539,6 +558,7 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
     await deps.reply(chatId, `🔁 ${loop.name}: ⚠️ ${gated.lastDetail}`);
     return gated;
   }
+  const line = loopThread(deps.trace, loop, chatId);
   await deps.reply(chatId, `🔁 ${loop.name}: starting on ${loop.folder}…`);
   const { check, ...extras } = loopRunExtras(loop, deps);
   const out = await runProjectLoop(
@@ -547,16 +567,19 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
       prompt: loop.prompt,
       goal: loop.goal,
       bounds: loop.bounds,
-      onProgress: (m) => void deps.reply(chatId, m.length > 220 ? `${m.slice(0, 220)}…` : m),
+      onProgress: (m) => {
+        const text = m.length > 220 ? `${m.slice(0, 220)}…` : m;
+        line(text, "progress");
+        void deps.reply(chatId, text);
+      },
       shouldStop: deps.shouldStop,
       ...extras,
     },
     { run: deps.run, check },
   );
-  await deps.reply(
-    chatId,
-    `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`,
-  );
+  const outcome = `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`;
+  line(outcome, "result");
+  await deps.reply(chatId, outcome);
   return out;
 }
 
@@ -578,6 +601,9 @@ export interface ScheduledLoopDeps {
   /** Loop store — only `listCacheObservations` is used here, to derive the LEARNED cache TTL for
    *  the resume gate. Omitted ⇒ the gate falls back to cacheTtlFallbackMs (no observations). */
   store?: LoopStore;
+  /** The cause seam (ADR-0015): each fire roots its own `loop` thread and files the worker's lines
+   *  there. Absent → no thread, exactly as before. */
+  trace?: Trace;
 }
 
 /** The project tag for a scheduled loop's worker lines — the folder's basename (e.g. /home/acme →
@@ -602,6 +628,7 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
     await deps.reply(deps.chatId, gated.lastDetail, project);
     return gated;
   }
+  const line = loopThread(deps.trace, loop, deps.chatId);
   const { check, ...extras } = loopRunExtras(loop, deps);
   return runProjectLoop(
     {
@@ -609,7 +636,11 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
       prompt: loop.prompt,
       goal: loop.goal,
       bounds: loop.bounds,
-      onMessage: (t) => void deps.reply(deps.chatId, t, project), // worker text only — no engine chrome
+      // worker text only — no engine chrome
+      onMessage: (t) => {
+        line(t, "text");
+        void deps.reply(deps.chatId, t, project);
+      },
       shouldStop: deps.shouldStop,
       ...extras,
     },
