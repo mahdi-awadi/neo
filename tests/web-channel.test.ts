@@ -701,3 +701,35 @@ test("/attention emits an attention event; attentionAction applies the shared ru
   expect(await ch.attentionAction(1, "dismiss")).toMatchObject({ ok: true });
   expect(listOpen(eng.ledger, { now: Date.now() })).toEqual([]);
 });
+
+// ADR-0025: the server renders each feed line once — Markdown or a step line as code — with its tone.
+test("a worker line is emitted as rendered HTML with a tone; a step line's command is a code block", async () => {
+  const dir = scratch();
+  const f = fakeStart((h) => {
+    h.onMessage("| a | n |\n|---|---|\n| x | 1 |");
+    h.onMessage("🔧 Bash: ls -la", "tool");
+    h.onMessage("⚠️ ↳ Exit code 2", "tool");
+  });
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send(`/open ${dir} do it`);
+  const msgs = events.filter((e) => e.type === "message") as Array<{ text: string; tone?: string }>;
+  expect(msgs.find((m) => m.text.includes('<div class="tbl">'))?.tone).toBe("");
+  expect(msgs.find((m) => m.text.includes('data-lang="bash"'))?.tone).toBe("tool");
+  expect(msgs.find((m) => m.text.includes("Exit code"))?.tone).toBe("error");
+});
+
+test("an escalation event carries the reason as safe HTML, the shell command as code", async () => {
+  const dir = scratch();
+  let captured!: RunHandlers;
+  const f = fakeStart((h) => void (captured = h));
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send(`/open ${dir} go`);
+  void captured.onEscalation("risky shell command: rm -rf <build>");
+  const esc = events.find((e) => e.type === "escalation") as { reason: string; html?: string } | undefined;
+  expect(esc?.reason).toBe("risky shell command: rm -rf <build>");
+  expect(esc?.html).toBe('risky shell command<pre class="code" data-lang="bash"><code>rm -rf &lt;build&gt;</code></pre>');
+});

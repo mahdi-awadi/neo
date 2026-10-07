@@ -601,6 +601,17 @@ The id of the last feed event a console received. A reconnecting console sends i
 later events, so a dropped connection never shows a line twice.
 _Avoid_: cursor, offset, checkpoint
 
+**Step line**:
+A line the engine itself writes about a worker's tool use: `🔧 Tool: target`, `↳ output`, `⚠️ ↳ error
+output`, `🔓 auto-approved: reason`. Its payload (a command, an output) is shown as code, never parsed
+as Markdown (ADR-0025).
+_Avoid_: log line, tool message
+
+**Line tone**:
+The colour class of a feed line: tool, result, error, warn, done, approval, info or none. Derived
+from the line's step prefix or its leading priority accent, never from AI.
+_Avoid_: status, level, severity
+
 **App shell**:
 The public, static, non-personal files the installed console may keep on the device: the web app
 manifest, the icons and the offline page (ADR-0022). Never the page at `/`, the bundle, API answers,

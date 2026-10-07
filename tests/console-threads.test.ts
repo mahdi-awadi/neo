@@ -180,3 +180,19 @@ test("GET /api/thread-projects and a thread's plans with the actions their statu
   const view = await get(`/api/threads/${t1}`);
   expect(view.plans).toEqual([expect.objectContaining({ title: "A", status: "approved", actions: ["execute", "drop"] })]);
 });
+
+// ADR-0025: thread history renders like the live feed — an assistant row carries its HTML and tone;
+// the operator's own messages stay plain text (escaped in the browser).
+test("GET /api/threads/:id: assistant rows carry rendered html + tone, operator rows do not", async () => {
+  const a = app();
+  const t1 = thread(a.ledger, { project: "gold", at: 100, text: "show me **the** table" });
+  a.ledger.insertMessage({ chatId: 1, role: "assistant", content: "🔧 Bash: git log --oneline -3", at: 150, threadId: t1, project: "gold" });
+  const cookie = (await a.instance.fetch(new Request(loginUrl(555)))).headers.get("set-cookie")!.split(";")[0]!;
+  const view = (await (await a.instance.fetch(new Request(`http://neo.test/api/threads/${t1}`, { headers: { cookie } }))).json()) as any;
+  const tool = view.messages.find((m: any) => m.role === "assistant");
+  expect(tool.tone).toBe("tool");
+  expect(tool.html).toContain('<pre class="code" data-lang="bash"><code>git log --oneline -3</code></pre>');
+  const mine = view.messages.find((m: any) => m.role === "user");
+  expect(mine.html).toBeUndefined();
+  expect(mine.content).toBe("show me **the** table");
+});

@@ -28,7 +28,8 @@ import {
 } from "./loops";
 import type { LoopInput } from "./loop-validate";
 import { dashboardSnapshot, type DashState } from "./dashboard";
-import { mdToHtml, snippetHtml } from "./format";
+import { snippetHtml } from "./format";
+import { feedLine, reasonHtml, type LineTone } from "./feed-line";
 import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
 import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
@@ -46,13 +47,14 @@ export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
 // A feed line names its recorded message and thread when the engine traced it (spec §6), so the
 // console can open the thread a line belongs to.
 export type WebEvent =
-  | ({ type: "message"; text: string; project?: string } & LineIds)
+  // `text` is safe HTML (feedLine, ADR-0025); `tone` is the row's colour class.
+  | ({ type: "message"; text: string; tone: LineTone; project?: string } & LineIds)
   // The operator's own message typed on the OTHER surface (Telegram), mirrored here so both
   // surfaces show the full thread. Rendered as a `me` row (raw text, escaped client-side).
   | ({ type: "echo"; text: string } & LineIds)
   // Display-only chrome mirrored from the other surface (e.g. "approval pending on Telegram").
   | { type: "notice"; text: string }
-  | { type: "escalation"; id: string; reason: string }
+  | { type: "escalation"; id: string; reason: string; html: string }
   | { type: "projects"; text: string; items: SelectableProject[] }
   | { type: "loops"; items: LoopInfo[] }
   | { type: "sdk"; sdk: WorkerSdkState }
@@ -65,7 +67,8 @@ export type WebEvent =
 /** One thread as the console shows it (spec §6). `next` is the cursor for the older messages. */
 export interface ThreadView {
   thread: ThreadRow & { ref?: string };
-  messages: MessageRow[];
+  /** An assistant row carries its rendered `html` and `tone` (ADR-0025); an operator row stays text. */
+  messages: Array<MessageRow & { html?: string; tone?: LineTone }>;
   next?: number;
   orders: ThreadArtifacts["orders"];
   todos: ThreadArtifacts["todos"];
@@ -151,10 +154,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     for (const l of listeners) l(e, id);
     return id;
   }
-  // Worker/engine lines are Markdown — render to safe HTML once, here, so the feed shows
-  // formatting (bold, code, bullets) instead of raw ** and #.
-  const message = (text: string, project?: string, ids: LineIds = {}): void =>
-    void emit({ type: "message", text: mdToHtml(text), project, ...knownIds(ids) });
+  // Worker/engine lines render to safe HTML once, here (ADR-0025): Markdown as formatted content, an
+  // engine step line's command or output as code, plus the row's colour tone.
+  const message = (text: string, project?: string, ids: LineIds = {}): void => {
+    const { html, tone } = feedLine(text);
+    void emit({ type: "message", text: html, tone, project, ...knownIds(ids) });
+  };
 
   // Register this surface as an operator sink: lines mirrored from the OTHER surface (Telegram)
   // render here. Output-only — deliver never re-enters the pipeline, so no mirrored line can become
@@ -208,7 +213,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       new Promise<"allow" | "deny">((resolve) => {
         const id = crypto.randomUUID();
         pending.set(id, resolve);
-        const e: WebEvent = { type: "escalation", id, reason };
+        const e: WebEvent = { type: "escalation", id, reason, html: reasonHtml(reason) };
         pendingEvents.set(id, { id: emit(e), e });
         // The engine gave up waiting (approval timeout, ADR-0012): drop the prompt, and stop
         // replaying it to reconnecting consoles (ADR-0014, the feed window) — nothing left to click.
@@ -402,7 +407,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const art = ledger.threadArtifacts(id, PAGE_MAX);
       return {
         thread: { ...t, ...(trace ? { ref: trace.ref(id) } : {}) },
-        messages,
+        messages: messages.map((m) => (m.role === "assistant" ? { ...m, ...feedLine(m.content) } : m)),
         ...(rows.length > limit ? { next: messages.at(-1)!.id } : {}),
         orders: art.orders,
         todos: art.todos,
