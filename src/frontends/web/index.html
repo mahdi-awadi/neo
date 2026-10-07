@@ -68,9 +68,9 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;animation:fade .5s .0
 #fbar{display:none;align-items:center;gap:8px;padding:8px 22px;border-bottom:1px solid var(--border);background:var(--panel);font-family:var(--mono);font-size:11px;color:var(--muted)}
 #fbar.on{display:flex}#fbar b{color:var(--accent)}
 #fbar a{margin-inline-start:auto;color:var(--muted);cursor:pointer;text-decoration:underline;text-underline-offset:2px}#fbar a:hover{color:var(--fg)}
-.row.out code{font-family:var(--code);font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+.row.out code,.tmsg .tx code{font-family:var(--code);font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
 .row.out pre{font-family:var(--code);font-size:12px;background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:11px 13px;overflow-x:auto;margin:8px 0;line-height:1.45;direction:ltr;text-align:start}
-.row.out a{color:var(--accent)}
+.row.out a,.tmsg .tx a{color:var(--accent)}
 table.md{border-collapse:collapse;margin:9px 0;font-size:13px;width:auto;max-width:100%;display:block;overflow-x:auto}
 table.md th,table.md td{border:1px solid var(--border);padding:6px 12px;text-align:start;white-space:nowrap}
 /* Rich feed content (ADR-0025): server-rendered Markdown, code blocks, step-line tones. */
@@ -89,7 +89,8 @@ table.md td.num{font-family:var(--code);font-size:12px}
 .cbw{position:relative;margin:8px 0;direction:ltr}
 pre.code{direction:ltr;text-align:start;unicode-bidi:isolate;white-space:pre;tab-size:2;font-family:var(--code);font-size:12px;line-height:1.5;background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin:8px 0;overflow-x:auto;color:var(--fg)}
 .cbw pre.code{margin:0;padding-inline-end:70px}
-pre.code code{display:block;background:none;border:0;padding:0;font-size:inherit;color:inherit}
+.row.out pre.code>code,.tx pre.code>code,.escc pre.code>code,pre.code>code{display:block;background:none;border:0;border-radius:0;padding:0;font-size:inherit;color:inherit}
+.row.out .ptag{float:inline-start;margin-top:3px}.row.out .tx{min-width:0;overflow-wrap:anywhere}.row.out .tx>.mh:first-child{margin-top:2px}
 pre.code.out{background:var(--panel2);color:var(--out-fg)}
 .copy{position:absolute;top:6px;inset-inline-end:6px;font-family:var(--mono);font-size:10.5px;padding:3px 9px;border-radius:6px;border:1px solid var(--border);background:var(--panel2);color:var(--out-fg);cursor:pointer}
 .copy:hover,.copy:focus-visible{color:var(--fg);border-color:var(--accent-dim)}.copy.ok{color:var(--accent);border-color:var(--accent-dim)}
@@ -247,6 +248,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 @media (pointer:coarse),(max-width:768px){
 .tab,.chip,.run,.btn,.seg button,.compose button,.idel,.kbtn,#menu,.back,.tp,.copy{min-height:44px;min-width:44px}
 .tab{height:44px}.seg button{height:44px}
+.cbw pre.code{min-height:56px}
 .chip,.run,.idel{display:inline-flex;align-items:center;justify-content:center}
 .kbtn{opacity:1}
 .proj{min-height:52px}

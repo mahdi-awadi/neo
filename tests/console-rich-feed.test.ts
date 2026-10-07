@@ -88,3 +88,15 @@ test("RTL: code, tables and the copy button stay LTR inside the Arabic UI", () =
   expect(CSS).toMatch(/\.tbl\{[^}]*overflow-x:auto/);
   expect(CSS).toContain("table.md td.num");
 });
+
+// Playwright (2026-10-07): an English line in the Arabic UI showed its full stop on the wrong side,
+// and code inside a block still wore the inline-code box (.row.out code outranked pre.code code).
+test("a feed message body has its own direction (dir=auto), apart from the project tag", () => {
+  expect(APP).toContain('<div class="tx" dir="auto">${e.text}</div>');
+  expect(CSS).toMatch(/\.row\.out \.ptag\{[^}]*float:inline-start/);
+});
+
+test("code inside a block never wears the inline-code box", () => {
+  expect(CSS).toMatch(/\.row\.out pre\.code>code,[^{]*\{[^}]*border:0/);
+  expect(CSS).toContain(".row.out code,.tmsg .tx code{"); // inline code looks the same in thread history
+});

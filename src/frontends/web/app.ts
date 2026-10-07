@@ -1299,7 +1299,8 @@ es.onopen = () => {
 es.onmessage = (ev) => {
   const e = JSON.parse(ev.data);
   if (e.type === "message") {
-    feedMsg((e.project ? `<span class="ptag">${esc(e.project)}</span>` : "") + e.text, "out", e.project, e.tone);
+    // The body takes its direction from its own text (an English line in the Arabic UI stays LTR).
+    feedMsg((e.project ? `<span class="ptag">${esc(e.project)}</span>` : "") + `<div class="tx" dir="auto">${e.text}</div>`, "out", e.project, e.tone);
     if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "assistant", project: e.project, at: Date.now(), tone: e.tone }, e.text);
   } else if (e.type === "echo") {
     feedMsg("› " + esc(e.text), "me", filterProject);
