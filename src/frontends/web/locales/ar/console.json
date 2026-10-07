@@ -340,6 +340,8 @@
   "code": {
     "copy": "نسخ",
     "copied": "تم النسخ",
-    "copyFailed": "تعذّر النسخ"
+    "copyFailed": "تعذّر النسخ",
+    "expand": "عرض كل الأسطر ({{count}})",
+    "collapse": "عرض أقل"
   }
 }

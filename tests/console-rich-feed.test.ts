@@ -4,7 +4,7 @@
 import { test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HIGHLIGHT_MAX, highlightHtml, resolveLang } from "../src/frontends/web/code-blocks";
+import { COLLAPSE_LINES, HIGHLIGHT_MAX, highlightHtml, lineCount, resolveLang, shouldCollapse } from "../src/frontends/web/code-blocks";
 import en from "../src/frontends/web/locales/en/console.json";
 import ar from "../src/frontends/web/locales/ar/console.json";
 
@@ -99,6 +99,29 @@ test("a feed message body has its own direction (dir=auto), apart from the proje
 test("code inside a block never wears the inline-code box", () => {
   expect(CSS).toMatch(/\.row\.out pre\.code>code,[^{]*\{[^}]*border:0/);
   expect(CSS).toContain(".row.out code,.tmsg .tx code{"); // inline code looks the same in thread history
+});
+
+test("collapse: a block over COLLAPSE_LINES lines starts folded; shorter blocks never fold", () => {
+  expect(lineCount("a")).toBe(1);
+  expect(lineCount("a\nb\n")).toBe(2); // a trailing newline is not a line
+  expect(shouldCollapse(Array(COLLAPSE_LINES).fill("x").join("\n"))).toBe(false);
+  expect(shouldCollapse(Array(COLLAPSE_LINES + 1).fill("x").join("\n"))).toBe(true);
+});
+
+test("collapse toggle: catalogue labels in EN and AR with the line count, aria-expanded, one listener", () => {
+  for (const cat of [en, ar] as Array<Record<string, any>>) {
+    expect(cat.code.expand).toContain("{{count}}");
+    expect(cat.code.collapse).toBeTruthy();
+  }
+  expect(en.code.collapse).not.toBe(ar.code.collapse);
+  expect(CODE).toContain('"aria-expanded"');
+  expect(CODE).toContain('closest?.<HTMLButtonElement>("button.more")');
+  // The toggle sits after the LTR code wrapper, so it follows the message body's own direction.
+  expect(CODE).toContain("wrap.after(m)");
+  // Folded: a fixed height with a fade, still scrolling sideways; unfolded: the whole block.
+  expect(CSS).toMatch(/\.cbw\.clp pre\.code\{[^}]*max-height:[^}]*overflow-y:hidden/);
+  expect(CSS).toMatch(/\.cbw\.clp::after\{[^}]*pointer-events:none/); // the fade never eats a tap
+  expect(CSS).toContain(".more{");
 });
 
 test("a pruned feed row releases its code blocks from the observer; copy feedback timers do not stack", () => {

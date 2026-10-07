@@ -612,6 +612,11 @@ The colour class of a feed line: tool, result, error, warn, done, approval, info
 from the line's step prefix or its leading priority accent, never from AI.
 _Avoid_: status, level, severity
 
+**Folded block**:
+A code block longer than `COLLAPSE_LINES` lines, shown at that height with a fade and a "show all
+lines (N)" toggle until the operator unfolds it. Display only: the copy button copies the whole block.
+_Avoid_: truncated, hidden
+
 **App shell**:
 The public, static, non-personal files the installed console may keep on the device: the web app
 manifest, the icons and the offline page (ADR-0022). Never the page at `/`, the bundle, API answers,

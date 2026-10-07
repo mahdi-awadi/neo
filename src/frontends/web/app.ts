@@ -21,8 +21,9 @@ type Vars = Record<string, string | number>;
 const t = (key: string, vars?: Vars): string => i18n.t(key, vars ?? {});
 /** Plain text (textContent, title, placeholder, dialogs): the DOM does not parse it, so no escaping. */
 const tx = (key: string, vars?: Vars): string => i18n.t(key, { ...vars, interpolation: { escapeValue: false } });
-/** Syntax colours (lazy, visible blocks only) + copy buttons for the server-rendered code blocks (ADR-0025). */
-const code = createCodeEnhancer((key) => tx(key));
+/** Syntax colours (lazy, visible blocks only), copy buttons and folding of long blocks for the
+ *  server-rendered code blocks (ADR-0025). */
+const code = createCodeEnhancer((key, vars) => tx(key, vars));
 const enhanceCode = code.enhance;
 
 const FEED_WINDOW = Number(root.dataset.feedWindow) || 500;

@@ -37,3 +37,7 @@ visible code blocks (highlight.js core + a few languages) and adds copy buttons.
 - Two new pinned dependencies: `marked`, `highlight.js` (core plus registered languages only).
 - Telegram output is produced by the same token walk; its tests pin the old shape.
 - Restart-gated, like every console change.
+- Follow-up (todo #70): long blocks fold in the browser (display only; no server-side truncation
+  beyond the existing 600-char result preview), and output languages are read from shape (diff, JSON),
+  never by highlight.js auto-detection. Rejected: a native `<details>` element, because it hides
+  the whole block, and the first lines are what the operator scans for.

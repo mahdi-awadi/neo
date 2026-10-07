@@ -340,6 +340,8 @@
   "code": {
     "copy": "Copy",
     "copied": "Copied",
-    "copyFailed": "Copy failed"
+    "copyFailed": "Copy failed",
+    "expand": "Show all lines ({{count}})",
+    "collapse": "Show less"
   }
 }

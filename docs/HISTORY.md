@@ -895,3 +895,8 @@ warning, done, approval). Code and tables stay LTR in the Arabic UI, and an Engl
 own direction. One renderer: `mdToHtml` parses with marked's GFM lexer and walks the tokens itself
 for the web and Telegram targets, so raw HTML in worker text is always shown as text. Verified in
 Chromium at 360/390/412 px, EN+AR, light+dark. Going live needs a daemon restart (operator-gated).
+
+Follow-up (todo #70): a tool result keeps its first line's indentation, so a ClickHouse box table
+stays aligned (the result preview used to trim it). JSON output gets JSON colours. A code block over
+16 lines starts folded, with a "show all lines (N)" toggle. Verified in Chromium at 360/390 px, EN+AR,
+light+dark, against the real ledger rows behind the operator's two screenshots.

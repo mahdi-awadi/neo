@@ -81,6 +81,43 @@ test("a tool result is plain code output; an error result has the error tone; a 
   expect(diff.html).toContain('data-lang="diff"');
 });
 
+// The two operator screenshots (todo #70), as the ledger recorded them (messages 325890, 325543).
+test("repro: an auto-approved heredoc is one bash block — # comments stay comments, indentation kept", () => {
+  const line =
+    "🔓 auto-approved: risky shell command: cat > update-rules.sh <<'EOF'\n#!/usr/bin/env bash\n" +
+    "# Cache the Semgrep registry packs locally so per-edit scans are fast and work offline.\n" +
+    'set -uo pipefail\nfor p in $packs; do\n  if curl -fsS -m 30 "https://semgrep.dev/c/p/$p"; then :; fi\ndone\nEOF';
+  const r = feedLine(line);
+  expect(r.tone).toBe("approval");
+  expect(r.html).toContain('<pre class="code" data-lang="bash"><code>cat &gt; update-rules.sh');
+  expect(r.html).toContain("\n# Cache the Semgrep registry packs");
+  expect(r.html).toContain("\n  if curl -fsS");
+  expect(r.html).not.toMatch(/<h\d|<strong>|<br>/);
+});
+
+test("repro: a ClickHouse box table result keeps every column and float as written, in one code block", () => {
+  const box =
+    "┌─action─────┬────n─┬─age_seconds_p50_p90_p95_p99───────────────────────┐\n" +
+    "1. │ book       │  121 │ [186,682,1006,1158.7999999999997]                 │\n" +
+    "2. │ revalidate │ 1150 │ [63,300.10000000000014,435.9499999999996,1082.12] │\n" +
+    "   └────────────┴──────┴───────────────────────────────────────────────────┘";
+  const r = feedLine(`↳ ${box}`);
+  expect(r.tone).toBe("result");
+  expect(r.html).toBe(`<span class="ti">↳</span><pre class="code out" data-lang=""><code>${box}</code></pre>`);
+});
+
+test("a JSON tool result is highlighted as json; text that only starts with a bracket is not", () => {
+  expect(feedLine('↳ [\n {\n  "tag": "360-en-dark",\n  "total": 7\n }\n]').html).toContain('data-lang="json"');
+  expect(feedLine('↳ {"ok":true}').html).toContain('data-lang="json"');
+  // The engine cuts long results short ("…"): a cut JSON document is still JSON.
+  expect(feedLine('↳ [\n {\n  "thread": {\n   "code": 6,\n   "tbl": true…').html).toContain('data-lang="json"');
+  expect(feedLine("↳ [1/3] building").html).toContain('data-lang=""');
+  expect(feedLine('↳ ["a", "b"]').html).toContain('data-lang="json"');
+  expect(feedLine('↳ ["$x" = y]').html).toContain('data-lang=""'); // a shell test, not a string array
+  expect(feedLine("↳ [security] semgrep packs cached").html).toContain('data-lang=""');
+  expect(feedLine("↳ 42").html).toContain('data-lang=""'); // a bare scalar is not a JSON document
+});
+
 test("an escalation reason: a shell command is code, a path is inline code, anything else is text", () => {
   expect(reasonHtml("risky shell command: rm -rf /tmp/x")).toBe('risky shell command<pre class="code" data-lang="bash"><code>rm -rf /tmp/x</code></pre>');
   expect(reasonHtml("file write outside the project folder: /etc/x (folder: /home/a)")).toBe("file write outside the project folder: <code>/etc/x (folder: /home/a)</code>");

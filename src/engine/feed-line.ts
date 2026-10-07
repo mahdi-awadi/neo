@@ -25,6 +25,20 @@ function looksLikeDiff(s: string): boolean {
   return (s.match(/^[+-](?![+-])/gm) ?? []).length >= 3 && /^\+/m.test(s) && /^-(?!-)/m.test(s);
 }
 
+/** Output that is a JSON document (an object or array), e.g. a script's or an API's reply — read from
+ *  how it opens, because the engine cuts long results short ("…") and a cut document does not parse.
+ *  An object must open with a quoted key and an array with an object, array or string, so log output
+ *  such as "[security] warn" or "[1/3] building" stays plain. */
+function looksLikeJson(s: string): boolean {
+  return /^\s*(\{\s*("|\}\s*$)|\[\s*([{[]|"[^"\n]*"\s*[,:\]]|\]\s*$))/.test(s);
+}
+
+/** The highlight language of a tool's output, read from its shape; "" leaves it plain. */
+function outputLang(s: string): string {
+  if (looksLikeDiff(s)) return "diff";
+  return looksLikeJson(s) ? "json" : "";
+}
+
 /** A governor reason (auto-approval note or escalation card): a shell command as a bash block, a
  *  path as inline code, anything else as escaped text. */
 export function reasonHtml(reason: string): string {
@@ -61,7 +75,7 @@ export function feedLine(text: string): FeedLine {
   const result = /^(⚠️ )?↳ ?([\s\S]*)$/u.exec(text);
   if (result) {
     const out = result[2]!;
-    return { html: `<span class="ti">↳</span>${codeBlock(out, looksLikeDiff(out) ? "diff" : "", "out")}`, tone: result[1] ? "error" : "result" };
+    return { html: `<span class="ti">↳</span>${codeBlock(out, outputLang(out), "out")}`, tone: result[1] ? "error" : "result" };
   }
   const approved = /^🔓 auto-approved: ([\s\S]*)$/u.exec(text);
   if (approved) return { html: `<span class="ti">🔓</span><span class="tl">auto-approved</span> ${reasonHtml(approved[1]!)}`, tone: "approval" };

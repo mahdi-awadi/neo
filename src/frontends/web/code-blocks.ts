@@ -33,6 +33,19 @@ const ALIASES: Record<string, keyof typeof LANGS> = {
 /** Blocks larger than this stay plain: highlighting them costs more than it helps. */
 export const HIGHLIGHT_MAX = 20_000;
 
+/** Blocks longer than this many lines start folded to about this height, with a "show all" toggle,
+ *  so one long heredoc or query result does not push the rest of the feed off a phone screen. */
+export const COLLAPSE_LINES = 16;
+
+/** The block's line count (a trailing newline does not start a line). */
+export function lineCount(text: string): number {
+  return text.replace(/\n$/, "").split("\n").length;
+}
+
+export function shouldCollapse(text: string): boolean {
+  return lineCount(text) > COLLAPSE_LINES;
+}
+
 export function resolveLang(name: string): string | undefined {
   const n = name.trim().toLowerCase();
   if (!n) return undefined;
@@ -56,8 +69,8 @@ export interface CodeEnhancer {
 }
 
 /** Wire the enhancer once, for every feed row, thread pane and card.
- *  `label(key)` reads the console catalogue (code.copy / code.copied / code.copyFailed). */
-export function createCodeEnhancer(label: (key: string) => string): CodeEnhancer {
+ *  `label(key, vars)` reads the console catalogue (code.copy / copied / copyFailed / expand / collapse). */
+export function createCodeEnhancer(label: (key: string, vars?: Record<string, number>) => string): CodeEnhancer {
   const colour = (pre: HTMLElement) => {
     const code = pre.querySelector("code");
     if (!code) return;
@@ -103,6 +116,21 @@ export function createCodeEnhancer(label: (key: string) => string): CodeEnhancer
     );
   });
 
+  // One delegated listener for every fold toggle: unfold shows the whole block, fold restores the preview.
+  const foldLabel = (btn: HTMLButtonElement, open: boolean) => {
+    btn.textContent = open ? label("code.collapse") : label("code.expand", { count: Number(btn.dataset.lines) });
+    btn.setAttribute("aria-expanded", String(open));
+  };
+  document.addEventListener("click", (ev) => {
+    const btn = (ev.target as Element | null)?.closest?.<HTMLButtonElement>("button.more");
+    const wrap = btn?.previousElementSibling;
+    if (!btn || !wrap?.classList.contains("cbw")) return;
+    const open = wrap.classList.toggle("clp") === false;
+    foldLabel(btn, open);
+    // Folding a block taller than the screen would leave the reader far below it: bring it back.
+    if (!open) wrap.scrollIntoView({ block: "nearest" });
+  });
+
   const forget = (root: ParentNode) => {
     if (io) root.querySelectorAll<HTMLElement>("pre.code").forEach((pre) => io.unobserve(pre));
   };
@@ -121,6 +149,18 @@ export function createCodeEnhancer(label: (key: string) => string): CodeEnhancer
       b.className = "copy";
       b.textContent = label("code.copy");
       wrap.append(b);
+      const text = pre.querySelector("code")?.textContent ?? "";
+      if (shouldCollapse(text)) {
+        wrap.classList.add("clp");
+        wrap.style.setProperty("--fold-lines", String(COLLAPSE_LINES)); // the folded height, one source
+        const m = document.createElement("button");
+        m.type = "button";
+        m.className = "more";
+        m.dataset.lines = String(lineCount(text));
+        foldLabel(m, false);
+        // After the wrapper, not in it: the toggle follows the message body's direction, not the code's.
+        wrap.after(m);
+      }
       if (io) io.observe(pre);
       else colour(pre);
     });
