@@ -60,7 +60,7 @@ const RESULT_SILENT_TOOLS = new Set([...QUIET_TOOLS, "Write", "Edit", "MultiEdit
 const RESULT_PREVIEW_MAX = 600;
 
 /** A concise, operator-facing preview of a tool_result payload (string, or the SDK's content-block
- *  array), trimmed and truncated. Empty string => nothing worth surfacing. */
+ *  array), without surrounding blank lines, truncated. Empty string => nothing worth surfacing. */
 function toolResultPreview(content: unknown): string {
   let text = "";
   if (typeof content === "string") text = content;
@@ -70,8 +70,10 @@ function toolResultPreview(content: unknown): string {
       .map((b) => b.text as string)
       .join("\n");
   }
-  text = text.trim();
-  if (!text) return "";
+  // Drop blank lines around the output, never the first line's indentation: aligned output (a
+  // ClickHouse box table, `column -t`, YAML) would lose its first column's alignment.
+  text = text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd();
+  if (!text.trim()) return "";
   return text.length > RESULT_PREVIEW_MAX ? `${text.slice(0, RESULT_PREVIEW_MAX - 1)}…` : text;
 }
 

@@ -834,6 +834,20 @@ test("surfaces a concise result preview for Bash but stays quiet for navigation 
   expect(msgs.some((m) => m.includes("file body that should stay quiet"))).toBe(false); // Read result stays quiet
 });
 
+test("a result preview keeps the first line's indentation, so aligned output stays aligned", async () => {
+  // ClickHouse PrettyCompact with row numbers indents its header to sit over the "1." column.
+  const box = "\n   ┌─action─┬─n─┐\n1. │ book   │ 1 │\n   └────────┴───┘\n\n";
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ch" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: box }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  const msgs: string[] = [];
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  expect(msgs).toContain("↳    ┌─action─┬─n─┐\n1. │ book   │ 1 │\n   └────────┴───┘");
+});
+
 test("truncates a long tool result and flags an errored one", async () => {
   const long = "x".repeat(2000);
   const q = () =>
