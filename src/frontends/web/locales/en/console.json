@@ -336,5 +336,10 @@
     "close": "Close menu",
     "back": "Back",
     "views": "Views"
+  },
+  "code": {
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Copy failed"
   }
 }

@@ -9,6 +9,7 @@ import { pastedImages } from "./paste";
 import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
 import { CONFIRM_WINDOW_MS, armedFor, confirmTap } from "./confirm";
 import { type DetailView, backAction, enterAction, popDetail, staleOnLoad } from "./nav";
+import { createCodeEnhancer } from "./code-blocks";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
 const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
@@ -20,6 +21,8 @@ type Vars = Record<string, string | number>;
 const t = (key: string, vars?: Vars): string => i18n.t(key, vars ?? {});
 /** Plain text (textContent, title, placeholder, dialogs): the DOM does not parse it, so no escaping. */
 const tx = (key: string, vars?: Vars): string => i18n.t(key, { ...vars, interpolation: { escapeValue: false } });
+/** Syntax colours (lazy, visible blocks only) + copy buttons for the server-rendered code blocks (ADR-0025). */
+const enhanceCode = createCodeEnhancer((key) => tx(key));
 
 const FEED_WINDOW = Number(root.dataset.feedWindow) || 500;
 const POLL_MS = 15000;
@@ -698,10 +701,12 @@ function pushFeed(node: FeedNode, kind: string, project: string | null | undefin
   }
   if (v) scheduleTail();
 }
-function feedMsg(html: string, kind: string, project: string | null | undefined): HTMLElement {
+/** A feed row. `html` is safe markup (escaped here, or rendered by the server); `tone` colours it. */
+function feedMsg(html: string, kind: string, project: string | null | undefined, tone?: string): HTMLElement {
   const d = document.createElement("div") as FeedNode;
-  d.className = "row " + (kind === "me" ? "me" : "out");
+  d.className = "row " + (kind === "me" ? "me" : "out") + (tone ? ` tone-${tone}` : "");
   d.innerHTML = html;
+  enhanceCode(d);
   pushFeed(d, kind, project);
   return d;
 }
@@ -859,7 +864,9 @@ function openThread(id: number): void {
 function messageHtml(m: Any, html?: string): string {
   const who = m.role === "user" ? t("threads.you") : m.project ? iso(m.project) : t("threads.neo");
   // Message text has no fixed direction (an English line in the Arabic console, or the reverse).
-  return `<div class="tmsg ${m.role === "user" ? "user" : ""}"><div class="tw">${who} · ${ltr(clock(m.at))}</div><div dir="auto">${html ?? esc(m.content)}</div></div>`;
+  // An assistant row arrives rendered by the server (m.html, ADR-0025); the operator's own text is escaped.
+  const tone = m.tone ? ` tone-${esc(m.tone)}` : "";
+  return `<div class="tmsg ${m.role === "user" ? "user" : ""}${tone}"><div class="tw">${who} · ${ltr(clock(m.at))}</div><div dir="auto" class="tx">${html ?? m.html ?? esc(m.content)}</div></div>`;
 }
 function renderThreadPane(v: Any): void {
   const th = v.thread;
@@ -893,6 +900,7 @@ function renderThreadPane(v: Any): void {
   }
   h += `<div class="tsect rfo">${t("threads.toolActions", { count: v.toolActions })}</div>`;
   $("tbody").innerHTML = h;
+  enhanceCode($("tbody"));
   ($("tform") as HTMLFormElement).hidden = false;
   const msgs = $("tbody");
   msgs.scrollTop = msgs.scrollHeight;
@@ -906,6 +914,7 @@ function olderMessages(): void {
       if (TH.open !== id) return;
       TH.msgNext = v.next;
       $("tmsgs").insertAdjacentHTML("afterbegin", (v.messages as Any[]).slice().reverse().map((m) => messageHtml(m)).join(""));
+      enhanceCode($("tmsgs"));
       if (!v.next) document.getElementById("tolder")?.remove();
     })
     .catch(() => {});
@@ -915,6 +924,7 @@ function appendThreadLine(m: Any, html?: string): void {
   const box = document.getElementById("tmsgs");
   if (!box) return;
   box.insertAdjacentHTML("beforeend", messageHtml(m, html));
+  enhanceCode(box);
   const b = $("tbody");
   b.scrollTop = b.scrollHeight;
 }
@@ -1289,8 +1299,8 @@ es.onopen = () => {
 es.onmessage = (ev) => {
   const e = JSON.parse(ev.data);
   if (e.type === "message") {
-    feedMsg((e.project ? `<span class="ptag">${esc(e.project)}</span>` : "") + e.text, "out", e.project);
-    if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "assistant", project: e.project, at: Date.now() }, e.text);
+    feedMsg((e.project ? `<span class="ptag">${esc(e.project)}</span>` : "") + e.text, "out", e.project, e.tone);
+    if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "assistant", project: e.project, at: Date.now(), tone: e.tone }, e.text);
   } else if (e.type === "echo") {
     feedMsg("› " + esc(e.text), "me", filterProject);
     if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "user", content: e.text, at: Date.now() });
@@ -1304,7 +1314,9 @@ es.onmessage = (ev) => {
   else if (e.type === "escalation") {
     const c = document.createElement("div") as FeedNode;
     c.className = "escc";
-    c.innerHTML = "⚠ " + esc(e.reason);
+    // The server renders the reason (a shell command as a code block); an older daemon sends text only.
+    c.innerHTML = "⚠ " + (e.html ?? esc(e.reason));
+    enhanceCode(c);
     const a = document.createElement("div");
     a.className = "acts";
     (["allow", "deny"] as const).forEach((dec) => {
