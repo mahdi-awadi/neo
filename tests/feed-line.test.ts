@@ -128,3 +128,24 @@ test("the step-line payload is escaped too", () => {
   expect(feedLine("↳ <b>hi</b>").html).toContain("&lt;b&gt;hi&lt;/b&gt;");
   expect(feedLine('🔓 auto-approved: risky shell command: echo "<x>"').html).toContain('echo "&lt;x&gt;"');
 });
+
+// Review findings (2026-10-07).
+test("underscores never emphasise: dunder names and paths keep their underscores (both targets)", () => {
+  expect(web("rename __init__ in path/to/__tests__/x.ts and my_var_name")).toBe("rename __init__ in path/to/__tests__/x.ts and my_var_name");
+  expect(mdToHtml("rename __init__ and _x_")).toBe("rename __init__ and _x_");
+  expect(web("**bold** and *it*")).toBe("<strong>bold</strong> and <em>it</em>"); // asterisks still do
+});
+
+test("a text line over --- is a line and a rule, not a heading (setext)", () => {
+  expect(mdToHtml("Title\n---\nnext")).toBe("Title\n———\nnext");
+  expect(web("Title\n---\nnext")).toBe("<p>Title</p><hr><p>next</p>");
+  expect(web("# Real")).toBe('<h3 class="mh">Real</h3>');
+});
+
+test("worker prose that starts with 🔧 or ↳ is not mistaken for a step line", () => {
+  expect(feedLine("🔧 Fixed: the **login** bug\n- step two").tone).toBe("");
+  expect(feedLine("🔧 Fixed: the **login** bug\n- step two").html).toContain("<strong>login</strong>");
+  expect(feedLine("🔧 mcp tool: send_file").tone).toBe(""); // not one tool token
+  expect(feedLine("🔧 send_file: report.md").tone).toBe("tool");
+  expect(feedLine("🔧 Bash: cat > x <<EOF\n# c\nEOF").tone).toBe("tool"); // a shell command may span lines
+});

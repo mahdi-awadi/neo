@@ -6,7 +6,7 @@
 //     console, which highlights code blocks lazily in the browser.
 //   - the default compact target: the b/i/s/code/pre/a/blockquote subset Telegram accepts, newlines
 //     kept as text. Telegram has no <table>, so `tables: "pre"` renders tables as an aligned <pre>.
-import { Lexer, type Token, type Tokens } from "marked";
+import { Lexer, Tokenizer, type Token, type Tokens } from "marked";
 
 /** Deterministic Telegram hashtag for a project name, e.g. "eticket-v3" -> "#eticket_v3".
  *  Telegram only auto-links [A-Za-z0-9_] after "#", needs length >= 2, and treats a leading
@@ -59,6 +59,14 @@ export interface MdOptions {
   target?: "web";
   /** Compact target only: "pre" renders tables as an aligned <pre> (Telegram has no <table>). */
   tables?: "html" | "pre";
+}
+
+/** GFM emphasis without underscores: worker output is full of `__init__`, `__tests__/` and snake_case,
+ *  and `_x_` emphasis turning them bold (losing the underscores) costs more than it adds. `*` still works. */
+class NoUnderscoreEmphasis extends Tokenizer {
+  override emStrong(src: string, maskedSrc: string, prevChar = ""): Tokens.Em | Tokens.Strong | undefined {
+    return src.startsWith("_") ? undefined : super.emStrong(src, maskedSrc, prevChar);
+  }
 }
 
 /** A safe link target: http(s) and mailto only, else undefined (the label renders as text). */
@@ -204,6 +212,8 @@ function block(t: Token, c: Ctx, depth: number, tight: boolean): string {
     }
     case "heading": {
       const h = t as Tokens.Heading;
+      // A line over "---"/"===" (setext) is how workers draw a separator, not a heading: a line + a rule.
+      if (!/^ {0,3}#/.test(h.raw)) return c.web ? `<p>${inline(h.tokens, c)}</p><hr>` : `${inline(h.tokens, c)}\n———`;
       if (!c.web) return `<b>${inline(h.tokens, c)}</b>`;
       const level = Math.min(h.depth + 2, 6);
       return `<h${level} class="mh">${inline(h.tokens, c)}</h${level}>`;
@@ -243,7 +253,7 @@ export function codeBlock(code: string, lang = "", extraClass = ""): string {
 
 export function mdToHtml(md: string, opts: MdOptions = {}): string {
   const c: Ctx = { web: opts.target === "web", tablesPre: opts.tables === "pre", rtl: RTL_SCRIPT.test(md) };
-  const tokens = new Lexer({ gfm: true, breaks: c.web }).lex(md);
+  const tokens = new Lexer({ gfm: true, breaks: c.web, tokenizer: new NoUnderscoreEmphasis() }).lex(md);
   const out = blocks(tokens, c);
   if (!c.web) return out.replace(/\n+$/, "");
   // A one-paragraph line (most feed lines) needs no block wrapper.

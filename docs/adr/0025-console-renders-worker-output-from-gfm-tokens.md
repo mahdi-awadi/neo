@@ -24,6 +24,15 @@ visible code blocks (highlight.js core + a few languages) and adds copy buttons.
   strings through dispatch, pipeline, the operator bus and Telegram. Their prefixes are already a
   contract (`isToolStepLine`), so `feedLine` reads that contract in one place.
 
+## Deliberate departures from GFM
+- **No underscore emphasis.** `__init__`, `__tests__/` and snake_case stay as written; `*` and `**`
+  still emphasise. Worker output is code-heavy, and losing underscores costs more than `_x_` adds.
+- **No setext headings.** A line over `---` is a line and a rule: workers use it as a separator.
+- **Step lines are matched by shape**, not only by prefix: one tool token, then a one-line target of
+  at most 60 characters (or a shell command). Worker prose that starts with `🔧 Word: …` on one short
+  line can still read as a tool line. That residual risk ends when step lines carry their kind as
+  structured data (the option above).
+
 ## Consequences
 - Two new pinned dependencies: `marked`, `highlight.js` (core plus registered languages only).
 - Telegram output is produced by the same token walk; its tests pin the old shape.

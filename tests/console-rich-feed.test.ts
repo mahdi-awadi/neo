@@ -100,3 +100,9 @@ test("code inside a block never wears the inline-code box", () => {
   expect(CSS).toMatch(/\.row\.out pre\.code>code,[^{]*\{[^}]*border:0/);
   expect(CSS).toContain(".row.out code,.tmsg .tx code{"); // inline code looks the same in thread history
 });
+
+test("a pruned feed row releases its code blocks from the observer; copy feedback timers do not stack", () => {
+  expect(CODE).toContain("forget(root");
+  expect(APP).toContain("code.forget(o!)");
+  expect(CODE).toContain("clearTimeout(");
+});

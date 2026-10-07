@@ -46,8 +46,11 @@ function proseTone(text: string): LineTone {
 }
 
 export function feedLine(text: string): FeedLine {
-  const tool = /^🔧 ([^:\n]+?)(?:: ([\s\S]*))?$/u.exec(text);
-  if (tool) {
+  // session-runner's milestone shape: one tool token, then a target of at most 60 characters on one
+  // line (toolDetail truncates) — or a shell command, which may span lines. Anything else is prose.
+  const tool = /^🔧 ([\w.-]+)(?:: ([\s\S]*))?$/u.exec(text);
+  const isStep = tool && (SHELL_TOOLS.has(tool[1]!) || /^[^\n]{0,60}$/.test(tool[2] ?? ""));
+  if (tool && isStep) {
     const name = tool[1]!;
     const detail = tool[2] ?? "";
     const head = `<span class="ti">🔧</span><span class="tl">${esc(name)}</span>`;

@@ -22,7 +22,8 @@ const t = (key: string, vars?: Vars): string => i18n.t(key, vars ?? {});
 /** Plain text (textContent, title, placeholder, dialogs): the DOM does not parse it, so no escaping. */
 const tx = (key: string, vars?: Vars): string => i18n.t(key, { ...vars, interpolation: { escapeValue: false } });
 /** Syntax colours (lazy, visible blocks only) + copy buttons for the server-rendered code blocks (ADR-0025). */
-const enhanceCode = createCodeEnhancer((key) => tx(key));
+const code = createCodeEnhancer((key) => tx(key));
+const enhanceCode = code.enhance;
 
 const FEED_WINDOW = Number(root.dataset.feedWindow) || 500;
 const POLL_MS = 15000;
@@ -696,6 +697,7 @@ function pushFeed(node: FeedNode, kind: string, project: string | null | undefin
     if (i >= 0) {
       const [o] = feedNodes.splice(i, 1);
       o!.remove();
+      code.forget(o!);
       if (nodeVisible(o!) && !feedNodes.some(nodeVisible)) ph.style.display = "";
     }
   }

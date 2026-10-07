@@ -881,3 +881,17 @@ shell; `/`, `/app.js`, the API, the live feed, login and uploads are never cache
 An **Install app** chip appears when the browser offers it (on iPhone it shows the Add to Home
 Screen hint). Verified in Chromium at 360/390/412/820 px, EN+AR, light+dark. Going live needs a
 daemon restart (operator-gated).
+
+### Console: worker output as formatted content (ADR-0025, 2026-10-07)
+
+Worker output in the Activity feed and in thread history now renders as formatted content. Tables
+are bordered, with zebra rows, a sideways scroll on phones, and right-aligned number columns.
+Headings, lists, task lists, links and inline code render as HTML. Code blocks keep their whitespace
+and get syntax colours (highlight.js, coloured only when they scroll into view) and a copy button.
+The engine's step lines show their payload as code: a shell command (the auto-approval note, a
+`🔧 Bash` milestone) is a bash block, and tool output is an output block (a diff gets diff colours).
+A heredoc's `# comment` is no longer a heading. Each row has a colour tone (tool, output, error,
+warning, done, approval). Code and tables stay LTR in the Arabic UI, and an English line keeps its
+own direction. One renderer: `mdToHtml` parses with marked's GFM lexer and walks the tokens itself
+for the web and Telegram targets, so raw HTML in worker text is always shown as text. Verified in
+Chromium at 360/390/412 px, EN+AR, light+dark. Going live needs a daemon restart (operator-gated).

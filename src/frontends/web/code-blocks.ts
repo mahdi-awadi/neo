@@ -48,9 +48,16 @@ export function highlightHtml(text: string, lang: string): string | undefined {
   return hljs.highlight(text, { language, ignoreIllegals: true }).value;
 }
 
-/** Wire the enhancer once: returns `enhanceCode(root)` for each new feed row, thread pane or card.
+export interface CodeEnhancer {
+  /** Colour (lazily) and add copy buttons to the new code blocks under `root`. */
+  enhance(root: ParentNode): void;
+  /** Stop watching the blocks under a removed node (a pruned feed row), so it can be collected. */
+  forget(root: ParentNode): void;
+}
+
+/** Wire the enhancer once, for every feed row, thread pane and card.
  *  `label(key)` reads the console catalogue (code.copy / code.copied / code.copyFailed). */
-export function createCodeEnhancer(label: (key: string) => string): (root: ParentNode) => void {
+export function createCodeEnhancer(label: (key: string) => string): CodeEnhancer {
   const colour = (pre: HTMLElement) => {
     const code = pre.querySelector("code");
     if (!code) return;
@@ -74,6 +81,7 @@ export function createCodeEnhancer(label: (key: string) => string): (root: Paren
         )
       : null;
 
+  const resets = new WeakMap<HTMLButtonElement, number>();
   // One delegated listener for every copy button, present or future.
   document.addEventListener("click", (ev) => {
     const btn = (ev.target as Element | null)?.closest?.<HTMLButtonElement>("button.copy");
@@ -82,10 +90,11 @@ export function createCodeEnhancer(label: (key: string) => string): (root: Paren
     const done = (key: string) => {
       btn.textContent = label(key);
       btn.classList.toggle("ok", key === "code.copied");
-      window.setTimeout(() => {
+      clearTimeout(resets.get(btn)); // a second tap restarts the feedback, it does not stack
+      resets.set(btn, window.setTimeout(() => {
         btn.textContent = label("code.copy");
         btn.classList.remove("ok");
-      }, 1600);
+      }, 1600));
     };
     if (!navigator.clipboard) return done("code.copyFailed");
     navigator.clipboard.writeText(text).then(
@@ -94,7 +103,10 @@ export function createCodeEnhancer(label: (key: string) => string): (root: Paren
     );
   });
 
-  return (root) => {
+  const forget = (root: ParentNode) => {
+    if (io) root.querySelectorAll<HTMLElement>("pre.code").forEach((pre) => io.unobserve(pre));
+  };
+  const enhance = (root: ParentNode) => {
     root.querySelectorAll<HTMLElement>("pre.code").forEach((pre) => {
       if (pre.dataset.hl) return;
       pre.dataset.hl = "1";
@@ -113,4 +125,5 @@ export function createCodeEnhancer(label: (key: string) => string): (root: Paren
       else colour(pre);
     });
   };
+  return { enhance, forget };
 }
