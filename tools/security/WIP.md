@@ -15,7 +15,7 @@ Spec: docs/superpowers/specs/2026-10-08-shift-left-security-kit.md · ADR-0024 �
 3. ~~init.ts~~ DONE (.githooks with chaining; husky → .husky/<hook> line; config, baseline, gitignore).
 4. ~~security-sweep loop~~ DONE: docs/loops/security-sweep.json + prompt + sweep.ts (goal); validated via create-loop on a scratch ledger. Live create = operator step after install.
 5. ~~briefWithProjectDocs line~~ DONE (preamble 4843 chars, under the 5000 ceiling).
-6. tools/security/security-review.md → ~/.claude/commands/security-review.md.
+6. ~~command~~ DONE as /security-scan (security-scan.md): /security-review is a Claude Code built-in, so ours must not shadow it.
 7. Security Rules diff for both CLAUDE.md files → file + ask_operator (do NOT save).
 8. Pilot on /home/neo in the worktree; record timings. 9. docs/security-checks.md.
 - ADR number: use 0024 (dev already has 0023).

@@ -1,6 +1,6 @@
 // Install the security kit for every Claude Code session on this host (ADR-0024): copy the kit to
-// ~/.claude/security, add its two hooks to ~/.claude/settings.json and the /security-review command
-// to ~/.claude/commands. Running it again changes nothing. Other hooks and settings are kept.
+// ~/.claude/security, add its two hooks to ~/.claude/settings.json and the /security-scan command
+// to ~/.claude/commands (named so it never shadows Claude Code's built-in /security-review). Running it again changes nothing. Other hooks and settings are kept.
 //
 //   bun tools/security/install.ts [--claude-dir ~/.claude] [--no-rules]
 //   (--no-rules: skip downloading the semgrep packs; the scans warn until update-rules.sh runs)
@@ -51,10 +51,10 @@ export function installKit(opts: { src: string; claudeDir: string }): { dest: st
   const dest = join(opts.claudeDir, "security");
   mkdirSync(dest, { recursive: true });
   cpSync(opts.src, dest, { recursive: true, filter: (from) => !NOT_INSTALLED.has(basename(from)) });
-  const review = join(opts.src, "security-review.md");
-  if (existsSync(review)) {
+  const command = join(opts.src, "security-scan.md");
+  if (existsSync(command)) {
     mkdirSync(join(opts.claudeDir, "commands"), { recursive: true });
-    cpSync(review, join(opts.claudeDir, "commands", "security-review.md"));
+    cpSync(command, join(opts.claudeDir, "commands", "security-scan.md"));
   }
 
   const after = `${JSON.stringify(mergeHooks(settings, dest), null, 2)}\n`;

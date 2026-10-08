@@ -19,7 +19,7 @@ rules for JS/Go/Python with fixtures, the guard hook (secret files) and the post
      `findings.ts`), so fingerprints match across checkouts.
    - The custom rule fixtures give the same results as before.
 2. **install.ts.** Copies the kit to `~/.claude/security` and merges the guard (PreToolUse) and
-   post-edit (PostToolUse) hooks into `~/.claude/settings.json`. Running it twice changes nothing.
+   post-edit (PostToolUse) hooks into `~/.claude/settings.json` and installs the task 6 command. Running it twice changes nothing.
    Other hooks and settings stay. Session runner sets `NEO_WORKER=1` for workers (TDD).
 3. **init.ts `<repo>`.** Writes `.githooks/pre-commit` and `pre-push`. It chains any existing husky or
    `core.hooksPath` hook, never replaces it. It writes `.security/config.json`, records the baseline,
@@ -28,8 +28,10 @@ rules for JS/Go/Python with fixtures, the guard hook (secret files) and the post
    `tools/create-loop.ts`, cron `0 3 * * *`.
 5. **Dispatch brief.** `briefWithProjectDocs` (src/engine/dispatch.ts) tells every worker that new
    high or critical findings block, and how to fix or report them (TDD).
-6. **/security-review command.** `tools/security/security-review.md` is installed to
-   `~/.claude/commands/security-review.md`.
+6. **/security-scan command.** `tools/security/security-scan.md` is installed to
+   `~/.claude/commands/security-scan.md`: the kit's push-layer scan on the branch, triage, then
+   Claude Code's built-in `/security-review`. (Renamed from the planned `security-review.md`: that
+   name would shadow the built-in command.)
 7. **Security rules for CLAUDE.md.** A proposed diff for `/home/neo/CLAUDE.md` and
    `~/.claude/CLAUDE.md`, written to a file and sent to the operator with ask_operator. Nothing is
    saved to either file.

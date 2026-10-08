@@ -45,7 +45,7 @@ describe("security kit install", () => {
     writeFileSync(join(src, "hooks", "guard.sh"), "#!/bin/bash\n");
     writeFileSync(join(src, "rules", "custom", "a.yaml"), "rules: []\n");
     writeFileSync(join(src, "WIP.md"), "notes");
-    writeFileSync(join(src, "security-review.md"), "# review\n");
+    writeFileSync(join(src, "security-scan.md"), "# scan\n");
     const claude = join(home, ".claude");
     mkdirSync(claude);
     writeFileSync(join(claude, "settings.json"), JSON.stringify({ theme: "dark" }));
@@ -55,7 +55,8 @@ describe("security kit install", () => {
     expect(existsSync(join(claude, "security", "hooks", "guard.sh"))).toBe(true);
     expect(existsSync(join(claude, "security", "rules", "custom", "a.yaml"))).toBe(true);
     expect(existsSync(join(claude, "security", "WIP.md"))).toBe(false); // build notes are not installed
-    expect(readFileSync(join(claude, "commands", "security-review.md"), "utf8")).toBe("# review\n");
+    expect(readFileSync(join(claude, "commands", "security-scan.md"), "utf8")).toBe("# scan\n");
+    expect(existsSync(join(claude, "commands", "security-review.md"))).toBe(false); // never shadows the built-in
     const s1 = readFileSync(join(claude, "settings.json"), "utf8");
     expect(JSON.parse(s1).theme).toBe("dark");
     expect(s1).toContain(`bash ${join(claude, "security")}/hooks/guard.sh`);
