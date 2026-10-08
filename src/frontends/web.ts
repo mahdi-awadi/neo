@@ -13,7 +13,6 @@ import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/we
 import type { CommandDeps } from "../engine/commands";
 import { runCompanyBrief } from "../engine/ingress";
 import { draftInboxReply, sendInboxReply } from "../engine/inbox-actions";
-import { saveInbound } from "../engine/files";
 import type { Inbox } from "../engine/inbox";
 import type { OperatorBus } from "../engine/operator-bus";
 import { faults } from "../engine/fault";
@@ -283,25 +282,36 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     }
 
     if (req.method === "POST" && path === "/msg") {
-      const body = (await req.json().catch(() => ({}))) as { text?: unknown; threadId?: unknown };
+      const body = (await req.json().catch(() => ({}))) as { text?: unknown; threadId?: unknown; attachments?: unknown };
       const text = typeof body.text === "string" ? body.text.trim() : "";
       // The composer opened inside a thread names it (spec §4.1 rule 2); anything else starts a new one.
       const threadId = typeof body.threadId === "number" && Number.isSafeInteger(body.threadId) ? body.threadId : undefined;
-      if (text) faults.contain("web.send", () => channel.send(text, threadId === undefined ? undefined : { threadId }));
+      // Staged attachment tokens (ADR-0026): the files go with this text as one message.
+      const attachments = Array.isArray(body.attachments) ? body.attachments.filter((t): t is string => typeof t === "string") : [];
+      if (text || attachments.length) {
+        // Refused before anything is sent, so the composer keeps its text and chips (ADR-0026).
+        const checked = channel.check(text, { attachments });
+        if ("error" in checked) return Response.json({ ok: false, error: checked.error }, { status: 409 });
+        faults.contain("web.send", () => channel.send(text, { ...(threadId === undefined ? {} : { threadId }), ...(attachments.length ? { attachments } : {}) }));
+      }
       return Response.json({ ok: true });
     }
 
+    // Attaching only stages the file (ADR-0026): saved to an inbox, nothing sent. The composer sends
+    // the returned token with its text through /msg, so the worker gets both in one turn.
     if (req.method === "POST" && path === "/upload") {
       const form = await req.formData().catch(() => null);
       const f = form?.get("file");
       if (!(f instanceof File)) return Response.json({ ok: false }, { status: 400 });
-      const target = deps.engine.registry.findByChat(WEB_CHAT_ID) ?? deps.engine.registry.getDefault();
-      if (!target) return Response.json({ ok: false, error: "no active project" }, { status: 409 });
-      const bytes = new Uint8Array(await f.arrayBuffer());
-      const saved = saveInbound(target.order.folder, f.name || "file", bytes);
-      const cap = form?.get("caption"); const caption = typeof cap === "string" ? cap : "";
-      faults.contain("web.send", () => channel.send(`📎 operator attached \`${basename(saved)}\` at \`${saved}\`\n${caption}`), { project: target.name });
-      return Response.json({ ok: true });
+      const t = Number(form?.get("threadId"));
+      const threadId = Number.isSafeInteger(t) && t > 0 ? t : undefined;
+      const staged = channel.stage({ name: f.name || "file", bytes: new Uint8Array(await f.arrayBuffer()) }, threadId === undefined ? undefined : { threadId });
+      if ("error" in staged) return Response.json({ ok: false, error: staged.error }, { status: 409 });
+      return Response.json({ ok: true, ...staged }, NO_STORE);
+    }
+    if (req.method === "POST" && path === "/upload/discard") {
+      const body = (await req.json().catch(() => ({}))) as { token?: unknown };
+      return Response.json({ ok: typeof body.token === "string" && channel.discard(body.token) });
     }
 
     if (req.method === "GET" && path === "/file") {

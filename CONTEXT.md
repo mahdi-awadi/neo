@@ -601,6 +601,13 @@ The id of the last feed event a console received. A reconnecting console sends i
 later events, so a dropped connection never shows a line twice.
 _Avoid_: cursor, offset, checkpoint
 
+**Staged attachment**:
+A file the operator attached in the console composer but has not sent yet. It is already saved in an
+inbox, and the web channel holds a one-shot token for it. Send turns the text and its staged
+attachments into one message (`withAttachments`), so the worker gets the files in the same turn as
+the text (ADR-0026).
+_Avoid_: upload (the transfer, not the thing), pending file
+
 **Step line**:
 A line the engine itself writes about a worker's tool use: `🔧 Tool: target`, `↳ output`, `⚠️ ↳ error
 output`, `🔓 auto-approved: reason`. Its payload (a command, an output) is shown as code, never parsed

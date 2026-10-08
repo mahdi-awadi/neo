@@ -22,12 +22,12 @@ test("pastedImages: text-only paste yields nothing; text+image yields only the i
   expect(pastedImages(undefined, 1)).toEqual([]);
 });
 
-test("the composer attaches pasted images through the shared /upload sender and never blocks the text paste", () => {
+test("the composer stages pasted images through the shared upload path and never blocks the text paste", () => {
   const paste = APP.match(/addEventListener\("paste"[\s\S]*?\}\);/)![0];
-  expect(paste).toContain("pastedImages(");
-  expect(paste).toContain("sendFile");
+  expect(paste).toContain("add(pastedImages(");
   expect(paste).not.toContain("preventDefault");
-  // One upload mechanism: the 📎 picker and paste both go through sendFile → /upload.
-  expect(APP.match(/fetch\("\/upload"/g)).toHaveLength(1);
-  expect(APP).toMatch(/function uploadFile\(\)[\s\S]*?sendFile\(/);
+  // One upload mechanism (ADR-0026): the 📎 picker and paste both stage through add() → /upload.
+  expect(APP.match(/open\("POST", "\/upload"\)/g)).toHaveLength(1);
+  expect(APP).not.toMatch(/fetch\("\/upload"/);
+  expect(APP).toMatch(/picker\.onchange = \(\) => \{[\s\S]*?add\(picker\.files\)/);
 });

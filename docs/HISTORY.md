@@ -900,3 +900,18 @@ Follow-up (todo #70): a tool result keeps its first line's indentation, so a Cli
 stays aligned (the result preview used to trim it). JSON output gets JSON colours. A code block over
 16 lines starts folded, with a "show all lines (N)" toggle. Verified in Chromium at 360/390 px, EN+AR,
 light+dark, against the real ledger rows behind the operator's two screenshots.
+
+### Console: attachments travel with their message (ADR-0026, 2026-10-08)
+
+A file attached in the web console used to go to the worker at once, as its own `📎 operator
+attached` message. The typed text came as a second message, so the worker could not tell which
+message the file belonged to. Now attaching (📎 or paste) only stages the file: it is saved to the
+inbox and shows as a chip with its name, size, upload progress and ×. Send posts the text and the
+staged files together. The worker gets ONE message, the text and then an `Attached files:` list of
+inbox paths, with one ledger row, one trace id, and the same thread routing as any message. The
+thread composer has the same flow, and its files go to the thread's project. Telegram's caption +
+file uses the same `withAttachments` format. Send waits for every upload. A send whose staged files
+the server no longer has (reload, 6 h TTL), or a slash command with files, is refused (409). The
+composer then keeps the text and the chips and shows the reason in EN or AR. Verified in Chromium at
+390/360 px, EN+AR, light+dark: one row per send, thread replies filed under the thread. Going live
+needs a daemon restart (operator-gated).

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createWebChannel, type WebEvent } from "../src/engine/web-channel";
@@ -15,6 +15,7 @@ import type { Order } from "../src/types";
 import { DEFAULT_GOVERNOR_CFG } from "../src/engine/governor";
 import { createTrace } from "../src/engine/trace";
 import { reconcile, listOpen } from "../src/engine/attention";
+import { withAttachments } from "../src/engine/files";
 
 function cfg(): NeoConfig {
   return {
@@ -732,4 +733,137 @@ test("an escalation event carries the reason as safe HTML, the shell command as 
   const esc = events.find((e) => e.type === "escalation") as { reason: string; html?: string } | undefined;
   expect(esc?.reason).toBe("risky shell command: rm -rf <build>");
   expect(esc?.html).toBe('risky shell command<pre class="code" data-lang="bash"><code>rm -rf &lt;build&gt;</code></pre>');
+});
+
+// ── staged attachments travel with their message (ADR-0026) ─────────────────────────────────
+
+/** A traced channel with one running, pinned project; `got` records what reaches its worker. */
+async function withProject() {
+  const got: string[] = [];
+  const t = traced(((o: Order, h: RunHandlers) => {
+    const run = fakeStart().start(o, h);
+    return { ...run, followUp: (x: string) => void got.push(x) };
+  }) as ReturnType<typeof fakeStart>["start"]);
+  const dir = scratch();
+  await t.ch.send(`/open ${dir} start`);
+  const s = t.eng.registry.list()[0]!;
+  t.eng.registry.setStatus(s.id, "running");
+  t.eng.registry.setFocus(0, s.id, "pinned");
+  return { ...t, got, dir };
+}
+const staged = (r: unknown) => {
+  if (!r || typeof r !== "object" || !("token" in r)) throw new Error(`not staged: ${JSON.stringify(r)}`);
+  return r as { token: string; name: string; size: number };
+};
+const userRows = (t: { eng: { ledger: ReturnType<typeof openLedger> } }) => t.eng.ledger.conversation(0, 50).filter((m) => m.role === "user").map((m) => m.content);
+
+test("staging saves the file to the project's inbox and sends nothing", async () => {
+  const t = await withProject();
+  const before = t.got.length;
+  const a = staged(t.ch.stage({ name: "shot.png", bytes: new Uint8Array([1, 2, 3]) }));
+  expect(a).toMatchObject({ name: "shot.png", size: 3 });
+  expect(existsSync(join(t.dir, "inbox", "shot.png"))).toBe(true);
+  expect(t.got.length).toBe(before);
+});
+
+test("text + staged files → ONE message: one ledger row, one prompt, the text then every path", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "shot.png", bytes: new Uint8Array([1]) }));
+  const b = staged(t.ch.stage({ name: "spec.pdf", bytes: new Uint8Array([2]) }));
+  await t.ch.send("use these", { attachments: [a.token, b.token] });
+  const want = withAttachments("use these", [
+    { name: "shot.png", path: join(t.dir, "inbox", "shot.png") },
+    { name: "spec.pdf", path: join(t.dir, "inbox", "spec.pdf") },
+  ]);
+  expect(t.got.at(-1)).toBe(want);
+  expect(userRows(t).filter((c) => c.includes("shot.png"))).toEqual([want]);
+});
+
+test("files with no text are one message with just the list", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "notes.txt", bytes: new Uint8Array([1]) }));
+  await t.ch.send("", { attachments: [a.token] });
+  expect(t.got.at(-1)).toBe(withAttachments("", [{ name: "notes.txt", path: join(t.dir, "inbox", "notes.txt") }]));
+});
+
+test("a token is one-shot; a send naming a used or unknown token is refused whole; a discarded file is deleted", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "a.txt", bytes: new Uint8Array([1]) }));
+  await t.ch.send("first", { attachments: [a.token] });
+  const sent = t.got.length;
+  const rows = userRows(t).length;
+  // A reload or the TTL forgot the file: the words must not go out without it (nor an empty prompt).
+  expect(t.ch.check("again", { attachments: [a.token, "nope"] })).toEqual({ error: "expired" });
+  expect(t.ch.check("", { attachments: ["nope"] })).toEqual({ error: "expired" });
+  await t.ch.send("again", { attachments: [a.token, "nope"] });
+  await t.ch.send("", { attachments: ["nope"] });
+  expect(t.got.length).toBe(sent);
+  expect(userRows(t).length).toBe(rows);
+  const b = staged(t.ch.stage({ name: "b.txt", bytes: new Uint8Array([1]) }));
+  const path = join(t.dir, "inbox", "b.txt");
+  expect(t.ch.discard(b.token)).toBe(true);
+  expect(existsSync(path)).toBe(false);
+  expect(t.ch.discard(b.token)).toBe(false);
+  expect(t.ch.check("after discard", { attachments: [b.token] })).toEqual({ error: "expired" });
+});
+
+test("check passes plain text and known tokens, and never takes them", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "a.txt", bytes: new Uint8Array([1]) }));
+  expect(t.ch.check("hello")).toEqual({ ok: true });
+  expect(t.ch.check("use it", { attachments: [a.token] })).toEqual({ ok: true });
+  expect(t.ch.check("use it", { attachments: [a.token] })).toEqual({ ok: true });
+  await t.ch.send("use it", { attachments: [a.token] });
+  expect(t.got.at(-1)).toBe(withAttachments("use it", [{ name: "a.txt", path: join(t.dir, "inbox", "a.txt") }]));
+});
+
+test("inside a thread: the file lands in the thread's project inbox and the message joins the thread", async () => {
+  const got: string[] = [];
+  const t = traced(((o: Order, h: RunHandlers) => {
+    const run = fakeStart().start(o, h);
+    return { ...run, followUp: (x: string) => void got.push(`${o.folder}:${x}`) };
+  }) as ReturnType<typeof fakeStart>["start"]);
+  const gold = scratch();
+  const acme = scratch();
+  await t.ch.send(`/open ${gold} start`);
+  await t.ch.send(`/open ${acme} start`);
+  const [g, a] = t.eng.registry.list();
+  for (const s of [g!, a!]) t.eng.registry.setStatus(s.id, "running");
+  t.eng.registry.setFocus(0, a!.id, "pinned");
+  const cause = t.trace.inbound({ chatId: 0, text: "gold work", surface: "web" });
+  t.trace.outbound({ chatId: 0, text: "on it", cause, project: g!.name, folder: gold });
+  const f = staged(t.ch.stage({ name: "diagram.png", bytes: new Uint8Array([9]) }, { threadId: cause.threadId }));
+  const path = join(gold, "inbox", "diagram.png");
+  expect(existsSync(path)).toBe(true);
+  await t.ch.send("see the diagram", { threadId: cause.threadId, attachments: [f.token] });
+  expect(got.at(-1)).toBe(`${gold}:${withAttachments("see the diagram", [{ name: "diagram.png", path }])}`);
+  const inThread = t.eng.ledger.messagesInThread(cause.threadId!, { limit: 10 }).filter((m) => m.role === "user");
+  expect(inThread[0]!.content).toContain(path);
+});
+
+test("a slash line with files is refused unless it is an order; the files stay staged", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "x.txt", bytes: new Uint8Array([1]) }));
+  const rows = userRows(t).length;
+  // A console command cannot carry files, and the pipeline would answer "not an order" and lose them.
+  expect(t.ch.check("/list", { attachments: [a.token] })).toEqual({ error: "command" });
+  await t.ch.send("/list", { attachments: [a.token] });
+  expect(userRows(t).length).toBe(rows);
+  // An order carries its files: the list becomes part of the task.
+  const dir = scratch();
+  expect(t.ch.check(`/open ${dir} read the spec`, { attachments: [a.token] })).toEqual({ ok: true });
+  await t.ch.send(`/open ${dir} read the spec`, { attachments: [a.token] });
+  expect(userRows(t)).toContain(withAttachments(`/open ${dir} read the spec`, [{ name: "x.txt", path: join(t.dir, "inbox", "x.txt") }]));
+});
+
+test("a thread send that asks to clarify keeps its files staged", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "x.txt", bytes: new Uint8Array([1]) }));
+  await t.ch.send("for the old thread", { threadId: 9_999, attachments: [a.token] });
+  expect(t.ch.check("again", { attachments: [a.token] })).toEqual({ ok: true });
+});
+
+test("staging with no project to receive it is refused", () => {
+  const t = traced();
+  expect(t.ch.stage({ name: "a.txt", bytes: new Uint8Array([1]) })).toEqual({ error: "no active project" });
 });

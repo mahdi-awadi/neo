@@ -120,12 +120,26 @@ pre.code.out{background:var(--panel2);color:var(--out-fg)}
 table.md th{background:color-mix(in srgb,var(--accent) 9%,var(--panel));color:var(--fg);font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;font-weight:500}
 table.md tbody tr:nth-child(even){background:var(--panel2)}
 .fe{margin:auto;color:var(--faint);font-family:var(--mono);font-size:12px;text-align:center;line-height:1.7}
-.compose{display:flex;gap:10px;padding-block:13px calc(13px + env(safe-area-inset-bottom));padding-inline:max(18px,env(safe-area-inset-left),env(safe-area-inset-right));border-top:1px solid var(--border);background:var(--panel)}
+.compose{display:flex;flex-wrap:wrap;gap:10px;padding-block:13px calc(13px + env(safe-area-inset-bottom));padding-inline:max(18px,env(safe-area-inset-left),env(safe-area-inset-right));border-top:1px solid var(--border);background:var(--panel)}
 .compose input{flex:1;min-width:0;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:var(--ink);color:var(--fg);font-family:var(--sans);font-size:14px;outline:none}
 .compose input:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
 .compose input::placeholder{color:var(--faint);font-family:var(--mono);font-size:12px}
 .compose button{padding:0 18px;border-radius:10px;border:0;background:var(--accent-fill);color:var(--on-accent);font-weight:700;font-family:var(--mono);font-size:11px;letter-spacing:.06em;cursor:pointer}
 .compose button.chip{padding:0 12px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-weight:400}
+.compose button:disabled{opacity:.45;cursor:not-allowed}
+.matt{display:block;margin-block-start:3px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.anote{flex:1 0 100%;margin:0;font-size:12.5px;line-height:1.4;color:var(--danger)}.anote[hidden]{display:none}
+.atts{flex:1 0 100%;display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x proximity;padding-block-end:2px}.atts[hidden]{display:none}
+.att{position:relative;flex:none;scroll-snap-align:start;display:flex;align-items:center;gap:8px;max-width:min(260px,78vw);padding-block:6px;padding-inline:11px 4px;border-radius:9px;border:1px solid var(--border);background:var(--panel2);overflow:hidden}
+.att .an{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;unicode-bidi:isolate;font-family:var(--mono);font-size:11.5px;color:var(--fg)}
+.att .as{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.att .ast{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--muted)}.att .ast:empty{display:none}
+.compose .att button{flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;padding:0 6px;border-radius:7px;border:0;background:transparent;color:var(--muted);font-weight:500}
+.compose .att button:hover,.compose .att button:focus-visible{color:var(--fg);background:color-mix(in srgb,var(--fg) 8%,transparent)}
+.att .abar{position:absolute;inset-inline-start:0;bottom:0;height:2px;width:var(--p,0%);background:var(--accent);transition:width .15s linear}
+.att.ok .abar{display:none}
+.att.err{border-color:color-mix(in srgb,var(--danger) 55%,var(--border))}.att.err .ast{color:var(--danger)}.att.err .abar{display:none}
+.compose .att button.aretry{color:var(--accent);font-family:var(--mono);font-size:10.5px}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:14px}
 .card h3{margin:0 0 13px;font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:500}
 .lrow{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border)}.lrow:first-of-type{border-top:0}
@@ -251,7 +265,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 .ttitle{overflow-wrap:anywhere}
 }
 @media (pointer:coarse),(max-width:768px){
-.tab,.chip,.run,.btn,.seg button,.compose button,.idel,.kbtn,#menu,.back,.tp,.copy{min-height:44px;min-width:44px}
+.tab,.chip,.run,.btn,.seg button,.compose button,.idel,.kbtn,#menu,.back,.tp,.copy{min-height:44px;min-width:44px}.compose .att button,.att button{min-height:44px;min-width:44px;height:auto}.att{padding-block:0}
 .tab{height:44px}.seg button{height:44px}
 .cbw pre.code{min-height:56px}
 .chip,.run,.idel{display:inline-flex;align-items:center;justify-content:center}
@@ -303,7 +317,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
   <div class="view on" id="vactivity">
    <div id="fbar"></div>
    <div id="feed"><div class="fe" id="ph" data-i18n="feed.placeholder"></div></div>
-   <form class="compose" id="ff"><input id="msg" autocomplete="off" data-i18n-placeholder="feed.compose"><input type="file" id="file" hidden><button class="chip" type="button" id="attach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>
+   <form class="compose" id="ff"><p class="anote" id="ffnote" role="alert" hidden></p><div class="atts" id="ffatts" data-i18n-aria="feed.attList" role="list" hidden></div><input id="msg" autocomplete="off" data-i18n-placeholder="feed.compose"><input type="file" id="file" hidden multiple><button class="chip" type="button" id="attach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>
   </div>
   <div class="view" id="vthreads">
    <div class="trail" id="trail"><div class="sec" data-i18n="threads.projects"></div><div id="tprojects"></div></div>
@@ -318,7 +332,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
    <div class="tpane">
     <button class="back" type="button" data-act="back"><span class="arr" aria-hidden="true">‹</span><span data-i18n="nav.back"></span></button>
     <div id="tbody"><div class="fe" data-i18n="threads.pick"></div></div>
-    <form class="compose" id="tform" hidden><input id="tmsg" autocomplete="off" data-i18n-placeholder="threads.reply"><button type="submit" data-i18n="feed.send"></button></form>
+    <form class="compose" id="tform" hidden><p class="anote" id="tformnote" role="alert" hidden></p><div class="atts" id="tformatts" data-i18n-aria="feed.attList" role="list" hidden></div><input id="tmsg" autocomplete="off" data-i18n-placeholder="threads.reply"><input type="file" id="tfile" hidden multiple><button class="chip" type="button" id="tattach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>
    </div>
   </div>
   <div class="view" id="vprojects">

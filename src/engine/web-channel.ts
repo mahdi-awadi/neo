@@ -5,8 +5,11 @@
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
 import { applyAttentionAction, type AttentionAction, type AttentionActionResult } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
+import { rmSync } from "node:fs";
 import { basename } from "node:path";
+import { saveInbound, withAttachments, type AttachedFile } from "./files";
 import { handleMessage, type PipelineDeps } from "./pipeline";
+import { parseOrder } from "./orders";
 import { sharedCodebaseMemoryIndexer } from "./codebase-memory";
 import {
   handleCommand,
@@ -78,10 +81,31 @@ export interface ThreadView {
   toolActions: number;
 }
 
+/** A staged attachment as the composer sees it: the token to send, the saved name and its size. */
+export interface StagedFile {
+  token: string;
+  name: string;
+  size: number;
+}
+
+export type SendCheck = { ok: true } | { error: "expired" | "command" };
+
+/** A staged attachment nobody sent is forgotten after this long (its file stays in the inbox). */
+export const STAGE_TTL_MS = 6 * 60 * 60 * 1000;
+
 export interface WebChannel {
   /** Operator sent a message — drive the pipeline; streamed output arrives as events. `threadId`:
    *  the composer was opened inside that thread, so the message joins it (spec §4.1 rule 2). */
-  send(text: string, opts?: { threadId?: number }): Promise<void>;
+  send(text: string, opts?: { threadId?: number; attachments?: string[] }): Promise<void>;
+  /** Would `send` take this message? `expired`: a staged file is unknown or gone (reload, TTL).
+   *  `command`: files with a slash line that is not an order. Synchronous, so /msg can answer at once. */
+  check(text: string, opts?: { attachments?: string[] }): SendCheck;
+  /** Stage a file attached in the composer (ADR-0026): save it to an inbox (the thread's project when
+   *  `threadId` names one with a folder, else the active project) and return a one-shot token that
+   *  `send` turns into the message's file list. Nothing is sent. */
+  stage(file: { name: string; bytes: Uint8Array }, opts?: { threadId?: number }): StagedFile | { error: string };
+  /** The operator took a staged file out of the composer: forget it and delete it. False: unknown token. */
+  discard(token: string): boolean;
   /** Subscribe an SSE listener. The replay window is replayed first, then events go live; each
    *  event carries an increasing id. With `after` (a resume point), only later events replay. A
    *  pending escalation older than the window is replayed too (ADR-0014). */
@@ -200,6 +224,33 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     return token;
   }
 
+  // Staged attachments (ADR-0026): token -> the saved file, until a send takes it or it expires. The
+  // browser only ever holds the token, never a server path.
+  const stagedFiles = new Map<string, AttachedFile & { at: number }>();
+  const dropExpired = (now: number): void => {
+    for (const [token, f] of stagedFiles) if (now - f.at > STAGE_TTL_MS) stagedFiles.delete(token);
+  };
+  /** The staged files named by `tokens`, in the order given; undefined when any is unknown or expired
+   *  (a reload or the TTL forgot it). Read-only: `send` deletes them once the message is routed. */
+  const stagedFor = (tokens: string[] = []): AttachedFile[] | undefined => {
+    dropExpired(Date.now());
+    const out: AttachedFile[] = [];
+    for (const token of tokens) {
+      const f = stagedFiles.get(token);
+      if (!f) return undefined;
+      out.push({ name: f.name, path: f.path });
+    }
+    return out;
+  };
+  const check = (text: string, sendOpts?: { attachments?: string[] }): SendCheck => {
+    const attached = stagedFor(sendOpts?.attachments);
+    if (!attached) return { error: "expired" };
+    // A console command cannot carry files, and any other slash line reaches the pipeline as an order:
+    // only a real order (/open) may take them.
+    if (attached.length && text.trim().startsWith("/") && "error" in parseOrder(text, "neo", opts.chatId)) return { error: "command" };
+    return { ok: true };
+  };
+
   const deps: PipelineDeps = {
     ...opts.engine,
     usage: opts.usage,
@@ -236,18 +287,26 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   };
 
   return {
-    send: async (text, sendOpts) => {
+    check,
+    send: async (typed, sendOpts) => {
+      // Staged files travel with the words they belong to (ADR-0026): one message, one row, one prompt.
+      // A message with files is never a console command — the files must reach a worker. A send that
+      // fails `check` does nothing: /msg already told the composer, which keeps its text and chips.
+      if ("error" in check(typed, sendOpts)) return;
+      const attached = stagedFor(sendOpts?.attachments) ?? [];
+      const text = withAttachments(typed, attached);
+      const commandable = attached.length === 0;
       // Bare /loop → a loops event the UI renders as run buttons (vs Telegram's text list).
-      if (text.trim() === "/loop") {
+      if (commandable && text.trim() === "/loop") {
         emit({ type: "loops", items: listLoops(opts.engine.ledger) });
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace, plans: loopPlans })) return;
+      if (commandable && handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace, plans: loopPlans })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
-      const command = handleCommand(text, opts.chatId, {
+      const command = !commandable ? null : handleCommand(text, opts.chatId, {
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,
@@ -293,17 +352,38 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
           { chatId: opts.chatId, threadId: sendOpts.threadId, text },
         );
         if ("clarify" in routing) {
-          message(routing.clarify);
+          message(routing.clarify); // the files stay staged for the resend
           return;
         }
         deliver = routing.deliver;
       }
+      for (const token of sendOpts?.attachments ?? []) stagedFiles.delete(token); // routed: one-shot
       opts.bus?.mirror("web", { kind: "echo", text, ...knownIds({ msgId: cause?.msgId, threadId: cause?.threadId }) });
       await handleMessage(deliver, opts.chatId, deps, "neo", cause);
       // The thread's one-shot focus took the chat's only focus slot: once it is used, the pin returns.
       if (threaded && pin?.mode === "pinned" && !registry.getFocus(opts.chatId) && registry.get(pin.session.id)) {
         registry.setFocus(opts.chatId, pin.session.id, "pinned");
       }
+    },
+    stage(file, stageOpts) {
+      const now = Date.now();
+      dropExpired(now);
+      // Inside a thread the file belongs to that thread's project; otherwise the active project, as
+      // Telegram's attachments do.
+      const threadFolder = stageOpts?.threadId === undefined ? undefined : opts.engine.ledger.threadById(stageOpts.threadId)?.folder;
+      const folder = threadFolder || (opts.engine.registry.findByChat(opts.chatId) ?? opts.engine.registry.getDefault())?.order.folder;
+      if (!folder) return { error: "no active project" };
+      const path = saveInbound(folder, file.name || "file", file.bytes);
+      const token = crypto.randomUUID();
+      stagedFiles.set(token, { name: basename(path), path, at: now });
+      return { token, name: basename(path), size: file.bytes.byteLength };
+    },
+    discard(token) {
+      const f = stagedFiles.get(token);
+      if (!f) return false;
+      stagedFiles.delete(token);
+      rmSync(f.path, { force: true });
+      return true;
     },
     subscribe(listener, sub) {
       const after = sub?.after ?? 0;

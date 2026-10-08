@@ -1,5 +1,5 @@
 // Paste-to-attach for the console composer: the image items on a paste's clipboard become files named
-// pasted-<ms>[-n].<ext>, sent through the same /upload as the 📎 picker. Pure, so it is unit-tested.
+// pasted-<ms>[-n].<ext>, staged through the same /upload as the 📎 picker (ADR-0026). Pure, so it is unit-tested.
 
 /** The slice of a DataTransferItem this reads (a real clipboard item satisfies it). */
 export interface ClipItem {

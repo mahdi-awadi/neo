@@ -7,7 +7,8 @@ import { DEFAULT_ATTENTION_CFG } from "../engine/producers/engine";
 import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ApiClientOptions } from "grammy";
 import type { MessageEntity, UserFromGetMe } from "grammy/types";
-import { saveInbound } from "../engine/files";
+import { basename } from "node:path";
+import { saveInbound, withAttachments } from "../engine/files";
 import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "../engine/ledger";
 import type { Registry } from "../engine/registry";
@@ -586,7 +587,8 @@ export function createTelegramBot(
     const file = await ctx.getFile();
     const bytes = await downloadTelegramFile(cfg.telegramToken, file.file_path!);
     const path = saveInbound(target.order.folder, name, bytes);
-    const text = `📎 operator attached \`${name}\` at \`${path}\`\n${routing.deliver}`;
+    // The caption and its file are one message, in the one format both surfaces use (ADR-0026).
+    const text = withAttachments(routing.deliver, [{ name: basename(path), path }]);
     await handleMessage(text, chatId, pipelineDeps(), "neo", inbound(chatId, text, ctx.message));
   }
 

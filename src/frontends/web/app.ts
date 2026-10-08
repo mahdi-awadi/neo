@@ -10,6 +10,7 @@ import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
 import { CONFIRM_WINDOW_MS, armedFor, confirmTap } from "./confirm";
 import { type DetailView, backAction, enterAction, popDetail, staleOnLoad } from "./nav";
 import { createCodeEnhancer } from "./code-blocks";
+import { type Attachment, type SendBody, createAttachments, formatSize } from "./attachments";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
 const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
@@ -713,26 +714,174 @@ function feedMsg(html: string, kind: string, project: string | null | undefined,
   pushFeed(d, kind, project);
   return d;
 }
-function say(text: string): void {
-  const v = (text || "").trim();
-  if (!v) return;
-  feedMsg("› " + esc(v), "me", filterProject);
-  void post("/msg", { text: v });
+// ── Composer attachments (ADR-0026) ─────────────────────────────────────────────────────────────
+// Attaching uploads at once and stages a chip; nothing is sent. Send posts the text and the chips'
+// tokens as ONE message, so the worker gets the files in the same turn as the words. The 📎 picker and
+// a pasted image share this one path, in the main composer and inside a thread.
+interface Composer {
+  /** Stage files (picked or pasted): a chip each, uploading now. */
+  add(files: Iterable<File>): void;
+  /** Post the text and the staged files as ONE /msg. Resolves with what was sent (the chips clear), or
+   *  null when Send is not allowed or the server refused it (the chips stay and a note says why). */
+  send(text: string): Promise<{ body: SendBody; names: string[] } | null>;
+  /** Drop every chip and discard its staged file (the thread composer moved to another thread). */
+  reset(): void;
 }
-/** The one upload path: the 📎 picker and a pasted image both land in the project's inbox/. */
-function sendFile(f: File): void {
-  const fd = new FormData();
-  fd.append("file", f);
-  void fetch("/upload", { method: "POST", body: fd }).then((r) => {
-    if (!r.ok) alert(tx("feed.uploadFailed", { status: r.status }));
+/** Why /msg or /upload refused, as the composer's note says it. */
+const COMPOSE_NOTE: Record<string, string> = { expired: "feed.attExpired", command: "feed.attCommand", "no active project": "feed.attNoProject" };
+function attachComposer(o: { form: string; box: string; note: string; input: string; file: string; attach: string; threadId: () => number | undefined }): Composer {
+  const s = createAttachments();
+  const noteEl = $(o.note);
+  let note = "";
+  let busy = false; // a /msg is in flight
+  const files = new Map<number, File>();
+  const uploads = new Map<number, XMLHttpRequest>();
+  const box = $(o.box);
+  const sendBtn = ($(o.form) as HTMLFormElement).querySelector<HTMLButtonElement>("button[type=submit]")!;
+  const discard = (token: string) => void post("/upload/discard", { token }).catch(() => {});
+  const status = (a: Attachment) =>
+    a.state === "uploading" ? t("feed.attUploading", { pct: a.progress }) : a.state === "failed" ? t("feed.attFailed") : "";
+  const chip = (a: Attachment) =>
+    `<div class="att ${a.state === "ready" ? "ok" : a.state === "failed" ? "err" : "up"}" role="listitem" data-id="${a.id}" style="--p:${a.progress}%">` +
+    `<span class="an" title="${esc(a.name)}">${esc(a.name)}</span><span class="as">${iso(formatSize(a.size, LOCALE))}</span>` +
+    `<span class="ast" role="status">${status(a)}</span>` +
+    (a.state === "failed" ? `<button type="button" class="aretry" data-act="retry">${t("feed.attRetry")}</button>` : "") +
+    `<button type="button" class="ax" data-act="remove" aria-label="${t("feed.attRemove", { name: a.name })}">${KILL_ICON}</button><i class="abar"></i></div>`;
+  const render = () => {
+    const all = s.list();
+    box.hidden = all.length === 0;
+    box.innerHTML = all.map(chip).join("");
+    sendBtn.disabled = busy || all.some((a) => a.state !== "ready"); // Send waits for every upload
+    noteEl.hidden = note === "";
+    noteEl.textContent = note;
+  };
+  // Progress repaints only the bar and the status line, so a chip's buttons keep their focus.
+  const paint = (id: number) => {
+    const a = s.get(id);
+    const el = box.querySelector<HTMLElement>(`.att[data-id="${id}"]`);
+    if (!a || !el) return;
+    el.style.setProperty("--p", `${a.progress}%`);
+    el.querySelector(".ast")!.innerHTML = status(a);
+  };
+  const upload = (id: number) => {
+    const f = files.get(id);
+    if (!f) return;
+    const fd = new FormData();
+    fd.append("file", f);
+    const th = o.threadId();
+    if (th !== undefined) fd.append("threadId", String(th));
+    const x = new XMLHttpRequest();
+    uploads.set(id, x);
+    x.open("POST", "/upload");
+    x.responseType = "json";
+    x.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      s.progress(id, e.loaded, e.total);
+      paint(id);
+    };
+    x.onload = () => {
+      uploads.delete(id);
+      const token = x.status === 200 && typeof x.response?.token === "string" ? (x.response.token as string) : undefined;
+      if (!s.get(id)) {
+        if (token) discard(token); // the chip was removed while its upload finished
+        return;
+      }
+      if (token) s.ready(id, token);
+      else {
+        s.fail(id);
+        const why = COMPOSE_NOTE[String(x.response?.error)];
+        if (why) note = tx(why);
+      }
+      render();
+    };
+    x.onerror = () => {
+      uploads.delete(id);
+      s.fail(id);
+      render();
+    };
+    x.send(fd);
+  };
+  const drop = (id: number) => {
+    uploads.get(id)?.abort();
+    uploads.delete(id);
+    const a = s.remove(id);
+    if (a?.token) discard(a.token);
+    files.delete(id);
+  };
+  box.addEventListener("click", (ev) => {
+    const btn = (ev.target as Element).closest<HTMLButtonElement>("button[data-act]");
+    const id = Number(btn?.closest<HTMLElement>(".att")?.dataset.id);
+    if (!btn || !id) return;
+    note = "";
+    if (btn.dataset.act === "retry") {
+      s.retry(id);
+      render();
+      upload(id);
+      return;
+    }
+    drop(id);
+    render();
+    ($(o.input) as HTMLInputElement).focus();
   });
+  const add = (list: Iterable<File>) => {
+    note = "";
+    for (const f of list) {
+      const id = s.add(f.name, f.size);
+      files.set(id, f);
+      upload(id);
+    }
+    render();
+  };
+  const picker = $(o.file) as HTMLInputElement;
+  $(o.attach).onclick = () => picker.click();
+  picker.onchange = () => {
+    if (picker.files) add(picker.files);
+    picker.value = "";
+  };
+  $(o.input).addEventListener("paste", (e) => {
+    // Pasted images stage like picked files; the default paste is NOT cancelled, so text still lands.
+    add(pastedImages((e as ClipboardEvent).clipboardData?.items, Date.now()));
+  });
+  return {
+    add,
+    async send(text) {
+      if (busy || !s.canSend(text)) return null;
+      const out = { body: s.body(text, o.threadId()), names: s.list().map((a) => a.name) };
+      busy = true;
+      note = "";
+      render();
+      let error: string | undefined;
+      try {
+        const r = await post("/msg", out.body);
+        if (!r.ok) error = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed";
+      } catch {
+        error = "failed";
+      }
+      busy = false;
+      if (error) {
+        if (error === "expired") for (const a of s.list()) s.fail(a.id); // Retry uploads the kept file again
+        note = tx(COMPOSE_NOTE[error] ?? "feed.attNotSent");
+        render();
+        return null;
+      }
+      s.clear();
+      files.clear();
+      render();
+      return out;
+    },
+    reset() {
+      for (const a of s.list()) drop(a.id);
+      note = "";
+      render();
+    },
+  };
 }
-function uploadFile(): void {
-  const i = $("file") as HTMLInputElement;
-  if (!i.files || !i.files.length) return;
-  sendFile(i.files[0]!);
-  i.value = "";
+/** The operator's own line in the feed or a thread: the text, then the names of the files it carried. */
+function ownLine(text: string, names: string[]): string {
+  return esc(text) + (names.length ? `<span class="matt">📎 ${names.map((n) => `<bdi>${esc(n)}</bdi>`).join(", ")}</span>` : "");
 }
+const mainComposer = attachComposer({ form: "ff", box: "ffatts", note: "ffnote", input: "msg", file: "file", attach: "attach", threadId: () => undefined });
+const threadComposer = attachComposer({ form: "tform", box: "tformatts", note: "tformnote", input: "tmsg", file: "tfile", attach: "tattach", threadId: () => TH.open });
 
 // ── Threads (ADR-0017): project rail · thread list · thread pane, paged from the ledger ─────────
 const SINCE_MS: Record<string, number> = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 };
@@ -853,6 +1002,8 @@ function loadHits(q: string, seq: number): void {
     .catch(() => (box.innerHTML = ""));
 }
 function openThread(id: number): void {
+  // Files staged for another thread went to that thread's project: they never follow to this one.
+  if (TH.open !== id) threadComposer.reset();
   TH.open = id;
   document.querySelectorAll(".trow").forEach((el) => el.classList.toggle("on", (el as HTMLElement).dataset.id === String(id)));
   void fetch(`/api/threads/${id}?limit=50`, { cache: "no-store" })
@@ -1210,8 +1361,6 @@ window.addEventListener("popstate", () => {
 if (staleOnLoad(history.state)) history.replaceState(null, "");
 setDrawer(false, false);
 fitViewport();
-$("attach").onclick = () => $("file").click();
-$("file").onchange = uploadFile;
 $("lang").onclick = () => {
   // The other language, remembered in a cookie the server reads to render the page's lang/dir.
   document.cookie = `neo_lang=${root.lang === "ar" ? "en" : "ar"}; path=/; max-age=31536000; samesite=lax`;
@@ -1270,25 +1419,27 @@ $("ioshint-x").onclick = () => {
   renderInstall();
 };
 renderInstall();
-// Paste-to-attach: images go through sendFile; the default paste is NOT cancelled, so text still lands.
-$("msg").addEventListener("paste", (e) => {
-  pastedImages((e as ClipboardEvent).clipboardData?.items, Date.now()).forEach(sendFile);
-});
 ($("ff") as HTMLFormElement).onsubmit = (ev) => {
   ev.preventDefault();
   const m = $("msg") as HTMLInputElement;
-  say(m.value);
-  m.value = "";
+  const typed = m.value;
+  void mainComposer.send(typed).then((sent) => {
+    if (!sent) return; // refused: the text and the chips stay
+    feedMsg("› " + ownLine(sent.body.text, sent.names), "me", filterProject);
+    if (m.value === typed) m.value = "";
+  });
 };
 ($("tform") as HTMLFormElement).onsubmit = (ev) => {
   ev.preventDefault();
   const m = $("tmsg") as HTMLInputElement;
-  const text = m.value.trim();
-  if (!text || TH.open === undefined) return;
+  if (TH.open === undefined) return;
   // The composer inside a thread names it, so the message joins that thread (spec §4.1 rule 2).
-  void post("/msg", { text, threadId: TH.open });
-  appendThreadLine({ role: "user", content: text, at: Date.now() });
-  m.value = "";
+  const typed = m.value;
+  void threadComposer.send(typed).then((sent) => {
+    if (!sent) return; // refused: the text and the chips stay
+    appendThreadLine({ role: "user", content: sent.body.text, at: Date.now() }, ownLine(sent.body.text, sent.names));
+    if (m.value === typed) m.value = "";
+  });
 };
 
 const es = new EventSource("/stream");

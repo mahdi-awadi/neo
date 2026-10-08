@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { reconcile } from "../src/engine/attention";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { withAttachments } from "../src/engine/files";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, createHmac } from "node:crypto";
@@ -348,4 +349,77 @@ test("GET /api/projects lists the known projects (bounded); GET /api/projects/:n
   expect((v.git as { error?: string }).error).toBeDefined(); // not a repo: named, never a 500
   expect((await get("/api/projects/ghost", cookie)).status).toBe(404);
   expect((await get("/api/projects/%2Fetc", cookie)).status).toBe(404);
+});
+
+/** /msg answers before the pipeline finishes: wait until the /open made its session, then pin it as
+ *  the console's project (WEB_CHAT_ID = 0), so attachments have an inbox. */
+async function opened(a: { registry: ReturnType<typeof createRegistry> }): Promise<void> {
+  for (let i = 0; i < 100 && !a.registry.list().length; i++) await Bun.sleep(5);
+  a.registry.setFocus(0, a.registry.list()[0]!.id, "pinned");
+}
+
+// ── staged attachments (ADR-0026): /upload stages, /msg sends the text and the files together ──
+test("POST /upload stages the file and sends nothing; /msg with its token is ONE message with the path", async () => {
+  const dir = scratch();
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const post = (path: string, body: unknown) =>
+    a.instance.fetch(new Request(`http://neo.test${path}`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  await post("/msg", { text: `/open ${dir} do it` });
+  await opened(a);
+  const rowsBefore = a.ledger.conversation(0, 50).length;
+  const fd = new FormData();
+  fd.append("file", new File([new Uint8Array([1, 2, 3, 4])], "shot.png", { type: "image/png" }));
+  const up = await a.instance.fetch(new Request("http://neo.test/upload", { method: "POST", headers: { cookie }, body: fd }));
+  expect(up.status).toBe(200);
+  const staged = (await up.json()) as { ok: boolean; token: string; name: string; size: number };
+  expect(staged).toMatchObject({ ok: true, name: "shot.png", size: 4 });
+  expect(typeof staged.token).toBe("string");
+  expect(JSON.stringify(staged)).not.toContain(dir); // the browser never sees a server path
+  expect(existsSync(join(dir, "inbox", "shot.png"))).toBe(true);
+  expect(a.ledger.conversation(0, 50).length).toBe(rowsBefore); // staging sent nothing
+
+  await post("/msg", { text: "look at this", attachments: [staged.token] });
+  const users = a.ledger.conversation(0, 50).filter((m) => m.role === "user").map((m) => m.content);
+  expect(users.at(-1)).toBe(withAttachments("look at this", [{ name: "shot.png", path: join(dir, "inbox", "shot.png") }]));
+});
+
+test("POST /msg with files and no text still sends; /upload/discard deletes a staged file", async () => {
+  const dir = scratch();
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const post = (path: string, body: unknown) =>
+    a.instance.fetch(new Request(`http://neo.test${path}`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  await post("/msg", { text: `/open ${dir} do it` });
+  await opened(a);
+  const stage = async (name: string) => {
+    const fd = new FormData();
+    fd.append("file", new File([new Uint8Array([1])], name));
+    return ((await (await a.instance.fetch(new Request("http://neo.test/upload", { method: "POST", headers: { cookie }, body: fd }))).json()) as { token: string }).token;
+  };
+  const keep = await stage("keep.txt");
+  const drop = await stage("drop.txt");
+  expect(await (await post("/upload/discard", { token: drop })).json()).toEqual({ ok: true });
+  expect(existsSync(join(dir, "inbox", "drop.txt"))).toBe(false);
+  expect(await (await post("/upload/discard", { token: drop })).json()).toEqual({ ok: false });
+  // A send naming a gone file is refused whole (409), so the composer keeps its text and chips.
+  const rows = a.ledger.conversation(0, 50).length;
+  const refused = await post("/msg", { text: "   ", attachments: [keep, drop] });
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toEqual({ ok: false, error: "expired" });
+  expect(a.ledger.conversation(0, 50).length).toBe(rows);
+  const command = await post("/msg", { text: "/list", attachments: [keep] });
+  expect(await command.json()).toEqual({ ok: false, error: "command" });
+  expect((await post("/msg", { text: "   ", attachments: [keep, 7] })).status).toBe(200);
+  const users = a.ledger.conversation(0, 50).filter((m) => m.role === "user").map((m) => m.content);
+  expect(users.at(-1)).toBe(withAttachments("", [{ name: "keep.txt", path: join(dir, "inbox", "keep.txt") }]));
+});
+
+test("POST /upload with no active project is refused (409)", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const fd = new FormData();
+  fd.append("file", new File([new Uint8Array([1])], "a.txt"));
+  const res = await a.instance.fetch(new Request("http://neo.test/upload", { method: "POST", headers: { cookie }, body: fd }));
+  expect(res.status).toBe(409);
 });
