@@ -230,7 +230,7 @@ export function projectSummary(d: Omit<ProjectViewDeps, "read">, name: string, n
     name,
     folder,
     ...(c.session ? sessionNow(d.registry, c.session, now, name) : {}),
-    queue: c.queue.length,
+    queue: c.queue.filter((q) => q.status === "running" || q.status === "queued").length,
     attention,
     health: c.health,
   };
@@ -518,8 +518,10 @@ export function renderProject(v: ProjectView, now: number, o: { maxLines: number
   L.push(v.now ? `now: ${v.now.line}${th ? ` — ${todoTitle(th.title)} · ${th.ref}` : ""}` : "now: no session open");
 
   const running = v.queue.filter((q) => q.status === "running");
-  const queued = v.queue.length - running.length;
-  L.push(v.queue.length ? `queue: ${[...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : [])].join(", ")}` : "queue: empty");
+  const count = (st: string) => v.queue.filter((q) => q.status === st).length;
+  const [queued, retry, failed] = [count("queued"), count("retry"), count("failed")];
+  const parts = [...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : []), ...(retry ? [`${retry} to retry`] : []), ...(failed ? [`${failed} failed (/todo retry <id>)`] : [])];
+  L.push(parts.length ? `queue: ${parts.join(", ")}` : "queue: empty");
 
   const g = v.git;
   const head = [g.branch, g.lastCommit ? todoTitle(g.lastCommit) : undefined].filter(Boolean).join(" ");

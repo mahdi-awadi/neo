@@ -54,6 +54,7 @@ function cfg(): NeoConfig {
     dispatchProgressMs: 600_000,
     dispatchRecoverWindowMs: 86_400_000,
     todoOnFailure: "continue",
+    todoRetryBackoffMs: [],
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -422,4 +423,16 @@ test("POST /upload with no active project is refused (409)", async () => {
   fd.append("file", new File([new Uint8Array([1])], "a.txt"));
   const res = await a.instance.fetch(new Request("http://neo.test/upload", { method: "POST", headers: { cookie }, body: fd }));
   expect(res.status).toBe(409);
+});
+
+// ADR-0027: the Queue tab's Retry re-runs a failed todo through the shared /todo command.
+test("POST /api/todo accepts retry; an unknown action is a 400", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const post = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/todo", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const r = await post({ action: "retry", id: 999 });
+  expect(r.status).toBe(200);
+  expect(((await r.json()) as { text: string }).text).not.toContain("required");
+  expect((await post({ action: "explode", id: 1 })).status).toBe(400);
 });

@@ -60,12 +60,16 @@ export interface DashState {
   loops: LoopInfo[];
   recent: Array<{ folder: string; task: string; status: string }>;
   repos: string[];
-  /** Running + queued todos across projects (ADR-0008): running first, then each queue in order.
-   *  `position` is the 1-based queue position, 0 for a running todo. */
+  /** Running + queued todos across projects (ADR-0008): running first, then each queue in order;
+   *  then kept work (ADR-0027): waiting retries and the newest failed todos. `position` is the 1-based
+   *  queue position, 0 for any other status. */
   todos: DashTodo[];
   /** Newest context resets and resumes across projects (ADR-0021). */
   contextEvents: DashContextEvent[];
 }
+
+/** Failed todos the console shows (newest first). All of them stay in the ledger (ADR-0027). */
+const FAILED_SHOWN = 20;
 
 /** Context events shown in the console's timeline. */
 const CONTEXT_EVENTS_SHOWN = 20;
@@ -73,8 +77,11 @@ const CONTEXT_EVENTS_SHOWN = 20;
 export interface DashTodo {
   id: number;
   project: string;
-  status: "running" | "queued";
+  status: "running" | "queued" | "retry" | "failed";
   position: number;
+  /** Automatic retries so far, and when a `retry` todo re-runs (ADR-0027). */
+  attempts?: number;
+  retryAt?: number;
   title: string;
   createdAt: number;
   startedAt?: number;
@@ -87,7 +94,13 @@ export interface DashTodo {
  *  and the project dashboard both read it. */
 export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
   const nextPos = new Map<string, number>();
-  return ledger.listTodos({ ...(folder !== undefined ? { folder } : {}), statuses: ["running", "queued"] }).map((t) => {
+  const where = folder !== undefined ? { folder } : {};
+  const rows = [
+    ...ledger.listTodos({ ...where, statuses: ["running", "queued"] }),
+    ...ledger.listTodos({ ...where, statuses: ["retry"] }),
+    ...ledger.listTodos({ ...where, statuses: ["failed"], limit: FAILED_SHOWN }),
+  ];
+  return rows.map((t) => {
     const position = t.status === "queued" ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
     if (t.status === "queued") nextPos.set(t.folder, position);
     return {
@@ -99,6 +112,7 @@ export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
       createdAt: t.createdAt,
       startedAt: t.startedAt,
       paused: ledger.todoPaused(t.folder)?.reason,
+      ...(t.status === "retry" || t.status === "failed" ? { attempts: t.attempts, ...(t.retryAt !== undefined ? { retryAt: t.retryAt } : {}) } : {}),
     };
   });
 }

@@ -28,6 +28,7 @@ import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
 import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } from "./engine/dispatch-report";
+import { nextRetry } from "./engine/todo-retry";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
@@ -73,7 +74,16 @@ async function main(): Promise<void> {
   // company with where it stopped. Runs FIRST — before any frontend or the scheduler can start a
   // new dispatch that would look unfinished. Queued in the dispatcher inbox, NOT delivered now: the
   // company is not woken at boot; the operator's next message to it carries them (ADR-0007).
-  const interrupted = recoverInterruptedDispatches(ledger, { now: Date.now(), windowMs: cfg.dispatchRecoverWindowMs });
+  const bootAt = Date.now();
+  // A todo run among them is kept and re-run by the queue (todo.recover below, ADR-0027): its report
+  // says so instead of asking the company to resume it — or the same work would run twice.
+  const todoNote = (orderId: string): string | undefined => {
+    const t = ledger.todoByOrder(orderId);
+    return t?.status === "running" && nextRetry(t.attempts, cfg.todoRetryBackoffMs, bootAt)
+      ? `[todo] #${t.id} is kept and re-runs by itself after a backoff (it continues from what is done) — do NOT dispatch it again.`
+      : undefined;
+  };
+  const interrupted = recoverInterruptedDispatches(ledger, { now: bootAt, windowMs: cfg.dispatchRecoverWindowMs, todoNote });
   console.log(`  dispatch  -> ${interrupted} interrupted dispatch(es) queued for the company; no wall-clock limit, digest every ${cfg.dispatchProgressMs / 60_000}m`);
   const admin = openAdminStore("data/admin.db", { busyTimeoutMs });
   const registry = createRegistry();
@@ -82,10 +92,10 @@ async function main(): Promise<void> {
   // files its lines in the same threads.
   const trace = createTrace({ ledger, registry, companyFolder: cfg.companyFolder });
   // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
-  // above: fail it with its stop point (failure policy applies). Queued todos stay queued; the
+  // above: keep it as `retry` with its stop point, or fail it once its retries are used up (ADR-0027). Queued todos stay queued; the
   // heartbeat tick releases them in order once the operator channel registers its launcher.
-  const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure });
-  const cutTodos = todo.recover({ now: Date.now() });
+  const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs });
+  const cutTodos = todo.recover({ now: bootAt });
   const engineProducerDeps: EngineProducerDeps = {
     ledger,
     registry,
@@ -154,7 +164,7 @@ async function main(): Promise<void> {
   };
   console.log(`  boot      -> ${thisBoot ? `${thisBoot.headSha.slice(0, 7)} on ${thisBoot.branch}` : "not recorded (git unreadable)"} (/gated)`);
   console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
-  console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
+  console.log(`  todo      -> ${cutTodos} cut-short todo(s) kept to retry (or failed) with their stop point; on failure: ${cfg.todoOnFailure}`);
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
   // operator conversation mirrors across both surfaces (engine/operator-bus.ts).
   const bus = createOperatorBus();

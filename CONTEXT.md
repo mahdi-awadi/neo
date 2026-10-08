@@ -136,9 +136,26 @@ _Avoid_: checkpoint
 
 **Todo**:
 One dispatched brief the engine tracks from hand-over to end: its project, brief, who it came from,
-and its status — `queued`, `running`, then `done`, `failed` or `cancelled`. Every brief the company
-dispatches is a todo, whether it starts at once or waits. Known by its number (`#12`).
+and its status — `queued`, `running`, then `done`, `failed` or `cancelled`, or `retry` while it
+waits to re-run after a transient end. Every brief the company dispatches is a todo, whether it
+starts at once or waits. Known by its number (`#12`). A `failed` todo is never removed (ADR-0027).
 _Avoid_: task, job, ticket, item
+
+**Transient end**:
+A todo run that stopped for a reason outside the task, which a later run can get past: a stall
+abort, an engine reload or restart, a context checkpoint that could not complete, a worker that
+failed to start, or an API/account error (rate limit, overload, auth, subscription access). Code
+decides it from facts that dispatch reports, never from the result text. Every other bad end is a
+**task failure**: the worker reported that it failed, or the operator stopped it with `/kill`.
+_Avoid_: soft failure, flaky
+
+**Retry**:
+(1) The status of a todo after a transient end. It waits out a backoff (`todoRetryBackoffMs`), then
+goes back to the head of its project's queue. The run gets a preamble that tells it to continue from
+what is already done. After the last step of the ladder, the todo is parked as `failed`. (2) The
+operator's or the company's action that puts a `failed` todo back in the queue (or runs a `retry`
+todo now). It re-runs the same row and never creates a second todo.
+_Avoid_: resume brief, re-dispatch, requeue (as a noun)
 
 **Todo queue**:
 A project's ordered list of todos waiting to run. Durable: it survives a reload. A project runs one
@@ -160,9 +177,10 @@ interactive reserve.
 _Avoid_: dequeue, pop, next
 
 **Failure policy**:
-What a project's todo queue does when a todo ends badly (failed, stall-aborted, killed, cut short by
-a reload or restart): `continue` with the next todo and report the failure, or `pause` the queue
-until someone resumes it. Never a silent start of the next todo.
+What a project's todo queue does when a todo ends `failed` (a task failure, or a transient end
+whose retries are used up): `continue` with the next todo and report the failure, or `pause` the
+queue until someone resumes it. A todo that waits as `retry` has not ended, so the policy does not
+apply to it. Never a silent start of the next todo.
 _Avoid_: retry policy, on-error
 
 **Paused queue**:

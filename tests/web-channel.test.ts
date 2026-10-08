@@ -46,6 +46,7 @@ function cfg(): NeoConfig {
     dispatchProgressMs: 600_000,
     dispatchRecoverWindowMs: 86_400_000,
     todoOnFailure: "continue",
+    todoRetryBackoffMs: [],
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,

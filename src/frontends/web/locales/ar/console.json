@@ -135,7 +135,10 @@
     "running": "▶ قيد التشغيل منذ {{age}}",
     "moveUp": "تقديم",
     "cancel": "إلغاء",
-    "confirmCancel": "إلغاء #{{id}}؟"
+    "confirmCancel": "إلغاء #{{id}}؟",
+    "retry": "إعادة المحاولة",
+    "retryWait": "↻ إعادة {{n}} · بعد {{age}}",
+    "failed": "✗ فاشلة"
   },
   "recent": {
     "title": "الطلبات الأخيرة",
@@ -230,6 +233,7 @@
     "todoStatus": {
       "queued": "في الطابور",
       "running": "قيد التشغيل",
+      "retry": "بانتظار الإعادة",
       "done": "منتهية",
       "failed": "فاشلة",
       "cancelled": "ملغاة"

@@ -467,7 +467,18 @@ export interface Ledger {
   /** Todos filtered by folder and/or status. Queued ones come in queue order; others newest first.
    *  `limit` caps the result. */
   listTodos(opts: { folder?: string; statuses?: TodoStatus[]; limit?: number }): TodoRow[];
-  updateTodo(id: number, patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt">>): void;
+  /** `retryAt: null` clears it. */
+  updateTodo(
+    id: number,
+    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure">> & { retryAt?: number | null },
+  ): void;
+  /** `retry` todos whose `retryAt` has come, oldest due first. */
+  dueTodoRetries(now: number): TodoRow[];
+  /** Todo #byId of `folder` finished in `threadId`: the todos there that had ALREADY STOPPED when #byId
+   *  was created — `failed`, `retry`, or a due retry already back in the queue — become `done`, their
+   *  result naming #byId and keeping the old one. #byId was dispatched after they stopped, so it was
+   *  their redo; a sibling queued alongside them is not touched (ADR-0027 §6). Returns the closed ids. */
+  closeSupersededTodos(threadId: number, folder: string, byId: number, at: number): number[];
   /** Move a queued todo to a 1-based position among its project's queued todos (clamped). */
   moveTodo(id: number, position: number): void;
   /** Folders that have at least one queued todo, oldest queue head first. */
@@ -479,7 +490,8 @@ export interface Ledger {
   listTodoPaused(): Array<{ folder: string; reason: string; at: number }>;
 }
 
-export type TodoStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+/** `retry`: kept after a transient end, waiting until `retryAt` to go back to the queue (ADR-0027). */
+export type TodoStatus = "queued" | "running" | "retry" | "done" | "failed" | "cancelled";
 
 /** A brief handed to the todo queue. `createdBy` follows the work class: an operator turn → operator. */
 export interface NewTodo {
@@ -504,9 +516,16 @@ export interface TodoRow extends NewTodo {
   result?: string;
   startedAt?: number;
   endedAt?: number;
+  /** Automatic retries so far (ADR-0027); 0 for a first run or after the operator's retry. */
+  attempts: number;
+  /** When a `retry` todo goes back to the queue. */
+  retryAt?: number;
+  /** The last bad end's reason (`stall`, `restart`, `api:<kind>`, …), when it had one. */
+  failure?: string;
 }
 
-/** Finished (done/failed/cancelled) todos kept as history; queued and running ones are never pruned. */
+/** Done and cancelled todos kept as history. Queued, running, retry and failed ones are never pruned:
+ *  a failed todo is kept until someone retries it (ADR-0027). */
 export const TODOS_KEEP = 1_000;
 
 /** One queued final dispatch result for the dispatcher (the company). */
@@ -641,6 +660,13 @@ export function openLedger(
     return Number(r.lastInsertRowid);
   };
 
+  /** Keep the newest TODOS_KEEP done/cancelled todos; failed ones are never pruned (ADR-0027). */
+  const pruneTodos = (): void => {
+    db.query(
+      `DELETE FROM project_todos WHERE status IN ('done','cancelled') AND id NOT IN
+         (SELECT id FROM project_todos WHERE status IN ('done','cancelled') ORDER BY id DESC LIMIT ?)`,
+    ).run(TODOS_KEEP);
+  };
   const todoById = (id: number): TodoRow | undefined => {
     const r = db.query(`SELECT * FROM project_todos WHERE id = ?`).get(id) as TodoDbRow | null;
     return r ? mapTodoRow(r) : undefined;
@@ -706,7 +732,7 @@ export function openLedger(
         pick(db.query(`SELECT folder FROM orders WHERE folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`).all(pattern, FOLDER_CANDIDATES) as Array<{ folder: string }>) ??
         pick(
           db
-            .query(`SELECT folder FROM project_todos WHERE status IN ('queued', 'running') AND folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`)
+            .query(`SELECT folder FROM project_todos WHERE status IN ('queued', 'running', 'retry') AND folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`)
             .all(pattern, FOLDER_CANDIDATES) as Array<{ folder: string }>,
         )
       );
@@ -812,7 +838,7 @@ export function openLedger(
         .query(
           `SELECT
              (SELECT count(*) FROM decisions WHERE thread_id = ?1 AND status = 'open') AS open_decisions,
-             (SELECT count(*) FROM project_todos WHERE thread_id = ?1 AND status IN ('queued', 'running')) AS active_todos,
+             (SELECT count(*) FROM project_todos WHERE thread_id = ?1 AND status IN ('queued', 'running', 'retry')) AS active_todos,
              (SELECT closed_by_operator FROM threads WHERE id = ?1) AS closed`,
         )
         .get(id) as { open_decisions: number; active_todos: number; closed: number | null };
@@ -1490,19 +1516,38 @@ export function openLedger(
       return rows.map(mapTodoRow);
     },
     updateTodo(id, patch) {
-      const cols: Record<string, string> = { status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at" };
+      const cols: Record<string, string> = {
+        status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at",
+        attempts: "attempts", retryAt: "retry_at", failure: "failure",
+      };
       const sets = Object.entries(patch).filter(([k, v]) => k in cols && v !== undefined);
       if (sets.length === 0) return;
       db.query(`UPDATE project_todos SET ${sets.map(([k]) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`).run(
-        ...sets.map(([, v]) => v as string | number),
+        ...sets.map(([, v]) => v as string | number | null),
         id,
       );
-      if (patch.status === "done" || patch.status === "failed" || patch.status === "cancelled") {
-        db.query(
-          `DELETE FROM project_todos WHERE status IN ('done','failed','cancelled') AND id NOT IN
-             (SELECT id FROM project_todos WHERE status IN ('done','failed','cancelled') ORDER BY id DESC LIMIT ?)`,
-        ).run(TODOS_KEEP);
-      }
+      if (patch.status === "done" || patch.status === "cancelled") pruneTodos();
+    },
+    dueTodoRetries(now) {
+      const rows = db
+        .query(`SELECT * FROM project_todos WHERE status = 'retry' AND retry_at <= ? ORDER BY retry_at, id`)
+        .all(now) as TodoDbRow[];
+      return rows.map(mapTodoRow);
+    },
+    closeSupersededTodos(threadId, folder, byId, at) {
+      const rows = db
+        .query(
+          `UPDATE project_todos
+             SET status = 'done', ended_at = ?1, retry_at = NULL,
+                 result = 'finished by #' || ?2 || ' later in this thread' || CASE WHEN result IS NULL OR result = '' THEN '' ELSE ' — earlier: ' || result END
+           WHERE thread_id = ?3 AND folder = ?4 AND id < ?2
+             AND (status IN ('failed', 'retry') OR (status = 'queued' AND attempts > 0))
+             AND ended_at IS NOT NULL AND ended_at < (SELECT created_at FROM project_todos WHERE id = ?2)
+           RETURNING id`,
+        )
+        .all(at, byId, threadId, folder) as Array<{ id: number }>;
+      if (rows.length) pruneTodos();
+      return rows.map((r) => r.id).sort((a, b) => a - b);
     },
     moveTodo(id, position) {
       const t = todoById(id);
@@ -1730,6 +1775,9 @@ interface TodoDbRow {
   cause_msg_id: number | null;
   thread_id: number | null;
   plan_id: number | null;
+  attempts: number;
+  retry_at: number | null;
+  failure: string | null;
 }
 
 function mapTodoRow(r: TodoDbRow): TodoRow {
@@ -1750,6 +1798,9 @@ function mapTodoRow(r: TodoDbRow): TodoRow {
     endedAt: r.ended_at ?? undefined,
     cause: causeOf(r.cause_msg_id, r.thread_id),
     ...(r.plan_id !== null ? { planId: r.plan_id } : {}),
+    attempts: r.attempts ?? 0,
+    ...(r.retry_at !== null && r.retry_at !== undefined ? { retryAt: r.retry_at } : {}),
+    ...(r.failure ? { failure: r.failure } : {}),
   };
 }
 

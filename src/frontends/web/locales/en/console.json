@@ -135,7 +135,10 @@
     "running": "▶ running {{age}}",
     "moveUp": "move up",
     "cancel": "Cancel",
-    "confirmCancel": "Cancel #{{id}}?"
+    "confirmCancel": "Cancel #{{id}}?",
+    "retry": "Retry",
+    "retryWait": "↻ retry {{n}} · in {{age}}",
+    "failed": "✗ failed"
   },
   "recent": {
     "title": "Recent orders",
@@ -230,6 +233,7 @@
     "todoStatus": {
       "queued": "queued",
       "running": "running",
+      "retry": "retry waiting",
       "done": "done",
       "failed": "failed",
       "cancelled": "cancelled"

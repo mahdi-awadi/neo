@@ -242,6 +242,19 @@ type RunFn = typeof runOrder;
  *  session is not, and the reply to the dispatcher must say so instead of promising a result. */
 const dispatchRuns = new WeakSet<object>();
 
+/** How a dispatch run ended, as the todo queue hears it. `failure` is WHY a bad end happened, when the
+ *  engine knows it as a fact (ADR-0027): `stall` (the liveness limit aborted it), `reload` (wrapped up
+ *  for an engine reload), `checkpoint` (a context checkpoint could not complete), `launch` (the worker
+ *  failed to start) or `api:<kind>` (the SDK's error kind). Absent on a bad end = the worker reported
+ *  failure, or the operator stopped it. */
+export interface TodoEnd {
+  orderId: string;
+  ok: boolean;
+  summary: string;
+  continuation?: string;
+  failure?: string;
+}
+
 /** Liveness stall limit (ms) — 5 minutes of NO activity aborts a sub-run. */
 export const DISPATCH_STALL_MS_DEFAULT = 300_000;
 /** Wrap-up grace window (ms) — 75 seconds between the limit firing and the hard abort. */
@@ -394,11 +407,11 @@ export interface DispatchHooks {
   onRefused?: (reason: string) => void;
   /** Extra line for the dispatcher's final result (e.g. what the queue does next). `ok` is false
    *  for any bad end: failure, stall abort, or a reload cut. */
-  resultNote?: (ok: boolean) => string | undefined;
+  resultNote?: (ok: boolean, failure?: string) => string | undefined;
   /** The run is over and its result has reached the operator and the dispatcher inbox. A
    *  `continuation` means the run was handed off at a safe checkpoint (ADR-0021): the task is NOT
    *  finished, and this brief continues it in a fresh session. */
-  onEnd?: (end: { orderId: string; ok: boolean; summary: string; continuation?: string }) => void | Promise<void>;
+  onEnd?: (end: TodoEnd) => void | Promise<void>;
   /** Skip the "→ dispatching to …" line (the queue sends its own start line). */
   quietStart?: boolean;
 }
@@ -1102,12 +1115,17 @@ export async function dispatchToProject(
     const checkpointLost = !!armed && !atCheckpoint && result.ok && !timedOut && !reloading;
     const ok = result.ok && !checkpointLost;
     const stop = timedOut || !ok || reloading ? stopPoint() : undefined;
+    // Why it ended badly, from facts only (ADR-0027) — the todo queue decides retry vs failed from this.
+    const good = ok && !timedOut && !reloading;
+    const failure = good
+      ? undefined
+      : reloading ? "reload" : timedOut ? "stall" : checkpointLost ? "checkpoint" : !result.ok && result.apiError ? `api:${result.apiError}` : undefined;
     const summary = atCheckpoint
       ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
       : checkpointLost
         ? `stopped at a context checkpoint (${Math.round(armed!.occupancy * 100)}%) that could not complete — uncommitted changes appeared after it; HANDOFF.md may be partial, dispatch it again to continue`
         : reloading
-        ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — resume it after the restart)`
+        ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — ${hooks.onEnd ? "its todo queue re-runs it" : "resume it after the restart"})`
         : result.summary;
     const stopLine = stop ? formatStopPoint(stop) : "";
     const line =
@@ -1138,7 +1156,7 @@ export async function dispatchToProject(
       });
       let note: string | undefined;
       try {
-        note = hooks.resultNote?.(ok && !timedOut && !reloading);
+        note = hooks.resultNote?.(good, failure);
       } catch {
         note = undefined; // the queue's note is extra — the result itself must still be queued
       }
@@ -1221,7 +1239,7 @@ export async function dispatchToProject(
     }
     // Last: the result is out, so the todo queue may release the project's next brief (ADR-0008).
     try {
-      await hooks.onEnd?.({ orderId: order.id, ok: ok && !timedOut && !reloading, summary, ...(continuation ? { continuation } : {}) });
+      await hooks.onEnd?.({ orderId: order.id, ok: good, summary, ...(continuation ? { continuation } : {}), ...(failure ? { failure } : {}) });
     } catch {
       // observer only
     }
@@ -1254,7 +1272,7 @@ export async function dispatchToProject(
     }
     for (const threadId of answered) refreshThread(deps, threadId);
     try {
-      await hooks.onEnd?.({ orderId: order.id, ok: false, summary });
+      await hooks.onEnd?.({ orderId: order.id, ok: false, summary, failure: "launch" });
     } catch {
       // observer only
     }
@@ -1578,9 +1596,10 @@ export function neoMcpServers(
         tool(
           "todo",
           "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
-            "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued todos only — a running one is stopped by the operator with /kill), `pause` / `resume` (`project`). Returns text.",
+            "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued or retry todos only — a running one is stopped by the operator with /kill), `retry` (`id`: re-run a failed todo, or a waiting retry now — the SAME todo; never dispatch a new brief to redo a failed one), `pause` / `resume` (`project`). " +
+            "A todo that stopped for a passing reason (stall, restart, API or account error) is kept as `retry` and re-runs by itself. Returns text.",
           {
-            action: z.enum(["list", "add", "reorder", "cancel", "pause", "resume"]),
+            action: z.enum(["list", "add", "reorder", "cancel", "retry", "pause", "resume"]),
             project: z.string().optional().describe("project folder name, e.g. \"eticket-v3\""),
             id: z.number().int().optional().describe("todo number (#N)"),
             position: z.number().int().min(1).optional().describe("new 1-based queue position, for reorder"),
@@ -1606,6 +1625,9 @@ export function neoMcpServers(
                 case "cancel":
                   if (args.id === undefined) return need("`id`");
                   return todo.cancel(args.id);
+                case "retry":
+                  if (args.id === undefined) return need("`id`");
+                  return todo.retry(args.id);
                 case "pause":
                   if (!args.project) return need("`project`");
                   return todo.pause(args.project);

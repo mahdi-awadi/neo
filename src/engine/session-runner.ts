@@ -236,6 +236,10 @@ export type ApiErrorKind =
   | "overloaded"
   | "server_error"
   | "authentication_failed"
+  | "oauth_org_not_allowed"
+  | "account_on_hold"
+  | "verification_required"
+  | "cloud_credential_error"
   | "billing_error"
   | "invalid_request"
   | "model_not_found"
@@ -591,8 +595,12 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // A rejected resume id is a local precondition failure, not an API failure: nothing was
         // sent, so blaming the API ("the API failed (unknown)") is both wrong and unactionable.
         if (failed && RESUME_MISSING_RE.test(summary)) resumeMissing = true;
+        // An API failure is a `success` result marked is_error, or one that carries an HTTP status or an
+        // assistant error field. error_max_turns / error_during_execution (a turn cap, an interrupt) are
+        // the run ending, not the API failing — they get no API kind (ADR-0027: no false "transient").
+        const apiShaped = msg.subtype === "success" || apiError !== undefined || typeof msg.api_error_status === "number";
         const turnError =
-          failed && !resumeMissing
+          failed && !resumeMissing && apiShaped
             ? (apiError ?? apiErrorFromStatus(msg.api_error_status as number | null) ?? apiErrorFromMessage(summary) ?? "unknown")
             : undefined;
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;

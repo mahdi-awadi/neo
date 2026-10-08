@@ -230,7 +230,8 @@ test("failure policy pause: a failed todo pauses the queue and the next one wait
 
 // --- AC4: restart -------------------------------------------------------------------------------
 
-test("boot recovery: a running todo is failed with where it stopped; queued ones resume in order", async () => {
+// ADR-0027 amends ADR-0008: a todo cut short by a restart is kept as `retry`, not failed.
+test("boot recovery: a running todo is kept to retry with where it stopped; queued ones resume in order", async () => {
   const { queue, ledger, runs } = setup();
   const folder = join(queue.launcher()!.deps.workRoot!, "eticket-v3");
   const a = ledger.addTodo({ project: "eticket-v3", folder, brief: "was running", workClass: "interactive", createdBy: "operator" }, 1);
@@ -239,7 +240,7 @@ test("boot recovery: a running todo is failed with where it stopped; queued ones
   ledger.addTodo({ project: "eticket-v3", folder, brief: "after that", workClass: "interactive", createdBy: "operator" }, 4);
 
   expect(queue.recover({ now: 100, lastCommit: () => "abc123 wip (1 min ago)" })).toBe(1);
-  expect(ledger.todoById(a.id)?.status).toBe("failed");
+  expect(ledger.todoById(a.id)?.status).toBe("retry");
   expect(ledger.todoById(a.id)?.result).toContain("engine restart");
   expect(ledger.todoById(a.id)?.result).toContain("abc123");
 
@@ -415,7 +416,7 @@ test("config todoOnFailure defaults to continue, accepts pause, and fails closed
 
 // --- code-review pass (2026-10-04) --------------------------------------------------------------
 
-test("a run that throws while starting fails its todo, frees the project and starts the next", async () => {
+test("a run that throws while starting keeps its todo to retry, frees the project and starts the next", async () => {
   const { queue, ledger, deps, registry } = setup();
   let calls = 0;
   const started: string[] = [];
@@ -438,7 +439,7 @@ test("a run that throws while starting fails its todo, frees the project and sta
   await q2.submit({ project: "eticket-v3", brief: "first", workClass: "interactive" }, deps, 1);
   await q2.submit({ project: "eticket-v3", brief: "second", workClass: "interactive" }, deps, 1);
   await settle();
-  expect(ledger.todoById(1)).toMatchObject({ status: "failed" });
+  expect(ledger.todoById(1)).toMatchObject({ status: "retry", failure: "launch" }); // ADR-0027: a launch failure is transient
   expect(ledger.todoById(1)?.result).toContain("worker failed to launch");
   expect(ledger.todoById(2)?.status).toBe("running");
   expect(started).toHaveLength(1);

@@ -1,6 +1,6 @@
 # A busy project gets a durable todo queue, released when the current todo is settled
 
-**Status:** accepted (2026-10-04)
+**Status:** accepted (2026-10-04) · amended by ADR-0027 (a transient end — including a restart — is retried, a failed todo is never dropped)
 
 The operator's order (2026-10-04): "for the main agent in neo add a todo list for each project, so
 when a project is running I can send more tasks. The main agent keeps them in a todo list and sends

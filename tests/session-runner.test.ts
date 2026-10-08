@@ -1211,3 +1211,17 @@ test("every Claude worker runs with NEO_WORKER=1, one-shot and long-running", as
   run.close();
   await run.done;
 });
+
+// ADR-0027: a turn cap or an interrupt is the run ending, not the API failing — no API kind, so the
+// todo queue never mistakes it for a passing (retryable) failure.
+test("error_max_turns and error_during_execution results carry no api error kind", async () => {
+  for (const subtype of ["error_max_turns", "error_during_execution"]) {
+    const q = () =>
+      (async function* () {
+        yield { type: "result", subtype, is_error: true, errors: ["stopped"], total_cost_usd: 0, session_id: "s" };
+      })();
+    const res = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+    expect(res.ok).toBe(false);
+    expect(res.apiError).toBeUndefined();
+  }
+});

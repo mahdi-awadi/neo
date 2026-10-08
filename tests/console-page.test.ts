@@ -48,6 +48,9 @@ test("the Queue tab renders the todo queues, posts its actions to /api/todo, and
   expect(html).toContain('id="vtodos"');
   expect(APP).toContain("function renderTodos");
   expect(APP).toContain("/api/todo");
+  // ADR-0027: a failed or waiting-retry todo shows and offers Retry.
+  expect(APP).toContain('todoAct("retry"');
+  expect(APP).toContain('x.status === "failed"');
   // Every view a tab names is one the tab switch toggles (the Queue view used to be missing).
   const views = [...html.matchAll(/class="tab[^"]*" data-v="([a-z]+)"/g)].map((m) => m[1]);
   expect(views.length).toBe(8);

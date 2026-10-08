@@ -392,9 +392,9 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     }
 
     if (req.method === "POST" && path === "/api/todo") {
-      // Queue-tab actions: { action: "cancel"|"up"|"pause"|"resume", id?, project? } → the shared /todo command.
+      // Queue-tab actions: { action: "cancel"|"up"|"retry"|"pause"|"resume", id?, project? } → the shared /todo command.
       const body = (await req.json().catch(() => ({}))) as { action?: unknown; id?: unknown; project?: unknown };
-      const action = typeof body.action === "string" && ["cancel", "up", "pause", "resume"].includes(body.action) ? body.action : "";
+      const action = typeof body.action === "string" && ["cancel", "up", "retry", "pause", "resume"].includes(body.action) ? body.action : "";
       const arg = typeof body.id === "number" ? String(body.id) : typeof body.project === "string" ? body.project.trim() : "";
       if (!action || !arg) return Response.json({ ok: false, error: "action + id/project required" }, { status: 400 });
       return Response.json(channel.todo(`${action} ${arg}`), { headers: { "cache-control": "no-store" } });

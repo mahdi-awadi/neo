@@ -3,25 +3,36 @@
 // project (or one whose queue is non-empty or paused) waits in order. The queue is RELEASED when the
 // current dispatch run ends (the SDK-settled end, ADR-0007) — after its result reached the operator
 // and the dispatcher — and on every daemon tick, for queues a hold or a restart left waiting.
+// A run that ends for a passing reason keeps its todo as `retry` and re-runs it after a backoff; a
+// failed todo is never dropped and can be retried (ADR-0027, rules in todo-retry.ts).
 // Deterministic: no AI decides anything here.
 import { basename } from "node:path";
 import type { Cause, Ledger, TodoRow } from "./ledger";
 import type { Registry } from "./registry";
 import { heldByReserve, type WorkClass } from "./budget";
-import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts, type ReplyMeta } from "./dispatch";
+import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts, type ReplyMeta, type TodoEnd } from "./dispatch";
 import { lastCommitIn, uncommittedIn } from "./dispatch-report";
 import { raise } from "./attention";
 import { msgRef } from "./trace";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
+import { classifyEnd, nextRetry, retryBrief } from "./todo-retry";
 
-import type { TodoFailurePolicy } from "../config";
+import { TODO_RETRY_BACKOFF_MS_DEFAULT, type TodoFailurePolicy } from "../config";
 
 /** The attention kinds the queue raises (spec §8.6) — the briefs test checks each has a template. */
 export const DIRTY_KINDS = ["dirty"] as const;
 
 /** Finished todos shown in a single project's `/todo <project>` view. */
 const HISTORY_SHOWN = 5;
+/** Failed todos shown per project in `/todo` (newest first; all of them stay in the ledger). */
+const FAILED_SHOWN = 10;
+
+/** "in 15m" / "in 4h" — when a waiting retry is due. */
+function dueIn(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  return m >= 120 ? `in ${Math.round(m / 60)}h` : `in ${m}m`;
+}
 
 /** The deps + chat a release starts a todo with (the operator channel's own dispatch deps). */
 export interface TodoLauncher {
@@ -39,6 +50,9 @@ export interface TodoQueueDeps {
   dispatchOpts?: Partial<DispatchOpts>;
   /** The folder's uncommitted paths, read when a todo ends (spec §8.6). Default: git status. */
   uncommitted?: (folder: string) => string[] | undefined;
+  /** The retry backoff ladder (ms per retry; its length = the number of automatic retries), read live
+   *  so a config reload applies (ADR-0027). Default TODO_RETRY_BACKOFF_MS_DEFAULT. */
+  retryBackoffMs?: () => readonly number[];
 }
 
 export interface TodoQueue {
@@ -58,6 +72,9 @@ export interface TodoQueue {
   /** Text view: all projects with work (no arg), or one project with its recent history. */
   list(project?: string): string;
   cancel(id: number): string;
+  /** Re-run a todo (ADR-0027): a `failed` one joins the end of the queue with a fresh retry budget; a
+   *  `retry` one goes to the head now, without waiting for its backoff. The same row — never a copy. */
+  retry(id: number): string;
   up(id: number): string;
   move(id: number, position: number): string;
   pause(project: string): string;
@@ -94,6 +111,7 @@ function holdReason(deps: DispatchDeps, workClass: WorkClass, now: number): stri
 export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   const { ledger, registry } = q;
   const now = q.now ?? q.dispatchOpts?.now ?? (() => Date.now()); // one clock with dispatch
+  const ladder = (): readonly number[] => q.retryBackoffMs?.() ?? TODO_RETRY_BACKOFF_MS_DEFAULT;
   let launcherFn: () => TodoLauncher | undefined = () => undefined;
   let lastSeen: TodoLauncher | undefined;
   const launcher = (): TodoLauncher | undefined => launcherFn() ?? lastSeen;
@@ -123,15 +141,23 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     return resolveProject(project, deps?.workRoot ?? launcher()?.deps.workRoot ?? q.dispatchOpts?.root, q.dispatchOpts?.desks ?? DESKS_DIR);
   };
 
-  /** What the queue will do after a todo of `folder` ends with `ok` — for the dispatcher's result. */
-  const nextNote = (folder: string, ok: boolean): string | undefined => {
+  /** What the queue will do after todo `t` ends with `ok` (and `failure`, ADR-0027) — for the
+   *  dispatcher's result. */
+  const nextNote = (t: TodoRow, ok: boolean, failure?: string): string | undefined => {
+    const folder = t.folder;
+    // A transient end with retries left: the todo re-runs by itself — say so, so nobody re-dispatches it.
+    const again = !ok && classifyEnd(failure).transient ? nextRetry(t.attempts, ladder(), now()) : undefined;
+    const retryLine = again
+      ? `[todo] #${t.id} stopped for a passing reason (${failure}); it is kept and re-runs by itself ${dueIn(again.retryAt - now())} (retry ${t.attempts + 1}/${ladder().length}) — do NOT dispatch it again.`
+      : undefined;
     const waiting = queued(folder);
-    if (waiting.length === 0) return undefined;
-    if (ledger.todoPaused(folder) || (!ok && q.onFailure() === "pause")) {
-      return `[todo] queue paused: ${waiting.length} waiting — resume it with the todo tool when ready.`;
+    if (waiting.length === 0) return retryLine;
+    const join = (line: string) => (retryLine ? `${retryLine}\n${line}` : line);
+    if (ledger.todoPaused(folder) || (!ok && !again && q.onFailure() === "pause")) {
+      return join(`[todo] queue paused: ${waiting.length} waiting — resume it with the todo tool when ready.`);
     }
     const more = waiting.length - 1;
-    return `[todo] next: ${tag(waiting[0])} starts now${more ? ` (${more} more queued)` : ""} — no need to dispatch it again.`;
+    return join(`[todo] next: ${tag(waiting[0])} starts now${more ? ` (${more} more queued)` : ""} — no need to dispatch it again.`);
   };
 
   type LaunchOutcome =
@@ -143,7 +169,10 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   const launch = async (t: TodoRow, l: TodoLauncher, quiet: boolean): Promise<LaunchOutcome> => {
     let outcome: "run" | "delivered" | undefined;
     let refused = "";
-    const text = await dispatchToProject(t.folder, t.brief, l.deps, l.replyChat, {
+    // A todo that ran before (an automatic retry, or the operator's re-run of a failed one) is told so
+    // (ADR-0027); the stored brief never changes.
+    const brief = t.startedAt !== undefined ? retryBrief(t, ladder().length) : t.brief;
+    const text = await dispatchToProject(t.folder, brief, l.deps, l.replyChat, {
       ...q.dispatchOpts,
       root: l.deps.workRoot ?? q.dispatchOpts?.root,
       team: t.team,
@@ -158,7 +187,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           ledger.updateTodo(
             t.id,
             mode === "run"
-              ? { status: "running", orderId, startedAt: now() }
+              ? { status: "running", orderId, startedAt: now(), retryAt: null }
               : {
                   status: "done",
                   orderId,
@@ -169,7 +198,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           );
         },
         onRefused: (reason) => void (refused = reason),
-        resultNote: (ok) => nextNote(t.folder, ok),
+        resultNote: (ok, failure) => nextNote(ledger.todoById(t.id) ?? t, ok, failure),
         onEnd: (end) => finish(end, l),
       },
     });
@@ -183,6 +212,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   /** Release one folder: start its next todo if it is free, unpaused and not held. Returns the
    *  todo it started, or why it did not. Fails a todo whose folder vanished and tries the next. */
   const release = async (folder: string, l: TodoLauncher, quiet: boolean): Promise<{ started?: TodoRow; delivered?: TodoRow; waits?: string }> => {
+    promoteDue();
     for (;;) {
       if (ledger.todoPaused(folder)) return { waits: "paused" };
       if (busy(folder)) return { waits: "busy" };
@@ -222,7 +252,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
 
   /** A dispatch run of a todo ended: record it, apply the failure policy, release the next one,
    *  and send the operator ONE line about the transition (none when the queue is empty). */
-  const finish = async (end: { orderId: string; ok: boolean; summary: string; continuation?: string }, l: TodoLauncher): Promise<void> => {
+  const finish = async (end: TodoEnd, l: TodoLauncher): Promise<void> => {
     live.delete(end.orderId);
     const t = ledger.todoByOrder(end.orderId);
     if (!t || t.status !== "running") return;
@@ -233,9 +263,25 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause }, now())
         : undefined;
     if (cont) ledger.moveTodo(cont.id, 1);
-    ledger.updateTodo(t.id, { status: end.ok ? "done" : "failed", result: cont ? `${end.summary} → continuing as #${cont.id}` : end.summary, endedAt: now() });
+    // A bad end: a transient one with retries left keeps the todo as `retry`; otherwise `failed`,
+    // never dropped (ADR-0027). Only `failed` is a final bad end, so only it applies the policy.
+    const cls = end.ok ? undefined : classifyEnd(end.failure);
+    const again = cls?.transient ? nextRetry(t.attempts, ladder(), now()) : undefined;
+    const failure = end.failure ? { failure: end.failure } : {};
+    if (end.ok) {
+      ledger.updateTodo(t.id, { status: "done", result: cont ? `${end.summary} → continuing as #${cont.id}` : end.summary, endedAt: now() });
+    } else if (again) {
+      ledger.updateTodo(t.id, { status: "retry", attempts: t.attempts + 1, retryAt: again.retryAt, result: end.summary, endedAt: now(), ...failure });
+      ledger.recordEvent("todo_retry", { folder: t.folder, orderId: end.orderId, data: { project: t.project, id: t.id, attempt: t.attempts + 1, retryAt: again.retryAt, failure: end.failure }, cause: t.cause });
+    } else {
+      const gaveUp = cls?.transient ? `gave up after ${t.attempts + 1} attempts: ` : "";
+      ledger.updateTodo(t.id, { status: "failed", result: `${gaveUp}${end.summary}`, endedAt: now(), retryAt: null, ...failure });
+    }
+    // A finished run closes the earlier failed/retry todos of its thread and folder (ADR-0027 §6).
+    const closed = end.ok && !cont && t.cause ? ledger.closeSupersededTodos(t.cause.threadId, t.folder, t.id, now()) : [];
+    if (closed.length) ledger.recordEvent("todo_superseded", { folder: t.folder, orderId: end.orderId, data: { project: t.project, id: t.id, closed }, cause: t.cause });
     refresh(launcher()?.deps ?? l.deps, t.cause);
-    if (!end.ok && q.onFailure() === "pause" && queued(t.folder).length > 0) {
+    if (!end.ok && !again && q.onFailure() === "pause" && queued(t.folder).length > 0) {
       ledger.setTodoPaused(t.folder, `#${t.id} failed`, now());
     }
     const left = cont ? undefined : leftUncommitted(t);
@@ -243,8 +289,10 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       (cont
         ? `${t.project}: #${t.id} handed off at a safe checkpoint, continuing as #${cont.id}`
         : end.ok
-          ? `${t.project}: done #${t.id}`
-          : `${t.project}: #${t.id} failed`) + (left ? ` — left ${left} uncommitted file${left === 1 ? "" : "s"}` : "");
+          ? `${t.project}: done #${t.id}${closed.length ? ` (also closes ${closed.map((x) => `#${x}`).join(", ")}, finished by this run)` : ""}`
+          : again
+            ? `${t.project}: #${t.id} stopped (${end.failure}) — retry ${t.attempts + 1}/${ladder().length} ${dueIn(again.retryAt - now())}`
+            : `${t.project}: #${t.id} failed`) + (left ? ` — left ${left} uncommitted file${left === 1 ? "" : "s"}` : "");
     const r = await release(t.folder, launcher() ?? l, true);
     const line = r.started
       ? `${head}, starting ${tag(r.started)}`
@@ -254,18 +302,28 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           ? `${head} — queue paused, ${queued(t.folder).length} waiting (/todo resume ${t.project})`
           : r.waits && queued(t.folder).length > 0
             ? `${head}; next waits (${r.waits})`
-            : left
-              ? head // nothing queued, but the work left behind must be said
+            : left || again || closed.length
+              ? head // nothing queued, but the work left behind, a pending retry or a closed todo must be said
               : undefined;
     // A todo line (spec §4.3): filed under the todo's cause, so it carries its thread's ref.
     if (line) await (launcher() ?? l).deps.reply((launcher() ?? l).replyChat, line, t.project, undefined, todoLine(t));
+  };
+
+  /** Due retries go back to the HEAD of their queue — they were ahead of what was queued after them;
+   *  the oldest due ends up first (ADR-0027). Run before any release decision, so a brief that arrives
+   *  before the tick never jumps a retry that is already due. */
+  const promoteDue = (): void => {
+    for (const t of ledger.dueTodoRetries(now()).reverse()) {
+      ledger.updateTodo(t.id, { status: "queued", retryAt: null });
+      ledger.moveTodo(t.id, 1);
+    }
   };
 
   const describePosition = (t: TodoRow): number => queued(t.folder).findIndex((x) => x.id === t.id) + 1;
 
   const renderProject = (folder: string, history: boolean): string => {
     const all = ledger.listTodos({ folder, statuses: ["running", "queued"] });
-    const name = all[0]?.project ?? basename(folder);
+    const name = all[0]?.project ?? ledger.listTodos({ folder, limit: 1 })[0]?.project ?? basename(folder);
     const paused = ledger.todoPaused(folder);
     const lines = [`📋 ${name}${paused ? ` — paused (${paused.reason})` : ""}`];
     const t0 = now();
@@ -273,10 +331,16 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (t.status === "running") lines.push(`  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`);
     }
     all.filter((t) => t.status === "queued").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoTitle(t.brief)}`));
+    // Kept work (ADR-0027): waiting retries, then failed todos with how to re-run them.
+    for (const t of ledger.listTodos({ folder, statuses: ["retry"] })) {
+      lines.push(`  ↻ #${t.id} retry ${t.attempts}/${ladder().length} ${dueIn((t.retryAt ?? t0) - t0)} (${t.failure ?? "stopped"}) — ${todoTitle(t.brief)}`);
+    }
+    for (const t of ledger.listTodos({ folder, statuses: ["failed"], limit: FAILED_SHOWN })) {
+      lines.push(`  ✗ #${t.id} failed — ${todoTitle(t.brief)} (/todo retry ${t.id})`);
+    }
     if (history) {
-      for (const t of ledger.listTodos({ folder, statuses: ["done", "failed", "cancelled"], limit: HISTORY_SHOWN })) {
-        const icon = t.status === "done" ? "✓" : t.status === "failed" ? "✗" : "–";
-        lines.push(`  ${icon} #${t.id} ${t.status} — ${todoTitle(t.brief)}`);
+      for (const t of ledger.listTodos({ folder, statuses: ["done", "cancelled"], limit: HISTORY_SHOWN })) {
+        lines.push(`  ${t.status === "done" ? "✓" : "–"} #${t.id} ${t.status} — ${todoTitle(t.brief)}`);
       }
     }
     return lines.join("\n");
@@ -285,6 +349,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   return {
     async submit(p, deps, replyChat) {
       lastSeen = { deps, replyChat };
+      promoteDue();
       const folder = resolveProject(p.project, deps.workRoot ?? q.dispatchOpts?.root, q.dispatchOpts?.desks ?? DESKS_DIR);
       // Unknown project: dispatch reports it exactly as before, and no todo is created.
       const traced = { cause: p.cause, parentOrderId: p.parentOrderId };
@@ -330,6 +395,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     },
 
     async pump() {
+      promoteDue();
       const l = launcher();
       if (!l) return;
       for (const folder of ledger.queuedTodoFolders()) {
@@ -348,12 +414,15 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const cut = ledger.listTodos({ statuses: ["running"] });
       for (const t of cut) {
         const head = readCommit(t.folder);
-        ledger.updateTodo(t.id, {
-          status: "failed",
-          endedAt: opts.now,
-          result: `interrupted by an engine restart before it finished${head ? ` — stopped at: folder HEAD now ${head}` : ""}`,
-        });
-        if (q.onFailure() === "pause" && queued(t.folder).length > 0) ledger.setTodoPaused(t.folder, `#${t.id} cut short by a restart`, opts.now);
+        const result = `interrupted by an engine restart before it finished${head ? ` — stopped at: folder HEAD now ${head}` : ""}`;
+        // A restart is a passing reason (ADR-0027): keep it as `retry` under the same ladder.
+        const again = nextRetry(t.attempts, ladder(), opts.now);
+        if (again) {
+          ledger.updateTodo(t.id, { status: "retry", attempts: t.attempts + 1, retryAt: again.retryAt, endedAt: opts.now, result, failure: "restart" });
+        } else {
+          ledger.updateTodo(t.id, { status: "failed", endedAt: opts.now, result: `gave up after ${t.attempts + 1} attempts: ${result}`, failure: "restart" });
+          if (q.onFailure() === "pause" && queued(t.folder).length > 0) ledger.setTodoPaused(t.folder, `#${t.id} cut short by a restart`, opts.now);
+        }
         ledger.recordEvent("todo_interrupted", { folder: t.folder, orderId: t.orderId, data: { project: t.project, id: t.id }, cause: t.cause });
         refresh(launcher()?.deps, t.cause);
       }
@@ -367,7 +436,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         if (ledger.listTodos({ folder, limit: 1 }).length === 0 && !ledger.todoPaused(folder)) return `${project}: the todo queue is empty.`;
         return renderProject(folder, true);
       }
-      const folders = [...new Set(ledger.listTodos({ statuses: ["running", "queued"] }).map((t) => t.folder))];
+      const folders = [...new Set(ledger.listTodos({ statuses: ["running", "queued", "retry", "failed"] }).map((t) => t.folder))];
       if (folders.length === 0) return "No todos — every project queue is empty.";
       return folders.map((f) => renderProject(f, false)).join("\n\n");
     },
@@ -387,12 +456,31 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         void this.pump();
         return `cancelled #${id} (it was marked running but ${t.project} has no live run).`;
       }
-      if (t.status !== "queued") return `#${id} is already ${t.status}.`;
-      ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cancelled" });
+      if (t.status !== "queued" && t.status !== "retry") return `#${id} is already ${t.status}.`;
+      ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cancelled", retryAt: null });
       parents.delete(id);
       ledger.recordEvent("todo_cancelled", { folder: t.folder, data: { project: t.project, id }, cause: t.cause });
       refresh(launcher()?.deps, t.cause);
       return `cancelled #${id} for ${t.project}: ${todoTitle(t.brief)}`;
+    },
+
+    retry(id) {
+      const t = ledger.todoById(id);
+      if (!t) return `No todo #${id}.`;
+      if (t.status !== "failed" && t.status !== "retry") return `#${id} is ${t.status} — only a failed or waiting retry todo can be retried.`;
+      if (t.status === "failed") {
+        // The operator's (or the company's) call: a fresh retry budget, at the end of the queue.
+        ledger.updateTodo(id, { status: "queued", attempts: 0, retryAt: null });
+        ledger.moveTodo(id, Number.MAX_SAFE_INTEGER);
+      } else {
+        ledger.updateTodo(id, { status: "queued", retryAt: null });
+        ledger.moveTodo(id, 1);
+      }
+      ledger.recordEvent("todo_retried", { folder: t.folder, data: { project: t.project, id, from: t.status }, cause: t.cause });
+      refresh(launcher()?.deps, t.cause);
+      const position = describePosition(t); // before the pump: it may start the todo at once
+      void this.pump();
+      return `↻ #${id} re-queued for ${t.project} at position ${position}${t.status === "retry" ? " (now, not after its backoff)" : ""}: ${todoTitle(t.brief)}`;
     },
 
     up(id) {

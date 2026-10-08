@@ -929,3 +929,16 @@ per-language rule files, osemgrep and warm, network-less containers cut its CPU 
 hooks), `/security-scan` runs it on a branch, and the dispatch preamble tells workers to fix what
 it blocks. Not installed on the host yet: install, `init` per repo and the nightly loop are
 operator steps. Reference: `docs/security-checks.md`.
+
+### Todo failures are retried and never dropped (ADR-0027, 2026-10-08)
+
+On 2026-10-07 a Claude account error (`oauth_org_not_allowed`) failed five todos in one minute.
+Nothing re-ran them, and the work was later re-dispatched as new todos, so the old rows stayed red.
+Now dispatch tells the queue why a run ended (`stall`, `reload`, `checkpoint`, `launch`,
+`api:<kind>`; boot recovery adds `restart`). A passing reason keeps the todo as `retry` with a
+backoff (`todoRetryBackoffMs`, default 15m→1h→4h→12h). It then goes back to the head of its queue
+and runs with a preamble that says "continue from what is done". When the ladder is used up, or the
+end was a task failure, the todo is `failed`. A failed todo is never pruned and can be re-run with
+`/todo retry <id>`, the company's `todo` tool, or a Retry button in the Queue tab. A todo that
+finishes in the same thread and folder closes the earlier failed or retry todos there as done.
+Migration 9 adds `attempts`, `retry_at` and `failure`.

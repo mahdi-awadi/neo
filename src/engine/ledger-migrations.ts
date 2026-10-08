@@ -368,6 +368,15 @@ function meta(db: Database): void {
   db.run(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`);
 }
 
+/** Version 9 — todo retries (ADR-0027): a todo that ended for a passing reason waits as `retry` until
+ *  `retry_at`; `attempts` counts its automatic retries; `failure` is the last end's reason. */
+function todoRetries(db: Database): void {
+  db.run(`ALTER TABLE project_todos ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN retry_at INTEGER`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN failure TEXT`);
+  db.run(`CREATE INDEX idx_project_todos_retry ON project_todos (status, retry_at)`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -377,6 +386,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 6, name: "console indexes", up: consoleIndexes },
   { version: 7, name: "attention items and engine boots", up: attention },
   { version: 8, name: "meta", up: meta },
+  { version: 9, name: "todo retries", up: todoRetries },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

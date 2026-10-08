@@ -168,8 +168,8 @@ const COMMANDS: Command[] = [
   {
     name: "todo",
     aliases: ["todos", "queue"],
-    usage: "/todo [<project>] · /todo cancel|up <id> · /todo pause|resume <project>",
-    summary: "per-project todo queues: list, cancel, move up, pause, resume",
+    usage: "/todo [<project>] · /todo cancel|up|retry <id> · /todo pause|resume <project>",
+    summary: "per-project todo queues: list, cancel, move up, retry a failed todo, pause, resume",
     run: ({ deps, args }) => ({ text: todoCommand(args.trim(), deps.todo) }),
   },
   {
@@ -346,7 +346,7 @@ export function killProject(id: string, chatId: number, deps: CommandDeps): Comm
   return renderList(deps, now, chatId);
 }
 
-const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo pause <project> · /todo resume <project>";
+const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo retry <id> · /todo pause <project> · /todo resume <project>";
 
 /** /todo — read and steer the per-project todo queues. Thin: the queue owns every rule. */
 function todoCommand(args: string, todo: TodoQueue | undefined): string {
@@ -361,8 +361,9 @@ function todoCommand(args: string, todo: TodoQueue | undefined): string {
       return todo.list();
     case "cancel":
     case "up":
+    case "retry":
       if (!(id > 0)) return TODO_USAGE;
-      return verb === "cancel" ? todo.cancel(id) : todo.up(id);
+      return verb === "cancel" ? todo.cancel(id) : verb === "up" ? todo.up(id) : todo.retry(id);
     case "pause":
     case "resume":
       if (!arg) return TODO_USAGE;

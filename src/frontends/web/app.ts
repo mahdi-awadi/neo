@@ -434,10 +434,25 @@ function renderTodos(): void {
     by[p]!.forEach((x) => {
       const row = document.createElement("div");
       row.className = "rrow";
-      const lead = x.status === "running" ? t("queue.running", { age: age(Date.now() - (x.startedAt || x.createdAt)) }) : ltr(x.position + ".");
+      const lead =
+        x.status === "running"
+          ? t("queue.running", { age: age(Date.now() - (x.startedAt || x.createdAt)) })
+          : x.status === "retry"
+            ? t("queue.retryWait", { n: x.attempts, age: age(Math.max(0, (x.retryAt || Date.now()) - Date.now())) })
+            : x.status === "failed"
+              ? t("queue.failed")
+              : ltr(x.position + ".");
       row.innerHTML = `<span>${lead}</span><div style="flex:1;min-width:0"><div>${ltr("#" + x.id)} ${esc(x.title)}</div></div>`;
-      if (x.status === "queued") {
-        if (x.position > 1) {
+      // ADR-0027: kept work — a failed todo or a waiting retry can be re-run (the same todo).
+      if (x.status === "failed" || x.status === "retry") {
+        const r = document.createElement("button");
+        r.className = "chip";
+        r.textContent = tx("queue.retry");
+        r.onclick = () => todoAct("retry", x.id);
+        row.appendChild(r);
+      }
+      if (x.status === "queued" || x.status === "retry") {
+        if (x.status === "queued" && x.position > 1) {
           const up = document.createElement("button");
           up.className = "chip";
           up.textContent = "↑";

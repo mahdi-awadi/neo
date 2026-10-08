@@ -29,6 +29,10 @@ function fakeQueue(ledger: Ledger, refuse = false) {
       const t = ledger.addTodo({ project: basename(p.project), folder: p.project, brief: p.brief, workClass: p.workClass, createdBy: "operator", cause: p.cause }, 1000);
       return `queued #${t.id}`;
     },
+    retry: (id: number) => {
+      ledger.updateTodo(id, { status: "queued", attempts: 0 });
+      return `↻ #${id} re-queued`;
+    },
   } as unknown as TodoQueue;
   return { q, submitted };
 }
@@ -106,15 +110,17 @@ test("an item that comes back can be queued again; a failed todo can be retried;
   const first = r.ledger.attentionById(id!)!.todoId!;
   expect((await applyAttentionAction(r.deps, id!, "todo", 250)).text).toContain(`already todo #${first} (queued)`);
   r.ledger.updateTodo(first, { status: "failed", endedAt: 300 });
-  expect((await applyAttentionAction(r.deps, id!, "todo", 310)).text).toMatch(/^queued as todo #\d+$/); // retry after a failure
+  // ADR-0027: a failed linked todo is re-run as the SAME row, never copied
+  expect((await applyAttentionAction(r.deps, id!, "todo", 310)).text).toBe(`↻ #${first} re-queued`);
   const second = r.ledger.attentionById(id!)!.todoId!;
-  expect(second).not.toBe(first);
+  expect(second).toBe(first);
+  expect(r.ledger.todoById(first)?.status).toBe("queued");
   r.ledger.updateTodo(second, { status: "done", endedAt: 400 });
   reconcile(r.ledger, "engine", "gold", [], 500); // resolved
   reconcile(r.ledger, "engine", "gold", [draft()], 600); // back: the same row reopens, its old todo is not its todo
   expect(r.ledger.attentionById(id!)!.todoId).toBeUndefined();
   expect((await applyAttentionAction(r.deps, id!, "todo", 700)).ok).toBe(true);
-  expect(r.submitted).toHaveLength(3);
+  expect(r.submitted).toHaveLength(2); // the retry re-used the row: two briefs, not three
 });
 
 test("a → todo whose queue throws answers with the failure, never throws", async () => {

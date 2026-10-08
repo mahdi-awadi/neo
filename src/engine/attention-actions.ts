@@ -155,6 +155,8 @@ async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<Att
   // an open session is done at once while the item is still open. A returning item has no link (reopen).
   const existing = row.todoId !== undefined ? ledger.todoById(row.todoId) : undefined;
   if (existing && existing.status !== "failed" && existing.status !== "cancelled") return { ok: true, text: `already todo #${existing.id} (${existing.status})` };
+  // A failed linked todo is re-run as the SAME row, never copied (ADR-0027).
+  if (existing?.status === "failed" && deps.todo) return { ok: true, text: deps.todo.retry(existing.id) };
   const launcher = deps.todo?.launcher();
   if (!deps.todo || !launcher || !deps.trace) return { ok: false, text: "the todo queue is unavailable — → todo needs it" };
   const brief = attentionBrief(row);
