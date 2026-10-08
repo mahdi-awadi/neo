@@ -137,7 +137,10 @@ rules:
     mode: taint
     pattern-sources:
       - pattern: $REQ.body
-      - pattern: $REQ.query
+      # `db.query(...)` is a method call, not the request's query string
+      - patterns:
+          - pattern: $REQ.query
+          - pattern-not-inside: $REQ.query(...)
       - pattern: $REQ.params
       - pattern: $C.req.query(...)
       - pattern: $C.req.param(...)
@@ -154,8 +157,14 @@ rules:
               - pattern: axios($U, ...)
               - pattern: axios.$M($U, ...)
               - pattern: got($U, ...)
-              - pattern: $HTTP.request($U, ...)
-              - pattern: $HTTP.get($U, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: $HTTP.request($U, ...)
+                      - pattern: $HTTP.get($U, ...)
+                  # an HTTP client, not any .get() (a SQLite statement, a Map)
+                  - metavariable-regex:
+                      metavariable: $HTTP
+                      regex: ^(http|https|axios|got|ky|superagent|needle|undici|request|httpClient|client)$
           - focus-metavariable: $U
 
   - id: neo-js-path-traversal
@@ -166,7 +175,10 @@ rules:
     mode: taint
     pattern-sources:
       - pattern: $REQ.body
-      - pattern: $REQ.query
+      # `db.query(...)` is a method call, not the request's query string
+      - patterns:
+          - pattern: $REQ.query
+          - pattern-not-inside: $REQ.query(...)
       - pattern: $REQ.params
       - pattern: $C.req.query(...)
       - pattern: $C.req.param(...)

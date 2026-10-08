@@ -30,8 +30,20 @@ function handlers(req: any, res: any, db: any, cp: any, fs: any, c: any) {
   // ruleid: neo-js-ssrf-user-url
   fetch(req.query.url);
 
+  // ok: neo-js-ssrf-user-url
+  db.query(sql).get(req.params.id);
+
+  // ok: neo-js-ssrf-user-url
+  db.query(q.sql).get(...q.params);
+
+  // ruleid: neo-js-ssrf-user-url
+  https.get(req.body.callback);
+
   // ruleid: neo-js-path-traversal
   fs.readFileSync("/data/" + req.params.name);
+
+  // ok: neo-js-path-traversal
+  fs.readFileSync("/data/" + db.query(sql).name);
   // ok: neo-js-path-traversal
   fs.readFileSync("/data/" + path.basename(req.params.name));
 

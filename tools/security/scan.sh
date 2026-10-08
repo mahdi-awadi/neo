@@ -76,9 +76,10 @@ run_osv() {
   specs+=("osv:$work/osv.json")
 }
 
-run_trivy_fs() { # scanners
+run_trivy_fs() { # scanners (the kit's rule packs quote example secrets: never scanned as project code)
   docker run --rm -v "$repo:$repo:ro" -v neo-sec-trivy-cache:/root/.cache "$TRIVY_IMAGE" fs --quiet --format json \
-    --scanners "$1" --severity MEDIUM,HIGH,CRITICAL --skip-dirs node_modules --skip-dirs .git "$repo" > "$work/trivy-fs.json" 2>/dev/null || true
+    --scanners "$1" --severity MEDIUM,HIGH,CRITICAL --skip-dirs node_modules --skip-dirs .git \
+    --skip-dirs "**/tools/security/rules" "$repo" > "$work/trivy-fs.json" 2>/dev/null || true
   specs+=("trivy:$work/trivy-fs.json")
 }
 
