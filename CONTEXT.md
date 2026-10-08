@@ -446,6 +446,30 @@ How long a pending approval waits: a reminder to the operator every `approvalRem
 deny after `approvalTimeoutMs` (fails closed). An approval never waits silently forever (ADR-0012).
 _Avoid_: approval TTL, auto-approve on timeout
 
+### Security checks
+
+**Scan layer**:
+One point where the security checks run: **write-time** (each file a worker edits), **pre-commit**
+(staged files), **pre-push** (the commit range, dependencies, security tests) or **nightly**
+(everything, history, images, dev URLs). Earlier layers are fast and narrow; later ones are deep
+(ADR-0024).
+_Avoid_: stage, phase, gate
+
+**Finding**:
+One problem a scanner reported, in one shape for every scanner: tool, rule, severity, repo-relative
+file and line, message, and a **fingerprint**. A secret's value is never part of it.
+_Avoid_: alert, issue, vuln
+
+**Fingerprint**:
+A finding's identity: tool, rule, file and the matched code, without the line number. A finding
+keeps its fingerprint when code above it moves.
+_Avoid_: finding id, hash
+
+**Security baseline**:
+A project's findings recorded once (`.security/baseline.json`), by fingerprint. They are tracked,
+never blocking. Only a **new** high or critical finding blocks a layer.
+_Avoid_: allowlist, ignore list, suppression
+
 ### Tracing work back to the operator
 
 **Operator message**:

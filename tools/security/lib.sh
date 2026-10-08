@@ -13,25 +13,34 @@ sec_have_docker() {
   command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
-# Semgrep configs for a set of files: the OWASP/secrets core, our custom rules, plus language packs.
-sec_semgrep_configs() {
-  local reg="$SEC_KIT/rules/registry" exts="" f
-  local packs="owasp-top-ten secrets jwt xss sql-injection command-injection insecure-transport"
-  for f in "$@"; do exts="$exts ${f##*/}"; done
-  [[ "$exts" =~ \.(ts|tsx|js|jsx|mjs|cjs)( |$) ]] && packs="$packs javascript typescript react nodejs nodejsscan"
-  [[ "$exts" =~ \.go( |$) ]] && packs="$packs golang gosec"
-  [[ "$exts" =~ \.py( |$) ]] && packs="$packs python bandit flask django"
-  [[ "$exts" =~ \.php( |$) ]] && packs="$packs php"
-  [[ "$exts" =~ \.java( |$) ]] && packs="$packs java"
-  [[ "$exts" =~ \.cs( |$) ]] && packs="$packs csharp"
-  [[ "$exts" =~ \.tf( |$) ]] && packs="$packs terraform"
-  [[ "$exts" =~ (Dockerfile[^ ]*|\.dockerfile)( |$) ]] && packs="$packs dockerfile"
-  [[ "$exts" =~ (compose[^ ]*\.ya?ml)( |$) ]] && packs="$packs docker-compose"
-  [[ "${SEC_DEEP:-0}" == 1 ]] && packs="$packs security-audit"
-  local p
-  for p in $packs; do [[ -f "$reg/$p.yml" ]] && printf -- '--config=%s\n' "$reg/$p.yml"; done
-  printf -- '--config=%s\n' "$SEC_KIT/rules/custom"
+# Warm scanner containers (ADR-0024): started once and reused, so a scan pays no container start.
+# No network, a read-only root, and no host mount but the kit's rules: the files to scan are streamed
+# in (sec_stage) and removed after. Recreated when the image digest or the kit path changes.
+SEC_SEMGREP_CTR=neo-sec-semgrep
+SEC_GITLEAKS_CTR=neo-sec-gitleaks
+
+sec_warm() { # name image → 0 when the container is up
+  local name="$1" image="$2" want="$2|$SEC_KIT" fd rc=1
+  exec {fd}>"/tmp/$name.lock"
+  flock -w 60 "$fd" || { exec {fd}>&-; return 1; } # two hooks at once: one starts it, the other waits
+  if [[ "$(docker inspect -f '{{index .Config.Labels "neo.sec"}}|{{.State.Running}}' "$name" 2>/dev/null)" == "$want|true" ]]; then rc=0
+  else
+    docker rm -f "$name" >/dev/null 2>&1
+    docker run -d --name "$name" --label "neo.sec=$want" --network none --read-only \
+      --tmpfs /scan:size=1g --tmpfs /tmp:size=256m -e HOME=/tmp \
+      -v "$SEC_KIT/rules:/kit/rules:ro" --entrypoint sleep "$image" infinity >/dev/null 2>&1 && rc=0
+  fi
+  exec {fd}>&-
+  return $rc
 }
+
+sec_stage() { # name repo relfile... → prints the scan id (files under /scan/<id>)
+  local name="$1" repo="$2" id="s$$-$RANDOM"; shift 2
+  tar -C "$repo" -cf - -- "$@" 2>/dev/null | docker exec -i "$name" sh -c "mkdir -p /scan/$id && tar -xf - -C /scan/$id" || return 1
+  echo "$id"
+}
+
+sec_unstage() { docker exec "$1" rm -rf "/scan/$2" >/dev/null 2>&1 || true; }
 
 # Files worth scanning (skip binaries, vendored, generated, lockfiles and huge files).
 sec_scannable() {

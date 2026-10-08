@@ -22,22 +22,36 @@ cfg_get() { [[ -f "$cfg" ]] && bun -e "const c=JSON.parse(require('fs').readFile
 
 if ! sec_have_docker; then sec_warn "docker unavailable — security scan skipped"; exit 0; fi
 
+# Semgrep and file-gitleaks run in the background (both in warm containers); report() waits for them.
 run_semgrep() { # files...
   (($#)) || return 0
-  mapfile -t configs < <(sec_semgrep_configs "$@")
-  docker run --rm -v "$repo:$repo:ro" -v "$SEC_KIT:$SEC_KIT:ro" -w "$repo" "$SEMGREP_IMAGE" \
-    semgrep scan --metrics=off --disable-version-check --quiet --json --timeout 20 "${configs[@]}" "$@" \
-    > "$work/semgrep.json" 2>"$work/semgrep.err" || true
+  local rel=() f; for f in "$@"; do rel+=("${f#"$repo"/}"); done
+  local deep=(); [[ "${SEC_DEEP:-0}" == 1 ]] && deep=(--deep)
   specs+=("semgrep:$work/semgrep.json")
+  (
+    mapfile -t configs < <(bun "$SEC_KIT/rules.ts" configs "${deep[@]}" --base /kit/rules "${rel[@]}")
+    sec_warm "$SEC_SEMGREP_CTR" "$SEMGREP_IMAGE" || { sec_warn "semgrep container did not start — skipped"; exit 0; }
+    id="$(sec_stage "$SEC_SEMGREP_CTR" "$repo" "${rel[@]}")" || { sec_warn "could not stage files for semgrep — skipped"; exit 0; }
+    docker exec -w "/scan/$id" "$SEC_SEMGREP_CTR" semgrep scan --experimental --metrics=off --disable-version-check \
+      --quiet --json --timeout 20 "${configs[@]}" "${rel[@]}" > "$work/semgrep.json" 2>"$work/semgrep.err"
+    sec_unstage "$SEC_SEMGREP_CTR" "$id"
+  ) &
 }
 
 run_gitleaks_files() { # files...
   (($#)) || return 0
-  local d="$work/gl-src"; mkdir -p "$d"; local f
-  for f in "$@"; do mkdir -p "$d/$(dirname "${f#"$repo"/}")"; cp "$f" "$d/${f#"$repo"/}"; done
-  docker run --rm -v "$d:/scan:ro" -v "$work:/out" "$GITLEAKS_IMAGE" dir /scan --no-banner --exit-code 0 \
-    --report-format json --report-path /out/gitleaks-files.json >/dev/null 2>&1 || true
+  local rel=() f; for f in "$@"; do [[ -f "$f" ]] && rel+=("${f#"$repo"/}"); done
+  ((${#rel[@]})) || return 0
   specs+=("gitleaks:$work/gitleaks-files.json")
+  (
+    sec_warm "$SEC_GITLEAKS_CTR" "$GITLEAKS_IMAGE" || { sec_warn "gitleaks container did not start — skipped"; exit 0; }
+    id="$(sec_stage "$SEC_GITLEAKS_CTR" "$repo" "${rel[@]}")" || { sec_warn "could not stage files for gitleaks — skipped"; exit 0; }
+    docker exec -w "/scan/$id" "$SEC_GITLEAKS_CTR" gitleaks dir . --no-banner --exit-code 0 --report-format json \
+      --report-path "/tmp/$id.json" >/dev/null 2>&1
+    docker exec "$SEC_GITLEAKS_CTR" cat "/tmp/$id.json" > "$work/gitleaks-files.json" 2>/dev/null
+    docker exec "$SEC_GITLEAKS_CTR" rm -f "/tmp/$id.json" >/dev/null 2>&1
+    sec_unstage "$SEC_GITLEAKS_CTR" "$id"
+  ) &
 }
 
 run_gitleaks_git() { # log-opts
@@ -82,9 +96,10 @@ run_tests() {
 }
 
 report() { # label
+  wait # the background scanners
   mkdir -p "$repo/.security/reports"
   local out="$repo/.security/reports/$1-$(date +%Y%m%d-%H%M%S).json"
-  bun "$SEC_KIT/findings.ts" report --baseline "$baseline" --out "$out" --label "$1" "${specs[@]}"
+  bun "$SEC_KIT/findings.ts" report --root "$repo" --baseline "$baseline" --out "$out" --label "$1" "${specs[@]}"
   local rc=$?
   ls -1t "$repo/.security/reports/$1-"*.json 2>/dev/null | tail -n +31 | xargs -r rm -f # keep 30 per layer
   return $rc
@@ -144,7 +159,7 @@ case "$mode" in
       done < <(cfg_get devUrls)
       report nightly; exit $?
     fi
-    mkdir -p "$repo/.security"
-    bun "$SEC_KIT/findings.ts" baseline --baseline "$baseline" "${specs[@]}" ;;
+    wait; mkdir -p "$repo/.security"
+    bun "$SEC_KIT/findings.ts" baseline --root "$repo" --baseline "$baseline" "${specs[@]}" ;;
   *) sed -n '2,12p' "$0"; exit 2 ;;
 esac

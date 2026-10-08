@@ -5,8 +5,8 @@
 // Fingerprints ignore line numbers so a finding does not turn "new" when code above it moves.
 // Secrets are never copied into a finding — only a hash of them.
 //
-//   bun tools/security/findings.ts report   [--baseline f] [--out f] [--label s] tool:raw.json ...
-//   bun tools/security/findings.ts baseline --baseline f tool:raw.json ...
+//   bun tools/security/findings.ts report   [--baseline f] [--out f] [--label s] [--root repo] tool:raw.json ...
+//   bun tools/security/findings.ts baseline --baseline f [--root repo] tool:raw.json ...
 //   (exit 1 from `report` = new high/critical findings)
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -33,7 +33,7 @@ const RANK: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1
 const hash = (...parts: string[]) => createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 16);
 const squash = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim();
 
-function mk(tool: Tool, rule: string, severity: Severity, file: string, line: number, message: string, key: string): Finding {
+function make(tool: Tool, rule: string, severity: Severity, file: string, line: number, message: string, key: string): Finding {
   return { tool, rule, severity, file, line, message: squash(message).slice(0, 300), fingerprint: hash(tool, rule, file, key) };
 }
 
@@ -58,7 +58,25 @@ function word(s: unknown): Severity {
 // biome-ignore lint: scanner JSON is untyped by nature
 type Any = any;
 
-export function normalize(tool: Tool, raw: Any): Finding[] {
+/** Semgrep prefixes a rule id with its config file's directory, relative to where it ran
+ *  (`tools.security.rules.custom.neo-js-x`). The id without it is the same in every checkout. */
+export function ruleId(id: string): string {
+  return String(id ?? "").replace(/^(?:[\w-]+\.)*?rules\.(?:custom|merged|registry)\./, "");
+}
+
+/** A scanner path, repo-relative: the repo root and the gitleaks `/scan` mount are stripped. A path
+ *  outside the repo stays as it is. */
+export function relPath(path: string, root?: string): string {
+  const p = String(path ?? "");
+  if (p.startsWith("/scan/")) return p.slice("/scan/".length);
+  if (root && p.startsWith(`${root.replace(/\/+$/, "")}/`)) return p.slice(root.replace(/\/+$/, "").length + 1);
+  return p;
+}
+
+export function normalize(tool: Tool, raw: Any, ctx: { root?: string } = {}): Finding[] {
+  // Every finding is built here, so its file and rule are canonical before the fingerprint is taken.
+  const mk = (t: Tool, rule: string, severity: Severity, file: string, line: number, message: string, key: string) =>
+    make(t, ruleId(rule), severity, relPath(file, ctx.root), line, message, key);
   switch (tool) {
     case "semgrep":
       return (raw?.results ?? []).map((r: Any) => {
@@ -112,7 +130,7 @@ export function summarize(findings: Finding[]): { block: boolean; counts: Record
   return { block: counts.critical + counts.high > 0, counts };
 }
 
-function load(spec: string): Finding[] {
+function load(spec: string, root?: string): Finding[] {
   const i = spec.indexOf(":");
   const tool = spec.slice(0, i) as Tool;
   const path = spec.slice(i + 1);
@@ -120,7 +138,7 @@ function load(spec: string): Finding[] {
   const text = readFileSync(path, "utf8").trim();
   if (!text) return [];
   try {
-    return normalize(tool, JSON.parse(text));
+    return normalize(tool, JSON.parse(text), { root });
   } catch {
     console.error(`[security] could not parse ${tool} output ${path}`);
     return [];
@@ -132,14 +150,16 @@ if (import.meta.main) {
   let baselinePath: string | undefined;
   let outPath: string | undefined;
   let label = "scan";
+  let root: string | undefined;
   const specs: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--baseline") baselinePath = rest[++i];
     else if (rest[i] === "--out") outPath = rest[++i];
     else if (rest[i] === "--label") label = rest[++i];
+    else if (rest[i] === "--root") root = rest[++i];
     else specs.push(rest[i]);
   }
-  const all = specs.flatMap(load);
+  const all = specs.flatMap((spec) => load(spec, root));
   if (cmd === "baseline") {
     if (!baselinePath) throw new Error("--baseline required");
     const fingerprints = [...new Set(all.map((f) => f.fingerprint))].sort();

@@ -72,4 +72,26 @@ describe("security findings", () => {
     expect(summarize(fresh).block).toBe(true);
     expect(summarize(fresh.filter((x) => x.rule === "c")).block).toBe(false);
   });
+  test("a semgrep rule id loses its config-directory prefix, so it is the same in every checkout", () => {
+    const at = (check_id: string) => normalize("semgrep", { results: [{ check_id, path: "a.ts", start: { line: 1 }, extra: { severity: "ERROR", message: "m", lines: "l" } }] })[0];
+    expect(at("tools.security.rules.custom.neo-js-mass-assignment").rule).toBe("neo-js-mass-assignment");
+    expect(at("kit.rules.custom.neo-js-mass-assignment").rule).toBe("neo-js-mass-assignment");
+    expect(at("home.neo-wt-security.tools.security.rules.merged.javascript.lang.security.audit.x").rule).toBe("javascript.lang.security.audit.x");
+    expect(at("javascript.lang.security.audit.x").rule).toBe("javascript.lang.security.audit.x");
+    expect(at("kit.rules.custom.neo-js-mass-assignment").fingerprint).toBe(at("tools.security.rules.custom.neo-js-mass-assignment").fingerprint);
+  });
+
+  test("paths are repo-relative: the repo root and the gitleaks /scan mount are stripped", () => {
+    const root = "/home/neo-wt-security";
+    const sg = normalize("semgrep", { results: [{ check_id: "r", path: `${root}/src/a.ts`, start: { line: 1 }, extra: { severity: "ERROR", message: "", lines: "x" } }] }, { root });
+    const rel = normalize("semgrep", { results: [{ check_id: "r", path: "src/a.ts", start: { line: 1 }, extra: { severity: "ERROR", message: "", lines: "x" } }] }, { root });
+    expect(sg[0].file).toBe("src/a.ts");
+    expect(sg[0].fingerprint).toBe(rel[0].fingerprint);
+    const gl = normalize("gitleaks", [{ RuleID: "aws", File: "/scan/config/.env.prod", StartLine: 2, Secret: "s" }], { root });
+    expect(gl[0].file).toBe("config/.env.prod");
+    const osv = normalize("osv", { results: [{ source: { path: `${root}/bun.lock` }, packages: [] }] }, { root });
+    expect(osv).toEqual([]);
+    const outside = normalize("gosec", { Issues: [{ rule_id: "G1", severity: "HIGH", file: "/elsewhere/a.go", line: "1", details: "d", code: "" }] }, { root });
+    expect(outside[0].file).toBe("/elsewhere/a.go"); // not under the repo: left as is
+  });
 });
