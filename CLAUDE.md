@@ -104,6 +104,19 @@ Every dispatched worker gets this automatically: the dispatch preamble (`briefWi
 `src/engine/dispatch.ts`) carries it, because a worker sent into another folder loads *that*
 project's CLAUDE.md, never this one. Don't re-type it into briefs.
 
+## Security checks (ADR-0024)
+
+The kit in `tools/security/` scans at four layers: each edited file (Claude Code hook), pre-commit,
+pre-push, and a nightly sweep (`docs/loops/security-sweep.json`). Only NEW high or critical findings
+block; a project's existing findings are its baseline (`.security/baseline.json`). Every scanner
+runs in a digest-pinned Docker image; a missing Docker only warns.
+
+- The host is a dev server but public, so the bar is a public server's, not a laptop's.
+- Install for all sessions: `bun tools/security/install.ts`. Turn on for a repo:
+  `bun ~/.claude/security/init.ts <repo>`. Full reference: `docs/security-checks.md`.
+- The rules for every session live in `~/.claude/CLAUDE.md` and, for workers, in the dispatch
+  preamble. Don't re-type them into briefs.
+
 ## Conventions
 
 - **Secrets** in `.env` (gitignored, `chmod 600`). Runtime/tenant data under `company/` is
