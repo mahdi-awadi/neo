@@ -70,6 +70,14 @@ the last section maps it onto Neo.
 > repo — one row per requirement × target, so the FILE is the memory, not the session. Definition:
 > `docs/loops/waselni-store-readiness.json` + `.prompt.md`.
 >
+> **`security-sweep` (2026-10-08, defined, not yet created on the live ledger).** Nightly `0 3 * * *`,
+> `/home/neo`, command goal `sweep.ts check --root /home` (every repo with `.security/config.json`
+> has a nightly report under 20 hours old), 3 iterations, $3 per fire, `freshSession: true`. It runs
+> `scan.sh full` per repo and reports new high/critical findings; it changes nothing in the swept
+> repos (ADR-0024). Create it with `tools/create-loop.ts docs/loops/security-sweep.json` after the
+> kit is installed (`bun tools/security/install.ts`). Definition: `docs/loops/security-sweep.json`
+> + `.prompt.md`.
+>
 > **Scheduled-loop output → operator — live (2026-07-10).** A scheduled fire now streams **only** the
 > worker's real text to the operator's Telegram chat (the admin id, resolved at fire time so a late
 > TOFU admin still works), tagged with the loop's `#project` — the same streaming style as dispatch.

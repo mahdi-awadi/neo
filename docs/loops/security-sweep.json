@@ -1,0 +1,15 @@
+{
+  "name": "security-sweep",
+  "summary": "Nightly deep security scan of every repo with the checks turned on; reports new high/critical findings (fixes nothing on its own)",
+  "folder": "/home/neo",
+  "promptFile": "security-sweep.prompt.md",
+  "goalKind": "command",
+  "goalCommand": "bun \"$HOME/.claude/security/sweep.ts\" check --root /home",
+  "goalTimeoutMs": 30000,
+  "triggerKind": "cron",
+  "cronExpr": "0 3 * * *",
+  "maxIterations": 3,
+  "budgetUsd": 3,
+  "enabledByDefault": true,
+  "freshSession": true
+}

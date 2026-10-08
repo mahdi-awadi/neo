@@ -13,7 +13,7 @@ Spec: docs/superpowers/specs/2026-10-08-shift-left-security-kit.md · ADR-0024 �
    web.ts: CPU 37.2 s → 5.9 s; wall 9–14 s at load 11–13 (≈ 6.5 s quiet). Fixtures: 30 = 30 findings.
 2. ~~install.ts + NEO_WORKER=1~~ DONE (built and tested against a temp ~/.claude; NOT run on the real one — operator step).
 3. ~~init.ts~~ DONE (.githooks with chaining; husky → .husky/<hook> line; config, baseline, gitignore).
-4. docs/loops/security-sweep.json + prompt via tools/create-loop.ts, cron `0 3 * * *`.
+4. ~~security-sweep loop~~ DONE: docs/loops/security-sweep.json + prompt + sweep.ts (goal); validated via create-loop on a scratch ledger. Live create = operator step after install.
 5. briefWithProjectDocs line in src/engine/dispatch.ts (TDD).
 6. tools/security/security-review.md → ~/.claude/commands/security-review.md.
 7. Security Rules diff for both CLAUDE.md files → file + ask_operator (do NOT save).
