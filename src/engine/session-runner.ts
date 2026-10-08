@@ -312,6 +312,8 @@ export interface SessionRun extends SessionControl {
 /** Env switch that makes the CLI emit `session_state_changed` (it is off by default). Its `idle` is
  *  the SDK's documented "authoritative turn-over signal" — see RunHandlers.onSettled. */
 export const SESSION_STATE_EVENTS_ENV = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS";
+/** Set in every worker's environment (resolvedRunDeps). */
+export const WORKER_ENV = { NEO_WORKER: "1" } as const;
 
 // Loosely-typed view of the SDK so the runner is testable with an injected fake.
 type SdkMessage = { type: string; [k: string]: unknown };
@@ -883,7 +885,9 @@ function resolvedRunDeps(deps: RunDeps, provider: WorkerModelProvider, handlers?
       reason: model.reason,
     });
   }
-  return { ...deps, model: model.model, effort: model.effort };
+  // Every worker is marked, so a Claude Code hook can tell it from the operator's own session: the
+  // security guard blocks a worker from secret files but only warns the operator (ADR-0024).
+  return { ...deps, model: model.model, effort: model.effort, env: { ...(deps.env ?? {}), ...WORKER_ENV } };
 }
 
 // Only-defined keys survive into the SDK options (so absent fields aren't sent as undefined).

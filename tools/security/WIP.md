@@ -11,7 +11,7 @@ Spec: docs/superpowers/specs/2026-10-08-shift-left-security-kit.md · ADR-0024 �
 ## Next (operator-approved TODO, in order)
 1. ~~Speed~~ DONE: rules.ts merged per-group files + osemgrep in warm containers + gitleaks in parallel.
    web.ts: CPU 37.2 s → 5.9 s; wall 9–14 s at load 11–13 (≈ 6.5 s quiet). Fixtures: 30 = 30 findings.
-2. install.ts (~/.claude/security + settings.json hook merge, idempotent) + NEO_WORKER=1 in session-runner.
+2. ~~install.ts + NEO_WORKER=1~~ DONE (built and tested against a temp ~/.claude; NOT run on the real one — operator step).
 3. init.ts (.githooks pre-commit/pre-push, chain husky/core.hooksPath, .security/config.json + baseline, .gitignore).
 4. docs/loops/security-sweep.json + prompt via tools/create-loop.ts, cron `0 3 * * *`.
 5. briefWithProjectDocs line in src/engine/dispatch.ts (TDD).

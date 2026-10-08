@@ -1189,3 +1189,25 @@ test("onTurnStart: a live Codex session reports one consumed input per turn; Cla
   await claude.done;
   expect(starts).toBe(0); // the SDK pulls input eagerly: the pipeline falls back to "all delivered"
 });
+
+// The security guard hook blocks a worker from secret files but only warns the operator's own
+// sessions; it tells them apart by NEO_WORKER (ADR-0024).
+test("every Claude worker runs with NEO_WORKER=1, one-shot and long-running", async () => {
+  const seen: Array<{ env?: Record<string, string> }> = [];
+  const oneShot = (args: { options: unknown }) => {
+    seen.push(args.options as { env?: Record<string, string> });
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s1" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: oneShot as never });
+  expect(seen[0]?.env?.NEO_WORKER).toBe("1");
+  expect(seen[0]?.env?.PATH).toBeDefined();
+
+  const { q, seenOptions } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  while (seenOptions.length === 0) await new Promise((r) => setTimeout(r, 1));
+  expect((seenOptions[0] as { env?: Record<string, string> }).env?.NEO_WORKER).toBe("1");
+  run.close();
+  await run.done;
+});
