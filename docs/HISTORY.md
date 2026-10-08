@@ -915,3 +915,17 @@ the server no longer has (reload, 6 h TTL), or a slash command with files, is re
 composer then keeps the text and the chips and shows the reason in EN or AR. Verified in Chromium at
 390/360 px, EN+AR, light+dark: one row per send, thread replies filed under the thread. Going live
 needs a daemon restart (operator-gated).
+
+### Shift-left security checks (ADR-0024, 2026-10-08)
+
+One kit in `tools/security/` scans every project at four layers: each file a worker edits (a Claude
+Code hook), pre-commit, pre-push, and a nightly sweep loop. Every scanner (semgrep, gitleaks,
+osv-scanner, trivy, gosec, hadolint, ZAP, testssl, syft) runs from a digest-pinned Docker image.
+Only new high or critical findings block; a project's existing findings are its baseline. A guard
+hook keeps workers away from secret files, and workers now run with `NEO_WORKER=1` so it can tell
+them from the operator. The write-time scan was too slow at first (36.7 s for one file); merged
+per-language rule files, osemgrep and warm, network-less containers cut its CPU time to 5.9 s.
+`install.ts` sets it up for every session, `init.ts` turns it on per repo (chaining existing git
+hooks), `/security-scan` runs it on a branch, and the dispatch preamble tells workers to fix what
+it blocks. Not installed on the host yet: install, `init` per repo and the nightly loop are
+operator steps. Reference: `docs/security-checks.md`.

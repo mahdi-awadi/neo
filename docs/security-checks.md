@@ -1,0 +1,83 @@
+# Security checks
+
+Neo's shift-left security kit lives in `tools/security/`. It scans every project the same way, early
+and cheaply, and blocks only what is new and serious. Decision record: ADR-0024. Terms: CONTEXT.md,
+"Security checks".
+
+## Layers
+
+| Layer | When | What runs | Blocks on |
+|---|---|---|---|
+| write-time | after each Edit/Write (Claude Code PostToolUse hook) | semgrep + gitleaks on the one file | new high/critical (exit 2: the agent must fix it now) |
+| pre-commit | `git commit` | semgrep + gitleaks on staged files, hadolint on staged Dockerfiles | new high/critical |
+| pre-push | `git push` | semgrep (deep) on changed files, gitleaks on the commit range, osv-scanner (dependencies), trivy (misconfig), hadolint, gosec (Go), the project's security tests | new high/critical, or failing security tests |
+| nightly | `security-sweep` loop, 03:00 | everything: all files, full git history, dependencies, trivy (vuln/misconfig/secret), images from `config.json` (+ SBOM via syft), ZAP baseline and testssl on `devUrls` | reported, never blocking |
+
+The PreToolUse **guard** hook also keeps agents away from secret files (`.env*`, keys, credential
+stores). It blocks a Neo worker (`NEO_WORKER=1`) and only warns the operator's own sessions.
+`.env.example`-style templates are always allowed.
+
+## Policy
+
+- Only **new** high or critical findings block. A project's existing findings are recorded once in
+  `.security/baseline.json` (by fingerprint): tracked, not blocking.
+- A fingerprint is tool + rule + repo-relative file + the matched code, without the line number, so
+  a finding stays known when code above it moves.
+- A secret's value is never copied into a finding or a report, only a hash of it.
+- No Docker, or a scanner that cannot start: the layer warns and passes. A scanner outage never
+  stops editing or committing.
+- Getting past a check (`--no-verify`, editing the baseline, turning a hook off) is not allowed for
+  workers (dispatch preamble). A false positive is reported to the operator.
+
+## Commands
+
+```bash
+bun tools/security/install.ts            # kit → ~/.claude/security, hooks → ~/.claude/settings.json,
+                                         # /security-scan → ~/.claude/commands; downloads the rules
+bun ~/.claude/security/init.ts <repo>    # git hooks (chains existing ones), .security/config.json,
+                                         # baseline, .gitignore lines
+bash ~/.claude/security/scan.sh file|staged|push|full|baseline <repo> [...]
+bash ~/.claude/security/update-rules.sh  # refresh semgrep packs + rebuild the merged rule files
+bash ~/.claude/security/update-images.sh # bump the pinned scanner image digests (images.env)
+bun ~/.claude/security/sweep.ts check --root /home   # the nightly loop's goal
+```
+
+The git hooks find the kit at `$NEO_SECURITY_KIT`, default `~/.claude/security`. Without it they
+warn and still run any hook they chain.
+
+`/security-scan` (a Claude Code command) runs the push layer on the branch, triages, then the
+built-in `/security-review`.
+
+## Per-project settings — `.security/config.json`
+
+| Key | Meaning |
+|---|---|
+| `devUrls` | Dev URLs for the nightly ZAP baseline scan and testssl. Never production. |
+| `images` | Docker images to scan nightly (vulnerabilities, secrets) and to write an SBOM for. |
+| `testCmd` | The project's security test command, run at pre-push (for example authz tests). |
+
+Reports go to `.security/reports/<layer>-<time>.json` (30 kept per layer, gitignored); SBOMs to
+`.security/sbom/`. Commit `config.json` and `baseline.json`.
+
+## Speed (write-time)
+
+A write-time scan loads per-language merged rule files (`rules.ts build`, run by
+`update-rules.sh`), runs osemgrep in the warm `neo-sec-semgrep` container, and runs gitleaks at the
+same time in `neo-sec-gitleaks`. Both containers have no network, a read-only root and only the rules
+mounted; the files to scan are streamed in and removed after. For `src/frontends/web.ts` the semgrep
+CPU time fell from 37.2 s to 5.9 s. `docker rm -f neo-sec-semgrep neo-sec-gitleaks` is always safe:
+the next scan starts them again.
+
+## Rules
+
+- Registry packs (downloaded, gitignored): the OWASP core and cross-language classes for every
+  file, language packs by file type, `security-audit` at the deep layers. The list lives in
+  `tools/security/rules.ts`.
+- Custom rules (`rules/custom/`, 20 for JS/TS, Go and Python) cover what the packs miss in our
+  stacks: mass assignment, a price trusted from the client, weak randomness for secrets, secrets in
+  logs, cookies without flags, CORS wildcard with credentials, LLM output reaching a sink, SSRF from
+  a user URL, path traversal, error details sent to the client, unverified JWTs and raw HTML. Each has a fixture in
+  `rules/tests/` (deliberately vulnerable code, never scanned as project code). `// ruleid:` marks a
+  line that must match and `// ok:` one that must not. Run them with `semgrep --test` on a folder
+  holding `neo-<lang>.yaml` next to `neo-<lang>.<ext>` (they need Docker, so `bun test` does not run
+  them).

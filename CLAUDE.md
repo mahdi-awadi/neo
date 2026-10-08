@@ -178,3 +178,5 @@ Greptile) are noted but not adopted; these principles are:
   `loop_defs` by hand. Checked-in definitions live in `docs/loops/`.
 - `docs/HISTORY.md` — the phase-by-phase build narrative (moved out of this file to stay lean).
 - `docs/CONFIG.md` — full config reference (env vars + `config.json` knobs).
+- `tools/security/` + `docs/security-checks.md` — the shift-left security kit (ADR-0024): scan layers,
+  install/init, the nightly `security-sweep` loop.
