@@ -89,4 +89,42 @@ describe("security init", () => {
   test("not a git repo: refused", () => {
     expect(() => initRepo(mkdtempSync(join(tmpdir(), "neo-sec-nogit-")), noBaseline)).toThrow(/git/);
   });
+  test("an absolute core.hooksPath is chained by its absolute path", () => {
+    const r = repo();
+    const global = mkdtempSync(join(tmpdir(), "neo-sec-ghooks-"));
+    writeFileSync(join(global, "pre-commit"), "#!/bin/sh\necho global-hook-ran\n");
+    chmodSync(join(global, "pre-commit"), 0o755);
+    git(r, "config", "core.hooksPath", global);
+    initRepo(r, noBaseline);
+    const body = readFileSync(join(r, ".githooks", "pre-commit"), "utf8");
+    expect(body).toContain(`prev="${global}/pre-commit"`);
+    const run = Bun.spawnSync(["bash", join(r, ".githooks", "pre-commit")], { cwd: r, env: { ...process.env, NEO_SECURITY_KIT: "/nonexistent" } });
+    expect(run.stdout.toString()).toContain("global-hook-ran");
+  });
+
+  test("pre-push scans exactly the pushed commits (from the refs on stdin), and skips a branch deletion", () => {
+    const r = repo();
+    initRepo(r, noBaseline);
+    const body = readFileSync(join(r, ".githooks", "pre-push"), "utf8");
+    expect(body).toContain("--not --remotes");
+    // A fake kit records the arguments it was called with.
+    const kit = mkdtempSync(join(tmpdir(), "neo-sec-kit-"));
+    writeFileSync(join(kit, "scan.sh"), 'echo "$@" > "$(dirname "$0")/args"\n');
+    const push = (stdin: string) =>
+      Bun.spawnSync(["bash", join(r, ".githooks", "pre-push"), "origin", "x"], { cwd: r, stdin: new TextEncoder().encode(stdin), env: { ...process.env, NEO_SECURITY_KIT: kit } });
+    expect(push("refs/heads/dev abc123 refs/heads/dev 0000000000000000000000000000000000000000\n").exitCode).toBe(0);
+    expect(readFileSync(join(kit, "args"), "utf8").trim()).toBe(`push ${r} abc123 --not --remotes`);
+    Bun.spawnSync(["rm", join(kit, "args")]);
+    expect(push("(delete) 0000000000000000000000000000000000000000 refs/heads/old def456\n").exitCode).toBe(0);
+    expect(existsSync(join(kit, "args"))).toBe(false);
+  });
+
+  test("husky: a clone without the kit still commits (husky runs hooks with sh -e)", () => {
+    const r = repo();
+    mkdirSync(join(r, ".husky", "_"), { recursive: true });
+    git(r, "config", "core.hooksPath", ".husky/_");
+    initRepo(r, noBaseline);
+    const run = Bun.spawnSync(["sh", "-e", join(r, ".husky", "pre-commit")], { cwd: r, env: { ...process.env, NEO_SECURITY_KIT: "/nonexistent" } });
+    expect(run.exitCode).toBe(0);
+  });
 });

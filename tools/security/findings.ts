@@ -7,9 +7,10 @@
 //
 //   bun tools/security/findings.ts report   [--baseline f] [--out f] [--label s] [--root repo] tool:raw.json ...
 //   bun tools/security/findings.ts baseline --baseline f [--root repo] tool:raw.json ...
-//   (exit 1 from `report` = new high/critical findings)
+//   (exit 1 from `report` = new high/critical findings; exit 3 = the baseline is unreadable, warn only)
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Tool = "semgrep" | "gitleaks" | "osv" | "trivy" | "gosec" | "hadolint" | "zap";
@@ -73,7 +74,22 @@ export function relPath(path: string, root?: string): string {
   return p;
 }
 
-export function normalize(tool: Tool, raw: Any, ctx: { root?: string } = {}): Finding[] {
+/** Semgrep without a login reports `"requires login"` for the matched code, so the code is read from
+ *  the scanned source by its byte offsets. Unreadable: the reported lines, else the position. */
+function matchedCode(r: Any, base: string | undefined, cache: Map<string, Buffer | null>): string {
+  const lines = String(r.extra?.lines ?? "");
+  const file = String(r.path ?? "");
+  if (base && file && Number.isInteger(r.start?.offset) && Number.isInteger(r.end?.offset)) {
+    const path = isAbsolute(file) ? file : join(base, file);
+    if (!cache.has(path)) cache.set(path, existsSync(path) ? readFileSync(path) : null);
+    const buf = cache.get(path);
+    if (buf) return squash(buf.subarray(r.start.offset, r.end.offset).toString("utf8"));
+  }
+  return lines && lines !== "requires login" ? squash(lines) : `@${r.start?.line ?? 0}:${r.start?.col ?? 0}`;
+}
+
+export function normalize(tool: Tool, raw: Any, ctx: { root?: string; src?: string } = {}): Finding[] {
+  const sources = new Map<string, Buffer | null>();
   // Every finding is built here, so its file and rule are canonical before the fingerprint is taken.
   const mk = (t: Tool, rule: string, severity: Severity, file: string, line: number, message: string, key: string) =>
     make(t, ruleId(rule), severity, relPath(file, ctx.root), line, message, key);
@@ -83,7 +99,7 @@ export function normalize(tool: Tool, raw: Any, ctx: { root?: string } = {}): Fi
         let sev = word(r.extra?.severity);
         const m = r.extra?.metadata ?? {};
         if (sev === "medium" && String(m.impact).toUpperCase() === "HIGH" && String(m.confidence).toUpperCase() !== "LOW") sev = "high";
-        return mk("semgrep", r.check_id, sev, r.path, r.start?.line ?? 0, r.extra?.message, squash(r.extra?.lines));
+        return mk("semgrep", r.check_id, sev, r.path, r.start?.line ?? 0, r.extra?.message, matchedCode(r, ctx.src ?? ctx.root, sources));
       });
     case "gitleaks":
       return (Array.isArray(raw) ? raw : []).map((r: Any) =>
@@ -130,7 +146,7 @@ export function summarize(findings: Finding[]): { block: boolean; counts: Record
   return { block: counts.critical + counts.high > 0, counts };
 }
 
-function load(spec: string, root?: string): Finding[] {
+function load(spec: string, ctx: { root?: string; src?: string }): Finding[] {
   const i = spec.indexOf(":");
   const tool = spec.slice(0, i) as Tool;
   const path = spec.slice(i + 1);
@@ -138,7 +154,7 @@ function load(spec: string, root?: string): Finding[] {
   const text = readFileSync(path, "utf8").trim();
   if (!text) return [];
   try {
-    return normalize(tool, JSON.parse(text), { root });
+    return normalize(tool, JSON.parse(text), ctx);
   } catch {
     console.error(`[security] could not parse ${tool} output ${path}`);
     return [];
@@ -151,15 +167,17 @@ if (import.meta.main) {
   let outPath: string | undefined;
   let label = "scan";
   let root: string | undefined;
+  let src: string | undefined;
   const specs: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--baseline") baselinePath = rest[++i];
     else if (rest[i] === "--out") outPath = rest[++i];
     else if (rest[i] === "--label") label = rest[++i];
     else if (rest[i] === "--root") root = rest[++i];
+    else if (rest[i] === "--src") src = rest[++i]; // where the scanned files are (staged: the index copy)
     else specs.push(rest[i]);
   }
-  const all = specs.flatMap((spec) => load(spec, root));
+  const all = specs.flatMap((spec) => load(spec, { root, src }));
   if (cmd === "baseline") {
     if (!baselinePath) throw new Error("--baseline required");
     const fingerprints = [...new Set(all.map((f) => f.fingerprint))].sort();
@@ -167,7 +185,17 @@ if (import.meta.main) {
     console.log(`[security] baseline written: ${fingerprints.length} findings tracked → ${baselinePath}`);
     process.exit(0);
   }
-  const baseline = baselinePath && existsSync(baselinePath) ? (JSON.parse(readFileSync(baselinePath, "utf8")) as Baseline) : undefined;
+  let baseline: Baseline | undefined;
+  if (baselinePath && existsSync(baselinePath)) {
+    try {
+      baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as Baseline;
+    } catch {
+      // A broken baseline (e.g. merge-conflict markers) must not read as "new findings": that would
+      // block every edit. Exit 3 = scan unusable, warn only.
+      console.error(`[security] warn: ${baselinePath} is not valid JSON (merge conflict?) — fix it; scan skipped`);
+      process.exit(3);
+    }
+  }
   const fresh = filterNew(all, baseline).sort((a, b) => RANK[b.severity] - RANK[a.severity]);
   const { block, counts } = summarize(fresh);
   if (outPath) writeFileSync(outPath, `${JSON.stringify({ label, at: new Date().toISOString(), counts, findings: fresh }, null, 2)}\n`);

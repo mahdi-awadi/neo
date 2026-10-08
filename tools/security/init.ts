@@ -6,7 +6,7 @@
 //
 //   bun ~/.claude/security/init.ts <repo> [--no-baseline]
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 const HOOKS = { "pre-commit": "staged", "pre-push": "push" } as const;
 type Hook = keyof typeof HOOKS;
@@ -21,9 +21,18 @@ function git(repo: string, ...args: string[]): { ok: boolean; out: string } {
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim() };
 }
 
-/** Our .githooks script: scan, then run the hook that was there before (`prev`, repo-relative). */
+/** Our .githooks script: scan, then run the hook that was there before (`prev`: repo-relative, or
+ *  absolute for a global or worktree hooks folder). */
 function hookScript(hook: Hook, prev: string | undefined): string {
   const pushInput = hook === "pre-push"; // pre-push gets the refs on stdin; the chained hook needs them too
+  const scan =
+    hook === "pre-push"
+      ? [
+          // Scan exactly the commits being pushed and not yet on any remote. Deleting a ref pushes none.
+          'shas=""; while read -r _ lsha _ _; do [[ -n "$lsha" && ! "$lsha" =~ ^0+$ ]] && shas="${shas:+$shas }$lsha"; done <<<"$input"',
+          'if [[ -n "$shas" ]]; then bash "$kit/scan.sh" push "$repo" "$shas --not --remotes" || exit 1; fi',
+        ]
+      : [`bash "$kit/scan.sh" ${HOOKS[hook]} "$repo" || exit 1`];
   return [
     "#!/usr/bin/env bash",
     `# ${MARK}: Neo security checks (tools/security, ADR-0024). Recreate with: bun ~/.claude/security/init.ts <repo>`,
@@ -32,12 +41,12 @@ function hookScript(hook: Hook, prev: string | undefined): string {
     'repo="$(git rev-parse --show-toplevel)"',
     ...(pushInput ? ['input="$(cat)"'] : []),
     'if [[ -f "$kit/scan.sh" ]]; then',
-    `  bash "$kit/scan.sh" ${HOOKS[hook]} "$repo" || exit 1`,
+    ...scan.map((l) => `  ${l}`),
     "else",
     '  echo "[security] warn: security kit not installed at $kit — scan skipped" >&2',
     "fi",
     ...(prev
-      ? [`prev="$repo/${prev}"`, `if [[ -x "$prev" ]]; then exec "$prev" "$@"${pushInput ? ' <<<"$input"' : ""}; fi`]
+      ? [`prev="${isAbsolute(prev) ? prev : `$repo/${prev}`}"`, `if [[ -x "$prev" ]]; then exec "$prev" "$@"${pushInput ? ' <<<"$input"' : ""}; fi`]
       : []),
     "exit 0",
     "",
@@ -56,9 +65,10 @@ function previousHook(repo: string, hook: Hook, hooksPath: string): string | und
     renameSync(ours, `${ours}.pre-neo`); // a project hook already in .githooks: keep it, chained
     return `.githooks/${hook}.pre-neo`;
   }
-  if (hooksPath && hooksPath !== ".githooks") return existsSync(join(repo, hooksPath, hook)) ? `${hooksPath}/${hook}` : undefined;
+  // core.hooksPath may be global and absolute; --git-path is absolute in a worktree. resolve() takes both.
+  if (hooksPath && hooksPath !== ".githooks") return existsSync(resolve(repo, hooksPath, hook)) ? join(hooksPath, hook) : undefined;
   const legacy = git(repo, "rev-parse", "--git-path", `hooks/${hook}`).out;
-  return legacy && existsSync(join(repo, legacy)) ? legacy : undefined;
+  return legacy && existsSync(resolve(repo, legacy)) ? legacy : undefined;
 }
 
 function installGithooks(repo: string, hooksPath: string): void {
@@ -76,7 +86,8 @@ function installHusky(repo: string): void {
     const path = join(repo, ".husky", hook);
     const body = existsSync(path) ? readFileSync(path, "utf8") : "";
     if (body.includes(MARK)) continue;
-    const line = `bash "${KIT_DIR}/scan.sh" ${HOOKS[hook]} "$(git rev-parse --show-toplevel)" # ${MARK}\n`;
+    // husky runs hooks with `sh -e`: without the kit (a fresh clone) the line must pass, not fail.
+    const line = `kit="${KIT_DIR}"; [ ! -f "$kit/scan.sh" ] || bash "$kit/scan.sh" ${HOOKS[hook]} "$(git rev-parse --show-toplevel)" # ${MARK}\n`;
     writeFileSync(path, body && !body.endsWith("\n") ? `${body}\n${line}` : body + line);
     chmodSync(path, 0o755);
   }

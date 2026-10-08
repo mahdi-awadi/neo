@@ -20,7 +20,7 @@ const EDIT_MATCHER = "Edit|Write|MultiEdit|NotebookEdit";
 /** The post-edit hook gives the scan time to finish; scan.sh itself stops at 60 s. */
 const POST_EDIT_TIMEOUT_S = 90;
 /** Our entries are recognised by their script, wherever the kit was installed. */
-const OURS = /\/hooks\/(guard|post-edit)\.sh$/;
+const OURS = /\/security\/hooks\/(guard|post-edit)\.sh$/;
 /** Files in the source kit that are build notes, not part of the installed kit. */
 const NOT_INSTALLED = new Set(["WIP.md"]);
 

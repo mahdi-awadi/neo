@@ -9,13 +9,15 @@ and cheaply, and blocks only what is new and serious. Decision record: ADR-0024.
 | Layer | When | What runs | Blocks on |
 |---|---|---|---|
 | write-time | after each Edit/Write (Claude Code PostToolUse hook) | semgrep + gitleaks on the one file | new high/critical (exit 2: the agent must fix it now) |
-| pre-commit | `git commit` | semgrep + gitleaks on staged files, hadolint on staged Dockerfiles | new high/critical |
-| pre-push | `git push` | semgrep (deep) on changed files, gitleaks on the commit range, osv-scanner (dependencies), trivy (misconfig), hadolint, gosec (Go), the project's security tests | new high/critical, or failing security tests |
+| pre-commit | `git commit` | semgrep + gitleaks on the staged content (the index, not the working copy), hadolint on staged Dockerfiles | new high/critical |
+| pre-push | `git push` | the commits not yet on any remote (from the pushed refs): semgrep (deep) on their files, gitleaks on those commits, osv-scanner (dependencies), trivy (misconfig), hadolint, gosec (Go), the project's security tests | new high/critical, or failing security tests |
 | nightly | `security-sweep` loop, 03:00 | everything: all files, full git history, dependencies, trivy (vuln/misconfig/secret), images from `config.json` (+ SBOM via syft), ZAP baseline and testssl on `devUrls` | reported, never blocking |
 
-The PreToolUse **guard** hook also keeps agents away from secret files (`.env*`, keys, credential
-stores). It blocks a Neo worker (`NEO_WORKER=1`) and only warns the operator's own sessions.
-`.env.example`-style templates are always allowed.
+The PreToolUse **guard** hook (`guard.ts`) also keeps agents away from secret files (`.env*`, keys,
+credential stores). It checks the paths a call names: file tools' paths, Grep's path and glob, and
+each path token of a Bash command (not commit messages, `--env-file` arguments or lines written into
+an ignore file). It blocks a Neo worker (`NEO_WORKER=1`) and only warns the operator's own sessions.
+Templates (`*.example`, `.sample`, `.template`, `.dist`, `.defaults`) are always allowed.
 
 ## Policy
 
@@ -24,8 +26,10 @@ stores). It blocks a Neo worker (`NEO_WORKER=1`) and only warns the operator's o
 - A fingerprint is tool + rule + repo-relative file + the matched code, without the line number, so
   a finding stays known when code above it moves.
 - A secret's value is never copied into a finding or a report, only a hash of it.
-- No Docker, or a scanner that cannot start: the layer warns and passes. A scanner outage never
-  stops editing or committing.
+- No Docker, a scanner that cannot start or finish, or an unreadable baseline (a merge conflict in
+  `baseline.json`): the layer warns and passes. A scanner outage never stops editing or committing.
+- A fingerprint uses the matched code, read from the scanned file (semgrep without a login reports
+  only "requires login" for it).
 - Getting past a check (`--no-verify`, editing the baseline, turning a hook off) is not allowed for
   workers (dispatch preamble). A false positive is reported to the operator.
 
@@ -57,16 +61,17 @@ built-in `/security-review`.
 | `testCmd` | The project's security test command, run at pre-push (for example authz tests). |
 
 Reports go to `.security/reports/<layer>-<time>.json` (30 kept per layer, gitignored); SBOMs to
-`.security/sbom/`. Commit `config.json` and `baseline.json`.
+`.security/sbom/`. Commit `config.json` and `baseline.json`. A repo without `config.json` (never
+`init`ed) gets no files at all: the write-time hook only prints there.
 
 ## Speed (write-time)
 
 A write-time scan loads per-language merged rule files (`rules.ts build`, run by
-`update-rules.sh`), runs osemgrep in the warm `neo-sec-semgrep` container, and runs gitleaks at the
-same time in `neo-sec-gitleaks`. Both containers have no network, a read-only root and only the rules
+`update-rules.sh`), runs osemgrep in a warm `neo-sec-semgrep-<kit hash>` container, and runs gitleaks at
+the same time in `neo-sec-gitleaks-<kit hash>` (one pair per kit copy). Both containers have no network, a read-only root and only the rules
 mounted; the files to scan are streamed in and removed after. For `src/frontends/web.ts` the semgrep
-CPU time fell from 37.2 s to 5.9 s. `docker rm -f neo-sec-semgrep neo-sec-gitleaks` is always safe:
-the next scan starts them again.
+CPU time fell from 37.2 s to 5.9 s. A run inside a container stops itself after 50 s (write-time) or 30 min, so a hook that times out
+leaves nothing running. `docker rm -f` on them is always safe: the next scan starts them again.
 
 ## Rules
 

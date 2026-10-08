@@ -3,11 +3,13 @@
 #
 #   scan.sh file   <repo> <file>...   write-time (Claude Code hook): semgrep + gitleaks on the files
 #   scan.sh staged <repo>             pre-commit: staged files only, < ~10 s
-#   scan.sh push   <repo> [range]     pre-push: changed files, commit range, deps, Dockerfiles, security tests
+#   scan.sh push   <repo> [log-opts]  pre-push: the commits not yet pushed (default "HEAD --not --remotes"),
+#                                     their files, deps, Dockerfiles, security tests
 #   scan.sh full   <repo>             nightly: everything, full git history, images, SBOM, DAST on dev
 #   scan.sh baseline <repo>           record today's findings as the baseline (tracked, not blocking)
 #
-# Exit 1 = new high/critical findings (blocks). Exit 0 = clean or only baselined/low findings.
+# Exit 1 = new high/critical findings (blocks). Exit 0 = clean, only baselined/low findings, or a scan
+# that could not run (it warns). Reports are written only for repos with .security/config.json.
 # Per-project settings live in <repo>/.security/config.json (devUrls, images, testCmd, zapAuth).
 set -uo pipefail
 # shellcheck disable=SC1091
@@ -18,35 +20,43 @@ cfg="$repo/.security/config.json"; baseline="$repo/.security/baseline.json"
 work="$(mktemp -d /tmp/neo-sec.XXXXXX)"; trap 'rm -rf "$work"' EXIT
 specs=()
 
-cfg_get() { [[ -f "$cfg" ]] && bun -e "const c=JSON.parse(require('fs').readFileSync('$cfg','utf8'));const v=c[process.argv[1]];if(v!==undefined)console.log(Array.isArray(v)?v.join('\n'):typeof v==='object'?JSON.stringify(v):v)" "$1" 2>/dev/null; }
+src="$repo" # where the scanned files are read from (staged: a copy of the index)
+# Inner limit for one semgrep/gitleaks run in its warm container, so a hook killed by its own timeout
+# never leaves a scan running there. The write-time hook allows 60 s.
+inner_timeout=$([[ "$mode" == file ]] && echo 50 || echo 1800)
+
+cfg_get() { # key → the value (arrays one per line)
+  [[ -f "$cfg" ]] && bun -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=c[process.argv[2]];if(v!==undefined)console.log(Array.isArray(v)?v.join("\n"):typeof v==="object"?JSON.stringify(v):v)' "$cfg" "$1" 2>/dev/null
+}
 
 if ! sec_have_docker; then sec_warn "docker unavailable — security scan skipped"; exit 0; fi
 
 # Semgrep and file-gitleaks run in the background (both in warm containers); report() waits for them.
-run_semgrep() { # files...
+run_semgrep() { # repo-relative files...
   (($#)) || return 0
-  local rel=() f; for f in "$@"; do rel+=("${f#"$repo"/}"); done
+  local rel=("$@")
   local deep=(); [[ "${SEC_DEEP:-0}" == 1 ]] && deep=(--deep)
   specs+=("semgrep:$work/semgrep.json")
   (
     mapfile -t configs < <(bun "$SEC_KIT/rules.ts" configs "${deep[@]}" --base /kit/rules "${rel[@]}")
     sec_warm "$SEC_SEMGREP_CTR" "$SEMGREP_IMAGE" || { sec_warn "semgrep container did not start — skipped"; exit 0; }
-    id="$(sec_stage "$SEC_SEMGREP_CTR" "$repo" "${rel[@]}")" || { sec_warn "could not stage files for semgrep — skipped"; exit 0; }
-    docker exec -w "/scan/$id" "$SEC_SEMGREP_CTR" semgrep scan --experimental --metrics=off --disable-version-check \
-      --quiet --json --timeout 20 "${configs[@]}" "${rel[@]}" > "$work/semgrep.json" 2>"$work/semgrep.err"
+    id="$(sec_stage "$SEC_SEMGREP_CTR" "$src" "${rel[@]}")" || { sec_warn "could not stage files for semgrep — skipped"; exit 0; }
+    docker exec -w "/scan/$id" "$SEC_SEMGREP_CTR" timeout "$inner_timeout" semgrep scan --experimental --metrics=off \
+      --disable-version-check --quiet --json --timeout 20 "${configs[@]}" "${rel[@]}" > "$work/semgrep.json" 2>"$work/semgrep.err" \
+      || [[ -s "$work/semgrep.json" ]] || sec_warn "semgrep did not finish (timeout or error) — its findings are missing"
     sec_unstage "$SEC_SEMGREP_CTR" "$id"
   ) &
 }
 
-run_gitleaks_files() { # files...
+run_gitleaks_files() { # repo-relative files...
   (($#)) || return 0
-  local rel=() f; for f in "$@"; do [[ -f "$f" ]] && rel+=("${f#"$repo"/}"); done
+  local rel=() f; for f in "$@"; do [[ -f "$src/$f" ]] && rel+=("$f"); done
   ((${#rel[@]})) || return 0
   specs+=("gitleaks:$work/gitleaks-files.json")
   (
     sec_warm "$SEC_GITLEAKS_CTR" "$GITLEAKS_IMAGE" || { sec_warn "gitleaks container did not start — skipped"; exit 0; }
-    id="$(sec_stage "$SEC_GITLEAKS_CTR" "$repo" "${rel[@]}")" || { sec_warn "could not stage files for gitleaks — skipped"; exit 0; }
-    docker exec -w "/scan/$id" "$SEC_GITLEAKS_CTR" gitleaks dir . --no-banner --exit-code 0 --report-format json \
+    id="$(sec_stage "$SEC_GITLEAKS_CTR" "$src" "${rel[@]}")" || { sec_warn "could not stage files for gitleaks — skipped"; exit 0; }
+    docker exec -w "/scan/$id" "$SEC_GITLEAKS_CTR" timeout "$inner_timeout" gitleaks dir . --no-banner --exit-code 0 --report-format json \
       --report-path "/tmp/$id.json" >/dev/null 2>&1
     docker exec "$SEC_GITLEAKS_CTR" cat "/tmp/$id.json" > "$work/gitleaks-files.json" 2>/dev/null
     docker exec "$SEC_GITLEAKS_CTR" rm -f "/tmp/$id.json" >/dev/null 2>&1
@@ -55,16 +65,23 @@ run_gitleaks_files() { # files...
 }
 
 run_gitleaks_git() { # log-opts
-  docker run --rm -v "$repo:$repo:ro" -v "$work:/out" -w "$repo" "$GITLEAKS_IMAGE" git "$repo" --no-banner \
-    --exit-code 0 --log-opts="$1" --report-format json --report-path /out/gitleaks-git.json >/dev/null 2>&1 || true
-  specs+=("gitleaks:$work/gitleaks-git.json")
+  # A worktree's .git is a file pointing at the main repo's git dir: mount that too, or gitleaks sees
+  # no repository and reports "no leaks" for history it never read.
+  local common mounts=(-v "$repo:$repo:ro")
+  common="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  [[ -n "$common" && "$common" != "$repo/.git" ]] && mounts+=(-v "$common:$common:ro")
+  mkdir -p "$work/gl"
+  docker run --rm "${mounts[@]}" -v "$work/gl:/out" -w "$repo" "$GITLEAKS_IMAGE" git "$repo" --no-banner \
+    --exit-code 0 --log-opts="$1" --report-format json --report-path /out/gitleaks-git.json >"$work/gl/err" 2>&1
+  [[ -f "$work/gl/gitleaks-git.json" ]] || sec_warn "gitleaks history scan failed: $(tail -1 "$work/gl/err")"
+  specs+=("gitleaks:$work/gl/gitleaks-git.json")
 }
 
-run_hadolint() { # dockerfiles...
+run_hadolint() { # repo-relative dockerfiles...
   local f n=0
   for f in "$@"; do
     n=$((n + 1))
-    docker run --rm -i "$HADOLINT_IMAGE" hadolint --no-fail -f json - < "$f" 2>/dev/null \
+    docker run --rm -i "$HADOLINT_IMAGE" hadolint --no-fail -f json - < "$src/$f" 2>/dev/null \
       | bun -e "const a=JSON.parse(await Bun.stdin.text()||'[]');console.log(JSON.stringify(a.map(x=>({...x,file:process.argv[1]}))))" "$f" \
       > "$work/hadolint-$n.json" || true
     specs+=("hadolint:$work/hadolint-$n.json")
@@ -98,41 +115,52 @@ run_tests() {
 
 report() { # label
   wait # the background scanners
-  mkdir -p "$repo/.security/reports"
-  local out="$repo/.security/reports/$1-$(date +%Y%m%d-%H%M%S).json"
-  bun "$SEC_KIT/findings.ts" report --root "$repo" --baseline "$baseline" --out "$out" --label "$1" "${specs[@]}"
-  local rc=$?
+  local out=() rc
+  if [[ -f "$cfg" ]]; then # only a repo that turned the checks on (init.ts) gets report files
+    mkdir -p "$repo/.security/reports"
+    out=(--out "$repo/.security/reports/$1-$(date +%Y%m%d-%H%M%S).json")
+  fi
+  bun "$SEC_KIT/findings.ts" report --root "$repo" --src "$src" --baseline "$baseline" "${out[@]}" --label "$1" "${specs[@]}"
+  rc=$?
   ls -1t "$repo/.security/reports/$1-"*.json 2>/dev/null | tail -n +31 | xargs -r rm -f # keep 30 per layer
+  [[ $rc -eq 3 ]] && return 0 # the baseline is unreadable: findings.ts warned; never block on that
   return $rc
 }
 
-list_dockerfiles() { git -C "$repo" ls-files | grep -Ei '(^|/)(Dockerfile[^/]*|[^/]*\.dockerfile)$' | sed "s#^#$repo/#"; }
+is_dockerfile() { [[ "${1##*/}" =~ ^Dockerfile|\.dockerfile$ ]]; }
+list_dockerfiles() { git -C "$repo" ls-files | while read -r f; do is_dockerfile "$f" && echo "$f"; done; }
+scannable() { local f; for f in "$@"; do sec_scannable "$src/$f" && echo "$f"; done; }
 
 case "$mode" in
   file)
-    files=(); for f in "$@"; do sec_scannable "$f" && files+=("$f"); done
+    rel=(); for f in "$@"; do f="$(realpath -m "$f")"; [[ "$f" == "$repo/"* ]] && rel+=("${f#"$repo"/}"); done
+    mapfile -t files < <(scannable "${rel[@]}")
     ((${#files[@]})) || exit 0
     run_semgrep "${files[@]}"; run_gitleaks_files "${files[@]}"
     report write ;;
   staged)
-    mapfile -t files < <(git -C "$repo" diff --cached --name-only --diff-filter=ACMR | sed "s#^#$repo/#")
-    keep=(); dfs=(); for f in "${files[@]}"; do sec_scannable "$f" && keep+=("$f"); [[ "${f##*/}" =~ ^Dockerfile|\.dockerfile$ ]] && dfs+=("$f"); done
-    run_semgrep "${keep[@]}"; run_gitleaks_files "${files[@]}"; run_hadolint "${dfs[@]}"
+    # Scan what will be committed: the index, not the working tree (a staged secret removed from the
+    # working copy afterwards is still committed).
+    mapfile -t staged < <(git -C "$repo" diff --cached --name-only --diff-filter=ACMR)
+    ((${#staged[@]})) || exit 0
+    src="$work/idx"; mkdir -p "$src"
+    git -C "$repo" checkout-index --prefix="$src/" -- "${staged[@]}" 2>/dev/null
+    mapfile -t files < <(scannable "${staged[@]}")
+    dfs=(); for f in "${staged[@]}"; do is_dockerfile "$f" && dfs+=("$f"); done
+    run_semgrep "${files[@]}"; run_gitleaks_files "${staged[@]}"; run_hadolint "${dfs[@]}"
     report commit ;;
   push)
-    range="${1:-}"
-    if [[ -z "$range" ]]; then
-      up="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" && range="$up..HEAD" || range="HEAD~20..HEAD"
-    fi
-    mapfile -t files < <(git -C "$repo" diff --name-only --diff-filter=ACMR "${range%%..*}" HEAD 2>/dev/null | sed "s#^#$repo/#")
-    keep=(); for f in "${files[@]}"; do sec_scannable "$f" && keep+=("$f"); done
+    # The commits not yet on any remote. The pre-push hook passes "<local sha>... --not --remotes".
+    range="${1:-HEAD --not --remotes}"; read -ra logargs <<<"$range"
+    mapfile -t changed < <(git -C "$repo" log --name-only --format= --diff-filter=ACMR "${logargs[@]}" 2>/dev/null | sort -u)
+    mapfile -t files < <(scannable "${changed[@]}")
     mapfile -t dfs < <(list_dockerfiles)
-    SEC_DEEP=1 run_semgrep "${keep[@]}"; run_gitleaks_git "$range"; run_osv; run_trivy_fs misconfig; run_hadolint "${dfs[@]}"
-    printf '%s\n' "${files[@]}" | grep -q '\.go$' && run_gosec
+    SEC_DEEP=1 run_semgrep "${files[@]}"; run_gitleaks_git "$range"; run_osv; run_trivy_fs misconfig; run_hadolint "${dfs[@]}"
+    printf '%s\n' "${changed[@]}" | grep -q '\.go$' && run_gosec
     rc=0; report push || rc=1; run_tests || rc=1; exit $rc ;;
   full|baseline)
-    mapfile -t all < <(git -C "$repo" ls-files | sed "s#^#$repo/#")
-    keep=(); for f in "${all[@]}"; do sec_scannable "$f" && keep+=("$f"); done
+    mapfile -t all < <(git -C "$repo" ls-files)
+    mapfile -t keep < <(scannable "${all[@]}")
     mapfile -t dfs < <(list_dockerfiles)
     SEC_DEEP=1 run_semgrep "${keep[@]}"; run_gitleaks_git "--all"; run_osv; run_trivy_fs vuln,misconfig,secret
     run_hadolint "${dfs[@]}"; run_gosec
@@ -149,11 +177,13 @@ case "$mode" in
       n=0
       while read -r url; do
         [[ -n "$url" ]] || continue; n=$((n + 1))
-        chmod 777 "$work"
-        docker run --rm -v "$work:/zap/wrk" "$ZAP_IMAGE" zap-baseline.py -t "$url" -J "zap-$n.json" -I -m 3 >/dev/null 2>&1 || true
-        specs+=("zap:$work/zap-$n.json")
+        # ZAP runs as its own user: open only its folder, never $work (raw scanner output lives there).
+        mkdir -p "$work/zap"; chmod 777 "$work/zap"
+        docker run --rm -v "$work/zap:/zap/wrk" "$ZAP_IMAGE" zap-baseline.py -t "$url" -J "zap-$n.json" -I -m 3 >/dev/null 2>&1 || true
+        specs+=("zap:$work/zap/zap-$n.json")
         host="${url#*://}"; host="${host%%/*}"
         if [[ "$url" == https://* ]]; then
+          mkdir -p "$repo/.security/reports"
           docker run --rm "$TESTSSL_IMAGE" --quiet --severity HIGH --color 0 "$host" > "$repo/.security/reports/testssl-$host.txt" 2>&1 || true
           grep -E 'HIGH|CRITICAL' "$repo/.security/reports/testssl-$host.txt" | head -5 | sed 's/^/[security] testssl: /'
         fi

@@ -47,8 +47,8 @@ The deep layers (push, nightly) use the same merged files plus `security-audit`.
 
 ## Consequences
 
-- One container per scanner (`neo-sec-semgrep`, `neo-sec-gitleaks`) stays up, idle. It is
-  recreated when the image digest or the kit path changes. `docker rm -f` it at any time: the next
-  scan starts it again.
+- One container per scanner and kit copy (`neo-sec-semgrep-<kit hash>`, `neo-sec-gitleaks-<kit
+  hash>`) stays up, idle. It is recreated when the image digest changes. `docker rm -f` it at any
+  time: the next scan starts it again.
 - Findings name repo-relative paths and rule ids without the config's directory prefix, so a
   baseline gives the same fingerprints in every checkout and worktree.

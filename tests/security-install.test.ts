@@ -37,6 +37,13 @@ describe("security kit install", () => {
     expect(moved.hooks.PreToolUse![0]!.hooks[0]!.command).toBe("bash /opt/kit/hooks/guard.sh");
   });
 
+  test("a user's own hooks/guard.sh is not mistaken for ours", () => {
+    const mine = { matcher: "Bash", hooks: [{ type: "command", command: "bash /home/me/hooks/guard.sh" }] };
+    const after = mergeHooks({ hooks: { PreToolUse: [mine] } }, KIT) as { hooks: Record<string, unknown[]> };
+    expect(after.hooks.PreToolUse).toHaveLength(2);
+    expect(after.hooks.PreToolUse![0]).toEqual(mine);
+  });
+
   test("install copies the kit, writes settings, and is idempotent; a broken settings file is never overwritten", () => {
     const home = mkdtempSync(join(tmpdir(), "neo-sec-home-"));
     const src = mkdtempSync(join(tmpdir(), "neo-sec-src-"));

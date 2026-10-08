@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { filterNew, normalize, severityFromCvss, summarize } from "../tools/security/findings";
 
 describe("security findings", () => {
@@ -93,5 +96,27 @@ describe("security findings", () => {
     expect(osv).toEqual([]);
     const outside = normalize("gosec", { Issues: [{ rule_id: "G1", severity: "HIGH", file: "/elsewhere/a.go", line: "1", details: "d", code: "" }] }, { root });
     expect(outside[0].file).toBe("/elsewhere/a.go"); // not under the repo: left as is
+  });
+  test("semgrep without a login says 'requires login' for the code: the fingerprint reads the matched code itself", () => {
+    const src = mkdtempSync(join(tmpdir(), "neo-sec-src-"));
+    mkdirSync(join(src, "src"));
+    writeFileSync(join(src, "src", "a.ts"), "const a = eval(x);\nconst b = eval(y);\n");
+    const hit = (offset: number, end: number, line: number) => ({ check_id: "r.eval", path: "src/a.ts", start: { line, offset }, end: { offset: end }, extra: { severity: "ERROR", message: "eval", lines: "requires login" } });
+    const f = normalize("semgrep", { results: [hit(10, 17, 1), hit(29, 36, 2)] }, { root: "/repo", src });
+    expect(f[0]!.fingerprint).not.toBe(f[1]!.fingerprint);
+    // The same code moved down keeps its fingerprint.
+    writeFileSync(join(src, "src", "a.ts"), "\n\nconst a = eval(x);\n");
+    expect(normalize("semgrep", { results: [hit(12, 19, 3)] }, { root: "/repo", src })[0]!.fingerprint).toBe(f[0]!.fingerprint);
+    // An unreadable source still separates findings by position.
+    const blind = normalize("semgrep", { results: [hit(10, 17, 1), hit(29, 36, 2)] }, { root: "/repo", src: "/nonexistent" });
+    expect(blind[0]!.fingerprint).not.toBe(blind[1]!.fingerprint);
+  });
+  test("a broken baseline (merge conflict) warns with exit 3 instead of blocking every edit", () => {
+    const d = mkdtempSync(join(tmpdir(), "neo-sec-bl-"));
+    writeFileSync(join(d, "baseline.json"), "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> x\n");
+    writeFileSync(join(d, "sg.json"), JSON.stringify({ results: [] }));
+    const r = Bun.spawnSync(["bun", join(import.meta.dir, "../tools/security/findings.ts"), "report", "--baseline", join(d, "baseline.json"), `semgrep:${join(d, "sg.json")}`]);
+    expect(r.exitCode).toBe(3);
+    expect(r.stderr.toString()).toContain("baseline");
   });
 });

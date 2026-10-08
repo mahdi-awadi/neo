@@ -15,9 +15,11 @@ sec_have_docker() {
 
 # Warm scanner containers (ADR-0024): started once and reused, so a scan pays no container start.
 # No network, a read-only root, and no host mount but the kit's rules: the files to scan are streamed
-# in (sec_stage) and removed after. Recreated when the image digest or the kit path changes.
-SEC_SEMGREP_CTR=neo-sec-semgrep
-SEC_GITLEAKS_CTR=neo-sec-gitleaks
+# in (sec_stage) and removed after. One pair per kit copy (the name carries a hash of its path), so two
+# copies never recreate each other's container mid-scan; recreated when the image digest changes.
+SEC_KIT_ID="$(printf '%s' "$SEC_KIT" | sha1sum | cut -c1-8)"
+SEC_SEMGREP_CTR="neo-sec-semgrep-$SEC_KIT_ID"
+SEC_GITLEAKS_CTR="neo-sec-gitleaks-$SEC_KIT_ID"
 
 sec_warm() { # name image → 0 when the container is up
   local name="$1" image="$2" want="$2|$SEC_KIT" fd rc=1
