@@ -316,7 +316,8 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
  *  docs/adr/0002-engineering-baseline-lives-in-the-dispatch-preamble.md) — and (5) challenges itself BEFORE raising any operator question — root-cause the
  *  real issue, reach for the industry-standard fix (not a patch), self-critique its options, and
  *  only escalate a decision that is genuinely the operator's (mirrors the `ask_operator` precondition
- *  so a worker can't turn a solvable bug into a shallow patch-menu). (2) is made satisfiable by the
+ *  so a worker can't turn a solvable bug into a shallow patch-menu), and (6) fixes what the security
+ *  scans block instead of getting past them (ADR-0024). (2) is made satisfiable by the
  *  engine: `ensureIndexed` (see codebase-memory.ts)
  *  indexes the folder before the worker starts, because the governor denies subagents the index
  *  tools so a worker can never self-index. The engine appends this automatically so the operator
@@ -354,6 +355,10 @@ export function briefWithProjectDocs(task: string): string {
     "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it: extend " +
     "what is there, never a second implementation. Meet these in what you ship; a change that misses " +
     "one is not done.\n\n" +
+    "REQUIRED — security: a NEW high or critical finding from the edit/commit/push scans blocks; fix " +
+    "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
+    "positive instead. Never read secret files. Run `/security-review` before finishing auth, " +
+    "payment, upload or input-handling work.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
     "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +

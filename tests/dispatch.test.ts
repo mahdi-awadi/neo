@@ -741,6 +741,17 @@ test("preamble tells workers where plans go and that the engine sends them", () 
   expect(brief.endsWith("\n\nX")).toBe(true); // the task still comes last
 });
 
+// ADR-0024: the security checks block new high/critical findings; a worker fixes them, never hides them.
+test("preamble tells workers how to treat the security checks", () => {
+  const brief = briefWithProjectDocs("X");
+  expect(brief).toContain("security");
+  expect(brief).toContain("high or critical");
+  expect(brief).toContain("--no-verify"); // named, as the thing never to do
+  expect(brief).toContain(".security/baseline.json");
+  expect(brief).toContain("/security-review");
+  expect(brief.indexOf("engineering baseline")).toBeLessThan(brief.indexOf("--no-verify"));
+});
+
 test("preamble wires the two-phase design→build flow: domain-modeling (CONTEXT.md/ADR) before superpowers TDD", () => {
   const brief = briefWithProjectDocs("X");
   // Design phase: the mattpocock design skills adopted 2026-09-10 (model-invocable only).
