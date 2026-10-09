@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveProject, dispatchToProject, briefWithProjectDocs, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, type DispatchDeps } from "../src/engine/dispatch";
+import { resolveProject, dispatchToProject, briefWithProjectDocs, codebaseMemoryLine, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, type DispatchDeps } from "../src/engine/dispatch";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -1260,13 +1260,17 @@ test("dispatch prepends a read-the-project-docs preamble to the brief", async ()
 // codebase-memory MCP for a structural map before cold-reading files, and to use the superpowers
 // skills — so the operator never has to add it by hand and it can't be omitted. ---
 
-test("briefWithProjectDocs preamble requires codebase-memory + superpowers, states the engine indexed it, then the task verbatim", () => {
+test("briefWithProjectDocs preamble requires superpowers and the rest, then the task verbatim; the codebase-memory line names the index", () => {
   const out = briefWithProjectDocs("DO THE WORK");
   expect(out.toLowerCase()).toContain("agents.md"); // read project docs (existing)
   expect(out).toContain("REQUIRED"); // MANDATORY, not optional
-  expect(out.toLowerCase()).toContain("codebase-memory"); // structural map FIRST
-  expect(out.toLowerCase()).toContain("already indexed"); // engine guarantees the map is ready
-  expect(out.toLowerCase()).toContain("list_projects"); // look up the EXACT project name, don't guess it
+  // ADR-0028: the codebase-memory instruction is its own line, built once the engine indexed the
+  // folder — REQUIRED, the map FIRST, the EXACT name handed over (no list_projects, no guessing).
+  const cm = codebaseMemoryLine({ project: "home-p" });
+  expect(cm).toContain("REQUIRED");
+  expect(cm.toLowerCase()).toContain("codebase-memory");
+  expect(cm).toContain("indexed this project as `home-p`");
+  expect(out.toLowerCase()).not.toContain("list_projects"); // the old "list, then guess" step is gone
   expect(out.toLowerCase()).toContain("superpowers"); // use the skills
   // Challenge-yourself-first mandate (2026-09-03): no shallow patch-menu decisions — the worker
   // must root-cause + reach for the standard fix + self-critique BEFORE raising anything.
@@ -1307,6 +1311,18 @@ test("the dispatch preamble stays terse — every worker pays for it on every ru
   // A ceiling, not a target: the preamble is engine-owned context charged to the operator on each
   // dispatch, so a new rule must be phrased tightly rather than appended as prose.
   expect(briefWithProjectDocs("").length).toBeLessThan(5000);
+  // ...including the codebase-memory line the engine adds once the index is known (a long name)
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5000);
+});
+
+test("the codebase-memory line names the exact project and forbids listing, checking or indexing", () => {
+  const line = codebaseMemoryLine({ project: "home-eticket-v3" });
+  expect(line).toContain("`home-eticket-v3`");
+  expect(line).toContain("Do NOT call `list_projects`, `index_status` or `index_repository`");
+  expect(line.toLowerCase()).toContain("worktree");
+  const none = codebaseMemoryLine({});
+  expect(none).toContain("no index");
+  expect(none).not.toContain("list_projects");
 });
 
 test("dispatch injects the codebase-memory + superpowers instruction into every brief automatically", async () => {
@@ -1318,10 +1334,13 @@ test("dispatch injects the codebase-memory + superpowers instruction into every 
     seenTask = o.task;
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
-  await dispatchToProject("eticket-v3", "fix the partner leak", d, 1, { start: fakeStart as never, root });
+  const codebaseMemory = { ensureIndexed: async () => ({ project: "home-eticket-v3" }) };
+  await dispatchToProject("eticket-v3", "fix the partner leak", { ...d, codebaseMemory }, 1, { start: fakeStart as never, root });
   await new Promise((r) => setTimeout(r, 0));
   expect(seenTask).toContain("fix the partner leak"); // the original brief survives verbatim
   expect(seenTask.toLowerCase()).toContain("codebase-memory"); // map before cold-reading files
+  expect(seenTask).toContain("indexed this project as `home-eticket-v3`"); // the exact name: no list, no guess
+  expect(seenTask).not.toContain("Call `list_projects` FIRST");
   expect(seenTask.toLowerCase()).toContain("superpowers"); // use the skills
 });
 
@@ -1334,6 +1353,7 @@ test("dispatch indexes the folder (and emits the operator line) BEFORE starting 
     ensureIndexed: async (folder: string, onFirstIndex?: () => void | Promise<void>) => {
       events.push("index:" + folder);
       if (onFirstIndex) await onFirstIndex();
+      return { project: "home-eticket-v3" };
     },
   };
   const fakeStart = () => {

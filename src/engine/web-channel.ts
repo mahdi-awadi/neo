@@ -10,7 +10,7 @@ import { basename } from "node:path";
 import { saveInbound, withAttachments, type AttachedFile } from "./files";
 import { handleMessage, type PipelineDeps } from "./pipeline";
 import { parseOrder } from "./orders";
-import { sharedCodebaseMemoryIndexer } from "./codebase-memory";
+import { ledgerIndexStore, sharedCodebaseMemoryIndexer } from "./codebase-memory";
 import {
   handleCommand,
   selectProject as engineSelectProject,
@@ -254,7 +254,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   const deps: PipelineDeps = {
     ...opts.engine,
     usage: opts.usage,
-    codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg),
+    codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg, ledgerIndexStore(opts.engine.ledger)),
     reply: (_chatId, text, project, priority, meta) => {
       const ids = { msgId: meta?.msgId, threadId: meta?.cause?.threadId };
       message(styleLine(text, priority), project, ids); // local delivery, styled by priority (Feature 2)

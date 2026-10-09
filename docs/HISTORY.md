@@ -942,3 +942,14 @@ end was a task failure, the todo is `failed`. A failed todo is never pruned and 
 `/todo retry <id>`, the company's `todo` tool, or a Retry button in the Queue tab. A todo that
 finishes in the same thread and folder closes the earlier failed or retry todos there as done.
 Migration 9 adds `attempts`, `retry_at` and `failure`.
+
+### The project index is checked on every dispatch and named in the brief (ADR-0028, 2026-10-09)
+
+Workers kept finding no codebase-memory index for their project. The binary (0.8.1) writes a new
+DB file on any change and crashes now and then (11 SIGABRT dumps since 2026-10-05), so index DBs
+went missing. The engine checked each folder only once per daemon lifetime, so a lost DB stayed
+lost until a restart, and the preamble told workers to list projects and match the path themselves.
+Now `ensureIndexed` checks on every dispatch, indexes a missing folder, refreshes one whose HEAD
+moved since the last index (kept in the ledger `meta`), and returns the exact project name. Dispatch
+puts that name in a short line at the top of the brief and tells the worker not to list, check or
+index. Worktrees use the same index.

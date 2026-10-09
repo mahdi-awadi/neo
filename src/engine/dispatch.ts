@@ -61,7 +61,7 @@ import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./co
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
 import { knownProjects, projectDeps, projectSummaries, summaryLine } from "./project-view";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./liveness";
-import type { CodebaseMemoryIndexer } from "./codebase-memory";
+import type { CodebaseMemoryIndexer, IndexResult } from "./codebase-memory";
 import type { TodoQueue } from "./todo-queue";
 import { memoryTools } from "./memory-tool";
 import { profileDeps } from "./worker-profile";
@@ -318,7 +318,8 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
  *  rest of a project's rule/docs .md files never reach it unless the brief says so. Every
  *  dispatched brief gets this preamble so the worker (1) reads its own rules, (2) uses the
  *  codebase-memory MCP FIRST for a structural map — REQUIRED, not optional — reading source files
- *  directly only for what the map doesn't cover, (3) works in two phases — DESIGN (sharpen the
+ *  directly only for what the map doesn't cover (that line, codebaseMemoryLine, is prepended after
+ *  the engine indexed the folder, so it carries the exact project name — ADR-0028), (3) works in two phases — DESIGN (sharpen the
  *  domain model with domain-modeling/codebase-design into a CONTEXT.md glossary + ADRs, then a
  *  spec) then BUILD (superpowers TDD → verify → code-review); the mattpocock design skills adopted
  *  2026-09-10 are model-invocable, the interactive-only ones (grill-with-docs/to-spec/to-tickets)
@@ -331,23 +332,30 @@ export function resolveProject(project: string, root = "/home", desks = DESKS_DI
  *  only escalate a decision that is genuinely the operator's (mirrors the `ask_operator` precondition
  *  so a worker can't turn a solvable bug into a shallow patch-menu), and (6) fixes what the security
  *  scans block instead of getting past them (ADR-0024). (2) is made satisfiable by the
- *  engine: `ensureIndexed` (see codebase-memory.ts)
- *  indexes the folder before the worker starts, because the governor denies subagents the index
+ *  engine: `ensureIndexed` (see codebase-memory.ts) indexes the folder (or refreshes a stale index)
+ *  before the worker starts and returns its project name, because the governor denies subagents the index
  *  tools so a worker can never self-index. The engine appends this automatically so the operator
  *  never has to and it can't be omitted. */
+/** The codebase-memory instruction, built once the engine has indexed the folder (ADR-0028): the
+ *  EXACT project name, so the worker never lists, checks or indexes. No name → the engine could not
+ *  make an index; the worker reads files and does not try to index it itself. */
+export function codebaseMemoryLine(index: { project?: string }): string {
+  if (!index.project) {
+    return "codebase-memory: no index is available for this project right now — read the files directly; do not try to index it yourself.";
+  }
+  return (
+    `REQUIRED — use the \`codebase-memory\` MCP FIRST. The engine has indexed this project as \`${index.project}\` (fresh at its HEAD). ` +
+    `Pass project="${index.project}" to get_architecture for the module layout, then search_code / query_graph to find the code that matters. ` +
+    "Do NOT call `list_projects`, `index_status` or `index_repository`. A git worktree of this repo uses the same index for structure; " +
+    "read the files you changed directly. Read source files directly ONLY for what the map doesn't cover — never as your default way in."
+  );
+}
+
 export function briefWithProjectDocs(task: string): string {
   return (
     "Before starting, read this project's rule and doc .md files so you work by its rules: " +
     "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
     "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
-    "REQUIRED — use the `codebase-memory` MCP FIRST. The engine has already indexed this project for " +
-    "you, so the structural map is ready to query. Call `list_projects` FIRST and pass the EXACT " +
-    "project name it returns whose `root_path` matches (or contains) your working directory — do NOT " +
-    "guess or construct the project name. Guessing yields \"project not found\": this repo may be " +
-    "indexed under a path-derived name, and its code can live in a subfolder indexed as its own " +
-    "project. Then get_architecture for the module layout with that name, then search_code / " +
-    "query_graph to find the code that matters. Read source files directly ONLY for what the map " +
-    "doesn't cover — never as your default way in.\n\n" +
     "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
     "  DESIGN — before writing code for any feature or non-trivial change, sharpen the domain model " +
     "with the `domain-modeling` and `codebase-design` skills: define the real terms precisely and " +
@@ -764,13 +772,17 @@ export async function dispatchToProject(
     // starts. Best-effort — a failure never blocks the dispatch; the worker falls back to file reads.
     // Placed before startedAt so a first-time index doesn't eat the dispatch stall budget.
     if (deps.codebaseMemory) {
+      let index: IndexResult = {};
       try {
-        await deps.codebaseMemory.ensureIndexed(folder, () =>
+        index = await deps.codebaseMemory.ensureIndexed(folder, () =>
           say(`indexing ${name} into codebase-memory…`, undefined, { cause: liveCause() }),
         );
       } catch {
         // ensureIndexed is itself best-effort; this guard belts-and-braces the dispatch path.
       }
+      // The worker gets the exact project name, so it never lists, checks or indexes (ADR-0028).
+      order.task = `${codebaseMemoryLine(index)}\n\n${order.task}`;
+      faults.guard("dispatch.recordOrder", () => deps.ledger.recordOrder(order));
     }
 
     const startedAt = now();

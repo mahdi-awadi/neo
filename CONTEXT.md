@@ -134,6 +134,13 @@ Where an interrupted dispatch stopped: the folder's last commit, the worker's la
 last activity. Every abnormal final result carries one, so the dispatcher can resume.
 _Avoid_: checkpoint
 
+**Project index**:
+A project's codebase-memory graph, known by the name the binary gives its root path (for example
+`home-eticket-v3`). Before every dispatch the engine makes sure it exists and is fresh at the
+folder's HEAD, then hands the worker that exact name, so the worker never lists, checks or indexes
+(ADR-0028). A worktree of the project uses the same index.
+_Avoid_: index (unqualified), codebase map, project name (for the index name)
+
 **Todo**:
 One dispatched brief the engine tracks from hand-over to end: its project, brief, who it came from,
 and its status — `queued`, `running`, then `done`, `failed` or `cancelled`, or `retry` while it

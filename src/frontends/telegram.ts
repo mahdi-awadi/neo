@@ -22,7 +22,7 @@ import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { openTrustStore } from "../engine/trust";
 import { handleMessage, dispatchDepsFrom } from "../engine/pipeline";
-import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
+import { ledgerIndexStore, sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply, answerDecision } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type CommandResult, type SelectableProject, type TelegramCommand } from "../engine/commands";
@@ -490,7 +490,7 @@ export function createTelegramBot(
     trust,
     lifecycle: reload?.lifecycle,
     cooldown: reload?.cooldown,
-    codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
+    codebaseMemory: sharedCodebaseMemoryIndexer(cfg, ledgerIndexStore(ledger)),
     todo: reload?.todo,
     trace,
     reply: (cid, text, project, priority, meta?: ReplyMeta) => {

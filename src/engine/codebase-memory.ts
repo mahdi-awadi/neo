@@ -2,8 +2,11 @@
 // dispatch runs before a worker starts. The engine has no AI, but it CAN speak MCP: the governor
 // denies subagents index_repository/list_projects, so a dispatched worker can never self-index —
 // the main/engine side must guarantee the index. Two layers: a thin stdio JSON-RPC adapter (real
-// IO, not unit-tested) and makeIndexer (the tested orchestration + a process-lifetime "already
-// indexed" cache). Spec: docs/superpowers/specs/2026-07-21-dispatch-mandatory-codebase-memory-design.md
+// IO, not unit-tested) and makeIndexer (the tested orchestration). It checks on EVERY dispatch and
+// refreshes when the repo's HEAD moved, because the binary rebuilds a project's DB on any change and
+// can lose it in a crash; it hands dispatch the exact project name (ADR-0028).
+// Spec: docs/superpowers/specs/2026-07-21-dispatch-mandatory-codebase-memory-design.md
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { NeoConfig } from "../config";
@@ -21,13 +24,34 @@ export interface CodebaseMemoryClient {
   indexRepository(repoPath: string): Promise<void>;
 }
 
-/** What dispatch depends on: ensure `folder` is indexed before the worker runs. */
+/** What ensureIndexed hands dispatch: the exact codebase-memory project name for the folder, or none
+ *  when no index could be made (the worker then reads files). */
+export interface IndexResult {
+  project?: string;
+}
+
+/** What dispatch depends on: ensure `folder` is indexed and fresh before the worker runs. */
 export interface CodebaseMemoryIndexer {
-  /** Resolves once `folder` is known-indexed (indexing it first if missing). Best-effort: NEVER
-   *  throws — on any failure it logs and resolves, so a dispatch is never blocked by indexing.
-   *  `onFirstIndex` fires only when THIS call triggers a fresh index (dispatch uses it for the
-   *  operator "indexing…" line). */
-  ensureIndexed(folder: string, onFirstIndex?: () => void | Promise<void>): Promise<void>;
+  /** Checks codebase-memory on every call: indexes a missing folder, refreshes one whose HEAD moved
+   *  since the engine last indexed it, and returns the project name. Best-effort: NEVER throws — on
+   *  any failure it logs and resolves (with no project when there is no index at all), so a dispatch
+   *  is never blocked by indexing. `onFirstIndex` fires only when THIS call builds a missing index
+   *  (dispatch uses it for the operator "indexing…" line); a refresh is quiet. */
+  ensureIndexed(folder: string, onFirstIndex?: () => void | Promise<void>): Promise<IndexResult>;
+}
+
+/** Where the engine remembers the HEAD it last indexed each folder at (durable: the ledger's meta). */
+export interface IndexStore {
+  get(folder: string): string | undefined;
+  set(folder: string, head: string): void;
+}
+
+/** The folder's committed state — its HEAD sha — or undefined when it is not a git repo. The index is a
+ *  map of committed code; a worker reads its own uncommitted work directly. */
+export function gitHead(folder: string): string | undefined {
+  const r = spawnSync("git", ["-C", folder, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 5_000 });
+  const sha = r.status === 0 ? r.stdout.trim() : "";
+  return /^[0-9a-f]{7,64}$/.test(sha) ? sha : undefined;
 }
 
 /** Newline-delimited JSON-RPC 2.0 op timeouts. */
@@ -43,36 +67,54 @@ function canonical(folder: string): string {
   }
 }
 
-/** The tested core: check the folder against codebase-memory and index it if missing, with a
- *  process-lifetime cache of known-indexed folders so the common path is a no-op. */
+/** The tested core: on every call, look the folder up in codebase-memory; index it when missing,
+ *  refresh it when its HEAD moved since the engine last indexed it (the binary's own file hashes make
+ *  an unchanged repo cheap), and return the exact project name. Concurrent calls for one folder share
+ *  one run. There is deliberately no "already indexed" cache: the binary can lose a DB after the
+ *  first check (it rebuilds the whole DB on any change), so a cached "yes" went stale for every later
+ *  dispatch until a restart. */
 export function makeIndexer(
   client: CodebaseMemoryClient,
-  opts: { log?: (msg: string) => void } = {},
+  opts: { log?: (msg: string) => void; store?: IndexStore; fingerprint?: (folder: string) => string | undefined } = {},
 ): CodebaseMemoryIndexer {
   const log = opts.log ?? (() => {});
-  const known = new Set<string>();
+  const memory = new Map<string, string>();
+  const store: IndexStore = opts.store ?? { get: (f) => memory.get(f), set: (f, v) => void memory.set(f, v) };
+  const fingerprint = opts.fingerprint ?? gitHead;
+  const inFlight = new Map<string, Promise<IndexResult>>();
+  const nameOf = (projects: CmProject[], path: string) => projects.find((p) => canonical(p.root_path) === path)?.name;
+
+  const run = async (path: string, onFirstIndex?: () => void | Promise<void>): Promise<IndexResult> => {
+    let name: string | undefined;
+    try {
+      name = nameOf(await client.listProjects(), path);
+      const head = fingerprint(path);
+      if (name && (head === undefined || store.get(path) === head)) return { project: name }; // present and fresh
+      if (!name && onFirstIndex) await onFirstIndex();
+      log(`codebase-memory: ${name ? "refreshing" : "indexing"} ${path}${head ? ` at ${head.slice(0, 12)}` : ""}`);
+      await client.indexRepository(path);
+      const after = nameOf(await client.listProjects(), path);
+      if (!after) throw new Error("index_repository finished but the project is not listed");
+      if (head) store.set(path, head);
+      log(`codebase-memory: indexed ${path} as ${after}`);
+      return { project: after };
+    } catch (e) {
+      // Best-effort: indexing must never block a dispatch. Nothing is recorded, so the next dispatch
+      // retries. A failed REFRESH still hands out the existing (stale) index — better than none.
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`codebase-memory: ensureIndexed(${path}) failed${name ? " — using the existing index" : " — proceeding without index"}: ${msg}`);
+      return name ? { project: name } : {};
+    }
+  };
+
   return {
-    async ensureIndexed(folder, onFirstIndex) {
+    ensureIndexed(folder, onFirstIndex) {
       const path = canonical(folder);
-      if (known.has(path)) return; // cheap common path: already confirmed this process
-      try {
-        const projects = await client.listProjects();
-        if (projects.some((p) => canonical(p.root_path) === path)) {
-          known.add(path);
-          return;
-        }
-        // Missing → index it (the whole point: the worker can't do this itself).
-        if (onFirstIndex) await onFirstIndex();
-        log(`codebase-memory: indexing ${path}`);
-        await client.indexRepository(path);
-        known.add(path);
-        log(`codebase-memory: indexed ${path}`);
-      } catch (e) {
-        // Best-effort: indexing must never block a dispatch. Leave `path` uncached so a later
-        // dispatch retries; the worker meanwhile falls back to reading files.
-        const msg = e instanceof Error ? e.message : String(e);
-        log(`codebase-memory: ensureIndexed(${path}) failed — proceeding without index: ${msg}`);
-      }
+      const running = inFlight.get(path);
+      if (running) return running;
+      const p = run(path, onFirstIndex).finally(() => inFlight.delete(path));
+      inFlight.set(path, p);
+      return p;
     },
   };
 }
@@ -169,17 +211,31 @@ export function stdioCodebaseMemoryClient(
   };
 }
 
-/** Process-lifetime indexer for the configured binary, memoised by bin so its known-indexed cache
- *  is shared across every dispatch. Returns undefined when no binary is configured → dispatch skips
+/** The ledger-backed store of the HEAD each folder was last indexed at — survives a restart, so a
+ *  restart does not force a re-index of every project. */
+export function ledgerIndexStore(ledger: { getMeta(key: string): { value: unknown } | undefined; setMeta(key: string, value: unknown, at: number): void }): IndexStore {
+  const key = (folder: string) => `cbm:${folder}`;
+  return {
+    get: (folder) => {
+      const v = ledger.getMeta(key(folder))?.value;
+      return typeof v === "string" ? v : undefined;
+    },
+    set: (folder, head) => ledger.setMeta(key(folder), head, Date.now()),
+  };
+}
+
+/** Process-lifetime indexer for the configured binary, memoised by bin so its in-flight runs are
+ *  shared across every dispatch. Returns undefined when no binary is configured → dispatch skips
  *  the step (matching the worker, which also gets no codebase-memory MCP in that case). */
 const sharedByBin = new Map<string, CodebaseMemoryIndexer>();
-export function sharedCodebaseMemoryIndexer(cfg: NeoConfig): CodebaseMemoryIndexer | undefined {
+export function sharedCodebaseMemoryIndexer(cfg: NeoConfig, store?: IndexStore): CodebaseMemoryIndexer | undefined {
   const bin = cfg.codebaseMemoryBin;
   if (!bin) return undefined;
   let ix = sharedByBin.get(bin);
   if (!ix) {
     ix = makeIndexer(stdioCodebaseMemoryClient(bin, { indexTimeoutMs: cfg.codebaseMemoryIndexTimeoutMs, listTimeoutMs: cfg.codebaseMemoryListTimeoutMs }), {
       log: (m) => console.log(`  ${m}`),
+      ...(store ? { store } : {}),
     });
     sharedByBin.set(bin, ix);
   }
