@@ -382,7 +382,13 @@ export function createTelegramBot(
   // `msg`: the operator's typed answer message (a reply or an "Other" answer), bound to its row; a tap has none.
   async function answerAndResume(dec: DecisionRow, answer: string, chatId: number, msg?: TracedMessage): Promise<void> {
     pendingStructuredSelection.delete(dec.id); // drop any in-progress selection — this decision is done
-    const resumed = answerDecision({ registry, ledger, routes, worker: cfg.providers.ownWork }, dec, answer, chatId);
+    const todoQueue = reload?.todo;
+    const resumed = answerDecision(
+      { registry, ledger, worker: cfg.providers.ownWork, ...(todoQueue ? { parked: (d, a) => !!todoQueue.decisionAnswered(d.id, d.question, a) } : {}) },
+      dec,
+      answer,
+      chatId,
+    );
     // The acknowledgement stays in the chat the operator answered in (the group, when tapped there),
     // so they see confirmation where they acted. But the RESUME runs on the decision's ORIGINAL chat
     // (the DM) so the reopened session's progress flows to the muted firehose, never floods the group.

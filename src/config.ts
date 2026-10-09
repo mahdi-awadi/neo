@@ -184,6 +184,10 @@ export interface NeoConfig {
    *  number of automatic retries is DERIVED from its length. `[]` turns automatic retries off. Any value
    *  that is not an array of positive numbers fails closed to the default. */
   todoRetryBackoffMs: readonly number[];
+  /** Where Neo keeps its handoff notes (ADR-0029) — OUTSIDE every project repo, so Neo never writes a
+   *  project's own HANDOFF.md. A relative path resolves against the daemon's working folder (/home/neo).
+   *  Default data/handoffs. */
+  handoffNotesDir: string;
   /** Second-tier API-throttle backoff ladder (ms per attempt) — the wait before re-sending a
    *  rate-limited brief when the API gave no real reset time. The number of automatic retries is
    *  DERIVED from this array's length (not a separate knob). Default [30s, 2m, 8m]. */
@@ -359,6 +363,7 @@ const DEFAULTS = {
   dispatchRecoverWindowMs: 24 * 60 * 60 * 1000,
   todoOnFailure: "continue" as TodoFailurePolicy,
   todoRetryBackoffMs: TODO_RETRY_BACKOFF_MS_DEFAULT,
+  handoffNotesDir: "data/handoffs",
   // API-throttle recovery policy (see api-retry.ts). These reproduce the pre-config constants
   // exactly, so behavior is byte-identical until an operator overrides them.
   apiRetryLadderMs: [30_000, 120_000, 480_000],
@@ -525,6 +530,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     todoOnFailure: TODO_FAILURE_POLICIES.includes(fileCfg.todoOnFailure as TodoFailurePolicy)
       ? (fileCfg.todoOnFailure as TodoFailurePolicy)
       : DEFAULTS.todoOnFailure,
+    handoffNotesDir: typeof fileCfg.handoffNotesDir === "string" && fileCfg.handoffNotesDir.trim() ? fileCfg.handoffNotesDir : DEFAULTS.handoffNotesDir,
     todoRetryBackoffMs:
       Array.isArray(fileCfg.todoRetryBackoffMs) && fileCfg.todoRetryBackoffMs.every((x) => typeof x === "number" && Number.isFinite(x) && x > 0)
         ? (fileCfg.todoRetryBackoffMs as number[])

@@ -40,6 +40,7 @@ import {
   continuationBrief,
   describeContextReset,
   noteStamp,
+  neoNotePath,
   type ContextDecision,
 } from "./context-policy";
 import { createCheckpointWatch, createResumeProbe, type CheckpointWatch, type ResumeProbe } from "./context-checkpoint";
@@ -684,6 +685,9 @@ function startSession(
       probe = createResumeProbe((r) =>
         faults.contain("pipeline.resumeProbe", () => ledger.updateContextEventDetail(pre.eventId, { ...r, success: r.steps <= policy.handoffOrientationMaxSteps }), ctx),
       );
+    } else if (existsSync(neoNotePath(folder))) {
+      // Neo's note (ADR-0029) — outside the repo; the project's own HANDOFF.md stays the project's.
+      order = { ...order, task: `Read ${neoNotePath(folder)} first — it is Neo's state-of-work note from the previous session.\n\n${order.task}` };
     } else if (existsSync(join(folder, "HANDOFF.md"))) {
       order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
     }

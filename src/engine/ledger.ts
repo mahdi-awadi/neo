@@ -470,8 +470,16 @@ export interface Ledger {
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
-    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure">> & { retryAt?: number | null },
+    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief">> & {
+      retryAt?: number | null;
+      waitingOn?: string | null;
+    },
   ): void;
+  /** The decisions order `orderId` raised that are still open, oldest first; `plan` marks a plan
+   *  card's decision (its Approve/Execute tap has its own path, ADR-0019). ADR-0029. */
+  openDecisionsForOrder(orderId: string): Array<{ id: string; question: string; plan: boolean }>;
+  /** The `waiting` todos parked on decision `decisionId`, oldest first (ADR-0029). */
+  todosWaitingOn(decisionId: string): TodoRow[];
   /** `retry` todos whose `retryAt` has come, oldest due first. */
   dueTodoRetries(now: number): TodoRow[];
   /** Todo #byId of `folder` finished in `threadId`: the todos there that had ALREADY STOPPED when #byId
@@ -491,7 +499,8 @@ export interface Ledger {
 }
 
 /** `retry`: kept after a transient end, waiting until `retryAt` to go back to the queue (ADR-0027). */
-export type TodoStatus = "queued" | "running" | "retry" | "done" | "failed" | "cancelled";
+/** `waiting`: a continuation parked on an open decision; the answer queues it (ADR-0029). */
+export type TodoStatus = "queued" | "running" | "retry" | "waiting" | "done" | "failed" | "cancelled";
 
 /** A brief handed to the todo queue. `createdBy` follows the work class: an operator turn → operator. */
 export interface NewTodo {
@@ -522,6 +531,8 @@ export interface TodoRow extends NewTodo {
   retryAt?: number;
   /** The last bad end's reason (`stall`, `restart`, `api:<kind>`, …), when it had one. */
   failure?: string;
+  /** The decision a `waiting` todo resumes on (ADR-0029). */
+  waitingOn?: string;
 }
 
 /** Done and cancelled todos kept as history. Queued, running, retry and failed ones are never pruned:
@@ -732,7 +743,7 @@ export function openLedger(
         pick(db.query(`SELECT folder FROM orders WHERE folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`).all(pattern, FOLDER_CANDIDATES) as Array<{ folder: string }>) ??
         pick(
           db
-            .query(`SELECT folder FROM project_todos WHERE status IN ('queued', 'running', 'retry') AND folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`)
+            .query(`SELECT folder FROM project_todos WHERE status IN ('queued', 'running', 'retry', 'waiting') AND folder LIKE ? ESCAPE '\\' GROUP BY folder ORDER BY folder LIMIT ?`)
             .all(pattern, FOLDER_CANDIDATES) as Array<{ folder: string }>,
         )
       );
@@ -838,7 +849,7 @@ export function openLedger(
         .query(
           `SELECT
              (SELECT count(*) FROM decisions WHERE thread_id = ?1 AND status = 'open') AS open_decisions,
-             (SELECT count(*) FROM project_todos WHERE thread_id = ?1 AND status IN ('queued', 'running', 'retry')) AS active_todos,
+             (SELECT count(*) FROM project_todos WHERE thread_id = ?1 AND status IN ('queued', 'running', 'retry', 'waiting')) AS active_todos,
              (SELECT closed_by_operator FROM threads WHERE id = ?1) AS closed`,
         )
         .get(id) as { open_decisions: number; active_todos: number; closed: number | null };
@@ -1518,7 +1529,7 @@ export function openLedger(
     updateTodo(id, patch) {
       const cols: Record<string, string> = {
         status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at",
-        attempts: "attempts", retryAt: "retry_at", failure: "failure",
+        attempts: "attempts", retryAt: "retry_at", failure: "failure", brief: "brief", waitingOn: "waiting_on",
       };
       const sets = Object.entries(patch).filter(([k, v]) => k in cols && v !== undefined);
       if (sets.length === 0) return;
@@ -1527,6 +1538,18 @@ export function openLedger(
         id,
       );
       if (patch.status === "done" || patch.status === "cancelled") pruneTodos();
+    },
+    openDecisionsForOrder(orderId) {
+      const rows = db
+        .query(
+          `SELECT d.id AS id, d.question AS question, EXISTS (SELECT 1 FROM plans p WHERE p.decision_id = d.id) AS plan
+           FROM decisions d WHERE d.status = 'open' AND d.order_id = ? ORDER BY d.created_at ASC, d.rowid ASC`,
+        )
+        .all(orderId) as Array<{ id: string; question: string; plan: number }>;
+      return rows.map((r) => ({ id: r.id, question: r.question, plan: r.plan === 1 }));
+    },
+    todosWaitingOn(decisionId) {
+      return (db.query(`SELECT * FROM project_todos WHERE status = 'waiting' AND waiting_on = ? ORDER BY id`).all(decisionId) as TodoDbRow[]).map(mapTodoRow);
     },
     dueTodoRetries(now) {
       const rows = db
@@ -1652,7 +1675,7 @@ function threadListQuery(f: ThreadFilter, cursor: { at: number; id: number } | u
   const sql = `SELECT t.*,
       (SELECT count(*) FROM messages m WHERE m.thread_id = t.id) AS messages,
       (SELECT count(*) FROM decisions d WHERE d.thread_id = t.id AND d.status = 'open') AS open_decisions,
-      (SELECT count(*) FROM project_todos p WHERE p.thread_id = t.id AND p.status IN ('queued', 'running')) AS active_todos
+      (SELECT count(*) FROM project_todos p WHERE p.thread_id = t.id AND p.status IN ('queued', 'running', 'retry', 'waiting')) AS active_todos
     FROM threads t${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
     ORDER BY t.updated_at DESC, t.id DESC LIMIT ?`;
   return { sql, params };
@@ -1778,6 +1801,7 @@ interface TodoDbRow {
   attempts: number;
   retry_at: number | null;
   failure: string | null;
+  waiting_on: string | null;
 }
 
 function mapTodoRow(r: TodoDbRow): TodoRow {
@@ -1801,6 +1825,7 @@ function mapTodoRow(r: TodoDbRow): TodoRow {
     attempts: r.attempts ?? 0,
     ...(r.retry_at !== null && r.retry_at !== undefined ? { retryAt: r.retry_at } : {}),
     ...(r.failure ? { failure: r.failure } : {}),
+    ...(r.waiting_on ? { waitingOn: r.waiting_on } : {}),
   };
 }
 

@@ -475,7 +475,7 @@ export function knownProjects(d: Pick<ProjectViewDeps, "ledger" | "registry" | "
       const out = new Set<string>([basename(d.neoFolder)]);
       for (const s of d.registry.list()) out.add(basename(s.order.folder));
       for (const f of d.ledger.folders()) if (existsSync(f)) out.add(basename(f));
-      for (const t of d.ledger.listTodos({ statuses: ["running", "queued"] })) out.add(basename(t.folder));
+      for (const t of d.ledger.listTodos({ statuses: ["running", "queued", "waiting"] })) out.add(basename(t.folder));
       return out;
     }) ?? new Set<string>();
   return [...names].filter(Boolean).sort();
@@ -519,8 +519,8 @@ export function renderProject(v: ProjectView, now: number, o: { maxLines: number
 
   const running = v.queue.filter((q) => q.status === "running");
   const count = (st: string) => v.queue.filter((q) => q.status === st).length;
-  const [queued, retry, failed] = [count("queued"), count("retry"), count("failed")];
-  const parts = [...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : []), ...(retry ? [`${retry} to retry`] : []), ...(failed ? [`${failed} failed (/todo retry <id>)`] : [])];
+  const [queued, retry, waiting, failed] = [count("queued"), count("retry"), count("waiting"), count("failed")];
+  const parts = [...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : []), ...(retry ? [`${retry} to retry`] : []), ...(waiting ? [`${waiting} waiting on a decision`] : []), ...(failed ? [`${failed} failed (/todo retry <id>)`] : [])];
   L.push(parts.length ? `queue: ${parts.join(", ")}` : "queue: empty");
 
   const g = v.git;

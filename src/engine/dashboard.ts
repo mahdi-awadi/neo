@@ -77,7 +77,9 @@ const CONTEXT_EVENTS_SHOWN = 20;
 export interface DashTodo {
   id: number;
   project: string;
-  status: "running" | "queued" | "retry" | "failed";
+  status: "running" | "queued" | "retry" | "waiting" | "failed";
+  /** The decision a `waiting` todo resumes on (ADR-0029). */
+  waitingOn?: string;
   position: number;
   /** Automatic retries so far, and when a `retry` todo re-runs (ADR-0027). */
   attempts?: number;
@@ -98,6 +100,7 @@ export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
   const rows = [
     ...ledger.listTodos({ ...where, statuses: ["running", "queued"] }),
     ...ledger.listTodos({ ...where, statuses: ["retry"] }),
+    ...ledger.listTodos({ ...where, statuses: ["waiting"] }),
     ...ledger.listTodos({ ...where, statuses: ["failed"], limit: FAILED_SHOWN }),
   ];
   return rows.map((t) => {
@@ -113,6 +116,7 @@ export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
       startedAt: t.startedAt,
       paused: ledger.todoPaused(t.folder)?.reason,
       ...(t.status === "retry" || t.status === "failed" ? { attempts: t.attempts, ...(t.retryAt !== undefined ? { retryAt: t.retryAt } : {}) } : {}),
+      ...(t.waitingOn ? { waitingOn: t.waitingOn } : {}),
     };
   });
 }

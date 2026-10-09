@@ -10,13 +10,14 @@ import { basename } from "node:path";
 import type { Cause, Ledger, TodoRow } from "./ledger";
 import type { Registry } from "./registry";
 import { heldByReserve, type WorkClass } from "./budget";
-import { dispatchToProject, resolveProject, DESKS_DIR, type DispatchDeps, type DispatchOpts, type ReplyMeta, type TodoEnd } from "./dispatch";
+import { dispatchToProject, resolveProject, DESKS_DIR, planWaitTail, type DispatchDeps, type DispatchOpts, type ReplyMeta, type TodoEnd } from "./dispatch";
 import { lastCommitIn, uncommittedIn } from "./dispatch-report";
 import { raise } from "./attention";
 import { msgRef } from "./trace";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { classifyEnd, nextRetry, retryBrief } from "./todo-retry";
+import { awaitHandoff, continuationBrief, handoffInFlight, type HandoffNext } from "./context-policy";
 
 import { TODO_RETRY_BACKOFF_MS_DEFAULT, type TodoFailurePolicy } from "../config";
 
@@ -75,6 +76,9 @@ export interface TodoQueue {
   /** Re-run a todo (ADR-0027): a `failed` one joins the end of the queue with a fresh retry budget; a
    *  `retry` one goes to the head now, without waiting for its backoff. The same row — never a copy. */
   retry(id: number): string;
+  /** A decision was answered (ADR-0029): the continuation parked on it goes to the head of its queue
+   *  with the answer in its brief. Returns that todo, or undefined when nothing was parked on it. */
+  decisionAnswered(decisionId: string, question: string, answer: string): TodoRow | undefined;
   up(id: number): string;
   move(id: number, position: number): string;
   pause(project: string): string;
@@ -119,6 +123,19 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
    *  live" signal: the registry reads the session idle a moment before the run's end reaches the
    *  queue, and a row left `running` by a crash is never in here. */
   const live = new Set<string>();
+  /** Answers to a run's decision that arrived while its handoff was still running (order → answers):
+   *  folded into the continuation, so the answer is never lost and no second session starts (ADR-0029). */
+  const earlyAnswers = new Map<string, string[]>();
+  const answerLine = (decisionId: string, question: string, answer: string) =>
+    `The operator answered decision #${decisionId.slice(0, 8)} ("${question}"): ${answer}`;
+  const takeAnswers = (orderId: string | undefined): string => {
+    const a = orderId ? earlyAnswers.get(orderId) : undefined;
+    if (!a) return "";
+    earlyAnswers.delete(orderId!);
+    return `\n\n${a.join("\n")}`;
+  };
+  /** Folders whose release waits for an in-flight handoff to settle (one waiter each). */
+  const awaiting = new Set<string>();
   /** Todo id → the company order that submitted it, for the sub-order's `parent_order_id`. In memory:
    *  a todo released after a restart has no parent (its cause is durable on the row). */
   const parents = new Map<number, string>();
@@ -200,6 +217,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         onRefused: (reason) => void (refused = reason),
         resultNote: (ok, failure) => nextNote(ledger.todoById(t.id) ?? t, ok, failure),
         onEnd: (end) => finish(end, l),
+        onHandoff: ({ orderId, next, note }) => afterHandoff(orderId, next, note),
       },
     });
     parents.delete(t.id);
@@ -213,6 +231,18 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
    *  todo it started, or why it did not. Fails a todo whose folder vanished and tries the next. */
   const release = async (folder: string, l: TodoLauncher, quiet: boolean): Promise<{ started?: TodoRow; delivered?: TodoRow; waits?: string }> => {
     promoteDue();
+    // A handoff is still writing the note (ADR-0029): what runs next may be its continuation, queued at
+    // the head when it completes — so wait, and release once it has settled.
+    if (handoffInFlight(folder)) {
+      if (!awaiting.has(folder)) {
+        awaiting.add(folder);
+        void awaitHandoff(folder).then(() => {
+          awaiting.delete(folder);
+          return pumpAll();
+        });
+      }
+      return { waits: "handing off" };
+    }
     for (;;) {
       if (ledger.todoPaused(folder)) return { waits: "paused" };
       if (busy(folder)) return { waits: "busy" };
@@ -260,7 +290,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     // the HEAD of the project's queue, so the release below starts it before anything else.
     const cont =
       end.ok && end.continuation
-        ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause }, now())
+        ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation + takeAnswers(end.orderId), team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause }, now())
         : undefined;
     if (cont) ledger.moveTodo(cont.id, 1);
     // A bad end: a transient one with retries left keeps the todo as `retry`; otherwise `failed`,
@@ -319,6 +349,53 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     }
   };
 
+  /** After a handoff at the "task done" boundary (ADR-0029): queue the continuation at the head, park
+   *  it on the decision this run raised, or nothing — and return the notice's tail. */
+  const afterHandoff = (orderId: string, next: HandoffNext, note: string): string | undefined => {
+    const t = ledger.todoByOrder(orderId);
+    if (!t) return undefined;
+    const answers = takeAnswers(orderId); // answered while the note was being written: continue with it
+    if (!answers && next.kind === "idle") return "done, idle";
+    if (!answers && next.kind === "plan") return planWaitTail(next.decision);
+    const parking = !answers && next.kind === "blocked";
+    // A parked continuation may run hours later, after other todos: it carries the note itself, and
+    // the pending handoff is claimed so an unrelated todo is not told it "continues earlier work".
+    const carried = parking && note.trim() ? `\n\nNeo's handoff note from the finished run:\n--- note ---\n${note.trim()}\n--- end of note ---` : "";
+    const cont = ledger.addTodo(
+      { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + carried + answers, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
+      now(),
+    );
+    if (!parking) {
+      ledger.moveTodo(cont.id, 1);
+      ledger.recordEvent("todo_continued", { folder: t.folder, orderId, data: { project: t.project, id: t.id, continuation: cont.id }, cause: t.cause });
+      refresh(launcher()?.deps, t.cause);
+      return `continuing as #${cont.id}${answers ? " (with your answer)" : ""}`;
+    }
+    if (next.kind !== "blocked") return undefined; // unreachable: parking implies blocked
+    const short = next.decision.id.slice(0, 8);
+    ledger.updateTodo(cont.id, { status: "waiting", waitingOn: next.decision.id });
+    faults.guard("todo.claimHandoff", () => {
+      const pending = ledger.pendingHandoff(t.folder);
+      if (pending) ledger.recordContextEvent(t.folder, "resumed", 0, now(), { reason: pending.reason, boundary: "resume", detail: { handoffId: pending.id, parkedAs: cont.id } });
+    });
+    ledger.recordEvent("todo_waiting", { folder: t.folder, orderId, data: { project: t.project, id: cont.id, decision: next.decision.id }, cause: t.cause });
+    refresh(launcher()?.deps, t.cause);
+    return `paused: waiting on decision #${short} — ${next.decision.question} (continues as #${cont.id} once answered)`;
+  };
+  const pumpAll = async (): Promise<void> => {
+    const l = launcher();
+    if (!l) return;
+    for (const folder of ledger.queuedTodoFolders()) {
+      try {
+        const r = await release(folder, l, true);
+        const t = r.started ?? r.delivered;
+        if (t) await l.deps.reply(l.replyChat, `${t.project}: starting ${tag(t)} (from the queue)`, t.project, undefined, todoLine(t));
+      } catch {
+        // one project's release must never stop the others
+      }
+    }
+  };
+
   const describePosition = (t: TodoRow): number => queued(t.folder).findIndex((x) => x.id === t.id) + 1;
 
   const renderProject = (folder: string, history: boolean): string => {
@@ -331,6 +408,10 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (t.status === "running") lines.push(`  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`);
     }
     all.filter((t) => t.status === "queued").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoTitle(t.brief)}`));
+    // Parked continuations (ADR-0029): each waits on one decision.
+    for (const t of ledger.listTodos({ folder, statuses: ["waiting"] })) {
+      lines.push(`  ⏸ #${t.id} waiting on decision #${(t.waitingOn ?? "?").slice(0, 8)} — ${todoTitle(t.brief)}`);
+    }
     // Kept work (ADR-0027): waiting retries, then failed todos with how to re-run them.
     for (const t of ledger.listTodos({ folder, statuses: ["retry"] })) {
       lines.push(`  ↻ #${t.id} retry ${t.attempts}/${ladder().length} ${dueIn((t.retryAt ?? t0) - t0)} (${t.failure ?? "stopped"}) — ${todoTitle(t.brief)}`);
@@ -396,17 +477,43 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
 
     async pump() {
       promoteDue();
-      const l = launcher();
-      if (!l) return;
-      for (const folder of ledger.queuedTodoFolders()) {
-        try {
-          const r = await release(folder, l, true);
-          const t = r.started ?? r.delivered;
-          if (t) await l.deps.reply(l.replyChat, `${t.project}: starting ${tag(t)} (from the queue)`, t.project, undefined, todoLine(t));
-        } catch {
-          // one project's release must never stop the others
-        }
+      await pumpAll();
+    },
+
+    decisionAnswered(decisionId, question, answer) {
+      const parked = ledger.todosWaitingOn(decisionId);
+      for (const t of parked.reverse()) {
+        const brief = `${t.brief}\n\n${answerLine(decisionId, question, answer)}`;
+        ledger.updateTodo(t.id, { status: "queued", waitingOn: null, brief });
+        ledger.moveTodo(t.id, 1);
+        ledger.recordEvent("todo_resumed", { folder: t.folder, data: { project: t.project, id: t.id, decision: decisionId }, cause: t.cause });
+        refresh(launcher()?.deps, t.cause);
       }
+      if (parked.length === 0) {
+        // Answered while the run's handoff is still writing its note: nothing is parked YET. Hold the
+        // answer for that order's continuation instead of letting the caller open a second session.
+        const dec = ledger.decisionById(decisionId);
+        const t = dec?.orderId ? ledger.todoByOrder(dec.orderId) : undefined;
+        if (!t || !handoffInFlight(t.folder)) return undefined;
+        const orderId = t.orderId!;
+        earlyAnswers.set(orderId, [...(earlyAnswers.get(orderId) ?? []), answerLine(decisionId, question, answer)]);
+        // Normally the settled handoff's afterHandoff takes it. If nothing did by the time the handoff
+        // settles (a checkpoint handoff), queue the continuation with the answer here — never drop it.
+        void awaitHandoff(t.folder).then(() => {
+          const left = takeAnswers(orderId);
+          if (!left) return;
+          const cont = ledger.addTodo(
+            { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + left, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
+            now(),
+          );
+          ledger.moveTodo(cont.id, 1);
+          refresh(launcher()?.deps, t.cause);
+          return pumpAll();
+        });
+        return t;
+      }
+      void this.pump();
+      return ledger.todoById(parked[parked.length - 1]!.id);
     },
 
     recover(opts) {
@@ -436,7 +543,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         if (ledger.listTodos({ folder, limit: 1 }).length === 0 && !ledger.todoPaused(folder)) return `${project}: the todo queue is empty.`;
         return renderProject(folder, true);
       }
-      const folders = [...new Set(ledger.listTodos({ statuses: ["running", "queued", "retry", "failed"] }).map((t) => t.folder))];
+      const folders = [...new Set(ledger.listTodos({ statuses: ["running", "queued", "retry", "waiting", "failed"] }).map((t) => t.folder))];
       if (folders.length === 0) return "No todos — every project queue is empty.";
       return folders.map((f) => renderProject(f, false)).join("\n\n");
     },
@@ -456,8 +563,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         void this.pump();
         return `cancelled #${id} (it was marked running but ${t.project} has no live run).`;
       }
-      if (t.status !== "queued" && t.status !== "retry") return `#${id} is already ${t.status}.`;
-      ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cancelled", retryAt: null });
+      if (t.status !== "queued" && t.status !== "retry" && t.status !== "waiting") return `#${id} is already ${t.status}.`;
+      ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cancelled", retryAt: null, waitingOn: null });
       parents.delete(id);
       ledger.recordEvent("todo_cancelled", { folder: t.folder, data: { project: t.project, id }, cause: t.cause });
       refresh(launcher()?.deps, t.cause);

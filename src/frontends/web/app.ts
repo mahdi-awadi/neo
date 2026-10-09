@@ -441,7 +441,9 @@ function renderTodos(): void {
             ? t("queue.retryWait", { n: x.attempts, age: age(Math.max(0, (x.retryAt || Date.now()) - Date.now())) })
             : x.status === "failed"
               ? t("queue.failed")
-              : ltr(x.position + ".");
+              : x.status === "waiting"
+                ? t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
+                : ltr(x.position + ".");
       row.innerHTML = `<span>${lead}</span><div style="flex:1;min-width:0"><div>${ltr("#" + x.id)} ${esc(x.title)}</div></div>`;
       // ADR-0027: kept work — a failed todo or a waiting retry can be re-run (the same todo).
       if (x.status === "failed" || x.status === "retry") {
@@ -451,7 +453,7 @@ function renderTodos(): void {
         r.onclick = () => todoAct("retry", x.id);
         row.appendChild(r);
       }
-      if (x.status === "queued" || x.status === "retry") {
+      if (x.status === "queued" || x.status === "retry" || x.status === "waiting") {
         if (x.status === "queued" && x.position > 1) {
           const up = document.createElement("button");
           up.className = "chip";

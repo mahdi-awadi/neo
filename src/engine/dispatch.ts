@@ -54,7 +54,9 @@ import {
   continuationBrief,
   describeContextReset,
   noteStamp,
+  nextAfterHandoff,
   type ContextPolicyCfg,
+  type HandoffNext,
 } from "./context-policy";
 import { faults } from "./fault";
 import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./context-checkpoint";
@@ -351,6 +353,11 @@ export function codebaseMemoryLine(index: { project?: string }): string {
   );
 }
 
+/** The notice tail for a run that ended on a plan card (ADR-0029): its Execute tap queues the work. */
+export function planWaitTail(d: { id: string; question: string }): string {
+  return `paused: waiting on plan approval #${d.id.slice(0, 8)} — ${d.question} (its Execute tap queues the work)`;
+}
+
 export function briefWithProjectDocs(task: string): string {
   return (
     "Before starting, read this project's rule and doc .md files so you work by its rules: " +
@@ -420,6 +427,10 @@ export interface DispatchHooks {
    *  `continuation` means the run was handed off at a safe checkpoint (ADR-0021): the task is NOT
    *  finished, and this brief continues it in a fresh session. */
   onEnd?: (end: TodoEnd) => void | Promise<void>;
+  /** After a handoff at the "task done" boundary (ADR-0029): act on what happens next — queue the
+   *  continuation, or park it on the decision this run raised — and return the notice's tail
+   *  ("continuing as #12"). Absent (no queue): dispatch says it itself. */
+  onHandoff?: (h: { orderId: string; next: HandoffNext; note: string }) => string | undefined;
   /** Skip the "→ dispatching to …" line (the queue sends its own start line). */
   quietStart?: boolean;
 }
@@ -1135,7 +1146,7 @@ export async function dispatchToProject(
     const summary = atCheckpoint
       ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
       : checkpointLost
-        ? `stopped at a context checkpoint (${Math.round(armed!.occupancy * 100)}%) that could not complete — uncommitted changes appeared after it; HANDOFF.md may be partial, dispatch it again to continue`
+        ? `stopped at a context checkpoint (${Math.round(armed!.occupancy * 100)}%) that could not complete — uncommitted changes appeared after it; Neo's handoff note may be partial, dispatch it again to continue`
         : reloading
         ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — ${hooks.onEnd ? "its todo queue re-runs it" : "resume it after the restart"})`
         : result.summary;
@@ -1205,7 +1216,7 @@ export async function dispatchToProject(
         let work: Promise<unknown> | undefined;
         if (atCheckpoint && armed) {
           const target: SessionInfo = { ...(entry ?? session), sdkSessionId: sid };
-          const at = { ...handoffDeps, decision: armed.decision, boundary: "checkpoint" as const };
+          const at = { ...handoffDeps, decision: armed.decision, boundary: "checkpoint" as const, next: () => "the task continues in a fresh session" };
           // The worker wrote its note in its own context — no extra handoff turn, unless it did not.
           work = noteStamp(folder) !== noteAtArm ? Promise.resolve(completeHandoff(target, policy, at, { before: noteAtArm, occupancy: armed.occupancy })) : handoff(target, policy, at);
           continuation = continuationBrief(task);
@@ -1215,7 +1226,21 @@ export async function dispatchToProject(
           const ttlMs = effectiveCacheTtlMs(deps.ledger.listCacheObservations(policy.cacheObsWindow ?? CACHE_OBS_WINDOW), policy);
           const decision = decideContext(sig, policy, ttlMs, { boundary: "settled" });
           if (decision.verdict !== "keep" && !handoffDeferred(folder, decision, { ledger: deps.ledger, boundary: "settled", occupancy: sig.occupancy, sessionId: sid })) {
-            work = handoff({ ...entry, sdkSessionId: sid }, policy, { ...handoffDeps, decision, boundary: "settled" });
+            // The task is done: say — and do — what happens next, from the note and this run's open
+            // decisions (ADR-0029). Never a bare "the next session starts from the note".
+            const next = (note: string): string | undefined => {
+              const n = nextAfterHandoff({ note, openDecisions: deps.ledger.openDecisionsForOrder(order.id) });
+              const told = hooks.onHandoff?.({ orderId: order.id, next: n, note });
+              if (told) return told;
+              return n.kind === "continue"
+                ? "the next dispatch to this project starts from Neo's note"
+                : n.kind === "blocked"
+                  ? `paused: waiting on decision #${n.decision.id.slice(0, 8)} — ${n.decision.question} (answering it resumes the project)`
+                  : n.kind === "plan"
+                    ? planWaitTail(n.decision)
+                    : "done, idle";
+            };
+            work = handoff({ ...entry, sdkSessionId: sid }, policy, { ...handoffDeps, decision, boundary: "settled", next });
           }
         }
         if (work) {

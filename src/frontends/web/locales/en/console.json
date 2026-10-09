@@ -138,7 +138,8 @@
     "confirmCancel": "Cancel #{{id}}?",
     "retry": "Retry",
     "retryWait": "↻ retry {{n}} · in {{age}}",
-    "failed": "✗ failed"
+    "failed": "✗ failed",
+    "waiting": "⏸ waiting on decision #{{id}}"
   },
   "recent": {
     "title": "Recent orders",
@@ -234,6 +235,7 @@
       "queued": "queued",
       "running": "running",
       "retry": "retry waiting",
+      "waiting": "waiting on a decision",
       "done": "done",
       "failed": "failed",
       "cancelled": "cancelled"

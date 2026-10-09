@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -45,6 +46,7 @@ function cfg(): NeoConfig {
     dispatchRecoverWindowMs: 86_400_000,
     todoOnFailure: "continue",
     todoRetryBackoffMs: [],
+    handoffNotesDir: "data/handoffs",
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -1308,7 +1310,7 @@ test("a message sent while a session closes for its handoff reaches the fresh se
 
 test("a fresh start after a handoff gets the note inline and measures its orientation", async () => {
   const dir = gitScratch();
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship the cart\n");
+  writeFileSync(neoNotePath(dir), "## Goal\nship the cart\n");
   const { f, h, base } = sweetHarness(0.1);
   const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1, { reason: "above-sweet-spot", boundary: "settled" });
   await handleMessage(`/open ${dir} carry on`, 9, base);
@@ -1332,8 +1334,8 @@ test("a safe checkpoint in the heavy band steers the worker to its note, then a 
   run.onToolUse?.("c1", "Bash", { command: "git commit -m 'phase 2'" });
   run.onToolResult?.("c1", false);
   expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toContain("Neo context checkpoint");
-  expect(run.contextSteer?.("Write", { file_path: join(dir, "HANDOFF.md") })).toBeUndefined();
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nfive phases\n## Next steps\n1. phase 3\n"); // the worker obeys
+  expect(run.contextSteer?.("Write", { file_path: neoNotePath(dir) })).toBeUndefined();
+  writeFileSync(neoNotePath(dir), "## Goal\nfive phases\n## Next steps\n1. phase 3\n"); // the worker obeys
   run.onTurnComplete?.(ok("s1"));
   run.onSettled?.();
   expect(f.runs[0].closed).toBe(true);
@@ -1392,7 +1394,7 @@ test("the resume gate defers a handoff over uncommitted work, and an emergency c
 
 test("a resumed session that ends before any edit records how far it got, with no success verdict", async () => {
   const dir = gitScratch();
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nx\n");
+  writeFileSync(neoNotePath(dir), "## Goal\nx\n");
   const { f, h, base } = sweetHarness(0.1);
   const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1);
   await handleMessage(`/open ${dir} just a question`, 9, base);

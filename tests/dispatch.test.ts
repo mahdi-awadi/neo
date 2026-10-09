@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -2008,7 +2009,7 @@ test("a todo dispatch armed at a safe checkpoint ends as a continuation, with no
   });
   await tick();
   expect(steer?.("Edit", { file_path: join(folder, "a.txt") })).toContain("Neo context checkpoint");
-  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
+  writeFileSync(neoNotePath(folder), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
   finish(finished("s1"));
   await tick();
   expect(handedOff).toBe(false);
@@ -2035,7 +2036,7 @@ test("a dispatch with no continuation path (not from the todo queue) is never st
 test("a fresh dispatch after a handoff starts from the note, inline", async () => {
   const { root, folder } = gitProject();
   const { d } = makeDeps();
-  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nthe cart\n");
+  writeFileSync(neoNotePath(folder), "## Goal\nthe cart\n");
   const handoffId = d.ledger.recordContextEvent(folder, "handoff", 0.7, 1, { reason: "above-sweet-spot" });
   let task = "";
   const fakeStart = (o: Order) => {

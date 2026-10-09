@@ -331,13 +331,18 @@ Always recorded with its reason. Never done with uncommitted work, except in the
 _Avoid_: reset, compact, clear, restart
 
 **Handoff note**:
-The state-of-work note (`HANDOFF.md`) a session writes for its successor: the goal, what is done,
-the next steps, the branch and commit, open decisions, gotchas. The engine appends the facts it can
-check itself (branch, last commit, uncommitted files).
-_Avoid_: summary, WIP note, memory
+The state-of-work note a session writes for its successor: the goal, what is done, the next steps,
+the branch and commit, open decisions, gotchas. The engine appends the facts it can check itself
+(branch, last commit, uncommitted files). It is **Neo's note**: kept in `handoffNotesDir`, outside
+the project repo (ADR-0029). A project's own `HANDOFF.md` is the project's file, and Neo never
+writes it.
+_Avoid_: summary, WIP note, memory, HANDOFF.md (for Neo's note)
 
 **Continuation**:
-The fresh session that picks up a task a mid-task handoff interrupted. Its first brief carries the
+The todo that carries a handed-off task on in a fresh session. A mid-task (checkpoint) handoff always
+makes one. A handoff after the task is done makes one only when the note's next steps list work and
+the run raised no decision that is still open. If it did raise one, the continuation is **parked** as
+`waiting` on that decision and is queued when it is answered (ADR-0029). Its first brief carries the
 handoff note itself, not a pointer to it.
 _Avoid_: retry, resume (resume keeps the old session)
 

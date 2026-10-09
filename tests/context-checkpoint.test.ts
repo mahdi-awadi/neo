@@ -3,7 +3,7 @@
 // fed raw stream facts and arms the governor-hook steer; the resume probe measures orientation.
 import { test, expect } from "bun:test";
 import { createCheckpointWatch, createResumeProbe, steerAllows } from "../src/engine/context-checkpoint";
-import { checkpointSteer, type ContextPolicyCfg } from "../src/engine/context-policy";
+import { checkpointSteer, neoNotePath, type ContextPolicyCfg } from "../src/engine/context-policy";
 
 const FOLDER = "/home/proj";
 const CFG: ContextPolicyCfg = {
@@ -99,8 +99,10 @@ test("steerAllows: only what writing and committing the note needs", () => {
   const ok = (tool: string, input: unknown) => steerAllows(FOLDER, tool, input);
   expect(ok("Read", { file_path: "/home/proj/src/a.ts" })).toBe(true);
   expect(ok("Grep", { pattern: "x" })).toBe(true);
-  expect(ok("Write", { file_path: "/home/proj/HANDOFF.md", content: "n" })).toBe(true);
-  expect(ok("Edit", { file_path: "HANDOFF.md", old_string: "a", new_string: "b" })).toBe(true); // relative to the folder
+  // ADR-0029: Neo's note, outside the repo — never the project's own HANDOFF.md
+  expect(ok("Write", { file_path: neoNotePath("/home/proj"), content: "n" })).toBe(true);
+  expect(ok("Edit", { file_path: neoNotePath("/home/proj"), old_string: "a", new_string: "b" })).toBe(true);
+  expect(ok("Write", { file_path: "/home/proj/HANDOFF.md", content: "n" })).toBe(false);
   expect(ok("Write", { file_path: "/home/proj/src/a.ts", content: "x" })).toBe(false);
   expect(ok("Write", { file_path: "/home/proj/sub/HANDOFF.md", content: "x" })).toBe(false);
   expect(ok("Bash", { command: "git add HANDOFF.md && git commit -m 'handoff'" })).toBe(true);
@@ -122,8 +124,8 @@ test("an armed watch steers every other tool to the note; an unarmed one has no 
   expect(w.steer("Edit", { file_path: "/home/proj/a.ts" })).toBeUndefined();
   w.onUsage(OPUS, usage(650_000));
   commit(w, "c");
-  expect(w.steer("Edit", { file_path: "/home/proj/a.ts" })).toBe(checkpointSteer(0.65));
-  expect(w.steer("Write", { file_path: "/home/proj/HANDOFF.md" })).toBeUndefined();
+  expect(w.steer("Edit", { file_path: "/home/proj/a.ts" })).toBe(checkpointSteer(0.65, "/home/proj"));
+  expect(w.steer("Write", { file_path: neoNotePath("/home/proj") })).toBeUndefined(); // ADR-0029: Neo's note, outside the repo
   w.disarm();
   expect(w.steer("Edit", { file_path: "/home/proj/a.ts" })).toBeUndefined();
 });

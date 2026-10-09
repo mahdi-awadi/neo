@@ -953,3 +953,14 @@ Now `ensureIndexed` checks on every dispatch, indexes a missing folder, refreshe
 moved since the last index (kept in the ledger `meta`), and returns the exact project name. Dispatch
 puts that name in a short line at the top of the brief and tells the worker not to list, check or
 index. Worktrees use the same index.
+
+### A handoff always says what happens next; Neo's note is outside the repo (ADR-0029, 2026-10-09)
+
+A handoff after a finished task ("task done", above the 40% sweet spot) used to only reset the
+session and say "the next session starts from HANDOFF.md", and then nothing ran. Now the engine
+decides from facts. If the run raised a decision that is still open, the continuation is parked as a
+`waiting` todo and queued when the decision is answered. If the note's next steps list work, the
+continuation is queued at the head ("continuing as #n"). Otherwise it says "done, idle". The
+continuation sticks to approved work and asks before anything else. Neo's note now lives in
+`handoffNotesDir` (default `data/handoffs`), so Neo never overwrites a project's own `HANDOFF.md`.
+Migration 10 adds `waiting_on`.

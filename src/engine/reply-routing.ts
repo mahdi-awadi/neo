@@ -123,7 +123,8 @@ export function deliverIntoFolder(deps: FolderDeliveryDeps, folder: string, chat
   return text;
 }
 
-/** Record an answer to a tracked decision and seed a resume of the project that raised it. The ONE
+/** Record an answer to a tracked decision and resume the work that waits on it: a continuation parked
+ *  on the decision goes back to its todo queue (ADR-0029); otherwise seed a resume of the project. The ONE
  *  path behind every answer gesture (a plain REPLY to the decision message, a tapped option button,
  *  or a typed "Other" answer): it marks the row answered — so it drops out of /decisions + the
  *  secretary digest — then, when the decision carries a resumable `folder`, seeds a focused resume
@@ -131,12 +132,17 @@ export function deliverIntoFolder(deps: FolderDeliveryDeps, folder: string, chat
  *  resume (e.g. a governor escalation with no project — that unblocks via its in-memory Allow/Deny
  *  resolver instead). Pure bookkeeping + registry seeding; the frontend does the actual send. */
 export function answerDecision(
-  deps: ReplyRoutingDeps,
+  deps: FolderDeliveryDeps & {
+    /** A continuation parked on this decision (ADR-0029): resume it through the todo queue and return
+     *  true — then no operator session is seeded. */
+    parked?: (dec: Pick<DecisionRow, "id" | "question">, answer: string) => boolean;
+  },
   dec: Pick<DecisionRow, "id" | "folder" | "question" | "chatId">,
   answer: string,
   chatId: number,
 ): { brief: string; homeChat: number } | undefined {
   deps.ledger.resolveDecision(dec.id, answer);
+  if (deps.parked?.(dec, answer)) return undefined; // the queued continuation carries the answer
   if (!dec.folder) return undefined;
   // Resume against the ORIGINAL raising chat (the DM the raising session was homed to), NOT the chat
   // the answer arrived on. A decision posted to the unmuted Decisions group is answered THERE; homing

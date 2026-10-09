@@ -377,6 +377,13 @@ function todoRetries(db: Database): void {
   db.run(`CREATE INDEX idx_project_todos_retry ON project_todos (status, retry_at)`);
 }
 
+/** Version 10 — a continuation parked on a decision (ADR-0029): status `waiting`, `waiting_on` = the
+ *  decision id it resumes on. */
+function todoWaiting(db: Database): void {
+  db.run(`ALTER TABLE project_todos ADD COLUMN waiting_on TEXT`);
+  db.run(`CREATE INDEX idx_project_todos_waiting ON project_todos (waiting_on)`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -387,6 +394,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 7, name: "attention items and engine boots", up: attention },
   { version: 8, name: "meta", up: meta },
   { version: 9, name: "todo retries", up: todoRetries },
+  { version: 10, name: "todo waiting on a decision", up: todoWaiting },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

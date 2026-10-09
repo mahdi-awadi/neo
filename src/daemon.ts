@@ -29,6 +29,7 @@ import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
 import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } from "./engine/dispatch-report";
 import { nextRetry } from "./engine/todo-retry";
+import { setNeoNotesDir } from "./engine/context-policy";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
@@ -94,6 +95,8 @@ async function main(): Promise<void> {
   // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
   // above: keep it as `retry` with its stop point, or fail it once its retries are used up (ADR-0027). Queued todos stay queued; the
   // heartbeat tick releases them in order once the operator channel registers its launcher.
+  // Neo's handoff notes live outside every project repo (ADR-0029).
+  setNeoNotesDir(cfg.handoffNotesDir);
   const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs });
   const cutTodos = todo.recover({ now: bootAt });
   const engineProducerDeps: EngineProducerDeps = {

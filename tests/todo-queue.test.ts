@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -532,7 +533,7 @@ test("a checkpoint continuation becomes the next todo at the head of the queue a
   await queue.submit({ project: "eticket-v3", brief: "build all phases", workClass: "interactive" }, deps, 1);
   await queue.submit({ project: "eticket-v3", brief: "later work", workClass: "interactive" }, deps, 1);
   await settle();
-  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
+  writeFileSync(neoNotePath(folder), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
   runs[0].finish({ ok: true, sessionId: "s1", summary: "note written", costUsd: 0 });
   await settle();
   const all = ledger.listTodos({ folder });
