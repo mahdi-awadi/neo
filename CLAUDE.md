@@ -193,3 +193,4 @@ Greptile) are noted but not adopted; these principles are:
 - `docs/CONFIG.md` — full config reference (env vars + `config.json` knobs).
 - `tools/security/` + `docs/security-checks.md` — the shift-left security kit (ADR-0024): scan layers,
   install/init, the nightly `security-sweep` loop.
+- `tools/browser/` + `docs/browser.md` — the shared, memory-capped browser workers attach to (ADR-0032).

@@ -964,3 +964,13 @@ continuation is queued at the head ("continuing as #n"). Otherwise it says "done
 continuation sticks to approved work and asks before anything else. Neo's note now lives in
 `handoffNotesDir` (default `data/handoffs`), so Neo never overwrites a project's own `HANDOFF.md`.
 Migration 10 adds `waiting_on`.
+
+### Guard reads, project fence, shared browser (ADR-0030/0031/0032, 2026-10-10)
+
+The secret guard now judges reads, not text: code, search patterns, commit messages and name listings
+are not reads, and a bare key-file name counts only when the file exists (it had blocked `e.key` and
+a git listing). Dispatched and loop workers, helpers included, get a project fence: a write, branch or
+commit in another project under `/home` escalates (a mirshad worker's subagents had branched in
+eticket-v3); the preamble says to send such work back to Neo. And workers share one browser:
+`tools/browser` runs a digest-pinned browserless Chromium on 127.0.0.1:9222, capped at 3 GB with 4
+concurrent browsers; `install.ts --wire-mcp` points the Playwright/Chrome MCPs at it.

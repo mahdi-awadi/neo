@@ -134,6 +134,17 @@ Where an interrupted dispatch stopped: the folder's last commit, the worker's la
 last activity. Every abnormal final result carries one, so the dispatcher can resume.
 _Avoid_: checkpoint
 
+**Project fence**:
+The governor rule that keeps a dispatched or loop worker, and its helper agents, inside its own
+project. A write, a branch or a commit in another top-level folder under the work root (`/home`) is a
+fenced escalation; reading it, and writing outside the work root, are allowed (ADR-0031).
+_Avoid_: path fence (that is the older "inside the session folder" rule, ADR-0011)
+
+**Shared browser**:
+The one memory-capped Chromium service (`neo-browser`, loopback 9222) that workers' Playwright and
+Chrome DevTools MCPs attach to over CDP, instead of each starting its own browser (ADR-0032).
+_Avoid_: browser pool, headless farm
+
 **Project index**:
 A project's codebase-memory graph, known by the name the binary gives its root path (for example
 `home-eticket-v3`). Before every dispatch the engine makes sure it exists and is fresh at the
