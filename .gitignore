@@ -26,6 +26,8 @@ AGENTS.local.md
 .claude/settings.local.json
 .gitnexus/
 .claude/skills/gitnexus/
+.security/reports/
+.security/sbom/
 
 # Neo shared browser: machine-local overrides (ADR-0032)
 tools/browser/browser.local.env
