@@ -378,7 +378,7 @@ export function briefWithProjectDocs(task: string): string {
     "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
     "failure, even when it works. (1) i18n through standard per-locale catalogues (react-i18next or " +
     "the stack's equivalent), namespaced keys, AR+EN complete — never literal user-facing strings in " +
-    "components, never a bespoke translation mechanism. (2) `.env` + environments, dev by default, " +
+    "components or a bespoke mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, dev by default, " +
     "failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
     "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it: extend " +
     "what is there, never a second implementation. Meet these in what you ship; a change that misses " +
