@@ -28,6 +28,8 @@ AGENTS.local.md
 .claude/skills/gitnexus/
 .security/reports/
 .security/sbom/
+# The security kit's per-repo scan config is tracked (docs/security-checks.md), despite `config.json` above
+!.security/config.json
 
 # Neo shared browser: machine-local overrides (ADR-0032)
 tools/browser/browser.local.env

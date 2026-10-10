@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# neo-security: Neo security checks (tools/security, ADR-0024). Recreate with: bun ~/.claude/security/init.ts <repo>
+# chained: none
+kit="${NEO_SECURITY_KIT:-$HOME/.claude/security}"
+repo="$(git rev-parse --show-toplevel)"
+input="$(cat)"
+if [[ -f "$kit/scan.sh" ]]; then
+  shas=""; while read -r _ lsha _ _; do [[ -n "$lsha" && ! "$lsha" =~ ^0+$ ]] && shas="${shas:+$shas }$lsha"; done <<<"$input"
+  if [[ -n "$shas" ]]; then bash "$kit/scan.sh" push "$repo" "$shas --not --remotes" || exit 1; fi
+else
+  echo "[security] warn: security kit not installed at $kit — scan skipped" >&2
+fi
+exit 0
