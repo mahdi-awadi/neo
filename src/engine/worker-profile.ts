@@ -1,11 +1,12 @@
 // Fold a config worker profile into RunDeps for a launch path. Pure + deterministic: the ONLY
 // place path→model/effort/skills/env routing happens, so no launch site hardcodes cost choices.
+import { resolve } from "node:path";
 import type { NeoConfig, ModelsCfg, WorkerPathName } from "../config";
 import type { RunDeps } from "./session-runner";
 import { filterSdkEnv, sdkProvider, supportsRunConfigField, withLongContext } from "./model-resolver";
 
 type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> &
-  Partial<Pick<NeoConfig, "providers" | "models" | "governor">>;
+  Partial<Pick<NeoConfig, "providers" | "models" | "governor" | "workRoot" | "handoffNotesDir">>;
 
 /** Which model this launch gets, in precedence order: the call site, then the path's profile, then
  *  the pinned default — and whichever wins, a tier alias is expanded to its real id so no
@@ -53,6 +54,11 @@ export function profileDeps(
   // customer-driven briefs, so it keeps the fence.
   if (path !== "ingress" && cfg.governor && d.outOfFolderWrites === undefined) {
     d.outOfFolderWrites = cfg.governor.outOfFolderWrites;
+  }
+  // Dispatched and loop workers stay in their project, helpers included (ADR-0031). Neo's handoff
+  // notes are the one engine folder under the work root every worker writes.
+  if ((path === "dispatch" || path === "loop") && cfg.workRoot && d.projectFence === undefined) {
+    d.projectFence = { root: cfg.workRoot, allow: cfg.handoffNotesDir ? [resolve(cfg.handoffNotesDir)] : [] };
   }
   const env = filterSdkEnv(d.provider, { ...cfg.workerEnv, ...(base.env ?? {}) });
   if (Object.keys(env).length) d.env = env;

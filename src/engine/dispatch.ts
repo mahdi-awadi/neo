@@ -387,6 +387,8 @@ export function briefWithProjectDocs(task: string): string {
     "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
     "positive instead. Never read secret files. Run `/security-review` before finishing auth, " +
     "payment, upload or input-handling work.\n\n" +
+    "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
+    "may your helper agents. Work for another project (even one an old note lists) goes back to Neo to dispatch.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
     "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +
@@ -401,10 +403,10 @@ export function briefWithProjectDocs(task: string): string {
     "even though it is not hung — this includes a background wait or Monitor, a long `sleep`, " +
     "`gh run watch`, tailing logs, or any \"wait for the CI/build/deploy to finish\" command. So NEVER " +
     "use a background wait or Monitor: when you must wait on CI, a build, or a deploy, POLL in short " +
-    "FOREGROUND steps under 90 seconds each — check status (e.g. `gh run view`), a brief `sleep`, then " +
+    "FOREGROUND steps under 90 seconds each — check status, a brief `sleep`, then " +
     "check again — so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
     "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
-    "poll to a terminal state here rather than \"standing by\" for a later event.\n\n" +
+    "poll to a terminal state here.\n\n" +
     "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`. The engine " +
     "sends it to the operator for review; you may also call `send_file` with it — the engine sends each " +
     "version once.\n\n" +

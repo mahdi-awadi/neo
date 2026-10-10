@@ -33,7 +33,7 @@ import {
 } from "@openai/codex-sdk";
 import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
-import { decide, type OutOfFolderWrites } from "./governor";
+import { decide, type OutOfFolderWrites, ProjectFence } from "./governor";
 import { fromAskUserQuestionInput, type StructuredAsk } from "./structured-question";
 import {
   filterSdkEnv,
@@ -220,6 +220,8 @@ export interface RunDeps {
   /** `governor.outOfFolderWrites` for this run (ADR-0012). Engine-side only — never sent to the
    *  SDK. Absent = "ask"; a customer-sourced order is always "ask". */
   outOfFolderWrites?: OutOfFolderWrites;
+  /** The project fence (ADR-0031): set by profileDeps for dispatch and loop workers. Engine-side only. */
+  projectFence?: ProjectFence;
   /** Codex SDK controls. These are ignored by the Claude adapter. */
   codexSandboxMode?: CodexSandboxMode;
   codexApprovalPolicy?: CodexApprovalMode;
@@ -361,6 +363,7 @@ export function buildCanUseTool(
   folder: string,
   source: OrderSource,
   outOfFolderWrites: OutOfFolderWrites = "ask",
+  projectFence?: ProjectFence,
 ) {
   // Customer work never gets the operator's standing write approval (ADR-0012).
   const writes: OutOfFolderWrites = source === "customer" ? "ask" : outOfFolderWrites;
@@ -397,7 +400,7 @@ export function buildCanUseTool(
         }
         // unparseable / empty → fall through to the plain steer below (never raise an empty ask)
       }
-      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes });
+      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes, ...(projectFence ? { projectFence } : {}) });
       if ("allow" in verdict) {
         report("allow");
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
@@ -451,7 +454,7 @@ type GovernorHookOutput = Record<string, never> | {
 //
 // An armed context checkpoint (ADR-0021) speaks first, through `steer`: its reason DENIES the call,
 // telling the worker to write its handoff note and end the turn. A throwing steer has no opinion.
-export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolderWrites = "ask", steer?: RunHandlers["contextSteer"]) {
+export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolderWrites = "ask", steer?: RunHandlers["contextSteer"], projectFence?: ProjectFence) {
   return async (input: HookInput, _toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
     let steered: string | undefined;
@@ -463,7 +466,7 @@ export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolder
     if (steered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: steered } };
     let reason: string;
     try {
-      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites });
+      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites, ...(projectFence ? { projectFence } : {}) });
       if ("allow" in verdict) return {};
       reason = "deny" in verdict ? verdict.deny : verdict.escalate;
     } catch (err) {
@@ -478,6 +481,7 @@ function sdkOptions(
   handlers: RunHandlers,
   extra: Record<string, unknown> = {},
   outOfFolderWrites: OutOfFolderWrites = "ask",
+  projectFence?: ProjectFence,
 ): Record<string, unknown> {
   // The hook and canUseTool must judge alike, so the customer rule is applied once, here too.
   const writes: OutOfFolderWrites = order.source === "customer" ? "ask" : outOfFolderWrites;
@@ -498,9 +502,10 @@ function sdkOptions(
     // Governance goes LAST so no per-run field can replace it. permissionMode is explicit: from SDK
     // 0.3.286 an unset mode can start the session in auto mode, which skips canUseTool.
     permissionMode: "default",
-    canUseTool: buildCanUseTool(handlers, order.folder, order.source, writes),
-    // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls.
-    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, writes, handlers.contextSteer)] }] },
+    canUseTool: buildCanUseTool(handlers, order.folder, order.source, writes, projectFence),
+    // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls — so the
+    // project fence (ADR-0031) holds for a worker's helper agents too.
+    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, writes, handlers.contextSteer, projectFence)] }] },
   };
 }
 
@@ -939,7 +944,7 @@ async function runClaudeOrder(
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const run = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites) }), handlers);
+    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence) }), handlers);
   };
   const first = await run(deps);
   if (!first.resumeMissing || !deps.resume) return first;
@@ -1040,7 +1045,7 @@ function startClaudeOrder(
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
     // Long-running sessions need the CLI's settled signal (see tracked.onSessionState above).
     const withState: RunDeps = { ...d, env: { ...(d.env ?? {}), [SESSION_STATE_EVENTS_ENV]: "1" } };
-    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState), withState.outOfFolderWrites) });
+    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState), withState.outOfFolderWrites, withState.projectFence) });
     return consumeStream(queryObj, tracked);
   };
 
