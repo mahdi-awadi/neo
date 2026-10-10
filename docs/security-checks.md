@@ -14,9 +14,13 @@ and cheaply, and blocks only what is new and serious. Decision record: ADR-0024.
 | nightly | `security-sweep` loop, 03:00 | everything: all files, full git history, dependencies, trivy (vuln/misconfig/secret), images from `config.json` (+ SBOM via syft), ZAP baseline and testssl on `devUrls` | reported, never blocking |
 
 The PreToolUse **guard** hook (`guard.ts`) also keeps agents away from secret files (`.env*`, keys,
-credential stores). It checks the paths a call names: file tools' paths, Grep's path and glob, and
-each path token of a Bash command (not commit messages, `--env-file` arguments or lines written into
-an ignore file). It blocks a Neo worker (`NEO_WORKER=1`) and only warns the operator's own sessions.
+credential stores). It checks READS (ADR-0030): file tools' paths, Grep's path and glob, and the
+path arguments of a Bash command. It does not check code (`node -e`, `python -c`), search patterns
+(grep, rg, sed, awk, `git log -S`), commit messages, `--env-file` arguments, lines written into an
+ignore file, or commands that only list names (ls, find without `-exec`, `git ls-files`/`status`, the
+Glob tool). A bare key-file name such as `server.key` counts only when that file exists, so `e.key`
+in a snippet is just text. It blocks a Neo worker (`NEO_WORKER=1`) and only warns the operator's own
+sessions.
 Templates (`*.example`, `.sample`, `.template`, `.dist`, `.defaults`) are always allowed.
 
 ## Policy
