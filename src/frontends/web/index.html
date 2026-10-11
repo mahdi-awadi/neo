@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{color-scheme:dark light;--ink:#080b10;--panel:#0d121a;--panel2:#10171f;--border:#1a2530;--fg:#d7e2ee;--muted:#67788c;--faint:#3a4655;--accent:#3fe0a2;--accent-dim:#1f7a5c;--glow:rgba(63,224,162,.22);--warn:#f5b14c;--danger:#ff6b6b;--info:#6db3ff;--accent-fill:#3fe0a2;--on-accent:#06241a;--topbar:rgba(13,18,26,.55);--scrim:rgba(4,7,11,.6);--glow-a:rgba(63,224,162,.06);--glow-b:rgba(63,150,224,.05);--grid-op:.42;--drawer-x:-100%;--syn-kw:#7fb8ff;--syn-str:#9bdcb9;--syn-com:#8a9aae;--syn-num:#f5b14c;--syn-fn:#e8c97a;--syn-var:#ff9f87;--syn-add:#3fe0a2;--syn-del:#ff7b7b;--out-fg:#aebdcc;--code:'JetBrains Mono',ui-monospace,monospace;--mono:'JetBrains Mono','IBM Plex Sans Arabic',ui-monospace,monospace;--sans:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;--slide:-12px}
+:root{color-scheme:dark light;--ink:#080b10;--panel:#0d121a;--panel2:#10171f;--border:#1a2530;--fg:#d7e2ee;--muted:#67788c;--faint:#3a4655;--accent:#3fe0a2;--accent-dim:#1f7a5c;--glow:rgba(63,224,162,.22);--warn:#f5b14c;--danger:#ff6b6b;--info:#6db3ff;--accent-fill:#3fe0a2;--on-accent:#06241a;--topbar:rgba(13,18,26,.55);--scrim:rgba(4,7,11,.6);--glow-a:rgba(63,224,162,.06);--glow-b:rgba(63,150,224,.05);--grid-op:.42;--drawer-x:-100%;--syn-kw:#7fb8ff;--syn-str:#9bdcb9;--syn-com:#8a9aae;--syn-num:#f5b14c;--syn-fn:#e8c97a;--syn-var:#ff9f87;--syn-add:#3fe0a2;--syn-del:#ff7b7b;--out-fg:#aebdcc;--code:'JetBrains Mono',ui-monospace,monospace;--mono:'JetBrains Mono','IBM Plex Sans Arabic',ui-monospace,monospace;--sans:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;--slide:-12px;--compose-h:46px}
 :root[dir=rtl]{--slide:12px;--drawer-x:100%;--sans:'IBM Plex Sans Arabic','Manrope',system-ui,sans-serif;--mono:'IBM Plex Sans Arabic','JetBrains Mono',ui-monospace,monospace}
 /* Light theme (AC8): the same look on a light ink; the system setting decides. Ink = BRAND.inkLight. */
 @media (prefers-color-scheme:light){:root{--ink:#f4f7f9;--panel:#fbfcfd;--panel2:#eef2f5;--border:#d5dee6;--fg:#0f1720;--muted:#4f5e72;--faint:#7d8ca0;--accent:#0b7f58;--accent-dim:#7fcfb0;--glow:rgba(11,127,88,.16);--warn:#8a5207;--danger:#c63b3b;--info:#1f6fc5;--syn-kw:#1c5fae;--syn-str:#0a7350;--syn-com:#5a6a7d;--syn-num:#985700;--syn-fn:#7a4a00;--syn-var:#b0391a;--syn-add:#0a7350;--syn-del:#b83232;--out-fg:#3d4b5d;--accent-fill:#1fbf86;--on-accent:#06241a;--topbar:rgba(251,252,253,.8);--scrim:rgba(15,23,32,.35);--glow-a:rgba(31,191,134,.05);--glow-b:rgba(31,111,197,.04);--grid-op:.25}}
@@ -26,7 +26,7 @@ aside{width:300px;min-width:300px;background:linear-gradient(180deg,var(--panel)
 .sec{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint);padding:15px 18px 7px;display:flex;justify-content:space-between}
 .np{padding:0 16px 8px}
 .np select,.np textarea{width:100%;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:9px;padding:9px 11px;font-size:12.5px;margin-bottom:7px;outline:none}
-.np select{font-family:var(--mono)}.np textarea{resize:vertical;min-height:52px;font-family:var(--sans)}
+.np select{font-family:var(--mono)}.np textarea{min-height:52px;font-family:var(--sans);line-height:1.45}
 .np select:focus,.np textarea:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
 .btn{width:100%;padding:10px;border-radius:9px;border:0;background:var(--accent-fill);color:var(--on-accent);font-weight:700;font-family:var(--mono);font-size:11px;letter-spacing:.06em;cursor:pointer;transition:opacity .12s}
 .btn:hover{opacity:.9}
@@ -63,6 +63,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;animation:fade .5s .0
 #feed{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column}
 .row{padding:6px 0;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
 .row.me{color:var(--muted);font-family:var(--mono);font-size:12.5px}
+.row.me .mk{float:inline-start;margin-inline-end:.6ch}.row.me .tx{overflow:hidden}
 .row.out{border-inline-start:2px solid var(--accent-dim);padding-inline-start:13px;margin:5px 0}
 .ptag{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border));padding:1px 7px;border-radius:6px;margin-inline-end:8px;vertical-align:1px}
 #fbar{display:none;align-items:center;gap:8px;padding:8px 22px;border-bottom:1px solid var(--border);background:var(--panel);font-family:var(--mono);font-size:11px;color:var(--muted)}
@@ -75,10 +76,12 @@ table.md{border-collapse:collapse;margin:9px 0;font-size:13px;width:auto;max-wid
 table.md th,table.md td{border:1px solid var(--border);padding:6px 12px;text-align:start;white-space:nowrap}
 /* Rich feed content (ADR-0025): server-rendered Markdown, code blocks, step-line tones. */
 .row.out{white-space:normal}
-.row.out p,.tx p{margin:0 0 7px}.row.out p:last-child,.tx p:last-child{margin-bottom:0}
+.row.out p,.tx p,.row.out .lines,.tx .lines{margin:0 0 7px}.row.out p:last-child,.tx p:last-child,.row.out .lines:last-child,.tx .lines:last-child{margin-bottom:0}
 .mh{font-family:var(--sans);font-weight:700;line-height:1.3;margin:12px 0 5px;color:var(--fg)}.mh:first-child{margin-top:2px}
 h3.mh{font-size:16px}h4.mh{font-size:14.5px}h5.mh,h6.mh{font-size:13px;color:var(--muted)}
-.row.out ul,.row.out ol,.tx ul,.tx ol{margin:4px 0 7px;padding-inline-start:22px}.row.out li,.tx li{margin:2px 0}
+.row.out ul,.row.out ol,.tx ul,.tx ol{margin:4px 0 7px;padding:0}
+/* Each item has its own direction (dir=auto, ADR-0033): its indent follows it, so the bullet of an Arabic item sits on the right. */
+.row.out li,.tx li{margin-block:2px;margin-inline:22px 0}
 li.task{list-style:none;margin-inline-start:-20px}li.task input{margin:0;margin-inline-end:7px;accent-color:var(--accent);vertical-align:-1px}
 .row.out blockquote,.tx blockquote{margin:7px 0;padding:2px 0;padding-inline-start:11px;border-inline-start:3px solid var(--border);color:var(--muted)}
 .row.out hr,.tx hr{border:0;border-top:1px solid var(--border);margin:11px 0}
@@ -121,9 +124,14 @@ table.md th{background:color-mix(in srgb,var(--accent) 9%,var(--panel));color:va
 table.md tbody tr:nth-child(even){background:var(--panel2)}
 .fe{margin:auto;color:var(--faint);font-family:var(--mono);font-size:12px;text-align:center;line-height:1.7}
 .compose{display:flex;flex-wrap:wrap;gap:10px;padding-block:13px calc(13px + env(safe-area-inset-bottom));padding-inline:max(18px,env(safe-area-inset-left),env(safe-area-inset-right));border-top:1px solid var(--border);background:var(--panel)}
-.compose input{flex:1;min-width:0;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:var(--ink);color:var(--fg);font-family:var(--sans);font-size:14px;outline:none}
-.compose input:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
-.compose input::placeholder{color:var(--faint);font-family:var(--mono);font-size:12px}
+.compose{align-items:flex-end}
+.compose textarea{flex:1;min-width:0;min-height:var(--compose-h);padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:var(--ink);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.45;outline:none}
+.compose textarea:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
+.compose textarea::placeholder{color:var(--faint);font-family:var(--mono);font-size:12px}
+.compose>button{height:var(--compose-h)}
+/* The compose box (ADR-0033): grows with its text up to max-height, then scrolls (compose-box.ts reads it). */
+textarea[data-compose]{resize:none;overflow-y:hidden;max-height:min(40vh,240px)}
+.itx[data-compose]{max-height:60vh}
 .compose button{padding:0 18px;border-radius:10px;border:0;background:var(--accent-fill);color:var(--on-accent);font-weight:700;font-family:var(--mono);font-size:11px;letter-spacing:.06em;cursor:pointer}
 .compose button.chip{padding:0 12px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);font-weight:400}
 .compose button:disabled{opacity:.45;cursor:not-allowed}
@@ -164,7 +172,7 @@ table.md tbody tr:nth-child(even){background:var(--panel2)}
 .ist-new{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--border));background:color-mix(in srgb,var(--warn) 8%,transparent)}
 .ist-with-agent{color:var(--info);border-color:color-mix(in srgb,var(--info) 40%,var(--border))}.ist-drafted{color:var(--accent);border-color:var(--accent-dim)}.ist-replied{color:var(--muted)}
 .iact{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:9px}
-.iinp{flex:1;min-width:160px;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:7px 11px;font-size:12.5px;outline:none}
+.iinp{flex:1;min-width:160px;font-family:var(--sans);line-height:1.45;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:7px 11px;font-size:12.5px;outline:none}
 .iinp:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
 .itx{width:100%;min-height:120px;margin-top:6px;background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:9px;padding:10px 12px;font-family:var(--sans);font-size:13.5px;line-height:1.5;resize:vertical;outline:none}
 .itx:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
@@ -253,7 +261,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 #feed,#tbody,#pjbody{padding:14px}
 #fbar,.hint{padding-inline:14px}
 .compose{gap:8px;padding-inline:max(12px,env(safe-area-inset-left),env(safe-area-inset-right))}
-.compose input,#tmsg,.tfilters input,.tfilters select,.np select,.np textarea,.iinp,.itx,.lci{font-size:16px}
+.compose textarea,.tfilters input,.tfilters select,.np select,.np textarea,.iinp,.itx,.lci{font-size:16px}
 .iinp{min-width:0;flex-basis:100%}
 #vthreads.on{grid-template-columns:minmax(0,1fr)}
 #vthreads .tlist,#vprojects .tlist{width:100%;border-inline-end:0}
@@ -286,8 +294,8 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
   <div class="sec" data-i18n="newProject.section"></div>
   <div class="np">
    <select id="repo"></select>
-   <textarea id="task" data-i18n-placeholder="newProject.taskPlaceholder"></textarea>
-   <button class="btn" id="open-project" data-i18n="newProject.open"></button>
+   <textarea id="task" rows="1" dir="auto" data-compose="send" data-i18n-placeholder="newProject.taskPlaceholder" data-i18n-title="feed.composeHint"></textarea>
+   <button class="btn" id="open-project" data-compose-submit data-i18n="newProject.open"></button>
   </div>
   <div class="sec"><span data-i18n="sdk.section"></span><span id="sdk-label"></span></div>
   <div class="sdkbox" id="sdkbox"></div>
@@ -317,7 +325,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
   <div class="view on" id="vactivity">
    <div id="fbar"></div>
    <div id="feed"><div class="fe" id="ph" data-i18n="feed.placeholder"></div></div>
-   <form class="compose" id="ff"><p class="anote" id="ffnote" role="alert" hidden></p><div class="atts" id="ffatts" data-i18n-aria="feed.attList" role="list" hidden></div><input id="msg" autocomplete="off" data-i18n-placeholder="feed.compose"><input type="file" id="file" hidden multiple><button class="chip" type="button" id="attach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>
+   <form class="compose" id="ff"><p class="anote" id="ffnote" role="alert" hidden></p><div class="atts" id="ffatts" data-i18n-aria="feed.attList" role="list" hidden></div><textarea id="msg" rows="1" dir="auto" data-compose="send" autocomplete="off" data-i18n-placeholder="feed.compose" data-i18n-title="feed.composeHint"></textarea><input type="file" id="file" hidden multiple><button class="chip" type="button" id="attach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>
   </div>
   <div class="view" id="vthreads">
    <div class="trail" id="trail"><div class="sec" data-i18n="threads.projects"></div><div id="tprojects"></div></div>
@@ -332,7 +340,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
    <div class="tpane">
     <button class="back" type="button" data-act="back"><span class="arr" aria-hidden="true">‹</span><span data-i18n="nav.back"></span></button>
     <div id="tbody"><div class="fe" data-i18n="threads.pick"></div></div>
-    <form class="compose" id="tform" hidden><p class="anote" id="tformnote" role="alert" hidden></p><div class="atts" id="tformatts" data-i18n-aria="feed.attList" role="list" hidden></div><input id="tmsg" autocomplete="off" data-i18n-placeholder="threads.reply"><input type="file" id="tfile" hidden multiple><button class="chip" type="button" id="tattach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>
+    <form class="compose" id="tform" hidden><p class="anote" id="tformnote" role="alert" hidden></p><div class="atts" id="tformatts" data-i18n-aria="feed.attList" role="list" hidden></div><textarea id="tmsg" rows="1" dir="auto" data-compose="send" autocomplete="off" data-i18n-placeholder="threads.reply" data-i18n-title="feed.composeHint"></textarea><input type="file" id="tfile" hidden multiple><button class="chip" type="button" id="tattach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>
    </div>
   </div>
   <div class="view" id="vprojects">

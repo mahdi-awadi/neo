@@ -97,7 +97,7 @@ test("touch targets: 44 px buttons, the kill button always visible, wrapping but
   expect(CSS).toMatch(/\.acts\{[^}]*flex-wrap:wrap/);
   expect(CSS).toMatch(/\.lrow\{[^}]*flex-wrap:wrap/);
   // 16 px inputs on narrow screens: no iOS zoom on focus.
-  expect(media("(max-width:768px)")).toMatch(/\.compose input[^{]*\{[^}]*font-size:16px/);
+  expect(media("(max-width:768px)")).toMatch(/\.compose textarea[^{]*\{[^}]*font-size:16px/);
 });
 
 test("light theme: its own token set, ink = the brand's light ink, on-accent text is a token (AC8)", () => {

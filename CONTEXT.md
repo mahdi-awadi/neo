@@ -673,6 +673,20 @@ attachments into one message (`withAttachments`), so the worker gets the files i
 the text (ADR-0026).
 _Avoid_: upload (the transfer, not the thing), pending file
 
+**Compose box**:
+Any console field that takes a message or a brief: the main composer, the thread reply, the
+new-project task, the inbox instructions and notes (Enter sends), and the customer draft and loop
+prompt (Enter is always a new line). One shared component (`compose-box.ts`), bound once by
+delegation. It is a multi-line textarea that grows to a max height and keeps every line break. Its
+text takes its own direction (`dir="auto"`) (ADR-0033).
+_Avoid_: input, text field, chat box
+
+**Line direction**:
+The direction of one line of a message, taken from its own first strong letter (`dir="auto"`). An
+Arabic line runs right-to-left and the English line under it left-to-right. Numbers stay an LTR run
+(ADR-0033).
+_Avoid_: RTL mode, message direction
+
 **Step line**:
 A line the engine itself writes about a worker's tool use: `🔧 Tool: target`, `↳ output`, `⚠️ ↳ error
 output`, `🔓 auto-approved: reason`. Its payload (a command, an output) is shown as code, never parsed

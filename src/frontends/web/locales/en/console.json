@@ -67,6 +67,7 @@
     "showing": "Showing",
     "showAll": "show all activity",
     "compose": "message the active project — a follow-up for the AI…",
+    "composeHint": "Enter sends · Shift+Enter adds a new line (on a phone, Enter adds a new line) · Ctrl+Enter sends",
     "send": "Send",
     "attach": "attach a file",
     "attList": "attached files",

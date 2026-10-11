@@ -7,6 +7,7 @@
 //   - the default compact target: the b/i/s/code/pre/a/blockquote subset Telegram accepts, newlines
 //     kept as text. Telegram has no <table>, so `tables: "pre"` renders tables as an aligned <pre>.
 import { Lexer, Tokenizer, type Token, type Tokens } from "marked";
+import { RTL_SCRIPT, numbersLtr } from "./bidi";
 
 /** Deterministic Telegram hashtag for a project name, e.g. "eticket-v3" -> "#eticket_v3".
  *  Telegram only auto-links [A-Za-z0-9_] after "#", needs length >= 2, and treats a leading
@@ -82,16 +83,6 @@ function fenceLang(info: string | undefined): string {
 
 /** A cell that is a number (counts, money, percentages, sizes): its column right-aligns. */
 const NUMERIC = /^[-+−]?[$€£]?\d[\d,.\s]*(%|[kKmMgGtT]i?[bB]?|ms|s)?$/;
-
-const RTL_SCRIPT = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
-
-/** Numbers in web prose of an RTL line become an isolated LTR run, so "10:30" or "1,250" never flips in Arabic.
- *  Applied to already-escaped text: entities are skipped, a digit inside a word (E2E) is left alone. */
-function numbersLtr(escaped: string): string {
-  return escaped.replace(/&#?\w+;|(?<![\p{L}\d_])\d(?:[\d,.:/%-]*\d)?%?(?![\p{L}\d_])/gu, (m) =>
-    m.startsWith("&") ? m : `<bdi dir="ltr" class="n">${m}</bdi>`,
-  );
-}
 
 interface Ctx {
   web: boolean;
@@ -173,11 +164,13 @@ function listItems(l: Tokens.List, c: Ctx, depth: number): string {
     const items = l.items
       .map((it) => {
         const body = blocks(it.tokens.filter((x) => x.type !== "checkbox"), c, depth + 1, true);
-        if (!it.task) return `<li>${body}</li>`;
-        return `<li class="task"><input type="checkbox" disabled${it.checked ? " checked" : ""}> ${body}</li>`;
+        if (!it.task) return `<li dir="auto">${body}</li>`;
+        return `<li class="task" dir="auto"><input type="checkbox" disabled${it.checked ? " checked" : ""}> ${body}</li>`;
       })
       .join("");
     const start = l.ordered && l.start !== "" && l.start !== 1 ? ` start="${Number(l.start) || 1}"` : "";
+    // No dir on the list itself: dir=auto skips children that have their own dir, so it would always
+    // resolve LTR. Each item carries its direction, and the CSS indents each item on its own start side.
     return l.ordered ? `<ol${start}>${items}</ol>` : `<ul>${items}</ul>`;
   }
   const pad = "  ".repeat(depth);
@@ -213,10 +206,10 @@ function block(t: Token, c: Ctx, depth: number, tight: boolean): string {
     case "heading": {
       const h = t as Tokens.Heading;
       // A line over "---"/"===" (setext) is how workers draw a separator, not a heading: a line + a rule.
-      if (!/^ {0,3}#/.test(h.raw)) return c.web ? `<p>${inline(h.tokens, c)}</p><hr>` : `${inline(h.tokens, c)}\n———`;
+      if (!/^ {0,3}#/.test(h.raw)) return c.web ? `<p dir="auto">${inline(h.tokens, c)}</p><hr>` : `${inline(h.tokens, c)}\n———`;
       if (!c.web) return `<b>${inline(h.tokens, c)}</b>`;
       const level = Math.min(h.depth + 2, 6);
-      return `<h${level} class="mh">${inline(h.tokens, c)}</h${level}>`;
+      return `<h${level} class="mh" dir="auto">${inline(h.tokens, c)}</h${level}>`;
     }
     case "table":
       return c.web ? tableWeb(t as Tokens.Table, c) : tableCompact(t as Tokens.Table, c);
@@ -224,13 +217,13 @@ function block(t: Token, c: Ctx, depth: number, tight: boolean): string {
       return c.web ? "<hr>" : "———";
     case "blockquote": {
       const inner = blocks((t as Tokens.Blockquote).tokens, c, depth).replace(/\n+$/, "");
-      return `<blockquote>${inner}</blockquote>`;
+      return c.web ? `<blockquote dir="auto">${inner}</blockquote>` : `<blockquote>${inner}</blockquote>`;
     }
     case "list":
       return listItems(t as Tokens.List, c, depth);
     case "paragraph": {
       const body = inline((t as Tokens.Paragraph).tokens, c);
-      return c.web && !tight ? `<p>${body}</p>` : body;
+      return c.web ? paragraphWeb(body, tight) : body;
     }
     case "text": {
       const x = t as Tokens.Text;
@@ -241,9 +234,36 @@ function block(t: Token, c: Ctx, depth: number, tight: boolean): string {
     case "html":
     default: {
       const raw = t.raw.replace(/\n+$/, "");
-      return c.web ? `<p>${textOut(raw, c)}</p>` : esc(raw);
+      return c.web ? `<p dir="auto">${textOut(raw, c)}</p>` : esc(raw);
     }
   }
+}
+
+const VOID_TAG = new Set(["br", "hr", "input", "img", "wbr"]);
+
+/** Split rendered inline HTML at its top-level <br>s. A <br> inside a tag (bold over two lines) stays,
+ *  so no element is ever cut in half. The HTML is ours (well-formed), so a tag scan is exact. */
+function topLevelLines(html: string): string[] {
+  const lines: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (const m of html.matchAll(/<(\/?)([a-z0-9]+)[^>]*>/g)) {
+    const name = m[2]!;
+    if (name === "br" && depth === 0) {
+      lines.push(html.slice(from, m.index));
+      from = m.index! + m[0].length;
+    } else if (!VOID_TAG.has(name)) depth += m[1] ? -1 : 1;
+  }
+  lines.push(html.slice(from));
+  return lines;
+}
+
+/** A web paragraph takes its own direction (dir=auto), and so does each of its lines: an Arabic line
+ *  runs right-to-left and the English line under it left-to-right (ADR-0033). */
+function paragraphWeb(body: string, tight: boolean): string {
+  const lines = topLevelLines(body);
+  if (lines.length > 1) return `<div class="lines">${lines.map((l) => `<div dir="auto">${l || "<br>"}</div>`).join("")}</div>`;
+  return tight ? body : `<p dir="auto">${body}</p>`;
 }
 
 /** A code block for the web console: whitespace kept, the language for the browser's highlighter. */
@@ -257,7 +277,7 @@ export function mdToHtml(md: string, opts: MdOptions = {}): string {
   const out = blocks(tokens, c);
   if (!c.web) return out.replace(/\n+$/, "");
   // A one-paragraph line (most feed lines) needs no block wrapper.
-  const one = /^<p>((?:(?!<p>|<\/p>)[\s\S])*)<\/p>$/.exec(out);
+  const one = /^<p dir="auto">((?:(?!<p[ >]|<\/p>)[\s\S])*)<\/p>$/.exec(out);
   return one ? one[1]! : out;
 }
 

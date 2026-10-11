@@ -974,3 +974,13 @@ commit in another project under `/home` escalates (a mirshad worker's subagents 
 eticket-v3); the preamble says to send such work back to Neo. And workers share one browser:
 `tools/browser` runs a digest-pinned browserless Chromium on 127.0.0.1:9222, capped at 3 GB with 4
 concurrent browsers; `install.ts --wire-mcp` points the Playwright/Chrome MCPs at it.
+
+The console composer is a multi-line compose box (ADR-0033). One shared, delegated component
+(`web/compose-box.ts`) handles every field that takes a message or a brief:
+- On a desktop, Enter sends and Shift+Enter adds a new line.
+- On a phone, Enter adds a new line.
+- The box grows to a max height, then scrolls. Pasted lines are kept.
+
+Each line of a message now takes its own direction (`dir="auto"`): the operator's own text, the
+Telegram echo, and the paragraphs, lines and list items of worker Markdown. An Arabic message reads
+right-to-left with its bullets on the right, and numbers stay LTR.

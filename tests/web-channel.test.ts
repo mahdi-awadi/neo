@@ -377,6 +377,27 @@ test("an inbound conversational message mirrors an echo to the bus, but a slash-
   expect(tg.lines.filter((l) => l.kind === "echo").length).toBe(1); // unchanged
 });
 
+test("a multi-line message keeps every line break: the worker brief and the Telegram echo", async () => {
+  const dir = scratch();
+  const bus = createOperatorBus();
+  const tg = recorder("telegram");
+  bus.register(tg);
+  const tasks: string[] = [];
+  const start = (o: Order, _h: RunHandlers): SessionRun => {
+    tasks.push(o.task);
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true, close: () => {}, closed: () => false, done: new Promise(() => {}) };
+  };
+  const ch = createWebChannel({ engine: engine(start), chatId: 0, bus });
+
+  const brief = "first line\n\nالاستمارات:\n* سطر أول.\n* second";
+  await ch.send(`/open ${dir} ${brief}`);
+  expect(tasks).toEqual([brief]);
+
+  // A follow-up reaches the worker as text.trim() (pipeline.ts): only the ends are trimmed.
+  await ch.send("follow\nup");
+  expect(tg.lines.filter((l) => l.kind === "echo").map((l) => (l as { text: string }).text)).toContain("follow\nup");
+});
+
 test("a web-raised escalation mirrors a pending notice to the bus, and its resolution mirrors too", async () => {
   const dir = scratch();
   const bus = createOperatorBus();

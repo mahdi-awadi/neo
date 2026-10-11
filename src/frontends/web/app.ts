@@ -11,6 +11,8 @@ import { CONFIRM_WINDOW_MS, armedFor, confirmTap } from "./confirm";
 import { type DetailView, backAction, enterAction, popDetail, staleOnLoad } from "./nav";
 import { createCodeEnhancer } from "./code-blocks";
 import { type Attachment, type SendBody, createAttachments, formatSize } from "./attachments";
+import { bindComposeBoxes, clearBox } from "./compose-box";
+import { linesHtml } from "./text-lines";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
 const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
@@ -265,7 +267,7 @@ function openProject(): void {
   }
   closeDrawer(false);
   void post("/api/open", { folder, task }).then(() => {
-    ($("task") as HTMLTextAreaElement).value = "";
+    clearBox($("task") as HTMLTextAreaElement);
     tab("activity");
     setTimeout(loadState, 500);
   });
@@ -282,7 +284,7 @@ function renderLoops(): void {
     `<input id="lc-name" placeholder="${ph("loops.name")}" class="lci">` +
     `<input id="lc-sum" placeholder="${ph("loops.summary")}" class="lci">` +
     `<input id="lc-folder" placeholder="${ph("loops.folder")}" class="lci">` +
-    `<textarea id="lc-prompt" class="itx" placeholder="${ph("loops.prompt")}"></textarea>` +
+    `<textarea id="lc-prompt" class="itx" dir="auto" data-compose="text" placeholder="${ph("loops.prompt")}"></textarea>` +
     `<select id="lc-gk" class="lci"><option value="command">${t("loops.goalCommand")}</option><option value="judge">${t("loops.goalJudge")}</option></select>` +
     `<input id="lc-gv" placeholder="${ph("loops.goalValue")}" class="lci">` +
     `<select id="lc-tk" class="lci"><option value="manual">${t("loops.triggerManual")}</option><option value="interval">${t("loops.triggerInterval")}</option><option value="cron">${t("loops.triggerCron")}</option></select>` +
@@ -535,14 +537,14 @@ function renderInbox(items: Any[]): void {
     h += `<div class="isubj">${i.subject ? esc(i.subject) : t("inbox.noSubject")}</div>`;
     h += `<div class="ibody">${esc((i.text || "").slice(0, 800))}</div>`;
     if (i.status === "new") {
-      h += `<div class="iact"><input class="iinp" id="instr-${id}" placeholder="${ph("inbox.instructions")}"><button class="run" data-act="inbox-agent" data-id="${id}">${t("inbox.sendToAgent")}</button></div>`;
+      h += `<div class="iact"><textarea class="iinp" id="instr-${id}" rows="1" dir="auto" data-compose="send" placeholder="${ph("inbox.instructions")}"></textarea><button class="run" data-act="inbox-agent" data-compose-submit data-id="${id}">${t("inbox.sendToAgent")}</button></div>`;
     } else if (i.status === "with-agent") {
       h += `<div class="iact"><span class="rfo">${t("inbox.drafting")}</span></div>`;
     } else if (i.status === "drafted") {
       h += `<div class="rfo" style="margin-top:9px">${t("inbox.draftHint")}</div>`;
-      h += `<textarea class="itx" id="draft-${id}">${esc(i.draft || "")}</textarea>`;
+      h += `<textarea class="itx" id="draft-${id}" dir="auto" data-compose="text">${esc(i.draft || "")}</textarea>`;
       h += `<div class="iact"><button class="run ok" data-act="inbox-send" data-id="${id}">${t("inbox.sendToCustomer")}</button>`;
-      h += `<input class="iinp" id="notes-${id}" placeholder="${ph("inbox.notes")}"><button class="run" data-act="inbox-redraft" data-id="${id}">${t("inbox.redraft")}</button></div>`;
+      h += `<textarea class="iinp" id="notes-${id}" rows="1" dir="auto" data-compose="send" placeholder="${ph("inbox.notes")}"></textarea><button class="run" data-act="inbox-redraft" data-compose-submit data-id="${id}">${t("inbox.redraft")}</button></div>`;
     } else if (i.status === "replied") {
       h += `<div class="rfo" style="margin-top:7px">${t("inbox.replied")}${i.draft ? ` — "${esc(i.draft.slice(0, 90))}…"` : ""}</div>`;
     }
@@ -555,7 +557,7 @@ function dim(id: string, o: string): void {
   if (row) row.style.opacity = o;
 }
 function inboxDraft(id: string, field: "instr" | "notes"): void {
-  const el = document.getElementById(`${field}-${id}`) as HTMLInputElement | null;
+  const el = document.getElementById(`${field}-${id}`) as HTMLTextAreaElement | null;
   dim(id, "0.55");
   void post("/api/inbox/draft", { id, instructions: el ? el.value : "" }).then(loadInbox).catch(loadInbox);
   setTimeout(loadInbox, 800);
@@ -838,7 +840,7 @@ function attachComposer(o: { form: string; box: string; note: string; input: str
     }
     drop(id);
     render();
-    ($(o.input) as HTMLInputElement).focus();
+    ($(o.input) as HTMLTextAreaElement).focus();
   });
   const add = (list: Iterable<File>) => {
     note = "";
@@ -893,9 +895,14 @@ function attachComposer(o: { form: string; box: string; note: string; input: str
     },
   };
 }
-/** The operator's own line in the feed or a thread: the text, then the names of the files it carried. */
+/** The operator's own line in the feed or a thread: the text line by line, each line in its own
+ *  direction (ADR-0033), then the names of the files it carried. */
 function ownLine(text: string, names: string[]): string {
-  return esc(text) + (names.length ? `<span class="matt">📎 ${names.map((n) => `<bdi>${esc(n)}</bdi>`).join(", ")}</span>` : "");
+  return linesHtml(text) + (names.length ? `<span class="matt">📎 ${names.map((n) => `<bdi>${esc(n)}</bdi>`).join(", ")}</span>` : "");
+}
+/** An own line as a feed row's body: the › mark beside the text, never on a line of its own. */
+function ownRow(html: string): string {
+  return `<span class="mk">›</span><div class="tx">${html}</div>`;
 }
 const mainComposer = attachComposer({ form: "ff", box: "ffatts", note: "ffnote", input: "msg", file: "file", attach: "attach", threadId: () => undefined });
 const threadComposer = attachComposer({ form: "tform", box: "tformatts", note: "tformnote", input: "tmsg", file: "tfile", attach: "tattach", threadId: () => TH.open });
@@ -1037,7 +1044,7 @@ function messageHtml(m: Any, html?: string): string {
   // Message text has no fixed direction (an English line in the Arabic console, or the reverse).
   // An assistant row arrives rendered by the server (m.html, ADR-0025); the operator's own text is escaped.
   const tone = m.tone ? ` tone-${esc(m.tone)}` : "";
-  return `<div class="tmsg ${m.role === "user" ? "user" : ""}${tone}"><div class="tw">${who} · ${ltr(clock(m.at))}</div><div dir="auto" class="tx">${html ?? m.html ?? esc(m.content)}</div></div>`;
+  return `<div class="tmsg ${m.role === "user" ? "user" : ""}${tone}"><div class="tw">${who} · ${ltr(clock(m.at))}</div><div dir="auto" class="tx">${html ?? m.html ?? linesHtml(m.content)}</div></div>`;
 }
 function renderThreadPane(v: Any): void {
   const th = v.thread;
@@ -1362,6 +1369,8 @@ document.addEventListener("click", (ev) => {
   }
 });
 $("open-project").onclick = openProject;
+// Every message/brief field is a compose box (ADR-0033): one delegated binding for the whole page.
+bindComposeBoxes(document);
 $("menu").onclick = () => setDrawer(!document.querySelector(".app")!.classList.contains("drawer-open"), true);
 $("scrim").onclick = () => closeDrawer();
 document.addEventListener("keydown", (ev) => {
@@ -1438,24 +1447,24 @@ $("ioshint-x").onclick = () => {
 renderInstall();
 ($("ff") as HTMLFormElement).onsubmit = (ev) => {
   ev.preventDefault();
-  const m = $("msg") as HTMLInputElement;
+  const m = $("msg") as HTMLTextAreaElement;
   const typed = m.value;
   void mainComposer.send(typed).then((sent) => {
     if (!sent) return; // refused: the text and the chips stay
-    feedMsg("› " + ownLine(sent.body.text, sent.names), "me", filterProject);
-    if (m.value === typed) m.value = "";
+    feedMsg(ownRow(ownLine(sent.body.text, sent.names)), "me", filterProject);
+    if (m.value === typed) clearBox(m);
   });
 };
 ($("tform") as HTMLFormElement).onsubmit = (ev) => {
   ev.preventDefault();
-  const m = $("tmsg") as HTMLInputElement;
+  const m = $("tmsg") as HTMLTextAreaElement;
   if (TH.open === undefined) return;
   // The composer inside a thread names it, so the message joins that thread (spec §4.1 rule 2).
   const typed = m.value;
   void threadComposer.send(typed).then((sent) => {
     if (!sent) return; // refused: the text and the chips stay
     appendThreadLine({ role: "user", content: sent.body.text, at: Date.now() }, ownLine(sent.body.text, sent.names));
-    if (m.value === typed) m.value = "";
+    if (m.value === typed) clearBox(m);
   });
 };
 
@@ -1474,7 +1483,7 @@ es.onmessage = (ev) => {
     feedMsg((e.project ? `<span class="ptag">${esc(e.project)}</span>` : "") + `<div class="tx" dir="auto">${e.text}</div>`, "out", e.project, e.tone);
     if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "assistant", project: e.project, at: Date.now(), tone: e.tone }, e.text);
   } else if (e.type === "echo") {
-    feedMsg("› " + esc(e.text), "me", filterProject);
+    feedMsg(ownRow(ownLine(e.text, [])), "me", filterProject);
     if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "user", content: e.text, at: Date.now() });
   } else if (e.type === "notice") feedMsg("⋯ " + esc(e.text), "me", filterProject);
   else if (e.type === "projects") void loadState();

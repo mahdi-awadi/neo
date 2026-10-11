@@ -27,17 +27,18 @@ test("a mixed column stays start-aligned; an explicit --: wins", () => {
 // ── AC2: Markdown blocks and inlines ──────────────────────────────────────────────────────────────
 test("headings, lists, task lists, emphasis, links and inline code are real HTML", () => {
   const html = web("## Plan\n\n1. first\n2. second\n\n- [x] done\n- [ ] open\n\n**b** *i* ~~s~~ `c` [d](https://x.dev/a?b=1&c=2)");
-  expect(html).toContain('<h4 class="mh">Plan</h4>');
-  expect(html).toContain("<ol><li>first</li><li>second</li></ol>");
-  expect(html).toContain('<li class="task"><input type="checkbox" disabled checked> done</li>');
-  expect(html).toContain('<li class="task"><input type="checkbox" disabled> open</li>');
+  expect(html).toContain('<h4 class="mh" dir="auto">Plan</h4>');
+  expect(html).toContain('<ol><li dir="auto">first</li><li dir="auto">second</li></ol>');
+  expect(html).toContain('<li class="task" dir="auto"><input type="checkbox" disabled checked> done</li>');
+  expect(html).toContain('<li class="task" dir="auto"><input type="checkbox" disabled> open</li>');
   expect(html).toContain("<strong>b</strong> <em>i</em> <del>s</del> <code>c</code>");
   expect(html).toContain('<a href="https://x.dev/a?b=1&amp;c=2" target="_blank" rel="noopener noreferrer">d</a>');
 });
 
 test("a soft line break inside a paragraph is kept as a <br>", () => {
-  expect(web("one\ntwo")).toBe("one<br>two"); // a lone paragraph needs no <p>
-  expect(web("one\n\ntwo")).toBe("<p>one</p><p>two</p>");
+  expect(web("one\ntwo")).toBe('<div class="lines"><div dir="auto">one</div><div dir="auto">two</div></div>'); // each line has its own direction (ADR-0033)
+  expect(web("one")).toBe("one"); // a lone one-line paragraph needs no <p>
+  expect(web("one\n\ntwo")).toBe('<p dir="auto">one</p><p dir="auto">two</p>');
 });
 
 // ── AC3: fenced code ──────────────────────────────────────────────────────────────────────────────
@@ -175,8 +176,8 @@ test("underscores never emphasise: dunder names and paths keep their underscores
 
 test("a text line over --- is a line and a rule, not a heading (setext)", () => {
   expect(mdToHtml("Title\n---\nnext")).toBe("Title\n———\nnext");
-  expect(web("Title\n---\nnext")).toBe("<p>Title</p><hr><p>next</p>");
-  expect(web("# Real")).toBe('<h3 class="mh">Real</h3>');
+  expect(web("Title\n---\nnext")).toBe('<p dir="auto">Title</p><hr><p dir="auto">next</p>');
+  expect(web("# Real")).toBe('<h3 class="mh" dir="auto">Real</h3>');
 });
 
 test("worker prose that starts with 🔧 or ↳ is not mistaken for a step line", () => {

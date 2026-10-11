@@ -69,7 +69,7 @@ test("copy button: catalogue labels in EN and AR, clipboard with feedback, one d
 test("rows carry their tone; thread history and escalations use the server's HTML", () => {
   expect(APP).toContain('(tone ? ` tone-${tone}` : "")'); // feed rows
   expect(APP).toContain('"out", e.project, e.tone)');
-  expect(APP).toContain("html ?? m.html ?? esc(m.content)"); // thread history
+  expect(APP).toContain("html ?? m.html ?? linesHtml(m.content)"); // thread history (own text line by line, ADR-0033)
   expect(APP).toContain("e.html ?? esc(e.reason)"); // escalation card
 });
 
