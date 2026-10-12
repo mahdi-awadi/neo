@@ -75,7 +75,7 @@ function readText(path: string, maxBytes: number): string | undefined {
 
 /** How far a plan file is: ticked, total, and how many unticked steps are operator-gated. `finished`:
  *  it has steps and none is left that a worker may do. */
-interface Progress {
+export interface Progress {
   done: number;
   total: number;
   gated: number;
@@ -86,6 +86,24 @@ function progressOf(md: string, cfg: PlansCfg): Progress {
   const open = steps.filter((s) => !s.done);
   const gated = open.filter((s) => gatedStep(s.text, cfg)).length;
   return { done: steps.length - open.length, total: steps.length, gated, finished: steps.length > 0 && gated === open.length };
+}
+
+/** The plans of a spec, added up: finished when every one is. */
+function sumProgress(plans: Progress[]): Progress {
+  return plans.reduce((a, p) => ({ done: a.done + p.done, total: a.total + p.total, gated: a.gated + p.gated, finished: a.finished && p.finished }), { done: 0, total: 0, gated: 0, finished: true });
+}
+
+/** The design unit's progress when it is finished on disk, else undefined (ADR-0034 rules 1 and 4;
+ *  the plan registry's first sight, ADR-0035). A plan is judged by its own steps (`content`); a spec
+ *  by the plans that name it, when it has at least one and every one is finished. */
+export function finishedUnit(cfg: PlansCfg, folder: string, path: string, content: string, git: GitRunner = defaultGit): Progress | undefined {
+  if (!isSpec(path)) {
+    const p = progressOf(content, cfg);
+    return p.finished ? p : undefined;
+  }
+  const plans = plansOfSpec(folder, path, cfg, git).map((p) => progressOf(readText(join(folder, p), cfg.maxBytes) ?? "", cfg));
+  const sum = sumProgress(plans);
+  return plans.length > 0 && sum.finished ? sum : undefined;
 }
 
 /** The plan files in `folder` (tracked or untracked, not ignored) whose text names `spec`. */
@@ -145,8 +163,7 @@ export function judgeExecute(deps: JudgeDeps, plan: PlanRow, opts: { anyway?: bo
       target = candidates[0]!.path;
       notes.push(`the plan of spec ${plan.path}`);
     } else if (plans.length > 0) {
-      const sum = plans.reduce((a, p) => ({ done: a.done + p.progress.done, total: a.total + p.progress.total, gated: a.gated + p.progress.gated, finished: true }), { done: 0, total: 0, gated: 0, finished: true });
-      return { kind: "done", path: plan.path, progress: sum };
+      return { kind: "done", path: plan.path, progress: sumProgress(plans.map((p) => p.progress)) };
     }
   } else {
     unit = [plan.path, ...specRefs(readText(join(folder, plan.path), cfg.maxBytes) ?? "")];

@@ -560,3 +560,110 @@ test("every plan write moves updatedAt, so /plans stays newest first", async () 
   expect(ledger.planById(a.id)!.updatedAt).toBeGreaterThan(old);
   expect(ledger.listPlans()[0]!.id).toBe(a.id);
 });
+
+// ── ADR-0035: a plan first seen finished is recorded done, never sent as a card ──────────────
+
+const DONE_BODY = "# Sub-users\n- [x] one\n- [x] two\n";
+
+test("a plan first seen with every step ticked: recorded done, no card, no decision, no file", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, DONE_BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, cause, chatId: 42 });
+  expect(posts).toEqual([]);
+  expect(ledger.listOpenDecisions()).toEqual([]);
+  const plan = ledger.planByPath(dir, PLAN)!;
+  expect(plan).toMatchObject({ status: "done", stepsDone: 2, stepsTotal: 2, version: 0 });
+  expect(plan.sentSha256).toBeUndefined();
+  expect(planActions(plan.status)).toEqual([]);
+  expect(ledger.listEvents({ kind: "plan_seen_done" }).map((e) => e.data)).toEqual([expect.objectContaining({ planId: plan.id, path: PLAN, done: 2, total: 2, gated: 0 })]);
+  expect(renderPlans(ledger, undefined)).toContain(`#${plan.id} · done · 2/2 · gold · Sub-users`);
+  // A later run end with the same file sends nothing either.
+  await onRunEndPlans(deps, { project: "gold", folder: dir, cause, chatId: 42 });
+  expect(posts).toEqual([]);
+});
+
+test("a plan first seen with only operator-gated steps left is done (ADR-0034's judge)", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, "# Sub-users\n- [x] build it\n- [ ] push to origin (operator)\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toEqual([]);
+  expect(ledger.planByPath(dir, PLAN)).toMatchObject({ status: "done", stepsDone: 1, stepsTotal: 2 });
+});
+
+test("a plan with no steps, or with a step left, is sent as before", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, "# Notes only\nno checkboxes\n");
+  put(dir, "docs/superpowers/plans/b.md", "# B\n- [x] one\n- [ ] two\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toHaveLength(2);
+  expect(ledger.planByPath(dir, PLAN)!.status).toBe("sent");
+});
+
+test("a spec whose plans are all done is done with them; a spec with an open plan, or none, is sent", async () => {
+  const SPEC = "docs/superpowers/specs/sub-users-design.md";
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, SPEC, "# Sub-users design\nThe design.\n");
+  put(dir, PLAN, `# Sub-users plan\nSpec: ${SPEC}\n- [x] one\n- [x] two\n`);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toEqual([]);
+  expect(ledger.planByPath(dir, SPEC)!.status).toBe("done");
+  expect(ledger.listEvents({ kind: "plan_seen_done" }).map((e) => e.data)).toContainEqual(expect.objectContaining({ path: SPEC, done: 2, total: 2 }));
+  // Open plan → the spec is sent.
+  const b = repo();
+  const r = rig();
+  put(b, SPEC, "# Sub-users design\n");
+  put(b, PLAN, `# Sub-users plan\nSpec: ${SPEC}\n- [x] one\n- [ ] two\n`);
+  await onRunEndPlans(r.deps, { project: "gold", folder: b, chatId: 42 });
+  expect(r.posts).toHaveLength(2);
+  // No plan yet → the spec is sent.
+  const c = repo();
+  const s = rig();
+  put(c, SPEC, "# Sub-users design\n");
+  await onRunEndPlans(s.deps, { project: "gold", folder: c, chatId: 42 });
+  expect(s.posts).toHaveLength(1);
+});
+
+test("a plan recorded done at first sight that gains an unticked step is sent normally", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, DONE_BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toEqual([]);
+  put(dir, PLAN, DONE_BODY + "- [ ] three\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts.map((p) => p.caption)).toEqual(["📄 plan · gold · Sub-users"]);
+  expect(posts[0]!.rec.status).toBe("sent");
+  expect(ledger.planByPath(dir, PLAN)).toMatchObject({ status: "sent", version: 1, stepsDone: 2, stepsTotal: 3 });
+  expect(ledger.listOpenDecisions()).toHaveLength(1);
+});
+
+test("an operator-done plan (it was executed) stays done when its file gains a step", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  const plan = ledger.planByPath(dir, PLAN)!;
+  const { todo } = fakeTodo(ledger);
+  await applyPlanAction({ ...deps, todo }, plan.id, "execute");
+  await applyPlanAction(deps, plan.id, "done");
+  put(dir, PLAN, BODY + "- [ ] more\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, chatId: 42 });
+  expect(posts).toHaveLength(1);
+  expect(ledger.planById(plan.id)!.status).toBe("done");
+});
+
+test("send_file of a plan first seen finished: not sent, the worker is told it is already done", async () => {
+  const dir = repo();
+  const { ledger, posts, deps } = rig();
+  put(dir, PLAN, DONE_BODY);
+  const text = `already done: ${PLAN} — 2/2 steps ticked; recorded as done, not sent to the operator`;
+  expect(await offerPlanFile(deps, { project: "gold", folder: dir, path: PLAN, chatId: 42 })).toEqual({ handled: true, text });
+  expect(await offerPlanFile(deps, { project: "gold", folder: dir, path: PLAN, chatId: 42 })).toEqual({ handled: true, text });
+  expect(posts).toEqual([]);
+  expect(ledger.planByPath(dir, PLAN)!.status).toBe("done");
+  expect(ledger.listEvents({ kind: "plan_seen_done" })).toHaveLength(1);
+});

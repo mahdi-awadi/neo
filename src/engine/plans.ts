@@ -10,7 +10,7 @@ import { faults } from "./fault";
 import type { Trace } from "./trace";
 import type { TodoQueue } from "./todo-queue";
 import type { Registry } from "./registry";
-import { judgeExecute, planSteps, verdictText } from "./plan-execute";
+import { finishedUnit, judgeExecute, planSteps, verdictText, type Progress } from "./plan-execute";
 
 /** Spec default for config `plans.paths`. */
 export const DEFAULT_PLAN_PATHS: string[] = ["docs/**/plans/**/*.md", "docs/**/specs/**/*.md", "specs/**/*.md", "plans/**/*.md"];
@@ -281,13 +281,32 @@ function readPlan(folder: string, path: string, maxBytes: number): string | unde
   }
 }
 
-/** Register the file and finish an executing plan whose every step is checked. */
-function register(deps: PlanDeps, run: PlanRun, path: string, content: string): PlanRow {
-  const { plan } = registerPlan(deps.ledger, { project: run.project, folder: run.folder, path, content, cause: run.cause, orderId: run.orderId });
+/** Whether the engine recorded this plan done from its file alone (ADR-0035): done, yet it never
+ *  reached the operator and no Execute ran it. Only this kind of done reopens when its file changes. */
+function seenDone(plan: PlanRow): boolean {
+  return plan.status === "done" && plan.version === 0 && plan.todoId === undefined;
+}
+
+/** Register the file and finish an executing plan whose every step is checked. A plan the operator
+ *  never received is judged by its file (ADR-0035): finished (ADR-0034's judge, spec↔plan unit) →
+ *  recorded done and never sent; a recorded-done one that has work again → draft, sent as usual. */
+function register(deps: PlanDeps, run: PlanRun, path: string, content: string): { plan: PlanRow; finished?: Progress } {
+  const { ledger } = deps;
+  const { plan } = registerPlan(ledger, { project: run.project, folder: run.folder, path, content, cause: run.cause, orderId: run.orderId });
   if (plan.status === "executing" && plan.stepsTotal > 0 && plan.stepsDone === plan.stepsTotal) {
-    return deps.ledger.upsertPlan({ ...plan, status: "done" });
+    return { plan: ledger.upsertPlan({ ...plan, status: "done" }) };
   }
-  return plan;
+  const unsentDraft = plan.status === "draft" && plan.version === 0;
+  if (!unsentDraft && !seenDone(plan)) return { plan };
+  const finished = finishedUnit(deps.cfg, run.folder, path, content, deps.git);
+  if (!finished) return { plan: plan.status === "done" ? ledger.upsertPlan({ ...plan, status: "draft" }) : plan };
+  if (unsentDraft) {
+    const data = { project: plan.project, planId: plan.id, path, done: finished.done, total: finished.total, gated: finished.gated };
+    ledger.recordEvent("plan_seen_done", { folder: run.folder, orderId: run.orderId, cause: run.cause, data });
+    console.log(`[plans] ${join(run.folder, path)} first seen finished (${finished.done}/${finished.total}) — recorded done, not sent`);
+    return { plan: ledger.upsertPlan({ ...plan, status: "done" }), finished };
+  }
+  return { plan, finished };
 }
 
 /** Whether a send of this version would post a card (it is not finished and not already sent). */
@@ -367,7 +386,7 @@ export async function onRunEndPlans(deps: PlanDeps, run: PlanRun): Promise<void>
     try {
       const content = readPlan(run.folder, path, deps.cfg.maxBytes);
       if (content === undefined) continue;
-      const plan = register(deps, run, path, content);
+      const { plan } = register(deps, run, path, content);
       if (unsent(deps, plan)) toSend.push(plan);
     } catch (e) {
       faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path });
@@ -400,7 +419,10 @@ export async function offerPlanFile(deps: PlanDeps, p: PlanRun & { path: string 
   if (!deps.cfg.paths.some((g) => new Bun.Glob(g).match(p.path))) return { handled: false };
   const content = readPlan(p.folder, p.path, deps.cfg.maxBytes);
   if (content === undefined) return { handled: false };
-  switch (await sendPlan(deps, register(deps, p, p.path, content), p)) {
+  const { plan, finished } = register(deps, p, p.path, content);
+  // Recorded done from its file (ADR-0035): no card and no plain file either.
+  if (finished && seenDone(plan)) return { handled: true, text: `already done: ${p.path} — ${finished.done}/${finished.total} steps ticked; recorded as done, not sent to the operator` };
+  switch (await sendPlan(deps, plan, p)) {
     case "sent":
       return { handled: true, text: `sent plan ${p.path}` };
     case "already":

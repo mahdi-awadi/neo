@@ -112,8 +112,9 @@ test("AC1: every box ticked in the FILE (the row is stale) → done, nothing que
 test("AC1: only operator-gated boxes left → done, and the reply names how many are gated", async () => {
   const dir = repo();
   const { ledger, deps, submitted } = rig();
-  put(dir, PLAN, GATED);
+  put(dir, PLAN, OPEN);
   await seen(deps, dir, "gold");
+  put(dir, PLAN, GATED); // a plan first seen finished is never sent (ADR-0035): it was open then
   const r = await applyPlanAction(deps, row(ledger, dir, PLAN).id, "execute");
   expect(r.ok).toBe(false);
   expect(r.text).toContain("1/3");
@@ -124,8 +125,9 @@ test("AC1: only operator-gated boxes left → done, and the reply names how many
 test("AC2: Run anyway skips only the done check", async () => {
   const dir = repo();
   const { ledger, deps, submitted } = rig();
-  put(dir, PLAN, DONE);
+  put(dir, PLAN, OPEN);
   await seen(deps, dir, "gold");
+  put(dir, PLAN, DONE);
   const r = await applyPlanAction(deps, row(ledger, dir, PLAN).id, "anyway");
   expect(r.ok).toBe(true);
   expect(submitted).toHaveLength(1);
@@ -250,8 +252,9 @@ test("AC6: a spec whose plans are all done → done; one with several open plans
   const dir = repo();
   const { ledger, deps, submitted } = rig();
   put(dir, SPEC, SPEC_BODY);
-  put(dir, PLAN, DONE);
+  put(dir, PLAN, OPEN);
   await seen(deps, dir, "gold");
+  put(dir, PLAN, DONE);
   const done = await applyPlanAction(deps, row(ledger, dir, SPEC).id, "execute");
   expect(done.text).toContain("already done");
   put(dir, PLAN, OPEN);

@@ -996,3 +996,9 @@ A finished plan (only operator-gated boxes left) is reported as done, with a Run
 A plan already queued or running anywhere in the repository is reported with where it is. Execute
 from a worktree runs in the main checkout when the plan is there. A spec and its plans are one
 unit, so a spec resolves to its open plan. The reply is a real Telegram message, not only a toast.
+
+A plan the registry first sees finished is no longer sent (ADR-0035). eticket-v3's finished
+sub-users plan and spec reached the operator as new cards with Approve and Execute, and two todos
+re-checked done work. Now such a plan is recorded done with ADR-0034's judge (a spec with its
+plans), with an event and a log line, and no card or file. It is sent normally if it gets an open
+step again.

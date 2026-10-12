@@ -600,7 +600,9 @@ _Avoid_: plan folder, docs
 
 **Plan status**:
 `draft` (registered, not sent), `sent` (the operator has it), `approved`, `executing` (a todo works
-it), `done`, or `abandoned`. Moves only on an operator tap or a fact the engine can read.
+it), `done`, or `abandoned`. Moves only on an operator tap or a fact the engine can read. A plan the
+registry first sees finished is recorded `done` and never sent; it goes back to `draft` if its file
+gets work again (ADR-0035).
 _Avoid_: plan state, phase
 
 **Plan card**:
@@ -634,7 +636,8 @@ _Avoid_: same project, same folder
 
 **Operator-gated step**:
 A plan step a worker must not do alone (push, deploy, restart, ask the operator…), matched by
-`plans.gatedStepPatterns`. A plan whose only unticked steps are gated counts as done for Execute.
+`plans.gatedStepPatterns`. A plan whose only unticked steps are gated counts as done for Execute,
+and for the registry's first sight (ADR-0035).
 _Avoid_: manual step, blocked step
 
 ### The running engine
