@@ -39,7 +39,7 @@ import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 import type { Cause, ThreadChange } from "./trace";
 import { faults } from "./fault";
-import { applyPlanAction, planActions, planDepsFrom, type PlanAction } from "./plans";
+import { applyPlanAction, planActions, planDepsFrom, type PlanAction, type PlanActionResult } from "./plans";
 import { routeThreadMessage } from "./reply-routing";
 import { projectDeps, projectSummaries, projectView, type ProjectSummary, type ProjectView } from "./project-view";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
@@ -145,7 +145,7 @@ export interface WebChannel {
   search(q: string, f: { project?: string; before?: number; limit: number }): { rows: Array<SearchHit & { ref?: string; threadRef?: string }>; next?: number };
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
    *  operator's text, which the console does not carry yet, so it is refused here. */
-  planAction(id: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }>;
+  planAction(id: number, action: PlanAction, version?: number): Promise<PlanActionResult>;
   /** An attention item's one-tap action (ADR-0018) — the same engine rules as a Telegram tap. */
   attentionAction(id: number, action: AttentionAction): Promise<AttentionActionResult>;
   /** The project list (P6, spec §9): one summary per known project, health first, at most PAGE_MAX. */

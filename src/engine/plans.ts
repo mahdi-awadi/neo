@@ -9,6 +9,8 @@ import { git as defaultGit } from "./dispatch-report";
 import { faults } from "./fault";
 import type { Trace } from "./trace";
 import type { TodoQueue } from "./todo-queue";
+import type { Registry } from "./registry";
+import { judgeExecute, planSteps, verdictText } from "./plan-execute";
 
 /** Spec default for config `plans.paths`. */
 export const DEFAULT_PLAN_PATHS: string[] = ["docs/**/plans/**/*.md", "docs/**/specs/**/*.md", "specs/**/*.md", "plans/**/*.md"];
@@ -62,21 +64,8 @@ export function changedPlanFiles(folder: string, sinceSha: string | undefined, g
 
 /** Checkbox steps (`- [ ]`, `- [x]`, also `*`/`+` bullets, indented) outside ``` fences. */
 export function countSteps(md: string): { total: number; done: number } {
-  let total = 0;
-  let done = 0;
-  let fenced = false;
-  for (const line of md.split("\n")) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
-      continue;
-    }
-    if (fenced) continue;
-    const m = /^\s*[-*+]\s+\[([ xX])\]/.exec(line);
-    if (!m) continue;
-    total++;
-    if (m[1] !== " ") done++;
-  }
-  return { total, done };
+  const steps = planSteps(md);
+  return { total: steps.length, done: steps.filter((s) => s.done).length };
 }
 
 /** First `# ` heading outside fences, else the file name. */
@@ -139,6 +128,11 @@ export interface PlansCfg {
   executeBrief: string;
   /** At most this many cards per run end (a merge or pull can bring many plans); the rest wait in `/plans`. */
   maxPerRun: number;
+  /** Regex sources (case-insensitive) for steps a worker must not do alone. A plan whose only
+   *  unticked steps match is done for Execute (ADR-0034). */
+  gatedStepPatterns: string[];
+  /** A live session that ticked a plan within this many minutes is executing it (ADR-0034). */
+  activeWindowMinutes: number;
 }
 
 export const DEFAULT_PLANS_CFG: PlansCfg = {
@@ -147,6 +141,17 @@ export const DEFAULT_PLANS_CFG: PlansCfg = {
   maxBytes: 1_000_000,
   executeBrief: "Execute the plan at {path} task by task. Tick each step's checkbox in the file when it is done.",
   maxPerRun: 3,
+  gatedStepPatterns: [
+    "\\bpush(es|ed|ing)?\\b",
+    "\\bdeploy",
+    "\\brestart",
+    "\\breload",
+    "\\bpublish",
+    "\\bask (the )?operator\\b",
+    "\\boperator('s)? (approval|permission|decision|sign-off)\\b",
+    "\\(operator\\)",
+  ],
+  activeWindowMinutes: 30,
 };
 
 /** Config `plans` from config.json: each well-typed field is kept, anything else is the default. */
@@ -161,14 +166,29 @@ export function readPlansCfg(raw: unknown): PlansCfg {
     maxBytes: positive(r.maxBytes, d.maxBytes),
     executeBrief: typeof r.executeBrief === "string" && r.executeBrief.trim() ? r.executeBrief : d.executeBrief,
     maxPerRun: positive(r.maxPerRun, d.maxPerRun),
+    gatedStepPatterns: regexList(r.gatedStepPatterns) ?? d.gatedStepPatterns,
+    activeWindowMinutes: positive(r.activeWindowMinutes, d.activeWindowMinutes),
   };
 }
 
+/** A list of valid regex sources, else undefined (one bad entry keeps the whole default). */
+function regexList(v: unknown): string[] | undefined {
+  if (!Array.isArray(v) || !v.every((p) => typeof p === "string" && p.length > 0)) return undefined;
+  try {
+    for (const p of v as string[]) new RegExp(p, "i");
+    return v as string[];
+  } catch {
+    return undefined;
+  }
+}
+
 /** What the operator can do with a plan (the card's buttons; `/plans` and the web API take the same). */
-export type PlanAction = "approve" | "changes" | "execute" | "done" | "drop";
+/** `anyway`: Run anyway — an Execute that skips only the done check (ADR-0034). It is offered on a
+ *  "done" reply, never as a card button. */
+export type PlanAction = "approve" | "changes" | "execute" | "anyway" | "done" | "drop";
 
 /** The button label of each action; the decision row's options are all of them, in card order. */
-export const PLAN_LABELS: Record<PlanAction, string> = { approve: "Approve", changes: "Changes", execute: "Execute", done: "Done", drop: "Drop" };
+export const PLAN_LABELS: Record<PlanAction, string> = { approve: "Approve", changes: "Changes", execute: "Execute", anyway: "Run anyway", done: "Done", drop: "Drop" };
 export const PLAN_OPTIONS = ["Approve", "Changes", "Execute", "Done", "Drop"];
 
 /** The buttons a plan offers in a status, in card order. A finished plan offers none. */
@@ -208,11 +228,13 @@ export interface PlanDeps {
   git?: GitRunner;
   /** For Execute (ADR-0008): the todo it queues runs through the project's queue. */
   todo?: TodoQueue;
+  /** For Execute (ADR-0034): live sessions that may already be executing the plan. */
+  registry?: Registry;
 }
 
 /** The plan deps of a run's deps (pipeline or dispatch): one place, so both build them alike. */
-export function planDepsFrom(d: { ledger: Ledger; postPlan?: PostPlan; trace?: Trace; todo?: TodoQueue }, cfg: PlansCfg | undefined): PlanDeps {
-  return { ledger: d.ledger, cfg: cfg ?? DEFAULT_PLANS_CFG, postPlan: d.postPlan, trace: d.trace, todo: d.todo };
+export function planDepsFrom(d: { ledger: Ledger; postPlan?: PostPlan; trace?: Trace; todo?: TodoQueue; registry?: Registry }, cfg: PlansCfg | undefined): PlanDeps {
+  return { ledger: d.ledger, cfg: cfg ?? DEFAULT_PLANS_CFG, postPlan: d.postPlan, trace: d.trace, todo: d.todo, registry: d.registry };
 }
 
 /** One run: where it ran, the HEAD it started from, the operator message it answers. */
@@ -398,9 +420,16 @@ function answerCard(deps: PlanDeps, plan: PlanRow, action: PlanAction): void {
   if (trace && plan.threadId !== undefined) faults.guard("plans.refreshThread", () => trace.refreshThread(plan.threadId!));
 }
 
+/** What a plan action answers. `offer: "anyway"`: the reply offers Run anyway (a done plan). */
+export interface PlanActionResult {
+  ok: boolean;
+  text: string;
+  offer?: "anyway";
+}
+
 /** An operator tap (Telegram, web, a command). The plan moves only here and on the checkbox count.
  *  `version`: the card's version — a tap on an older card than the newest sent is refused. */
-export async function applyPlanAction(deps: PlanDeps, planId: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }> {
+export async function applyPlanAction(deps: PlanDeps, planId: number, action: PlanAction, version?: number): Promise<PlanActionResult> {
   const { ledger } = deps;
   const plan = ledger.planById(planId);
   if (!plan) return { ok: false, text: `no plan #${planId}` };
@@ -408,14 +437,14 @@ export async function applyPlanAction(deps: PlanDeps, planId: number, action: Pl
   // Approve and Execute act on the text the operator read: refused when the file changed after the
   // newest card and that version has not reached them yet (held back by the cap, or its post failed).
   // Only while a new card can still come: with sending off, there is nothing to wait for.
-  if ((action === "approve" || action === "execute") && deps.postPlan && deps.cfg.send && plan.sentSha256 !== undefined && plan.sentSha256 !== plan.sha256) {
+  if ((action === "approve" || action === "execute" || action === "anyway") && deps.postPlan && deps.cfg.send && plan.sentSha256 !== undefined && plan.sentSha256 !== plan.sha256) {
     return { ok: false, text: `the plan changed after its newest card (v${plan.version}) — wait for the new card, or see /plans` };
   }
   if (plan.status === "done" || plan.status === "abandoned") return { ok: false, text: `this plan is already ${plan.status === "done" ? "done" : "dropped"}` };
   // The card's buttons are the rule on every surface: an action its status does not offer is refused.
-  if (!planActions(plan.status).includes(action)) {
+  if (!planActions(plan.status).includes(action === "anyway" ? "execute" : action)) {
     if (action === "approve") return { ok: false, text: `already ${plan.status}` };
-    if (action === "execute") return { ok: false, text: `already executing${plan.todoId !== undefined ? ` as #${plan.todoId}` : ""}` };
+    if (action === "execute" || action === "anyway") return { ok: false, text: `already executing${plan.todoId !== undefined ? ` as #${plan.todoId}` : ""}` };
     return { ok: false, text: `a plan that is ${plan.status} cannot be ${action === "done" ? "marked done" : "changed here"}` };
   }
   switch (action) {
@@ -433,36 +462,62 @@ export async function applyPlanAction(deps: PlanDeps, planId: number, action: Pl
       ledger.upsertPlan({ ...plan, status: "abandoned" });
       answerCard(deps, plan, action);
       return { ok: true, text: "Dropped" };
-    case "execute": {
-      const launcher = deps.todo?.launcher();
-      if (!deps.todo || !launcher) return { ok: false, text: "the todo queue is unavailable — Execute needs it" };
-      const cause = plan.decisionId ? ledger.decisionById(plan.decisionId)?.cause : undefined;
-      // Marked before the await, so a second tap meanwhile is refused instead of queueing twice. After
-      // it, only status and todo are written over a fresh read (a run end may have moved the plan).
-      ledger.upsertPlan({ ...plan, status: "executing" });
-      const setStatus = (patch: Pick<PlanRow, "status"> & Partial<Pick<PlanRow, "todoId">>) => {
-        const now = ledger.planById(plan.id);
-        if (now) ledger.upsertPlan({ ...now, ...patch });
-      };
-      const brief = deps.cfg.executeBrief.replaceAll("{path}", plan.path);
-      let text: string;
-      try {
-        // Returns once the todo is queued or its run has started — never after the run (dispatch runs in the background).
-        text = await deps.todo.submit({ project: plan.folder, brief, workClass: "interactive", cause, planId: plan.id }, launcher.deps, launcher.replyChat);
-      } catch (e) {
-        setStatus({ status: plan.status });
-        throw e;
-      }
-      const todo = ledger.todoForPlan(plan.id);
-      if (!todo || todo.status === "cancelled") {
-        setStatus({ status: plan.status }); // refused or held: nothing runs, the plan stays where it was
-        return { ok: false, text };
-      }
-      setStatus({ status: "executing", todoId: todo.id });
-      answerCard(deps, plan, action);
-      return { ok: true, text: `Executing as todo #${todo.id}` };
-    }
+    case "execute":
+    case "anyway":
+      return executePlan(deps, plan, action === "anyway");
   }
+}
+
+/** Execute (ADR-0034): judge it first. Only a `run` verdict queues a todo, for the plan row of the
+ *  folder that runs it (registered if that folder never sent the plan). Every other verdict is a reply
+ *  that says why nothing new started. */
+async function executePlan(deps: PlanDeps, plan: PlanRow, anyway: boolean): Promise<PlanActionResult> {
+  const { ledger } = deps;
+  const launcher = deps.todo?.launcher();
+  if (!deps.todo || !launcher) return { ok: false, text: "the todo queue is unavailable — Execute needs it" };
+  const verdict = judgeExecute(deps, plan, { anyway });
+  if (verdict.kind !== "run") {
+    ledger.recordEvent("plan_execute_refused", { folder: plan.folder, data: { planId: plan.id, path: plan.path, verdict: verdict.kind } });
+    return { ok: false, text: verdictText(verdict), ...(verdict.kind === "done" ? { offer: "anyway" as const } : {}) };
+  }
+  let target = plan;
+  if (verdict.folder !== plan.folder || verdict.path !== plan.path) {
+    const content = readPlan(verdict.folder, verdict.path, deps.cfg.maxBytes);
+    if (content === undefined) return { ok: false, text: `cannot read ${join(verdict.folder, verdict.path)} — nothing started` };
+    const known = ledger.planByPath(verdict.folder, verdict.path);
+    target = registerPlan(ledger, { project: known?.project ?? deps.registry?.findByFolder(verdict.folder)?.name ?? basename(verdict.folder), folder: verdict.folder, path: verdict.path, content }).plan;
+  }
+  const rows = target.id === plan.id ? [plan] : [plan, target];
+  const cause = plan.decisionId ? ledger.decisionById(plan.decisionId)?.cause : undefined;
+  // Marked before the await, so a second tap meanwhile is refused instead of queueing twice. After
+  // it, only status and todo are written over a fresh read (a run end may have moved the plan).
+  const before = rows.map((r) => ({ id: r.id, status: r.status }));
+  for (const r of rows) ledger.upsertPlan({ ...r, status: "executing" });
+  const setStatus = (patch: (id: number) => Pick<PlanRow, "status"> & Partial<Pick<PlanRow, "todoId">>) => {
+    for (const { id } of before) {
+      const now = ledger.planById(id);
+      if (now) ledger.upsertPlan({ ...now, ...patch(id) });
+    }
+  };
+  const restore = () => setStatus((id) => ({ status: before.find((b) => b.id === id)!.status }));
+  const brief = deps.cfg.executeBrief.replaceAll("{path}", target.path);
+  let text: string;
+  try {
+    // Returns once the todo is queued or its run has started — never after the run (dispatch runs in the background).
+    text = await deps.todo.submit({ project: verdict.folder, brief, workClass: "interactive", cause, planId: target.id }, launcher.deps, launcher.replyChat);
+  } catch (e) {
+    restore();
+    throw e;
+  }
+  const todo = ledger.todoForPlan(target.id);
+  if (!todo || todo.status === "cancelled") {
+    restore(); // refused or held: nothing runs, the plan stays where it was
+    return { ok: false, text };
+  }
+  setStatus(() => ({ status: "executing", todoId: todo.id }));
+  answerCard(deps, plan, "execute");
+  const where = verdict.notes.length ? ` — ${verdict.notes.join("; ")}` : "";
+  return { ok: true, text: `Executing ${target.path} as todo #${todo.id}${where}` };
 }
 
 /** `/plans [project]`: newest first, bounded — status, checked steps, project, title, thread ref, path. */

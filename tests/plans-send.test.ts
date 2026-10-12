@@ -455,6 +455,8 @@ test("readPlansCfg keeps each well-typed field and falls back for the rest", () 
     maxBytes: 10,
     executeBrief: "go {path}",
     maxPerRun: 5,
+    gatedStepPatterns: DEFAULT_PLANS_CFG.gatedStepPatterns,
+    activeWindowMinutes: DEFAULT_PLANS_CFG.activeWindowMinutes,
   });
 });
 

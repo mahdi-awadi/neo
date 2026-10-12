@@ -253,7 +253,8 @@
       "approve": "Approve",
       "execute": "Execute",
       "done": "Done",
-      "drop": "Drop"
+      "drop": "Drop",
+      "anyway": "Run anyway"
     }
   },
   "age": {

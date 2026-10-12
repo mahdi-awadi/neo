@@ -274,7 +274,7 @@ export function createTelegramBot(
   // The cause seam (ADR-0015), shared with every other surface. Absent → nothing is traced.
   const trace = reload?.trace;
   // The plan registry (ADR-0019): plan taps, and the loops this bot starts (only where a card can be posted).
-  const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, trace, todo: reload?.todo }, cfg.plans);
+  const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, trace, todo: reload?.todo, registry }, cfg.plans);
   const loopPlans = reload?.postPlan ? planDeps() : undefined;
   const attentionDeps = () => ({ ledger, registry, todo: reload?.todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 });
   /** Trace an operator line (spec §4.1). Contained (ADR-0010): a trace fault costs the thread, never
@@ -1009,6 +1009,12 @@ export function createTelegramBot(
       }
       const r = await applyPlanAction(planDeps(), planId, action, version);
       await ackCallback(ctx, r.text.slice(0, 200));
+      // An Execute's verdict (ADR-0034) is a message, not only a toast: the operator sees why nothing
+      // new started, or where it runs. A done plan offers Run anyway.
+      if (action === "execute" || action === "anyway") {
+        const kb = r.offer ? new InlineKeyboard().text(PLAN_LABELS[r.offer], `plan:${planId}:${version}:${r.offer}`) : undefined;
+        await bot.api.sendMessage(chatId, r.text, kb ? { reply_markup: kb } : {}).catch((e) => faults.report("telegram.planReply", e, { planId }));
+      }
       const after = ledger.planById(planId);
       if (after) {
         try {

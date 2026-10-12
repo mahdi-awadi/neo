@@ -1316,7 +1316,18 @@ function planAction(id: number, action: string, version: number): void {
   void post("/api/plan", { id, action, version })
     .then((r) => r.json())
     .then((d) => {
-      feedMsg("⋯ " + esc(d.text || ""), "me", null);
+      const row = feedMsg("⋯ " + linesHtml(d.text || ""), "me", null);
+      // A done plan (ADR-0034): the reply says why nothing started and offers Run anyway.
+      if (d.offer === "anyway") {
+        const b = document.createElement("button");
+        b.className = "chip";
+        b.textContent = tx("threads.planAction.anyway");
+        b.onclick = () => {
+          b.remove();
+          planAction(id, "anyway", version);
+        };
+        row.appendChild(b);
+      }
       if (TH.open !== undefined) openThread(TH.open);
     });
 }

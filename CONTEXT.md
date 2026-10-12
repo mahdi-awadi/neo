@@ -609,6 +609,34 @@ version and thread ref, and the buttons its status offers. It is a tracked decis
 reminded, and a reply to it is the operator's change request.
 _Avoid_: plan message, plan notification
 
+**Design unit**:
+A spec and the plans derived from it: each plan file whose text names the spec's path. A spec is a
+file under a `specs/` folder. Execute on either one acts on the unit: a spec resolves to its one
+open plan, and one active todo for the unit blocks the others (ADR-0034).
+_Avoid_: feature, epic, plan set
+
+**Execute verdict**:
+What the engine decides before an Execute queues anything (ADR-0034). It reads the file, git, the
+todos and the live sessions:
+- `done`: nothing left a worker may do.
+- `busy`: the unit is already queued or running in the same repository.
+- `choose`: a spec has several open plans.
+- `run`: a todo starts, in the repository's main checkout when the file is there.
+
+Every verdict except `run` is a reply that says why nothing started.
+_Avoid_: check, guard, dedupe
+
+**Same repository**:
+Folders that share one git common dir (`git rev-parse --git-common-dir`): a main checkout and all
+its worktrees, whatever their folder names. The **main checkout** is the first entry of
+`git worktree list`.
+_Avoid_: same project, same folder
+
+**Operator-gated step**:
+A plan step a worker must not do alone (push, deploy, restart, ask the operator…), matched by
+`plans.gatedStepPatterns`. A plan whose only unticked steps are gated counts as done for Execute.
+_Avoid_: manual step, blocked step
+
 ### The running engine
 
 **Running build**:

@@ -984,3 +984,15 @@ The console composer is a multi-line compose box (ADR-0033). One shared, delegat
 Each line of a message now takes its own direction (`dir="auto"`): the operator's own text, the
 Telegram echo, and the paragraphs, lines and list items of worker Markdown. An Arabic message reads
 right-to-left with its bullets on the right, and numbers stay LTR.
+
+Execute no longer starts duplicate work (ADR-0034). Before a todo is queued, `judgeExecute` reads
+these facts:
+- the plan file itself, not the ledger row's last count;
+- every worktree of the repository (by git common dir);
+- active todos;
+- live sessions.
+
+A finished plan (only operator-gated boxes left) is reported as done, with a Run anyway button.
+A plan already queued or running anywhere in the repository is reported with where it is. Execute
+from a worktree runs in the main checkout when the plan is there. A spec and its plans are one
+unit, so a spec resolves to its open plan. The reply is a real Telegram message, not only a toast.
