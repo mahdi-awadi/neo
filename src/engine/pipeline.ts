@@ -52,7 +52,8 @@ import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { refSuffix, type Trace } from "./trace";
 import { faults } from "./fault";
-import { headSha, onRunEndPlans, planDepsFrom, type PostPlan } from "./plans";
+import { createPlanWatch } from "./plan-watch";
+import { DEFAULT_PLANS_CFG, headSha, onRunEndPlans, planDepsFrom, type EditPlanCard, type PostPlan } from "./plans";
 import {
   apiExhaustionWarning,
   apiFailureNotice,
@@ -111,6 +112,8 @@ export interface PipelineDeps {
   /** Post a plan card (ADR-0019): the one Telegram poster the daemon builds, shared by every
    *  operator surface. Absent (no bot token, the customer path) → no plan detection at all. */
   postPlan?: PostPlan;
+  /** Redraw a posted plan card when its plan changes state (ADR-0036). */
+  editPlan?: EditPlanCard;
   /** Per-project trust — when a folder is trusted, risky tools auto-approve. */
   trust: TrustStore;
   /** Send a line to the channel. `project` (a session's short name) tags worker output so a
@@ -733,8 +736,20 @@ function startSession(
   const sendPlans = (cause: Cause | undefined): void => {
     if (!deps.postPlan) return;
     const run = { project: project ?? basename(folder), folder, startSha: planStart, cause, orderId: order.id, chatId };
-    faults.contain("pipeline.plans", () => onRunEndPlans(planDepsFrom(deps, deps.cfg.plans), run), ctx);
+    // After the cards this run already started posting (ADR-0036), so a turn end never races them.
+    faults.contain("pipeline.plans", async () => {
+      await planWatch?.settled();
+      await onRunEndPlans(planDepsFrom(deps, deps.cfg.plans), run);
+    }, ctx);
   };
+  // The plan gate (ADR-0036): a big plan this worker writes holds it until Approve & build. Claude
+  // only — Codex has no PreToolUse hook to steer through.
+  const planWatch =
+    deps.postPlan && (deps.cfg.plans ?? DEFAULT_PLANS_CFG).send && runDeps.provider !== "codex"
+      ? createPlanWatch(planDepsFrom(deps, deps.cfg.plans), () => ({ project: project ?? basename(folder), folder, startSha: planStart, cause: runCause(), orderId: order.id, chatId }), {
+          onHold: (p) => registry.noteBlocked(registryId, { kind: "decision", label: `plan approval: ${p.title}`, since: now() }),
+        })
+      : undefined;
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
   // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
   // follow-up into a live worker). Default `scopes: []` → memoryEnabledFor is always false.
@@ -834,10 +849,15 @@ function startSession(
       },
       onToolUse: (id, name, input) => {
         watch?.onToolUse(id, name, input);
+        planWatch?.onToolUse(id, name, input);
         probe?.onToolUse(id, name, input);
       },
-      onToolResult: (id, isError) => watch?.onToolResult(id, isError),
-      contextSteer: watch ? (tool, input) => watch.steer(tool, input) : undefined,
+      onToolResult: (id, isError) => {
+        watch?.onToolResult(id, isError);
+        planWatch?.onToolResult(id, isError);
+      },
+      // A held plan speaks first (ADR-0036), then an armed context checkpoint (ADR-0021).
+      contextSteer: watch || planWatch ? (tool, input) => planWatch?.steer(tool, input) ?? watch?.steer(tool, input) : undefined,
       // A task just finished and the session is at rest, its cache warm: the `settled` boundary.
       onSettled: () => faults.contain("pipeline.contextSettle", () => settleCheck(), ctx),
       onTurnComplete: (result) => {

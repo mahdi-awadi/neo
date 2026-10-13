@@ -39,7 +39,7 @@ import { openEscalationDecision, patientApproval, resolveEscalationDecision } fr
 import { DEFAULT_GOVERNOR_CFG } from "../engine/governor";
 import type { ApiCooldown } from "../engine/api-retry";
 import { faults } from "../engine/fault";
-import { applyPlanAction, isPlanAction, planActions, planDepsFrom, PLAN_LABELS, type PostPlan } from "../engine/plans";
+import { applyPlanAction, isPlanAction, planDepsFrom, PLAN_LABELS, type EditPlanCard, type PlanAction, type PostPlan } from "../engine/plans";
 import type { PlanStatus } from "../engine/ledger";
 import {
   keyboardRows,
@@ -232,7 +232,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan; neoFolder?: string; gitRead?: CommandDeps["gitRead"] },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"] },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -274,7 +274,7 @@ export function createTelegramBot(
   // The cause seam (ADR-0015), shared with every other surface. Absent → nothing is traced.
   const trace = reload?.trace;
   // The plan registry (ADR-0019): plan taps, and the loops this bot starts (only where a card can be posted).
-  const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, trace, todo: reload?.todo, registry }, cfg.plans);
+  const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, editPlan: reload?.editPlan, trace, todo: reload?.todo, registry }, cfg.plans);
   const loopPlans = reload?.postPlan ? planDeps() : undefined;
   const attentionDeps = () => ({ ledger, registry, todo: reload?.todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 });
   /** Trace an operator line (spec §4.1). Contained (ADR-0010): a trace fault costs the thread, never
@@ -506,6 +506,7 @@ export function createTelegramBot(
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
     postPlan: reload?.postPlan, // plans the run writes reach the operator as cards (ADR-0019)
+    editPlan: reload?.editPlan, // and their cards follow the plan's state (ADR-0036)
     askApproval: (cid, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
@@ -1007,21 +1008,19 @@ export function createTelegramBot(
         await bot.api.sendMessage(chatId, "✏️ Send your changes as your next message — I'll deliver them to the worker that wrote the plan.");
         return;
       }
-      const r = await applyPlanAction(planDeps(), planId, action, version);
+      // The engine redraws the card itself (ADR-0036): caption and buttons follow the plan's state.
+      const r = await applyPlanAction(planDeps(), planId, action, version, { canResume: true });
       await ackCallback(ctx, r.text.slice(0, 200));
-      // An Execute's verdict (ADR-0034) is a message, not only a toast: the operator sees why nothing
-      // new started, or where it runs. A done plan offers Run anyway.
-      if (action === "execute" || action === "anyway") {
+      // Approve & build on a plan a worker is held on: answer its decision — the same path as any
+      // decision answer — so that worker resumes and builds.
+      const dec = r.resume ? ledger.decisionById(r.resume.decisionId) : undefined;
+      if (r.resume && dec) {
+        await answerAndResume(dec, r.resume.answer, chatId);
+      } else if (action === "approve" || action === "execute" || action === "anyway") {
+        // A build's verdict (ADR-0034) is a message, not only a toast: the operator sees why nothing
+        // new started, or where it runs. A done plan offers Run anyway.
         const kb = r.offer ? new InlineKeyboard().text(PLAN_LABELS[r.offer], `plan:${planId}:${version}:${r.offer}`) : undefined;
         await bot.api.sendMessage(chatId, r.text, kb ? { reply_markup: kb } : {}).catch((e) => faults.report("telegram.planReply", e, { planId }));
-      }
-      const after = ledger.planById(planId);
-      if (after) {
-        try {
-          await ctx.editMessageReplyMarkup({ reply_markup: planKeyboard(planId, after.status, version) });
-        } catch {
-          // "not modified" — ignore
-        }
       }
       bus?.mirror("telegram", { kind: "notice", text: `plan #${planId}: ${r.text}` });
       return;
@@ -1171,12 +1170,28 @@ export function projectDashKeyboard(p: { name: string; attention: number; consol
   return kb;
 }
 
-/** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<version>:<action>`
- *  tap — the version keeps an older card from acting on newer content. */
-export function planKeyboard(planId: number, status: PlanStatus, version: number): InlineKeyboard {
+/** A plan card's buttons (ADR-0019, ADR-0036): the actions the engine names for the plan's state
+ *  (`planActions`), each a `plan:<id>:<version>:<action>` tap — the version keeps an older card from
+ *  acting on newer content. */
+export function planKeyboard(planId: number, version: number, actions: PlanAction[]): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const a of planActions(status)) kb.text(PLAN_LABELS[a], `plan:${planId}:${version}:${a}`);
+  for (const a of actions) kb.text(PLAN_LABELS[a], `plan:${planId}:${version}:${a}`);
   return kb;
+}
+
+/** The one plan card editor (ADR-0036): a state change redraws the posted card — caption and buttons
+ *  — in place. "message is not modified" counts as done; any other failure is reported. */
+export function createPlanEditor(api: Api): EditPlanCard {
+  return async (at, card) => {
+    try {
+      await api.editMessageCaption(at.chatId, at.messageId, { caption: card.caption.slice(0, 1024), reply_markup: planKeyboard(card.planId, card.version, card.actions) });
+      return true;
+    } catch (e) {
+      if (e instanceof GrammyError && /message is not modified/.test(e.description)) return true;
+      faults.report("telegram.planEdit", e, { planId: card.planId, chatId: at.chatId });
+      return false;
+    }
+  };
 }
 
 /** The one plan poster (ADR-0019): the plan file as a document with its caption and buttons, in the
@@ -1189,7 +1204,7 @@ export function createPlanPoster(api: Api, target: () => number | undefined): Po
     if (chatId === undefined) return undefined;
     try {
       // Telegram caps a document caption at 1024 characters.
-      const m = await api.sendDocument(chatId, new InputFile(path), { caption: caption.slice(0, 1024), reply_markup: planKeyboard(rec.planId, rec.status, rec.version) });
+      const m = await api.sendDocument(chatId, new InputFile(path), { caption: caption.slice(0, 1024), reply_markup: planKeyboard(rec.planId, rec.version, rec.actions) });
       return { chatId, messageId: m.message_id };
     } catch (e) {
       faults.report("telegram.plan", e, { project: rec.project, chatId });

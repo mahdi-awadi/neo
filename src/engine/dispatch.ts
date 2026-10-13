@@ -70,7 +70,8 @@ import { profileDeps } from "./worker-profile";
 import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { canResumeWith } from "./sdk-choice";
-import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan } from "./plans";
+import { createPlanWatch } from "./plan-watch";
+import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import {
   apiFailureNotice,
@@ -125,6 +126,8 @@ export interface DispatchDeps {
   /** Post a plan card (ADR-0019; frontend-supplied, operator surfaces only). Absent → no plan
    *  detection at all (nothing is registered), and `send_file` of a plan is a plain file. */
   postPlan?: PostPlan;
+  /** Redraw a posted plan card when its plan changes state (ADR-0036). */
+  editPlan?: EditPlanCard;
   /** Config `plans` (paths, send, size cap, Execute brief). Absent → the shipped defaults. */
   plans?: PlansCfg;
   /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
@@ -399,17 +402,16 @@ export function briefWithProjectDocs(task: string): string {
     "defensible on its own — no patch-level options.\n\n" +
     "REQUIRED — stay alive; never park on a background wait. Neo watches your STREAMED tool/step " +
     "activity to tell a working worker from a hung one, and ABORTS a sub-run after ~5 minutes with no " +
-    "such activity. A single step that blocks silently for minutes produces NO activity and is killed " +
-    "even though it is not hung — this includes a background wait or Monitor, a long `sleep`, " +
-    "`gh run watch`, tailing logs, or any \"wait for the CI/build/deploy to finish\" command. So NEVER " +
+    "such activity. A step that blocks silently for minutes is killed though not hung: a background " +
+    "wait or Monitor, a long `sleep`, `gh run watch`, tailing logs, waiting on CI/build/deploy. So NEVER " +
     "use a background wait or Monitor: when you must wait on CI, a build, or a deploy, POLL in short " +
-    "FOREGROUND steps under 90 seconds each — check status, a brief `sleep`, then " +
-    "check again — so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
+    "FOREGROUND steps under 90 seconds each, so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
     "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
     "poll to a terminal state here.\n\n" +
-    "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`. The engine " +
-    "sends it to the operator for review; you may also call `send_file` with it — the engine sends each " +
-    "version once.\n\n" +
+    "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; the engine " +
+    "sends it to the operator. A small plan: build on. A BIG plan (many tasks or steps; migrations, auth, " +
+    "money, deploy, deletes; or front matter `approval: required`) waits: when a call is denied with " +
+    "STOP, end your turn — Approve & build resumes you.\n\n" +
     task
   );
 }
@@ -778,6 +780,14 @@ export async function dispatchToProject(
             },
           })
         : undefined;
+    // The plan gate (ADR-0036): a big plan this worker writes holds it until Approve & build. Only
+    // where a card can be posted, and only a Claude worker can be steered (the PreToolUse hook).
+    const planWatch =
+      deps.postPlan && (deps.plans ?? DEFAULT_PLANS_CFG).send && worker !== "codex"
+        ? createPlanWatch(planDepsFrom(deps, deps.plans), () => ({ project: name, folder, startSha: planStart, cause: liveCause(), orderId: order.id, chatId: replyChat }), {
+            onHold: (p) => deps.registry.noteBlocked(session.id, { kind: "decision", label: `plan approval: ${p.title}`, since: now() }),
+          })
+        : undefined;
     let lastSessionId = gatedResume ?? "";
 
     // Guarantee the structural map the brief now REQUIRES: the worker can't self-index (the governor
@@ -934,10 +944,15 @@ export async function dispatchToProject(
             spinning(`${name} ran the same ${toolName} call ${loopLimit} times in a row in one turn`, toolName, { reason: "tool_loop", tool: toolName });
           }
           watch?.onToolUse(id, toolName, input);
+          planWatch?.onToolUse(id, toolName, input);
           probe?.onToolUse(id, toolName, input);
         },
-        onToolResult: (id, isError) => watch?.onToolResult(id, isError),
-        contextSteer: watch ? (tool, input) => watch.steer(tool, input) : undefined,
+        onToolResult: (id, isError) => {
+          watch?.onToolResult(id, isError);
+          planWatch?.onToolResult(id, isError);
+        },
+        // A held plan speaks first (ADR-0036), then an armed context checkpoint (ADR-0021).
+        contextSteer: watch || planWatch ? (tool, input) => planWatch?.steer(tool, input) ?? watch?.steer(tool, input) : undefined,
         onTurnComplete: (result) => {
           lastActivityAt = now();
           spin.turnEnd();
@@ -1258,7 +1273,11 @@ export async function dispatchToProject(
     // post never holds up the result below.
     if (deps.postPlan) {
       const run = { project: name, folder, startSha: planStart, cause, orderId: order.id, chatId: replyChat };
-      faults.contain("dispatch.plans", () => onRunEndPlans(planDepsFrom(deps, deps.plans), run), { project: name, orderId: order.id, folder });
+      // After the cards the run already started posting (ADR-0036), so a run end never races them.
+      faults.contain("dispatch.plans", async () => {
+        await planWatch?.settled();
+        await onRunEndPlans(planDepsFrom(deps, deps.plans), run);
+      }, { project: name, orderId: order.id, folder });
     }
     try {
       // A dispatched job's finish is a RESULT the operator wants notified (Decisions group); a failure

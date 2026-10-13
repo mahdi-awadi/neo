@@ -250,11 +250,22 @@
       "abandoned": "متروكة"
     },
     "planAction": {
-      "approve": "اعتمد",
+      "approve": "اعتمد وابدأ البناء",
+      "changes": "تعديلات",
       "execute": "نفّذ",
+      "anyway": "شغّلها على أي حال",
+      "stop": "أوقف",
       "done": "تمت",
-      "drop": "اترك",
-      "anyway": "شغّلها على أي حال"
+      "drop": "اترك"
+    },
+    "planState": {
+      "draft": "مسودة",
+      "awaiting": "بانتظار موافقتك",
+      "info": "تغيير صغير — قيد البناء",
+      "approved": "معتمدة",
+      "building": "قيد البناء",
+      "done": "منتهية",
+      "dropped": "متروكة"
     }
   },
   "age": {

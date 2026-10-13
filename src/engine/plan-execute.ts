@@ -60,7 +60,7 @@ export function isSpec(path: string): boolean {
 }
 
 /** Spec paths a text names (`docs/superpowers/specs/x.md`). */
-function specRefs(md: string): string[] {
+export function specRefs(md: string): string[] {
   return [...new Set([...md.matchAll(/[\w./-]*specs\/[\w./-]+\.md/g)].map((m) => m[0].replace(/^\.\//, "")))];
 }
 

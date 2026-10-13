@@ -250,11 +250,22 @@
       "abandoned": "dropped"
     },
     "planAction": {
-      "approve": "Approve",
+      "approve": "Approve & build",
+      "changes": "Changes",
       "execute": "Execute",
+      "anyway": "Run anyway",
+      "stop": "Stop",
       "done": "Done",
-      "drop": "Drop",
-      "anyway": "Run anyway"
+      "drop": "Drop"
+    },
+    "planState": {
+      "draft": "draft",
+      "awaiting": "waiting for your approval",
+      "info": "small change — being built",
+      "approved": "approved",
+      "building": "building",
+      "done": "done",
+      "dropped": "dropped"
     }
   },
   "age": {

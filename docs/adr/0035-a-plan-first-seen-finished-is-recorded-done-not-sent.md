@@ -29,7 +29,8 @@ The registry judges a plan the operator never received by its file, with ADR-003
 4. **A worker's `send_file` of such a plan** is not sent as a card or as a plain file. The worker
    is told `already done: <path> — N/M steps ticked; recorded as done, not sent to the operator`.
 
-A plan that was already sent keeps its lifecycle. Ticking its last box does not close its card.
+A plan that was already sent keeps its lifecycle. (Changed by ADR-0036: a sent plan whose file is
+finished at a run end becomes done, and its card says so.)
 
 ## Considered options
 - **Send it with a short "already done" line.** Rejected: a merge or a first run in an old repo can

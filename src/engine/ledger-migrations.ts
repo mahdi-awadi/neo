@@ -384,6 +384,24 @@ function todoWaiting(db: Database): void {
   db.run(`CREATE INDEX idx_project_todos_waiting ON project_todos (waiting_on)`);
 }
 
+/** Version 11 — the plan approval gate (ADR-0036): the gate a version got (`approval` | `info`), when a
+ *  worker was held on it, the commit a finished plan was seen done at, and the card's message (edited
+ *  on every state change). */
+function planGate(db: Database): void {
+  db.run(`ALTER TABLE plans ADD COLUMN gate TEXT`);
+  db.run(`ALTER TABLE plans ADD COLUMN card_chat_id INTEGER`);
+  db.run(`ALTER TABLE plans ADD COLUMN card_message_id INTEGER`);
+  db.run(`ALTER TABLE plans ADD COLUMN held_at INTEGER`);
+  db.run(`ALTER TABLE plans ADD COLUMN done_sha TEXT`);
+  // Cards posted before this version: their message is the one their review decision was posted as.
+  db.run(
+    `UPDATE plans SET
+       card_chat_id = (SELECT d.decision_chat_id FROM decisions d WHERE d.id = plans.decision_id),
+       card_message_id = (SELECT d.decision_message_id FROM decisions d WHERE d.id = plans.decision_id)
+     WHERE decision_id IS NOT NULL`,
+  );
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -395,6 +413,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 8, name: "meta", up: meta },
   { version: 9, name: "todo retries", up: todoRetries },
   { version: 10, name: "todo waiting on a decision", up: todoWaiting },
+  { version: 11, name: "plan approval gate", up: planGate },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

@@ -4,13 +4,14 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Cause, Ledger, PlanRow, PlanStatus } from "./ledger";
+import type { Cause, Ledger, PlanGate, PlanRow, PlanStatus } from "./ledger";
 import { git as defaultGit } from "./dispatch-report";
 import { faults } from "./fault";
 import type { Trace } from "./trace";
 import type { TodoQueue } from "./todo-queue";
 import type { Registry } from "./registry";
-import { finishedUnit, judgeExecute, planSteps, verdictText, type Progress } from "./plan-execute";
+import { finishedUnit, isSpec, judgeExecute, planSteps, specRefs, verdictText, type Progress } from "./plan-execute";
+import { classifyPlan } from "./plan-gate";
 
 /** Spec default for config `plans.paths`. */
 export const DEFAULT_PLAN_PATHS: string[] = ["docs/**/plans/**/*.md", "docs/**/specs/**/*.md", "specs/**/*.md", "plans/**/*.md"];
@@ -87,7 +88,7 @@ function planTitle(md: string, path: string): string {
  *  sha, title and steps update. */
 export function registerPlan(
   ledger: Ledger,
-  p: { project: string; folder: string; path: string; content: string; cause?: Cause; orderId?: string },
+  p: { project: string; folder: string; path: string; content: string; cause?: Cause; orderId?: string; gate?: PlanGate },
 ): { plan: PlanRow; isNewVersion: boolean } {
   const sha256 = reviewHash(p.content);
   const prev = ledger.planByPath(p.folder, p.path);
@@ -95,9 +96,10 @@ export function registerPlan(
   const steps = countSteps(p.content);
   const base = { project: p.project, folder: p.folder, path: p.path, title: planTitle(p.content, p.path), sha256, stepsTotal: steps.total, stepsDone: steps.done };
   if (prev && !isNewVersion) {
-    // Same text: only progress (ticked steps) can have moved.
-    if (prev.stepsDone === steps.done && prev.stepsTotal === steps.total) return { plan: prev, isNewVersion: false };
-    return { plan: ledger.upsertPlan({ ...prev, stepsTotal: steps.total, stepsDone: steps.done }), isNewVersion: false };
+    // Same text: only progress (ticked steps) can have moved, and a gate a pre-ADR-0036 row lacked.
+    const gate = prev.gate ?? p.gate;
+    if (prev.stepsDone === steps.done && prev.stepsTotal === steps.total && gate === prev.gate) return { plan: prev, isNewVersion: false };
+    return { plan: ledger.upsertPlan({ ...prev, stepsTotal: steps.total, stepsDone: steps.done, ...(gate ? { gate } : {}) }), isNewVersion: false };
   }
   const status = !prev || prev.status === "draft" || prev.status === "sent" ? "draft" : prev.status;
   const plan = ledger.upsertPlan({
@@ -110,6 +112,11 @@ export function registerPlan(
     createdAt: prev?.createdAt,
     sentAt: prev?.sentAt,
     sentSha256: prev?.sentSha256,
+    gate: p.gate ?? prev?.gate,
+    heldAt: prev?.heldAt,
+    doneSha: prev?.doneSha,
+    cardChatId: prev?.cardChatId,
+    cardMessageId: prev?.cardMessageId,
   });
   return { plan, isNewVersion };
 }
@@ -133,6 +140,16 @@ export interface PlansCfg {
   gatedStepPatterns: string[];
   /** A live session that ticked a plan within this many minutes is executing it (ADR-0034). */
   activeWindowMinutes: number;
+  /** When a plan is big and waits for the operator's approval (ADR-0036). */
+  approval: PlanApprovalCfg;
+}
+
+/** Config `plans.approval` (ADR-0036): a plan with more tasks or steps than these, or a line matching
+ *  one of `patterns` (case-insensitive regex sources), waits for Approve & build. */
+export interface PlanApprovalCfg {
+  maxTasks: number;
+  maxSteps: number;
+  patterns: string[];
 }
 
 export const DEFAULT_PLANS_CFG: PlansCfg = {
@@ -152,6 +169,17 @@ export const DEFAULT_PLANS_CFG: PlansCfg = {
     "\\(operator\\)",
   ],
   activeWindowMinutes: 30,
+  approval: {
+    maxTasks: 4,
+    maxSteps: 20,
+    patterns: [
+      "\\bmigrat(e|es|ed|ion|ions)\\b",
+      "\\b(auth|authentication|authorization|login|passwords?|permissions?)\\b",
+      "\\b(payments?|finance|financial|money|wallets?|invoices?|refunds?|billing|balances?)\\b",
+      "\\b(deploy|deployment|production)\\b",
+      "\\b(delete|deletes|deletion|purge|truncate|drop (table|column|database))\\b",
+    ],
+  },
 };
 
 /** Config `plans` from config.json: each well-typed field is kept, anything else is the default. */
@@ -168,7 +196,14 @@ export function readPlansCfg(raw: unknown): PlansCfg {
     maxPerRun: positive(r.maxPerRun, d.maxPerRun),
     gatedStepPatterns: regexList(r.gatedStepPatterns) ?? d.gatedStepPatterns,
     activeWindowMinutes: positive(r.activeWindowMinutes, d.activeWindowMinutes),
+    approval: readApproval(r.approval, d.approval, positive),
   };
+}
+
+/** Config `plans.approval`: each well-typed field is kept, anything else is the default. */
+function readApproval(raw: unknown, d: PlanApprovalCfg, positive: (v: unknown, d: number) => number): PlanApprovalCfg {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return { maxTasks: positive(r.maxTasks, d.maxTasks), maxSteps: positive(r.maxSteps, d.maxSteps), patterns: regexList(r.patterns) ?? d.patterns };
 }
 
 /** A list of valid regex sources, else undefined (one bad entry keeps the whole default). */
@@ -182,24 +217,62 @@ function regexList(v: unknown): string[] | undefined {
   }
 }
 
-/** What the operator can do with a plan (the card's buttons; `/plans` and the web API take the same). */
-/** `anyway`: Run anyway — an Execute that skips only the done check (ADR-0034). It is offered on a
- *  "done" reply, never as a card button. */
-export type PlanAction = "approve" | "changes" | "execute" | "anyway" | "done" | "drop";
+/** What the operator can do with a plan — the ONE definition of each button (ADR-0036); Telegram, the
+ *  console and the API all take these:
+ *  - `approve` — **Approve & build**: a worker held on the plan resumes and builds it; with none held
+ *    it is an Execute (ADR-0034: judged, queued once).
+ *  - `changes` — the operator's next message goes back to the worker that wrote it.
+ *  - `stop` — a small plan the worker is building: drop it and stop the project's live session.
+ *  - `done` — mark a building plan finished.  `drop` — abandon it.
+ *  - `execute` — Approve & build's engine verb, kept for old cards and the API; no card shows it.
+ *  - `anyway` — Run anyway: an Execute that skips only the done check, offered on a "done" reply. */
+export type PlanAction = "approve" | "changes" | "execute" | "anyway" | "stop" | "done" | "drop";
 
-/** The button label of each action; the decision row's options are all of them, in card order. */
-export const PLAN_LABELS: Record<PlanAction, string> = { approve: "Approve", changes: "Changes", execute: "Execute", anyway: "Run anyway", done: "Done", drop: "Drop" };
-export const PLAN_OPTIONS = ["Approve", "Changes", "Execute", "Done", "Drop"];
+/** The button label of each action. The console's English catalogue (`threads.planAction`) has the
+ *  same labels (a test keeps them equal). */
+export const PLAN_LABELS: Record<PlanAction, string> = {
+  approve: "Approve & build",
+  changes: "Changes",
+  execute: "Execute",
+  anyway: "Run anyway",
+  stop: "Stop",
+  done: "Done",
+  drop: "Drop",
+};
 
-/** The buttons a plan offers in a status, in card order. A finished plan offers none. */
-export function planActions(status: PlanStatus): PlanAction[] {
-  switch (status) {
+/** Where a plan is, as the operator sees it (ADR-0036): `awaiting` = sent and waiting for Approve &
+ *  build; `info` = a small plan sent for information while the worker builds it. */
+export type PlanState = "draft" | "awaiting" | "info" | "approved" | "building" | "done" | "dropped";
+
+/** A row without a gate (sent before ADR-0036) waits for the operator, as it did. */
+export function planState(p: Pick<PlanRow, "status" | "gate">): PlanState {
+  switch (p.status) {
     case "draft":
+      return "draft";
     case "sent":
-      return ["approve", "changes", "execute", "drop"];
+      return p.gate === "info" ? "info" : "awaiting";
     case "approved":
-      return ["execute", "drop"]; // accepted: its review is closed, so no more Changes
+      return "approved";
     case "executing":
+      return "building";
+    case "done":
+      return "done";
+    case "abandoned":
+      return "dropped";
+  }
+}
+
+/** The buttons a plan offers, in card order. A finished plan offers none. */
+export function planActions(p: Pick<PlanRow, "status" | "gate">): PlanAction[] {
+  switch (planState(p)) {
+    case "draft":
+    case "approved":
+      return ["approve", "drop"];
+    case "awaiting":
+      return ["approve", "changes", "drop"];
+    case "info":
+      return ["stop"];
+    case "building":
       return ["done", "drop"];
     default:
       return [];
@@ -210,31 +283,45 @@ export function isPlanAction(s: string): s is PlanAction {
   return s in PLAN_LABELS;
 }
 
-/** The frontend half of a send: post the file (`path` is absolute) with the buttons `planActions`
- *  names for `rec.status`, as one card for content version `rec.version` (its taps carry it, so an
- *  older card cannot act on newer content). Returns where it landed; undefined = not posted. */
+/** One card as a frontend draws it: the caption and the buttons (`plan:<id>:<version>:<action>`). */
+export interface PlanCard {
+  planId: number;
+  version: number;
+  caption: string;
+  actions: PlanAction[];
+}
+
+/** The frontend half of a send: post the file (`path` is absolute) as one card for content version
+ *  `rec.version` (its taps carry it, so an older card cannot act on newer content). Returns where it
+ *  landed; undefined = not posted. */
 export type PostPlan = (
-  rec: { planId: number; project: string; folder: string; status: PlanStatus; version: number },
+  rec: { planId: number; project: string; folder: string; status: PlanStatus; version: number; actions: PlanAction[] },
   path: string,
   caption: string,
 ) => Promise<{ chatId: number; messageId: number } | undefined>;
+
+/** The frontend half of a state change (ADR-0036): redraw a posted card in place — its caption and
+ *  buttons. True when the message was edited. */
+export type EditPlanCard = (at: { chatId: number; messageId: number }, card: PlanCard) => Promise<boolean>;
 
 export interface PlanDeps {
   ledger: Ledger;
   cfg: PlansCfg;
   /** Absent (the customer path, a test) → plans are registered, never sent. */
   postPlan?: PostPlan;
+  /** Absent → cards are not redrawn (the console still reads the ledger). */
+  editPlan?: EditPlanCard;
   trace?: Trace;
   git?: GitRunner;
   /** For Execute (ADR-0008): the todo it queues runs through the project's queue. */
   todo?: TodoQueue;
-  /** For Execute (ADR-0034): live sessions that may already be executing the plan. */
+  /** For Execute (ADR-0034): live sessions that may already be executing the plan; Stop interrupts one. */
   registry?: Registry;
 }
 
 /** The plan deps of a run's deps (pipeline or dispatch): one place, so both build them alike. */
-export function planDepsFrom(d: { ledger: Ledger; postPlan?: PostPlan; trace?: Trace; todo?: TodoQueue; registry?: Registry }, cfg: PlansCfg | undefined): PlanDeps {
-  return { ledger: d.ledger, cfg: cfg ?? DEFAULT_PLANS_CFG, postPlan: d.postPlan, trace: d.trace, todo: d.todo, registry: d.registry };
+export function planDepsFrom(d: { ledger: Ledger; postPlan?: PostPlan; editPlan?: EditPlanCard; trace?: Trace; todo?: TodoQueue; registry?: Registry }, cfg: PlansCfg | undefined): PlanDeps {
+  return { ledger: d.ledger, cfg: cfg ?? DEFAULT_PLANS_CFG, postPlan: d.postPlan, editPlan: d.editPlan, trace: d.trace, todo: d.todo, registry: d.registry };
 }
 
 /** One run: where it ran, the HEAD it started from, the operator message it answers. */
@@ -287,26 +374,52 @@ function seenDone(plan: PlanRow): boolean {
   return plan.status === "done" && plan.version === 0 && plan.todoId === undefined;
 }
 
-/** Register the file and finish an executing plan whose every step is checked. A plan the operator
- *  never received is judged by its file (ADR-0035): finished (ADR-0034's judge, spec↔plan unit) →
- *  recorded done and never sent; a recorded-done one that has work again → draft, sent as usual. */
-function register(deps: PlanDeps, run: PlanRun, path: string, content: string): { plan: PlanRow; finished?: Progress } {
+/** A version's gate (ADR-0036): big → `approval`, else `info`. A plan that names a spec the operator
+ *  already approved is `info` — one approval covers the design unit (ADR-0034 rule 4). */
+function gateOf(deps: PlanDeps, folder: string, path: string, content: string): PlanGate {
+  if (!classifyPlan(content, deps.cfg).big) return "info";
+  const approved = (p: string) => {
+    const row = deps.ledger.planByPath(folder, p);
+    return !!row && (row.status === "approved" || row.status === "executing" || row.status === "done");
+  };
+  return !isSpec(path) && specRefs(content).some(approved) ? "info" : "approval";
+}
+
+/** What `register` did: the row, the unit's progress when it is finished, and whether the plan's
+ *  state changed so its card must be redrawn. */
+interface Registered {
+  plan: PlanRow;
+  finished?: Progress;
+  changed?: boolean;
+}
+
+/** Register the file. A new version gets its gate (ADR-0036). A plan the operator never received is
+ *  judged by its file (ADR-0035): finished → recorded done and never sent; a recorded-done one that
+ *  has work again → draft, sent as usual. A plan the operator has (sent, approved, building) whose
+ *  file is finished becomes done at the commit it was seen at (ADR-0036). */
+function register(deps: PlanDeps, run: PlanRun, path: string, content: string): Registered {
   const { ledger } = deps;
-  const { plan } = registerPlan(ledger, { project: run.project, folder: run.folder, path, content, cause: run.cause, orderId: run.orderId });
-  if (plan.status === "executing" && plan.stepsTotal > 0 && plan.stepsDone === plan.stepsTotal) {
-    return { plan: ledger.upsertPlan({ ...plan, status: "done" }) };
-  }
+  const prev = ledger.planByPath(run.folder, path);
+  const gate = !prev || prev.sha256 !== reviewHash(content) || !prev.gate ? gateOf(deps, run.folder, path, content) : prev.gate;
+  let { plan } = registerPlan(ledger, { project: run.project, folder: run.folder, path, content, cause: run.cause, orderId: run.orderId, gate });
+  // Revised into a small plan: nobody waits on it any more.
+  if (plan.heldAt !== undefined && plan.gate === "info") plan = ledger.upsertPlan({ ...plan, heldAt: undefined });
   const unsentDraft = plan.status === "draft" && plan.version === 0;
-  if (!unsentDraft && !seenDone(plan)) return { plan };
-  const finished = finishedUnit(deps.cfg, run.folder, path, content, deps.git);
-  if (!finished) return { plan: plan.status === "done" ? ledger.upsertPlan({ ...plan, status: "draft" }) : plan };
-  if (unsentDraft) {
+  const finished = plan.status === "abandoned" || (plan.status === "done" && !seenDone(plan)) ? undefined : finishedUnit(deps.cfg, run.folder, path, content, deps.git);
+  if (unsentDraft || seenDone(plan)) {
+    if (!finished) return { plan: plan.status === "done" ? ledger.upsertPlan({ ...plan, status: "draft" }) : plan };
+    if (!unsentDraft) return { plan, finished };
     const data = { project: plan.project, planId: plan.id, path, done: finished.done, total: finished.total, gated: finished.gated };
     ledger.recordEvent("plan_seen_done", { folder: run.folder, orderId: run.orderId, cause: run.cause, data });
     console.log(`[plans] ${join(run.folder, path)} first seen finished (${finished.done}/${finished.total}) — recorded done, not sent`);
     return { plan: ledger.upsertPlan({ ...plan, status: "done" }), finished };
   }
-  return { plan, finished };
+  if (!finished || plan.status === "done") return { plan };
+  const doneSha = headSha(run.folder, deps.git)?.slice(0, 7);
+  const done = ledger.upsertPlan({ ...plan, status: "done", ...(doneSha ? { doneSha } : {}) });
+  ledger.recordEvent("plan_done", { folder: run.folder, orderId: run.orderId, cause: run.cause, data: { project: plan.project, planId: plan.id, path, commit: doneSha } });
+  answerCard(deps, done, "done");
+  return { plan: done, finished, changed: true };
 }
 
 /** Whether a send of this version would post a card (it is not finished and not already sent). */
@@ -340,32 +453,102 @@ async function sendPlan(deps: PlanDeps, plan: PlanRow, run: PlanRun, more = 0): 
   }
 }
 
-async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan: PostPlan, more: number): Promise<SendOutcome> {
-  const { ledger, trace } = deps;
-  const cause = run.cause;
-  const ref = cause && trace ? trace.ref(cause.threadId) : undefined;
-  const version = plan.version + 1;
-  const status = plan.status === "draft" ? "sent" : plan.status;
-  const caption = planCaption(plan, version, ref, more);
-  const posted = await postPlan({ planId: plan.id, project: plan.project, folder: plan.folder, status, version }, join(plan.folder, plan.path), caption);
-  if (!posted) return "failed";
-  const decisionId = ledger.openDecision({
+/** The state line under a card's caption (Telegram is English; the console reads `planState`). */
+function stateLine(deps: PlanDeps, plan: PlanRow): string {
+  switch (planState(plan)) {
+    case "awaiting": {
+      const content = readPlan(plan.folder, plan.path, deps.cfg.maxBytes);
+      const why = content ? classifyPlan(content, deps.cfg).reasons.join("; ") : "";
+      return `⏸ waiting for your approval${why ? ` — ${why}` : ""}`;
+    }
+    case "info":
+      return "ℹ️ small change — the worker is building it";
+    case "approved":
+      return "✅ approved — Approve & build starts it";
+    case "building":
+      return `🔨 building${plan.todoId !== undefined ? ` as todo #${plan.todoId}` : ""}`;
+    case "done":
+      return `✅ done${plan.doneSha ? ` · ${plan.doneSha}` : ""} · ${plan.stepsDone}/${plan.stepsTotal} steps`;
+    case "dropped":
+      return "✖ dropped";
+    case "draft":
+      return "";
+  }
+}
+
+/** A card's caption: the plan line (`planCaption`) and its state line. */
+export function cardCaption(deps: PlanDeps, plan: PlanRow, version = plan.version, more = 0): string {
+  const ref = deps.trace && plan.threadId !== undefined ? deps.trace.ref(plan.threadId) : undefined;
+  const line = stateLine(deps, plan);
+  return `${planCaption(plan, version, ref, more)}${line ? `\n${line}` : ""}`;
+}
+
+/** Redraw the plan's newest card in place (ADR-0036): its caption and buttons follow the plan. The
+ *  console reads the ledger, so its thread is refreshed. Best-effort: a failed edit is reported. */
+export async function refreshCard(deps: PlanDeps, plan: PlanRow): Promise<void> {
+  const trace = deps.trace;
+  if (trace && plan.threadId !== undefined) faults.guard("plans.refreshThread", () => trace.refreshThread(plan.threadId!));
+  if (!deps.editPlan || plan.cardChatId === undefined || plan.cardMessageId === undefined) return;
+  try {
+    await deps.editPlan({ chatId: plan.cardChatId, messageId: plan.cardMessageId }, { planId: plan.id, version: plan.version, caption: cardCaption(deps, plan), actions: planActions(plan) });
+  } catch (e) {
+    faults.report("plans.refreshCard", e, { project: plan.project, planId: plan.id });
+  }
+}
+
+/** Open the plan's tracked review decision on its posted card: an `approval` card waits for the
+ *  operator (reminded; a reply is the change request). An `info` card has none. */
+function openReview(deps: PlanDeps, plan: PlanRow, at: { chatId: number; messageId: number }, run: Pick<PlanRun, "orderId" | "chatId" | "cause">): string {
+  const id = deps.ledger.openDecision({
     kind: "decision",
     project: plan.project,
     folder: plan.folder,
     orderId: run.orderId,
     chatId: run.chatId,
-    question: `Plan ready for review: ${plan.path} — ${plan.title}`,
-    options: PLAN_OPTIONS,
-    cause,
+    question: `Plan waiting for your approval: ${plan.path} — ${plan.title}`,
+    options: planActions({ status: "sent", gate: "approval" }).map((a) => PLAN_LABELS[a]),
+    cause: run.cause,
   });
-  ledger.setDecisionMessage(decisionId, posted.chatId, posted.messageId);
-  // Re-read after the post: only the send's own fields change (a tap may have moved the plan meanwhile).
+  deps.ledger.setDecisionMessage(id, at.chatId, at.messageId);
+  return id;
+}
+
+async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan: PostPlan, more: number): Promise<SendOutcome> {
+  const { ledger, trace } = deps;
+  const cause = run.cause;
+  const version = plan.version + 1;
+  const status = plan.status === "draft" ? "sent" : plan.status;
+  const shown = { ...plan, status, threadId: plan.threadId ?? cause?.threadId };
+  const caption = cardCaption(deps, shown, version, more);
+  const actions = planActions(shown);
+  const posted = await postPlan({ planId: plan.id, project: plan.project, folder: plan.folder, status, version, actions }, join(plan.folder, plan.path), caption);
+  if (!posted) return "failed";
+  // The older card no longer acts: it says what replaced it (ADR-0036).
+  const before = ledger.planById(plan.id) ?? plan;
+  if (deps.editPlan && before.cardChatId !== undefined && before.cardMessageId !== undefined) {
+    const old = { chatId: before.cardChatId, messageId: before.cardMessageId };
+    const superseded = `${planCaption(before, before.version)}\n↪ superseded by v${version}`;
+    await deps.editPlan(old, { planId: before.id, version: before.version, caption: superseded, actions: [] }).catch((e) => faults.report("plans.supersede", e, { planId: before.id }));
+  }
+  // Re-read after every await: only the send's own fields change. A tap or a run end may have moved
+  // the plan meanwhile (dropped it, or turned an `info` plan into one that waits), so the review
+  // decision and the card follow the row as it is now, not as it was posted.
   const now = ledger.planById(plan.id) ?? plan;
   const previous = now.decisionId ? ledger.decisionById(now.decisionId) : undefined;
   if (previous?.status === "open") ledger.dismissDecision(previous.id);
-  ledger.upsertPlan({ ...now, status: now.status === "draft" ? "sent" : now.status, decisionId, sentAt: Date.now(), sentSha256: plan.sha256, version });
-  ledger.recordEvent("plan_sent", { folder: plan.folder, orderId: run.orderId, cause, data: { project: plan.project, planId: plan.id, path: plan.path, version } });
+  const final = { ...now, status: now.status === "draft" ? ("sent" as const) : now.status };
+  const waits = planState(final) === "awaiting" || planState(final) === "approved";
+  const sent = ledger.upsertPlan({
+    ...final,
+    decisionId: waits ? openReview(deps, now, posted, run) : undefined,
+    cardChatId: posted.chatId,
+    cardMessageId: posted.messageId,
+    sentAt: Date.now(),
+    sentSha256: plan.sha256,
+    version,
+  });
+  if (planState(sent) !== planState(shown) || sent.status !== shown.status) await refreshCard(deps, sent);
+  ledger.recordEvent("plan_sent", { folder: plan.folder, orderId: run.orderId, cause, data: { project: plan.project, planId: plan.id, path: plan.path, version, gate: plan.gate } });
   if (trace && cause) {
     faults.guard("plans.line", () => {
       const lineId = trace.outbound({ chatId: posted.chatId, text: caption, cause, kind: "plan", project: plan.project, folder: plan.folder, orderId: run.orderId });
@@ -378,15 +561,25 @@ async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan
 
 /** At a run's end (company, project, dispatch, loop): register every plan file the run changed and
  *  send each content version the operator has not had — at most `maxPerRun` cards; the last one
- *  names how many more wait in `/plans`. Each file is its own unit (ADR-0010): one that throws is
- *  reported and the rest still go. */
+ *  names how many more wait in `/plans`. A plan that became done gets its card redrawn. Every plan
+ *  the run left unfinished waits for Approve & build — an `info` card included (ADR-0036): nobody is
+ *  building it now. Each file is its own unit (ADR-0010): one that throws is reported and the rest
+ *  still go. */
 export async function onRunEndPlans(deps: PlanDeps, run: PlanRun): Promise<void> {
   const toSend: PlanRow[] = [];
   for (const path of changedPlanFiles(run.folder, run.startSha, deps.cfg.paths, deps.git)) {
     try {
       const content = readPlan(run.folder, path, deps.cfg.maxBytes);
       if (content === undefined) continue;
-      const { plan } = register(deps, run, path, content);
+      let { plan, changed } = register(deps, run, path, content);
+      // The run is over, so nobody builds an unfinished plan now: it waits for Approve & build.
+      if (plan.gate === "info" && (plan.status === "draft" || plan.status === "sent")) {
+        const posted = plan.status === "sent" && plan.cardChatId !== undefined && plan.cardMessageId !== undefined;
+        const decisionId = posted ? openReview(deps, plan, { chatId: plan.cardChatId!, messageId: plan.cardMessageId! }, run) : plan.decisionId;
+        plan = deps.ledger.upsertPlan({ ...plan, gate: "approval", decisionId });
+        changed = posted;
+      }
+      if (changed) await refreshCard(deps, plan);
       if (unsent(deps, plan)) toSend.push(plan);
     } catch (e) {
       faults.report("plans.runEnd", e, { project: run.project, folder: run.folder, path });
@@ -410,6 +603,25 @@ export async function onRunEndPlans(deps: PlanDeps, run: PlanRun): Promise<void>
   }
 }
 
+/** A plan file a running worker just wrote (ADR-0036; `path` relative to the folder): registered now,
+ *  its card sent now (not at the run end), and the row returned so the watch can hold a big one.
+ *  Undefined when it is not a readable plan. The send is detached; `sent` settles when it is done. */
+export function notePlanWritten(deps: PlanDeps, run: PlanRun, path: string): { plan: PlanRow; sent: Promise<boolean> } | undefined {
+  const content = readPlan(run.folder, path, deps.cfg.maxBytes);
+  if (content === undefined) return undefined;
+  const { plan, changed } = register(deps, run, path, content);
+  // Settles true when this version's card is with the operator (posted now, or already).
+  const sent = (async () => {
+    if (changed) await refreshCard(deps, plan);
+    if (unsent(deps, plan)) return (await sendPlan(deps, plan, run)) === "sent" || deps.ledger.planById(plan.id)?.sentSha256 === plan.sha256;
+    return deps.ledger.planById(plan.id)?.sentSha256 === plan.sha256;
+  })().catch((e) => {
+    faults.report("plans.written", e, { project: run.project, folder: run.folder, path });
+    return false;
+  });
+  return { plan, sent };
+}
+
 /** A worker's own `send_file` (`path` relative to the folder). A plan path is sent through the
  *  registry, so the operator gets each version once — a card that cannot be posted now is left to
  *  the run end, never sent twice as a plain file. Anything else (not a plan path, nowhere to post,
@@ -419,9 +631,10 @@ export async function offerPlanFile(deps: PlanDeps, p: PlanRun & { path: string 
   if (!deps.cfg.paths.some((g) => new Bun.Glob(g).match(p.path))) return { handled: false };
   const content = readPlan(p.folder, p.path, deps.cfg.maxBytes);
   if (content === undefined) return { handled: false };
-  const { plan, finished } = register(deps, p, p.path, content);
+  const { plan, finished, changed } = register(deps, p, p.path, content);
   // Recorded done from its file (ADR-0035): no card and no plain file either.
   if (finished && seenDone(plan)) return { handled: true, text: `already done: ${p.path} — ${finished.done}/${finished.total} steps ticked; recorded as done, not sent to the operator` };
+  if (changed) await refreshCard(deps, plan);
   switch (await sendPlan(deps, plan, p)) {
     case "sent":
       return { handled: true, text: `sent plan ${p.path}` };
@@ -442,52 +655,77 @@ function answerCard(deps: PlanDeps, plan: PlanRow, action: PlanAction): void {
   if (trace && plan.threadId !== undefined) faults.guard("plans.refreshThread", () => trace.refreshThread(plan.threadId!));
 }
 
-/** What a plan action answers. `offer: "anyway"`: the reply offers Run anyway (a done plan). */
+/** What a plan action answers. `offer: "anyway"`: the reply offers Run anyway (a done plan).
+ *  `resume`: Approve & build on a plan a worker is held on — the frontend answers this decision with
+ *  `answer` through its decision-answer path, which resumes that same worker (ADR-0036). */
 export interface PlanActionResult {
   ok: boolean;
   text: string;
   offer?: "anyway";
+  resume?: { decisionId: string; answer: string };
+}
+
+/** The brief a held worker resumes with on Approve & build. */
+export function approvalAnswer(cfg: PlansCfg, path: string): string {
+  return `Approved by the operator. ${cfg.executeBrief.replaceAll("{path}", path)}`;
 }
 
 /** An operator tap (Telegram, web, a command). The plan moves only here and on the checkbox count.
- *  `version`: the card's version — a tap on an older card than the newest sent is refused. */
-export async function applyPlanAction(deps: PlanDeps, planId: number, action: PlanAction, version?: number): Promise<PlanActionResult> {
+ *  `version`: the card's version — a tap on an older card than the newest sent is refused.
+ *  `canResume`: the caller can answer a decision and resume its worker (Telegram, the console). */
+export async function applyPlanAction(deps: PlanDeps, planId: number, action: PlanAction, version?: number, opts: { canResume?: boolean } = {}): Promise<PlanActionResult> {
   const { ledger } = deps;
   const plan = ledger.planById(planId);
   if (!plan) return { ok: false, text: `no plan #${planId}` };
   if (version !== undefined && version !== plan.version) return { ok: false, text: `this card is v${version} — the newest is v${plan.version}; use that card` };
-  // Approve and Execute act on the text the operator read: refused when the file changed after the
-  // newest card and that version has not reached them yet (held back by the cap, or its post failed).
-  // Only while a new card can still come: with sending off, there is nothing to wait for.
-  if ((action === "approve" || action === "execute" || action === "anyway") && deps.postPlan && deps.cfg.send && plan.sentSha256 !== undefined && plan.sentSha256 !== plan.sha256) {
+  const builds = action === "approve" || action === "execute" || action === "anyway";
+  // Building acts on the text the operator read: refused when the file changed after the newest card
+  // and that version has not reached them yet (held back by the cap, or its post failed). Only while
+  // a new card can still come: with sending off, there is nothing to wait for.
+  if (builds && deps.postPlan && deps.cfg.send && plan.sentSha256 !== undefined && plan.sentSha256 !== plan.sha256) {
     return { ok: false, text: `the plan changed after its newest card (v${plan.version}) — wait for the new card, or see /plans` };
   }
   if (plan.status === "done" || plan.status === "abandoned") return { ok: false, text: `this plan is already ${plan.status === "done" ? "done" : "dropped"}` };
-  // The card's buttons are the rule on every surface: an action its status does not offer is refused.
-  if (!planActions(plan.status).includes(action === "anyway" ? "execute" : action)) {
-    if (action === "approve") return { ok: false, text: `already ${plan.status}` };
-    if (action === "execute" || action === "anyway") return { ok: false, text: `already executing${plan.todoId !== undefined ? ` as #${plan.todoId}` : ""}` };
-    return { ok: false, text: `a plan that is ${plan.status} cannot be ${action === "done" ? "marked done" : "changed here"}` };
+  // The card's buttons are the rule on every surface: an action its state does not offer is refused.
+  if (!planActions(plan).includes(builds ? "approve" : action)) {
+    if (builds) return { ok: false, text: plan.status === "executing" ? `already building${plan.todoId !== undefined ? ` as #${plan.todoId}` : ""}` : "the worker is building it — Stop cancels it" };
+    return { ok: false, text: `a plan that is ${planState(plan)} cannot be ${action === "done" ? "marked done" : action === "stop" ? "stopped" : "changed here"}` };
   }
   switch (action) {
     case "changes":
       return { ok: true, text: "Reply to the plan with your changes — they go to the worker that wrote it." };
-    case "approve":
-      ledger.upsertPlan({ ...plan, status: "approved" });
-      answerCard(deps, plan, action);
-      return { ok: true, text: "Approved" };
     case "done":
-      ledger.upsertPlan({ ...plan, status: "done" });
-      answerCard(deps, plan, action);
-      return { ok: true, text: "Marked done" };
+      return settle(deps, plan, "done", action, "Marked done");
     case "drop":
-      ledger.upsertPlan({ ...plan, status: "abandoned" });
-      answerCard(deps, plan, action);
-      return { ok: true, text: "Dropped" };
+      return settle(deps, plan, "abandoned", action, "Dropped");
+    case "stop": {
+      const live = deps.registry?.findByFolder(plan.folder);
+      if (live?.status === "running") void deps.registry!.getControl(live.id)?.interrupt();
+      return settle(deps, plan, "abandoned", action, live?.status === "running" ? `Stopped — ${live.name} interrupted` : "Stopped");
+    }
+    case "approve": {
+      // A worker held on this plan resumes and builds it: the frontend answers its decision.
+      const dec = plan.decisionId ? ledger.decisionById(plan.decisionId) : undefined;
+      if (opts.canResume && plan.heldAt !== undefined && dec?.status === "open") {
+        const building = ledger.upsertPlan({ ...plan, status: "executing", heldAt: undefined });
+        ledger.recordEvent("plan_approved", { folder: plan.folder, data: { planId: plan.id, path: plan.path, resumed: true } });
+        await refreshCard(deps, building);
+        return { ok: true, text: "Approved — the worker that wrote it builds it now", resume: { decisionId: dec.id, answer: approvalAnswer(deps.cfg, plan.path) } };
+      }
+      return executePlan(deps, plan, false);
+    }
     case "execute":
     case "anyway":
       return executePlan(deps, plan, action === "anyway");
   }
+}
+
+/** A tap that ends the plan's review: the new status, the decision closed, the card redrawn. */
+async function settle(deps: PlanDeps, plan: PlanRow, status: PlanStatus, action: PlanAction, text: string): Promise<PlanActionResult> {
+  const row = deps.ledger.upsertPlan({ ...plan, status });
+  answerCard(deps, plan, action);
+  await refreshCard(deps, row);
+  return { ok: true, text };
 }
 
 /** Execute (ADR-0034): judge it first. Only a `run` verdict queues a todo, for the plan row of the
@@ -538,17 +776,22 @@ async function executePlan(deps: PlanDeps, plan: PlanRow, anyway: boolean): Prom
   }
   setStatus(() => ({ status: "executing", todoId: todo.id }));
   answerCard(deps, plan, "execute");
+  for (const { id } of before) {
+    const row = ledger.planById(id);
+    if (row) await refreshCard(deps, row);
+  }
   const where = verdict.notes.length ? ` — ${verdict.notes.join("; ")}` : "";
   return { ok: true, text: `Executing ${target.path} as todo #${todo.id}${where}` };
 }
 
-/** `/plans [project]`: newest first, bounded — status, checked steps, project, title, thread ref, path. */
+/** `/plans [project]`: newest first, bounded — state (as on the card), checked steps, project, title,
+ *  thread ref, path. */
 export function renderPlans(ledger: Ledger, trace: Trace | undefined, project?: string): string {
   const rows = ledger.listPlans(project, 20);
   if (!rows.length) return project ? `No plans for ${project} yet.` : "No plans yet.";
   const lines = rows.map((p) => {
     const ref = trace && p.threadId !== undefined ? ` · ${trace.ref(p.threadId)}` : "";
-    return `#${p.id} · ${p.status} · ${p.stepsDone}/${p.stepsTotal} · ${p.project} · ${p.title}${ref}\n  ${p.path}`;
+    return `#${p.id} · ${planState(p)} · ${p.stepsDone}/${p.stepsTotal} · ${p.project} · ${p.title}${ref}\n  ${p.path}`;
   });
   return `📄 Plans${project ? ` — ${project}` : ""} (newest first):\n${lines.join("\n")}`;
 }

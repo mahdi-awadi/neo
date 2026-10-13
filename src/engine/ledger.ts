@@ -257,7 +257,19 @@ export interface PlanRow {
   version: number;
   /** The content hash last sent — a run end or `send_file` sends only a hash it has not sent. */
   sentSha256?: string;
+  /** This version's gate (ADR-0036): `approval` waits for the operator, `info` is sent for information. */
+  gate?: PlanGate;
+  /** When a worker was held on this plan, waiting for Approve & build (ADR-0036). */
+  heldAt?: number;
+  /** The commit the plan was seen finished at (ADR-0036). */
+  doneSha?: string;
+  /** Where the newest card was posted; a state change edits it in place (ADR-0036). */
+  cardChatId?: number;
+  cardMessageId?: number;
 }
+
+/** A plan version's gate (ADR-0036). */
+export type PlanGate = "approval" | "info";
 
 /** What `upsertPlan` takes: a row without its id (a new row gets one) and timestamps default to now. */
 export type PlanDraft = Omit<PlanRow, "id" | "createdAt" | "updatedAt" | "version"> & { id?: number; createdAt?: number; updatedAt?: number; version?: number };
@@ -921,18 +933,22 @@ export function openLedger(
     upsertPlan(p) {
       const now = Date.now();
       db.query(
-        `INSERT INTO plans (project, folder, path, title, sha256, status, steps_total, steps_done, thread_id, order_id, todo_id, decision_id, created_at, updated_at, sent_at, sent_sha256, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO plans (project, folder, path, title, sha256, status, steps_total, steps_done, thread_id, order_id, todo_id, decision_id, created_at, updated_at, sent_at, sent_sha256, gate, held_at, done_sha, card_chat_id, card_message_id, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (folder, path) DO UPDATE SET
            project = excluded.project, title = excluded.title, sha256 = excluded.sha256, status = excluded.status,
            steps_total = excluded.steps_total, steps_done = excluded.steps_done, thread_id = excluded.thread_id,
            order_id = excluded.order_id, todo_id = excluded.todo_id, decision_id = excluded.decision_id,
            updated_at = excluded.updated_at, sent_at = excluded.sent_at, sent_sha256 = excluded.sent_sha256,
+           gate = excluded.gate, held_at = excluded.held_at, done_sha = excluded.done_sha,
+           card_chat_id = excluded.card_chat_id, card_message_id = excluded.card_message_id,
            version = COALESCE(?, plans.version)`,
       ).run(
         p.project, p.folder, p.path, p.title, p.sha256, p.status, p.stepsTotal, p.stepsDone,
         p.threadId ?? null, p.orderId ?? null, p.todoId ?? null, p.decisionId ?? null,
-        p.createdAt ?? now, now, p.sentAt ?? null, p.sentSha256 ?? null, p.version ?? 0, p.version ?? null,
+        p.createdAt ?? now, now, p.sentAt ?? null, p.sentSha256 ?? null, p.gate ?? null, p.heldAt ?? null, p.doneSha ?? null,
+        p.cardChatId ?? null, p.cardMessageId ?? null,
+        p.version ?? 0, p.version ?? null,
       );
       return mapPlanRow(db.query(`SELECT * FROM plans WHERE folder = ? AND path = ?`).get(p.folder, p.path) as PlanDbRow);
     },
@@ -1542,7 +1558,7 @@ export function openLedger(
     openDecisionsForOrder(orderId) {
       const rows = db
         .query(
-          `SELECT d.id AS id, d.question AS question, EXISTS (SELECT 1 FROM plans p WHERE p.decision_id = d.id) AS plan
+          `SELECT d.id AS id, d.question AS question, EXISTS (SELECT 1 FROM plans p WHERE p.decision_id = d.id AND p.held_at IS NULL) AS plan
            FROM decisions d WHERE d.status = 'open' AND d.order_id = ? ORDER BY d.created_at ASC, d.rowid ASC`,
         )
         .all(orderId) as Array<{ id: string; question: string; plan: number }>;
@@ -1627,6 +1643,8 @@ interface PlanDbRow {
   steps_total: number; steps_done: number; thread_id: number | null; order_id: string | null;
   todo_id: number | null; decision_id: string | null; created_at: number; updated_at: number; sent_at: number | null;
   version: number; sent_sha256: string | null;
+  gate: string | null; held_at: number | null; done_sha: string | null;
+  card_chat_id: number | null; card_message_id: number | null;
 }
 
 function mapPlanRow(r: PlanDbRow): PlanRow {
@@ -1641,6 +1659,10 @@ function mapPlanRow(r: PlanDbRow): PlanRow {
     ...(r.sent_at !== null ? { sentAt: r.sent_at } : {}),
     version: r.version,
     ...(r.sent_sha256 !== null ? { sentSha256: r.sent_sha256 } : {}),
+    ...(r.gate === "approval" || r.gate === "info" ? { gate: r.gate } : {}),
+    ...(r.held_at !== null ? { heldAt: r.held_at } : {}),
+    ...(r.done_sha !== null ? { doneSha: r.done_sha } : {}),
+    ...(r.card_chat_id !== null && r.card_message_id !== null ? { cardChatId: r.card_chat_id, cardMessageId: r.card_message_id } : {}),
   };
 }
 

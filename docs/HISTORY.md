@@ -1002,3 +1002,14 @@ sub-users plan and spec reached the operator as new cards with Approve and Execu
 re-checked done work. Now such a plan is recorded done with ADR-0034's judge (a spec with its
 plans), with an event and a log line, and no card or file. It is sent normally if it gets an open
 step again.
+
+Big plans now wait for the operator (ADR-0036). gold's wallet-bars plan reached the operator with
+Approve and Execute after the worker had built and committed it. Now:
+- A plan is big by config: task count, step count, risky words (migrations, auth, money, deploy,
+  deletes), or `approval: required`.
+- A big plan that a worker writes stops that worker through the governor hook until the operator
+  taps **Approve & build**. That tap resumes the same worker. A small plan's card is information
+  only, with a Stop button.
+- Each button has one meaning, set in one place, and Telegram and the console use the same labels
+  (AR+EN).
+- Every state change edits the card in place: building, done · commit, dropped, or superseded.

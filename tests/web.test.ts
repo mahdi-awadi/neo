@@ -299,9 +299,11 @@ test("POST /api/plan applies a plan action; a bad body is a 400", async () => {
   const post = (body: unknown) =>
     a.instance.fetch(new Request("http://neo.test/api/plan", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
   expect(await (await post({ id: plan.id, action: "approve", version: 2 })).json()).toEqual({ ok: false, text: "this card is v2 — the newest is v1; use that card" });
-  const ok = await post({ id: plan.id, action: "approve", version: 1 });
-  expect(await ok.json()).toEqual({ ok: true, text: "Approved" });
-  expect(a.ledger.planById(plan.id)!.status).toBe("approved");
+  // Approve & build with no held worker is an Execute (ADR-0036): it needs the todo queue.
+  expect(await (await post({ id: plan.id, action: "approve", version: 1 })).json()).toEqual({ ok: false, text: "the todo queue is unavailable — Execute needs it" });
+  const ok = await post({ id: plan.id, action: "drop", version: 1 });
+  expect(await ok.json()).toEqual({ ok: true, text: "Dropped" });
+  expect(a.ledger.planById(plan.id)!.status).toBe("abandoned");
   expect((await post({ id: plan.id, action: "explode" })).status).toBe(400);
   expect((await post({ action: "drop" })).status).toBe(400);
   // "Changes" needs the operator's text, which the console does not carry yet: refused, not guessed.

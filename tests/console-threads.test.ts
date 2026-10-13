@@ -180,7 +180,7 @@ test("GET /api/thread-projects and a thread's plans with the actions their statu
   const get = async (u: string) => (await a.instance.fetch(new Request(`http://neo.test${u}`, { headers: { cookie } }))).json() as Promise<any>;
   expect(await get("/api/thread-projects")).toEqual({ rows: [{ project: "gold", threads: 1 }] });
   const view = await get(`/api/threads/${t1}`);
-  expect(view.plans).toEqual([expect.objectContaining({ title: "A", status: "approved", actions: ["execute", "drop"] })]);
+  expect(view.plans).toEqual([expect.objectContaining({ title: "A", status: "approved", state: "approved", actions: ["approve", "drop"] })]);
 });
 
 // ADR-0035: a plan the registry first saw finished shows in the console as done, with no buttons.

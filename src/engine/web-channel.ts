@@ -39,8 +39,8 @@ import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
 import type { Cause, ThreadChange } from "./trace";
 import { faults } from "./fault";
-import { applyPlanAction, planActions, planDepsFrom, type PlanAction, type PlanActionResult } from "./plans";
-import { routeThreadMessage } from "./reply-routing";
+import { applyPlanAction, planActions, planDepsFrom, planState, type PlanAction, type PlanActionResult, type PlanState } from "./plans";
+import { answerDecision, routeThreadMessage } from "./reply-routing";
 import { projectDeps, projectSummaries, projectView, type ProjectSummary, type ProjectView } from "./project-view";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
 
@@ -77,7 +77,7 @@ export interface ThreadView {
   todos: ThreadArtifacts["todos"];
   decisions: ThreadArtifacts["decisions"];
   /** Each plan with the actions its status offers (the card's buttons). */
-  plans: Array<PlanRow & { actions: PlanAction[] }>;
+  plans: Array<PlanRow & { state: PlanState; actions: PlanAction[] }>;
   toolActions: number;
 }
 
@@ -492,7 +492,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         orders: art.orders,
         todos: art.todos,
         decisions: art.decisions,
-        plans: ledger.plansInThread(id, PAGE_MAX).map((p) => ({ ...p, actions: planActions(p.status) })),
+        plans: ledger.plansInThread(id, PAGE_MAX).map((p) => ({ ...p, state: planState(p), actions: planActions(p) })),
         toolActions: art.toolActions,
       };
     },
@@ -512,8 +512,21 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     async planAction(id, action, version) {
       if (action === "changes") return { ok: false, text: "reply to the plan card on Telegram with your changes" };
-      const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action, version);
+      const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action, version, { canResume: true });
       opts.bus?.mirror("web", { kind: "notice", text: `plan #${id}: ${r.text} (web console)` });
+      // Approve & build on a plan a worker is held on (ADR-0036): answer its decision — the same path
+      // as a Telegram answer — so that worker resumes and builds.
+      const dec = r.resume ? opts.engine.ledger.decisionById(r.resume.decisionId) : undefined;
+      if (r.resume && dec) {
+        const { registry, ledger, todo, cfg } = opts.engine;
+        const resumed = answerDecision(
+          { registry, ledger, worker: cfg.providers.ownWork, ...(todo ? { parked: (d, a) => !!todo.decisionAnswered(d.id, d.question, a) } : {}) },
+          dec,
+          r.resume.answer,
+          opts.chatId,
+        );
+        if (resumed) void faults.contain("web.planResume", handleMessage(resumed.brief, resumed.homeChat, deps, "neo", inbound(r.resume.answer, dec.cause?.threadId)));
+      }
       return r;
     },
     async attentionAction(id, action) {

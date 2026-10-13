@@ -602,13 +602,45 @@ _Avoid_: plan folder, docs
 `draft` (registered, not sent), `sent` (the operator has it), `approved`, `executing` (a todo works
 it), `done`, or `abandoned`. Moves only on an operator tap or a fact the engine can read. A plan the
 registry first sees finished is recorded `done` and never sent; it goes back to `draft` if its file
-gets work again (ADR-0035).
-_Avoid_: plan state, phase
+gets work again (ADR-0035). A sent plan whose file is finished at a run end becomes `done` at the
+commit it was seen at (ADR-0036).
+_Avoid_: phase
+
+**Plan state**:
+Where a plan is, as the operator sees it, derived from its status and gate (ADR-0036): `draft`,
+`awaiting` (sent, waiting for Approve & build), `info` (a small plan the worker is building now),
+`approved` (rows approved before ADR-0036), `building`, `done`, `dropped`. The card's state line and
+the console show it.
+_Avoid_: plan status (the stored field)
+
+**Plan gate**:
+What a plan version's card asks for (ADR-0036). `approval`: the operator must Approve & build before
+any implementation. `info`: the card informs, and the worker goes on. A **big** plan gets
+`approval`: front matter `approval: required`, more tasks or steps than `plans.approval`, or a line
+that matches `plans.approval.patterns` (migrations, auth, money, deploy, deletes). A worker can make a
+plan big but never small. At a run end every unfinished plan waits (`approval`), because nobody is
+building it any more.
+_Avoid_: size, risk level
+
+**Held plan**:
+A big plan its writing worker is stopped at (ADR-0036). The worker's tool calls are denied with a
+STOP reason until the operator acts, except reads, Neo's own tools and edits to plan files. Its
+decision is blocking: a todo run parks on it. **Approve & build** answers that decision, so the same
+worker resumes.
+_Avoid_: paused plan, blocked plan
+
+**Approve & build**:
+The plan card's one primary button (`approve`). On a held plan it resumes the worker that wrote it.
+Otherwise it is an Execute (ADR-0034): judged, then queued once. The engine verb `execute` stays
+only for old cards and the API.
+_Avoid_: Approve then Execute
 
 **Plan card**:
 One version of a plan as the operator receives it: the file, a caption with its project, title,
-version and thread ref, and the buttons its status offers. It is a tracked decision, so it is
-reminded, and a reply to it is the operator's change request.
+version, thread ref and state line, and the buttons its state offers (`planActions`). Every state
+change edits the same message (ADR-0036), and a newer version marks the older card "superseded".
+An `awaiting` card is a tracked decision, so it is reminded, and a reply to it is the operator's
+change request. An `info` card is not a decision.
 _Avoid_: plan message, plan notification
 
 **Design unit**:

@@ -37,7 +37,7 @@ import { tickScheduler, folderBusy } from "./engine/scheduler";
 import { CRON_RESOLUTION_MS, heartbeatMs, nextTickDelayMs, runHeartbeatTick, type HeartbeatLoop } from "./engine/heartbeat";
 import { configureFaults, createFaultReporter, faults, installSafetyNet } from "./engine/fault";
 import { createHealthMonitor, startHealthTimer } from "./engine/health";
-import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster, attentionKeyboard } from "./frontends/telegram";
+import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster, createPlanEditor, attentionKeyboard } from "./frontends/telegram";
 import { startWeb } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
@@ -240,6 +240,8 @@ async function main(): Promise<void> {
   // The one plan poster (ADR-0019): every plan a run writes — from Telegram, the web console, a
   // dispatch or a loop — reaches the operator as the same card, in the Decisions chat (else the DM).
   const postPlan = operatorApi ? createPlanPoster(operatorApi, () => cfg.decisionsChatId ?? admin.adminId()) : undefined;
+  // ...and the one editor that redraws a card when its plan changes state (ADR-0036).
+  const editPlan = operatorApi ? createPlanEditor(operatorApi) : undefined;
 
   // The engine-wide fault reporter (ADR-0010): log with the stack, an `engine_fault` event, a
   // deduplicated + capped operator alert, and a note queued for the company to investigate.
@@ -354,7 +356,7 @@ async function main(): Promise<void> {
           cfg,
           store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
           trace,
-          plans: postPlan ? planDepsFrom({ ledger, postPlan, trace, todo }, cfg.plans) : undefined,
+          plans: postPlan ? planDepsFrom({ ledger, postPlan, editPlan, trace, todo }, cfg.plans) : undefined,
         });
       },
       // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
@@ -439,7 +441,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, neoFolder }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -451,7 +453,7 @@ async function main(): Promise<void> {
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
     startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder },
+      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder },
       cfg.webPort,
       cfg.webHost,
     );

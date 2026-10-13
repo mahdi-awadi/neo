@@ -1066,7 +1066,7 @@ function renderThreadPane(v: Any): void {
     h += `<div class="tsect"><h4>${t("threads.plans")}</h4>`;
     h += v.plans
       .map((p: Any) => {
-        const line = t("threads.planLine", { status: tx(`threads.planStatus.${p.status}`), done: p.stepsDone, total: p.stepsTotal, version: p.version });
+        const line = t("threads.planLine", { status: tx(`threads.planState.${p.state}`), done: p.stepsDone, total: p.stepsTotal, version: p.version });
         const buttons = (p.actions as string[])
           .filter((a) => a !== "changes")
           .map((a) => `<button class="chip" data-act="plan" data-id="${p.id}" data-action="${esc(a)}" data-version="${p.version}">${t(`threads.planAction.${a}`)}</button>`)

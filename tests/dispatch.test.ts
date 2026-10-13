@@ -737,8 +737,7 @@ test("preamble tells workers where plans go and that the engine sends them", () 
   const brief = briefWithProjectDocs("X");
   expect(brief).toContain("docs/superpowers/plans/");
   expect(brief).toContain("docs/superpowers/specs/");
-  expect(brief).toContain("sends it to the operator");
-  expect(brief).toContain("send_file");
+  expect(brief).toContain("sends it to the operator"); // the engine sees the write itself (ADR-0036): no send_file needed
   expect(brief.endsWith("\n\nX")).toBe(true); // the task still comes last
 });
 
@@ -1306,6 +1305,14 @@ test("briefWithProjectDocs carries the engineering baseline: i18n · env/dev · 
   expect(low).toContain("hardcod"); // 4. no hardcoding — values live in env/DB/config
   expect(low).toContain("reuse"); // 5. read what exists and extend it...
   expect(low).toContain("second implementation"); // ...never a parallel one
+});
+
+// ADR-0036: workers know a big plan waits for Approve & build, and that a STOP denial means end the turn.
+test("briefWithProjectDocs states the plan approval rule", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("BIG plan");
+  expect(out).toContain("`approval: required`");
+  expect(out).toContain("STOP, end your turn — Approve & build resumes you");
 });
 
 test("the dispatch preamble stays terse — every worker pays for it on every run", () => {

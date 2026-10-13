@@ -75,3 +75,17 @@ test("migration 6 runs on a ledger that already has its indexes (an intermediate
   expect(() => migrate(db, { path: ":memory:" })).not.toThrow();
   expect(version(db)).toBe(MIGRATIONS.at(-1)!.version);
 });
+
+// ADR-0036: a card posted before migration 11 is still redrawn — its message is its decision's message.
+test("migration 11 fills each plan's card message from its review decision", () => {
+  const db = new Database(":memory:");
+  migrate(db, { path: ":memory:", migrations: MIGRATIONS.filter((x) => x.version <= 10) });
+  db.run(`INSERT INTO decisions (id, kind, status, question, created_at, decision_chat_id, decision_message_id) VALUES ('d1', 'decision', 'open', 'q', 1, -100, 55)`);
+  db.run(`INSERT INTO plans (project, folder, path, title, sha256, status, created_at, updated_at, decision_id) VALUES ('g', '/f', 'p.md', 't', 's', 'sent', 1, 1, 'd1')`);
+  db.run(`INSERT INTO plans (project, folder, path, title, sha256, status, created_at, updated_at) VALUES ('g', '/f', 'q.md', 't', 's', 'draft', 1, 1)`);
+  migrate(db, { path: ":memory:" });
+  expect(db.query(`SELECT path, card_chat_id, card_message_id FROM plans ORDER BY path`).all()).toEqual([
+    { path: "p.md", card_chat_id: -100, card_message_id: 55 },
+    { path: "q.md", card_chat_id: null, card_message_id: null },
+  ]);
+});
