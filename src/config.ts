@@ -13,6 +13,7 @@ import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
 import { readCommitFinishCfg, type CommitFinishCfg } from "./engine/commit-finish";
+import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision-settle";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
 import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
@@ -256,6 +257,10 @@ export interface NeoConfig {
    *  asked once, in the same session, to commit them. `enabled` (default true), `ignore` (repo-relative
    *  globs never counted: the handoff notes). Optional like `plans`; `loadConfig` always fills it. */
   commitFinish?: CommitFinishCfg;
+  /** Settle stale decisions (ADR-0038): a decision asked again, answered in chat (and the thread's
+   *  work then finished), or whose plan is settled is superseded, so its thread stops waiting.
+   *  Optional like `plans`; `loadConfig` always fills it. */
+  decisionSettle?: DecisionSettleCfg;
   /** Attention items (ADR-0018): how long a paused queue, a waiting thread or an open decision may
    *  last before it needs the operator. Optional like `plans`; `loadConfig` always fills it. */
   attention?: AttentionCfg;
@@ -560,6 +565,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
     plans: readPlansCfg(fileCfg.plans),
     commitFinish: readCommitFinishCfg(fileCfg.commitFinish),
+    decisionSettle: readDecisionSettleCfg(fileCfg.decisionSettle),
     attention: readAttentionCfg(fileCfg.attention),
     restart: readRestartCfg(fileCfg.restart),
     github: readGithubCfg(fileCfg.github),

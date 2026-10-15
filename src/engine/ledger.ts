@@ -9,6 +9,7 @@ import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
 import type { StructuredAsk } from "./structured-question";
 import type { Priority } from "./priority";
+import type { SettleFacts } from "./decision-settle";
 
 /** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
  *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
@@ -213,9 +214,11 @@ export interface NewDecision {
 
 export interface DecisionRow extends NewDecision {
   id: string;
-  status: "open" | "answered" | "dismissed";
+  /** `superseded`: closed by the engine because it no longer needs an answer (ADR-0038). */
+  status: "open" | "answered" | "dismissed" | "superseded";
   createdAt: number;
   answeredAt?: number;
+  /** The answer — or, for a decision closed without one (dismissed, superseded), why it closed. */
   answer?: string;
   /** The channel the decision message was posted in + its message id — so a REPLY to it resolves
    *  the decision (decisionByMessage) and a later edit can mark it answered. */
@@ -325,6 +328,14 @@ export interface Ledger {
   touchThread(id: number, lastMsgId: number, at: number, learn?: { project: string; folder: string }): void;
   /** The ledger's facts about one thread (spec §5), for deriveThreadState. */
   threadFacts(id: number): ThreadFacts;
+  /** One thread's facts for settling its decisions (ADR-0038, decision-settle.ts). Operator
+   *  messages carry their message id; trace turns it into a ref. */
+  decisionSettleFacts(threadId: number): Omit<SettleFacts, "operatorMessages"> & { operatorMessages: Array<{ id: number; at: number }> };
+  /** The operator closes a thread (ADR-0038): `closed_by_operator`, its open decisions dismissed with
+   *  `reason`, the todos parked on them cancelled. `stillActive`: its queued/running todos, untouched. */
+  closeThread(threadId: number, reason: string, at: number): { closed: boolean; missing?: boolean; decisions: number; todosCancelled: number[]; stillActive: number[] };
+  /** A new operator message reopens a closed thread. */
+  reopenThread(threadId: number): void;
   /** The message a Telegram reply target was routed under (`message_routes.msg_id/thread_id`), if recorded. */
   routeCause(chatId: number, messageId: number): Cause | undefined;
   /** Orders, todos, decisions and the tool-action count linked to a thread; each list ≤ `limit`. */
@@ -454,6 +465,9 @@ export interface Ledger {
   resolveDecision(id: string, answer: string, at?: number): void;
   /** Close an alert (or a decision) without an answer — the operator acknowledged it. */
   dismissDecision(id: string): void;
+  /** The engine closes an open decision that no longer needs an answer, keeping why in `answer`
+   *  (ADR-0038). Only an `open` row changes. */
+  supersedeDecision(id: string, reason: string, at?: number): void;
   /** Stamp the reminder fields (lastRemindedAt + reminderCount++) after a secretary digest. */
   noteDecisionsReminded(ids: string[], at?: number): void;
   /** Dispatcher inbox (ADR-0007): queue one final dispatch result for the company. Returns its id.
@@ -884,6 +898,69 @@ export function openLedger(
         ...(end ? { lastEnd: end.ok ? ("ok" as const) : ("failed" as const) } : {}),
         closedByOperator: f.closed === 1,
       };
+    },
+    decisionSettleFacts(threadId) {
+      const none = { open: [], asked: [], operatorMessages: [], doneEnds: [], planOf: {}, parked: [] };
+      // Most lines join a thread with nothing open: answer from the one indexed probe.
+      if (!db.query(`SELECT 1 FROM decisions WHERE thread_id = ? AND status = 'open' LIMIT 1`).get(threadId)) return none;
+      const decisions = db
+        .query(`SELECT id, question, created_at, status, folder FROM decisions WHERE thread_id = ?`)
+        .all(threadId) as Array<{ id: string; question: string; created_at: number; status: string; folder: string | null }>;
+      const open = decisions.filter((d) => d.status === "open");
+      const asked = decisions.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at }));
+      const ids = open.map((d) => d.id);
+      const marks = ids.map(() => "?").join(",");
+      const planOf: Record<string, PlanStatus> = {};
+      const parked: string[] = [];
+      if (ids.length) {
+        for (const r of db.query(`SELECT decision_id, status FROM plans WHERE decision_id IN (${marks})`).all(...ids) as Array<{ decision_id: string; status: PlanStatus }>) {
+          planOf[r.decision_id] = r.status;
+        }
+        for (const r of db.query(`SELECT DISTINCT waiting_on FROM project_todos WHERE status = 'waiting' AND waiting_on IN (${marks})`).all(...ids) as Array<{ waiting_on: string }>) {
+          parked.push(r.waiting_on);
+        }
+      }
+      // The operator's own chat lines: typed on Telegram or the web (an approval verdict is an engine
+      // line), and not the answer to one of this thread's decisions (a tap writes its answer as a line).
+      const operatorMessages = db
+        .query(
+          `SELECT id, at FROM messages
+           WHERE thread_id = ?1 AND role = 'user' AND surface IN ('telegram', 'web')
+             AND content NOT IN (SELECT answer FROM decisions WHERE thread_id = ?1 AND answer IS NOT NULL)
+           ORDER BY at`,
+        )
+        .all(threadId) as Array<{ id: number; at: number }>;
+      const doneEnds = db
+        .query(
+          `SELECT o.at AS at, ord.folder AS folder FROM outcomes o JOIN orders ord ON ord.id = o.order_id WHERE ord.thread_id = ?1 AND o.status = 'done'
+           UNION ALL
+           SELECT ended_at AS at, folder FROM project_todos WHERE thread_id = ?1 AND status = 'done' AND ended_at IS NOT NULL`,
+        )
+        .all(threadId) as Array<{ at: number; folder: string }>;
+      return {
+        open: open.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at, ...(d.folder ? { folder: d.folder } : {}) })),
+        asked, operatorMessages, doneEnds, planOf, parked,
+      };
+    },
+    closeThread(threadId, reason, at) {
+      return db.transaction(() => {
+        const t = db.query(`SELECT closed_by_operator FROM threads WHERE id = ?`).get(threadId) as { closed_by_operator: number | null } | null;
+        if (!t) return { closed: false, missing: true, decisions: 0, todosCancelled: [], stillActive: [] };
+        const stillActive = (db.query(`SELECT id FROM project_todos WHERE thread_id = ? AND status IN ('queued', 'running', 'retry') ORDER BY id`).all(threadId) as Array<{ id: number }>).map((r) => r.id);
+        if (t.closed_by_operator === 1) return { closed: false, decisions: 0, todosCancelled: [], stillActive };
+        const open = (db.query(`SELECT id FROM decisions WHERE thread_id = ? AND status = 'open'`).all(threadId) as Array<{ id: string }>).map((r) => r.id);
+        const todosCancelled: number[] = [];
+        for (const id of open) {
+          for (const r of db.query(`SELECT id FROM project_todos WHERE status = 'waiting' AND waiting_on = ?`).all(id) as Array<{ id: number }>) todosCancelled.push(r.id);
+          db.query(`UPDATE project_todos SET status = 'cancelled', ended_at = ?, result = ?, waiting_on = NULL WHERE status = 'waiting' AND waiting_on = ?`).run(at, reason, id);
+          db.query(`UPDATE decisions SET status = 'dismissed', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'`).run(reason, at, id);
+        }
+        db.query(`UPDATE threads SET closed_by_operator = 1 WHERE id = ?`).run(threadId);
+        return { closed: true, decisions: open.length, todosCancelled: todosCancelled.sort((a, b) => a - b), stillActive };
+      })();
+    },
+    reopenThread(threadId) {
+      db.query(`UPDATE threads SET closed_by_operator = 0 WHERE id = ? AND closed_by_operator = 1`).run(threadId);
     },
     routeCause(chatId, messageId) {
       const r = db
@@ -1402,6 +1479,8 @@ export function openLedger(
         rec.cause?.msgId ?? null,
         rec.cause?.threadId ?? null,
       );
+      // A new question in a closed thread reopens it, so it is never hidden behind "done" (ADR-0038).
+      if (rec.cause) db.query(`UPDATE threads SET closed_by_operator = 0 WHERE id = ? AND closed_by_operator = 1`).run(rec.cause.threadId);
       return id;
     },
     setDecisionMessage(id, chatId, messageId) {
@@ -1439,6 +1518,10 @@ export function openLedger(
     },
     dismissDecision(id) {
       db.query(`UPDATE decisions SET status = 'dismissed', answered_at = ? WHERE id = ?`).run(Date.now(), id);
+      pruneDecisions();
+    },
+    supersedeDecision(id, reason, at = Date.now()) {
+      db.query(`UPDATE decisions SET status = 'superseded', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'`).run(reason, at, id);
       pruneDecisions();
     },
     noteDecisionsReminded(ids, at = Date.now()) {

@@ -559,6 +559,17 @@ ended badly and nothing runs). Waiting beats open. The operator may close a thre
 reopens it.
 _Avoid_: status (unqualified), progress
 
+**Superseded decision**:
+An open decision the engine closed because it no longer needs an answer: the same question was
+asked again later in the thread, the operator went on in chat and the thread's work then finished,
+or its plan was done, dropped or executed. It keeps the reason in its answer (ADR-0038).
+_Avoid_: stale, expired, auto-answered
+
+**Close (a thread)**:
+The operator's action that marks a thread done whatever its facts say: its open decisions are
+dismissed and the todos parked on them cancelled. A new operator message in the thread reopens it.
+_Avoid_: archive, resolve, delete
+
 **Trace**:
 The tree of everything one message or thread produced, read from the ledger. What `/trace` shows.
 _Avoid_: log, history, audit

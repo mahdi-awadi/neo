@@ -37,7 +37,7 @@ import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
 import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
-import type { Cause, ThreadChange } from "./trace";
+import type { Cause, ThreadChange, ThreadCloseResult } from "./trace";
 import { faults } from "./fault";
 import { applyPlanAction, planActions, planDepsFrom, planState, type PlanAction, type PlanActionResult, type PlanState } from "./plans";
 import { answerDecision, routeThreadMessage } from "./reply-routing";
@@ -146,6 +146,8 @@ export interface WebChannel {
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
    *  operator's text, which the console does not carry yet, so it is refused here. */
   planAction(id: number, action: PlanAction, version?: number): Promise<PlanActionResult>;
+  /** The operator closes a thread (ADR-0038). Undefined: no such thread (or no tracing). */
+  closeThread(id: number): (ThreadCloseResult & { ok: true }) | undefined;
   /** An attention item's one-tap action (ADR-0018) — the same engine rules as a Telegram tap. */
   attentionAction(id: number, action: AttentionAction): Promise<AttentionActionResult>;
   /** The project list (P6, spec §9): one summary per known project, health first, at most PAGE_MAX. */
@@ -509,6 +511,11 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         ...(trace ? { ref: trace.ref(h.id), ...(h.threadId !== undefined ? { threadRef: trace.ref(h.threadId) } : {}) } : {}),
       }));
       return { rows, ...(hits.length > limit ? { next: rows.at(-1)!.id } : {}) };
+    },
+    closeThread(id) {
+      const { ledger, trace } = opts.engine;
+      if (!trace || !ledger.threadById(id)) return undefined;
+      return { ok: true as const, ...trace.close(id) };
     },
     async planAction(id, action, version) {
       if (action === "changes") return { ok: false, text: "reply to the plan card on Telegram with your changes" };

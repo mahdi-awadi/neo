@@ -1048,7 +1048,9 @@ function messageHtml(m: Any, html?: string): string {
 }
 function renderThreadPane(v: Any): void {
   const th = v.thread;
-  let h = `<div class="thead">${th.ref ? ltr(th.ref) : ""}${th.project ? " · " + iso(th.project) : ""} <span class="tchip st-${esc(th.state)}">${t(`threads.state.${th.state}`)}</span></div>`;
+  // The operator may close any thread that is not closed yet (ADR-0038): it stops waiting.
+  const close = !th.closedByOperator ? ` <button class="chip" data-act="thread-close" data-id="${th.id}">${t("threads.close")}</button>` : "";
+  let h = `<div class="thead">${th.ref ? ltr(th.ref) : ""}${th.project ? " · " + iso(th.project) : ""} <span class="tchip st-${esc(th.state)}">${t(`threads.state.${th.state}`)}</span>${close}</div>`;
   h += `<div class="ttitle" dir="auto">${th.title ? esc(th.title) : t("threads.untitled")}</div>`;
   if (v.next) h += `<button class="run" id="tolder" data-act="thread-older">${t("threads.olderMessages")}</button>`;
   h += `<div id="tmsgs">${(v.messages as Any[]).slice().reverse().map((m) => messageHtml(m)).join("")}</div>`;
@@ -1312,6 +1314,18 @@ function openFromHash(): void {
   enterDetail("vprojects");
   showProject(name);
 }
+/** Close a thread (ADR-0038): confirm, then the engine's one close action, then redraw the thread. */
+function closeThread(id: number): void {
+  if (!confirm(tx("threads.confirmClose"))) return;
+  void post("/api/thread/close", { id })
+    .then((r) => r.json())
+    .then((d) => {
+      // linesHtml: dir="auto" and the count stays an LTR run inside Arabic (the numbers rule).
+      if (d.ok) feedMsg("⋯ " + linesHtml(tx("threads.closedNote", { decisions: d.decisions })), "me", null);
+      openThread(id);
+      loadThreads(true);
+    });
+}
 function planAction(id: number, action: string, version: number): void {
   void post("/api/plan", { id, action, version })
     .then((r) => r.json())
@@ -1368,6 +1382,8 @@ document.addEventListener("click", (ev) => {
       return olderMessages();
     case "plan":
       return planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version));
+    case "thread-close":
+      return closeThread(Number(id));
     case "project-open":
       enterDetail("vprojects");
       return showProject(el.dataset.project ?? "");

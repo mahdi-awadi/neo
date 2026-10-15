@@ -423,3 +423,13 @@ test("AC6: commitFinish defaults on with the handoff notes ignored; config.json 
   writeFileSync(join(bad, "config.json"), JSON.stringify({ commitFinish: { enabled: "no", ignore: 5, holdMaxMs: -1 } }));
   expect(loadConfig(bad).commitFinish).toEqual(loadConfig(dir()).commitFinish);
 });
+
+test("ADR-0038: decisionSettle defaults on; config.json can turn it off; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).decisionSettle).toEqual({ enabled: true });
+  const off = dir();
+  writeFileSync(join(off, "config.json"), JSON.stringify({ decisionSettle: { enabled: false } }));
+  expect(loadConfig(off).decisionSettle).toEqual({ enabled: false });
+  const bad = dir();
+  writeFileSync(join(bad, "config.json"), JSON.stringify({ decisionSettle: { enabled: "no" } }));
+  expect(loadConfig(bad).decisionSettle).toEqual({ enabled: true });
+});

@@ -227,10 +227,14 @@
     "planLine": "{{status}} · {{done}}/{{total}} · v{{version}}",
     "changesHint": "To ask for changes, reply to the plan card on Telegram.",
     "loadFailed": "Could not load — try again.",
+    "close": "Close thread",
+    "confirmClose": "Close this thread? Its open decisions are dismissed and it stops waiting. A new message reopens it.",
+    "closedNote": "Thread closed — {{decisions}} open decisions dismissed.",
     "decisionStatus": {
       "open": "open",
       "answered": "answered",
-      "dismissed": "dismissed"
+      "dismissed": "dismissed",
+      "superseded": "superseded"
     },
     "todoStatus": {
       "queued": "queued",

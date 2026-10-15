@@ -196,7 +196,10 @@ export function createRegistry(): Registry {
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0],
     setStatus(id, status) {
       const s = sessions.get(id);
-      if (s) s.status = status;
+      if (!s) return;
+      s.status = status;
+      // Only a running session can wait on an approval; a decision block outlives the run (ADR-0038).
+      if (status !== "running" && s.blockedOn?.kind === "approval") s.blockedOn = undefined;
     },
     setSdkSessionId(id, sdkSessionId, provider) {
       const s = sessions.get(id);

@@ -410,6 +410,17 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json(await channel.planAction(body.id, body.action, version), { headers: { "cache-control": "no-store" } });
     }
 
+    if (req.method === "POST" && path === "/api/thread/close") {
+      // The operator closes a thread (ADR-0038): { id } → the engine's one close action.
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown };
+      if (typeof body.id !== "number" || !Number.isSafeInteger(body.id) || body.id <= 0) {
+        return Response.json({ ok: false, error: "id (a thread id) required" }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
+      const r = channel.closeThread(body.id);
+      if (!r) return Response.json({ ok: false, error: "no such thread" }, { status: 404, headers: { "cache-control": "no-store" } });
+      return Response.json(r, { headers: { "cache-control": "no-store" } });
+    }
+
     if (req.method === "POST" && path === "/api/attention") {
       // An attention item's one-tap action (ADR-0018): { id, action } → the shared engine rules.
       const body = (await req.json().catch(() => ({}))) as { id?: unknown; action?: unknown };

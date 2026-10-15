@@ -227,10 +227,14 @@
     "planLine": "{{status}} · {{done}}/{{total}} · v{{version}}",
     "changesHint": "لطلب تعديلات، رُدّ على بطاقة الخطة في تيليجرام.",
     "loadFailed": "تعذّر التحميل — حاول مرة أخرى.",
+    "close": "إغلاق المحادثة",
+    "confirmClose": "إغلاق هذه المحادثة؟ تُغلق قراراتها المفتوحة ولا تبقى في الانتظار. أي رسالة جديدة تعيد فتحها.",
+    "closedNote": "أُغلقت المحادثة — أُغلق {{decisions}} من القرارات المفتوحة.",
     "decisionStatus": {
       "open": "مفتوح",
       "answered": "مُجاب",
-      "dismissed": "مُغلق"
+      "dismissed": "مُغلق",
+      "superseded": "لم يعد مطلوبًا"
     },
     "todoStatus": {
       "queued": "في الطابور",

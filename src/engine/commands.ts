@@ -179,6 +179,12 @@ const COMMANDS: Command[] = [
     run: ({ deps, args }) => ({ text: traceCommand(args.trim(), deps) }),
   },
   {
+    name: "close",
+    usage: "/close <thread ref> (or reply /close to a Neo message)",
+    summary: "close a thread: it stops waiting, its open decisions are dismissed",
+    run: ({ deps, args }) => ({ text: closeCommand(args.trim(), deps) }),
+  },
+  {
     name: "plans",
     usage: "/plans [<project>]",
     summary: "plans and specs the engine sent you: status, steps done, thread",
@@ -406,6 +412,31 @@ async function projectCommand(args: string, deps: CommandDeps, now: number): Pro
 }
 
 /** /trace — a message's thread and everything it produced (spec §4.4). Thin: the trace owns the tree. */
+/** /close — the operator closes a thread (ADR-0038). Any message ref of the thread names it. */
+function closeCommand(arg: string, deps: CommandDeps): string {
+  const { trace, ledger } = deps;
+  if (!trace) return "Tracing is unavailable on this channel.";
+  let msgId: number | undefined;
+  if (arg) {
+    msgId = trace.parseRef(arg);
+    if (msgId === undefined || !ledger.messageById(msgId)) return `No message ${msgId === undefined ? arg : trace.ref(msgId)} — check the ref`;
+  } else if (deps.replyTo) {
+    const { chatId, channelMsgId } = deps.replyTo;
+    msgId = ledger.messageByChannel(chatId, channelMsgId)?.id ?? ledger.routeCause(chatId, channelMsgId)?.msgId;
+  }
+  if (msgId === undefined) return "Usage: /close <thread ref> — or reply /close to a Neo message.";
+  const threadId = ledger.messageById(msgId)?.threadId;
+  if (threadId === undefined) return `Message ${trace.ref(msgId)} has no thread (it is older than tracing).`;
+  const ref = trace.ref(threadId);
+  const r = trace.close(threadId);
+  if (r.missing) return `Thread ${ref} was pruned — nothing to close.`;
+  if (!r.closed) return `thread ${ref} is already closed`;
+  const parts = [`${r.decisions} open decision${r.decisions === 1 ? "" : "s"} dismissed`];
+  if (r.todosCancelled.length) parts.push(`cancelled parked ${r.todosCancelled.map((id) => `#${id}`).join(", ")}`);
+  if (r.stillActive.length) parts.push(`still running or queued: ${r.stillActive.map((id) => `#${id}`).join(", ")}`);
+  return `✓ closed thread ${ref} — ${parts.join(" · ")}`;
+}
+
 function traceCommand(arg: string, deps: CommandDeps): string {
   const { trace, ledger } = deps;
   if (!trace) return "Tracing is unavailable on this channel.";

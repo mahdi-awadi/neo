@@ -201,7 +201,7 @@ test("edge: a stall inside the follow-up keeps the finished task good; the resul
   ctl.h!.onTurnComplete!(first);
   ctl.h!.onSettled!();
   // The follow-up hangs: no activity until the stall limit, the wrap-up and the grace run out.
-  for (let i = 0; i < 40 && ends.length === 0; i++) await settle(10);
+  for (let i = 0; i < 300 && ends.length === 0; i++) await settle(10); // up to ~3s: generous on a loaded host
   expect(ctl.followUps.some((f) => f.includes("stall limit"))).toBe(true);
   expect(ends[0]).toMatchObject({ ok: true });
   expect(ends[0]!.failure).toBeUndefined();

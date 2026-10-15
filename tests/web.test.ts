@@ -12,6 +12,7 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
 import { createSessionStore } from "../src/engine/web-session";
 import { openTrustStore } from "../src/engine/trust";
+import { createTrace } from "../src/engine/trace";
 import type { NeoConfig } from "../src/config";
 import { DEFAULT_FAULTS, DEFAULT_HEALTH, DEFAULT_MODELS, DEFAULT_UPDATES } from "../src/config";
 import type { RunHandlers, RunResult, SessionRun } from "../src/engine/session-runner";
@@ -98,18 +99,20 @@ function fakeStart(onStart?: (h: RunHandlers) => void) {
   return start;
 }
 
-function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnType<typeof fakeStart> } = {}) {
+function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnType<typeof fakeStart>; traced?: boolean } = {}) {
   const registry = createRegistry();
   const admin = over.admin ?? openAdminStore(":memory:");
   const config = cfg();
   const ledger = openLedger(":memory:");
+  const trace = over.traced ? createTrace({ ledger, registry }) : undefined;
   return {
     registry,
     admin,
     ledger,
+    trace,
     cfg: config,
     instance: createWebApp({
-      engine: { cfg: config, ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start },
+      engine: { cfg: config, ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start, ...(trace ? { trace } : {}) },
       botToken: TOKEN,
       botUsername: "neo_bot",
       sessions: createSessionStore({ secret: "websecret", ttlSec: 100000 }),
@@ -438,4 +441,22 @@ test("POST /api/todo accepts retry; an unknown action is a 400", async () => {
   expect(r.status).toBe(200);
   expect(((await r.json()) as { text: string }).text).not.toContain("required");
   expect((await post({ action: "explode", id: 1 })).status).toBe(400);
+});
+
+// ADR-0038: the operator closes a thread from the console — behind the admin session.
+test("POST /api/thread/close closes the thread; no session 401, a bad id 400, an unknown thread 404", async () => {
+  const a = app({ traced: true });
+  const root = a.trace!.inbound({ chatId: 7, text: "build it", surface: "web" });
+  const d = a.ledger.openDecision({ kind: "decision", question: "Which bank?", cause: root }, 500);
+  a.trace!.refreshThread(root.threadId);
+  const req = (body: unknown, cookie?: string) =>
+    a.instance.fetch(new Request("http://neo.test/api/thread/close", { method: "POST", headers: { ...(cookie ? { cookie } : {}), "content-type": "application/json" }, body: JSON.stringify(body) }));
+  expect((await req({ id: root.threadId })).status).toBe(401);
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  expect((await req({ id: "x" }, cookie)).status).toBe(400);
+  expect((await req({ id: 987654 }, cookie)).status).toBe(404);
+  const ok = await req({ id: root.threadId }, cookie);
+  expect(await ok.json()).toEqual({ ok: true, closed: true, decisions: 1, todosCancelled: [], stillActive: [] });
+  expect(a.ledger.threadById(root.threadId)).toMatchObject({ state: "done", closedByOperator: true });
+  expect(a.ledger.decisionById(d)).toMatchObject({ status: "dismissed", answer: "thread closed by the operator" });
 });

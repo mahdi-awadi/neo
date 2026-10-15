@@ -1022,3 +1022,12 @@ notes), the engine sends one fixed follow-up into the same session: commit, or s
 todo stays running, and queued todos for any worktree of the repository wait. The result keeps the
 worker's first end and adds one line: committed by resume, cleaned, or still uncommitted (an alert).
 Config `commitFinish`.
+
+A thread waits only on a live question (ADR-0038). The console's Threads tab showed 19 threads as
+waiting, though their work had finished: their decisions stayed open after the operator answered in
+chat, after the worker asked the same question again, or after the plan was executed. The engine
+now supersedes such decisions, with the reason kept in the answer, before it derives the thread
+state. The operator can close any thread: **Close thread** in the console (AR+EN) or `/close <ref>`
+on Telegram. Close dismisses the thread's open decisions and cancels the todos parked on them. A
+new message reopens the thread. An approval counts only while its session is running. Config
+`decisionSettle`.

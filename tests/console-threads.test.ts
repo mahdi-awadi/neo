@@ -215,3 +215,23 @@ test("GET /api/threads/:id: assistant rows carry rendered html + tone, operator 
   expect(mine.html).toBeUndefined();
   expect(mine.content).toBe("show me **the** table");
 });
+
+// ADR-0038: the thread view offers Close (behind a confirm) while the thread is not closed, and shows
+// why a superseded or dismissed decision closed.
+test("the thread view has a Close thread action wired to POST /api/thread/close, and labels superseded decisions", async () => {
+  const { readFileSync } = await import("node:fs");
+  const app = readFileSync(join(import.meta.dir, "../src/frontends/web/app.ts"), "utf8");
+  const en = JSON.parse(readFileSync(join(import.meta.dir, "../src/frontends/web/locales/en/console.json"), "utf8"));
+  const ar = JSON.parse(readFileSync(join(import.meta.dir, "../src/frontends/web/locales/ar/console.json"), "utf8"));
+  expect(app).toContain('data-act="thread-close"');
+  expect(app).toContain('case "thread-close":');
+  expect(app).toContain('post("/api/thread/close"');
+  expect(app).toContain('confirm(tx("threads.confirmClose"');
+  expect(app).toContain("!th.closedByOperator");
+  for (const cat of [en, ar]) {
+    expect(typeof cat.threads.close).toBe("string");
+    expect(typeof cat.threads.confirmClose).toBe("string");
+    expect(typeof cat.threads.closedNote).toBe("string");
+    expect(typeof cat.threads.decisionStatus.superseded).toBe("string");
+  }
+});
