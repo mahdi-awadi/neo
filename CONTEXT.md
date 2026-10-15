@@ -118,6 +118,17 @@ The only automatic abort of a dispatch: true silence (no streamed SDK event) for
 dispatch has no wall-clock limit (ADR-0007).
 _Avoid_: timeout, ceiling
 
+**Commit finish**:
+The one follow-up the engine sends into a dispatch run that settled with its own changes still
+uncommitted: commit them, or say why not, then end. Sent at most once per run, into the same
+session. While it runs, every worktree of the repository waits (ADR-0037).
+_Avoid_: auto-commit (the engine never commits), nudge, cleanup run
+
+**Run's own changes**:
+The uncommitted paths at a run's end that are new or changed since the run started, minus
+`commitFinish.ignore`. A path that was already dirty and untouched is not the run's.
+_Avoid_: dirty files (unqualified)
+
 **Progress digest**:
 A short line about a running dispatch, built by the engine: elapsed time, current activity, the
 latest note and the last commit. It goes to the operator and the live dispatcher every
