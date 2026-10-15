@@ -18,6 +18,7 @@ import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { classifyEnd, nextRetry, retryBrief } from "./todo-retry";
 import { awaitHandoff, continuationBrief, handoffInFlight, type HandoffNext } from "./context-policy";
+import { awaitCommitFinish, commitFinishInFlight } from "./commit-finish";
 
 import { TODO_RETRY_BACKOFF_MS_DEFAULT, type TodoFailurePolicy } from "../config";
 
@@ -136,6 +137,21 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   };
   /** Folders whose release waits for an in-flight handoff to settle (one waiter each). */
   const awaiting = new Set<string>();
+  /** Folders whose release waits for a commit finish in their repository to end (ADR-0037). */
+  const awaitingCommit = new Set<string>();
+  /** True while a commit finish holds the folder's repository (any worktree): the folder's next todo
+   *  waits, and is released the moment the commit finish ends (one waiter per folder). */
+  const commitHeld = (folder: string): boolean => {
+    if (!commitFinishInFlight(folder)) return false;
+    if (!awaitingCommit.has(folder)) {
+      awaitingCommit.add(folder);
+      void awaitCommitFinish(folder).then(() => {
+        awaitingCommit.delete(folder);
+        return pumpAll();
+      });
+    }
+    return true;
+  };
   /** Todo id → the company order that submitted it, for the sub-order's `parent_order_id`. In memory:
    *  a todo released after a restart has no parent (its cause is durable on the row). */
   const parents = new Map<number, string>();
@@ -243,6 +259,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       }
       return { waits: "handing off" };
     }
+    if (commitHeld(folder)) return { waits: "finishing a commit" };
     for (;;) {
       if (ledger.todoPaused(folder)) return { waits: "paused" };
       if (busy(folder)) return { waits: "busy" };
@@ -437,7 +454,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (!folder) return dispatchToProject(p.project, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass, ...traced });
       const project = basename(folder);
       const paused = ledger.todoPaused(folder);
-      const mustWait = busy(folder) || queued(folder).length > 0 || !!paused;
+      const mustWait = busy(folder) || queued(folder).length > 0 || !!paused || commitHeld(folder);
       // A free project under a hold (reload, cooldown, reserve) is refused exactly as before, by
       // dispatch itself, and no todo is created — the queue never turns a refusal into a promise.
       if (!mustWait && holdReason(deps, p.workClass, now())) {

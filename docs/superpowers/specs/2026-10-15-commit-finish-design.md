@@ -23,10 +23,7 @@ in `release()`.
 - Stall during the follow-up → the task still ends good; outcome "still uncommitted".
 - A path deleted by the run counts (fingerprint "gone").
 
-## WIP (2026-10-15, cut by an engine reload)
-Done: ADR-0037, CONTEXT.md terms, this spec. Not started: code. Next, TDD in this order:
-`tests/commit-finish.test.ts` + `src/engine/commit-finish.ts` → dispatch wiring (`onTurnComplete`
-keeps lastTurn; `onSettled` calls `atSettle()`; `end()` after the run loop; mark `wrappingUp` where
-`wrapUpBrief` is sent) → todo-queue `release()` hold (mirror the `handoffInFlight` wait) → config
-`commitFinish` (+ pipeline `dispatchDeps`) → docs/CONFIG.md + HISTORY.md. Work happens in the
-temporary worktree `/home/neo-wt-uncommitted` (branch `dev`); remove it when done.
+## Status (2026-10-15)
+Built on `dev`. Each acceptance criterion has a test: `tests/commit-finish.test.ts` (module, AC1,
+AC2, AC4-AC6, edge cases), `tests/dispatch-commit-finish.test.ts` (dispatch AC1-AC4, AC6, the stall
+edge case), `tests/todo-queue.test.ts` (AC5), `tests/config.test.ts` (AC6).

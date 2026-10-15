@@ -413,3 +413,13 @@ test("github scan defaults and per-project settings from config.json (bad fields
   expect(c.github).toEqual({ scanEveryMs: 600_000, callTimeoutMs: 20_000 });
   expect(c.projects).toEqual({ gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], ignoreKinds: ["dirty"] } });
 });
+
+test("AC6: commitFinish defaults on with the handoff notes ignored; config.json can turn it off; bad values fail closed", () => {
+  expect(loadConfig(dir()).commitFinish).toEqual({ enabled: true, ignore: ["HANDOFF.md", "**/HANDOFF.md", "data/handoffs/**"], holdMaxMs: 1_800_000 });
+  const off = dir();
+  writeFileSync(join(off, "config.json"), JSON.stringify({ commitFinish: { enabled: false, ignore: ["dist/**"], holdMaxMs: 60_000 } }));
+  expect(loadConfig(off).commitFinish).toEqual({ enabled: false, ignore: ["dist/**"], holdMaxMs: 60_000 });
+  const bad = dir();
+  writeFileSync(join(bad, "config.json"), JSON.stringify({ commitFinish: { enabled: "no", ignore: 5, holdMaxMs: -1 } }));
+  expect(loadConfig(bad).commitFinish).toEqual(loadConfig(dir()).commitFinish);
+});

@@ -1013,3 +1013,12 @@ Approve and Execute after the worker had built and committed it. Now:
 - Each button has one meaning, set in one place, and Telegram and the console use the same labels
   (AR+EN).
 - Every state change edits the card in place: building, done · commit, dropped, or superseded.
+
+A run that ends with uncommitted work is asked once to commit (ADR-0037). On gold, nine runs
+ended on their `/security-review` step with the build uncommitted, and the next todo started on top
+of the files; the chief of staff committed each one by hand. Now, when a dispatch run settles with
+its own changes uncommitted (not files that were already dirty and untouched, not the handoff
+notes), the engine sends one fixed follow-up into the same session: commit, or say why not. The
+todo stays running, and queued todos for any worktree of the repository wait. The result keeps the
+worker's first end and adds one line: committed by resume, cleaned, or still uncommitted (an alert).
+Config `commitFinish`.

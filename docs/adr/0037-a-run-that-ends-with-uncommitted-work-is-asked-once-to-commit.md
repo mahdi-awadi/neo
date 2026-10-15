@@ -40,10 +40,18 @@ No commit finish when: the turn ended on an API error; the engine is draining; t
 the spin wrap-up was already sent; a context checkpoint is armed (ADR-0021 owns that end); or the
 session waits on the operator (a held plan, an open decision — that run continues later, ADR-0029).
 
+Inside the follow-up turn the task is already finished, so:
+- An API retry re-sends the commit request, never the original brief.
+- A context checkpoint that arms there (its commit is a safe point) neither steers the worker nor
+  turns the end into a handoff or a failure. The normal settled-end handoff still applies.
+- A reload that starts there does not make the task a transient end.
+
 ### 4. Other worktrees of the same repository wait too
 While a commit finish runs, the repository is held, keyed by its git common dir (ADR-0034). A
 queued todo for any worktree of that repository waits ("finishing a commit") and is released when
-the commit finish ends. Its own folder is busy anyway.
+the commit finish ends. Its own folder is busy anyway. The hold lasts at most
+`commitFinish.holdMaxMs` (default 30 min), so a run whose interrupt hangs never wedges every queue
+of the repository.
 
 ### 5. The result says what happened
 The final result keeps the worker's FIRST end (its summary and its ok). The commit-finish turn only
@@ -57,7 +65,7 @@ A stall during the commit-finish turn does not turn the finished task into a tra
 work was done; the result says it is still uncommitted.
 
 ### 6. Config
-`commitFinish: { enabled: true, ignore: [...] }`. `enabled: false` turns it off. A bad value fails
+`commitFinish: { enabled: true, ignore: [...], holdMaxMs: 1800000 }`. `enabled: false` turns it off. A bad value fails
 closed to the default.
 
 ## Rejected

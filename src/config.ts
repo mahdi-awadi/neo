@@ -12,6 +12,7 @@ import type { HealthCfg } from "./engine/health";
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
+import { readCommitFinishCfg, type CommitFinishCfg } from "./engine/commit-finish";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
 import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
@@ -251,6 +252,10 @@ export interface NeoConfig {
   /** The plan registry (ADR-0019): where plans live, whether new versions are sent, the size cap and
    *  the Execute brief. Optional like `trace`; `loadConfig` always fills it. */
   plans?: PlansCfg;
+  /** The commit finish (ADR-0037): a dispatch run that settles with its own changes uncommitted is
+   *  asked once, in the same session, to commit them. `enabled` (default true), `ignore` (repo-relative
+   *  globs never counted: the handoff notes). Optional like `plans`; `loadConfig` always fills it. */
+  commitFinish?: CommitFinishCfg;
   /** Attention items (ADR-0018): how long a paused queue, a waiting thread or an open decision may
    *  last before it needs the operator. Optional like `plans`; `loadConfig` always fills it. */
   attention?: AttentionCfg;
@@ -554,6 +559,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
     plans: readPlansCfg(fileCfg.plans),
+    commitFinish: readCommitFinishCfg(fileCfg.commitFinish),
     attention: readAttentionCfg(fileCfg.attention),
     restart: readRestartCfg(fileCfg.restart),
     github: readGithubCfg(fileCfg.github),

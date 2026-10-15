@@ -546,3 +546,33 @@ test("a checkpoint continuation becomes the next todo at the head of the queue a
   expect(runs[1].task).toContain("phase 3"); // the continuation starts from the note, inline
   expect(replies.some((r) => r.includes(`continuing as #${cont.id}`))).toBe(true);
 });
+
+// --- ADR-0037: a commit finish holds every worktree of its repository --------------------------
+
+test("AC5: a todo for a sibling worktree waits while a commit finish runs, and starts when it ends", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { writeFileSync } = await import("node:fs");
+  const { createCommitFinish, DEFAULT_COMMIT_FINISH_CFG } = await import("../src/engine/commit-finish");
+  const s = setup();
+  const sh = (cwd: string, ...args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" });
+  const main = join(s.root, "proj");
+  mkdirSync(main);
+  sh(main, "init", "-q", "-b", "main");
+  sh(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  sh(main, "worktree", "add", "-q", join(s.root, "proj-wt"), "-b", "side");
+  const cf = createCommitFinish(main, DEFAULT_COMMIT_FINISH_CFG);
+  writeFileSync(join(main, "b.ts"), "built\n");
+  expect(cf.atSettle()).toBeDefined(); // the main worktree's run is finishing its commit
+
+  const out = await s.queue.submit({ project: "proj-wt", brief: "next job", workClass: "interactive" }, s.deps, 1);
+  expect(out).toContain("queued as #");
+  expect(s.runs).toHaveLength(0);
+  await s.queue.pump(); // the tick does not start it either
+  expect(s.runs).toHaveLength(0);
+  expect(s.queue.list("proj-wt")).toContain("1. #");
+
+  cf.end();
+  await settle();
+  expect(s.runs).toHaveLength(1); // released as soon as the commit finish ended
+  expect(s.runs[0]!.task).toContain("next job");
+});

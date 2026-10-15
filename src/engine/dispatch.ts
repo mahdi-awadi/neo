@@ -71,6 +71,7 @@ import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { canResumeWith } from "./sdk-choice";
 import { createPlanWatch } from "./plan-watch";
+import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./commit-finish";
 import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import {
@@ -130,6 +131,9 @@ export interface DispatchDeps {
   editPlan?: EditPlanCard;
   /** Config `plans` (paths, send, size cap, Execute brief). Absent → the shipped defaults. */
   plans?: PlansCfg;
+  /** Config `commitFinish` (ADR-0037): a run that settles with its own changes uncommitted is asked
+   *  once, in the same session, to commit them. Absent → off. */
+  commitFinish?: CommitFinishCfg;
   /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
    *  message id (so a reply/edit can find it). The frontend supplies this — it builds the inline
    *  keyboard from `options` (tappable answers) + an "other / type an answer" affordance. Its
@@ -808,6 +812,14 @@ export async function dispatchToProject(
       faults.guard("dispatch.recordOrder", () => deps.ledger.recordOrder(order));
     }
 
+    // The commit finish (ADR-0037) records the folder's dirty paths NOW, before the worker starts, so
+    // only the run's own changes count at its end. Best-effort: a git fault costs only the check.
+    const commitFinish = deps.commitFinish?.enabled ? faults.guard("dispatch.commitFinish", () => createCommitFinish(folder, deps.commitFinish!), { folder }) : undefined;
+    let lastTurn: RunResult | undefined; // the latest turn's end — the commit finish needs a good one
+    let firstEnd: RunResult | undefined; // the run's end before the commit-finish follow-up
+    let wrappingUp = false; // a stall or spin wrap-up was sent: that end is not a settled finish
+    let commitBrief: string | undefined; // the commit-finish follow-up, once sent (an API retry re-sends it)
+
     const startedAt = now();
     event("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, stallMs, progressMs } });
     // Every registry write below is pure observation: a failure in it must never surface into the
@@ -855,7 +867,10 @@ export async function dispatchToProject(
       void Promise.resolve()
         .then(() => dispatcher.deliver(`🌀 ${text}`, cause ? { wake: false, cause } : { wake: false }))
         .catch(() => {}); // best-effort, like a digest
-      if (deps.dispatchSpinPolicy === "wrapup") runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs));
+      if (deps.dispatchSpinPolicy === "wrapup") {
+        wrappingUp = true;
+        runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs));
+      }
     };
     // A dispatch is single-brief: once the session is SETTLED with nothing queued, the sub-run IS
     // complete (the real SDK stream stays open waiting for input that will never come — awaiting
@@ -864,6 +879,23 @@ export async function dispatchToProject(
     // stays resumable (idle bookkeeping below is unchanged). Settled, not merely a turn boundary:
     // a worker running background agents emits a `result` and keeps working (ADR-0007).
     let runRef: ReturnType<typeof startOrder> | undefined;
+    /** At a settled end: send the commit-finish follow-up when this run's own changes are uncommitted
+     *  and the end was a real finish (ADR-0037 §3). True when it was sent — the run stays open. */
+    const commitFinishNow = (): boolean =>
+      faults.guard("dispatch.commitFinish", () => {
+        if (!commitFinish || commitFinish.nudged() || wrappingUp || !lastTurn?.ok || lastTurn.apiError) return false;
+        if (deps.lifecycle?.draining() || watch?.armed() || deps.registry.get(session.id)?.blockedOn) return false;
+        const ask = commitFinish.atSettle();
+        if (!ask || !runRef) return false;
+        firstEnd = lastTurn;
+        const { brief, files } = ask;
+        commitBrief = brief;
+        event("commit_finish_sent", { orderId: order.id, folder, data: { project: name, files } });
+        void say(`📝 ${name} ended with uncommitted changes — asked it once to commit them`, undefined, { cause: liveCause() });
+        lastActivityAt = now();
+        runRef.followUp(brief);
+        return true;
+      }, { folder }) === true;
     const run = start(
       order,
       {
@@ -952,12 +984,14 @@ export async function dispatchToProject(
           planWatch?.onToolResult(id, isError);
         },
         // A held plan speaks first (ADR-0036), then an armed context checkpoint (ADR-0021).
-        contextSteer: watch || planWatch ? (tool, input) => planWatch?.steer(tool, input) ?? watch?.steer(tool, input) : undefined,
+        // The commit finish's turn is the task's tail: a checkpoint that arms in it never steers (ADR-0037).
+        contextSteer: watch || planWatch ? (tool, input) => planWatch?.steer(tool, input) ?? (commitBrief ? undefined : watch?.steer(tool, input)) : undefined,
         onTurnComplete: (result) => {
           lastActivityAt = now();
           spin.turnEnd();
           if (spinMark === "tool_loop") clearSpin(); // a tool loop is one turn's
           if (result.sessionId) lastSessionId = result.sessionId;
+          lastTurn = result;
           const kind = result.apiError;
           if (kind) {
             deps.cooldown?.note(kind, now()); // sibling dispatches/loops back off too
@@ -988,7 +1022,8 @@ export async function dispatchToProject(
               void (opts.sleep ?? realSleep)(delayMs).then(() => {
                 lastActivityAt = now();
                 retryPending = false;
-                runRef?.followUp(apiRetryFollowUp(task));
+                // Inside the commit finish, the retry re-sends the commit request — never the whole task.
+                runRef?.followUp(commitBrief ?? apiRetryFollowUp(task));
               });
               return; // keep the sub-run open — it hasn't done the work yet
             }
@@ -1000,7 +1035,9 @@ export async function dispatchToProject(
         // is queued — and not while an API retry is about to re-send it.
         onSettled: () => {
           lastActivityAt = now();
-          if (!retryPending && (runRef?.queued() ?? 1) === 0) runRef?.close?.();
+          if (retryPending || (runRef?.queued() ?? 1) !== 0) return;
+          if (commitFinishNow()) return; // one follow-up into this same run (ADR-0037); the next settle closes it
+          runRef?.close?.();
         },
         onActivity: (label) => {
           lastActivityAt = now();
@@ -1123,6 +1160,7 @@ export async function dispatchToProject(
         });
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave
         // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
+        wrappingUp = true;
         run.followUp(wrapUpBrief(`dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m)`, graceMs));
         const graced = await doneOrTick(graceMs);
         if (graced !== "tick") {
@@ -1139,14 +1177,22 @@ export async function dispatchToProject(
     } catch (e) {
       result = { ok: false, sessionId: "", summary: e instanceof Error ? e.message : String(e), costUsd: 0 };
     }
+    // The commit finish's outcome (ADR-0037 §5): the run's end is its FIRST end — the follow-up only
+    // adds one line, and a stall or failure inside the follow-up never turns the finished task bad.
+    const finished = commitFinish ? faults.guard("dispatch.commitFinish", () => commitFinish.end(), { folder }) : undefined;
+    if (finished && firstEnd) {
+      result = { ...firstEnd, sessionId: result.sessionId || firstEnd.sessionId, costUsd: result.costUsd, summary: `${firstEnd.summary}\n${commitFinishLine(finished)}` };
+      timedOut = false;
+    }
     // The final report is built FIRST and queued in the dispatcher inbox in the same synchronous step
     // as `dispatch_end` — no await between them — so no crash or reload can leave a run that is
     // marked ended but never reported (boot recovery only covers runs with no `dispatch_end`).
     // An abnormal end (stall abort, error, crash, API give-up, interrupt) — or a run wrapped up early
     // for an engine reload — says where it stopped, so the dispatcher can resume.
-    const reloading = deps.lifecycle?.draining() === true;
+    // A reload that starts inside the commit finish does not cut the task: its first end was a finish.
+    const reloading = deps.lifecycle?.draining() === true && !finished;
     // Handed off at a safe checkpoint (ADR-0021)? Then the task is not done — it continues fresh.
-    const armed = watch?.armed();
+    const armed = finished ? undefined : watch?.armed(); // armed in the commit finish's turn: not this task's checkpoint
     const atCheckpoint =
       !!armed && result.ok && !timedOut && !reloading &&
       !handoffDeferred(folder, armed.decision, { ledger: deps.ledger, boundary: "checkpoint", occupancy: armed.occupancy, sessionId: result.sessionId || lastSessionId });
@@ -1284,6 +1330,8 @@ export async function dispatchToProject(
       // is an ALERT they must also see (Decisions). Both reach the unmuted group — never the muted DM.
       // The frontend prepends the single priority accent (✅/🔴) — no per-call-site glyph (Feature 2).
       await say(line, ok ? "result" : "alert", { kind: "result", cause });
+      // Still uncommitted after the one follow-up: the operator must see it (the queue also raises it).
+      if (finished?.kind === "still") await say(`⚠️ ${name}: ${commitFinishLine(finished)}`, "alert", { cause });
     } catch {
       // the operator line is best-effort; the dispatcher report below must still go out
     }

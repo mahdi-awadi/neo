@@ -599,6 +599,7 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     memory: deps.cfg.memory,
     companyFolder: deps.cfg.companyFolder,
     plans: deps.cfg.plans,
+    commitFinish: deps.cfg.commitFinish,
     ...(chatId !== undefined ? { dispatcher: companyLink(deps, chatId) } : {}),
   };
 }
