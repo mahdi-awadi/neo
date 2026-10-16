@@ -180,8 +180,9 @@ describe("security guard: host environment", () => {
 
   test("the host setting fails closed to prod", () => {
     const d = mkdtempSync(join(tmpdir(), "guard-host-"));
+    let n = 0;
     const at = (body?: string) => {
-      const f = join(d, `host-${Math.random()}.json`);
+      const f = join(d, `host-${n++}.json`);
       if (body !== undefined) writeFileSync(f, body);
       return hostEnvAt(f);
     };

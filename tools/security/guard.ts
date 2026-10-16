@@ -94,7 +94,7 @@ function readCandidates(seg: string, feeds: boolean, writes: boolean): { args: s
 
 /** The one sed program shape that only rewrites a file in place: an optional address, then `d` or a
  *  single `s` with flags g/I/digits. No `w`/`e`/`r`/`p`, no `;` (they copy, run or print lines). */
-const SAFE_SED_PROGRAM = /^(?:\d+|\$|\/(?:\\.|[^/\\])*\/)?(?:d|s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[gI\d]*)$/;
+const SAFE_SED_PROGRAM = /^(?:\d+|\$|\/(?:\\.|[^/\\])*\/)?(?:d|s(.)(?:\\.|(?!\1)[^\\])*\1(?:\\.|(?!\1)[^\\])*\1[gI\d]*)$/;
 const SAFE_SED_OPTION = /^(-[Er]*i[Er]*(\.[\w.]+)?|-[Er]+|--in-place(=[\w.]+)?|--regexp-extended)$/;
 
 /** `sed -i` that can only rewrite its files: in-place, safe options, and every program a safe one. */
