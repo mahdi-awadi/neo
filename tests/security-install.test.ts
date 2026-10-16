@@ -78,6 +78,18 @@ describe("security kit install", () => {
     expect(readFileSync(join(claude, "settings.json"), "utf8")).toBe("{ not json");
   });
 
+  // 2026-10-16: Bun's cpSync with a filter left existing files alone, so a re-install never updated
+  // the live guard (ADR-0030 had never gone live). A re-install must replace the kit's files.
+  test("a re-install replaces the kit's files with the source's", () => {
+    const src = mkdtempSync(join(tmpdir(), "neo-sec-src-"));
+    const claude = mkdtempSync(join(tmpdir(), "neo-sec-claude-"));
+    writeFileSync(join(src, "guard.ts"), "// v1\n");
+    installKit({ src, claudeDir: claude });
+    writeFileSync(join(src, "guard.ts"), "// v2\n");
+    installKit({ src, claudeDir: claude });
+    expect(readFileSync(join(claude, "security", "guard.ts"), "utf8")).toBe("// v2\n");
+  });
+
   // ADR-0039: the host environment lives in the installed kit; no flag keeps what is there.
   test("--host-env writes host.json; a re-install without it keeps the file; a bad value is refused", () => {
     const src = mkdtempSync(join(tmpdir(), "neo-sec-src-"));

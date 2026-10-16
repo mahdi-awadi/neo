@@ -58,3 +58,6 @@ keys. The operator's order: "remove this rule for dev in hooks, since that rule 
 - Known limit, as on prod: a `|` inside quotes splits a pipeline, so `sed -i 's|a|b|' .env` is
   still blocked. Use another delimiter (`s#a#b#`).
 - The hook reads `host.json` on every call, so no daemon restart is needed.
+- The live install found an older bug. Bun's `cpSync` with a `filter` did not overwrite existing
+  files, so a re-install never updated `guard.ts`, and ADR-0030 had never gone live. The
+  installer now passes `force: true`. This install puts ADR-0030 and ADR-0039 live together.

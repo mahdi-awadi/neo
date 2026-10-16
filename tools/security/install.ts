@@ -56,7 +56,8 @@ export function installKit(opts: { src: string; claudeDir: string; hostEnv?: Hos
 
   const dest = join(opts.claudeDir, "security");
   mkdirSync(dest, { recursive: true });
-  cpSync(opts.src, dest, { recursive: true, filter: (from) => !NOT_INSTALLED.has(basename(from)) });
+  // force: Bun drops Node's default (overwrite) when a filter is given, and a re-install must update the kit
+  cpSync(opts.src, dest, { recursive: true, force: true, filter: (from) => !NOT_INSTALLED.has(basename(from)) });
   const hostFile = join(dest, "host.json");
   if (opts.hostEnv) writeFileSync(hostFile, `${JSON.stringify({ hostEnv: opts.hostEnv })}\n`);
   const command = join(opts.src, "security-scan.md");
