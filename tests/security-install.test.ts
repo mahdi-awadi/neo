@@ -77,4 +77,20 @@ describe("security kit install", () => {
     expect(() => installKit({ src, claudeDir: claude })).toThrow(/settings\.json/);
     expect(readFileSync(join(claude, "settings.json"), "utf8")).toBe("{ not json");
   });
+
+  // ADR-0039: the host environment lives in the installed kit; no flag keeps what is there.
+  test("--host-env writes host.json; a re-install without it keeps the file; a bad value is refused", () => {
+    const src = mkdtempSync(join(tmpdir(), "neo-sec-src-"));
+    const claude = mkdtempSync(join(tmpdir(), "neo-sec-claude-"));
+    const host = join(claude, "security", "host.json");
+    installKit({ src, claudeDir: claude });
+    expect(existsSync(host)).toBe(false); // never set: the guard reads that as prod
+    expect(installKit({ src, claudeDir: claude, hostEnv: "dev" }).hostEnv).toBe("dev");
+    expect(JSON.parse(readFileSync(host, "utf8"))).toEqual({ hostEnv: "dev" });
+    expect(installKit({ src, claudeDir: claude }).hostEnv).toBe("dev"); // kept
+    expect(JSON.parse(readFileSync(host, "utf8"))).toEqual({ hostEnv: "dev" });
+    installKit({ src, claudeDir: claude, hostEnv: "prod" });
+    expect(JSON.parse(readFileSync(host, "utf8"))).toEqual({ hostEnv: "prod" });
+    expect(() => installKit({ src, claudeDir: claude, hostEnv: "staging" as never })).toThrow(/host-env/);
+  });
 });

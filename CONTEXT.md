@@ -522,6 +522,13 @@ A project's findings recorded once (`.security/baseline.json`), by fingerprint. 
 never blocking. Only a **new** high or critical finding blocks a layer.
 _Avoid_: allowlist, ignore list, suppression
 
+**Host environment**:
+What this server is: `dev` or `prod`. It is set once per host in the installed kit
+(`~/.claude/security/host.json`, `{ "hostEnv": "dev" }`, written by `install.ts --host-env`). A
+missing or unreadable value means `prod`. On a `dev` host the secret guard lets a worker **write** a
+secret file; reads stay blocked on every host (ADR-0039).
+_Avoid_: mode, stage, deployment env (that is a project's own `.env` setting, not the host's)
+
 ### Tracing work back to the operator
 
 **Operator message**:

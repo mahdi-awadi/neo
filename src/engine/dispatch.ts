@@ -392,7 +392,8 @@ export function briefWithProjectDocs(task: string): string {
     "one is not done.\n\n" +
     "REQUIRED — security: a NEW high or critical finding from the edit/commit/push scans blocks; fix " +
     "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
-    "positive instead. Never read secret files. Run `/security-review` before finishing auth, " +
+    "positive instead. Never read or print secret files; on a dev host you may write an " +
+    "operator-supplied dev secret into `.env` (chmod 600, gitignored). Run `/security-review` before finishing auth, " +
     "payment, upload or input-handling work.\n\n" +
     "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
     "may your helper agents. Work for another project (even one an old note lists) goes back to Neo to dispatch.\n\n" +
@@ -405,11 +406,10 @@ export function briefWithProjectDocs(task: string): string {
     "root cause you found, the standard fix you recommend, and why; every option you offer must be " +
     "defensible on its own — no patch-level options.\n\n" +
     "REQUIRED — stay alive; never park on a background wait. Neo watches your STREAMED tool/step " +
-    "activity to tell a working worker from a hung one, and ABORTS a sub-run after ~5 minutes with no " +
-    "such activity. A step that blocks silently for minutes is killed though not hung: a background " +
-    "wait or Monitor, a long `sleep`, `gh run watch`, tailing logs, waiting on CI/build/deploy. So NEVER " +
-    "use a background wait or Monitor: when you must wait on CI, a build, or a deploy, POLL in short " +
-    "FOREGROUND steps under 90 seconds each, so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
+    "activity and ABORTS a sub-run after ~5 minutes without it, hung or not: a background wait or " +
+    "Monitor, a long `sleep`, `gh run watch`, tailing logs, waiting on CI/build/deploy. So NEVER use " +
+    "those: to wait on CI, a build, or a deploy, POLL in short FOREGROUND steps under 90 seconds " +
+    "each, so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
     "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
     "poll to a terminal state here.\n\n" +
     "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; the engine " +

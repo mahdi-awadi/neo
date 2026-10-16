@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { secretTargets } from "../tools/security/guard";
+import { hostEnvAt, secretTargets } from "../tools/security/guard";
 
 const bash = (command: string) => secretTargets("Bash", { command });
 
@@ -110,5 +110,86 @@ describe("security guard: code, patterns and listings are not secret reads (regr
     expect(sh(`git show HEAD:config/server.key`)).toEqual(["server.key"]);
     expect(sh(`find . -name '*.key' -exec cat {} \\;`)).toEqual(["*.key"]);
     expect(sh(`grep -f patterns.txt .env`)).toEqual([".env"]);
+  });
+});
+
+// 2026-10-16 (ADR-0039): on a dev host a worker may WRITE a secret file the operator supplied;
+// reads stay blocked on every host, and a prod host (the default) is unchanged.
+describe("security guard: host environment", () => {
+  const WRITES = [
+    `printf 'R2_KEY=abc\\n' >> .env`,
+    `cat >> .env <<'EOF'\nR2_KEY=abc\nEOF`,
+    `cat > /srv/app/.env.local <<EOF\nA=1\nEOF`,
+    `echo A=1 >.env && chmod 600 .env`,
+    `sed -i 's/^R2_KEY=.*/R2_KEY=abc/' .env`,
+    `sed -i.bak -e 's/^A=.*/A=2/' .env`,
+    `cp .env.example .env`,
+    `mytool 2>/dev/null > .env`,
+    `printf 'A=1\\n' >> "/srv/my app/.env"`,
+    `sed -i -E 's#^R2_URL=.*#R2_URL=https://x.r2.dev/a#g' .env`,
+    `sed -i '/^OLD_KEY=/d' .env`,
+    `sed --in-place=.bak 's/^A=.*/A=2/' .env`,
+  ];
+  const READS = [
+    `cat .env`,
+    `cat .env >> /tmp/copy`,
+    `grep R2_KEY .env`,
+    `sed -n '/KEY/p' .env`,
+    `sed -i 's/a/b/w /dev/stdout' .env`,
+    `cp .env /tmp/x`,
+    `printf 'A=1\\n' | tee -a .env`,
+    `< .env cat > /tmp/x`,
+    `head -1 ~/.ssh/id_rsa`,
+    // code review (2026-10-16): reads dressed as writes
+    `grep -v '> ' .env`,
+    `grep -v "a >> b" .env`,
+    `sed -i 's/^/x/w out.txt' .env`,
+    `sed -i 'w /tmp/copy.txt' .env`,
+    `sed -i -e 's/a/a/' -e 'w /tmp/c' .env`,
+    `sed -i 's/a/b/;w /tmp/c' .env`,
+    `sed -i --debug 's/a/a/' .env`,
+    `sed -i -f .env notes.txt`,
+    `sed -i 's/a/b/e' .env`,
+    `cp -t /tmp/out .env`,
+    `cp --target-directory=/tmp/out .env`,
+    `cp --target=/tmp/out .env`,
+    `cp --targ /tmp/out .env`,
+  ];
+  const dev = (command: string) => secretTargets("Bash", { command }, { hostEnv: "dev" });
+
+  test("a dev host allows writes to secret files", () => {
+    for (const c of WRITES) expect([c, dev(c)]).toEqual([c, []]);
+    expect(secretTargets("Write", { file_path: "/srv/app/.env" }, { hostEnv: "dev" })).toEqual([]);
+  });
+
+  test("a dev host still blocks reads, and edits that need a read", () => {
+    for (const c of READS) expect([c, dev(c).length > 0]).toEqual([c, true]);
+    for (const tool of ["Read", "Edit", "MultiEdit", "NotebookEdit"])
+      expect(secretTargets(tool, { file_path: "/srv/app/.env" }, { hostEnv: "dev" })).toEqual([".env"]);
+    expect(secretTargets("Grep", { pattern: "KEY", path: "/srv/app/.env" }, { hostEnv: "dev" })).toEqual([".env"]);
+  });
+
+  test("a prod host, and no host setting at all, block writes as before", () => {
+    for (const ctx of [{ hostEnv: "prod" as const }, {}]) {
+      expect(secretTargets("Write", { file_path: "/srv/app/.env" }, ctx)).toEqual([".env"]);
+      expect(secretTargets("Bash", { command: `cat >> .env <<'EOF'\nA=1\nEOF` }, ctx)).toEqual([".env"]);
+      expect(secretTargets("Bash", { command: `sed -i 's/a/b/' .env` }, ctx)).toEqual([".env"]);
+      expect(secretTargets("Bash", { command: `cp .env.example .env` }, ctx)).toEqual([".env"]);
+    }
+  });
+
+  test("the host setting fails closed to prod", () => {
+    const d = mkdtempSync(join(tmpdir(), "guard-host-"));
+    const at = (body?: string) => {
+      const f = join(d, `host-${Math.random()}.json`);
+      if (body !== undefined) writeFileSync(f, body);
+      return hostEnvAt(f);
+    };
+    expect(at(JSON.stringify({ hostEnv: "dev" }))).toBe("dev");
+    expect(at(JSON.stringify({ hostEnv: "prod" }))).toBe("prod");
+    expect(at()).toBe("prod"); // missing
+    expect(at("{not json")).toBe("prod");
+    expect(at(JSON.stringify({ hostEnv: "DEV" }))).toBe("prod");
+    expect(at(JSON.stringify({}))).toBe("prod");
   });
 });

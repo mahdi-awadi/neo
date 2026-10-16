@@ -8,10 +8,25 @@
 // LIST names (ls, find without -exec, git ls-files/status) are not reads. A bare key-file name with
 // no path (`server.key`) counts only when that file exists, so `e.key` in a snippet is just text.
 //
+// On a `dev` host (host.json next to this file, ADR-0039) a WRITE to a secret file is allowed: the
+// Write tool, output redirections, `sed -i` and a `cp` destination. Reads stay blocked on every host.
+// A missing or unreadable host.json means `prod`, where nothing changed.
+//
 //   hooks/guard.sh → bun guard.ts  (the hook's JSON on stdin)
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
+
+export type HostEnv = "dev" | "prod";
+
+/** The host environment set in `file` (ADR-0039). Anything but an explicit `"dev"` is `prod`. */
+export function hostEnvAt(file: string): HostEnv {
+  try {
+    return (JSON.parse(readFileSync(file, "utf8")) as { hostEnv?: unknown }).hostEnv === "dev" ? "dev" : "prod";
+  } catch {
+    return "prod"; // missing or unreadable: fail closed
+  }
+}
 
 const TEMPLATE = /\.(example|sample|template|dist|defaults)$/i;
 const KEY_EXT = /\.(pem|key|p12|pfx|jks|keystore|ppk)$/i;
@@ -62,7 +77,7 @@ const GLOB_OPTS = new Set(["-g", "--glob", "--include"]);
 /** The argument words of one command that can name a file it reads, with patterns, code and
  *  name-only listings removed, and whether the command is a known reader. `feeds`: this stage pipes
  *  names into xargs / while-read, so a listing is a read after all. */
-function readCandidates(seg: string, feeds: boolean): { args: string[]; reader: boolean } {
+function readCandidates(seg: string, feeds: boolean, writes: boolean): { args: string[]; reader: boolean } {
   let w = words(seg);
   for (;;) {
     if (w.length && (/^\w+=/.test(w[0]!) || ["sudo", "env", "time", "nohup", "command", "exec"].includes(w[0]!))) w = w.slice(1);
@@ -74,10 +89,34 @@ function readCandidates(seg: string, feeds: boolean): { args: string[]; reader: 
   const cmd = basename(w[0] ?? "");
   const reader = READERS.has(cmd);
   if (feeds && (LISTING.has(cmd) || cmd === "find")) return { args: w.slice(1), reader }; // names piped on to a reader
-  return { args: candidateArgs(cmd, w.slice(1)), reader };
+  return { args: candidateArgs(cmd, w.slice(1), writes), reader };
 }
 
-function candidateArgs(cmd: string, args: string[]): string[] {
+/** The one sed program shape that only rewrites a file in place: an optional address, then `d` or a
+ *  single `s` with flags g/I/digits. No `w`/`e`/`r`/`p`, no `;` (they copy, run or print lines). */
+const SAFE_SED_PROGRAM = /^(?:\d+|\$|\/(?:\\.|[^/\\])*\/)?(?:d|s(.)(?:\\.|(?!\1).)*\1(?:\\.|(?!\1).)*\1[gI\d]*)$/;
+const SAFE_SED_OPTION = /^(-[Er]*i[Er]*(\.[\w.]+)?|-[Er]+|--in-place(=[\w.]+)?|--regexp-extended)$/;
+
+/** `sed -i` that can only rewrite its files: in-place, safe options, and every program a safe one. */
+function isInPlaceSed(args: string[]): boolean {
+  if (!args.some((a) => /^-[Er]*i/.test(a) || a.startsWith("--in-place"))) return false;
+  const programs: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "-e" || a === "--expression") programs.push(args[++i] ?? "");
+    else if (a.startsWith("-") && !SAFE_SED_OPTION.test(a)) return false; // --debug, -f FILE, -n, -s …
+  }
+  if (!programs.length) programs.push(args.find((a) => !a.startsWith("-")) ?? "");
+  return programs.every((p) => SAFE_SED_PROGRAM.test(p));
+}
+
+/** `writes` (a dev host, ADR-0039): an in-place sed and a cp destination are writes, not reads. */
+function candidateArgs(cmd: string, args: string[], writes = false): string[] {
+  if (writes && cmd === "sed" && isInPlaceSed(args)) return [];
+  if (writes && cmd === "cp" && !args.some((a) => /^-[^-]*t|^--t/.test(a))) {
+    const dest = args.findLastIndex((a) => !a.startsWith("-")); // with -t (or any `--t…` abbreviation of --target-directory) the last word is a source
+    args = args.filter((_, i) => i !== dest);
+  }
   if (cmd === "git") {
     const at = args.findIndex((a) => !a.startsWith("-"));
     const sub = at >= 0 ? args[at]! : "";
@@ -175,10 +214,14 @@ function secretPath(word: string, cwd: string, reader = false): string | undefin
 
 /** Input redirections (`< file`, `3<file`) read their file, whatever the command. Not `<<`, `<&` or `<(`. */
 const INPUT_REDIRECT = /(?:^|[^<\d&])\d?<\s*(?![<&(])([^\s<>&|;()]+)/g;
+/** Output redirections (`> f`, `>> f`, `2> f`, `&> f`) write their file. Not `>&2` or `>(…)`. A
+ *  quoted string is matched first and kept, so a `>` inside quotes (`grep -v '> ' .env`) is text. */
+const OUTPUT_REDIRECT = /"[^"]*"|'[^']*'|(?<![<>&\d])(?:\d|&)?>>?\|?\s*(?![&>(])(?:"[^"]*"|'[^']*'|[^\s<>&|;()"'])+/g;
+const stripOutputRedirects = (stage: string) => stage.replace(OUTPUT_REDIRECT, (m) => (m[0] === '"' || m[0] === "'" ? m : " "));
 
 /** Bash: the secret files a command reads. Follows `cd`/`pushd` between statements, so a bare
  *  name is looked up where the command really is. */
-function bashTargets(command: string, cwd: string): string[] {
+function bashTargets(command: string, cwd: string, writes: boolean): string[] {
   const cleaned = command
     .replace(/--env-file[ =]\S+/g, " ") // the file is used by docker, not read into context
     .replace(/(?:-m|--message)(?:\s+|=)("(?:[^"\\]|\\.)*"|'[^']*')/g, " "); // a commit message is text
@@ -193,12 +236,13 @@ function bashTargets(command: string, cwd: string): string[] {
       continue;
     }
     stages.forEach((stage, i) => {
+      if (writes) stage = stripOutputRedirects(stage);
       for (const m of stage.matchAll(INPUT_REDIRECT)) {
         const hit = secretPath(m[1]!, here, true);
         if (hit) hits.push(hit);
       }
       const feeds = stages.slice(i + 1).some((later) => /^(xargs\b|while\s+read\b)/.test(later));
-      const { args, reader } = readCandidates(stage.replace(INPUT_REDIRECT, " "), feeds);
+      const { args, reader } = readCandidates(stage.replace(INPUT_REDIRECT, " "), feeds, writes);
       for (const w of args) {
         const hit = secretPath(w, here, reader);
         if (hit) hits.push(hit);
@@ -208,10 +252,13 @@ function bashTargets(command: string, cwd: string): string[] {
   return hits;
 }
 
-/** The secret files a tool call reads, by name, in order. `cwd`: where a bare file name resolves. */
-export function secretTargets(tool: string, input: Record<string, unknown>, ctx: { cwd?: string } = {}): string[] {
-  if (tool === "Bash") return bashTargets(String(input.command ?? ""), ctx.cwd ?? process.cwd());
+/** The secret files a tool call reads, by name, in order. `cwd`: where a bare file name resolves.
+ *  `hostEnv` (default `prod`): on `dev`, writes to a secret file are not counted (ADR-0039). */
+export function secretTargets(tool: string, input: Record<string, unknown>, ctx: { cwd?: string; hostEnv?: HostEnv } = {}): string[] {
+  const writes = ctx.hostEnv === "dev";
+  if (tool === "Bash") return bashTargets(String(input.command ?? ""), ctx.cwd ?? process.cwd(), writes);
   if (tool === "Glob") return []; // it lists names; it never reads a file
+  if (tool === "Write" && writes) return []; // it creates or replaces a file and echoes nothing back
   const str = (k: string) => (typeof input[k] === "string" ? [input[k] as string] : []);
   const tokens = tool === "Grep" ? [...str("path"), ...str("glob")] : [...str("file_path"), ...str("notebook_path"), ...str("path")];
   // Named by the last segment; a folder-spanning glob (`**/*.pem`) is shown whole.
@@ -225,13 +272,15 @@ if (import.meta.main) {
   } catch {
     process.exit(0); // not a hook payload: nothing to guard
   }
-  const hits = secretTargets(String(call.tool_name ?? ""), call.tool_input ?? {}, { cwd: typeof call.cwd === "string" ? call.cwd : undefined });
+  const hostEnv = hostEnvAt(join(import.meta.dir, "host.json"));
+  const hits = secretTargets(String(call.tool_name ?? ""), call.tool_input ?? {}, { cwd: typeof call.cwd === "string" ? call.cwd : undefined, hostEnv });
   if (!hits.length) process.exit(0);
   const worker = Boolean(process.env.NEO_WORKER || process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS);
   if (worker) {
     console.error(
       `Blocked by security guard: ${call.tool_name} reads a secret file (${hits.join(", ")}). Secrets stay out of agent context. ` +
-        "Read config via the app's env loader, or ask the operator (ask_operator) to set or check the value.",
+        "Read config via the app's env loader, or ask the operator (ask_operator) to set or check the value." +
+        (hostEnv === "dev" ? " On this dev host you may WRITE a secret file (Write tool, `printf 'K=V\\n' >> .env`, `sed -i`), never read it." : ""),
     );
     process.exit(2);
   }

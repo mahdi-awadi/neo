@@ -23,6 +23,15 @@ in a snippet is just text. It blocks a Neo worker (`NEO_WORKER=1`) and only warn
 sessions.
 Templates (`*.example`, `.sample`, `.template`, `.dist`, `.defaults`) are always allowed.
 
+**Host environment (ADR-0039).** The installed kit's `host.json` says what this server is:
+`{ "hostEnv": "dev" }` or `"prod"`. `install.ts --host-env dev|prod` writes it; a re-install without
+the flag keeps it. A missing or unreadable file means `prod`. On a `dev` host the guard lets a worker
+WRITE a secret file: the Write tool, output redirections (`printf 'K=V\n' >> .env`,
+`cat >> .env <<'EOF'`), `sed -i` and the destination of `cp .env.example .env`. Reads stay blocked on
+every host (Read, Grep, cat, `sed` without `-i`, `tee`, a `cp` source, input redirections), and so do
+Edit/MultiEdit (they need a Read and echo the file). On a `prod` host nothing changed. The hook
+reads `host.json` on every call, so a change needs no restart. This host is set to `dev`.
+
 ## Policy
 
 - Only **new** high or critical findings block. A project's existing findings are recorded once in
@@ -42,6 +51,7 @@ Templates (`*.example`, `.sample`, `.template`, `.dist`, `.defaults`) are always
 ```bash
 bun tools/security/install.ts            # kit → ~/.claude/security, hooks → ~/.claude/settings.json,
                                          # /security-scan → ~/.claude/commands; downloads the rules
+bun tools/security/install.ts --host-env dev   # the same, and mark this host dev (ADR-0039)
 bun ~/.claude/security/init.ts <repo>    # git hooks (chains existing ones), .security/config.json,
                                          # baseline, .gitignore lines
 bash ~/.claude/security/scan.sh file|staged|push|full|baseline <repo> [...]
