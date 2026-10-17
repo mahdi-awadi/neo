@@ -1013,3 +1013,10 @@ Approve and Execute after the worker had built and committed it. Now:
 - Each button has one meaning, set in one place, and Telegram and the console use the same labels
   (AR+EN).
 - Every state change edits the card in place: building, done · commit, dropped, or superseded.
+
+A failed web bind no longer stops Neo (2026-10-17). The hosting side powered the server off and on.
+Docker was not enabled at boot, so the `WEB_HOST` bridge IP did not exist. `Bun.serve` threw,
+the daemon exited, and Telegram went silent too. Now:
+- Docker and containerd are enabled at boot (host change, not in the repo).
+- `startWeb` builds the app once and retries only the bind (`keepBinding`). Each failure is a
+  `web.bind` engine fault. The retry interval is `webBindRetryMs` (default 15s).
