@@ -1,0 +1,89 @@
+{
+  "mount": "/",
+  "targetPct": 70,
+  "alertPct": 80,
+  "dailyHour": 4,
+  "cooldownHours": 6,
+  "nothingLeftBytes": 1000000000,
+  "minAgeDays": 7,
+  "journalMaxSize": "500M",
+  "protect": [
+    "prod",
+    "^/home/neo/data(/|$)",
+    "^/home/neo/company(/|$)",
+    "^/home/neo/node_modules(/|$)"
+  ],
+  "keepImagesFrom": [
+    "~/.claude/security/images.env"
+  ],
+  "logRoots": [
+    "/var/log"
+  ],
+  "logSkipDirs": [
+    "/var/log/journal"
+  ],
+  "tmpRoots": [
+    "/tmp"
+  ],
+  "tmpSkip": [
+    "^systemd-private-",
+    "^\\.(X11|ICE|font|XIM|Test)-unix$",
+    "^tmux-"
+  ],
+  "packageCaches": [
+    {
+      "name": "bun",
+      "argv": [
+        "bun",
+        "pm",
+        "cache",
+        "rm"
+      ],
+      "cwd": "."
+    },
+    {
+      "name": "npm",
+      "argv": [
+        "npm",
+        "cache",
+        "clean",
+        "--force"
+      ]
+    },
+    {
+      "name": "go-build",
+      "argv": [
+        "go",
+        "clean",
+        "-cache"
+      ]
+    },
+    {
+      "name": "pip",
+      "argv": [
+        "pip3",
+        "cache",
+        "purge"
+      ]
+    }
+  ],
+  "dumpRoots": [
+    "/home",
+    "/root",
+    "/var/backups",
+    "/srv",
+    "/tmp"
+  ],
+  "dumpPattern": "\\.(sql|dump|pgdump|backup|archive)(\\.(gz|xz|zst|bz2))?$|\\.bak([-.][\\w.-]*)?$|backup[^/]*\\.(tar|tgz|zip|gz|zst)$",
+  "dumpMinBytes": 100000000,
+  "projectsRoot": "/home",
+  "buildOutputNames": [
+    "node_modules",
+    ".next",
+    "dist"
+  ],
+  "buildOutputMinBytes": 500000000,
+  "volumeMinBytes": 50000000,
+  "dbImagePattern": "postgres|clickhouse|mongo|mysql|mariadb|redis|meili|qdrant|elasticsearch|opensearch",
+  "reportTop": 25
+}

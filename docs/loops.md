@@ -78,6 +78,18 @@ the last section maps it onto Neo.
 > kit is installed (`bun tools/security/install.ts`). Definition: `docs/loops/security-sweep.json`
 > + `.prompt.md`.
 >
+> **`disk-cleanup` (2026-10-17, live).** Hourly `0 * * * *`, `/home/neo`, command goal
+> `cleanup.ts check`, 2 iterations, $1 per fire, `freshSession: true`. The goal costs nothing when
+> it holds: disk under 70%; or outside the daily hour (04:00) under 80%; or a clean in the last 6 h
+> freed under 1 GB. So the worker runs daily, and at once when the disk passes 80%. The worker only
+> runs the deterministic kit `tools/disk/` (installed to `~/.local/share/neo/disk/` by
+> `bun tools/disk/install.ts`) and relays its report. Tier A, which can be rebuilt, is removed by
+> code. Tier B, which cannot be undone, is listed with stable ids and deleted only by
+> `cleanup.ts delete --ids …` after the operator approves those exact ids (ADR-0040). Values:
+> `tools/disk/defaults.json`; a host overrides them in `config.json` next to the installed kit.
+> Definition: `docs/loops/disk-cleanup.json` + `.prompt.md`. Loop workers have no `ask_operator`
+> yet, so the reply carries the Tier B list and Neo raises the decision.
+>
 > **Scheduled-loop output → operator — live (2026-07-10).** A scheduled fire now streams **only** the
 > worker's real text to the operator's Telegram chat (the admin id, resolved at fire time so a late
 > TOFU admin still works), tagged with the loop's `#project` — the same streaming style as dispatch.

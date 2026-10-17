@@ -1,0 +1,5 @@
+{
+  "name": "neo-disk-kit",
+  "private": true,
+  "description": "Gives `bun pm cache rm` the project folder it needs (ADR-0040). Not a package."
+}

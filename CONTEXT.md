@@ -529,6 +529,26 @@ missing or unreadable value means `prod`. On a `dev` host the secret guard lets 
 secret file; reads stay blocked on every host (ADR-0039).
 _Avoid_: mode, stage, deployment env (that is a project's own `.env` setting, not the host's)
 
+### Disk space
+
+**Tier A** (disk cleanup):
+Space that can be rebuilt, which the disk-cleanup tool removes on its own. It covers dangling and
+old unused images, old build cache, containers stopped more than 7 days ago, the journal, rotated
+logs, package caches and old `/tmp` files (ADR-0040).
+_Avoid_: safe items, junk
+
+**Tier B** (disk cleanup):
+Space whose removal cannot be undone: volumes, database data, dumps and backups, worktrees and
+build outputs. The tool only lists it, each item with a stable **candidate id**. It deletes an item
+only when the operator approves that exact id.
+_Avoid_: unsafe items, manual items
+
+**Protected** (disk cleanup):
+Never touched by either tier: a running container and its volumes, anything matching a protect
+pattern (`prod`, `/home/neo/data`, `/home/neo/company`), `.env` files and the security kit's pinned
+scanner images.
+_Avoid_: excluded, allowlisted
+
 ### Tracing work back to the operator
 
 **Operator message**:

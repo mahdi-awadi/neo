@@ -194,3 +194,5 @@ Greptile) are noted but not adopted; these principles are:
 - `tools/security/` + `docs/security-checks.md` — the shift-left security kit (ADR-0024): scan layers,
   install/init, the nightly `security-sweep` loop.
 - `tools/browser/` + `docs/browser.md` — the shared, memory-capped browser workers attach to (ADR-0032).
+- `tools/disk/` — the disk-cleanup kit the `disk-cleanup` loop runs: Tier A automatic, Tier B only on
+  approved ids (ADR-0040, `docs/loops.md`).
