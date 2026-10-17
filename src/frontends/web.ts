@@ -480,14 +480,60 @@ function intParam(p: URLSearchParams, name: string): number | undefined {
   return Number.isSafeInteger(n) ? n : undefined;
 }
 
-export function startWeb(deps: WebAppDeps, port: number, hostname = "0.0.0.0"): ReturnType<typeof Bun.serve> {
+export function startWeb(
+  deps: WebAppDeps,
+  port: number,
+  hostname: string,
+  bindOpts: { retryMs: number; onFail: (err: unknown) => void; onBound: () => void },
+): { stop(): void } {
+  // The app is built once (it registers with the operator bus); only the bind is retried.
   const appHandler = createWebApp(deps);
   // Build the console bundle at start, so the first page load does not wait for it.
   faults.contain("web.bundle", () => consoleAppJs());
   faults.contain("web.bundle", () => consoleSwJs());
   // idleTimeout 0 = no per-request idle drop; the SSE /stream is long-lived (kept warm by its
   // own 15s keepalive). Without this Bun closed connections after 10s, stalling live updates.
-  return Bun.serve({ port, hostname, idleTimeout: 0, fetch: (req) => appHandler.fetch(req) });
+  return keepBinding(() => Bun.serve({ port, hostname, idleTimeout: 0, fetch: (req) => appHandler.fetch(req) }), bindOpts);
+}
+
+/** Bind, and on failure report it and try again every `retryMs` — never throw. The web host can be a
+ *  Docker bridge IP that does not exist until Docker is up (2026-10-17: after a reboot the missing
+ *  bridge made the bind throw, the daemon exit, and Telegram went silent too). `stop()` cancels a
+ *  pending retry on shutdown. */
+export function keepBinding<T>(
+  bind: () => T,
+  o: {
+    retryMs: number;
+    onFail: (err: unknown) => void;
+    onBound: (server: T) => void;
+    schedule?: (fn: () => void, ms: number) => unknown;
+    cancel?: (handle: unknown) => void;
+  },
+): { stop(): void } {
+  const schedule = o.schedule ?? ((fn, ms) => setTimeout(fn, ms));
+  const cancel = o.cancel ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  let pending: unknown;
+  let stopped = false;
+  const attempt = (): void => {
+    pending = undefined;
+    if (stopped) return;
+    let server: T;
+    try {
+      server = bind();
+    } catch (e) {
+      o.onFail(e);
+      pending = schedule(attempt, o.retryMs);
+      return;
+    }
+    o.onBound(server);
+  };
+  attempt();
+  return {
+    stop() {
+      stopped = true;
+      if (pending !== undefined) cancel(pending);
+    },
+  };
 }
 
 // The console page shell and the login page (ADR-0017): HTML templates in ./web, the browser bundle

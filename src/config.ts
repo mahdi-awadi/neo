@@ -99,6 +99,9 @@ export interface NeoConfig {
   webHost: string;
   /** Port the web operator console listens on (WEB_PORT env). Default 3003. */
   webPort: number;
+  /** When the web console cannot bind (e.g. its Docker bridge IP is not up yet after a reboot), retry
+   *  this often instead of exiting — Telegram keeps working meanwhile. Default 15s. */
+  webBindRetryMs: number;
   /** Public HTTPS base URL the console is reached at (e.g. https://neo.example.com), used for the
    *  startup hint only. From PUBLIC_URL env; empty → no public URL is advertised. */
   publicUrl: string;
@@ -353,6 +356,7 @@ const DEFAULTS = {
   trustNewProjects: true,
   webHost: "127.0.0.1",
   webPort: 3003,
+  webBindRetryMs: 15_000,
   budgetWindowUsd: 20,
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
@@ -500,6 +504,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     decisionsChatId: process.env.DECISIONS_CHAT_ID ? Number(process.env.DECISIONS_CHAT_ID) : fileCfg.decisionsChatId,
     webHost: process.env.WEB_HOST ?? fileCfg.webHost ?? DEFAULTS.webHost,
     webPort: process.env.WEB_PORT ? Number(process.env.WEB_PORT) : (fileCfg.webPort ?? DEFAULTS.webPort),
+    webBindRetryMs: fileCfg.webBindRetryMs ?? DEFAULTS.webBindRetryMs,
     publicUrl: process.env.PUBLIC_URL ?? fileCfg.publicUrl ?? "",
     providers: fileCfg.providers ?? DEFAULTS.providers,
     subscriptionInteractiveReservePct:
