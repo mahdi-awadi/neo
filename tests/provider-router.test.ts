@@ -12,6 +12,7 @@ function cfg(over: Partial<{ ownWork: Provider; customerWork: Provider }> = {}):
     botUsername: "",
     webHost: "127.0.0.1",
     webPort: 3003,
+    webBindRetryMs: 15_000,
     publicUrl: "",
     companyFolder: "/tmp/agent",
     gatewaySendUrl: "",

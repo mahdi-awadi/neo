@@ -144,6 +144,7 @@ function fakeNeoConfig(companyFolder: string): NeoConfig {
     botUsername: "",
     webHost: "127.0.0.1",
     webPort: 3003,
+    webBindRetryMs: 15_000,
     publicUrl: "",
     providers: { ownWork: "subscription", customerWork: "gemini" },
     subscriptionInteractiveReservePct: 0.2,

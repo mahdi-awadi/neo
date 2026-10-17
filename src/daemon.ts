@@ -38,7 +38,7 @@ import { CRON_RESOLUTION_MS, heartbeatMs, nextTickDelayMs, runHeartbeatTick, typ
 import { configureFaults, createFaultReporter, faults, installSafetyNet } from "./engine/fault";
 import { createHealthMonitor, startHealthTimer } from "./engine/health";
 import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster, createPlanEditor, attentionKeyboard } from "./frontends/telegram";
-import { startWeb } from "./frontends/web";
+import { startWeb, type WebAppDeps } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
 import { makeLoopReply } from "./engine/loop-mirror";
@@ -452,13 +452,22 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder },
-      cfg.webPort,
-      cfg.webHost,
-    );
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
-    console.log(`  web       -> http://${cfg.webHost}:${cfg.webPort} (sign in as @${botUsername})${publicHint}`);
+    const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
+    // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon
+    // down: report it, keep Telegram running, and retry until the address exists.
+    let webFailed = false;
+    const web = startWeb(webDeps, cfg.webPort, cfg.webHost, {
+      retryMs: cfg.webBindRetryMs,
+      onFail: (e) => {
+        if (!webFailed) console.log(`  web       -> ${webAt} NOT bound yet; retrying every ${cfg.webBindRetryMs / 1000}s`);
+        webFailed = true;
+        faults.report("web.bind", e, { webHost: cfg.webHost, webPort: cfg.webPort });
+      },
+      onBound: () => console.log(`  web       -> ${webAt} (sign in as @${botUsername})${publicHint}${webFailed ? " — bound after retry" : ""}`),
+    });
+    stopHooks.push(async () => web.stop());
   } else {
     console.log("  telegram  -> NOT configured (set TELEGRAM_TOKEN in .env). Web console disabled (needs the bot for login).");
   }

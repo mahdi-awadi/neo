@@ -1031,3 +1031,10 @@ state. The operator can close any thread: **Close thread** in the console (AR+EN
 on Telegram. Close dismisses the thread's open decisions and cancels the todos parked on them. A
 new message reopens the thread. An approval counts only while its session is running. Config
 `decisionSettle`.
+
+A failed web bind no longer stops Neo (2026-10-17). The hosting side powered the server off and on.
+Docker was not enabled at boot, so the `WEB_HOST` bridge IP did not exist. `Bun.serve` threw,
+the daemon exited, and Telegram went silent too. Now:
+- Docker and containerd are enabled at boot (host change, not in the repo).
+- `startWeb` builds the app once and retries only the bind (`keepBinding`). Each failure is a
+  `web.bind` engine fault. The retry interval is `webBindRetryMs` (default 15s).
