@@ -41,13 +41,17 @@ rebuilt. Tier B is only reported, because removing it cannot be undone.
    installed kit.
 5. **It is installed like the security kit**, to `~/.local/share/neo/disk/`. The loop runs that
    copy, so it does not depend on which branch the live checkout is on.
-6. **The loop:** an hourly cron with a command goal. `cleanup.ts check` passes, with no worker run
+6. **The loop:** a 60-minute interval with a command goal. `cleanup.ts check` passes, with no worker run
    and no cost, when one of these is true:
    - use is under the target (70%);
    - outside the daily hour, use is under the alert level (80%);
    - a clean in the last 6 hours freed less than 1 GB, so nothing safe is left.
    That gives "daily, plus whenever the disk is over 80%" on a runtime that has only manual,
-   interval and cron triggers.
+   interval and cron triggers. It is an interval, not the cron `0 * * * *`. The scheduler skips a
+   loop while its folder is busy, and `/home/neo` often is. A cron fire skipped at minute 0 is lost
+   for the hour. A skipped interval fire records no run, so it starts at the first free tick. The
+   daily run is then the first fire in the daily hour; if the folder is busy all that hour, the
+   day's 70% run is skipped, and the 80% rule still applies.
 
 ## Considered options
 

@@ -78,7 +78,8 @@ the last section maps it onto Neo.
 > kit is installed (`bun tools/security/install.ts`). Definition: `docs/loops/security-sweep.json`
 > + `.prompt.md`.
 >
-> **`disk-cleanup` (2026-10-17, live).** Hourly `0 * * * *`, `/home/neo`, command goal
+> **`disk-cleanup` (2026-10-17, live).** Every 60 minutes (interval: a busy folder delays a fire, never
+> loses it), `/home/neo`, command goal
 > `cleanup.ts check`, 2 iterations, $1 per fire, `freshSession: true`. The goal costs nothing when
 > it holds: disk under 70%; or outside the daily hour (04:00) under 80%; or a clean in the last 6 h
 > freed under 1 GB. So the worker runs daily, and at once when the disk passes 80%. The worker only

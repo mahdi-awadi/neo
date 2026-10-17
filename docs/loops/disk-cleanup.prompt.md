@@ -8,7 +8,8 @@ fresh and remember nothing; the tool's state files are the memory. The tool deci
    for 5 minutes. So start it in the background, then check it in short steps, each under 90
    seconds:
    `nohup bun ~/.local/share/neo/disk/cleanup.ts run > /tmp/neo-disk-cleanup.log 2>&1 &`
-   then `sleep 60; tail -5 /tmp/neo-disk-cleanup.log` until the log has the `Tier B` line.
+   then wait in bounded steps (a bare `sleep` is blocked) until the log has the `Tier B` line:
+   `timeout 80 sh -c 'until grep -q "^Tier B" /tmp/neo-disk-cleanup.log; do sleep 5; done'; tail -3 /tmp/neo-disk-cleanup.log`
    If the log says another cleanup is running, stop and say so in one line.
 2. Read the whole log: `cat /tmp/neo-disk-cleanup.log`.
 
