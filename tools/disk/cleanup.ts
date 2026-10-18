@@ -58,6 +58,8 @@ export interface DiskConfig {
   cacheVolumeMaxBytes: number;
   /** Containers never stopped for a wipe (an in-flight builder, a metrics store). */
   wipeSkipContainers: string[];
+  /** Top-level entries a wipe keeps: `bin` holds tools installed into a GOPATH-style volume. */
+  wipeKeep: string[];
   containerLogMaxBytes: number;
   coredumpDir: string;
   coredumpMaxAgeHours: number;
@@ -629,16 +631,16 @@ const fileBytes = (p: string) => {
   }
 };
 
-/** Empty a folder, keeping the folder itself. */
-function emptyDir(dir: string): void {
-  for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true });
+/** Empty a folder, keeping the folder itself and the `keep` entries at its top. */
+function emptyDir(dir: string, keep: string[]): void {
+  for (const name of readdirSync(dir)) if (!keep.includes(name)) rmSync(join(dir, name), { recursive: true, force: true });
 }
 
 /** A step's own action, for work that is more than a list of commands. */
 type Action = { label: string; run: () => { ok: boolean; note?: string } };
 
 /** Stop the running users, empty the volume, start them again — the start runs even if the empty fails. */
-function wipeAction(sh: Sh, w: { volume: VolumeInfo; stop: ContainerInfo[] }): Action {
+function wipeAction(sh: Sh, w: { volume: VolumeInfo; stop: ContainerInfo[] }, keep: string[]): Action {
   const ids = w.stop.map((c) => c.id);
   return {
     label: `wipe ${w.volume.name} (${gb(w.volume.bytes)})${ids.length ? `, restart ${w.stop.map((c) => c.name).join(",")}` : ""}`,
@@ -646,7 +648,7 @@ function wipeAction(sh: Sh, w: { volume: VolumeInfo; stop: ContainerInfo[] }): A
       if (ids.length && sh(["docker", "stop", ...ids]).code !== 0) return { ok: false, note: `could not stop ${w.stop.map((c) => c.name).join(",")}` };
       let ok = true;
       try {
-        emptyDir(w.volume.mountpoint!);
+        emptyDir(w.volume.mountpoint!, keep);
       } catch {
         ok = false;
       } finally {
@@ -688,7 +690,7 @@ export function runCleanup(d: RunDeps): RunResult {
     { category: "build cache", commands: [["docker", "builder", "prune", "-af", "--filter", `until=${cfg.buildCacheMaxAgeHours}h`]] },
     { category: "stopped containers", commands: oldContainers.map((c) => ["docker", "rm", c.id]) },
     { category: "unused volumes", commands: unusedVolumes.map((v) => ["docker", "volume", "rm", v.name]) },
-    { category: "cache volumes", actions: wipes.map((w) => wipeAction(sh, w)) },
+    { category: "cache volumes", actions: wipes.map((w) => wipeAction(sh, w, cfg.wipeKeep)) },
     { category: "container logs", commands: bigLogs.map((c) => ["truncate", "-s", "0", c.logPath!]) },
     { category: "journal", commands: [["journalctl", `--vacuum-size=${cfg.journalMaxSize}`]] },
     { category: "rotated logs", files: logs },

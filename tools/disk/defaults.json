@@ -119,6 +119,9 @@
     "^buildx_buildkit_",
     "^netdata$"
   ],
+  "wipeKeep": [
+    "bin"
+  ],
   "containerLogMaxBytes": 100000000,
   "coredumpDir": "/var/lib/systemd/coredump",
   "coredumpMaxAgeHours": 24,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -388,6 +388,8 @@ describe("disk cleanup: a run", () => {
     const state = mkdtempSync(join(tmpdir(), "disk-state-"));
     mkdirSync(join(CACHE_MNT, "ab"), { recursive: true });
     writeFileSync(join(CACHE_MNT, "ab", "obj"), "x");
+    mkdirSync(join(CACHE_MNT, "bin"), { recursive: true }); // a GOPATH volume: installed tools, not cache
+    writeFileSync(join(CACHE_MNT, "bin", "air"), "x");
     // used bytes: the start, then after each of the 18 Tier A steps (dangling, images, build cache,
     // containers, unused volumes, cache volumes, container logs, journal, rotated logs, core dumps,
     // /tmp, build outputs, worktrees, bun, npm, go-build, go-mod, pip)
@@ -407,7 +409,8 @@ describe("disk cleanup: a run", () => {
     expect(stop).toBeGreaterThan(-1);
     expect(lines.indexOf("docker start c-svc")).toBeGreaterThan(stop);
     expect(lines).not.toContain("docker volume rm svc_go_build_cache");
-    expect(readdirSync(CACHE_MNT)).toEqual([]);
+    expect(readdirSync(CACHE_MNT)).toEqual(["bin"]);
+    expect(existsSync(join(CACHE_MNT, "bin", "air"))).toBe(true);
     expect(existsSync(CACHE_MNT)).toBe(true);
     expect(lines).toContain("truncate -s 0 /var/lib/docker/containers/c-svc/c-svc-json.log");
     expect(lines).toContain("journalctl --vacuum-size=500M");
@@ -472,6 +475,7 @@ describe("disk cleanup: a run", () => {
 
   test("--dry-run changes nothing and writes no last run", () => {
     const state = mkdtempSync(join(tmpdir(), "disk-state-"));
+    rmSync(join(CACHE_MNT, "bin"), { recursive: true, force: true });
     writeFileSync(join(CACHE_MNT, "keep-me"), "x");
     const sh = fakeSh(answers, [920e9]);
     const out = runCleanup({ sh, cfg: { ...cfg, ...bare }, stateDir: state, now: NOW, keepDigests: new Set(), dryRun: true, cwds: [], logBytes: () => 2e9 });

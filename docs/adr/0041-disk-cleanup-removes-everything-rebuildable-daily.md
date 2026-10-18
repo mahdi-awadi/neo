@@ -34,7 +34,10 @@ important files; remove everything big that can be rebuilt, and do it every day.
    users are stopped, then starts the same containers. Removing the volume would need the container
    removed and recreated by its compose project, which the tool does not own. DB containers,
    protected containers and the skip list (in-flight buildkit builders, netdata's metrics store)
-   are never stopped. A start that fails is reported by name.
+   are never stopped. A start that fails is reported by name. A wipe keeps the volume's top-level
+   `bin/` (`wipeKeep`): a volume mounted as a whole GOPATH holds installed tools there, not cache.
+   The first run wiped `mirshad_mirshad_go_cache` (mounted at `/go`), removed `/go/bin/air`, and
+   `mirshad-api` could not reinstall it (`air@latest` needs a newer Go than its image).
 6. **The loop runs daily at 04:00 whatever the disk use**, and outside that hour when use is at or
    above 80%. `targetPct` is gone. The cooldown floor still stops repeat runs that free nothing.
 
