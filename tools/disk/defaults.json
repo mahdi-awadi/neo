@@ -112,8 +112,8 @@
   ],
   "buildOutputMaxDepth": 7,
   "volumeMinBytes": 50000000,
-  "rebuildableVolumePattern": "cache|go_?mod|go_?build|gobuild|^buildx_buildkit_.*_state$|node_modules|test",
-  "cacheVolumePattern": "cache|go_?mod|go_?build|gobuild",
+  "rebuildableVolumePattern": "(^|[_-])([a-z0-9]*cache|go_?mod(cache)?|go_?build(_cache)?|gobuild|node_modules|(pgbr)?tests?[0-9]*)([_-]|$)|^buildx_buildkit_.*_state$",
+  "cacheVolumePattern": "(^|[_-])([a-z0-9]*cache|go_?mod(cache)?|go_?build(_cache)?|gobuild)([_-]|$)",
   "cacheVolumeMaxBytes": 5000000000,
   "wipeSkipContainers": [
     "^buildx_buildkit_",

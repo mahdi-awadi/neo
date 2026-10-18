@@ -273,6 +273,16 @@ export function isRotatedLog(path: string): boolean {
   return /(\.\d+|[-.]\d{8})(\.(gz|xz|bz2|zst))?$|\.(gz|xz|bz2|zst|old)$/.test(basename(path));
 }
 
+/** `dir/.git` is a real repo (a folder with HEAD) or a worktree (a `gitdir:` file). A stray empty
+ *  `.git` folder is neither: one in /tmp once switched the whole /tmp rule off. */
+function isRepo(dir: string): boolean {
+  try {
+    return lstatSync(join(dir, ".git")).isFile() || existsSync(join(dir, ".git", "HEAD"));
+  } catch {
+    return false;
+  }
+}
+
 /** What the /tmp rule removes under `root`: regular files or links whose atime, mtime and ctime are
  *  all older than the minimum age (the systemd-tmpfiles rule), then each folder that would be left
  *  empty, if it is that old too — listed after everything inside it. Never inside a folder that
@@ -290,7 +300,7 @@ export function tmpVictims(root: string, cfg: DiskConfig, now: number): string[]
     } catch {
       return false;
     }
-    if (names.includes(".git")) return false; // a repo or worktree: never here
+    if (names.includes(".git") && isRepo(dir)) return false; // a repo or worktree: never here
     let all = true;
     for (const name of names) {
       const p = join(dir, name);
@@ -418,21 +428,30 @@ export interface BuildDir {
   kind: "build" | "artifact";
 }
 
-function findBuildDirs(sh: Sh, cfg: DiskConfig): BuildDir[] {
-  if (!existsSync(cfg.projectsRoot)) return [];
-  const all = [...cfg.buildOutputNames, ...cfg.artifactNames];
-  const names = all.flatMap((n, i) => (i ? ["-o", "-name", n] : ["-name", n]));
-  const found = sh(["find", cfg.projectsRoot, "-mindepth", "2", "-maxdepth", String(cfg.buildOutputMaxDepth), "-xdev", "(", "-name", ".git", "-prune", ")", "-o", "-type", "d", "(", ...names, ")", "-prune", "-printf", "%T@\t%p\n"]).out;
-  return lines(found).flatMap((l) => {
-    const [mt, p] = l.split("\t");
-    if (!p) return [];
+/** `find -printf '%T@\t%p\0'` records: NUL-separated, cut at the first tab only, never trimmed, so a
+ *  tab or newline in a name cannot shorten a path to its parent. */
+export function parseBuildDirs(out: string, cfg: DiskConfig): BuildDir[] {
+  return out.split("\0").flatMap((rec) => {
+    const tab = rec.indexOf("\t");
+    if (tab < 0) return [];
+    const mt = rec.slice(0, tab).replace(/^\n+/, "");
+    const p = rec.slice(tab + 1);
+    if (!p.startsWith("/")) return [];
     return [{ path: p, mtime: Number(mt) * 1000, kind: cfg.artifactNames.includes(basename(p)) ? ("artifact" as const) : ("build" as const) }];
   });
 }
 
+function findBuildDirs(sh: Sh, cfg: DiskConfig): BuildDir[] {
+  if (!existsSync(cfg.projectsRoot)) return [];
+  const all = [...cfg.buildOutputNames, ...cfg.artifactNames];
+  const names = all.flatMap((n, i) => (i ? ["-o", "-name", n] : ["-name", n]));
+  return parseBuildDirs(sh(["find", cfg.projectsRoot, "-mindepth", "2", "-maxdepth", String(cfg.buildOutputMaxDepth), "-xdev", "(", "-name", ".git", "-prune", ")", "-o", "-type", "d", "(", ...names, ")", "-prune", "-printf", "%T@\t%p\0"]).out, cfg);
+}
+
 /** Build outputs and test artifacts that go: git ignores the folder and tracks nothing in it (the
- *  `git clean -X` rule; outside a repo nothing goes). A build output only in a project that is not
- *  live; an artifact in any project, once older than the minimum age. */
+ *  `git clean -X` rule; outside a repo nothing goes), its parent tracks something (so it is not
+ *  inside an ignored data folder), and no repo or worktree sits inside it. A build output only in a
+ *  project that is not live; an artifact in any project, once older than the minimum age. */
 export function pickBuildOutputs(found: BuildDir[], live: Set<string>, sh: Sh, cfg: DiskConfig, now: number): string[] {
   const cutoff = now - cfg.minAgeDays * DAY;
   return found
@@ -442,15 +461,28 @@ export function pickBuildOutputs(found: BuildDir[], live: Set<string>, sh: Sh, c
       const name = basename(b.path);
       if (sh(["git", "-C", dir, "check-ignore", "-q", name]).code !== 0) return false;
       const tracked = sh(["git", "-C", dir, "ls-files", "--", name]);
-      return tracked.code === 0 && tracked.out.trim() === "";
+      if (tracked.code !== 0 || tracked.out.trim() !== "") return false;
+      const parent = sh(["git", "-C", dir, "ls-files", "--", "."]);
+      if (parent.code !== 0 || parent.out.trim() === "") return false;
+      const nested = sh(["find", b.path, "-name", ".git", "-print", "-quit"]);
+      return nested.code === 0 && nested.out.trim() === "";
     })
     .map((b) => b.path);
+}
+
+/** `git status --porcelain --ignored` lines: true when every ignored entry is a build output or
+ *  test artifact. Anything else (a local secrets file, a dev database) keeps the worktree in Tier B. */
+export function onlyRebuildableIgnored(porcelain: string, cfg: DiskConfig): boolean {
+  const rebuildable = new Set([...cfg.buildOutputNames, ...cfg.artifactNames]);
+  return lines(porcelain)
+    .filter((l) => l.startsWith("!! "))
+    .every((l) => rebuildable.has(basename(l.slice(3).replace(/\/$/, ""))));
 }
 
 export interface WorktreeInfo {
   path: string;
   repo: string;
-  /** No change, staged or untracked (ignored files do not count). */
+  /** No change, staged or untracked, and every ignored file is a build output. */
   clean: boolean;
   /** Its HEAD is reachable from a ref other than its own branch: merged or pushed. */
   onOtherRef: boolean;
@@ -476,12 +508,12 @@ function worktrees(sh: Sh, cfg: DiskConfig): WorktreeInfo[] {
       if (!wt || !existsSync(wt) || isProtected(cfg, wt, repo)) continue;
       const head = field("HEAD") ?? "";
       const own = field("branch");
-      const status = sh(["git", "-C", wt, "status", "--porcelain"]);
+      const status = sh(["git", "-C", wt, "status", "--porcelain", "--ignored"]);
       const refs = lines(sh(["git", "-C", repo, "for-each-ref", "--contains", head, "--format=%(refname)"]).out).filter((ref) => ref !== own);
       out.push({
         path: wt,
         repo,
-        clean: status.code === 0 && status.out.trim() === "",
+        clean: status.code === 0 && lines(status.out).every((l) => l.startsWith("!! ")) && onlyRebuildableIgnored(status.out, cfg),
         onOtherRef: !!head && refs.length > 0,
         lastCommit: Number(sh(["git", "-C", wt, "log", "-1", "--format=%ct"]).out.trim()) * 1000 || 0,
         bytes: duBytes(sh, wt),
@@ -642,23 +674,28 @@ type Action = { label: string; run: () => { ok: boolean; note?: string } };
 
 /** Stop the running users, empty the volume, start them again — the start runs even if the empty fails. */
 function wipeAction(sh: Sh, w: { volume: VolumeInfo; stop: ContainerInfo[] }, keep: string[]): Action {
-  const ids = w.stop.map((c) => c.id);
   return {
-    label: `wipe ${w.volume.name} (${gb(w.volume.bytes)})${ids.length ? `, restart ${w.stop.map((c) => c.name).join(",")}` : ""}`,
+    label: `wipe ${w.volume.name} (${gb(w.volume.bytes)})${w.stop.length ? `, restart ${w.stop.map((c) => c.name).join(",")}` : ""}`,
     run: () => {
-      if (ids.length && sh(["docker", "stop", ...ids]).code !== 0) return { ok: false, note: `could not stop ${w.stop.map((c) => c.name).join(",")}` };
-      let ok = true;
+      // one at a time, so a partial failure still knows exactly which ones stopped
+      const stopped: ContainerInfo[] = [];
+      const notStopped: string[] = [];
+      for (const c of w.stop) (sh(["docker", "stop", c.id]).code === 0 ? stopped.push(c) : notStopped.push(c.name));
+      const notes: string[] = [];
+      let ok = notStopped.length === 0;
       try {
-        emptyDir(w.volume.mountpoint!, keep);
+        if (ok) emptyDir(w.volume.mountpoint!, keep);
+        else notes.push(`could not stop ${notStopped.join(",")}: not wiped`);
       } catch {
         ok = false;
       } finally {
-        if (ids.length) {
-          const failed = w.stop.filter((c) => sh(["docker", "start", c.id]).code !== 0).map((c) => c.name);
-          if (failed.length) return { ok: false, note: `NOT restarted: ${failed.join(",")}` };
+        const failed = stopped.filter((c) => sh(["docker", "start", c.id]).code !== 0).map((c) => c.name);
+        if (failed.length) {
+          ok = false;
+          notes.push(`NOT restarted: ${failed.join(",")}`);
         }
       }
-      return { ok };
+      return { ok, note: notes.join("; ") || undefined };
     },
   };
 }

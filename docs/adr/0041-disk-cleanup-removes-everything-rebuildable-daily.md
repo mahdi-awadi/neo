@@ -26,9 +26,14 @@ important files; remove everything big that can be rebuilt, and do it every day.
      old empty `/tmp` folders; the Go module cache.
 2. **Tier B keeps only what cannot be rebuilt:** named unused volumes that may hold real DB data,
    data folders of stopped DB containers, dumps and backups, and worktrees with work in them.
-3. **A build output is touched only if git ignores it and tracks nothing in it.** This is the
-   `git clean -X` rule. It makes generic names like `bin` and `build` safe. Outside a git repo the
-   rule does not apply and nothing is removed.
+3. **A build output is touched only if git ignores it and tracks nothing in it** (the `git clean -X`
+   rule), its parent folder tracks something (so it is not inside an ignored data folder), and no
+   repo or worktree sits inside it. This makes generic names like `bin` and `build` safe. Outside a
+   git repo nothing is removed. A worktree is removed only if its ignored files are all build
+   outputs, so a local secrets file or a dev database keeps it in Tier B.
+   Volume name rules match whole name parts (`_test_`, `-cache`), so `latest` is not `test`.
+   An unreadable docker inventory stops the run before it changes anything; a stray empty `.git`
+   folder does not make a folder a repo.
 4. **A live project** is `/home/<p>` that a running container bind-mounts, or where a host process
    has its working folder. Its build outputs stay, because a dev server is using them.
 5. **A wiped cache volume keeps its container.** The tool empties the volume's mountpoint while the

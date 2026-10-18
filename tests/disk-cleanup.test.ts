@@ -12,6 +12,8 @@ import {
   loadDiskConfig,
   parseKeepDigests,
   liveProjects,
+  onlyRebuildableIgnored,
+  parseBuildDirs,
   pickBuildOutputs,
   pickCacheWipes,
   pickContainers,
@@ -143,10 +145,13 @@ describe("disk cleanup: Tier A choices", () => {
     put("systemd-private-abc/tmp/x");
     put("tmux-0/default");
     put("prod-export/data.csv");
+    put("wt/.git"); // a worktree: `.git` is a pointer file
+    put("wt/old.ts");
     mkdirSync(join(root, "empty/inner"), { recursive: true });
+    mkdirSync(join(root, ".git")); // a stray EMPTY .git folder is not a repo: /tmp is still cleaned
     const got = tmpVictims(root, cfg, now);
     // folders that end up empty go too, each after everything inside it
-    expect(got.sort()).toEqual([nested, victim, join(root, "dir/deep"), join(root, "dir"), join(root, "empty/inner"), join(root, "empty")].sort());
+    expect(got.sort()).toEqual([nested, victim, join(root, "dir/deep"), join(root, "dir"), join(root, "empty/inner"), join(root, "empty"), join(root, ".git")].sort());
     const order = tmpVictims(root, cfg, now);
     expect(order.indexOf(join(root, "dir/deep"))).toBeLessThan(order.indexOf(join(root, "dir")));
     expect(order.indexOf(nested)).toBeLessThan(order.indexOf(join(root, "dir/deep")));
@@ -168,6 +173,9 @@ describe("disk cleanup: Tier A volumes", () => {
       vol({ name: "pgbrtest499845-data" }),
       vol({ name: ANON, bytes: 1000 }), // no size floor in Tier A
       vol({ name: "ws_postgres_data" }), // may be real DB data: Tier B
+      vol({ name: "app_latest_data" }), // "latest" is not "test"
+      vol({ name: "contest_db" }),
+      vol({ name: "cachet_pgdata" }), // "cachet" is not "cache"
       vol({ name: "eticket-prod_cache" }), // protected
       vol({ name: "mounted_go_build_cache" }),
     ];
@@ -241,28 +249,51 @@ describe("disk cleanup: Tier A files", () => {
     expect([...liveProjects(cs, ["/home/gold/ui", "/root", "/home/neo"])].sort()).toEqual(["eticket-v3", "gold", "neo"]);
   });
 
-  test("build outputs: only git-ignored folders that track nothing; build kinds only outside live projects, artifacts only when old", () => {
+  test("build outputs: only git-ignored folders that track nothing, inside a tracked folder, holding no repo; build kinds only outside live projects, artifacts only when old", () => {
     const found = [
       { path: "/home/nutrizoid/node_modules", mtime: NOW, kind: "build" as const },
       { path: "/home/safari/backend-ota/src/Api/bin", mtime: NOW, kind: "build" as const },
       { path: "/home/tools/bin", mtime: NOW, kind: "build" as const }, // tracked scripts
       { path: "/home/plain/dist", mtime: NOW, kind: "build" as const }, // not a git repo
+      { path: "/home/site/build", mtime: NOW, kind: "build" as const }, // a nested clone or worktree inside
+      { path: "/home/app/data/out", mtime: NOW, kind: "build" as const }, // inside an ignored data folder
       { path: "/home/eticket-v3/ui/node_modules", mtime: NOW, kind: "build" as const }, // live
       { path: "/home/eticket-v3/ui/coverage", mtime: NOW - 30 * DAY, kind: "artifact" as const }, // old artifact: any project
       { path: "/home/eticket-v3/ui/test-results", mtime: NOW - 1 * DAY, kind: "artifact" as const }, // young
       { path: "/home/neo/node_modules", mtime: NOW, kind: "build" as const }, // protected
     ];
     const sh: Sh = (argv) => {
+      if (argv[0] === "find") return { code: 0, out: argv[1] === "/home/site/build" ? "/home/site/build/.git\n" : "" };
       const [, , dir, verb, ...rest] = argv; // git -C <dir> <verb> …
-      const path = `${dir}/${rest[rest.length - 1]}`;
-      if (dir!.startsWith("/home/plain")) return { code: 128, out: "fatal: not a git repository" };
+      const last = rest[rest.length - 1];
+      const path = last === "." ? dir! : `${dir}/${last}`;
+      if (dir!.startsWith("/home/plain")) return { code: 128, out: "", err: "fatal: not a git repository" };
       if (verb === "check-ignore") return { code: path === "/home/tools/bin" ? 1 : 0, out: "" };
-      if (verb === "ls-files") return { code: 0, out: path === "/home/tools/bin" ? "bin/run.sh\n" : "" };
+      if (verb === "ls-files") {
+        if (path === "/home/tools/bin") return { code: 0, out: "bin/run.sh\n" };
+        if (last === ".") return { code: 0, out: path === "/home/app/data" ? "" : "README.md\n" }; // the parent tracks something
+        return { code: 0, out: "" };
+      }
       return { code: 1, out: "" };
     };
     expect(pickBuildOutputs(found, new Set(["eticket-v3"]), sh, cfg, NOW)).toEqual([
       "/home/nutrizoid/node_modules", "/home/safari/backend-ota/src/Api/bin", "/home/eticket-v3/ui/coverage",
     ]);
+  });
+
+  test("find output is NUL-separated and cut at the first tab only, so odd names never shorten a path", () => {
+    const out = `1700000000.5\t/home/a/we\tird/node_modules\0` + `1700000000\t/home/b/new\nline/coverage\0`;
+    expect(parseBuildDirs(out, cfg)).toEqual([
+      { path: "/home/a/we\tird/node_modules", mtime: 1700000000500, kind: "build" },
+      { path: "/home/b/new\nline/coverage", mtime: 1700000000000, kind: "artifact" },
+    ]);
+  });
+
+  test("a worktree is clean only if its ignored files are all build outputs (no local secrets or databases)", () => {
+    expect(onlyRebuildableIgnored("!! node_modules/\n!! web/.next/\n!! coverage/\n", cfg)).toBe(true);
+    expect(onlyRebuildableIgnored("", cfg)).toBe(true);
+    expect(onlyRebuildableIgnored("!! node_modules/\n!! data/dev.sqlite\n", cfg)).toBe(false);
+    expect(onlyRebuildableIgnored("!! api/.env" + ".local\n", cfg)).toBe(false);
   });
 
   test("worktrees: clean, HEAD on another ref, idle, nobody inside — the rest stay for the operator", () => {
@@ -448,6 +479,25 @@ describe("disk cleanup: a run", () => {
     };
     expect(() => runCleanup({ sh: down, cfg: { ...cfg, ...bare }, stateDir: state, now: NOW, keepDigests: new Set(), cwds: [], logBytes: () => 0 })).toThrow(/inventory/);
     expect(calls.some((l) => /^(docker (rmi|rm|stop|volume rm|image prune|builder prune)|truncate|git .* worktree remove)/.test(l))).toBe(false);
+  });
+
+  test("a wipe whose stop partly fails: nothing is emptied and every container that did stop is started again", () => {
+    const state = mkdtempSync(join(tmpdir(), "disk-state-"));
+    writeFileSync(join(CACHE_MNT, "keep-on-failed-stop"), "x");
+    const two = JSON.parse(INSPECT_CONTAINERS) as Array<Record<string, unknown>>;
+    two.push({ ...two[1]!, Id: "c-svc2", Name: "/travel-worker" });
+    const base = fakeSh({ ...answers, "docker container inspect": JSON.stringify(two), "docker ps -aq": "c-old\nc-svc\nc-svc2\n" }, [920e9]);
+    const calls: string[] = [];
+    const sh: Sh = (argv, o) => {
+      calls.push(argv.join(" "));
+      return argv.join(" ") === "docker stop c-svc2" ? { code: 1, out: "", err: "timeout" } : base(argv, o);
+    };
+    const out = runCleanup({ sh, cfg: { ...cfg, ...bare }, stateDir: state, now: NOW, keepDigests: new Set(), cwds: [], logBytes: () => 0 });
+    expect(calls).toContain("docker stop c-svc");
+    expect(calls).toContain("docker start c-svc");
+    expect(existsSync(join(CACHE_MNT, "keep-on-failed-stop"))).toBe(true);
+    expect(out.freed.find((f) => f.category === "cache volumes")!.detail).toContain("could not stop travel-worker");
+    rmSync(join(CACHE_MNT, "keep-on-failed-stop"));
   });
 
   test("a container that fails to start again after a wipe is named in the report", () => {
