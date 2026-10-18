@@ -556,6 +556,12 @@ Emptying a mounted cache volume: its running users are stopped, the volume's mou
 and the same containers are started again. The volume and the containers stay (ADR-0041).
 _Avoid_: cache reset, volume purge
 
+**Test temp root** (disk cleanup):
+The one folder (`$TMPDIR/neo-test-XXXX`) that a `bun test` run makes in its preload and sets as
+`TMPDIR`. Every temp folder the run's tests make goes inside it, and the run removes it after the
+last test, so tests leave nothing in `/tmp` (ADR-0042).
+_Avoid_: test sandbox, scratch dir
+
 **Protected** (disk cleanup):
 Never touched by either tier: a running container and its volumes, anything matching a protect
 pattern (`prod`, `/home/neo/data`, `/home/neo/company`), `.env` files and the security kit's pinned
