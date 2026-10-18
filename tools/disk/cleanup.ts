@@ -31,7 +31,8 @@ export interface DiskConfig {
   nothingLeftBytes: number;
   minAgeDays: number;
   imageMinAgeDays: number;
-  buildCacheMaxAgeHours: number;
+  /** Build cache kept, least recently used goes first (`--max-used-space`, e.g. "10gb"). */
+  buildCacheMaxUsedSpace: string;
   journalMaxSize: string;
   protect: string[];
   keepImagesFrom: string[];
@@ -687,7 +688,7 @@ export function runCleanup(d: RunDeps): RunResult {
   const steps: Step[] = [
     { category: "dangling images", commands: [["docker", "image", "prune", "-f"]] },
     { category: "unused images", commands: oldImages.map((i) => ["docker", "rmi", ...i.tags]) },
-    { category: "build cache", commands: [["docker", "builder", "prune", "-af", "--filter", `until=${cfg.buildCacheMaxAgeHours}h`]] },
+    { category: "build cache", commands: [["docker", "builder", "prune", "-af", "--max-used-space", cfg.buildCacheMaxUsedSpace]] },
     { category: "stopped containers", commands: oldContainers.map((c) => ["docker", "rm", c.id]) },
     { category: "unused volumes", commands: unusedVolumes.map((v) => ["docker", "volume", "rm", v.name]) },
     { category: "cache volumes", actions: wipes.map((w) => wipeAction(sh, w, cfg.wipeKeep)) },

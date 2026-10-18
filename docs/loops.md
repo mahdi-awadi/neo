@@ -85,7 +85,7 @@ the last section maps it onto Neo.
 > unless a clean in the last 6 h freed under 1 GB. The worker only
 > runs the deterministic kit `tools/disk/` (installed to `~/.local/share/neo/disk/` by
 > `bun tools/disk/install.ts`) and relays its report. Tier A, everything that can be rebuilt
-> (images, build cache, cache and test volumes, mounted caches over 2 GB, big container logs, core
+> (images, build cache, cache and test volumes, mounted caches over 5 GB, big container logs, core
 > dumps, build outputs of projects with no live dev server, old test artifacts, finished
 > worktrees), is removed by code (ADR-0041). Tier B, which cannot be undone (possible DB data,
 > backups, worktrees with work in them), is listed with stable ids and deleted only by

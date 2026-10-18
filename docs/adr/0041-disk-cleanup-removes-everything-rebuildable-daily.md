@@ -13,7 +13,7 @@ important files; remove everything big that can be rebuilt, and do it every day.
 1. **Tier A now covers everything rebuildable.** New rules, each a pure picker with tests:
    - unused volumes that are anonymous or whose name says they are rebuildable (caches, Go
      mod/build, buildkit state, `node_modules`, `test`): `docker volume rm`;
-   - cache volumes that a container mounts, above a size cap (2 GB): stop the running containers
+   - cache volumes that a container mounts, above a size cap (5 GB): stop the running containers
      that use it, empty the volume's mountpoint, start them again;
    - container json logs above 100 MB: truncate;
    - core dumps older than 24 hours;
@@ -21,7 +21,8 @@ important files; remove everything big that can be rebuilt, and do it every day.
      project with no live dev server, and test artifacts (`coverage`, `test-results`,
      `playwright-report`) older than 7 days in any project;
    - clean worktrees whose HEAD is on another ref, with no process in them, idle 7 days;
-   - all build cache unused for 24 hours (`builder prune -a`); unused images older than 2 days;
+   - build cache above 10 GB, least recently used first (`builder prune -a --max-used-space`);
+     unused images older than 2 days;
      old empty `/tmp` folders; the Go module cache.
 2. **Tier B keeps only what cannot be rebuilt:** named unused volumes that may hold real DB data,
    data folders of stopped DB containers, dumps and backups, and worktrees with work in them.
@@ -51,12 +52,17 @@ important files; remove everything big that can be rebuilt, and do it every day.
 - **Keep build outputs in Tier B.** Rejected by the operator: they reinstall on demand.
 - **Delete build outputs by name alone.** Rejected: `bin/` and `build/` are often tracked source.
   The git-ignore rule is the standard safe test.
+- **Age out build cache (`builder prune --filter until=24h`).** Rejected after a real run: on
+  buildx with the containerd image store it freed nothing, even for entries unused for 12 days.
+  A size cap with LRU eviction is buildkit's own GC model and freed 26 GB.
 - **`docker system prune -a --volumes`.** Still rejected (ADR-0040): it removes named DB volumes and
   ignores prod and the pinned scanner images.
 
 ## Consequences
 
-- The first build of each eticket service after a 04:00 wipe is slow (a cold Go cache).
+- The first build of each service after a wipe is slow (a cold Go cache). Wiping six eticket
+  services at once took the load average to 181 for about 15 minutes. Fresh caches are 0.7–1.8 GB,
+  so the 5 GB cap wipes only a bloated cache (one had grown to 31 GB), not every cache every day.
 - A CI job that is running when its runner's cache is wiped fails; at 04:00 this is rare.
 - Daemon log rotation (`max-size 50m`, `max-file 3`) is already in `daemon.json`, but it applies
   only to containers created after it; the truncation rule covers the older ones.

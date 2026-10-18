@@ -9,13 +9,13 @@ rebuilt, every day. Extends the ADR-0040 kit (`tools/disk/cleanup.ts`). One seam
 | Rule | Picker | Acts with |
 |---|---|---|
 | Unused rebuildable volumes: anonymous (64-hex), or name matches `rebuildableVolumePattern` (caches, go mod/build, buildkit state, node_modules, `test`) | `pickUnusedVolumes` | `docker volume rm` (no force) |
-| Mounted cache volumes over `cacheVolumeMaxBytes` (name matches `cacheVolumePattern`), local driver, no DB/protected/skipped container mounts it | `pickCacheWipes` | stop the running users → empty the mountpoint → start them again (always, in `finally`) |
+| Mounted cache volumes over `cacheVolumeMaxBytes` (5 GB) (name matches `cacheVolumePattern`), local driver, no DB/protected/skipped container mounts it | `pickCacheWipes` | stop the running users → empty the mountpoint → start them again (always, in `finally`) |
 | Container json logs over `containerLogMaxBytes` | `pickLogTruncations` | `truncate -s 0 <LogPath>` |
 | Core dumps older than `coredumpMaxAgeHours` | `coredumpVictims` | delete |
 | Build outputs (`buildOutputNames`) in a project with no live dev server; git-ignored, no tracked file | `pickBuildOutputs` | delete |
 | Test artifacts (`artifactNames`) older than `minAgeDays`, any project; git-ignored, no tracked file | `pickBuildOutputs` | delete |
 | Clean worktrees: no change, HEAD on another ref, no process inside, last commit older than `minAgeDays` | `pickWorktrees` | `git worktree remove` (no force) |
-| Build cache unused for `buildCacheMaxAgeHours` | — | `docker builder prune -af --filter until=…` |
+| Build cache above `buildCacheMaxUsedSpace`, LRU first | — | `docker builder prune -af --max-used-space …` |
 | Unused images older than `imageMinAgeDays` | `pickImages` | `docker rmi` |
 | Old empty `/tmp` folders | `tmpVictims` | delete |
 | Go module cache | `packageCaches` | `go clean -modcache` |

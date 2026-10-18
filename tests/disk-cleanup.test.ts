@@ -400,7 +400,7 @@ describe("disk cleanup: a run", () => {
     expect(lines).toContain("docker image prune -f");
     expect(lines).toContain("docker rmi app:old");
     expect(lines.some((l) => l.startsWith("docker rmi app:2"))).toBe(false); // a stopped container uses it
-    expect(lines).toContain(`docker builder prune -af --filter until=${cfg.buildCacheMaxAgeHours}h`);
+    expect(lines).toContain(`docker builder prune -af --max-used-space ${cfg.buildCacheMaxUsedSpace}`); // an age filter frees nothing on buildx + the containerd store
     expect(lines).toContain("docker rm c-old"); // no -v: its volumes stay
     expect(lines).toContain("docker volume rm trivy-cache");
     expect(lines).not.toContain("docker volume rm ws_postgres_data"); // may be real DB data

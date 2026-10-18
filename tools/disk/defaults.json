@@ -6,7 +6,7 @@
   "nothingLeftBytes": 1000000000,
   "minAgeDays": 7,
   "imageMinAgeDays": 2,
-  "buildCacheMaxAgeHours": 24,
+  "buildCacheMaxUsedSpace": "10gb",
   "journalMaxSize": "500M",
   "protect": [
     "prod",
@@ -114,7 +114,7 @@
   "volumeMinBytes": 50000000,
   "rebuildableVolumePattern": "cache|go_?mod|go_?build|gobuild|^buildx_buildkit_.*_state$|node_modules|test",
   "cacheVolumePattern": "cache|go_?mod|go_?build|gobuild",
-  "cacheVolumeMaxBytes": 2000000000,
+  "cacheVolumeMaxBytes": 5000000000,
   "wipeSkipContainers": [
     "^buildx_buildkit_",
     "^netdata$"
