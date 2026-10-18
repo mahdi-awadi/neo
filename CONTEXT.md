@@ -532,16 +532,29 @@ _Avoid_: mode, stage, deployment env (that is a project's own `.env` setting, no
 ### Disk space
 
 **Tier A** (disk cleanup):
-Space that can be rebuilt, which the disk-cleanup tool removes on its own. It covers dangling and
-old unused images, old build cache, containers stopped more than 7 days ago, the journal, rotated
-logs, package caches and old `/tmp` files (ADR-0040).
+Space that can be rebuilt, which the disk-cleanup tool removes on its own every day. It covers
+images, build cache, stopped containers, the journal, logs, package caches, `/tmp`, core dumps,
+unused rebuildable volumes, mounted cache volumes over a cap, big container logs, build outputs of
+projects with no live dev server, old test artifacts and clean finished worktrees (ADR-0040,
+ADR-0041).
 _Avoid_: safe items, junk
 
 **Tier B** (disk cleanup):
-Space whose removal cannot be undone: volumes, database data, dumps and backups, worktrees and
-build outputs. The tool only lists it, each item with a stable **candidate id**. It deletes an item
-only when the operator approves that exact id.
+Space whose removal cannot be undone: named volumes that may hold real DB data, data folders of
+stopped DB containers, dumps and backups, and worktrees with work in them. The tool only lists it,
+each item with a stable **candidate id**. It deletes an item only when the operator approves that
+exact id.
 _Avoid_: unsafe items, manual items
+
+**Live project** (disk cleanup):
+A folder `/home/<p>` that a running container bind-mounts, or where a host process has its working
+folder. Its build outputs stay, because a dev server uses them (ADR-0041).
+_Avoid_: active project, running project
+
+**Cache wipe** (disk cleanup):
+Emptying a mounted cache volume: its running users are stopped, the volume's mountpoint is emptied,
+and the same containers are started again. The volume and the containers stay (ADR-0041).
+_Avoid_: cache reset, volume purge
 
 **Protected** (disk cleanup):
 Never touched by either tier: a running container and its volumes, anything matching a protect

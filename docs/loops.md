@@ -80,12 +80,15 @@ the last section maps it onto Neo.
 >
 > **`disk-cleanup` (2026-10-17, live).** Every 60 minutes (interval: a busy folder delays a fire, never
 > loses it), `/home/neo`, command goal
-> `cleanup.ts check`, 2 iterations, $1 per fire, `freshSession: true`. The goal costs nothing when
-> it holds: disk under 70%; or outside the daily hour (04:00) under 80%; or a clean in the last 6 h
-> freed under 1 GB. So the worker runs daily, and at once when the disk passes 80%. The worker only
+> `cleanup.ts check`, 2 iterations, $1 per fire, `freshSession: true`. The goal fails once a day in
+> the daily hour (04:00) whatever the disk use, and outside it when the disk is at 80% or more,
+> unless a clean in the last 6 h freed under 1 GB. The worker only
 > runs the deterministic kit `tools/disk/` (installed to `~/.local/share/neo/disk/` by
-> `bun tools/disk/install.ts`) and relays its report. Tier A, which can be rebuilt, is removed by
-> code. Tier B, which cannot be undone, is listed with stable ids and deleted only by
+> `bun tools/disk/install.ts`) and relays its report. Tier A, everything that can be rebuilt
+> (images, build cache, cache and test volumes, mounted caches over 2 GB, big container logs, core
+> dumps, build outputs of projects with no live dev server, old test artifacts, finished
+> worktrees), is removed by code (ADR-0041). Tier B, which cannot be undone (possible DB data,
+> backups, worktrees with work in them), is listed with stable ids and deleted only by
 > `cleanup.ts delete --ids …` after the operator approves those exact ids (ADR-0040). Values:
 > `tools/disk/defaults.json`; a host overrides them in `config.json` next to the installed kit.
 > Definition: `docs/loops/disk-cleanup.json` + `.prompt.md`. Loop workers have no `ask_operator`

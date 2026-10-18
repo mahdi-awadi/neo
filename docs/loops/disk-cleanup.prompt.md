@@ -1,6 +1,7 @@
 Free disk space on this host by running the disk-cleanup tool, and pass its report on. You start
 fresh and remember nothing; the tool's state files are the memory. The tool decides everything
-(ADR-0040 in /home/neo). Your job is only to run it and relay the result.
+(ADR-0040 and ADR-0041 in /home/neo). Your job is only to run it and relay the result. The tool
+itself may stop a dev container, empty its cache volume and start it again; that is expected.
 
 ## Each iteration
 
@@ -9,8 +10,9 @@ fresh and remember nothing; the tool's state files are the memory. The tool deci
    seconds:
    `nohup bun ~/.local/share/neo/disk/cleanup.ts run > /tmp/neo-disk-cleanup.log 2>&1 &`
    then wait in bounded steps (a bare `sleep` is blocked) until the log has the `Tier B` line:
-   `timeout 80 sh -c 'until grep -q "^Tier B" /tmp/neo-disk-cleanup.log; do sleep 5; done'; tail -3 /tmp/neo-disk-cleanup.log`
-   If the log says another cleanup is running, stop and say so in one line.
+   `timeout 80 sh -c 'until grep -qE "^Tier B|^error|Error:" /tmp/neo-disk-cleanup.log; do sleep 5; done'; tail -3 /tmp/neo-disk-cleanup.log`
+   Repeat that check until the log has the `Tier B` line or an error. If the log says another
+   cleanup is running, stop and say so in one line.
 2. Read the whole log: `cat /tmp/neo-disk-cleanup.log`.
 
 ## Rules (hard)

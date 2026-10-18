@@ -1,6 +1,6 @@
 {
   "name": "disk-cleanup",
-  "summary": "Frees disk space on this host: removes rebuildable Tier A space itself, lists irreversible Tier B items for the operator (ADR-0040)",
+  "summary": "Frees disk space on this host daily: removes everything rebuildable (Tier A) itself, lists irreversible Tier B items for the operator (ADR-0040, ADR-0041)",
   "folder": "/home/neo",
   "promptFile": "disk-cleanup.prompt.md",
   "goalKind": "command",

@@ -1,12 +1,16 @@
-// Disk cleanup for this host (ADR-0040). Deterministic: the decisions below are pure functions over
-// an inventory, and every command goes through an injected shell, so tests never touch the host.
+// Disk cleanup for this host (ADR-0040, ADR-0041). Deterministic: the decisions below are pure
+// functions over an inventory, and every command goes through an injected shell, so tests never
+// touch the host.
 //
-//   Tier A — rebuildable, removed automatically: dangling images; unused images older than the
-//            minimum age; old build cache; containers stopped longer than that; the journal;
-//            rotated logs; package caches; old /tmp files.
-//   Tier B — irreversible, only LISTED: unused volumes, data folders of stopped database
-//            containers, dumps and backups, git worktrees, big build outputs. Each has a stable
-//            id; `delete --ids` removes exactly the approved ones, checked again first.
+//   Tier A — rebuildable, removed automatically: dangling and unused images; build cache; stopped
+//            containers; unused rebuildable volumes (anonymous, caches, node_modules, test); mounted
+//            cache volumes over a cap (users stopped, emptied, started again); big container logs;
+//            the journal; rotated logs; core dumps; old /tmp files and empty folders; build
+//            outputs of projects with no live dev server; old test artifacts; clean finished
+//            worktrees; package caches.
+//   Tier B — irreversible, only LISTED: named volumes that may hold DB data, data folders of
+//            stopped database containers, dumps and backups, worktrees with work in them. Each has
+//            a stable id; `delete --ids` removes exactly the approved ones, checked again first.
 //   Never:   a running container or its volumes, anything matching a protect pattern (prod, the
 //            engine's data and company folders), .env files, the security kit's pinned images.
 //
@@ -15,18 +19,19 @@
 // Values live in defaults.json; a host overrides them in config.json next to the installed copy.
 // State (last run, Tier B list) lives in ./state.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export interface DiskConfig {
   mount: string;
-  targetPct: number;
   alertPct: number;
   dailyHour: number;
   cooldownHours: number;
   nothingLeftBytes: number;
   minAgeDays: number;
+  imageMinAgeDays: number;
+  buildCacheMaxAgeHours: number;
   journalMaxSize: string;
   protect: string[];
   keepImagesFrom: string[];
@@ -40,24 +45,55 @@ export interface DiskConfig {
   dumpPattern: string;
   dumpMinBytes: number;
   projectsRoot: string;
+  /** Removed when git ignores them and their project is not live. */
   buildOutputNames: string[];
-  buildOutputMinBytes: number;
+  /** Removed when git ignores them and they are older than minAgeDays, in any project. */
+  artifactNames: string[];
+  buildOutputMaxDepth: number;
   volumeMinBytes: number;
+  /** An unused volume whose name matches is rebuildable (Tier A); anonymous volumes are too. */
+  rebuildableVolumePattern: string;
+  /** A mounted volume whose name matches, above cacheVolumeMaxBytes, is wiped. */
+  cacheVolumePattern: string;
+  cacheVolumeMaxBytes: number;
+  /** Containers never stopped for a wipe (an in-flight builder, a metrics store). */
+  wipeSkipContainers: string[];
+  containerLogMaxBytes: number;
+  coredumpDir: string;
+  coredumpMaxAgeHours: number;
   dbImagePattern: string;
   reportTop: number;
 }
 
-/** Runs one command (no shell). A missing program is code 127, never a throw. */
-export type Sh = (argv: string[], opts?: { cwd?: string }) => { code: number; out: string };
+/** Runs one command (no shell). A missing program is code 127, never a throw. `out` is stdout only,
+ *  so a partial success (docker inspect with one id gone) still parses. */
+export type Sh = (argv: string[], opts?: { cwd?: string }) => { code: number; out: string; err?: string };
 
 export const realSh: Sh = (argv, opts) => {
   try {
     const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe", cwd: opts?.cwd });
-    return { code: r.exitCode ?? 1, out: r.stdout.toString() + (r.exitCode ? r.stderr.toString() : "") };
+    return { code: r.exitCode ?? 1, out: r.stdout.toString(), err: r.stderr.toString() };
   } catch {
-    return { code: 127, out: `${argv[0]}: not found` };
+    return { code: 127, out: "", err: `${argv[0]}: not found` };
   }
 };
+
+/** A command's message for a report: stderr, else stdout. */
+const message = (r: { out: string; err?: string }) => (r.err || r.out).trim();
+
+/** The ids of a docker listing; a failed listing (docker down) stops the run, as below. */
+function listed(what: string, r: { code: number; out: string; err?: string }): string[] {
+  if (r.code !== 0) throw new Error(`docker ${what} inventory unreadable: ${message(r).slice(0, 200)}`);
+  return lines(r.out);
+}
+
+/** Parse an inspect listing; ids were listed but nothing parsed means the inventory is unreadable,
+ *  and the run must stop before it changes anything (an empty inventory reads as "nothing in use"). */
+function inspected<T>(what: string, ids: string[], r: { out: string; err?: string }): T[] {
+  const parsed = json<T[]>(r.out, []);
+  if (ids.length && !parsed.length) throw new Error(`docker ${what} inventory unreadable: ${message(r).slice(0, 200)}`);
+  return parsed;
+}
 
 const DAY = 86_400_000;
 const tilde = (p: string, home: string) => p.replace(/^~(?=\/|$)/, home);
@@ -105,12 +141,16 @@ export interface ContainerInfo {
   finishedAt: number;
   volumes: string[];
   binds: string[];
+  logPath?: string;
+  logBytes?: number;
 }
 export interface VolumeInfo {
   name: string;
   created: number;
   project?: string;
   bytes: number;
+  driver?: string;
+  mountpoint?: string;
 }
 
 const time = (s: unknown) => {
@@ -135,24 +175,25 @@ export function parseSize(s: string): number {
 }
 
 export function images(sh: Sh): ImageInfo[] {
-  const ids = [...new Set(lines(sh(["docker", "image", "ls", "-aq", "--no-trunc"]).out))];
+  const ids = [...new Set(listed("image", sh(["docker", "image", "ls", "-aq", "--no-trunc"])))];
   if (!ids.length) return [];
-  const raw = json<Array<{ Id: string; RepoTags?: string[]; RepoDigests?: string[]; Created?: string }>>(sh(["docker", "image", "inspect", ...ids]).out, []);
+  const raw = inspected<{ Id: string; RepoTags?: string[]; RepoDigests?: string[]; Created?: string }>("image", ids, sh(["docker", "image", "inspect", ...ids]));
   return raw.map((i) => ({ id: i.Id, tags: (i.RepoTags ?? []).filter((t) => t !== "<none>:<none>"), digests: i.RepoDigests ?? [], created: time(i.Created) }));
 }
 
 export function containers(sh: Sh): ContainerInfo[] {
-  const ids = lines(sh(["docker", "ps", "-aq", "--no-trunc"]).out);
+  const ids = listed("container", sh(["docker", "ps", "-aq", "--no-trunc"]));
   if (!ids.length) return [];
   type Raw = {
     Id: string;
     Name?: string;
     Image?: string;
+    LogPath?: string;
     Config?: { Image?: string; Labels?: Record<string, string> | null };
     State?: { Status?: string; Running?: boolean; FinishedAt?: string };
     Mounts?: Array<{ Type?: string; Name?: string; Source?: string }>;
   };
-  return json<Raw[]>(sh(["docker", "container", "inspect", ...ids]).out, []).map((c) => ({
+  return inspected<Raw>("container", ids, sh(["docker", "container", "inspect", ...ids])).map((c) => ({
     id: c.Id,
     name: (c.Name ?? "").replace(/^\//, ""),
     image: c.Image ?? "",
@@ -163,16 +204,24 @@ export function containers(sh: Sh): ContainerInfo[] {
     finishedAt: time(c.State?.FinishedAt),
     volumes: (c.Mounts ?? []).filter((m) => m.Type === "volume" && m.Name).map((m) => m.Name!),
     binds: (c.Mounts ?? []).filter((m) => m.Type === "bind" && m.Source).map((m) => m.Source!),
+    logPath: c.LogPath || undefined,
   }));
 }
 
 export function volumes(sh: Sh): VolumeInfo[] {
-  const names = lines(sh(["docker", "volume", "ls", "-q"]).out);
+  const names = listed("volume", sh(["docker", "volume", "ls", "-q"]));
   if (!names.length) return [];
   const df = json<{ Volumes?: Array<{ Name: string; Size?: string }> }>(sh(["docker", "system", "df", "-v", "--format", "json"]).out, {});
   const size = new Map((df.Volumes ?? []).map((v) => [v.Name, parseSize(v.Size ?? "")]));
-  const raw = json<Array<{ Name: string; CreatedAt?: string; Labels?: Record<string, string> | null }>>(sh(["docker", "volume", "inspect", ...names]).out, []);
-  return raw.map((v) => ({ name: v.Name, created: time(v.CreatedAt), project: v.Labels?.["com.docker.compose.project"], bytes: size.get(v.Name) ?? 0 }));
+  const raw = inspected<{ Name: string; Driver?: string; Mountpoint?: string; CreatedAt?: string; Labels?: Record<string, string> | null }>("volume", names, sh(["docker", "volume", "inspect", ...names]));
+  return raw.map((v) => ({
+    name: v.Name,
+    created: time(v.CreatedAt),
+    project: v.Labels?.["com.docker.compose.project"],
+    bytes: size.get(v.Name) ?? 0,
+    driver: v.Driver,
+    mountpoint: v.Mountpoint,
+  }));
 }
 
 export function diskUse(sh: Sh, mount: string): { size: number; used: number; usedPct: number } {
@@ -195,7 +244,7 @@ export const repoOf = (ref: string) => ref.replace(/@.*$/, "").replace(/:[^/:]+$
 export function pickImages(imgs: ImageInfo[], ctrs: ContainerInfo[], keep: Set<string>, cfg: DiskConfig, now: number): ImageInfo[] {
   const used = new Set(ctrs.map((c) => c.image));
   const prodRepos = new Set(ctrs.filter((c) => isProtected(cfg, c.name, c.imageName, c.project)).map((c) => repoOf(c.imageName)));
-  const cutoff = now - cfg.minAgeDays * DAY;
+  const cutoff = now - cfg.imageMinAgeDays * DAY;
   return imgs.filter(
     (i) =>
       i.tags.length > 0 &&
@@ -221,35 +270,44 @@ export function isRotatedLog(path: string): boolean {
   return /(\.\d+|[-.]\d{8})(\.(gz|xz|bz2|zst))?$|\.(gz|xz|bz2|zst|old)$/.test(basename(path));
 }
 
-/** Files under `root` that the /tmp rule removes: regular files or links whose atime, mtime and
- *  ctime are all older than the minimum age (the systemd-tmpfiles rule). Never inside a folder that
+/** What the /tmp rule removes under `root`: regular files or links whose atime, mtime and ctime are
+ *  all older than the minimum age (the systemd-tmpfiles rule), then each folder that would be left
+ *  empty, if it is that old too — listed after everything inside it. Never inside a folder that
  *  holds `.git`, never a skipped system entry, a protected path, .env or a dump (Tier B). */
 export function tmpVictims(root: string, cfg: DiskConfig, now: number): string[] {
   const cutoff = now - cfg.minAgeDays * DAY;
   const skip = cfg.tmpSkip.map((p) => new RegExp(p));
   const dump = new RegExp(cfg.dumpPattern, "i");
   const out: string[] = [];
-  const walk = (dir: string, top: boolean) => {
+  /** Walks `dir`; true when everything in it goes. */
+  const walk = (dir: string, top: boolean): boolean => {
     let names: string[];
     try {
       names = readdirSync(dir);
     } catch {
-      return;
+      return false;
     }
-    if (names.includes(".git")) return; // a repo or worktree: Tier B
+    if (names.includes(".git")) return false; // a repo or worktree: never here
+    let all = true;
     for (const name of names) {
-      if (top && skip.some((r) => r.test(name))) continue;
       const p = join(dir, name);
-      if (isProtected(cfg, p) || dump.test(name)) continue;
+      if ((top && skip.some((r) => r.test(name))) || isProtected(cfg, p) || dump.test(name)) {
+        all = false;
+        continue;
+      }
       let st;
       try {
         st = lstatSync(p);
       } catch {
+        all = false;
         continue;
       }
-      if (st.isDirectory()) walk(p, false);
-      else if ((st.isFile() || st.isSymbolicLink()) && Math.max(st.atimeMs, st.mtimeMs, st.ctimeMs) < cutoff) out.push(p);
+      // reading a folder moves its atime, so a folder is judged by its mtime and ctime only
+      if (st.isDirectory() && walk(p, false) && Math.max(st.mtimeMs, st.ctimeMs) < cutoff) out.push(p);
+      else if (!st.isDirectory() && (st.isFile() || st.isSymbolicLink()) && Math.max(st.atimeMs, st.mtimeMs, st.ctimeMs) < cutoff) out.push(p);
+      else all = false;
     }
+    return all;
   };
   walk(root, true);
   return out;
@@ -281,9 +339,167 @@ function rotatedLogs(cfg: DiskConfig): string[] {
   return out;
 }
 
+const ANONYMOUS_VOLUME = /^[0-9a-f]{64}$/;
+const isDbContainer = (cfg: DiskConfig, c: ContainerInfo) => new RegExp(cfg.dbImagePattern, "i").test(c.imageName);
+
+/** Unused volumes that can be rebuilt: anonymous ones (a `docker run` leftover) and those whose name
+ *  says cache, go mod/build, buildkit state, node_modules or test. Any size; never protected. */
+export function pickUnusedVolumes(vols: VolumeInfo[], ctrs: ContainerInfo[], cfg: DiskConfig): VolumeInfo[] {
+  const mounted = new Set(ctrs.flatMap((c) => c.volumes));
+  const rebuildable = new RegExp(cfg.rebuildableVolumePattern, "i");
+  return vols.filter((v) => !mounted.has(v.name) && (ANONYMOUS_VOLUME.test(v.name) || rebuildable.test(v.name)) && !isProtected(cfg, v.name, v.project));
+}
+
+/** Mounted cache volumes over the cap, on the local driver, that no DB, protected or skipped
+ *  container mounts. `stop` is the running containers to stop around the wipe. */
+export function pickCacheWipes(vols: VolumeInfo[], ctrs: ContainerInfo[], cfg: DiskConfig): Array<{ volume: VolumeInfo; stop: ContainerInfo[] }> {
+  const cache = new RegExp(cfg.cacheVolumePattern, "i");
+  const skip = cfg.wipeSkipContainers.map((p) => new RegExp(p));
+  return vols.flatMap((v) => {
+    const users = ctrs.filter((c) => c.volumes.includes(v.name));
+    if (!users.length || !cache.test(v.name) || v.bytes <= cfg.cacheVolumeMaxBytes || v.driver !== "local" || !v.mountpoint) return [];
+    if (isProtected(cfg, v.name, v.project)) return [];
+    if (users.some((c) => isDbContainer(cfg, c) || isProtected(cfg, c.name, c.imageName, c.project) || skip.some((r) => r.test(c.name)))) return [];
+    return [{ volume: v, stop: users.filter((c) => c.running) }];
+  });
+}
+
+/** Containers whose json log is over the cap; never a protected one. */
+export function pickLogTruncations(ctrs: ContainerInfo[], cfg: DiskConfig): ContainerInfo[] {
+  return ctrs.filter((c) => !!c.logPath && (c.logBytes ?? 0) > cfg.containerLogMaxBytes && !isProtected(cfg, c.name, c.imageName, c.project));
+}
+
+/** Core dumps older than the cap. */
+export function coredumpVictims(cfg: DiskConfig, now: number): string[] {
+  const cutoff = now - cfg.coredumpMaxAgeHours * 3_600_000;
+  let names: string[];
+  try {
+    names = readdirSync(cfg.coredumpDir);
+  } catch {
+    return [];
+  }
+  return names.map((n) => join(cfg.coredumpDir, n)).filter((p) => {
+    try {
+      const st = lstatSync(p);
+      return st.isFile() && st.mtimeMs < cutoff;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Projects (`/home/<p>`) with a live dev server: a running container binds a path inside one, or a
+ *  host process works in one. A bind of `/home` or `/` itself (a monitor) names no project. */
+export function liveProjects(ctrs: ContainerInfo[], cwds: string[]): Set<string> {
+  const paths = [...ctrs.filter((c) => c.running).flatMap((c) => c.binds), ...cwds];
+  return new Set(paths.map(ownerOf).filter((p) => p !== "-"));
+}
+
+/** The working folders of every host process. */
+export function processCwds(): string[] {
+  const out: string[] = [];
+  for (const pid of (() => { try { return readdirSync("/proc"); } catch { return []; } })()) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      out.push(readlinkSync(`/proc/${pid}/cwd`));
+    } catch {
+      // gone, or not ours to read
+    }
+  }
+  return out;
+}
+
+export interface BuildDir {
+  path: string;
+  mtime: number;
+  kind: "build" | "artifact";
+}
+
+function findBuildDirs(sh: Sh, cfg: DiskConfig): BuildDir[] {
+  if (!existsSync(cfg.projectsRoot)) return [];
+  const all = [...cfg.buildOutputNames, ...cfg.artifactNames];
+  const names = all.flatMap((n, i) => (i ? ["-o", "-name", n] : ["-name", n]));
+  const found = sh(["find", cfg.projectsRoot, "-mindepth", "2", "-maxdepth", String(cfg.buildOutputMaxDepth), "-xdev", "(", "-name", ".git", "-prune", ")", "-o", "-type", "d", "(", ...names, ")", "-prune", "-printf", "%T@\t%p\n"]).out;
+  return lines(found).flatMap((l) => {
+    const [mt, p] = l.split("\t");
+    if (!p) return [];
+    return [{ path: p, mtime: Number(mt) * 1000, kind: cfg.artifactNames.includes(basename(p)) ? ("artifact" as const) : ("build" as const) }];
+  });
+}
+
+/** Build outputs and test artifacts that go: git ignores the folder and tracks nothing in it (the
+ *  `git clean -X` rule; outside a repo nothing goes). A build output only in a project that is not
+ *  live; an artifact in any project, once older than the minimum age. */
+export function pickBuildOutputs(found: BuildDir[], live: Set<string>, sh: Sh, cfg: DiskConfig, now: number): string[] {
+  const cutoff = now - cfg.minAgeDays * DAY;
+  return found
+    .filter((b) => !isProtected(cfg, b.path) && (b.kind === "build" ? !live.has(ownerOf(b.path)) : b.mtime < cutoff))
+    .filter((b) => {
+      const dir = dirname(b.path);
+      const name = basename(b.path);
+      if (sh(["git", "-C", dir, "check-ignore", "-q", name]).code !== 0) return false;
+      const tracked = sh(["git", "-C", dir, "ls-files", "--", name]);
+      return tracked.code === 0 && tracked.out.trim() === "";
+    })
+    .map((b) => b.path);
+}
+
+export interface WorktreeInfo {
+  path: string;
+  repo: string;
+  /** No change, staged or untracked (ignored files do not count). */
+  clean: boolean;
+  /** Its HEAD is reachable from a ref other than its own branch: merged or pushed. */
+  onOtherRef: boolean;
+  lastCommit: number;
+  bytes?: number;
+}
+
+function worktrees(sh: Sh, cfg: DiskConfig): WorktreeInfo[] {
+  const out: WorktreeInfo[] = [];
+  let repos: string[] = [];
+  try {
+    repos = readdirSync(cfg.projectsRoot).map((n) => join(cfg.projectsRoot, n)).filter((p) => existsSync(join(p, ".git")) && lstatSync(join(p, ".git")).isDirectory());
+  } catch {
+    return out;
+  }
+  for (const repo of repos) {
+    const r = sh(["git", "-C", repo, "worktree", "list", "--porcelain"]);
+    if (r.code !== 0) continue;
+    const blocks = r.out.split(/\n\s*\n/).map((b) => lines(b)).filter((b) => b.length);
+    for (const b of blocks.slice(1)) {
+      const field = (k: string) => b.find((l) => l.startsWith(`${k} `))?.slice(k.length + 1);
+      const wt = field("worktree");
+      if (!wt || !existsSync(wt) || isProtected(cfg, wt, repo)) continue;
+      const head = field("HEAD") ?? "";
+      const own = field("branch");
+      const status = sh(["git", "-C", wt, "status", "--porcelain"]);
+      const refs = lines(sh(["git", "-C", repo, "for-each-ref", "--contains", head, "--format=%(refname)"]).out).filter((ref) => ref !== own);
+      out.push({
+        path: wt,
+        repo,
+        clean: status.code === 0 && status.out.trim() === "",
+        onOtherRef: !!head && refs.length > 0,
+        lastCommit: Number(sh(["git", "-C", wt, "log", "-1", "--format=%ct"]).out.trim()) * 1000 || 0,
+        bytes: duBytes(sh, wt),
+      });
+    }
+  }
+  return out;
+}
+
+/** Worktrees that go: clean, HEAD on another ref, last commit older than the minimum age, no
+ *  process working inside. `git worktree remove` (no force) checks again. */
+export function pickWorktrees(wts: WorktreeInfo[], cwds: string[], cfg: DiskConfig, now: number): WorktreeInfo[] {
+  const cutoff = now - cfg.minAgeDays * DAY;
+  return wts.filter(
+    (w) => w.clean && w.onOtherRef && w.lastCommit > 0 && w.lastCommit < cutoff && !cwds.some((c) => c === w.path || c.startsWith(`${w.path}/`)) && !isProtected(cfg, w.path, w.repo),
+  );
+}
+
 // ---- Tier B candidates ---------------------------------------------------------------------------
 
-export type CandidateKind = "volume" | "db-data" | "dump" | "worktree" | "build-output";
+export type CandidateKind = "volume" | "db-data" | "dump" | "worktree";
 export interface Candidate {
   id: string;
   kind: CandidateKind;
@@ -302,11 +518,13 @@ export const candidateId = (kind: CandidateKind, target: string) => `b-${createH
 /** `/home/<p>/…` → p; anything else → "-". */
 export const ownerOf = (path: string) => /^\/home\/([^/]+)/.exec(path)?.[1] ?? "-";
 
-/** Volumes no container mounts (in any state), above the size floor, not protected. */
+/** Volumes no container mounts (in any state) that may hold real DB data: named, not rebuildable,
+ *  above the size floor, not protected. */
 export function volumeCandidates(vols: VolumeInfo[], ctrs: ContainerInfo[], cfg: DiskConfig): Candidate[] {
   const mounted = new Set(ctrs.flatMap((c) => c.volumes));
+  const auto = new Set(pickUnusedVolumes(vols, ctrs, cfg).map((v) => v.name));
   return vols
-    .filter((v) => !mounted.has(v.name) && v.bytes >= cfg.volumeMinBytes && !isProtected(cfg, v.name, v.project))
+    .filter((v) => !mounted.has(v.name) && !auto.has(v.name) && v.bytes >= cfg.volumeMinBytes && !isProtected(cfg, v.name, v.project))
     .map((v) => ({ id: candidateId("volume", v.name), kind: "volume" as const, target: v.name, bytes: v.bytes, lastUsed: v.created, project: v.project ?? "-" }));
 }
 
@@ -348,54 +566,25 @@ function dumpCandidates(sh: Sh, cfg: DiskConfig): Candidate[] {
   return out;
 }
 
-function worktreeCandidates(sh: Sh, cfg: DiskConfig): Candidate[] {
-  const out: Candidate[] = [];
-  let repos: string[] = [];
-  try {
-    repos = readdirSync(cfg.projectsRoot).map((n) => join(cfg.projectsRoot, n)).filter((p) => existsSync(join(p, ".git")) && lstatSync(join(p, ".git")).isDirectory());
-  } catch {
-    return out;
-  }
-  for (const repo of repos) {
-    const r = sh(["git", "-C", repo, "worktree", "list", "--porcelain"]);
-    if (r.code !== 0) continue;
-    const paths = lines(r.out).filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
-    for (const wt of paths.slice(1)) {
-      if (!existsSync(wt) || isProtected(cfg, wt, repo)) continue;
-      const last = Number(sh(["git", "-C", wt, "log", "-1", "--format=%ct"]).out.trim()) * 1000 || 0;
-      out.push({ id: candidateId("worktree", wt), kind: "worktree", target: wt, bytes: duBytes(sh, wt), lastUsed: last, project: basename(repo), repo });
-    }
-  }
-  return out;
-}
-
-function buildOutputCandidates(sh: Sh, cfg: DiskConfig): Candidate[] {
-  if (!existsSync(cfg.projectsRoot)) return [];
-  const names = cfg.buildOutputNames.flatMap((n, i) => (i ? ["-o", "-name", n] : ["-name", n]));
-  const found = sh(["find", cfg.projectsRoot, "-mindepth", "2", "-maxdepth", "5", "-xdev", "-type", "d", "(", ...names, ")", "-prune", "-printf", "%T@\t%p\n"]).out;
-  const out: Candidate[] = [];
-  for (const l of lines(found)) {
-    const [mt, p] = l.split("\t");
-    if (!p || isProtected(cfg, p) || p.includes("/node_modules/")) continue;
-    const bytes = duBytes(sh, p);
-    if (bytes >= cfg.buildOutputMinBytes) out.push({ id: candidateId("build-output", p), kind: "build-output", target: p, bytes, lastUsed: Number(mt) * 1000, project: ownerOf(p) });
-  }
-  return out;
+/** Worktrees the automatic rule left: dirty, unpushed, recent or in use. */
+function worktreeCandidates(wts: WorktreeInfo[]): Candidate[] {
+  return wts.map((w) => ({ id: candidateId("worktree", w.path), kind: "worktree" as const, target: w.path, bytes: w.bytes ?? 0, lastUsed: w.lastCommit, project: basename(w.repo), repo: w.repo }));
 }
 
 // ---- the goal --------------------------------------------------------------------------------------
 
-/** The loop's goal (ADR-0040). Met — so a fire costs nothing — when use is under the target; when it
- *  is outside the daily hour and under the alert level; or when a clean within the cooldown freed
- *  less than the floor (nothing safe is left). `now` is read in server-local time. */
+/** The loop's goal (ADR-0041). Not met — so the loop cleans — once a day in the daily hour, whatever
+ *  the use; and outside it when use is at or above the alert level, unless a clean within the
+ *  cooldown freed less than the floor (nothing safe is left). `now` is read in server-local time. */
 export function goalMet(input: { usedPct: number; lastRun?: { at: number; freedBytes: number } }, cfg: DiskConfig, now: number): { met: boolean; detail: string } {
   const { usedPct, lastRun } = input;
-  if (usedPct < cfg.targetPct) return { met: true, detail: `disk ${usedPct}% < target ${cfg.targetPct}%` };
-  const daily = new Date(now).getHours() === cfg.dailyHour;
-  if (!daily && usedPct < cfg.alertPct) return { met: true, detail: `disk ${usedPct}% < alert ${cfg.alertPct}% (daily run at ${cfg.dailyHour}:00)` };
+  const hourStart = new Date(now);
+  hourStart.setMinutes(0, 0, 0);
+  if (hourStart.getHours() === cfg.dailyHour && !(lastRun && lastRun.at >= hourStart.getTime())) return { met: false, detail: `disk ${usedPct}%: daily cleanup due (${cfg.dailyHour}:00)` };
+  if (usedPct < cfg.alertPct) return { met: true, detail: `disk ${usedPct}% < alert ${cfg.alertPct}% (daily run at ${cfg.dailyHour}:00)` };
   if (lastRun && now - lastRun.at < cfg.cooldownHours * 3_600_000 && lastRun.freedBytes < cfg.nothingLeftBytes)
     return { met: true, detail: `disk ${usedPct}%, nothing safe left (last clean freed ${gb(lastRun.freedBytes)})` };
-  return { met: false, detail: `disk ${usedPct}% ≥ ${daily ? cfg.targetPct : cfg.alertPct}%: cleanup due` };
+  return { met: false, detail: `disk ${usedPct}% ≥ ${cfg.alertPct}%: cleanup due` };
 }
 
 // ---- running -------------------------------------------------------------------------------------
@@ -417,6 +606,10 @@ export interface RunDeps {
   now: number;
   keepDigests: Set<string>;
   dryRun?: boolean;
+  /** Working folders of host processes (live projects, busy worktrees); default: read /proc. */
+  cwds?: string[];
+  /** Size of a container's log file; default: stat it. */
+  logBytes?: (path: string) => number;
 }
 
 export interface RunResult {
@@ -428,42 +621,98 @@ export interface RunResult {
   report: string;
 }
 
+const fileBytes = (p: string) => {
+  try {
+    return statSync(p).size;
+  } catch {
+    return 0;
+  }
+};
+
+/** Empty a folder, keeping the folder itself. */
+function emptyDir(dir: string): void {
+  for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true });
+}
+
+/** A step's own action, for work that is more than a list of commands. */
+type Action = { label: string; run: () => { ok: boolean; note?: string } };
+
+/** Stop the running users, empty the volume, start them again — the start runs even if the empty fails. */
+function wipeAction(sh: Sh, w: { volume: VolumeInfo; stop: ContainerInfo[] }): Action {
+  const ids = w.stop.map((c) => c.id);
+  return {
+    label: `wipe ${w.volume.name} (${gb(w.volume.bytes)})${ids.length ? `, restart ${w.stop.map((c) => c.name).join(",")}` : ""}`,
+    run: () => {
+      if (ids.length && sh(["docker", "stop", ...ids]).code !== 0) return { ok: false, note: `could not stop ${w.stop.map((c) => c.name).join(",")}` };
+      let ok = true;
+      try {
+        emptyDir(w.volume.mountpoint!);
+      } catch {
+        ok = false;
+      } finally {
+        if (ids.length) {
+          const failed = w.stop.filter((c) => sh(["docker", "start", c.id]).code !== 0).map((c) => c.name);
+          if (failed.length) return { ok: false, note: `NOT restarted: ${failed.join(",")}` };
+        }
+      }
+      return { ok };
+    },
+  };
+}
+
 /** One cleanup: every Tier A step in order, each measured; then the Tier B list. */
 export function runCleanup(d: RunDeps): RunResult {
   const { sh, cfg, now } = d;
   const before = diskUse(sh, cfg.mount);
+  const cwds = d.cwds ?? processCwds();
+  const sizeOf = d.logBytes ?? fileBytes;
   const imgs = images(sh);
-  const ctrs = containers(sh);
+  const ctrs = containers(sh).map((c) => ({ ...c, logBytes: c.logPath ? sizeOf(c.logPath) : 0 }));
   const vols = volumes(sh);
-  const hours = cfg.minAgeDays * 24;
+  const wts = worktrees(sh, cfg);
   const oldImages = pickImages(imgs, ctrs, d.keepDigests, cfg, now);
   const oldContainers = pickContainers(ctrs, cfg, now);
+  const unusedVolumes = pickUnusedVolumes(vols, ctrs, cfg);
+  const wipes = pickCacheWipes(vols, ctrs, cfg);
+  const bigLogs = pickLogTruncations(ctrs, cfg);
   const logs = rotatedLogs(cfg);
+  const cores = coredumpVictims(cfg, now);
   const tmp = cfg.tmpRoots.flatMap((r) => tmpVictims(r, cfg, now));
+  const builds = pickBuildOutputs(findBuildDirs(sh, cfg), liveProjects(ctrs, cwds), sh, cfg, now);
+  const doneWorktrees = pickWorktrees(wts, cwds, cfg, now);
 
-  type Step = { category: string; commands: string[][]; files?: string[]; cwd?: string };
+  type Step = { category: string; commands?: string[][]; files?: string[]; dirs?: string[]; actions?: Action[]; cwd?: string };
   const steps: Step[] = [
     { category: "dangling images", commands: [["docker", "image", "prune", "-f"]] },
     { category: "unused images", commands: oldImages.map((i) => ["docker", "rmi", ...i.tags]) },
-    { category: "build cache", commands: [["docker", "builder", "prune", "-f", "--filter", `until=${hours}h`]] },
+    { category: "build cache", commands: [["docker", "builder", "prune", "-af", "--filter", `until=${cfg.buildCacheMaxAgeHours}h`]] },
     { category: "stopped containers", commands: oldContainers.map((c) => ["docker", "rm", c.id]) },
+    { category: "unused volumes", commands: unusedVolumes.map((v) => ["docker", "volume", "rm", v.name]) },
+    { category: "cache volumes", actions: wipes.map((w) => wipeAction(sh, w)) },
+    { category: "container logs", commands: bigLogs.map((c) => ["truncate", "-s", "0", c.logPath!]) },
     { category: "journal", commands: [["journalctl", `--vacuum-size=${cfg.journalMaxSize}`]] },
-    { category: "rotated logs", commands: [], files: logs },
-    { category: "/tmp", commands: [], files: tmp },
+    { category: "rotated logs", files: logs },
+    { category: "core dumps", files: cores },
+    { category: "/tmp", files: tmp },
+    { category: "build outputs", dirs: builds },
+    { category: "worktrees", commands: doneWorktrees.map((w) => ["git", "-C", w.repo, "worktree", "remove", w.path]) },
     ...cfg.packageCaches.map((p) => ({ category: `${p.name} cache`, commands: [p.argv], cwd: p.cwd })),
   ];
 
   const freed: RunResult["freed"] = [];
   let used = before.used;
   for (const s of steps) {
-    const n = s.commands.length + (s.files?.length ?? 0);
+    const commands = s.commands ?? [];
+    const n = commands.length + (s.files?.length ?? 0) + (s.dirs?.length ?? 0) + (s.actions?.length ?? 0);
     if (d.dryRun) {
-      freed.push({ category: s.category, bytes: 0, detail: s.files ? `${s.files.length} files` : s.commands.map((c) => c.join(" ")).join("; ") || "nothing" });
+      const what = [...commands.map((c) => c.join(" ")), ...(s.actions ?? []).map((a) => a.label)].join("; ");
+      freed.push({ category: s.category, bytes: 0, detail: s.files ? `${s.files.length} files` : s.dirs ? `${s.dirs.length} folders` : what || "nothing" });
       continue;
     }
     let failed = 0;
     let missing = 0;
-    for (const c of s.commands) {
+    const notes: string[] = [];
+    for (const c of commands) {
       const code = sh(c, s.cwd ? { cwd: s.cwd } : undefined).code;
       if (code === 127) missing++;
       else if (code !== 0) failed++;
@@ -472,23 +721,39 @@ export function runCleanup(d: RunDeps): RunResult {
       try {
         rmSync(f, { force: true });
       } catch {
+        try {
+          rmdirSync(f); // an emptied /tmp folder; refuses one that is not empty
+        } catch {
+          failed++;
+        }
+      }
+    }
+    for (const dir of s.dirs ?? []) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
         failed++;
       }
     }
+    for (const a of s.actions ?? []) {
+      const r = a.run();
+      if (!r.ok) failed++;
+      if (r.note) notes.push(r.note);
+    }
     const now2 = diskUse(sh, cfg.mount).used;
-    const detail = missing && missing === n ? "not installed" : `${n - failed - missing}/${n}${failed + missing ? ` (${failed + missing} skipped)` : ""}`;
+    const detail = missing && missing === n ? "not installed" : `${n - failed - missing}/${n}${failed + missing ? ` (${failed + missing} skipped)` : ""}${notes.length ? ` — ${notes.join("; ")}` : ""}`;
     freed.push({ category: s.category, bytes: Math.max(0, used - now2), detail });
     used = now2;
   }
   const after = d.dryRun ? before : diskUse(sh, cfg.mount);
   const freedTotal = freed.reduce((a, f) => a + f.bytes, 0);
 
+  const removedWorktrees = new Set(d.dryRun ? [] : doneWorktrees.map((w) => w.path));
   const candidates = [
     ...volumeCandidates(vols, ctrs, cfg),
     ...dbDataCandidates(sh, ctrs, cfg),
     ...dumpCandidates(sh, cfg),
-    ...worktreeCandidates(sh, cfg),
-    ...buildOutputCandidates(sh, cfg),
+    ...worktreeCandidates(wts.filter((w) => !removedWorktrees.has(w.path) && !(d.dryRun && doneWorktrees.includes(w)))),
   ].sort((a, b) => b.bytes - a.bytes);
 
   const prevFile = join(d.stateDir, "candidates.json");
@@ -529,11 +794,11 @@ export function deleteApproved(ids: string[], d: { sh: Sh; cfg: DiskConfig; stat
     if (c.kind === "volume") {
       if (mounted.has(c.target)) return { id, target: c.target, result: "in use by a container now: skipped" };
       const r = d.sh(["docker", "volume", "rm", c.target]);
-      return { id, target: c.target, result: r.code === 0 ? "deleted" : `docker refused: ${r.out.trim()}` };
+      return { id, target: c.target, result: r.code === 0 ? "deleted" : `docker refused: ${message(r)}` };
     }
     if (c.kind === "worktree") {
       const r = d.sh(["git", "-C", c.repo ?? c.target, "worktree", "remove", c.target]);
-      return { id, target: c.target, result: r.code === 0 ? "deleted" : `git refused: ${r.out.trim()}` };
+      return { id, target: c.target, result: r.code === 0 ? "deleted" : `git refused: ${message(r)}` };
     }
     if (liveBinds.has(c.target)) return { id, target: c.target, result: "mounted by a running container: skipped" };
     if (!existsSync(c.target)) return { id, target: c.target, result: "already gone" };
