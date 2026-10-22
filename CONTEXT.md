@@ -608,8 +608,29 @@ _Avoid_: status (unqualified), progress
 **Superseded decision**:
 An open decision the engine closed because it no longer needs an answer: the same question was
 asked again later in the thread, the operator went on in chat and the thread's work then finished,
-or its plan was done, dropped or executed. It keeps the reason in its answer (ADR-0038).
+or its plan was done, dropped or executed. It keeps the reason in its answer (ADR-0038). The waiting
+sweep also supersedes a decision that was **acted on** (ADR-0045).
 _Avoid_: stale, expired, auto-answered
+
+**Acted-on decision**:
+An open decision whose project repository holds a commit, on any branch and made after the question
+was asked, that cites the decision as `#<first 8 characters of its id>` in its message or its
+changes. The cited commit is the evidence. Workers cite the decision they act on (ADR-0045).
+_Avoid_: implemented, done decision
+
+**Waiting sweep**:
+The hourly pass over the WAITING threads (loop `waiting-sweep`). The engine first applies the rules
+it can check (ADR-0038, acted-on). A worker then judges only the decisions that have new evidence in
+their repository, and closes a decision only with a commit or a file as evidence. At the end the
+engine sends **one** reminder of what still needs the operator, and only when that list changed
+(ADR-0045).
+_Avoid_: cleanup, stale-bot, auto-close
+
+**Operator reminder**:
+The one message in which the waiting sweep lists the threads that still need the operator: the
+thread ref, the project, and the open question. It is sent only when the list is not empty and is
+different from the last one sent.
+_Avoid_: digest (that is the daily attention digest), nag, notification
 
 **Close (a thread)**:
 The operator's action that marks a thread done whatever its facts say: its open decisions are
