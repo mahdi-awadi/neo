@@ -30,31 +30,33 @@ digest, console, snooze, dismiss and **→ todo**, so the new code is the note's
 
 ## Phase 1 — store and send (AC1–AC5, AC18)
 
-- [ ] **1.1 Migration 12.** Test first: a v11 ledger migrates; `attention_items` gains
+- [x] **1.1 Migration 12.** Test first: a v11 ledger migrates; `attention_items` gains
   `from_project`, `cause_msg_id`, `resolution`, `acked_at` and index `(from_project, source)`; old
   rows read unchanged. Add `"note"` to `AttentionSource`; ledger reads/writes for the new fields.
-- [ ] **1.2 Config `notes`.** `readNotesCfg` like `readAttentionCfg`: each positive number kept, else
+- [x] **1.2 Config `notes`.** `readNotesCfg` like `readAttentionCfg`: each positive number kept, else
   the default. Test the defaults and a bad value.
-- [ ] **1.3 Secret patterns.** `src/engine/secret-patterns.ts`: `findSecret(text) → pattern name |
+- [x] **1.3 Secret patterns.** `src/engine/secret-patterns.ts`: `findSecret(text) → pattern name |
   undefined`. Table-driven tests: one hit per pattern, placeholders (`<token>`, `xxx`, `changeme`,
   `${VAR}`) are not hits, and the result never contains the matched text.
-- [ ] **1.4 `send`.** `project-notes.ts` `send`: addressing (`resolveProject` under the work root;
+- [x] **1.4 `send`.** `project-notes.ts` `send`: addressing (`resolveProject` under the work root;
   refuse a desk, self, `/`, `..`), kind/severity, sizes, secrets, the two caps; then `attention.raise`
   with key `<sender>:<ref>` in one transaction. Tests for AC1, AC2 (refresh; reopen clears
   resolution, snooze, todo) and every AC3 refusal (nothing stored).
-- [ ] **1.5 Guard the scans.** Test: `reconcileAll` and the scan tick never touch source `note`;
+- [x] **1.5 Guard the scans.** Test: `reconcileAll` and the scan tick never touch source `note`;
   `pruneAttention("note")` uses `notes.keepResolvedDays`.
-- [ ] **1.6 Events and trace.** `note_sent` / `note_refused` events; a trace outbound line under the
+- [x] **1.6 Events and trace.** `note_sent` / `note_refused` events; a trace outbound line under the
   call's cause with the title only (AC4). Test that the body never reaches the trace.
-- [ ] **1.7 Routing table (AC5).** `noteRoute(kind, severity) → "now" | "digest"`. `now` posts one
+- [x] **1.7 Routing table (AC5).** `noteRoute(kind, severity) → "now" | "digest"`. `now` posts one
   line through the existing operator send (priority `result`, flood gate) with the attention buttons.
   Test the table and that no route calls the todo queue or a session.
-- [ ] **1.8 The tool.** `project_notes` in `neoMcpServers`, gated on `deps.notes` (actions in this
+- [x] **1.8 The tool.** `project_notes` in `neoMcpServers`, gated on `deps.notes` (actions in this
   phase: `send`). Sender from `opts.projectName`, cause from `opts.cause()`. Tests: a tool call raises
   the item; the tool has no sender argument; **AC18**: `ingress.ts` passes `notes: undefined`, and a
   test builds the ingress tool set and finds no `project_notes`. Record which launch paths (dispatch,
-  pipeline, company, loops) get the tool.
-- [ ] **1.9 Wire the daemon.** Build `ProjectNotes` once in `daemon.ts`; pass `deps.notes` on the
+  pipeline, company, loops) get the tool. *Recorded:* dispatch, operator sessions and the company
+  (pipeline) get it; ingress strips it; loops get no Neo tools today (only dream memory), so loop
+  workers cannot send notes — deferred.
+- [x] **1.9 Wire the daemon.** Build `ProjectNotes` once in `daemon.ts`; pass `deps.notes` on the
   operator surfaces only.
 
 ## Phase 2 — the target and the sender read and close notes (AC6–AC12, AC19)

@@ -74,6 +74,7 @@ import { createPlanWatch } from "./plan-watch";
 import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./commit-finish";
 import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
+import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type ProjectNotes } from "./project-notes";
 import {
   apiFailureNotice,
   apiHoldMessage,
@@ -139,6 +140,9 @@ export interface DispatchDeps {
    *  keyboard from `options` (tappable answers) + an "other / type an answer" affordance. Its
    *  PRESENCE gates the `ask_operator` tool: only operator surfaces (Telegram/web) wire it, so the
    *  customer/ingress path never gets ask_operator — the firewall, by construction. */
+  /** Project notes (ADR-0043). Its PRESENCE gates the `project_notes` tool: the daemon wires it on the
+   *  operator surfaces only, and the ingress path strips it explicitly (it spreads these deps). */
+  notes?: ProjectNotes;
   postDecision?: (
     /** `ref`: the ref of the decision's thread (trace only) — the card ends with it (spec §4.3). */
     rec: { id: string; project?: string; folder?: string; ref?: string },
@@ -1654,6 +1658,31 @@ export function neoMcpServers(
               },
             ],
           };
+        },
+      ),
+    );
+  }
+  // `project_notes` (ADR-0043): one project tells another. Gated on `deps.notes`, which only operator
+  // surfaces wire (ingress strips it). The sender is this session's project — never a tool argument.
+  const notes = deps.notes;
+  if (notes) {
+    tools.push(
+      tool(
+        "project_notes",
+        NOTES_TOOL_DESCRIPTION,
+        {
+          action: z.enum(["send"]),
+          to: z.string().optional().describe('target project folder name, e.g. "eticket-v3"'),
+          kind: z.enum(["finding", "fyi", "request"]).optional(),
+          severity: z.enum(["high", "normal", "low"]).optional(),
+          title: z.string().optional().describe("one line"),
+          body: z.string().optional().describe("the facts: what, where, how you know"),
+          refs: z.array(z.string()).optional().describe("files, URLs, ids the target can check"),
+          ref: z.string().optional().describe('your own id for the note, e.g. "D16"; the same ref again updates the same note'),
+        },
+        async (args: NoteToolArgs) => {
+          const from = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder, chatId: replyChat, cause: opts.cause?.() };
+          return { content: [{ type: "text" as const, text: runNoteAction(notes, from, args, Date.now()) }] };
         },
       ),
     );

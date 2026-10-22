@@ -128,6 +128,8 @@ export interface PipelineDeps {
    *  inline keyboard). Threaded into neoMcpServers so the `ask_operator` tool can post — and its
    *  presence gates that tool (operator surfaces only; never the customer/ingress path). */
   postDecision?: DispatchDeps["postDecision"];
+  /** Project notes (ADR-0043): gates the `project_notes` tool. Operator surfaces only. */
+  notes?: DispatchDeps["notes"];
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
   now?: () => number;

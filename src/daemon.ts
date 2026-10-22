@@ -11,7 +11,8 @@ import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } fro
 import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
 import { runScan } from "./engine/producers/scan";
-import { runDigest, type AttentionAction } from "./engine/attention-actions";
+import { attentionActions, runDigest, type AttentionAction } from "./engine/attention-actions";
+import { createProjectNotes, DEFAULT_NOTES_CFG, noteNowText } from "./engine/project-notes";
 import { DEFAULT_GITHUB_CFG } from "./engine/producers/github";
 import { createGitRead } from "./engine/git-read";
 import { restartNeededSince } from "./engine/updater";
@@ -149,6 +150,17 @@ async function main(): Promise<void> {
     const m = await operatorApi.sendMessage(target, text, buttons.length ? { reply_markup: attentionKeyboard(buttons, hours) } : {});
     return { chatId: target, messageId: m.message_id };
   };
+  // Project notes (ADR-0043): one project tells another. A request or a high finding is told to the
+  // operator at once (through the flood gate, like the digest); the rest wait for the digest.
+  const notes = createProjectNotes({
+    ledger,
+    cfg: cfg.notes ?? DEFAULT_NOTES_CFG,
+    workRoot: cfg.workRoot,
+    trace,
+    notifyNow: (row) => {
+      faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));
+    },
+  });
   // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
   // time, in the background — a tick only starts it (single-flight).
   let scanning = false;
@@ -416,6 +428,7 @@ async function main(): Promise<void> {
           ["attention.scan", attentionScanTick],
           ["attention.digest", () => runDigest({ ledger, trace, digestAt: (cfg.attention ?? DEFAULT_ATTENTION_CFG).digestAt, maxLines: (cfg.attention ?? DEFAULT_ATTENTION_CFG).listLines, consoleUrl: cfg.publicUrl || undefined, send: sendDigest }, Date.now())],
           // What is built but not running (spec §8.4): git + the boot record + the updater.
+          ["notes.prune", () => notes.prune(Date.now())],
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
@@ -441,7 +454,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder, notes }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -452,7 +465,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon

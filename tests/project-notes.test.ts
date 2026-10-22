@@ -180,3 +180,12 @@ test("a now-routed note is told once when it opens (not on a refresh); no note a
   expect(w.ledger.attentionById(id)?.todoId).toBeUndefined();
   expect(w.ledger.listTodos({})).toEqual([]);
 });
+
+test("noteNowText: the line the operator gets for a request or a high finding — sender, target, kind, title; never the body", async () => {
+  const { noteNowText } = await import("../src/engine/project-notes");
+  const w = world();
+  const id = w.notes.send(prodOps(w.root), d16({ kind: "request", severity: "high" }), 1_000).id!;
+  const text = noteNowText(w.ledger.attentionById(id)!);
+  expect(text).toBe(`📝 note #${id} prod-ops → eticket-v3 (request, high): stale provider_pnr breaks hotel cancellation`);
+  expect(text).not.toContain("Seen in prod logs");
+});

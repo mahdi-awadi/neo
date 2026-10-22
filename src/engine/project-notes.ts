@@ -210,3 +210,45 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
     },
   };
 }
+
+/** The `project_notes` tool's arguments, as the worker sends them (all optional: checked here). */
+export interface NoteToolArgs {
+  action: string;
+  to?: string;
+  kind?: string;
+  severity?: string;
+  title?: string;
+  body?: string;
+  refs?: string[];
+  ref?: string;
+}
+
+/** One tool call → its text answer. The sender and cause come from the session (`from`), never from
+ *  the arguments. */
+export function runNoteAction(notes: ProjectNotes, from: SenderCtx, args: NoteToolArgs, now: number): string {
+  switch (args.action) {
+    case "send": {
+      if (!args.to || !args.kind || !args.severity || !args.title || !args.ref) return "send needs `to`, `kind`, `severity`, `title` and `ref` (and usually `body`, `refs`).";
+      const r = notes.send(from, { to: args.to, kind: args.kind as NoteKind, severity: args.severity as AttentionSeverity, title: args.title, body: args.body ?? "", refs: args.refs, ref: args.ref }, now);
+      return r.text;
+    }
+    default:
+      return `unknown project_notes action: ${args.action}`;
+  }
+}
+
+/** The tool's description: what a note is for, and the rules a worker must keep. */
+export const NOTES_TOOL_DESCRIPTION =
+  "Tell ANOTHER of the operator's projects something it owns, through Neo (ADR-0043). " +
+  "`send`: `to` (project folder name, e.g. \"eticket-v3\"), `kind` (`finding` = a defect or risk it owns, `fyi` = information, `request` = you ask it to do work), " +
+  "`severity` (high/normal/low), `title` (one line), `body` (the facts), `refs` (files, URLs, ids), and `ref` (YOUR id for it, e.g. \"D16\" — the same ref again updates the same note). " +
+  "A note never starts work: it shows to the operator and to the target's next session, and only the operator turns it into a todo. Use it instead of writing \"for Neo to send\". " +
+  "Refer to records by id; never put customer data or secrets in a note (a secret is refused).";
+
+/** The kind word a note's attention kind stands for (`note_request` → `request`). */
+export const noteKindOf = (row: Pick<AttentionRow, "kind">): string => row.kind.replace(/^note_/, "");
+
+/** The one line the operator gets at once for a `now`-routed note: who, to whom, what. Never the body. */
+export function noteNowText(row: AttentionRow): string {
+  return `📝 note #${row.id} ${row.fromProject ?? "?"} → ${row.project} (${noteKindOf(row)}, ${row.severity}): ${row.title}`;
+}

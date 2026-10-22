@@ -94,7 +94,10 @@ export async function runCompanyBrief(
               { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv,
                 // Customer-driven: dispatches run as source "neo", so strip the operator's standing
                 // write approval here explicitly — they keep the fence (ADR-0012).
-                governor: undefined },
+                governor: undefined,
+                // A customer-driven run never sends or reads project notes (ADR-0043): these deps are
+                // the operator's, spread, so notes is stripped here — for this run and its dispatches.
+                notes: undefined },
               CUSTOMER_CHAT,
               // BACKGROUND: a customer brief is not the operator's turn — nobody is waiting at the
               // keyboard — so dispatches this run makes stay under the interactive reserve.
