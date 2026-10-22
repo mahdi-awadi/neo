@@ -760,6 +760,13 @@ function startSession(
     const snap = memorySnapshot(order.folder, deps.cfg.memory);
     if (snap) order = { ...order, task: `${snap}\n\n${order.task}` };
   }
+  // The notes block (ADR-0043): same fresh-start gate as the snapshot; only where the operator surface
+  // wired deps.notes.
+  if (!runDeps.resume && deps.notes) {
+    const notesName = project ?? basename(order.folder);
+    const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now()), { project: notesName });
+    if (block) order = { ...order, task: block + order.task };
+  }
   const run = start(
     order,
     {

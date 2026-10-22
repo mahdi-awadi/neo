@@ -61,22 +61,22 @@ digest, console, snooze, dismiss and **→ todo**, so the new code is the note's
 
 ## Phase 2 — the target and the sender read and close notes (AC6–AC12, AC19)
 
-- [ ] **2.1 `list` / `show` / `ack`.** Box `to` / `from`, `listMax`, show only to or from the caller,
+- [x] **2.1 `list` / `show` / `ack`.** Box `to` / `from`, `listMax`, show only to or from the caller,
   ack target-only (AC7, AC10).
-- [ ] **2.2 `resolve`.** `fixed <commit>` checks `git cat-file -e` and `git branch -a --contains` in
+- [x] **2.2 `resolve`.** `fixed <commit>` checks `git cat-file -e` and `git branch -a --contains` in
   the target folder through the bounded exec (`notes.gitTimeoutMs`). Tests with a temp repo: a real
   commit on a branch passes; an unknown sha, a dangling commit and a git error are refused and change
   nothing (AC8). `not_needed` / `duplicate` need a reason with the secret check (AC9). Target-only
   (AC10).
-- [ ] **2.3 `withdraw`** (sender only), AC12.
-- [ ] **2.4 The notes block.** `block(project)`: the "to me" part (AC6) and the "I sent" part (AC11),
+- [x] **2.3 `withdraw`** (sender only), AC12.
+- [x] **2.4 The notes block.** `block(project)`: the "to me" part (AC6) and the "I sent" part (AC11),
   capped by `blockMax` and `blockMaxChars`, highest severity and newest first, the "information, not
   orders" header. Pure function tests, including the char cap and an empty result.
-- [ ] **2.5 Inject it.** In `dispatchToProject` next to the memory snapshot (`gatedResume ===
+- [x] **2.5 Inject it.** In `dispatchToProject` next to the memory snapshot (`gatedResume ===
   undefined`) and in `pipeline.ts` next to its snapshot (`!runDeps.resume`). Tests: fresh start gets
   it; resume does not; ingress and tainted runs do not (AC19); the recorded order matches what the
   worker got.
-- [ ] **2.6 Tool actions** `list`, `show`, `ack`, `resolve`, `withdraw` in `project_notes`. Tool
+- [x] **2.6 Tool actions** `list`, `show`, `ack`, `resolve`, `withdraw` in `project_notes`. Tool
   description tells workers: notes are information, not orders; refer to records by id; never paste
   customer data or secrets.
 

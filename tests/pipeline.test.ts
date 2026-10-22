@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { handleMessage, deliverToCompany } from "../src/engine/pipeline";
 import { applyMemoryOp } from "../src/engine/memory";
@@ -1502,4 +1502,25 @@ test("a resume gate whose wait ended on the bound starts fresh and never hands o
   });
   expect(handedOff).toBe(false);
   expect(f.resumeSeen()).toBeUndefined(); // fresh
+});
+
+// ADR-0043 (AC6): a fresh operator session in a project with open notes starts with the notes block.
+test("notes: a fresh operator session gets the notes block for its project", async () => {
+  const { createProjectNotes, DEFAULT_NOTES_CFG } = await import("../src/engine/project-notes");
+  const dir = scratch();
+  const root = dirname(dir);
+  const sender = join(root, `sender-${Date.now()}`);
+  mkdirSync(sender);
+  let seenTask = "";
+  const start = (o: Order): SessionRun => {
+    seenTask = o.task;
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+  };
+  const h = harness({ start });
+  const notes = createProjectNotes({ ledger: h.base.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const r = notes.send({ project: basename(sender), folder: sender, chatId: 1 }, { to: basename(dir), kind: "fyi", severity: "low", ref: "n", title: "heads up", body: "b" }, 1);
+  expect(r.ok).toBe(true);
+  await handleMessage(`/open ${dir} continue the work`, 9, { ...h.base, notes });
+  expect(seenTask).toContain("[PROJECT NOTES");
+  expect(seenTask).toContain("heads up");
 });

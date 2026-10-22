@@ -2085,3 +2085,37 @@ test("a todo dispatch armed at a checkpoint that cannot complete ends as failed 
   const recorded = d.ledger.listRecent(5).find((o) => o.task.includes("build all phases"))!;
   expect(d.ledger.getOutcome(recorded.id)?.status).toBe("error"); // the record agrees with the report
 });
+
+// ADR-0043 (AC6, AC19): a fresh dispatch starts with the target's open notes; a resume, or a run
+// without deps.notes (ingress strips it), does not.
+test("notes: a fresh dispatch gets the notes block; a kept resume and a run without notes do not", async () => {
+  const { createProjectNotes, DEFAULT_NOTES_CFG } = await import("../src/engine/project-notes");
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  mkdirSync(join(root, "prod-ops"));
+  const { d } = makeDeps();
+  const notes = createProjectNotes({ ledger: d.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const id = notes.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "finding", severity: "high", ref: "D16", title: "stale pnr", body: "b" }, 1).id!;
+  const tasks: string[] = [];
+  const fakeStart = (o: Order) => {
+    tasks.push(o.task);
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "BRIEF", { ...d, notes }, 99, { start: fakeStart as never, now: () => 1, root });
+  expect(tasks[0]).toContain("[PROJECT NOTES");
+  expect(tasks[0]).toContain(`#${id} [finding/high] from prod-ops: stale pnr`);
+
+  const { d: d2 } = makeDeps();
+  await dispatchToProject("eticket-v3", "BRIEF", { ...d2 }, 99, { start: fakeStart as never, now: () => 1, root });
+  expect(tasks[1]).not.toContain("[PROJECT NOTES");
+
+  const { d: d3 } = makeDeps();
+  const notes3 = createProjectNotes({ ledger: d3.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  notes3.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "fyi", severity: "low", ref: "x", title: "t", body: "b" }, 1);
+  const prior: Order = { id: "prior", source: "neo", folder: join(root, "eticket-v3"), task: "prior", chatId: SUB_CHAT, createdAt: 0 };
+  const existing = d3.registry.add(prior, 0);
+  d3.registry.setSdkSessionId(existing.id, "sdk-existing");
+  d3.registry.setStatus(existing.id, "idle");
+  await dispatchToProject("eticket-v3", "BRIEF", { ...d3, notes: notes3 }, 99, { start: fakeStart as never, now: () => 1, root });
+  expect(tasks.at(-1)).not.toContain("[PROJECT NOTES"); // a kept resume: the session already knows
+});

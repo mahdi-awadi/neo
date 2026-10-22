@@ -759,6 +759,13 @@ export async function dispatchToProject(
         order.task = memorySnapshot(folder, memCfgForSnapshot) + order.task;
         deps.ledger.recordOrder(order); // keep the recorded task in sync with what the worker gets
       }
+      // The notes block (ADR-0043): the target's open notes and the state of the ones it sent, on a
+      // genuine fresh start only — like the snapshot. No deps.notes (ingress) → none.
+      const notesBlock = deps.notes ? faults.guard("dispatch.notesBlock", () => deps.notes!.block(name, now()), { project: name }) : undefined;
+      if (notesBlock) {
+        order.task = notesBlock + order.task;
+        deps.ledger.recordOrder(order);
+      }
     }
 
     // A fresh start after a context handoff begins FROM the note, inline (ADR-0021), and the probe
