@@ -1293,7 +1293,7 @@ function renderProjectPane(v: Any): void {
     row.className = "tart";
     row.dataset.att = String(it.id);
     // A project note names its sender (ADR-0043).
-    const from = it.fromProject ? `<span class="rfo" dir="auto">${t("pj.noteFrom", { project: it.fromProject })}</span>` : "";
+    const from = it.fromProject ? `<span class="rfo" dir="auto">${tx("pj.noteFrom", { project: esc(it.fromProject) })}</span>` : "";
     row.innerHTML = `<span>${SEV_ICON[it.severity] ?? ""}</span>${ltr("#" + it.id)}<span dir="auto">${esc(it.title)}</span>${from}<span class="rfo">${esc(age(it.ageMs))}</span>`;
     attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), () => {
       $("pjatth").textContent = tx("pj.sect.attention", { n: box.querySelectorAll(".tart[data-att]").length });
