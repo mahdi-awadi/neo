@@ -120,6 +120,36 @@ test("startScheduledLoop stays silent when the worker produces no text (silent s
   expect(replies).toEqual([]); // nothing forwarded → no per-iteration spam
 });
 
+// ADR-0045: a `report: "goal"` loop sends only its goal's output, once, never the worker's text.
+test("startScheduledLoop with report goal sends the goal detail once and no worker text", async () => {
+  const replies: Array<{ text: string; project?: string }> = [];
+  let checks = 0;
+  const out = await startScheduledLoop({ ...remLoop(), report: "goal", bounds: { maxIterations: 2 } }, {
+    chatId: 7,
+    reply: (_c, text, project) => void replies.push({ text, project }),
+    run: async (_o, h) => {
+      h.onMessage("Let me look at the threads first.");
+      return okRun();
+    },
+    check: async () => (++checks === 1 ? { met: false, detail: "" } : { met: true, detail: "⏳ Waiting on you (1):\n• m1 acme — approve?" }),
+  });
+  expect(out.met).toBe(true);
+  expect(replies).toEqual([{ text: "⏳ Waiting on you (1):\n• m1 acme — approve?", project: "acme" }]);
+});
+
+test("startScheduledLoop with report goal sends nothing when the goal prints nothing (no worker run when met first)", async () => {
+  const replies: string[] = [];
+  let ran = 0;
+  await startScheduledLoop({ ...remLoop(), report: "goal" }, {
+    chatId: 7,
+    reply: (_c, t) => void replies.push(t),
+    run: async () => (ran++, okRun()),
+    check: async () => ({ met: true, detail: "   " }),
+  });
+  expect(ran).toBe(0);
+  expect(replies).toEqual([]);
+});
+
 // Full NeoConfig fixture (2026-07-23 review finding #7): loopRunExtras derives BOTH the per-path
 // worker profile (profileDeps(cfg, "loop")) and the context-policy resume gate from `cfg` — this
 // proves a real `cfg` actually reaches runProjectLoop's iterate() call, not just that the plumbing

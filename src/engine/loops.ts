@@ -48,6 +48,9 @@ export interface LoopDef extends SchedulableLoop {
   bounds: Bounds; // maxIterations + optional budgetUsd
   enabledByDefault?: boolean; // for scheduled loops
   freshSession?: boolean; // never resume across iterations (judge/report loops)
+  /** A scheduled run sends only the goal's output, once, when it is not empty; the worker's text is
+   *  recorded in the loop's thread but never sent (ADR-0045). Unset: the worker's text is sent. */
+  report?: "goal";
   /** Marks the memory-dream consolidation loop (additive, optional — every other loop leaves this
    *  unset and is untouched). The static `folder`/`prompt` above are placeholders: the fire path
    *  (resolveDreamLoop) rewrites `folder` to `cfg.companyFolder` and interpolates `prompt`'s
@@ -666,13 +669,18 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
       // worker text only — no engine chrome
       onMessage: (t) => {
         line(t, "text");
-        void deps.reply(deps.chatId, t, project);
+        if (loop.report !== "goal") void deps.reply(deps.chatId, t, project);
       },
       shouldStop: deps.shouldStop,
       ...extras,
     },
     { run: deps.run, check },
   ).finally(() => loopPlans(deps.plans, loop, deps.chatId, planStart, cause));
+  // A goal-report loop's one message is its goal's output (deterministic), sent once.
+  if (loop.report === "goal" && out.lastDetail.trim()) {
+    line(out.lastDetail, "text");
+    await deps.reply(deps.chatId, out.lastDetail, project);
+  }
   return out;
 }
 
