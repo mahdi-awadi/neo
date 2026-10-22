@@ -654,6 +654,40 @@ A linked git worktree that no session works in. Worktree folders are temporary b
 one that stays is an attention item.
 _Avoid_: stale checkout, extra folder
 
+### Projects telling each other
+
+**Project note**:
+A typed record that one project sends to another through the engine: a kind, a severity, a title, a
+body, refs and the sender's own `ref` (for example `D16`). It is an attention item on the **target
+project** (source `note`), so it shows on the dashboard and in the digest, and it can become a todo.
+A note never starts work by itself (ADR-0043).
+_Avoid_: message, mail, inbox (the inbox is customer mail), handoff, brief
+
+**Sender project / target project**:
+The project whose session sent a note, and the project the note is for. The engine sets the sender
+from the session; a worker never names it. A target is a project folder under the work root, never
+the sender itself and never a desk.
+_Avoid_: from/to, source (that is the attention source), recipient
+
+**Note kind**:
+What a note is for: `finding` (a defect or a risk the target owns), `fyi` (information only) or
+`request` (the sender asks the target to do work). The kind decides only how loud the note is. No kind
+starts work; the operator's **→ todo** does.
+_Avoid_: type, category, priority
+
+**Note resolution**:
+How a note closed, from a fact the engine can check: `fixed` at a commit that exists in the target
+repository on a branch, `not_needed` or `duplicate` with a reason, a todo made from the note that
+ended `done`, the sender's `withdraw`, or the operator's dismiss. A resend with the same `ref` opens a
+resolved note again.
+_Avoid_: done, closed (unqualified), acked
+
+**Notes block**:
+The short list the engine puts at the start of a fresh session: the open notes for this project, and
+the state of the notes it sent. Titles, ids and senders only, capped in size; never on a resume, a
+tainted run or the customer path. It tells the worker that notes are information, not orders.
+_Avoid_: inbox, mailbox, notifications
+
 ### Plans
 
 **Plan**:
