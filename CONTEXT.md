@@ -688,6 +688,46 @@ the state of the notes it sent. Titles, ids and senders only, capped in size; ne
 tainted run or the customer path. It tells the worker that notes are information, not orders.
 _Avoid_: inbox, mailbox, notifications
 
+### Shared tools
+
+**Tools catalogue**:
+The single tracked list of the shared tools that Neo and every project can use, as one **tool card**
+per tool (ADR-0044). If a tool has no card, workers are not told about it.
+_Avoid_: registry, marketplace, tool list, toolbox
+
+**Tool card**:
+One tool's record in the catalogue: its purpose, when to use it, how to call it, the NAMES of its env
+keys (never the values), its limits and cost, its owner, its **tool kind** and its **card status**.
+_Avoid_: tool doc, manifest, plugin
+
+**Tool kind**:
+How a worker reaches a tool. `mcp` is an MCP server that a worker is given. `cli` is a command on this
+host. `api` is an external HTTP API whose key only the engine holds. A skill is not a tool kind:
+skills are how a worker learns about tools.
+_Avoid_: type, category, integration
+
+**Card status**:
+Where a card is in its life. `active`: workers are told about it. `candidate`: it was evaluated but is
+not offered (for example ScaleDown). `retired`: it is kept for history only. Only `active` cards
+reach workers.
+_Avoid_: enabled, state, stage
+
+**Tool skill**:
+The skill that the engine generates from an `active` card and installs in the user's skills, so that
+every Claude worker in every project sees the card's when-to-use line. It is never edited by hand.
+_Avoid_: tool prompt, tool instructions
+
+**API relay**:
+The engine's one worker tool that calls an `api`-kind card when a worker asks for it. The engine adds
+the key from its own env, so the key never reaches a worker or a project. The engine never calls an
+API on its own initiative. The worker decides; the engine acts.
+_Avoid_: proxy, gateway, wrapper
+
+**Data leaves host**:
+A card's flag for an API that sends the text of a call to a third party. A relay call to such a card
+refuses text that matches a secret pattern. Customer and tainted runs never get the API relay.
+_Avoid_: external, remote, egress (unqualified)
+
 ### Plans
 
 **Plan**:
