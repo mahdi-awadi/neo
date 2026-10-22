@@ -375,5 +375,8 @@
     "copyFailed": "Copy failed",
     "expand": "Show all lines ({{count}})",
     "collapse": "Show less"
+  },
+  "files": {
+    "download": "Download file"
   }
 }

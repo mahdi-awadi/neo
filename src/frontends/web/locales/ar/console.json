@@ -375,5 +375,8 @@
     "copyFailed": "تعذّر النسخ",
     "expand": "عرض كل الأسطر ({{count}})",
     "collapse": "عرض أقل"
+  },
+  "files": {
+    "download": "تنزيل الملف"
   }
 }

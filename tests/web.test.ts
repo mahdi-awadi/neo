@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { reconcile } from "../src/engine/attention";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { withAttachments } from "../src/engine/files";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -459,4 +459,79 @@ test("POST /api/thread/close closes the thread; no session 401, a bad id 400, an
   expect(await ok.json()).toEqual({ ok: true, closed: true, decisions: 1, todosCancelled: [], stillActive: [] });
   expect(a.ledger.threadById(root.threadId)).toMatchObject({ state: "done", closedByOperator: true });
   expect(a.ledger.decisionById(d)).toMatchObject({ status: "dismissed", answer: "thread closed by the operator" });
+});
+
+// ── Markdown file links (ADR-0046) ──────────────────────────────────────────────────────────────
+function mdApp() {
+  const a = app();
+  const base = realpathSync(scratch());
+  const root = join(base, "work");
+  mkdirSync(join(root, "learning", "notes"), { recursive: true });
+  writeFileSync(join(root, "learning", "notes", "how-neo-works.md"), "# How Neo works\n");
+  writeFileSync(join(root, "learning", "notes", "big.md"), "x".repeat(64));
+  writeFileSync(join(root, "learning", ".env"), "dotenv fixture\n");
+  writeFileSync(join(base, "outside.md"), "outside\n");
+  symlinkSync(join(base, "outside.md"), join(root, "learning", "escape.md"));
+  a.cfg.mdFiles = { roots: [root], maxBytes: 32 };
+  const get = (path: string, cookie?: string) =>
+    a.instance.fetch(new Request(`http://neo.test/md-file?path=${encodeURIComponent(path)}`, cookie ? { headers: { cookie } } : {}));
+  return { a, root, base, get };
+}
+
+test("GET /md-file serves an allowed .md file as an attachment with safe headers, and logs it", async () => {
+  const { a, root, get } = mdApp();
+  a.cfg.mdFiles!.maxBytes = 1024;
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const p = join(root, "learning", "notes", "how-neo-works.md");
+  const res = await get(p, cookie);
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("# How Neo works\n");
+  expect(res.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+  expect(res.headers.get("content-disposition")).toBe(`attachment; filename="how-neo-works.md"; filename*=UTF-8''how-neo-works.md`);
+  expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+  expect(res.headers.get("cache-control")).toBe("no-store");
+  const [ev] = a.ledger.listEvents({ kind: "md_file" });
+  expect(ev?.data).toMatchObject({ path: p, real: p, status: 200, uid: 555 });
+  expect(typeof ev?.data?.session).toBe("string");
+  expect(JSON.stringify(ev?.data)).not.toContain(decodeURIComponent(cookie.split("=")[1]!));
+});
+
+test("GET /md-file without a session is 401, reads nothing and logs nothing", async () => {
+  const { a, root, get } = mdApp();
+  const res = await get(join(root, "learning", "notes", "how-neo-works.md"));
+  expect(res.status).toBe(401);
+  expect(a.ledger.listEvents({ kind: "md_file" })).toHaveLength(0);
+});
+
+test("GET /md-file refuses outside a root, a symlink escape, .env, non-.md, a missing file and a too-large file", async () => {
+  const { a, root, base, get } = mdApp();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const status = async (p: string) => (await get(p, cookie)).status;
+  expect(await status(join(base, "outside.md"))).toBe(403);
+  expect(await status(join(root, "learning", "escape.md"))).toBe(403);
+  expect(await status(join(root, "learning", ".env"))).toBe(403);
+  expect(await status(join(root, "learning", "notes", "x.txt"))).toBe(403);
+  expect(await status(join(root, "learning", "notes", "missing.md"))).toBe(404);
+  expect(await status(join(root, "learning", "notes", "big.md"))).toBe(413);
+  expect(await status(`${root}/learning/notes/../notes/how-neo-works.md`)).toBe(400);
+  const bare = await a.instance.fetch(new Request("http://neo.test/md-file", { headers: { cookie } }));
+  expect(bare.status).toBe(400);
+  // A refusal never carries the file and is logged with its status.
+  const evs = a.ledger.listEvents({ kind: "md_file", limit: 20 });
+  expect(evs.map((e) => e.data?.status).sort()).toEqual([400, 400, 403, 403, 403, 403, 404, 413]);
+});
+
+test("a non-ASCII .md name gets an ASCII filename and an RFC 5987 filename*", async () => {
+  const { a, root, get } = mdApp();
+  const p = join(root, "learning", "notes", "ملاحظات \"x\".md");
+  writeFileSync(p, "ar\n");
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const res = await get(p, cookie);
+  expect(res.status).toBe(200);
+  const cd = res.headers.get("content-disposition") ?? "";
+  expect(cd).toStartWith('attachment; filename="');
+  expect(cd).toContain(`filename*=UTF-8''${encodeURIComponent("ملاحظات \"x\".md")}`);
+  expect(cd.split(";")[1]).not.toMatch(/[^\x20-\x7e]/);
+  expect(cd.split(";")[1]).toBe(` filename="${"_".repeat(9)}x_.md"`);
 });

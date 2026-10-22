@@ -227,6 +227,8 @@ textarea[data-compose]{resize:none;overflow-y:hidden;max-height:min(40vh,240px)}
 .pjerr{color:var(--danger)}
 .pjnote{min-height:1.4em}
 bdi.ref{font-family:var(--code);font-size:.92em}
+/* A Markdown file link (ADR-0046): the path stays an isolated LTR run; the icon follows it. */
+a.mdl{color:var(--accent);text-decoration:underline;text-underline-offset:2px;unicode-bidi:isolate;word-break:break-all}a.mdl svg{display:inline-block;vertical-align:-1px;margin-inline-start:3px}
 /* Arabic script joins its letters: no tracking or forced capitals on Arabic labels. */
 :lang(ar) .sec,:lang(ar) .sub,:lang(ar) .tab,:lang(ar) .card h3,:lang(ar) .btn,:lang(ar) .compose button,:lang(ar) .ist,:lang(ar) .tchip,:lang(ar) .tsect h4,:lang(ar) table.md th{letter-spacing:normal;text-transform:none}
 /* Phone and tablet (spec 2026-10-07, AC1–AC9). Logical properties only, so Arabic mirrors itself. */

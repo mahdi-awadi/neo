@@ -18,6 +18,7 @@ import type { OperatorBus } from "../engine/operator-bus";
 import { faults } from "../engine/fault";
 import { DEFAULT_WEB_FEED_WINDOW } from "../config";
 import { isPlanAction } from "../engine/plans";
+import { readMdFilesCfg, resolveMdFile } from "../engine/md-file";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -63,9 +64,13 @@ export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
   const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated, neoFolder: deps.neoFolder });
 
-  function sessionUser(req: Request): number | undefined {
+  function sessionToken(req: Request): string | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
-    return m ? deps.sessions.verify(decodeURIComponent(m[1]), now()) : undefined;
+    return m ? decodeURIComponent(m[1]) : undefined;
+  }
+  function sessionUser(req: Request): number | undefined {
+    const token = sessionToken(req);
+    return token === undefined ? undefined : deps.sessions.verify(token, now());
   }
 
   // The web request is a unit of work (ADR-0010): a throw in any route is reported and answered with
@@ -324,6 +329,27 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       });
     }
 
+    // A Markdown file link (ADR-0046): md-file.ts decides and reads; here only the headers and the audit.
+    if (req.method === "GET" && path === "/md-file") {
+      const asked = url.searchParams.get("path") ?? "";
+      const cfg = deps.engine.cfg.mdFiles ?? readMdFilesCfg(undefined, deps.engine.cfg.workRoot);
+      const r = resolveMdFile(asked, cfg);
+      const session = createHash("sha256").update(sessionToken(req) ?? "").digest("hex").slice(0, 12);
+      deps.engine.ledger.recordEvent("md_file", {
+        data: { path: asked.slice(0, 1024), ...(r.real ? { real: r.real } : {}), status: r.ok ? 200 : r.status, ...(r.ok ? {} : { reason: r.reason }), uid: sessionUser(req), session },
+      });
+      if (!r.ok) return new Response(r.reason, { status: r.status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      return new Response(r.bytes, {
+        headers: {
+          "content-type": "text/markdown; charset=utf-8",
+          "content-disposition": `attachment; filename="${r.name.replace(/[^\w.-]/g, "_")}"; filename*=UTF-8''${rfc5987(r.name)}`,
+          "x-content-type-options": "nosniff",
+          "cross-origin-resource-policy": "same-origin",
+          "cache-control": "no-store",
+        },
+      });
+    }
+
     if (req.method === "POST" && path === "/approve") {
       const body = (await req.json().catch(() => ({}))) as { id?: unknown; decision?: unknown };
       const ok =
@@ -482,6 +508,12 @@ const PAGE_DEFAULT = 50;
 const NO_STORE = { headers: { "cache-control": "no-store" } };
 const THREAD_STATES = new Set<string>(["open", "waiting", "done", "failed"]);
 const THREAD_ORIGINS = new Set<string>(["operator", "loop", "attention", "ingress", "legacy"]);
+
+/** A file name as an RFC 5987 `filename*` value: `encodeURIComponent` leaves `'()*` raw, which that
+ *  grammar does not allow. */
+function rfc5987(name: string): string {
+  return encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
 
 /** A non-negative integer query parameter, else undefined (a bad value is ignored, never a 500). */
 function intParam(p: URLSearchParams, name: string): number | undefined {

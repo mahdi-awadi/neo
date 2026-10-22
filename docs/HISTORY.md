@@ -1073,3 +1073,16 @@ on. Nothing closed the original question. ADR-0038 (on `dev`, not live) would ha
   `docs/investigations/2026-10-22-waiting-threads.md`.
 
 Restart-gated.
+
+Markdown file links in the console (2026-10-22, ADR-0046). A worker's reply often names a `.md`
+file it wrote. The console now shows an absolute `.md` path (inline code or plain text) as a
+download link.
+
+- `GET /md-file?path=…` serves the file to the admin session only. `src/engine/md-file.ts` checks
+  the path as written and its real path: absolute, `.md`, no hidden, `..` or secret-named segment,
+  inside a readable root (`mdFiles.roots`, default `[workRoot]`), at most `mdFiles.maxBytes`.
+- Each request with a session writes the ledger event `md_file` (path, real path, status, user,
+  session hash).
+- `src/frontends/web/md-links.ts` finds the paths in the browser and links them, LTR in RTL text.
+
+Restart-gated.

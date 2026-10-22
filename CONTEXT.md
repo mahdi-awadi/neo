@@ -889,6 +889,18 @@ A code block longer than `COLLAPSE_LINES` lines, shown at that height with a fad
 lines (N)" toggle until the operator unfolds it. Display only: the copy button copies the whole block.
 _Avoid_: truncated, hidden
 
+**Markdown file link**:
+An absolute path to a `.md` file inside a feed line (inline code or plain text), shown as a link with
+a download icon. Clicking it downloads the file through `/md-file`. The server serves it only to the
+admin session, and only when the real path is a regular `.md` file inside a **readable root**
+(ADR-0046). The path stays LTR in RTL text.
+_Avoid_: file link (unqualified), attachment (that is a staged or sent file)
+
+**Readable root**:
+A folder the console may serve Markdown files from (`mdFiles.roots`, default `[workRoot]`). A path
+counts only by its real path (symlinks resolved), never by how it was written (ADR-0046).
+_Avoid_: allowed dir, whitelist, sandbox
+
 **App shell**:
 The public, static, non-personal files the installed console may keep on the device: the web app
 manifest, the icons and the offline page (ADR-0022). Never the page at `/`, the bundle, API answers,

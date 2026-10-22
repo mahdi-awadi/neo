@@ -10,6 +10,7 @@ import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
 import { CONFIRM_WINDOW_MS, armedFor, confirmTap } from "./confirm";
 import { type DetailView, backAction, enterAction, popDetail, staleOnLoad } from "./nav";
 import { createCodeEnhancer } from "./code-blocks";
+import { linkMdPaths } from "./md-links";
 import { type Attachment, type SendBody, createAttachments, formatSize } from "./attachments";
 import { bindComposeBoxes, clearBox } from "./compose-box";
 import { linesHtml } from "./text-lines";
@@ -27,7 +28,11 @@ const tx = (key: string, vars?: Vars): string => i18n.t(key, { ...vars, interpol
 /** Syntax colours (lazy, visible blocks only), copy buttons and folding of long blocks for the
  *  server-rendered code blocks (ADR-0025). */
 const code = createCodeEnhancer((key, vars) => tx(key, vars));
-const enhanceCode = code.enhance;
+/** Every rendered row, thread and card: code blocks, then Markdown file links (ADR-0046). */
+const enhanceCode = (root: HTMLElement): void => {
+  code.enhance(root);
+  linkMdPaths(root, tx("files.download"));
+};
 
 const FEED_WINDOW = Number(root.dataset.feedWindow) || 500;
 const POLL_MS = 15000;

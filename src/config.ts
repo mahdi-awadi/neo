@@ -17,6 +17,7 @@ import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
+import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
 import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
 import { readProjectsCfg, type ProjectCfg } from "./engine/producers/git";
@@ -274,6 +275,9 @@ export interface NeoConfig {
   notes?: NotesCfg;
   /** The waiting sweep (ADR-0045): re-judge delay and reminder size. */
   waitingSweep?: WaitingSweepCfg;
+  /** Markdown file links in the console (ADR-0046): the readable roots and the size cap. Optional like
+   *  `plans`; `loadConfig` always fills it (roots default to `[workRoot]`). */
+  mdFiles?: MdFilesCfg;
   /** Restart-gated work (spec §8.4, `/gated`): the branch prefixes that count as work waiting to
    *  merge. Optional like `plans`; `loadConfig` always fills it. */
   restart?: RestartCfg;
@@ -513,6 +517,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     }
   }
 
+  const workRoot = process.env.WORK_ROOT ?? fileCfg.workRoot ?? DEFAULTS.workRoot;
   return {
     telegramToken: process.env.TELEGRAM_TOKEN ?? "",
     telegramAllowFrom: fileCfg.telegramAllowFrom ?? [],
@@ -526,7 +531,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     providers: fileCfg.providers ?? DEFAULTS.providers,
     subscriptionInteractiveReservePct:
       fileCfg.subscriptionInteractiveReservePct ?? DEFAULTS.subscriptionInteractiveReservePct,
-    workRoot: process.env.WORK_ROOT ?? fileCfg.workRoot ?? DEFAULTS.workRoot,
+    workRoot,
     companyFolder: process.env.COMPANY_FOLDER ?? fileCfg.companyFolder ?? DEFAULTS.companyFolder,
     trustNewProjects: fileCfg.trustNewProjects ?? DEFAULTS.trustNewProjects,
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
@@ -581,6 +586,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     attention: readAttentionCfg(fileCfg.attention),
     notes: readNotesCfg(fileCfg.notes),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
+    mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),
     github: readGithubCfg(fileCfg.github),
     projects: readProjectsCfg(fileCfg.projects),
