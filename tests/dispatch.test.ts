@@ -2119,3 +2119,10 @@ test("notes: a fresh dispatch gets the notes block; a kept resume and a run with
   await dispatchToProject("eticket-v3", "BRIEF", { ...d3, notes: notes3 }, 99, { start: fakeStart as never, now: () => 1, root });
   expect(tasks.at(-1)).not.toContain("[PROJECT NOTES"); // a kept resume: the session already knows
 });
+
+// ADR-0043: work for another project goes there as a project note, not "back to Neo to dispatch".
+test("the preamble sends work for another project through project_notes", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("`project_notes`");
+  expect(out).not.toContain("goes back to Neo to dispatch");
+});

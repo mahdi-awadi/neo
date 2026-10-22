@@ -97,7 +97,7 @@ function worktreeOf(dir: string, repo: string): boolean {
 }
 
 const CROSS = (dir: string) =>
-  `write into another project (${dir}). Stay in your own project; send work for another project back to Neo to dispatch there.`;
+  `write into another project (${dir}). Stay in your own project; send work for another project there with the \`project_notes\` tool.`;
 
 /** Git subcommands that change a repository (a branch, a commit, a worktree, the index or the tree). */
 const GIT_WRITE = /^(commit|checkout|switch|branch|merge|rebase|reset|tag|stash|worktree|cherry-pick|revert|am|apply|add|rm|mv|restore|push|pull|init)$/;

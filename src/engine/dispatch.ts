@@ -400,7 +400,7 @@ export function briefWithProjectDocs(task: string): string {
     "operator-supplied dev secret into `.env` (chmod 600, gitignored). Run `/security-review` before finishing auth, " +
     "payment, upload or input-handling work.\n\n" +
     "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
-    "may your helper agents. Work for another project (even one an old note lists) goes back to Neo to dispatch.\n\n" +
+    "may your helper agents. Work for another project (even one an old note lists): send it there with `project_notes`.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
     "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +

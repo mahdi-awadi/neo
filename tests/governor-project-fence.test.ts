@@ -14,7 +14,7 @@ test("a write into another project root escalates (fenced); its own folder and n
   const v = decide("Write", { file_path: "/home/eticket-v3/docs/superpowers/plans/kurdish.md", content: "x" }, CTX);
   expect(v).toMatchObject({ fenced: true });
   expect("escalate" in v && v.escalate).toContain("/home/eticket-v3");
-  expect("escalate" in v && v.escalate).toContain("dispatch");
+  expect("escalate" in v && v.escalate).toContain("`project_notes`"); // ADR-0043
   expect(decide("Edit", { file_path: "/home/eticket-v3/src/a.ts" }, CTX)).toMatchObject({ fenced: true });
   expect(decide("NotebookEdit", { notebook_path: "/home/gold/n.ipynb" }, CTX)).toMatchObject({ fenced: true });
   expect(decide("Write", { file_path: "/home/mirshad/src/a.cs", content: "x" }, CTX)).toEqual({ allow: true });
@@ -132,10 +132,10 @@ test("profileDeps fences dispatch and loop workers only, with Neo's handoff note
   expect(profileDeps(cfg, "company").projectFence).toBeUndefined();
 });
 
-test("the preamble tells workers (and their helpers) to send cross-project work back to Neo, and stays terse", () => {
+test("the preamble tells workers (and their helpers) to send cross-project work as a project note, and stays terse", () => {
   const p = briefWithProjectDocs("");
   expect(p).toContain("another project");
   expect(p).toContain("helper");
-  expect(p.toLowerCase()).toContain("dispatch");
+  expect(p).toContain("`project_notes`"); // ADR-0043
   expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + p).length).toBeLessThan(5000);
 });
