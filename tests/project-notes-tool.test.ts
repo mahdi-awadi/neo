@@ -59,7 +59,9 @@ test("send through the tool: the sender is the session's project and the cause i
 test("the tool's input has no sender field: a worker cannot name or fake the sender", () => {
   const { root, d } = setup();
   const t = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops" })).project_notes!;
-  expect(JSON.stringify(t.inputSchema)).not.toMatch(/"(from|sender|fromProject)"/);
+  const fields = Object.keys((JSON.parse(JSON.stringify(t.inputSchema)) as { def: { shape: Record<string, unknown> } }).def.shape);
+  expect(fields).toContain("to");
+  for (const f of ["from", "sender", "fromProject", "project"]) expect(fields).not.toContain(f);
 });
 
 test("send with a missing field says what is missing and stores nothing", async () => {
@@ -82,4 +84,20 @@ test("a customer (ingress) brief never gets project_notes, even when the operato
   await runCompanyBrief("customer asks about a booking", { ...d, cfg: { workers: {}, workerEnv: {} } as never, run: fakeRun as never, now: () => 2 });
   expect(seen?.mcpServers).toBeDefined();
   expect(Object.keys(neoTools(seen!.mcpServers!))).not.toContain("project_notes");
+});
+
+test("the tool's read and close actions: list, show, ack, resolve, withdraw", async () => {
+  const { root, d } = setup();
+  const sender = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops" })).project_notes!;
+  const target = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "eticket-v3"), projectName: "eticket-v3" })).project_notes!;
+  const text = async (t: typeof sender, args: Record<string, unknown>) => (await t.handler(args, {})).content[0]?.text ?? "";
+  const sent = await text(sender, { action: "send", to: "eticket-v3", kind: "fyi", severity: "low", ref: "n1", title: "heads up", body: "the body" });
+  const id = Number(sent.match(/#(\d+)/)![1]);
+  expect(await text(target, { action: "list" })).toContain(`#${id} [fyi/low] from prod-ops: heads up`);
+  expect(await text(target, { action: "show", id })).toContain("the body");
+  expect(await text(target, { action: "ack", id })).toBe(`note #${id} acknowledged`);
+  expect(await text(target, { action: "resolve", id, how: "not_needed", reason: "already known" })).toMatch(/resolved \(not_needed\)/);
+  expect(await text(sender, { action: "list", box: "from" })).toContain(`#${id} → eticket-v3: heads up — not needed: already known`);
+  expect(await text(sender, { action: "withdraw", id })).toMatch(/already not_needed/);
+  expect(await text(target, { action: "show" })).toMatch(/needs `id`/);
 });

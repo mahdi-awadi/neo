@@ -189,3 +189,139 @@ test("noteNowText: the line the operator gets for a request or a high finding �
   expect(text).toBe(`📝 note #${id} prod-ops → eticket-v3 (request, high): stale provider_pnr breaks hotel cancellation`);
   expect(text).not.toContain("Seen in prod logs");
 });
+
+// ---- Phase 2: the target and the sender read and close notes (AC6–AC12) ----
+
+const etkt = (root: string): SenderCtx => ({ project: "eticket-v3", folder: join(root, "eticket-v3"), chatId: 8 });
+const git = (cwd: string, ...args: string[]) => {
+  const r = Bun.spawnSync(["git", "-C", cwd, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  return r.stdout.toString().trim();
+};
+/** Make the target a repo with one commit on `main`; returns that commit and a dangling one. */
+function repo(root: string): { onBranch: string; dangling: string } {
+  const dir = join(root, "eticket-v3");
+  git(dir, "init", "-q", "-b", "main");
+  git(dir, "commit", "-q", "--allow-empty", "-m", "fix D16");
+  const onBranch = git(dir, "rev-parse", "HEAD");
+  const tree = git(dir, "rev-parse", "HEAD^{tree}");
+  const dangling = git(dir, "commit-tree", tree, "-m", "nowhere");
+  return { onBranch, dangling };
+}
+
+// AC7
+test("list shows my open notes, severity first; list from shows the notes I sent in every state", () => {
+  const w = world();
+  const s = prodOps(w.root);
+  const a = w.notes.send(s, d16({ ref: "a", title: "low one", severity: "low" }), 1_000).id!;
+  const b = w.notes.send(s, d16({ ref: "b", title: "high one", severity: "high" }), 1_000).id!;
+  const c = w.notes.send(s, d16({ ref: "c", title: "gone" }), 1_000).id!;
+  w.notes.withdraw("prod-ops", c, 2_000);
+  expect(w.notes.list("eticket-v3", { box: "to" }, 3_000).map((n) => n.id)).toEqual([b, a]);
+  const sent = w.notes.list("prod-ops", { box: "from" }, 3_000);
+  expect(sent.map((n) => [n.id, n.state])).toEqual([[b, "open"], [a, "open"], [c, "withdrawn"]]);
+  expect(w.notes.list("prod-ops", { box: "to" }, 3_000)).toEqual([]);
+});
+
+test("show gives the full body and refs, only to the target or the sender", () => {
+  const w = world();
+  mkdirSync(join(w.root, "gold"));
+  const id = w.notes.send(prodOps(w.root), d16(), 1_000).id!;
+  expect(w.notes.show("eticket-v3", id)).toMatchObject({ id, from: "prod-ops", to: "eticket-v3", kind: "finding", body: "Seen in prod logs on booking BK-1.", refs: ["docs/findings.md#d16"] });
+  expect(w.notes.show("prod-ops", id)?.id).toBe(id);
+  expect(w.notes.show("gold", id)).toBeUndefined();
+});
+
+// AC7, AC10
+test("ack is the target's: it marks the note acknowledged; anyone else is refused", () => {
+  const w = world();
+  const id = w.notes.send(prodOps(w.root), d16(), 1_000).id!;
+  expect(w.notes.ack("prod-ops", id, 2_000)).toMatchObject({ ok: false });
+  expect(w.notes.ack("eticket-v3", id, 2_000)).toMatchObject({ ok: true });
+  expect(w.notes.show("eticket-v3", id)?.state).toBe("acknowledged");
+});
+
+// AC8
+test("resolve fixed: a commit on a branch of the target resolves it; the sender sees the commit", async () => {
+  const w = world();
+  const { onBranch } = repo(w.root);
+  const id = w.notes.send(prodOps(w.root), d16(), 1_000).id!;
+  const r = await w.notes.resolve("eticket-v3", id, { how: "fixed", commit: onBranch.slice(0, 9) }, 2_000);
+  expect(r).toMatchObject({ ok: true });
+  const row = w.ledger.attentionById(id)!;
+  expect(row.resolvedAt).toBe(2_000);
+  expect(JSON.parse(row.resolution!)).toMatchObject({ how: "fixed", commit: onBranch, by: "eticket-v3" });
+  expect(w.notes.list("prod-ops", { box: "from" }, 3_000)[0]).toMatchObject({ id, state: "fixed" });
+});
+
+test("resolve fixed refuses an unknown sha, a commit on no branch, a non-sha and a git error — nothing changes", async () => {
+  const w = world();
+  const { dangling } = repo(w.root);
+  const id = w.notes.send(prodOps(w.root), d16(), 1_000).id!;
+  for (const commit of ["deadbeef1234", dangling, "HEAD", "main; rm -rf /"]) {
+    expect((await w.notes.resolve("eticket-v3", id, { how: "fixed", commit }, 2_000)).ok).toBe(false);
+  }
+  const broken = world({ deps: { exec: async () => ({ code: 128, out: "", err: "fatal: boom" }) } });
+  const id2 = broken.notes.send(prodOps(broken.root), d16(), 1_000).id!;
+  expect(await broken.notes.resolve("eticket-v3", id2, { how: "fixed", commit: "abcdef1" }, 2_000)).toMatchObject({ ok: false });
+  expect(w.ledger.attentionById(id)?.resolvedAt).toBeUndefined();
+  expect(broken.ledger.attentionById(id2)?.resolvedAt).toBeUndefined();
+});
+
+// AC9, AC10
+test("resolve not_needed or duplicate needs a reason (size- and secret-checked); only the target resolves", async () => {
+  const w = world();
+  const id = w.notes.send(prodOps(w.root), d16(), 1_000).id!;
+  expect((await w.notes.resolve("eticket-v3", id, { how: "not_needed" }, 2_000)).text).toMatch(/needs a reason/);
+  expect((await w.notes.resolve("eticket-v3", id, { how: "duplicate", reason: "r".repeat(501) }, 2_000)).text).toMatch(/over 500/);
+  expect((await w.notes.resolve("eticket-v3", id, { how: "duplicate", reason: `PASSWORD=${"s3cr3t" + "Value9"}` }, 2_000)).text).toMatch(/secret/);
+  expect((await w.notes.resolve("prod-ops", id, { how: "not_needed", reason: "x" }, 2_000)).ok).toBe(false);
+  expect(await w.notes.resolve("eticket-v3", id, { how: "duplicate", reason: "same as #3" }, 2_000)).toMatchObject({ ok: true });
+  expect(w.notes.list("prod-ops", { box: "from" }, 3_000)[0]).toMatchObject({ state: "duplicate", reason: "same as #3" });
+  expect((await w.notes.resolve("eticket-v3", id, { how: "duplicate", reason: "again" }, 2_000)).text).toMatch(/already resolved/);
+});
+
+// AC12, AC16
+test("withdraw is the sender's; a dismissed note reads as dismissed to the sender", () => {
+  const w = world();
+  const s = prodOps(w.root);
+  const a = w.notes.send(s, d16({ ref: "a" }), 1_000).id!;
+  const b = w.notes.send(s, d16({ ref: "b" }), 1_000).id!;
+  expect(w.notes.withdraw("eticket-v3", a, 2_000).ok).toBe(false);
+  expect(w.notes.withdraw("prod-ops", a, 2_000).ok).toBe(true);
+  w.ledger.updateAttention(b, { resolvedAt: 2_000, dismissed: true }); // the operator's dismiss
+  const sent = Object.fromEntries(w.notes.list("prod-ops", { box: "from" }, 3_000).map((n) => [n.id, n.state]));
+  expect(sent).toEqual({ [a]: "withdrawn", [b]: "dismissed" });
+});
+
+// AC6, AC11
+test("the notes block: my open notes and the state of the ones I sent, as information not orders", async () => {
+  const w = world();
+  const { onBranch } = repo(w.root);
+  const s = prodOps(w.root);
+  const id = w.notes.send(s, d16(), 1_000).id!;
+  const block = w.notes.block("eticket-v3", 2_000);
+  expect(block).toContain("information, not orders");
+  expect(block).toContain(`#${id} [finding/normal] from prod-ops: stale provider_pnr breaks hotel cancellation`);
+  expect(block).not.toContain("Seen in prod logs"); // titles only
+  await w.notes.resolve("eticket-v3", id, { how: "fixed", commit: onBranch }, 3_000);
+  expect(w.notes.block("eticket-v3", 4_000)).toBe("");
+  const mine = w.notes.block("prod-ops", 4_000);
+  expect(mine).toContain(`#${id} → eticket-v3: stale provider_pnr breaks hotel cancellation — fixed at ${onBranch.slice(0, 12)}`);
+});
+
+test("the notes block is capped by lines and characters, and the sender's part looks back sentLookbackDays", () => {
+  const w = world({ cfg: { blockMax: 2, blockMaxChars: 600, sentLookbackDays: 1 } });
+  const s = prodOps(w.root);
+  for (const r of ["a", "b", "c", "d"]) w.notes.send(s, d16({ ref: r, title: `note ${r} ${"x".repeat(60)}` }), 1_000);
+  const block = w.notes.block("eticket-v3", 2_000);
+  expect(block.match(/^- #/gm)).toHaveLength(2);
+  expect(block).toContain("+2 more — project_notes list");
+  expect(block.length).toBeLessThanOrEqual(600);
+  const old = w.notes.send(s, d16({ ref: "old", to: "eticket-v3" }), 1_000).id!;
+  w.notes.withdraw("prod-ops", old, 1_000);
+  expect(w.notes.block("prod-ops", 1_000 + 2 * DAY)).not.toContain(`#${old} `);
+});
+
+test("a project with no notes either way gets no block", () => {
+  expect(world().notes.block("eticket-v3", 1)).toBe("");
+});

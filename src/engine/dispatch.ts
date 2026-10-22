@@ -1671,7 +1671,7 @@ export function neoMcpServers(
         "project_notes",
         NOTES_TOOL_DESCRIPTION,
         {
-          action: z.enum(["send"]),
+          action: z.enum(["send", "list", "show", "ack", "resolve", "withdraw"]),
           to: z.string().optional().describe('target project folder name, e.g. "eticket-v3"'),
           kind: z.enum(["finding", "fyi", "request"]).optional(),
           severity: z.enum(["high", "normal", "low"]).optional(),
@@ -1679,10 +1679,15 @@ export function neoMcpServers(
           body: z.string().optional().describe("the facts: what, where, how you know"),
           refs: z.array(z.string()).optional().describe("files, URLs, ids the target can check"),
           ref: z.string().optional().describe('your own id for the note, e.g. "D16"; the same ref again updates the same note'),
+          id: z.number().int().optional().describe("note number (#N), for show/ack/resolve/withdraw"),
+          box: z.enum(["to", "from"]).optional().describe("list: `to` = notes for this project (default), `from` = notes it sent"),
+          how: z.enum(["fixed", "not_needed", "duplicate"]).optional().describe("resolve: how the note closed"),
+          commit: z.string().optional().describe("resolve fixed: the commit sha that fixed it (on a branch)"),
+          reason: z.string().optional().describe("resolve not_needed/duplicate: why"),
         },
         async (args: NoteToolArgs) => {
           const from = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder, chatId: replyChat, cause: opts.cause?.() };
-          return { content: [{ type: "text" as const, text: runNoteAction(notes, from, args, Date.now()) }] };
+          return { content: [{ type: "text" as const, text: await runNoteAction(notes, from, args, Date.now()) }] };
         },
       ),
     );
