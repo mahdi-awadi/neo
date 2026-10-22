@@ -19,7 +19,8 @@ export function reconcile(
 ): { opened: number[]; resolved: number[] } {
   const opened: number[] = [];
   const resolved: number[] = [];
-  if (drafts === "error") return { opened, resolved };
+  // A project note (ADR-0043) is never seen by a scan, so no scan may resolve it.
+  if (drafts === "error" || source === "note") return { opened, resolved };
   ledger.transaction(() => {
     const rows = new Map(ledger.attentionRows(project, source).map((r) => [`${r.kind}\0${r.key}`, r]));
     const seen = new Set<string>();
@@ -79,7 +80,7 @@ export function reconcileAll(
 ): { opened: number[]; resolved: number[] } {
   const opened: number[] = [];
   const resolved: number[] = [];
-  if (drafts === "error") return { opened, resolved };
+  if (drafts === "error" || source === "note") return { opened, resolved };
   const byProject = new Map<string, AttentionDraft[]>();
   for (const p of ledger.attentionProjects(source)) byProject.set(p, []);
   for (const d of drafts) byProject.set(d.project, [...(byProject.get(d.project) ?? []), d]);
