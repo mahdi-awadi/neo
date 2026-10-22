@@ -1,35 +1,47 @@
-# HANDOFF — project notes (ADR-0043)
+# HANDOFF — waiting threads (ADR-0045) + project notes (ADR-0043)
 
 ## Goal
-Let projects exchange information through Neo ("project notes", ADR-0043). A note is an attention
-item for the operator; only the operator starts work. Plan:
-`docs/superpowers/plans/2026-10-22-project-notes.md`; spec:
-`docs/superpowers/specs/2026-10-22-project-notes-design.md`.
+Finished threads must leave WAITING. An hourly loop re-checks WAITING threads and reminds the
+operator once, only when the list changes.
 
-## Done — all 4 phases, on `dev` @ e1649d7 (restart-gated, NOT on master)
-- Design: 74230b2 (ADR-0043, spec, plan, CONTEXT.md terms).
-- P1 store and send: ce2ec83, f5c6e7c, 6378aaf, 85d9406 (migration 12, notes config, secret refusal, caps, `project_notes` tool on operator surfaces only).
-- P2 read, ack, resolve, withdraw, the notes block: de76320, a5257b8.
-- P3 operator side (brief templates, cause, resolve on done, sender in the console EN+AR): 8d893b9, 6547285.
-- P4 preamble, fence reason, docs: fafc39f, ba104d9.
-- Code-review fixes: 2890b80. Plan ticked: e1649d7.
-- `/security-review`: no findings. Re-verified 2026-10-22: `tsc` clean, `bun test` 1989 pass, 0 fail.
-- Also on `dev`: 2b5abdb (ADR-0042, tests keep temp folders in one per-run root).
+## Done (on `dev`, restart-gated)
+- **Root cause:** a decision closes only through its own card (tap or reply to the card). The
+  operator answers elsewhere: a new message (a new thread), a re-ask under a new id, or chat that the
+  worker acts on. Nothing closed the original question, so `deriveThreadState`
+  (`src/engine/thread-state.ts:18`) kept the thread `waiting`. ADR-0038 (on dev since 10-15, not
+  live) would settle only 1 of 20.
+- **Fix (ADR-0045):** `src/engine/waiting-sweep.ts` + CLI `tools/threads/sweep.ts`:
+  - A decision closes only on evidence the engine checks: a commit or tracked file newer than the
+    question.
+  - The worker is offered only the decisions whose repository moved.
+  - One reminder is sent, only when the list changed.
+  - Loops gained `report: "goal"`, and a command goal keeps its output.
+  - `supersedeDecision` cancels the todos parked on the decision.
+- **Loop:** `docs/loops/waiting-sweep.json`, cron `0 * * * *`. It is NOT loaded yet.
+- **Cleanup, applied to the live ledger 2026-10-22:** `tools/oneoff/2026-10-22-close-done-waiting-threads.ts`.
+  - Backup: `data/ledger.db.bak-2026-10-22-waiting-sweep-1792684504336`.
+  - 14 decisions superseded. 9 threads went to done (m9g0b m74i2 ma18s mae06 m9ygk macay m9pfe
+    m9piu m9yn1).
+  - Todos #406 #413 #418 cancelled. The SOS plan was marked done.
+  - The 14 asks that stay open were seeded as judgements.
+  - WAITING threads: 21 → 12. Evidence: `docs/investigations/2026-10-22-waiting-threads.md`.
+- Tests: 2010 pass. `tsc` clean. Security review: no findings. Code review: findings fixed.
+- Earlier on dev: project notes (ADR-0043), test temp root (ADR-0042).
 
-## Next steps
-1. With operator permission only: merge `dev` → master, then restart the daemon. Never restart without permission.
-2. After the restart, check one real note end to end: prod-ops sends a note to eticket-v3 → it shows in `/attention` → todo → resolve.
-3. For Neo to dispatch (other projects, not this repo): eticket-v3 `eticket-expo-app` Metro JS-heap OOMs; mirshad air version pin (Go 1.26 vs image 1.25).
-4. Optional, needs the operator's yes: give loop and Codex workers Neo's MCP tools so they can use `project_notes`.
+## Next steps (operator)
+1. Merge `dev` → master, then restart neo.service, with the operator's permission. Never restart
+   without it.
+2. After the restart, run `bun tools/create-loop.ts docs/loops/waiting-sweep.json` (loads the hourly
+   loop). Do not run it before: dev code would migrate the live ledger to v12 under the v11 daemon.
+3. Rotate the sandbox password that the operator typed in plain text in thread m9ytv. It is stored
+   in the ledger.
 
-## Open decisions
-- When to merge `dev` → master and restart (restart-gated work is piling up on `dev`).
-- Accepted limit: at a "task done" handoff that still lists next steps, a note made into that todo resolves at once.
+## Still waiting for the operator (10 + 1 unclear + 1 live approval)
+m7hji, m7ijm, m9snq ×2, m9ytv ×2, ma71j, ma8ox (plan), m7wys, maby3, mab0w (2 plans), m8k9f.
+Unclear: m7nk8. Live approval: maeue. The asks are in the investigation doc.
 
 ## Gotchas
-- `bun test` fires no process `exit` event; use a global `afterAll` in the preload.
-- The ingress path spreads the operator `DispatchDeps`; strip every new operator-only dep there (`notes: undefined`).
-- Codex runs get no MCP servers; loops get only the dream-memory server.
-- `threadArtifacts` sorts todos ascending with a limit; use `newestTodoInThread`.
-- Write commit messages to a file and use `git commit -F` (the guard blocks some heredoc text).
-- A worktree needs a `node_modules` symlink; remove it before `git worktree remove`.
+- The sweep CLI writes the ledger from its own process and cannot see live sessions. The daemon
+  corrects a thread on its next line.
+- Commit messages: write them to a file and use `git commit -F`.
+- A worktree needs a `node_modules` symlink. Remove the link before `git worktree remove`.
