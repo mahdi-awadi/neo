@@ -1055,3 +1055,21 @@ pattern; sizes and per-sender caps are config (`notes`). The customer/ingress pa
 tool. The preamble and the fence's reason now point at `project_notes`. Loop workers and Codex
 workers have no Neo tools yet, so they cannot send notes (they still see the notes block on a fresh
 start where it applies). Restart-gated.
+
+Finished threads no longer stay WAITING (2026-10-22, ADR-0045). The console listed 20 WAITING
+threads that looked finished. Every one held a real `ask_operator` question or plan card. A
+decision closes only through its own card, but the operator answered elsewhere: a new message
+(which starts a new thread), a re-asked question under a new id, or chat that the worker then acted
+on. Nothing closed the original question. ADR-0038 (on `dev`, not live) would have settled 1 of the
+20. Fix:
+- A decision can be closed on evidence that the engine checks: a commit or a tracked file in its
+  repository that is newer than the question. The decision is superseded with the reason, and the
+  todos parked on it are cancelled.
+- A new hourly loop, `waiting-sweep`, runs a worker only when a decision's repository moved.
+- The operator gets one reminder of what still needs them, sent only when the list changed.
+- Loops gained `report: "goal"`, and a command goal keeps its whole output.
+- A one-off closed the 14 decisions a person had checked as done. 9 threads went to `done`. 10
+  threads still need the operator, and 1 is unclear. The evidence is in
+  `docs/investigations/2026-10-22-waiting-threads.md`.
+
+Restart-gated.

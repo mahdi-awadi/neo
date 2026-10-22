@@ -198,5 +198,7 @@ Greptile) are noted but not adopted; these principles are:
 - `tools/browser/` + `docs/browser.md` — the shared, memory-capped browser workers attach to (ADR-0032).
 - `src/engine/project-notes.ts` — project notes (ADR-0043): send/list/show/ack/resolve/withdraw, the
   notes block a fresh session starts with, resolution from facts; the `project_notes` worker tool.
+- `tools/threads/sweep.ts` + `src/engine/waiting-sweep.ts` — the hourly waiting sweep (ADR-0045): closes
+  decisions only on checked evidence and reminds the operator once per change (loop `waiting-sweep`).
 - `tools/disk/` — the disk-cleanup kit the `disk-cleanup` loop runs: Tier A automatic, Tier B only on
   approved ids (ADR-0040, ADR-0041, `docs/loops.md`).

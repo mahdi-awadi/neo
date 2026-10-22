@@ -153,6 +153,22 @@ To actually remove the human, prefer **scheduled** or **action** triggers over m
 Common shape: **define success criteria up front → act → re-measure under identical conditions →
 repeat until the goal holds**, tracking progress in a markdown file as it loops.
 
+### `waiting-sweep` (hourly, ADR-0045)
+
+Checked in as `docs/loops/waiting-sweep.json`. Load it with `bun tools/create-loop.ts
+docs/loops/waiting-sweep.json` (after the restart that brings ADR-0045 live).
+- **Goal first:** `bun tools/threads/sweep.ts check` re-derives every WAITING thread. If no decision
+  has new evidence to judge, the goal is met and **no worker runs**.
+- **Worker:** otherwise a worker judges only the decisions whose repository moved. It runs
+  `sweep.ts list`, reads the evidence read-only, then runs `close <id> --commit|--file … --reason`
+  (the engine checks the evidence) or `keep <id> --ask "…"`.
+- **Report:** `report: "goal"`. The operator gets only the goal's output: one reminder of the threads
+  that still need them. It is sent only when that list is not empty and changed. Worker text is
+  never sent.
+
+A loop with `report: "goal"` sends the goal command's whole output once, when the goal is met, and
+never the worker's text. Without it, a scheduled loop sends the worker's text, as before.
+
 ## Caveats
 
 - **Goal design is the hard part.** Verifiable goals work great; LLM-judge goals are brittle.
