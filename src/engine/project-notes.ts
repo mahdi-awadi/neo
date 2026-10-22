@@ -254,6 +254,8 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
     if (!SEVERITIES.includes(input.severity)) return "severity must be high, normal or low";
     if (!input.title?.trim()) return "a note needs a title";
     if (!input.ref?.trim()) return "a note needs a ref (your own id for it, e.g. D16)";
+    // The key is `<sender>:<ref>`: a ':' in the ref could make another sender's key.
+    if (input.ref.includes(":")) return "a ref may not contain ':'";
     if (input.title.length > cfg.maxTitleChars) return `the title is over ${cfg.maxTitleChars} characters`;
     if ((input.body ?? "").length > cfg.maxBodyChars) return `the body is over ${cfg.maxBodyChars} characters`;
     if (refs.length > cfg.maxRefs) return `more than ${cfg.maxRefs} refs`;
@@ -261,6 +263,14 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
     const secret = secretIn([input.title, input.body ?? "", input.ref, ...refs]);
     if (secret) return `the note looks like a secret (${secret}) — never send secrets; name where the value lives instead`;
     return undefined;
+  };
+
+  /** When this sender opened notes in the last 24 hours (meta `notes:sent:<sender>`, kept exact and
+   *  small: at most the cap's worth of times). */
+  const sentKey = (sender: string) => `notes:sent:${sender}`;
+  const sentTimes = (sender: string, now: number): number[] => {
+    const v = ledger.getMeta(sentKey(sender))?.value;
+    return Array.isArray(v) ? v.filter((t): t is number => typeof t === "number" && t > now - DAY_MS) : [];
   };
 
   const refuse = (from: SenderCtx, to: string, reason: string): NoteResult => {
@@ -311,18 +321,26 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
       if ("error" in t) return refuse(from, input.to, t.error);
       const to = input.to.trim();
       const key = `${from.project}:${input.ref.trim()}`;
-      const existing = ledger.attentionRows(to, "note").find((r) => r.key === key);
+      const existing = ledger.attentionRows(to, "note").find((r) => r.key === key && r.fromProject === from.project);
       if (existing?.dismissed) return refuse(from, to, `note #${existing.id} (${input.ref.trim()}) was dismissed by the operator and stays closed`);
       const isNew = !existing;
       const reopens = existing?.resolvedAt !== undefined;
-      const counts = ledger.noteCounts(from.project, to, now - DAY_MS);
-      if (isNew && counts.sentSince >= cfg.maxPerSenderPerDay) {
-        return refuse(from, to, `${from.project} already sent ${counts.sentSince} notes in 24 hours (notes.maxPerSenderPerDay)`);
+      // Every open (a new note, or a resolved one opened again) counts against the daily cap, so
+      // withdraw-and-resend is not a way around it. A refresh of an open note is not an open.
+      const opens = isNew || reopens;
+      const sent = sentTimes(from.project, now);
+      if (opens && sent.length >= cfg.maxPerSenderPerDay) {
+        return refuse(from, to, `${from.project} already opened ${sent.length} notes in 24 hours (notes.maxPerSenderPerDay)`);
       }
-      if ((isNew || reopens) && counts.openToTarget >= cfg.maxOpenPerPair) {
+      const counts = ledger.noteCounts(from.project, to, now - DAY_MS);
+      if (opens && counts.openToTarget >= cfg.maxOpenPerPair) {
         return refuse(from, to, `${from.project} already has ${counts.openToTarget} open notes to ${to} (notes.maxOpenPerPair) — resolve or withdraw some first`);
       }
       const refs = input.refs ?? [];
+      // The same ref with another kind is the same note: change its kind in place, so `raise` (which
+      // matches kind + key) refreshes this row instead of making a second one.
+      const wasNow = existing && existing.resolvedAt === undefined ? noteRoute(noteKindOf(existing) as NoteKind, existing.severity) === "now" : false;
+      if (existing && existing.kind !== noteAttentionKind(input.kind)) ledger.updateAttention(existing.id, { kind: noteAttentionKind(input.kind) });
       const id = raise(
         ledger,
         {
@@ -332,9 +350,11 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
         },
         now,
       );
-      ledger.recordEvent("note_sent", { folder: from.folder, cause: from.cause, data: { id, from: from.project, to, kind: input.kind, severity: input.severity, ref: input.ref.trim() } });
+      if (opens) ledger.setMeta(sentKey(from.project), [...sent, now], now);
+      ledger.recordEvent(opens ? "note_sent" : "note_refreshed", { at: now, folder: from.folder, cause: from.cause, data: { id, from: from.project, to, kind: input.kind, severity: input.severity, ref: input.ref.trim() } });
       deps.trace?.outbound({ chatId: from.chatId, text: `note #${id} → ${to}: ${input.title.trim()}`, cause: from.cause, kind: "notice", project: from.project, folder: from.folder });
-      if ((isNew || reopens) && noteRoute(input.kind, input.severity) === "now") {
+      // Told once when it opens, or when a refresh moves an open note up to a `now` route.
+      if ((opens || !wasNow) && noteRoute(input.kind, input.severity) === "now") {
         const row = ledger.attentionById(id);
         if (row) deps.notifyNow?.(row);
       }
@@ -374,6 +394,9 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
       } else {
         return { ok: false, text: "resolve needs `how`: fixed (with `commit`), not_needed or duplicate (with `reason`)" };
       }
+      // The git check awaited: the note may have been withdrawn or dismissed meanwhile. Never overwrite that.
+      const still = ledger.attentionById(id);
+      if (!still || still.resolvedAt !== undefined) return { ok: false, text: `note #${id} was closed meanwhile (${still ? noteState(still) : "gone"}) — not resolved` };
       close(row, { ...res, by: project, at: now }, now);
       return { ok: true, text: `note #${id} resolved (${res.how}${res.commit ? ` at ${res.commit.slice(0, 12)}` : ""}) — ${row.fromProject ?? "the sender"} sees it` };
     },

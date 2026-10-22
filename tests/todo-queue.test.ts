@@ -534,6 +534,9 @@ test("a checkpoint continuation becomes the next todo at the head of the queue a
   await queue.submit({ project: "eticket-v3", brief: "build all phases", workClass: "interactive" }, deps, 1);
   await queue.submit({ project: "eticket-v3", brief: "later work", workClass: "interactive" }, deps, 1);
   await settle();
+  // A project note made into todo #1 (ADR-0043): its link must follow the continuation.
+  const item = ledger.insertAttention({ project: "eticket-v3", folder, source: "note", kind: "note_finding", key: "p:D16", title: "t", severity: "normal", fromProject: "p" }, 1);
+  ledger.updateAttention(item, { todoId: 1 });
   writeFileSync(neoNotePath(folder), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
   runs[0].finish({ ok: true, sessionId: "s1", summary: "note written", costUsd: 0 });
   await settle();
@@ -546,6 +549,7 @@ test("a checkpoint continuation becomes the next todo at the head of the queue a
   expect(runs).toHaveLength(2);
   expect(runs[1].task).toContain("phase 3"); // the continuation starts from the note, inline
   expect(replies.some((r) => r.includes(`continuing as #${cont.id}`))).toBe(true);
+  expect(ledger.attentionById(item)!.todoId).toBe(cont.id); // ADR-0043: the note follows the work
 });
 
 // --- ADR-0037: a commit finish holds every worktree of its repository --------------------------

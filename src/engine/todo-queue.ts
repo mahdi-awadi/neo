@@ -127,6 +127,9 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
    *  live" signal: the registry reads the session idle a moment before the run's end reaches the
    *  queue, and a row left `running` by a crash is never in here. */
   const live = new Set<string>();
+  /** A todo handed on to a continuation: what was linked to it (a project note's → todo, ADR-0043)
+   *  follows the work, so the continuation's done end resolves it. Contained. */
+  const carryLinks = (from: number, to: number): void => void faults.guard("todo.carryLinks", () => ledger.relinkAttentionTodo(from, to), { todo: from });
   /** Answers to a run's decision that arrived while its handoff was still running (order → answers):
    *  folded into the continuation, so the answer is never lost and no second session starts (ADR-0029). */
   const earlyAnswers = new Map<string, string[]>();
@@ -312,7 +315,10 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       end.ok && end.continuation
         ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation + takeAnswers(end.orderId), team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause }, now())
         : undefined;
-    if (cont) ledger.moveTodo(cont.id, 1);
+    if (cont) {
+      ledger.moveTodo(cont.id, 1);
+      carryLinks(t.id, cont.id);
+    }
     // A bad end: a transient one with retries left keeps the todo as `retry`; otherwise `failed`,
     // never dropped (ADR-0027). Only `failed` is a final bad end, so only it applies the policy.
     const cls = end.ok ? undefined : classifyEnd(end.failure);
@@ -387,6 +393,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + carried + answers, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
       now(),
     );
+    carryLinks(t.id, cont.id);
     if (!parking) {
       ledger.moveTodo(cont.id, 1);
       ledger.recordEvent("todo_continued", { folder: t.folder, orderId, data: { project: t.project, id: t.id, continuation: cont.id }, cause: t.cause });
@@ -528,6 +535,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
             { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + left, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
             now(),
           );
+          carryLinks(t.id, cont.id);
           ledger.moveTodo(cont.id, 1);
           refresh(launcher()?.deps, t.cause);
           return pumpAll();

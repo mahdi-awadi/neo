@@ -104,3 +104,24 @@ test("attention lines name the sender of a note", () => {
 });
 
 export type { Ledger };
+
+// Review fix: notes share the sender's thread, so → todo must link the todo IT made, not the
+// thread's oldest one.
+test("→ todo on two notes from one turn, in a thread that already has a todo, links each to its own new todo", async () => {
+  const r = rig();
+  const cause = r.trace.inbound({ chatId: 7, text: "audit prod", surface: "telegram" });
+  const earlier = r.ledger.addTodo({ project: "prod-ops", folder: join(r.root, "prod-ops"), brief: "the sender's own work", workClass: "interactive", createdBy: "operator", cause }, 500);
+  const a = send(r, { ref: "r1", title: "first" }, cause);
+  const b = send(r, { ref: "r2", title: "second" }, cause);
+  await applyAttentionAction(r.deps, a, "todo", 2_000);
+  await applyAttentionAction(r.deps, b, "todo", 2_000);
+  const ta = r.ledger.attentionById(a)!.todoId!;
+  const tb = r.ledger.attentionById(b)!.todoId!;
+  expect(ta).not.toBe(earlier.id);
+  expect(tb).not.toBe(earlier.id);
+  expect(ta).not.toBe(tb);
+  expect(r.ledger.todoById(ta)!.brief).toContain("first");
+  expect(r.ledger.todoById(tb)!.brief).toContain("second");
+  await r.notes.onTodoEnd({ id: earlier.id, status: "done" }, 3_000); // the sender's todo ends: no note resolves
+  expect(r.ledger.attentionById(a)!.resolvedAt).toBeUndefined();
+});

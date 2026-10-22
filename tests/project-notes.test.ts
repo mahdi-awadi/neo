@@ -325,3 +325,55 @@ test("the notes block is capped by lines and characters, and the sender's part l
 test("a project with no notes either way gets no block", () => {
   expect(world().notes.block("eticket-v3", 1)).toBe("");
 });
+
+// ---- review fixes ----
+
+test("a reopen counts against the daily cap and is not a way to ping the operator without limit", () => {
+  const w = world({ cfg: { maxPerSenderPerDay: 2 } });
+  const s = prodOps(w.root);
+  expect(w.notes.send(s, d16({ kind: "request" }), 1_000).ok).toBe(true);
+  w.notes.withdraw("prod-ops", w.ledger.attentionRows("eticket-v3", "note")[0]!.id, 1_001);
+  expect(w.notes.send(s, d16({ kind: "request" }), 1_002).ok).toBe(true); // reopen #1 — the second send today
+  w.notes.withdraw("prod-ops", w.ledger.attentionRows("eticket-v3", "note")[0]!.id, 1_003);
+  const third = w.notes.send(s, d16({ kind: "request" }), 1_004);
+  expect(third.ok).toBe(false);
+  expect(third.text).toMatch(/notes.maxPerSenderPerDay/);
+  expect(w.nowLines).toHaveLength(2);
+});
+
+test("the same ref with another kind updates the one note (no second row), and a change up to a request is told", () => {
+  const w = world();
+  const s = prodOps(w.root);
+  const id = w.notes.send(s, d16({ kind: "fyi", severity: "low" }), 1_000).id!;
+  expect(w.notes.send(s, d16({ kind: "request", severity: "low" }), 2_000).id).toBe(id);
+  expect(w.ledger.attentionRows("eticket-v3", "note")).toHaveLength(1);
+  expect(w.ledger.attentionById(id)).toMatchObject({ kind: "note_request" });
+  expect(w.nowLines).toEqual([id]);
+});
+
+test("a ref may not contain ':' (it would collide with another sender's key)", () => {
+  const w = world();
+  const r = w.notes.send(prodOps(w.root), d16({ ref: "b:c" }), 1_000);
+  expect(r.ok).toBe(false);
+  expect(r.text).toMatch(/ref may not contain ':'/);
+});
+
+test("resolve does not overwrite a note withdrawn while its git check ran", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((res) => (release = res));
+  const sha = "a".repeat(40);
+  const w = world({
+    deps: {
+      exec: async (cmd) => {
+        await gate;
+        return cmd.includes("rev-parse") ? { code: 0, out: sha, err: "" } : { code: 0, out: "main\n", err: "" };
+      },
+    },
+  });
+  const id = w.notes.send(prodOps(w.root), d16(), 1_000).id!;
+  const pending = w.notes.resolve("eticket-v3", id, { how: "fixed", commit: "abcdef1" }, 2_000);
+  w.notes.withdraw("prod-ops", id, 1_500);
+  release();
+  expect((await pending).ok).toBe(false);
+  expect(JSON.parse(w.ledger.attentionById(id)!.resolution!)).toMatchObject({ how: "withdrawn" });
+});

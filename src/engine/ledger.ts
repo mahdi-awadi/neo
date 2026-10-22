@@ -171,6 +171,8 @@ export interface AttentionPatch {
   dismissed?: boolean;
   resolution?: string | null;
   ackedAt?: number | null;
+  /** A project note whose sender re-sent its ref with another kind (ADR-0043). */
+  kind?: string;
 }
 
 /** Candidate folders one `folderNamed` read looks at. */
@@ -349,6 +351,8 @@ export interface Ledger {
   routeCause(chatId: number, messageId: number): Cause | undefined;
   /** Orders, todos, decisions and the tool-action count linked to a thread; each list ≤ `limit`. */
   threadArtifacts(threadId: number, limit: number): ThreadArtifacts;
+  /** The newest todo filed under a thread for one folder (what an `→ todo` tap just made). */
+  newestTodoInThread(threadId: number, folder: string): TodoRow | undefined;
   /** Append one governed tool call (single INSERT; retention amortised — see TOOL_ACTIONS_KEEP). */
   recordToolAction(a: NewToolAction): void;
   planByPath(folder: string, path: string): PlanRow | undefined;
@@ -401,6 +405,8 @@ export interface Ledger {
   notesFrom(fromProject: string, resolvedSince: number, limit: number): AttentionRow[];
   /** The attention items a todo was made from (`→ todo`). */
   attentionByTodo(todoId: number): AttentionRow[];
+  /** A todo handed on to a continuation: the items linked to `from` now link to `to`. */
+  relinkAttentionTodo(from: number, to: number): void;
   /** How many notes `fromProject` raised since `since`, and how many are open from it to `project`. */
   noteCounts(fromProject: string, project: string, since: number): { sentSince: number; openToTarget: number };
   /** The projects that have threads and how many, most recently active first (bounded). */
@@ -984,6 +990,10 @@ export function openLedger(
         .get(chatId, messageId) as { msg_id: number | null; thread_id: number | null } | null;
       return r && r.msg_id !== null && r.thread_id !== null ? { msgId: r.msg_id, threadId: r.thread_id } : undefined;
     },
+    newestTodoInThread(threadId, folder) {
+      const r = db.query(`SELECT * FROM project_todos WHERE thread_id = ? AND folder = ? ORDER BY id DESC LIMIT 1`).get(threadId, folder) as TodoDbRow | null;
+      return r ? mapTodoRow(r) : undefined;
+    },
     threadArtifacts(threadId, limit) {
       const orders = db
         .query(
@@ -1114,7 +1124,7 @@ export function openLedger(
       const cols: Record<keyof AttentionPatch, string> = {
         folder: "folder", title: "title", detail: "detail", url: "url", severity: "severity", lastSeen: "last_seen",
         resolvedAt: "resolved_at", snoozedUntil: "snoozed_until", todoId: "todo_id", dismissed: "dismissed",
-        resolution: "resolution", ackedAt: "acked_at",
+        resolution: "resolution", ackedAt: "acked_at", kind: "kind",
       };
       const sets: string[] = [];
       const params: Array<string | number | null> = [];
@@ -1178,6 +1188,9 @@ export function openLedger(
           )
           .all(fromProject, resolvedSince, clampPage(limit)) as AttentionDbRow[]
       ).map(mapAttentionRow);
+    },
+    relinkAttentionTodo(from, to) {
+      db.query(`UPDATE attention_items SET todo_id = ? WHERE todo_id = ?`).run(to, from);
     },
     attentionByTodo(todoId) {
       return (db.query(`SELECT * FROM attention_items WHERE todo_id = ?`).all(todoId) as AttentionDbRow[]).map(mapAttentionRow);

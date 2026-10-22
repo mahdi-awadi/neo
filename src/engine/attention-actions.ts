@@ -177,8 +177,12 @@ async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<Att
     // A project note joins the thread of the operator message it traces to (ADR-0043), so /trace shows
     // the chain from the finding to the fix; anything else gets its own thread (origin attention).
     const cause = noteCause(ledger, row) ?? deps.trace.root({ origin: "attention", title: row.title, project: row.project, folder: row.folder });
+    // The todo THIS tap made: a project note joins a thread that may already hold todos (ADR-0043), so
+    // never "the thread's first todo" — the one in this folder that was not there before the submit.
+    const before = ledger.newestTodoInThread(cause.threadId, row.folder)?.id ?? 0;
     const text = await deps.todo.submit({ project: row.folder, brief, workClass: "interactive", cause }, launcher.deps, launcher.replyChat);
-    const todo = ledger.threadArtifacts(cause.threadId, 5).todos[0];
+    const made = ledger.newestTodoInThread(cause.threadId, row.folder);
+    const todo = made && made.id > before ? made : undefined;
     if (!todo || todo.status === "cancelled") return { ok: false, text }; // refused or held: nothing runs
     ledger.updateAttention(row.id, { todoId: todo.id });
     return { ok: true, text: `queued as todo #${todo.id}` };
