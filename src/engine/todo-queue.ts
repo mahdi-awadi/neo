@@ -55,6 +55,9 @@ export interface TodoQueueDeps {
   /** The retry backoff ladder (ms per retry; its length = the number of automatic retries), read live
    *  so a config reload applies (ADR-0027). Default TODO_RETRY_BACKOFF_MS_DEFAULT. */
   retryBackoffMs?: () => readonly number[];
+  /** A todo ended done — finished, not handed on as a continuation (project notes resolve on it,
+   *  ADR-0043). Contained: a throw here never breaks the queue. */
+  onDone?: (todo: TodoRow) => void;
 }
 
 export interface TodoQueue {
@@ -317,6 +320,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     const failure = end.failure ? { failure: end.failure } : {};
     if (end.ok) {
       ledger.updateTodo(t.id, { status: "done", result: cont ? `${end.summary} → continuing as #${cont.id}` : end.summary, endedAt: now() });
+      const done = cont ? undefined : ledger.todoById(t.id);
+      if (done && q.onDone) faults.guard("todo.onDone", () => q.onDone!(done), { todo: t.id });
     } else if (again) {
       ledger.updateTodo(t.id, { status: "retry", attempts: t.attempts + 1, retryAt: again.retryAt, result: end.summary, endedAt: now(), ...failure });
       ledger.recordEvent("todo_retry", { folder: t.folder, orderId: end.orderId, data: { project: t.project, id: t.id, attempt: t.attempts + 1, retryAt: again.retryAt, failure: end.failure }, cause: t.cause });

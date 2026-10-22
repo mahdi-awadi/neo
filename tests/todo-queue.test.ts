@@ -28,7 +28,7 @@ function fakeRuns() {
   return { runs, start };
 }
 
-function setup(opts: { onFailure?: "continue" | "pause"; uncommitted?: (folder: string) => string[] | undefined } = {}) {
+function setup(opts: { onFailure?: "continue" | "pause"; uncommitted?: (folder: string) => string[] | undefined; onDone?: (t: { id: number; status: string }) => void } = {}) {
   const root = mkdtempSync(join(tmpdir(), "neo-todo-"));
   mkdirSync(join(root, "eticket-v3"));
   mkdirSync(join(root, "waselni"));
@@ -51,6 +51,7 @@ function setup(opts: { onFailure?: "continue" | "pause"; uncommitted?: (folder: 
     onFailure: () => opts.onFailure ?? "continue",
     dispatchOpts: { start: start as never, now: () => 1_000 },
     ...(opts.uncommitted ? { uncommitted: opts.uncommitted } : {}),
+    ...(opts.onDone ? { onDone: opts.onDone } : {}),
   });
   queue.setLauncher(() => ({ deps, replyChat: 1 }));
   return { root, replies, ledger, registry, deps, queue, runs };
@@ -575,4 +576,21 @@ test("AC5: a todo for a sibling worktree waits while a commit finish runs, and s
   await settle();
   expect(s.runs).toHaveLength(1); // released as soon as the commit finish ended
   expect(s.runs[0]!.task).toContain("next job");
+});
+
+// ADR-0043: onDone fires once for a todo that ended done (a note made into it resolves); never for a
+// failed end; a throwing hook never breaks the queue.
+test("onDone fires for a done todo only, and a throwing hook does not stop the next release", async () => {
+  const seen: Array<[number, string]> = [];
+  const { queue, runs, ledger } = setup({ onDone: (t) => { seen.push([t.id, t.status]); throw new Error("hook boom"); } });
+  const { deps } = queue.launcher()!;
+  await queue.submit({ project: "eticket-v3", brief: "first", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "second", workClass: "interactive" }, deps, 1);
+  runs[0].finish(ok());
+  await settle();
+  expect(seen).toEqual([[1, "done"]]);
+  expect(ledger.todoById(2)?.status).toBe("running");
+  runs[1].finish(bad());
+  await settle();
+  expect(seen).toEqual([[1, "done"]]);
 });

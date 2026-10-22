@@ -56,6 +56,8 @@ export interface AttentionItemView {
   title: string;
   detail?: string;
   url?: string;
+  /** A project note (ADR-0043): the project that sent it. */
+  fromProject?: string;
   /** Since the item was first seen. */
   ageMs: number;
   todoId?: number;
@@ -324,6 +326,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
         title: r.title,
         ...(r.detail !== undefined ? { detail: r.detail } : {}),
         ...(r.url !== undefined ? { url: r.url } : {}),
+        ...(r.fromProject !== undefined ? { fromProject: r.fromProject } : {}),
         ageMs: now - r.firstSeen,
         ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
         actions: attentionActions(r),

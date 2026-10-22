@@ -149,6 +149,16 @@ async function removeWorktree(deps: AttentionActionDeps, row: AttentionRow, now:
   return { ok: true, text: `removed worktree ${f.path}` };
 }
 
+/** The cause of a project note: its operator message and that message's thread, when both are known. */
+function noteCause(ledger: Ledger, row: AttentionRow): { msgId: number; threadId: number } | undefined {
+  if (row.source !== "note" || row.causeMsgId === undefined) return undefined;
+  const threadId = ledger.messageById(row.causeMsgId)?.threadId;
+  return threadId !== undefined ? { msgId: row.causeMsgId, threadId } : undefined;
+}
+
+/** An item's title as its lines show it: a project note also names its sender (ADR-0043). */
+export const attentionTitle = (r: Pick<AttentionRow, "title" | "fromProject">): string => `${todoTitle(r.title)}${r.fromProject ? ` — from ${r.fromProject}` : ""}`;
+
 async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<AttentionActionResult> {
   const { ledger } = deps;
   // The linked todo is THE todo unless it failed or was cancelled — even "done": a brief delivered into
@@ -164,8 +174,9 @@ async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<Att
   if (queueing.has(row.id)) return { ok: false, text: `#${row.id} is being queued` };
   queueing.add(row.id);
   try {
-    // Its own thread (origin attention), so /trace and the console show what the tap started.
-    const cause = deps.trace.root({ origin: "attention", title: row.title, project: row.project, folder: row.folder });
+    // A project note joins the thread of the operator message it traces to (ADR-0043), so /trace shows
+    // the chain from the finding to the fix; anything else gets its own thread (origin attention).
+    const cause = noteCause(ledger, row) ?? deps.trace.root({ origin: "attention", title: row.title, project: row.project, folder: row.folder });
     const text = await deps.todo.submit({ project: row.folder, brief, workClass: "interactive", cause }, launcher.deps, launcher.replyChat);
     const todo = ledger.threadArtifacts(cause.threadId, 5).todos[0];
     if (!todo || todo.status === "cancelled") return { ok: false, text }; // refused or held: nothing runs
@@ -198,7 +209,7 @@ export function renderAttention(
     for (const r of items) {
       if (lines.length >= o.maxLines) break;
       // One bounded line per item: a title may hold a long, multi-line question (the brief keeps it all).
-      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${todoTitle(r.title)}${r.todoId !== undefined ? ` → todo #${r.todoId}` : ""}`);
+      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${attentionTitle(r)}${r.todoId !== undefined ? ` → todo #${r.todoId}` : ""}`);
       shown++;
       if (buttons.length < o.maxButtons) buttons.push(r);
     }
@@ -234,7 +245,7 @@ export function renderDigest(
     const count = (sev: AttentionRow["severity"]) => items.filter((r) => r.severity === sev).length;
     lines.push(`${project}: ${(["high", "normal", "low"] as const).filter((s) => count(s)).map((s) => `${count(s)} ${s}`).join(" · ")}`);
     for (const r of top) {
-      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${todoTitle(r.title)}`);
+      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${attentionTitle(r)}`);
       buttons.push({ ...r, actions: ["todo"] });
     }
     shownProjects++;

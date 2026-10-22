@@ -2,6 +2,7 @@
  *  the definition of done the worker gets when the operator taps `→ todo` on an item. Data, not
  *  code paths: a new kind adds one entry (a test checks every producer kind has one). */
 import type { AttentionRow } from "./ledger";
+import { noteDetail } from "./project-notes";
 
 interface BriefTemplate {
   /** What to do, one line. `{title}` is the item's title. */
@@ -43,6 +44,19 @@ export const ATTENTION_BRIEFS: Record<string, BriefTemplate> = {
     task: "Work was left uncommitted in this project: {title}. Review the changes: commit what is finished and green, revert what is not wanted, and say what was left and why.",
     doneWhen: "`git status` is clean, or every remaining change is explained",
   },
+  // Project notes (ADR-0043): {from} is the sender project, {id} the note number.
+  note_finding: {
+    task: "Project {from} found something this project owns (note #{id}): {title}. Check it against the code; if it holds, fix the cause and commit.",
+    doneWhen: "the finding is fixed, tested and committed, then `project_notes resolve id={id} how=fixed commit=<sha>` — or `how=not_needed` with the reason when it does not hold",
+  },
+  note_request: {
+    task: "Project {from} asks this project to do work (note #{id}): {title}. Do it when it fits this project's rules; otherwise say why not.",
+    doneWhen: "the work is done, tested and committed, then `project_notes resolve id={id} how=fixed commit=<sha>` — or `how=not_needed` with the reason",
+  },
+  note_fyi: {
+    task: "Project {from} sent this project information (note #{id}): {title}. Update what it affects here (code, docs, notes).",
+    doneWhen: "what the note affects is updated and committed, then `project_notes resolve id={id} how=fixed commit=<sha>` — or `how=not_needed` with the reason",
+  },
   restart_gated: {
     task: "Neo has changes that are built but not running: {title}. Check the change is ready (tests and types green on the branch), then list what a restart activates. Do NOT restart or reload Neo.",
     doneWhen: "the list of what a restart activates is ready for the operator",
@@ -51,12 +65,20 @@ export const ATTENTION_BRIEFS: Record<string, BriefTemplate> = {
 
 /** The todo brief for an item: its template, the facts and the URL. Undefined: no template (the
  *  test makes that impossible for a known kind). */
-export function attentionBrief(row: Pick<AttentionRow, "kind" | "title" | "detail" | "url" | "project">): string | undefined {
+export function attentionBrief(
+  row: Pick<AttentionRow, "kind" | "title" | "detail" | "url" | "project"> & Partial<Pick<AttentionRow, "id" | "source" | "fromProject">>,
+): string | undefined {
   const t = ATTENTION_BRIEFS[row.kind];
   if (!t) return undefined;
-  const lines = [t.task.replaceAll("{title}", row.title)];
-  if (row.detail) lines.push(`Facts: ${row.detail}`);
+  const fill = (s: string) => s.replaceAll("{title}", row.title).replaceAll("{from}", row.fromProject ?? "?").replaceAll("{id}", String(row.id ?? "?"));
+  const lines = [fill(t.task)];
+  if (row.source === "note") {
+    // A note keeps its body and refs as JSON: the brief gets them as plain facts.
+    const d = noteDetail(row);
+    if (d.body) lines.push(`Facts: ${d.body}`);
+    if (d.refs.length) lines.push(`Refs: ${d.refs.join(", ")}`);
+  } else if (row.detail) lines.push(`Facts: ${row.detail}`);
   if (row.url) lines.push(`Link: ${row.url}`);
-  lines.push(`Done when: ${t.doneWhen}.`);
+  lines.push(`Done when: ${fill(t.doneWhen)}.`);
   return lines.join("\n");
 }

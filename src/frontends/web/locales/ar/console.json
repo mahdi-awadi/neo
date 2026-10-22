@@ -294,6 +294,7 @@
     "unknown": "لا يوجد مشروع باسم {{name}}.",
     "noSession": "لا جلسة مفتوحة",
     "queueCount": "الطابور {{n}}",
+    "noteFrom": "من {{project}}",
     "noAttention": "لا شيء يحتاجك",
     "none": "لا شيء هنا",
     "ago": "قبل {{age}}",

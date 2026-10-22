@@ -399,6 +399,8 @@ export interface Ledger {
   /** Project notes a sender sent (ADR-0043), newest first: open ones, and ones resolved at or after
    *  `resolvedSince`. */
   notesFrom(fromProject: string, resolvedSince: number, limit: number): AttentionRow[];
+  /** The attention items a todo was made from (`→ todo`). */
+  attentionByTodo(todoId: number): AttentionRow[];
   /** How many notes `fromProject` raised since `since`, and how many are open from it to `project`. */
   noteCounts(fromProject: string, project: string, since: number): { sentSince: number; openToTarget: number };
   /** The projects that have threads and how many, most recently active first (bounded). */
@@ -1176,6 +1178,9 @@ export function openLedger(
           )
           .all(fromProject, resolvedSince, clampPage(limit)) as AttentionDbRow[]
       ).map(mapAttentionRow);
+    },
+    attentionByTodo(todoId) {
+      return (db.query(`SELECT * FROM attention_items WHERE todo_id = ?`).all(todoId) as AttentionDbRow[]).map(mapAttentionRow);
     },
     noteCounts(fromProject, project, since) {
       const r = db

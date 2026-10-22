@@ -6,7 +6,7 @@
  *  never from AI. No note starts work: only the operator's → todo does. */
 
 import { isAbsolute, join } from "node:path";
-import type { AttentionRow, AttentionSeverity, Cause, Ledger } from "./ledger";
+import type { AttentionRow, AttentionSeverity, Cause, Ledger, TodoRow } from "./ledger";
 import type { Trace } from "./trace";
 import { raise } from "./attention";
 import { DESKS_DIR, resolveProject } from "./dispatch";
@@ -218,6 +218,9 @@ export interface ProjectNotes {
   withdraw(project: string, id: number, now: number): NoteResult;
   /** The notes block a fresh session of `project` starts with; "" when there is nothing to say. */
   block(project: string, now: number): string;
+  /** A todo ended: when it is `done` and was made from open notes, they resolve `fixed` with the todo
+   *  and the target's HEAD at the end. Any other status changes nothing. */
+  onTodoEnd(todo: Pick<TodoRow, "id" | "status">, now: number): Promise<void>;
   /** Delete notes resolved longer ago than `notes.keepResolvedDays` (a dismissed one is kept). */
   prune(now: number): void;
 }
@@ -405,6 +408,16 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
       part("Notes for this project:", toMe, toMe.length);
       part("Notes this project sent:", sent, sent.length);
       return `${out.join("\n")}\n\n`;
+    },
+    async onTodoEnd(todo, now) {
+      if (todo.status !== "done") return;
+      for (const row of ledger.attentionByTodo(todo.id)) {
+        if (row.source !== "note" || row.resolvedAt !== undefined) continue;
+        const run = deps.exec ?? sysExec;
+        const head = await run(["git", "-C", row.folder, "rev-parse", "HEAD"], { timeoutMs: cfg.gitTimeoutMs, env: { GIT_OPTIONAL_LOCKS: "0" } });
+        const sha = head.code === 0 && /^[0-9a-f]{40}$/i.test(head.out.trim()) ? head.out.trim() : undefined;
+        close(row, { how: "fixed", todo: todo.id, ...(sha ? { commit: sha } : {}), by: row.project, at: now }, now);
+      }
     },
     prune(now) {
       ledger.pruneAttention("note", now - cfg.keepResolvedDays * DAY_MS);

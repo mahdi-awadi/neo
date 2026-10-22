@@ -82,16 +82,17 @@ digest, console, snooze, dismiss and **→ todo**, so the new code is the note's
 
 ## Phase 3 — the operator and the trace (AC13–AC17)
 
-- [ ] **3.1 Brief template.** `ATTENTION_BRIEFS` entries for the note kinds (`note_finding`,
+- [x] **3.1 Brief template.** `ATTENTION_BRIEFS` entries for the note kinds (`note_finding`,
   `note_fyi`, `note_request`); the existing "every kind has a template" test covers them (AC14).
-- [ ] **3.2 → todo keeps the cause.** For a note with `cause_msg_id`, the todo's cause is that thread,
+- [x] **3.2 → todo keeps the cause.** For a note with `cause_msg_id`, the todo's cause is that thread,
   not a new `attention` root. Test with the trace: `/trace` on the sender's thread lists the note, the
   todo and its run (AC14, AC17).
-- [ ] **3.3 Todo end resolves.** On a todo end `ok` whose id is a note's `todo_id`, resolve the note
+- [x] **3.3 Todo end resolves.** On a todo end `ok` whose id is a note's `todo_id`, resolve the note
   `fixed` with the target's HEAD (AC15). A failed end leaves it open. Test both.
-- [ ] **3.4 Dismiss shows to the sender.** Dismiss writes `{ how: "dismissed" }` for source `note`
-  (AC16).
-- [ ] **3.5 Surfaces.** Attention lines for notes read `<title> — from <sender>` on Telegram, the
+- [x] **3.4 Dismiss shows to the sender.** Dismiss writes `{ how: "dismissed" }` for source `note`
+  (AC16). *Built as:* the state is derived — a dismissed row reads `dismissed` (`noteState`), so the
+  existing dismiss needs no change.
+- [x] **3.5 Surfaces.** Attention lines for notes read `<title> — from <sender>` on Telegram, the
   dashboard and the console. New console strings as i18n keys in `en` and `ar` (catalogue-complete
   test). `/trace` renders a note line. (AC13)
 

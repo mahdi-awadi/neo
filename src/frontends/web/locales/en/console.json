@@ -294,6 +294,7 @@
     "unknown": "No project named {{name}}.",
     "noSession": "no session open",
     "queueCount": "queue {{n}}",
+    "noteFrom": "from {{project}}",
     "noAttention": "nothing needs you",
     "none": "nothing here",
     "ago": "{{age}} ago",

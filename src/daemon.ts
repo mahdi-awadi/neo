@@ -98,7 +98,12 @@ async function main(): Promise<void> {
   // heartbeat tick releases them in order once the operator channel registers its launcher.
   // Neo's handoff notes live outside every project repo (ADR-0029).
   setNeoNotesDir(cfg.handoffNotesDir);
-  const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs });
+  // A done todo made from a project note resolves the note (ADR-0043); `notes` is built below and only
+  // read when a todo ends.
+  const todo = createTodoQueue({
+    ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs,
+    onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
+  });
   const cutTodos = todo.recover({ now: bootAt });
   const engineProducerDeps: EngineProducerDeps = {
     ledger,

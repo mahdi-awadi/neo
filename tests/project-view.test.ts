@@ -367,3 +367,12 @@ test("folderNamed: exact basename only; LIKE wildcards in the name match nothing
   ledger.addTodo({ project: "new", folder: "/home/new", brief: "b", workClass: "interactive", createdBy: "operator" }, 1);
   expect(ledger.folderNamed("new")).toBe("/home/new");
 });
+
+// ADR-0043 (AC13): a project note on the dashboard names the project that sent it.
+test("a project note on the dashboard carries its sender", async () => {
+  const s = setup();
+  s.registry.add(order(s.dir), NOW - 60_000);
+  s.ledger.insertAttention({ project: "gold", folder: s.dir, source: "note", kind: "note_finding", key: "prod-ops:D1", title: "stale pnr", severity: "high", fromProject: "prod-ops" }, NOW - 1000);
+  const v = (await projectView({ ...s.deps, read: failing }, "gold", NOW))!;
+  expect(v.attention.find((a) => a.source === "note")).toMatchObject({ title: "stale pnr", fromProject: "prod-ops" });
+});
