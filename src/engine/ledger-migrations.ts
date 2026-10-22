@@ -402,6 +402,17 @@ function planGate(db: Database): void {
   );
 }
 
+/** Version 12 — project notes (ADR-0043): a note is an attention item (source `note`) that also knows
+ *  its sender project, the operator message it traces to, how it was resolved (JSON) and when its
+ *  target acknowledged it. The index serves the sender's view of the notes it sent. */
+function projectNotes(db: Database): void {
+  db.run(`ALTER TABLE attention_items ADD COLUMN from_project TEXT`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN cause_msg_id INTEGER`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN resolution TEXT`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN acked_at INTEGER`);
+  db.run(`CREATE INDEX idx_attention_from ON attention_items (from_project, source)`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -414,6 +425,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 9, name: "todo retries", up: todoRetries },
   { version: 10, name: "todo waiting on a decision", up: todoWaiting },
   { version: 11, name: "plan approval gate", up: planGate },
+  { version: 12, name: "project notes", up: projectNotes },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

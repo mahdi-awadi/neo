@@ -15,6 +15,7 @@ import { readPlansCfg, type PlansCfg } from "./engine/plans";
 import { readCommitFinishCfg, type CommitFinishCfg } from "./engine/commit-finish";
 import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision-settle";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
+import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
 import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
 import { readProjectsCfg, type ProjectCfg } from "./engine/producers/git";
@@ -267,6 +268,9 @@ export interface NeoConfig {
   /** Attention items (ADR-0018): how long a paused queue, a waiting thread or an open decision may
    *  last before it needs the operator. Optional like `plans`; `loadConfig` always fills it. */
   attention?: AttentionCfg;
+  /** Project notes (ADR-0043): sizes, caps and the notes block's bounds. Optional like `plans`;
+   *  `loadConfig` always fills it. */
+  notes?: NotesCfg;
   /** Restart-gated work (spec §8.4, `/gated`): the branch prefixes that count as work waiting to
    *  merge. Optional like `plans`; `loadConfig` always fills it. */
   restart?: RestartCfg;
@@ -572,6 +576,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     commitFinish: readCommitFinishCfg(fileCfg.commitFinish),
     decisionSettle: readDecisionSettleCfg(fileCfg.decisionSettle),
     attention: readAttentionCfg(fileCfg.attention),
+    notes: readNotesCfg(fileCfg.notes),
     restart: readRestartCfg(fileCfg.restart),
     github: readGithubCfg(fileCfg.github),
     projects: readProjectsCfg(fileCfg.projects),

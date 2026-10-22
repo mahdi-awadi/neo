@@ -433,3 +433,14 @@ test("ADR-0038: decisionSettle defaults on; config.json can turn it off; a bad v
   writeFileSync(join(bad, "config.json"), JSON.stringify({ decisionSettle: { enabled: "no" } }));
   expect(loadConfig(bad).decisionSettle).toEqual({ enabled: true });
 });
+
+test("project notes limits default, config.json overrides them, a bad value keeps the default (ADR-0043)", () => {
+  expect(loadConfig(dir()).notes).toEqual({
+    maxTitleChars: 120, maxBodyChars: 4000, maxRefs: 10, maxRefChars: 200, maxReasonChars: 500,
+    maxPerSenderPerDay: 30, maxOpenPerPair: 50, blockMax: 8, blockMaxChars: 1500, sentLookbackDays: 14,
+    listMax: 30, keepResolvedDays: 180, gitTimeoutMs: 10000,
+  });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ notes: { maxBodyChars: 2000, blockMax: -1, listMax: "x" } }));
+  expect(loadConfig(d).notes).toMatchObject({ maxBodyChars: 2000, blockMax: 8, listMax: 30 });
+});

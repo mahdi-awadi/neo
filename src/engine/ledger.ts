@@ -124,7 +124,8 @@ export interface BootRow {
 }
 
 /** Where an attention item comes from (spec §7): one producer per source. */
-export type AttentionSource = "github" | "git" | "engine" | "plan" | "restart";
+/** `note`: a project note (ADR-0043) — raised by a worker tool, never by a scan. */
+export type AttentionSource = "github" | "git" | "engine" | "plan" | "restart" | "note";
 export type AttentionSeverity = "high" | "normal" | "low";
 
 /** What a producer reports: one finding, identified by (project, kind, key). */
@@ -138,6 +139,9 @@ export interface AttentionDraft {
   detail?: string;
   url?: string;
   severity: AttentionSeverity;
+  /** A project note (ADR-0043): the sender project, and the operator message the note traces to. */
+  fromProject?: string;
+  causeMsgId?: number;
 }
 
 export interface AttentionRow extends AttentionDraft {
@@ -148,6 +152,9 @@ export interface AttentionRow extends AttentionDraft {
   snoozedUntil?: number;
   todoId?: number;
   dismissed: boolean;
+  /** A project note: how it was resolved (JSON, read by project-notes.ts) and when its target acked it. */
+  resolution?: string;
+  ackedAt?: number;
 }
 
 /** The fields reconcile, snooze, dismiss and toTodo change. `null` clears a field. */
@@ -162,6 +169,8 @@ export interface AttentionPatch {
   snoozedUntil?: number | null;
   todoId?: number | null;
   dismissed?: boolean;
+  resolution?: string | null;
+  ackedAt?: number | null;
 }
 
 /** Candidate folders one `folderNamed` read looks at. */
@@ -387,6 +396,11 @@ export interface Ledger {
   lastBoot(): BootRow | undefined;
   /** Delete one source's rows resolved before `before` (not dismissed: those remember the operator). */
   pruneAttention(source: AttentionSource, before: number): void;
+  /** Project notes a sender sent (ADR-0043), newest first: open ones, and ones resolved at or after
+   *  `resolvedSince`. */
+  notesFrom(fromProject: string, resolvedSince: number, limit: number): AttentionRow[];
+  /** How many notes `fromProject` raised since `since`, and how many are open from it to `project`. */
+  noteCounts(fromProject: string, project: string, since: number): { sentSince: number; openToTarget: number };
   /** The projects that have threads and how many, most recently active first (bounded). */
   threadProjects(limit: number): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
@@ -1088,16 +1102,17 @@ export function openLedger(
     insertAttention(d, at) {
       const r = db
         .query(
-          `INSERT INTO attention_items (project, folder, source, kind, key, title, detail, url, severity, first_seen, last_seen)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO attention_items (project, folder, source, kind, key, title, detail, url, severity, first_seen, last_seen, from_project, cause_msg_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         )
-        .get(d.project, d.folder, d.source, d.kind, d.key, d.title, d.detail ?? null, d.url ?? null, d.severity, at, at) as { id: number };
+        .get(d.project, d.folder, d.source, d.kind, d.key, d.title, d.detail ?? null, d.url ?? null, d.severity, at, at, d.fromProject ?? null, d.causeMsgId ?? null) as { id: number };
       return r.id;
     },
     updateAttention(id, patch) {
       const cols: Record<keyof AttentionPatch, string> = {
         folder: "folder", title: "title", detail: "detail", url: "url", severity: "severity", lastSeen: "last_seen",
         resolvedAt: "resolved_at", snoozedUntil: "snoozed_until", todoId: "todo_id", dismissed: "dismissed",
+        resolution: "resolution", ackedAt: "acked_at",
       };
       const sets: string[] = [];
       const params: Array<string | number | null> = [];
@@ -1151,6 +1166,26 @@ export function openLedger(
         | { at: number; head_sha: string; branch: string; sdk_version: string | null; config_hash: string | null }
         | null;
       return r ? { at: r.at, headSha: r.head_sha, branch: r.branch, ...(r.sdk_version ? { sdkVersion: r.sdk_version } : {}), ...(r.config_hash ? { configHash: r.config_hash } : {}) } : undefined;
+    },
+    notesFrom(fromProject, resolvedSince, limit) {
+      return (
+        db
+          .query(
+            `SELECT * FROM attention_items WHERE from_project = ? AND source = 'note' AND (resolved_at IS NULL OR resolved_at >= ?)
+             ORDER BY resolved_at IS NOT NULL, last_seen DESC, id DESC LIMIT ?`,
+          )
+          .all(fromProject, resolvedSince, clampPage(limit)) as AttentionDbRow[]
+      ).map(mapAttentionRow);
+    },
+    noteCounts(fromProject, project, since) {
+      const r = db
+        .query(
+          `SELECT
+             (SELECT count(*) FROM attention_items WHERE from_project = ?1 AND source = 'note' AND first_seen >= ?3) AS sent,
+             (SELECT count(*) FROM attention_items WHERE from_project = ?1 AND source = 'note' AND project = ?2 AND resolved_at IS NULL) AS open`,
+        )
+        .get(fromProject, project, since) as { sent: number; open: number };
+      return { sentSince: r.sent, openToTarget: r.open };
     },
     pruneAttention(source, before) {
       db.query(`DELETE FROM attention_items WHERE source = ? AND resolved_at < ? AND dismissed = 0`).run(source, before);
@@ -1854,6 +1889,7 @@ interface AttentionDbRow {
   title: string; detail: string | null; url: string | null; severity: string;
   first_seen: number; last_seen: number; resolved_at: number | null; snoozed_until: number | null;
   todo_id: number | null; dismissed: number;
+  from_project: string | null; cause_msg_id: number | null; resolution: string | null; acked_at: number | null;
 }
 
 function mapAttentionRow(r: AttentionDbRow): AttentionRow {
@@ -1866,6 +1902,10 @@ function mapAttentionRow(r: AttentionDbRow): AttentionRow {
     ...(r.resolved_at !== null ? { resolvedAt: r.resolved_at } : {}),
     ...(r.snoozed_until !== null ? { snoozedUntil: r.snoozed_until } : {}),
     ...(r.todo_id !== null ? { todoId: r.todo_id } : {}),
+    ...(r.from_project !== null && r.from_project !== undefined ? { fromProject: r.from_project } : {}),
+    ...(r.cause_msg_id !== null && r.cause_msg_id !== undefined ? { causeMsgId: r.cause_msg_id } : {}),
+    ...(r.resolution !== null && r.resolution !== undefined ? { resolution: r.resolution } : {}),
+    ...(r.acked_at !== null && r.acked_at !== undefined ? { ackedAt: r.acked_at } : {}),
   };
 }
 

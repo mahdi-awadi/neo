@@ -89,3 +89,19 @@ test("migration 11 fills each plan's card message from its review decision", () 
     { path: "q.md", card_chat_id: null, card_message_id: null },
   ]);
 });
+
+// ADR-0043: project notes ride on attention items — four nullable columns and a sender index.
+test("migration 12 adds the project-note columns and keeps old attention rows", () => {
+  const db = new Database(":memory:");
+  migrate(db, { path: ":memory:", migrations: MIGRATIONS.filter((x) => x.version <= 11) });
+  db.run(
+    `INSERT INTO attention_items (project, folder, source, kind, key, title, severity, first_seen, last_seen) VALUES ('p', '/f', 'git', 'dirty', 'k', 't', 'normal', 1, 1)`,
+  );
+  migrate(db, { path: ":memory:" });
+  expect(version(db)).toBeGreaterThanOrEqual(12);
+  expect(db.query(`SELECT from_project, cause_msg_id, resolution, acked_at FROM attention_items`).get()).toEqual({
+    from_project: null, cause_msg_id: null, resolution: null, acked_at: null,
+  });
+  const idx = db.query(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_attention_from'`).get();
+  expect(idx).toEqual({ name: "idx_attention_from" });
+});
