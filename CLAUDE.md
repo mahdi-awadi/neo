@@ -60,7 +60,9 @@ the Telegram flood gate, the trace spine (message ids, threads, causes, `/trace`
 registry (every plan sent once with Approve/Changes/Execute, `/plans`; ADR-0019; restart-gated), the context sweet spot (boundary handoffs + safe checkpoints, ADR-0021), and context-efficiency Phase 1
 (per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
-default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.
+default off — `memory.scopes`), and project notes (one project tells another through the
+`project_notes` tool; the note is an attention item on the target, only → todo starts work; ADR-0043;
+restart-gated). Full phase-by-phase narrative: `docs/HISTORY.md`.
 
 Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
 not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,
@@ -194,5 +196,7 @@ Greptile) are noted but not adopted; these principles are:
 - `tools/security/` + `docs/security-checks.md` — the shift-left security kit (ADR-0024): scan layers,
   install/init, the nightly `security-sweep` loop.
 - `tools/browser/` + `docs/browser.md` — the shared, memory-capped browser workers attach to (ADR-0032).
+- `src/engine/project-notes.ts` — project notes (ADR-0043): send/list/show/ack/resolve/withdraw, the
+  notes block a fresh session starts with, resolution from facts; the `project_notes` worker tool.
 - `tools/disk/` — the disk-cleanup kit the `disk-cleanup` loop runs: Tier A automatic, Tier B only on
   approved ids (ADR-0040, ADR-0041, `docs/loops.md`).

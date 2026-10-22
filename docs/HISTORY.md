@@ -1038,3 +1038,20 @@ the daemon exited, and Telegram went silent too. Now:
 - Docker and containerd are enabled at boot (host change, not in the repo).
 - `startWeb` builds the app once and retries only the bind (`keepBinding`). Each failure is a
   `web.bind` engine fault. The retry interval is `webBindRetryMs` (default 15s).
+
+Projects tell each other through Neo (ADR-0043, 2026-10-22). prod-ops found D13–D19 for eticket-v3
+and could only write "for Neo to send"; the chief of staff had to notice and dispatch each by hand,
+and a prod-ops note still listed D16 as open after eticket-v3 had fixed it. Now a worker sends a
+**project note** with the `project_notes` tool (`finding`, `fyi` or `request`; the sender comes
+from the session). The note is an attention item on the target project, so it shows on the
+dashboard, in `/attention`, the digest and the console, with → todo, snooze and dismiss. A request
+or a high finding is also told to the operator at once. No note starts work: only → todo does, and
+that todo joins the thread the note came from, so `/trace` shows the finding, the note, the todo and
+its run. A fresh session starts with its open notes and the state of the notes it sent (titles
+only, capped; information, not orders). A note closes from facts: `resolve … fixed` with a commit
+the engine finds on a branch of the target, `not_needed`/`duplicate` with a reason, a todo made
+from it that ends done, the sender's `withdraw`, or the operator's dismiss. Secrets are refused by
+pattern; sizes and per-sender caps are config (`notes`). The customer/ingress path never gets the
+tool. The preamble and the fence's reason now point at `project_notes`. Loop workers and Codex
+workers have no Neo tools yet, so they cannot send notes (they still see the notes block on a fresh
+start where it applies). Restart-gated.

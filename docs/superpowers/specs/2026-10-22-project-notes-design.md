@@ -157,3 +157,20 @@ export interface ProjectNotes {
 status", and the dispatch preamble line "Work for another project … goes back to Neo to dispatch"
 becomes "… send it with `project_notes`". The preamble plus the codebase-memory line must stay under
 5000 characters, so the line is replaced, not extended.
+
+## As built (2026-10-22)
+
+Where the build differs from the text above, the code and its tests are right:
+
+- **AC2:** a note the operator **dismissed** stays closed when the same `ref` is sent again (the
+  ADR-0018 rule: the operator wins). `send` refuses it and says so. A note resolved any other way
+  opens again.
+- **AC6:** the block's lines carry the id, kind, severity, sender and title — no refs, to stay small.
+  `show` gives the refs and the body.
+- **AC15:** when git cannot read the target's HEAD, the note still resolves `fixed` with the todo
+  number and no commit.
+- **AC16:** nothing is written on dismiss: a dismissed note's state is derived (`noteState`).
+- **Not built (out of reach today):** loop workers get no Neo tools (only the dream-memory server),
+  and Codex workers get no MCP servers, so neither can send or resolve notes. Both still get the
+  notes block where their launch path injects it (dispatch, operator sessions).
+- **Also changed:** the governor's fence reason now names `project_notes` instead of "back to Neo".

@@ -1,6 +1,6 @@
 # Projects exchange notes as attention items, and only the operator starts work
 
-**Status:** proposed (2026-10-22). Extends ADR-0018 (attention items). Related: ADR-0008 (todo queue),
+**Status:** accepted (2026-10-22; built on `dev`, restart-gated). Extends ADR-0018 (attention items). Related: ADR-0008 (todo queue),
 ADR-0015/0016 (cause, threads), ADR-0031 (project fence).
 
 A project often finds something that belongs to another project. prod-ops, for example, found D13–D19
