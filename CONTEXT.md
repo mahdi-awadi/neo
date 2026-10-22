@@ -728,6 +728,33 @@ A card's flag for an API that sends the text of a call to a third party. A relay
 refuses text that matches a secret pattern. Customer and tainted runs never get the API relay.
 _Avoid_: external, remote, egress (unqualified)
 
+**Recipe**:
+A tool card of kind `recipe`: a named chain of steps over other cards for a task that comes up
+again and again, such as a deploy check, a read-only prod query, an E2E test or a store build.
+_Avoid_: playbook, workflow (a workflow is a multi-agent script), runbook
+
+**Tool search**:
+The engine's ranked word search over the catalogue and the installed skill descriptions, for a piece
+of task text. It is BM25 plus a usage count, with no AI. A worker reaches it as `tools_for`. It
+returns candidates; the worker chooses.
+_Avoid_: tool recommendation, tool matching (both suggest that the engine judges)
+
+**Tools hint**:
+The few lines the engine puts at the start of a fresh brief, naming the best tool-search matches
+for that brief, plus "ask `tools_for` for more". If nothing scores above the threshold, there is no
+hint.
+_Avoid_: tool suggestions, tool context
+
+**Tool miss**:
+A tool search whose best score is below the threshold. It is recorded so that the gaps in the
+catalogue can be seen and filled, by a worker that improves the cards.
+_Avoid_: failed search, no result
+
+**Project capabilities**:
+What one project can use: the active cards whose scope includes it, plus its own MCP servers and
+skills. They are worked out read-only when they are asked for, and never stored in the project.
+_Avoid_: manifest (there is no file), permissions
+
 ### Plans
 
 **Plan**:

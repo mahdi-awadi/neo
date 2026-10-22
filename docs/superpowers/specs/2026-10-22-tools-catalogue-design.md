@@ -79,8 +79,8 @@ The validator collects every error (it does not stop at the first one). Rules:
 ## 4. The API relay
 
 The worker tool `tool_api({ card, operation, body })` lives in the `neo` MCP server. Its gate is the
-same one `project_notes` uses: an operator dep `toolsRelay`. The ingress path strips it explicitly
-(`toolsRelay: undefined`, like `notes`). Loops and Codex do not get it (the known gap, ADR-0044).
+same one `project_notes` uses: an operator dep `tools` (the opened `Catalogue`). The ingress path strips it explicitly
+(`tools: undefined`, like `notes`). Loops and Codex do not get it (the known gap, ADR-0044).
 
 `relayCall` checks these, in this order. The first refusal returns a plain-text reason, and nothing
 is sent.
@@ -169,3 +169,173 @@ A bad value falls back to the default, as `readNotesCfg` does.
 - Promoting ScaleDown.
 - Cards for skills.
 - Fixing the eticket-v3 committed credential. It belongs to another project; Neo dispatches it.
+
+---
+
+# Amendment 1 — "what tools fit this task?" (ADR-0044 §6–11)
+
+The operator's addition (2026-10-22): projects use Neo's tools efficiently, and Neo becomes truly
+agentic. It stays inside Neo's rules: the engine searches and counts, the worker judges.
+
+## A1. The seam, deepened (this replaces §1)
+
+```ts
+openCatalogue(deps: {
+  dir: string; cfg: ToolsCfg;
+  skills: SkillSource;      // reads installed skill descriptions (fs adapter | fake in tests)
+  usage: UsageSource;       // per-card success counts + relay latency (ledger adapter | fake)
+}): Catalogue
+
+interface Catalogue {
+  cards: ToolCard[]; errors: string[];
+  find(text: string, ctx: { project: string; folder: string; limit?: number }): ToolMatch[];
+  hint(brief: string, ctx: { project: string; folder: string }): string;   // "" when nothing scores
+  relay(cardId: string, op: string, body: unknown, ctx: RelayCtx): Promise<string>;
+  render(): Array<{ dir: string; files: Record<string, string> }>;       // skills for install.ts
+}
+interface ToolMatch {
+  id: string; kind: ToolKind | "recipe" | "skill"; title: string;
+  why: string[];            // the query words that matched, per field: "tags: deploy, coolify"
+  how: string;              // the first lines of "## How to call" (≤ cfg.howMaxChars)
+  cost?: string; limits?: string; p50Ms?: number;   // p50 only for relay cards with calls
+  allowed: boolean; reason?: string;                // scope check for ctx.project
+  score: number;
+}
+```
+
+`SkillSource` and `UsageSource` are real seams: each has two adapters (filesystem/ledger, and a fake in
+tests). Everything else is internal to `src/engine/tools-catalogue.ts`.
+
+## A2. Card schema additions
+
+- `tags: string[]` (≤ 12, lowercase words) and `examples: string[]` (≤ 6 one-line example tasks).
+  These are required on active cards. They are what the search matches best.
+- `usage: { tools?: string[]; commands?: string[] }`: glob patterns that map `tool_actions` rows to
+  this card. `tools` is matched against the tool name (for example `mcp__codebase-memory__*`).
+  `commands` is matched against a Bash label (for example `*tools/browser/*`). It is optional; a
+  card without it gets no usage boost.
+- `kind: recipe` cards have `steps: [{ card: <id>, do: "<one line>" }]` (2–10 steps) and no `relay`.
+  The validator checks that every `card` is an active non-recipe card.
+
+## A3. Tool search (`find`)
+
+1. **Index:** an in-memory FTS5 table `(id, kind, when, tags, examples, body)`, built once when the
+   catalogue is opened and rebuilt when it is reloaded. Skill rows hold only `when` = the skill's
+   description. Skills are read from `~/.claude/skills/*/SKILL.md`, from the enabled plugins' skill
+   folders, and from `<folder>/.claude/skills/*/SKILL.md` for the calling project. The project rows
+   are indexed per query into a temp table, so another project's skills never show.
+2. **Query:** reuse `safeFtsQuery` with a new `mode: "any"`: the words are joined with `OR`. A small
+   stop-word list in config (`tools.stopWords`) is dropped. At most `tools.queryMaxTerms` (24) terms
+   are used: the rarest ones first, measured by FTS5 document frequency.
+3. **Score:** `bm25(t, 0, 0, 4.0, 3.0, 2.0, 1.0)` (when, tags, examples, body), negated so that
+   higher is better, then `× (1 + cfg.usageWeight × ln(1 + okUses30d))`. A tie keeps the catalogue
+   order, so the result is deterministic.
+4. **Filter:** candidate and retired cards are never returned. A card the project may not use is
+   returned with `allowed: false` only if `tools.showDisallowed` is set (default `false`).
+5. **Miss:** if the best score is below `tools.minScore`, record `tools_miss {project, terms}` (the
+   terms only, at most 24 words, never the full brief), and return `[]`.
+
+## A4. `tools_for` (worker tool) and the tools hint
+
+- `tools_for({ task: string, limit?: 1..10 })` lives in `neoMcpServers`, behind the operator dep
+  `DispatchDeps.tools?: Catalogue` (the same dep as the relay), and
+  the ingress strips it. It returns one block per match: `id · kind · allowed`, `why`, `how`,
+  `cost/limits/p50`. The text is capped at `tools.replyMaxChars`.
+- **Hint:** in `dispatchToProject`, on a genuine fresh start, right after the notes block, through
+  `faults.guard`. `catalogue.hint(brief)` returns at most `hintMaxCards` lines of the form
+  `- <id> (<kind>): <when>`. The block is capped at `hintMaxChars` and ends with `Ask tools_for for
+  more.` If nothing scores, it returns `""`. It runs only on the worker paths listed in
+  `tools.hintPaths` (default `["dispatch"]`), so it fits the per-path profiles of context-efficiency
+  Phase 1. Operator sessions (`project`, `company`) can opt in.
+
+## A5. Usage, cost and latency
+
+- `UsageSource` (ledger adapter) reads `tool_actions` joined with each order's last outcome over 30
+  days, through one parameterized query. It maps rows to cards with each card's `usage` globs,
+  counts the `done` orders, and caches the result for `tools.usageCacheMs` (10 min). No migration.
+- The relay's p50 latency comes from `tool_api` events (spec §4). Cost and limits come from the card.
+
+## A6. Enrichment loop (worker side)
+
+`docs/loops/tools-enrich.json` (checked in; the operator loads it with `tools/create-loop.ts` after the restart, so it runs only when they choose):
+- Weekly, if there were any `tools_miss` events since the last run, the loop gives a worker the miss
+  terms and asks it to improve `tags` and `examples` (and to propose new cards as `candidate`) in
+  `docs/tools/`.
+- The goal is that `bun test tests/tools-catalogue.test.ts` is green and committed on a branch.
+- Promoting a card to `active` stays the operator's decision.
+
+## A7. Skillify suggestions (deterministic)
+
+A producer for attention items (ADR-0018, source `skillify`) runs daily. For each project, it groups
+the last 30 days of todo titles and dispatch brief first lines by normalised word sets (lowercased,
+stop words dropped, sorted). If one group has `≥ tools.skillifyMin` (3) members and no card or skill
+already scores above `minScore` for it, it raises one attention item: "this task repeated N times:
+make it a recipe or a skill?". **→ todo** sends it to a worker. The engine only counts.
+
+## A8. Efficiency additions, ranked (impact / effort)
+
+| # | Addition | Impact | Effort | Phase |
+|---|---|---|---|---|
+| 1 | `tools_for` + card `tags`/`examples` | high: every worker can find the right tool | low-med | P2 |
+| 2 | Tools hint at dispatch | high: no extra call needed, about 3 lines | low | P2 |
+| 3 | Recipes (deploy check, prod read-only query, E2E, store build) | high: removes re-discovery of multi-step chains | med | P3 |
+| 4 | Usage boost + `tools_miss` | med: ranking learns from what worked; gaps become visible | low (reads existing `tool_actions`) | P3 |
+| 5 | Derived project capabilities in `tools_for` | med | low | P2 (inside `find`) |
+| 6 | Cost/latency hints | low-med | low | P3 |
+| 7 | Enrichment loop | med: the catalogue gets better without the operator | low | P4 |
+| 8 | Skillify suggestions | med-high over time | med | P4 |
+| 9 | ScaleDown relay pilot (one-question extraction of a big text) | low-med | low, after DPA + quota | P5, operator-gated |
+
+## A9. Acceptance criteria (amendment)
+
+7. `find` on a fake catalogue: "take a screenshot of the RTL page" ranks `shared-browser` first,
+   with `why` naming `tags: screenshot, rtl`. A query of only stop words → `[]` plus one
+   `tools_miss`. The same input → the same order every time (test it twice).
+8. The usage boost: two cards with equal BM25; the one with 5 `done` uses ranks first; `failed`
+   uses do not count. Rows older than 30 days do not count.
+9. Scope: a card scoped to `eticket-v3` is absent for `waselni` (by default), and shown with
+   `allowed:false` when `showDisallowed` is set. Project skills of waselni never appear for
+   eticket-v3.
+10. The hint: a fresh dispatch whose brief matches → the order task starts with the hint (after
+    the notes block). A kept resume → no hint. An ingress `neoMcpServers` → no `tools_for`. A path
+    not in `hintPaths` → no hint. The hint is never longer than `hintMaxChars`.
+11. Recipes: a recipe that points at a candidate card → a validation error. A good recipe renders
+    to `neo-recipe-<id>` and is found by search.
+12. Skillify: 3 todos "deploy check waselni prod" (with words reordered) in 30 days → 1 attention
+    item. A 4th → still 1 (the existing upsert). With a matching recipe → none.
+13. `tools_miss` and `tool_api` events never contain the full brief or a body (a test with a
+    sentinel).
+
+## A10. Edge cases (amendment)
+
+- A brief in Arabic: FTS5 `unicode61` tokenises it, and cards are English, so there is likely a miss.
+  That is acceptable. The miss feeds enrichment (cards may add Arabic `tags`).
+- A huge brief (50 kB): only the rarest `queryMaxTerms` terms are used, so the cost is bounded.
+- A broken `SKILL.md` front matter: the skill is skipped, and search never throws (fail open to fewer
+  rows).
+- `tool_actions` was pruned: the counts are lower, and the ranking is still deterministic.
+
+## A11. What needs a daemon restart
+
+- **Restart-gated** (`dev` → master + restart): the `tool_api` relay, `tools_for`, the tools hint,
+  the usage boost, `tools_miss`, and the skillify producer.
+- **Not restart-gated:** the cards, and the skills written by `install.ts` (picked up when the next
+  worker starts). The `tools-enrich` loop definition is data (created with `tools/create-loop.ts`),
+  but the loop runs only on a daemon that has this code, so in practice it also comes after the
+  restart.
+
+## A12. Config additions (`config.tools`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `stopWords` | a short English list (in code, can be overridden) | dropped from queries |
+| `queryMaxTerms` | `24` | the most terms a query uses (the rarest first) |
+| `minScore` | `0.5` | the best negated-BM25 score below this is a miss, with no hint |
+| `usageWeight` | `0.3` | the strength of the usage boost |
+| `usageCacheMs` | `600000` | how long the usage counts are cached |
+| `showDisallowed` | `false` | return out-of-scope cards with `allowed:false` |
+| `findLimit` | `5` | the default `tools_for` result count (max 10) |
+| `replyMaxChars` / `howMaxChars` | `4000` / `400` | caps on the `tools_for` reply and on each `how` |
+| `hintMaxCards` / `hintMaxChars` | `3` / `500` | caps on the tools hint |
+| `hintPaths` | `["dispatch"]` | the worker paths that get the hint |
+| `skillifyMin` | `3` | how many repeats raise a skillify item |

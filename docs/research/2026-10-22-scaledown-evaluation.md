@@ -45,9 +45,34 @@ secrets or PII.
 | `rate:0.5` (repeat) | **403** `{"message":"Forbidden"}` | 85 ms | — | — | — |
 | tiny follow-up | **403** | — | — | — | — |
 
-**The key works, but it stopped working after 3 calls** (`403 Forbidden`, with no rate-limit headers).
-This looks like a trial key with a small call quota, or a key that was turned off. We stopped calling.
-The operator must ask ScaleDown what the key's quota is.
+**The key works.** After 3 quick calls it returned `403 Forbidden` (with no rate-limit headers). Later
+the same day it worked again, so the 403 was a short-term limit, not a dead key. The limit is not
+published. We now leave about 20 s between calls.
+
+### Measured on real Neo samples (second round, same day)
+
+Each sample was a tracked Neo file or real Neo tool output. We checked each one with Neo's own
+`findSecret` before sending, and sent no customer data. "Facts" are exact strings that a correct
+answer needs. We counted how many of them survive in the compressed text.
+
+| Sample (Neo use) | Question given | Tokens in → out | Kept | Facts kept | Round trip |
+|---|---|---|---|---|---|
+| `HANDOFF.md` (handoff) | "next steps, open decisions, gotchas?" | 854 → 234 (`auto`) | 27% | **3 / 9** | 422 ms |
+| same, gentle `rate: 0.3` | same | 854 → 685 | 80% | **6 / 9**. It lost all three gotchas | 409 ms |
+| `git log --stat -40` (long tool output) | "which commits changed project-notes.ts?" | 6,788 → 5,646 | 83% | 6 / 6. It kept 9 duplicate lines | 1,474 ms |
+| tools inventory (the catalogue) | "screenshot + RTL check: which tool, how to run?" | 2,398 → 207 | 9% | **2 / 5**. It lost the browser address, playwright and chrome | 703 ms |
+| `docs/HISTORY.md`, last 20 kB (memory-like) | "why was context over 100%, what fixed it?" | 6,020 → 118 | 2% | 4 / 4 | 777 ms |
+
+**What this shows:**
+- ScaleDown is a fast (0.4–1.5 s) **question-conditioned extractor**. When the question is narrow and
+  the answer sits in one place (HISTORY), it is excellent: 98% fewer tokens and every fact kept.
+- When the text must stay complete, it loses facts even at a gentle rate. That covers a handoff (any
+  line may matter later) and a catalogue (the worker must compare options). Those are exactly the
+  texts Neo would want to shrink.
+- On structured tool output (git log) it saves little (17%), and it does not remove duplicates.
+- A narrow question over a big local document can also be answered by local BM25 search (the same
+  FTS5 that memory recall uses), deterministically, for free, with nothing leaving the host. Only
+  the 2% case clearly beats `grep`/FTS, and only for text a worker is allowed to send away.
 
 **Quality check on the output.** Compression is *extractive and depends on the prompt*: it keeps the
 whole sentences that answer the `prompt` and drops the rest.
@@ -62,6 +87,8 @@ whole sentences that answer the `prompt` and drops the rest.
 
 | Candidate | Verdict | Why |
 |---|---|---|
+| Compressing the tools catalogue, or the dispatch tools hint | **No** | It kept only 2 of 5 facts on the inventory. `tools_for` (ADR-0044 amendment) returns only the top few cards by local BM25, so there is nothing big left to compress. |
+| Long tool output before it enters a worker's context | **No, in the engine path** | (1) The engine never sees tool output on its way into the SDK. Changing that means a proxy, which is the DietCode risk below. (2) On git log it saved 17%. |
 | Neo engine: handoffs, memory snapshots, dispatch results, tool output | **No** | (1) **No AI in the engine.** A compression model in the engine path is engine-side AI (CLAUDE.md; context-efficiency spec §8). (2) The text has no single question, and the test shows that facts are dropped. A handoff that loses the "migration" line fails the spec's quality rule ("handoff completeness"). (3) Workers run on the subscription, so tokens cost no money. The real cost is the size of the context window, which ADR-0021 (sweet spot) and memory Phase 2 already handle locally, with no third party. |
 | DietCode proxy in front of the workers | **No** | It sends every turn of every worker (code, secrets in view, customer-derived text) to a third party, and it moves the workers off the direct Anthropic path. That is a compliance and secret-handling change, not an efficiency setting. |
 | Gemini customer reading (Phase 3b) | **No, for now** | Customer PII would go to a processor that has no published privacy policy or DPA. Gemini's context is large and cheap, so the saving is small. |
@@ -75,7 +102,11 @@ whole sentences that answer the `prompt` and drops the rest.
 **Skip it for Neo itself. Do not adopt it yet for the projects. At most, run a small pilot later,
 as an opt-in worker tool for log triage.** The conditions for that pilot:
 1. ScaleDown publishes or signs a privacy policy or DPA (zero retention in writing).
-2. We have a key with a known quota. The current key returns 403 after 3 calls.
+2. We know the key's quota and rate limit. The current key returned 403 for a short time after 3
+   quick calls.
+4. It is used only as the worker-side "ask one question of a big, non-sensitive text" tool (the
+   HISTORY case). Then the measured value (98% fewer tokens, all facts kept) is real. A worker can
+   check the extract against the source, because it has both.
 3. It runs only through the catalogue's engine relay (ADR-0044), and it is marked
    `data-leaves-host`. It is never in the engine's own path and never on customer text. It
    refuses text that matches the secret patterns.
