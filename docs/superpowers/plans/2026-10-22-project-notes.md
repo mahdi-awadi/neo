@@ -98,12 +98,12 @@ digest, console, snooze, dismiss and **→ todo**, so the new code is the note's
 
 ## Phase 4 — docs and the preamble
 
-- [ ] **4.1** Replace the preamble sentence "Work for another project (even one an old note lists)
+- [x] **4.1** Replace the preamble sentence "Work for another project (even one an old note lists)
   goes back to Neo to dispatch." with one that points at `project_notes`. Test: the preamble plus the
   longest codebase-memory line stay under 5000 characters.
-- [ ] **4.2** `docs/CONFIG.md` (`notes.*`), `docs/HISTORY.md`, CLAUDE.md "Current status", ADR-0043
+- [x] **4.2** `docs/CONFIG.md` (`notes.*`), `docs/HISTORY.md`, CLAUDE.md "Current status", ADR-0043
   status → accepted.
-- [ ] **4.3** Full `bun test` + `bunx tsc --noEmit`, `/security-review` (input handling: tool
+- [x] **4.3** Full `bun test` + `bunx tsc --noEmit`, `/security-review` (input handling: tool
   arguments, secret check), `requesting-code-review`. Merge to `dev`, remove the worktree, report:
   restart-gated, and what a restart turns on.
 
@@ -115,3 +115,11 @@ digest, console, snooze, dismiss and **→ todo**, so the new code is the note's
 - **PII in a body.** Not detectable in code. The tool text forbids it; sizes are capped; the operator
   sees every note in the digest.
 - **Noise.** Caps per sender, `ref` dedupe, digest-only for most notes.
+
+## Result (2026-10-22)
+
+All four phases built on `feat/project-notes` and merged to `dev`. `/security-review`: no findings.
+The code review found five defects (wrong todo linked on → todo in a shared thread, a reopen that
+skipped the daily cap, a second row for a ref re-sent with another kind, a `:` key collision, a
+continuation that dropped the note's link) and a resolve/withdraw race; all fixed with tests
+(2890b80). Restart-gated.
