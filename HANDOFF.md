@@ -1,26 +1,35 @@
-# HANDOFF — operator traceability plan (neo #42)
+# HANDOFF — project notes (ADR-0043)
 
 ## Goal
-Execute `docs/superpowers/plans/2026-10-06-operator-traceability-and-project-management.md` (spec + ADR-0015..0019) phase by phase: TDD, reviewed, restart-gated, never restarting the daemon.
+Let projects exchange information through Neo ("project notes", ADR-0043). A note is an attention
+item for the operator; only the operator starts work. Plan:
+`docs/superpowers/plans/2026-10-22-project-notes.md`; spec:
+`docs/superpowers/specs/2026-10-22-project-notes-design.md`.
 
-## Done — the whole plan (P0–P6)
-- **P0 + P1** live since the 2026-10-06 17:35 restart (master `f8fae4c`).
-- **P2–P6** on local master `1d5921a` (fast-forward only, NOT pushed, restart-gated). Every task and phase reviewed and approved. `i18next` installed in `/home/neo` from the lockfile.
-  - P5 closed with fixes `ed8e403`, `942ea5b` (remove warning posted in full on Telegram; consent bound to the exact ignored files; `drop` flag).
-  - P6 project dashboard: `a8efc75`/`1cd7582` read model (`src/engine/project-view.ts`); `4b9a493`/`98b42c4` surfaces (console Projects tab EN+AR, `/project` + `/p`, `sessions` tool block); `6aadb43`/`ecc65ce` deployed-version + health probe (`src/engine/producers/probe.ts`); `1d5921a` sessions tool via `projectDeps`.
-- tsc clean, 1541 pass (5 full runs clean), console bundle builds.
-- Worktree `/home/neo-wt-trace` removed; branch `feat/operator-traceability` kept (= master). Nothing uncommitted except this file.
+## Done — all 4 phases, on `dev` @ e1649d7 (restart-gated, NOT on master)
+- Design: 74230b2 (ADR-0043, spec, plan, CONTEXT.md terms).
+- P1 store and send: ce2ec83, f5c6e7c, 6378aaf, 85d9406 (migration 12, notes config, secret refusal, caps, `project_notes` tool on operator surfaces only).
+- P2 read, ack, resolve, withdraw, the notes block: de76320, a5257b8.
+- P3 operator side (brief templates, cause, resolve on done, sender in the console EN+AR): 8d893b9, 6547285.
+- P4 preamble, fence reason, docs: fafc39f, ba104d9.
+- Code-review fixes: 2890b80. Plan ticked: e1649d7.
+- `/security-review`: no findings. Re-verified 2026-10-22: `tsc` clean, `bun test` 1989 pass, 0 fail.
+- Also on `dev`: 2b5abdb (ADR-0042, tests keep temp folders in one per-run root).
 
 ## Next steps
-1. **Operator restart** to activate P2–P6. Checklist: `/home/neo/.superpowers/sdd/2026-10-06-operator-traceability-and-project-management/restart-checklist.md` — one boot runs migrations v5→v8 with ONE backup `data/ledger.db.bak-v4` (~250 MB; the ledger is ~253 MB + WAL). After it, verify per the checklist's "Try after restart" lines.
-2. Deferred, not in the plan's tasks: `/attention refresh` + a console refresh button (spec §7 on-demand scan).
-3. The 8 optional extras and the Docker exception need the operator's yes. Push of master: operator decision.
+1. With operator permission only: merge `dev` → master, then restart the daemon. Never restart without permission.
+2. After the restart, check one real note end to end: prod-ops sends a note to eticket-v3 → it shows in `/attention` → todo → resolve.
+3. For Neo to dispatch (other projects, not this repo): eticket-v3 `eticket-expo-app` Metro JS-heap OOMs; mirshad air version pin (Go 1.26 vs image 1.25).
+4. Optional, needs the operator's yes: give loop and Codex workers Neo's MCP tools so they can use `project_notes`.
 
 ## Open decisions
-- The restart (above). ADR-0020 (auto-memory as the one project memory): approve or not.
+- When to merge `dev` → master and restart (restart-gated work is piling up on `dev`).
+- Accepted limit: at a "task done" handoff that still lists next steps, a note made into that todo resolves at once.
 
 ## Gotchas
-- Ledger of rulings/progress/restart checklist: `/home/neo/.superpowers/sdd/2026-10-06-operator-traceability-and-project-management/` (moved from the removed worktree; gitignored). Trust it plus `git log` over recall.
-- Known limits recorded there: `/project` names with spaces; `findByFolder` exact-path match; a failed digest send leaves an empty trace root; one unidentified flaky test failure seen once by a reviewer (not reproduced in 5 runs).
-- Any new schema = migration 9. Never open `data/ledger.db` for writing.
-- Other in-flight branches: `feat/console-paste-image` (re-port into `src/frontends/web/app.ts` on merge), `fix/telegram-stale-callback-answer` (switch the `plan:`, `att:` and new `pj:` taps to `ackCallback` on merge). Leftover worktree `/home/neo-wt-fence-allow` is not ours — do not touch.
+- `bun test` fires no process `exit` event; use a global `afterAll` in the preload.
+- The ingress path spreads the operator `DispatchDeps`; strip every new operator-only dep there (`notes: undefined`).
+- Codex runs get no MCP servers; loops get only the dream-memory server.
+- `threadArtifacts` sorts todos ascending with a limit; use `newestTodoInThread`.
+- Write commit messages to a file and use `git commit -F` (the guard blocks some heredoc text).
+- A worktree needs a `node_modules` symlink; remove it before `git worktree remove`.
