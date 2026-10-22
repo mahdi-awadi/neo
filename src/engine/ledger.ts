@@ -489,7 +489,9 @@ export interface Ledger {
   dismissDecision(id: string): void;
   /** The engine closes an open decision that no longer needs an answer, keeping why in `answer`
    *  (ADR-0038). Only an `open` row changes. */
-  supersedeDecision(id: string, reason: string, at?: number): void;
+  /** Close an open decision that no longer needs an answer (ADR-0038/0045), keeping `reason` in its
+   *  answer. Todos parked on it (ADR-0029) are cancelled with the same reason; their ids come back. */
+  supersedeDecision(id: string, reason: string, at?: number): { todosCancelled: number[] };
   /** Stamp the reminder fields (lastRemindedAt + reminderCount++) after a secretary digest. */
   noteDecisionsReminded(ids: string[], at?: number): void;
   /** Dispatcher inbox (ADR-0007): queue one final dispatch result for the company. Returns its id.
@@ -1574,8 +1576,15 @@ export function openLedger(
       pruneDecisions();
     },
     supersedeDecision(id, reason, at = Date.now()) {
-      db.query(`UPDATE decisions SET status = 'superseded', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'`).run(reason, at, id);
+      const todosCancelled = db.transaction(() => {
+        const r = db.query(`UPDATE decisions SET status = 'superseded', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'`).run(reason, at, id);
+        if (r.changes === 0) return [];
+        const parked = (db.query(`SELECT id FROM project_todos WHERE status = 'waiting' AND waiting_on = ? ORDER BY id`).all(id) as Array<{ id: number }>).map((t) => t.id);
+        db.query(`UPDATE project_todos SET status = 'cancelled', ended_at = ?, result = ?, waiting_on = NULL WHERE status = 'waiting' AND waiting_on = ?`).run(at, reason, id);
+        return parked;
+      })();
       pruneDecisions();
+      return { todosCancelled };
     },
     noteDecisionsReminded(ids, at = Date.now()) {
       if (ids.length === 0) return;

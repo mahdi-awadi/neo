@@ -16,6 +16,7 @@ import { readCommitFinishCfg, type CommitFinishCfg } from "./engine/commit-finis
 import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision-settle";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
+import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
 import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
 import { readProjectsCfg, type ProjectCfg } from "./engine/producers/git";
@@ -271,6 +272,8 @@ export interface NeoConfig {
   /** Project notes (ADR-0043): sizes, caps and the notes block's bounds. Optional like `plans`;
    *  `loadConfig` always fills it. */
   notes?: NotesCfg;
+  /** The waiting sweep (ADR-0045): re-judge delay and reminder size. */
+  waitingSweep?: WaitingSweepCfg;
   /** Restart-gated work (spec §8.4, `/gated`): the branch prefixes that count as work waiting to
    *  merge. Optional like `plans`; `loadConfig` always fills it. */
   restart?: RestartCfg;
@@ -577,6 +580,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     decisionSettle: readDecisionSettleCfg(fileCfg.decisionSettle),
     attention: readAttentionCfg(fileCfg.attention),
     notes: readNotesCfg(fileCfg.notes),
+    waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     restart: readRestartCfg(fileCfg.restart),
     github: readGithubCfg(fileCfg.github),
     projects: readProjectsCfg(fileCfg.projects),
