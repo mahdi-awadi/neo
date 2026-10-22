@@ -91,3 +91,11 @@ test("makeGoalCheck dispatches to the judge for kind:judge", async () => {
   );
   expect((await check()).met).toBe(true);
 });
+
+test("commandGoal keeps the whole stdout as output, capped (ADR-0045)", async () => {
+  const g = commandGoal({ command: ["sh", "-c", "printf 'line one\\nline two\\n'; exit 0"], cwd: process.cwd() });
+  const r = await g();
+  expect(r).toEqual({ met: true, detail: "exit 0: line two", output: "line one\nline two" });
+  const big = await commandGoal({ command: ["sh", "-c", "head -c 9000 /dev/zero | tr '\\0' x"], cwd: process.cwd() })();
+  expect(big.output?.length).toBe(4000);
+});

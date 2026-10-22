@@ -5,7 +5,12 @@
 import { runOrder, type RunDeps } from "./session-runner";
 import type { Order } from "../types";
 
-export type GoalCheck = () => Promise<{ met: boolean; detail: string }>;
+/** `output`: a command goal's whole stdout (capped at GOAL_OUTPUT_MAX), for a loop that reports its
+ *  goal (ADR-0045). `detail` stays the one-line summary. */
+export type GoalCheck = () => Promise<{ met: boolean; detail: string; output?: string }>;
+
+/** The most stdout a command goal keeps as `output`. */
+export const GOAL_OUTPUT_MAX = 4000;
 
 /** A declarative goal: a verifiable command, or an LLM-judge condition. */
 export type Goal =
@@ -46,7 +51,7 @@ export function commandGoal(opts: { command: string[]; cwd: string; timeoutMs?: 
     if (timedOut) return { met: false, detail: `timed out after ${opts.timeoutMs}ms` };
 
     const tail = `${out}${err}`.trim().split("\n").filter(Boolean).at(-1) ?? "";
-    return { met: exited === 0, detail: `exit ${exited}${tail ? `: ${tail.slice(0, 140)}` : ""}` };
+    return { met: exited === 0, detail: `exit ${exited}${tail ? `: ${tail.slice(0, 140)}` : ""}`, output: out.trim().slice(0, GOAL_OUTPUT_MAX) };
   };
 }
 

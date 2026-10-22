@@ -676,10 +676,12 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
     },
     { run: deps.run, check },
   ).finally(() => loopPlans(deps.plans, loop, deps.chatId, planStart, cause));
-  // A goal-report loop's one message is its goal's output (deterministic), sent once.
-  if (loop.report === "goal" && out.lastDetail.trim()) {
-    line(out.lastDetail, "text");
-    await deps.reply(deps.chatId, out.lastDetail, project);
+  // A goal-report loop's one message is its goal's output (deterministic), sent once, and only when
+  // the goal was met — a failing goal's output is not a report.
+  const report = out.met ? (out.lastOutput ?? "").trim() : "";
+  if (loop.report === "goal" && report) {
+    line(report, "text");
+    await deps.reply(deps.chatId, report, project);
   }
   return out;
 }

@@ -131,7 +131,7 @@ test("startScheduledLoop with report goal sends the goal detail once and no work
       h.onMessage("Let me look at the threads first.");
       return okRun();
     },
-    check: async () => (++checks === 1 ? { met: false, detail: "" } : { met: true, detail: "⏳ Waiting on you (1):\n• m1 acme — approve?" }),
+    check: async () => (++checks === 1 ? { met: false, detail: "exit 1", output: "not yet" } : { met: true, detail: "exit 0: • m1 acme — approve?", output: "⏳ Waiting on you (1):\n• m1 acme — approve?" }),
   });
   expect(out.met).toBe(true);
   expect(replies).toEqual([{ text: "⏳ Waiting on you (1):\n• m1 acme — approve?", project: "acme" }]);
@@ -144,7 +144,7 @@ test("startScheduledLoop with report goal sends nothing when the goal prints not
     chatId: 7,
     reply: (_c, t) => void replies.push(t),
     run: async () => (ran++, okRun()),
-    check: async () => ({ met: true, detail: "   " }),
+    check: async () => ({ met: true, detail: "exit 0", output: "   " }),
   });
   expect(ran).toBe(0);
   expect(replies).toEqual([]);
