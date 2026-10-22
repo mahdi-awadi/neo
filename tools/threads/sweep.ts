@@ -49,8 +49,9 @@ function deps(ledgerPath: string): SweepDeps {
 /** The decisions to judge, each with its repo's commits since the question (newest first). */
 function listText(d: SweepDeps): string {
   const judged = (d.ledger.getMeta("waitingSweep.judged")?.value ?? {}) as Record<string, Judged>;
+  // What `check` offered this run, plus anything due now (when `list` runs before `check`).
   const now = d.now();
-  const todo = waitingDecisions(d).filter((x) => needsJudging(x, judged[x.id], d.cfg, now));
+  const todo = waitingDecisions(d).filter((x) => judged[x.id]?.offeredAt !== undefined || needsJudging(x, judged[x.id], d.cfg, now));
   if (todo.length === 0) return "nothing to judge\n";
   const blocks = todo.map((x) => {
     const since = `@${Math.floor(x.createdAt / 1000)}`;

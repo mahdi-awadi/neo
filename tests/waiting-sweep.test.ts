@@ -15,6 +15,7 @@ function fakeGit(o: { latest?: number; commits?: Record<string, number>; files?:
   const calls: string[][] = [];
   const run = ((folder: string, args: string[]) => {
     calls.push([folder, ...args]);
+    if (args[0] === "--literal-pathspecs") args = args.slice(1);
     if (o.repo === null) return undefined;
     const [cmd] = args;
     if (cmd === "rev-parse" && args[1] === "--show-toplevel") return `${o.repo ?? "/home/p"}\n`;
@@ -106,6 +107,9 @@ test("AC3: close refuses without good evidence, and names the rule", () => {
   expect(r({ commit: "--all" })).toEqual({ ok: false, why: "commit must be a hex sha" });
   expect(r({ file: "../../etc/passwd" })).toEqual({ ok: false, why: "file must be a path inside the repository" });
   expect(r({ file: "/etc/passwd" })).toEqual({ ok: false, why: "file must be a path inside the repository" });
+  expect(r({ file: "*" })).toEqual({ ok: false, why: "file must be a plain path (no wildcards or pathspec magic)" });
+  expect(r({ file: ":(glob)**" })).toEqual({ ok: false, why: "file must be a plain path (no wildcards or pathspec magic)" });
+  expect(closeWithEvidence(s.deps, id.slice(0, 6), { commit: "def5678" }, "built in the wallet ADR")).toEqual({ ok: false, why: `no open decision #${id.slice(0, 6)} in a waiting thread` });
   expect(r({ file: "docs/none.md" })).toEqual({ ok: false, why: "file docs/none.md is not tracked in /home/p" });
   expect(r({ file: "docs/old.md" })).toEqual({ ok: false, why: "file docs/old.md was last changed before the question" });
   expect(r({})).toEqual({ ok: false, why: "give exactly one of --commit or --file" });
@@ -160,4 +164,23 @@ test("the reminder caps its lines and counts extra questions per thread", () => 
   expect(out[0]).toBe("⏳ Waiting on you (2):");
   expect(out.length).toBe(3);
   expect(out[2]).toBe("…and 1 more");
+});
+
+test("review: a decision the worker left unjudged does not block the reminder — the second check of the run is met", () => {
+  const s = setup(fakeGit({ latest: ASKED + 5_000 }));
+  ask(s);
+  expect(check(s.deps).met).toBe(false); // offered to the worker
+  const after = check(s.deps); // the worker judged nothing
+  expect(after.met).toBe(true);
+  expect(after.out).toBe(`⏳ Waiting on you (1):\n• ${s.t.ref(s.root.threadId)} p — Which bank?`);
+});
+
+test("review: judgements of decisions that left the list are dropped", () => {
+  const s = setup(fakeGit({ latest: ASKED + 5_000 }));
+  const id = ask(s);
+  keepJudged(s.deps, id.slice(0, 8), "Pick the bank");
+  s.led.resolveDecision(id, "IQD bank");
+  s.t.refreshThread(s.root.threadId);
+  check(s.deps);
+  expect(Object.keys((s.led.getMeta("waitingSweep.judged")?.value ?? {}) as object)).toEqual([]);
 });

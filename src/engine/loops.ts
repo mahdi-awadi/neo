@@ -607,6 +607,10 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
   ).finally(() => loopPlans(deps.plans, loop, chatId, planStart, cause));
   const outcome = `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`;
   await deps.reply(chatId, outcome + line(outcome, "result"));
+  // A goal-report loop's goal output is its message (ADR-0045) — a manual run sends it too, or the
+  // reminder its goal just recorded as sent would never reach the operator.
+  const report = loop.report === "goal" && out.met ? (out.lastOutput ?? "").trim() : "";
+  if (report) await deps.reply(chatId, report);
   return out;
 }
 

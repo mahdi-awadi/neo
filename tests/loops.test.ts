@@ -150,6 +150,16 @@ test("startScheduledLoop with report goal sends nothing when the goal prints not
   expect(replies).toEqual([]);
 });
 
+test("a manual run of a report-goal loop also sends the goal output (the fingerprint is spent either way)", async () => {
+  const replies: string[] = [];
+  await startLoop({ ...remLoop(), report: "goal" }, 7, {
+    reply: (_c, t) => void replies.push(t),
+    run: async () => okRun(),
+    check: async () => ({ met: true, detail: "exit 0: • m1 acme — approve?", output: "⏳ Waiting on you (1):\n• m1 acme — approve?" }),
+  });
+  expect(replies).toContain("⏳ Waiting on you (1):\n• m1 acme — approve?");
+});
+
 // Full NeoConfig fixture (2026-07-23 review finding #7): loopRunExtras derives BOTH the per-path
 // worker profile (profileDeps(cfg, "loop")) and the context-policy resume gate from `cfg` — this
 // proves a real `cfg` actually reaches runProjectLoop's iterate() call, not just that the plumbing

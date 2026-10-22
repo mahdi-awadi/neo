@@ -21,19 +21,19 @@ loop re-checks them and reminds the operator once, only on change.
 
 ### Task 1: Loop field `report: "goal"`
 Files: `src/engine/loop-validate.ts`, `src/engine/loops.ts` (`LoopDef`, `startScheduledLoop`), `tests/loops.test.ts`, `tests/loop-validate.test.ts`.
-- [ ] Failing tests (spec AC 4, and validation of `report` values) → implement → green → commit.
+- [x] Failing tests (spec AC 4, and validation of `report` values) → implement → green → commit.
 
 ### Task 2: `waiting-sweep.ts` + `supersedeDecision` cancels parked todos
 Files: `src/engine/waiting-sweep.ts`, `src/engine/ledger.ts`, `src/config.ts`, `tests/waiting-sweep.test.ts`, `tests/ledger.test.ts`.
-- [ ] Failing tests (spec AC 1–3) with a fake GitRunner and a temp ledger → implement → green → commit.
+- [x] Failing tests (spec AC 1–3) with a fake GitRunner and a temp ledger → implement → green → commit.
 
 ### Task 3: CLI + loop definition
 Files: `tools/threads/sweep.ts`, `docs/loops/waiting-sweep.json`, `docs/loops/waiting-sweep.prompt.md`, `tests/waiting-sweep-cli.test.ts`.
-- [ ] Failing tests (spec AC 5; CLI `check` twice prints once) → implement → green → commit.
+- [x] Failing tests (spec AC 5; CLI `check` twice prints once) → implement → green → commit.
 
 ### Task 4: One-off cleanup (Part 2)
 Files: `tools/oneoff/2026-10-22-close-done-waiting-threads.ts`, `tests/oneoff-waiting-threads.test.ts`.
-- [ ] Failing test (spec AC 6 against a fixture ledger) → implement → dry run on the live ledger →
+- [x] Failing test (spec AC 6 against a fixture ledger) → implement → dry run on the live ledger →
   `--apply` (backup first) → verify the counts → commit.
 
 ### Task 5: Docs + review

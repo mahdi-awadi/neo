@@ -98,7 +98,7 @@ export function run(db: Database, opts: { fixes: Fix[]; keeps: Keep[]; apply: bo
       const f = db
         .query(
           `SELECT (SELECT count(*) FROM decisions WHERE thread_id = ?1 AND status = 'open') AS open_decisions,
-                  (SELECT count(*) FROM project_todos WHERE thread_id = ?1 AND status IN ('queued', 'running', 'retry')) AS active_todos,
+                  (SELECT count(*) FROM project_todos WHERE thread_id = ?1 AND status IN ('queued', 'running', 'retry', 'waiting')) AS active_todos,
                   (SELECT closed_by_operator FROM threads WHERE id = ?1) AS closed`,
         )
         .get(id) as { open_decisions: number; active_todos: number; closed: number | null };

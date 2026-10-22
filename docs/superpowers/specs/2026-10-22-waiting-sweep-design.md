@@ -29,13 +29,17 @@ check(deps): { met: boolean; out: string }           // the loop goal: refresh, 
   time AND now − judgedAt ≥ `rejudgeAfterMs`). Plan cards never need judging (they follow the plan);
   they are listed in the reminder.
 - **Verified close:**
-  - The id8 must match exactly one open decision in a WAITING thread, and not a plan card.
+  - The id (8+ characters) must match exactly one open decision in a WAITING thread, and not a plan card.
   - `--commit`: `hasCommit` is true and the commit time is greater than `decision.createdAt`.
-  - `--file`: the path is relative and has no `..`. It is tracked (`git ls-files --error-unmatch`),
+  - `--file`: the path is relative, has no `..`, and has no wildcard or pathspec magic (`*?[]:\`); git
+    reads it with `--literal-pathspecs`. It is tracked (`git ls-files --error-unmatch`),
     and its last commit time is greater than `createdAt`.
   - `reason` is ≥ 10 chars and ≤ 300.
   - Then `ledger.supersedeDecision(id, "done by later work: <reason> (<evidence>)", at)`. This now
     also cancels the todos parked on the decision, and returns their ids. Then refresh the thread.
+- **Offer:** `check` marks each decision it hands the worker as judged now (`offeredAt`), keeping any
+  earlier ask, so a worker that judges nothing does not block the reminder or get paid for again
+  before `rejudgeAfterMs`. Judgements of decisions that left the list are dropped.
 - **Keep:** it stores `{ at: now, commitAt: latest, ask }` under meta `waitingSweep.judged`
   (a map by decision id). The ask is ≤ 160 chars.
 - **Reminder:** one line per WAITING thread (newest first): `• <ref> <project> — <ask or question,
@@ -45,8 +49,9 @@ check(deps): { met: boolean; out: string }           // the loop goal: refresh, 
   empty and differs from meta `waitingSweep.reminder`. The meta key is then updated. An empty list
   resets the key, so a later list is sent again.
 - **Loop field `report: "goal"`** (`LoopInput`, `LoopDef`, validation): in `startScheduledLoop`,
-  worker text is recorded in the loop thread but not sent. After the run, `out.lastDetail` is sent
-  once if it is not empty after trimming. The default (`"worker"`) keeps today's behaviour.
+  worker text is recorded in the loop thread but not sent. After the run, the goal's whole output
+  (`out.lastOutput`, a command goal's stdout) is sent once, only when the goal was met and the output
+  is not empty. A manual `/loop` run sends it too. The default (`"worker"`) keeps today's behaviour.
 
 ## Config (`waitingSweep`)
 

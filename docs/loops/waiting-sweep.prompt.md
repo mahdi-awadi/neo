@@ -16,5 +16,6 @@ from evidence only, whether it is still waiting for the operator. Never guess fr
      `bun tools/threads/sweep.ts keep <id> --ask "<one line: what the operator must decide or give>"`.
    A commit or doc that only *lists* a question as open ("waits on #…", "asked the operator") is
    not evidence that it is done.
-4. Work silently. Do not write messages or summaries: the engine sends the operator the one
+4. Never run `sweep.ts check` yourself: the engine runs it, and it records the reminder as sent.
+5. Work silently. Do not write messages or summaries: the engine sends the operator the one
    reminder itself, from `sweep.ts check`.

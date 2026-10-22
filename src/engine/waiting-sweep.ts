@@ -62,6 +62,8 @@ export interface Judged {
   at: number;
   commitAt: number;
   ask: string;
+  /** Set when `check` offered the decision to the worker; `keep` (a verdict) clears it. */
+  offeredAt?: number;
 }
 
 const JUDGED_KEY = "waitingSweep.judged";
@@ -158,7 +160,7 @@ export function reminder(list: WaitingDecision[], judged: Record<string, Judged>
   const lines = [...byThread.entries()].map(([threadId, ds]) => {
     const lead = ds.find((d) => judged[d.id]?.ask) ?? ds[0]!;
     const more = ds.length > 1 ? ` (+${ds.length - 1} more)` : "";
-    return `• ${ref(threadId)} ${lead.project ?? "-"} — ${clip(judged[lead.id]?.ask ?? lead.question, 120)}${more}`;
+    return `• ${ref(threadId)} ${lead.project ?? "-"} — ${clip(judged[lead.id]?.ask || lead.question, 120)}${more}`;
   });
   const shown = lines.slice(0, cfg.reminderMaxLines);
   const rest = lines.length - shown.length;
@@ -177,8 +179,15 @@ export function check(deps: SweepDeps): { met: boolean; out: string; toJudge: Wa
   const judged = judgedMap(deps);
   const now = deps.now();
   const toJudge = list.filter((d) => needsJudging(d, judged[d.id], deps.cfg, now));
+  // Keep only the judgements of decisions still on the list, and mark the ones offered to the worker
+  // as judged now (keeping any earlier ask): a worker that judges nothing must not block the
+  // reminder for the rest of the run, nor be paid for again before `rejudgeAfterMs` (ADR-0045).
+  const live = new Set(list.map((d) => d.id));
+  const kept: Record<string, Judged> = Object.fromEntries(Object.entries(judged).filter(([id]) => live.has(id)));
+  for (const d of toJudge) kept[d.id] = { at: now, commitAt: d.latestCommitAt ?? 0, ask: judged[d.id]?.ask ?? "", offeredAt: now };
+  if (toJudge.length || Object.keys(kept).length !== Object.keys(judged).length) deps.ledger.setMeta(JUDGED_KEY, kept, now);
   if (toJudge.length) return { met: false, out: "", toJudge };
-  const r = reminder(list, judged, deps.cfg, deps.ref);
+  const r = reminder(list, kept, deps.cfg, deps.ref);
   const last = deps.ledger.getMeta(REMINDER_KEY)?.value as { fingerprint?: string } | undefined;
   if (r.fingerprint === (last?.fingerprint ?? "")) return { met: true, out: "", toJudge };
   deps.ledger.setMeta(REMINDER_KEY, { fingerprint: r.fingerprint }, now);
@@ -188,7 +197,7 @@ export function check(deps: SweepDeps): { met: boolean; out: string; toJudge: Wa
 /** The one open decision (in a WAITING thread) an 8+-character id prefix names. */
 function findOne(deps: SweepDeps, id8: string): WaitingDecision | string {
   const key = id8.trim().toLowerCase();
-  const hits = key.length >= 6 ? waitingDecisions(deps).filter((d) => d.id.toLowerCase().startsWith(key)) : [];
+  const hits = key.length >= 8 ? waitingDecisions(deps).filter((d) => d.id.toLowerCase().startsWith(key)) : [];
   if (hits.length === 1) return hits[0]!;
   return hits.length === 0 ? `no open decision #${key} in a waiting thread` : `#${key} names ${hits.length} decisions — give more of the id`;
 }
@@ -222,9 +231,12 @@ export function closeWithEvidence(
     label = `commit ${sha}`;
   } else {
     const path = ev.file!.trim();
+    // A pathspec glob or magic (`*`, `:(glob)…`, `:/`) would match any tracked file and turn "this
+    // file changed" into "anything changed": refuse it, and read the path literally anyway.
+    if (/[*?[\]:\\]/.test(path)) return { ok: false, why: "file must be a plain path (no wildcards or pathspec magic)" };
     if (!path || path.startsWith("/") || path.startsWith("-") || path.split("/").includes("..")) return { ok: false, why: "file must be a path inside the repository" };
-    if (deps.git(repo, ["ls-files", "--error-unmatch", "--", path]) === undefined) return { ok: false, why: `file ${path} is not tracked in ${repo}` };
-    const at = gitTime(deps.git(repo, ["log", "-1", "--format=%ct", "--", path]));
+    if (deps.git(repo, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", path]) === undefined) return { ok: false, why: `file ${path} is not tracked in ${repo}` };
+    const at = gitTime(deps.git(repo, ["--literal-pathspecs", "log", "-1", "--format=%ct", "--", path]));
     if (at === undefined || at <= d.createdAt) return { ok: false, why: `file ${path} was last changed before the question` };
     label = `file ${path}`;
   }
