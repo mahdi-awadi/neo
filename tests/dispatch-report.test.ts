@@ -207,6 +207,22 @@ test("uncommittedIn ignores the note of a project that lives in a sub-folder of 
   mkdirSync(sub, { recursive: true });
   writeFileSync(join(sub, "HANDOFF.md"), "note");
   expect(uncommittedIn(sub)).toEqual([]);
+  // The parent repo's own changes are not the sub-folder's work (ADR-0048): a desk under /home/neo
+  // was blamed for the root HANDOFF.md.
   writeFileSync(join(d, "HANDOFF.md"), "the repo root's note is NOT this project's note");
-  expect(uncommittedIn(sub)).toEqual(["HANDOFF.md"]);
+  writeFileSync(join(d, "a.txt"), "changed outside the sub-folder");
+  expect(uncommittedIn(sub)).toEqual([]);
+  writeFileSync(join(sub, "work.ts"), "x");
+  expect(uncommittedIn(sub)).toEqual(["desks/dev/work.ts"]);
+});
+
+test("uncommittedIn: a folder its repo ignores is not under version control → undefined (ADR-0048)", () => {
+  const d = gitRepo();
+  writeFileSync(join(d, ".gitignore"), "/agent/\n");
+  const desk = join(d, "agent", "desks", "ops");
+  mkdirSync(desk, { recursive: true });
+  writeFileSync(join(desk, "notes.md"), "x");
+  writeFileSync(join(d, "a.txt"), "the parent repo's change");
+  expect(uncommittedIn(desk)).toBeUndefined();
+  expect(gitFacts(desk)).toEqual({});
 });

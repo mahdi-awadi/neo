@@ -136,6 +136,12 @@ The uncommitted paths at a run's end that are new or changed since the run start
 `commitFinish.ignore`. A path that was already dirty and untouched is not the run's.
 _Avoid_: dirty files (unqualified)
 
+**Uncommitted work (of a folder)**:
+The changed, staged or untracked paths under the folder, minus its own `HANDOFF.md`. A sub-folder
+of a repo counts only what is under it, never its parent repo's changes. A folder its repo ignores
+(a desk under `/home/neo/agent/`) is not under version control and has none (ADR-0048).
+_Avoid_: repo status (for a sub-folder)
+
 **Progress digest**:
 A short line about a running dispatch, built by the engine: elapsed time, current activity, the
 latest note and the last commit. It goes to the operator and the live dispatcher every

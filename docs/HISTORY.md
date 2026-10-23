@@ -1097,3 +1097,11 @@ session limit, its todo stays `running`, but the queue now says why it is quiet.
 - The console Queue tab shows `queue.limitWait` (AR+EN), with the time as an LTR isolate.
 
 Restart-gated.
+
+Desks are not blamed for the parent repo's changes (2026-10-23, ADR-0048). The ops and research
+desks raised "1 uncommitted file … HANDOFF.md". The file was `/home/neo`'s own root note.
+
+- `uncommittedFrom` counts only paths under the folder's prefix.
+- `uncommittedIn` returns undefined for a folder its repo ignores (a desk under `/home/neo/agent/`).
+
+Restart-gated.

@@ -144,13 +144,15 @@ export function parseWorktrees(porcelain: string): WorktreeEntry[] {
 const HANDOFF_NOTE = "HANDOFF.md";
 
 /** The uncommitted paths in `git status --porcelain --untracked-files=all` output (relative to the
- *  repo root; a rename counts as its new name), minus the folder's own HANDOFF.md — `prefix` is the
- *  folder inside its repo (`git rev-parse --show-prefix`). The one rule for "uncommitted work". */
+ *  repo root; a rename counts as its new name) UNDER the folder, minus the folder's own HANDOFF.md —
+ *  `prefix` is the folder inside its repo (`git rev-parse --show-prefix`). A sub-folder (a desk under
+ *  /home/neo) is never charged with its parent repo's changes (ADR-0048). The one rule for
+ *  "uncommitted work". */
 export function uncommittedFrom(porcelain: string, prefix: string): string[] {
   const note = prefix + HANDOFF_NOTE;
   return porcelain
     .split("\n")
     .filter((l) => l.length > 3)
     .map((l) => l.slice(3).replace(/^"|"$/g, "").split(" -> ").pop()!)
-    .filter((p) => p !== note);
+    .filter((p) => p.startsWith(prefix) && p !== note);
 }
