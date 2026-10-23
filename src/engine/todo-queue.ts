@@ -17,6 +17,7 @@ import { msgRef } from "./trace";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { classifyEnd, nextRetry, retryBrief } from "./todo-retry";
+import { limitWait } from "./api-retry";
 import { awaitHandoff, continuationBrief, handoffInFlight, type HandoffNext } from "./context-policy";
 import { awaitCommitFinish, commitFinishInFlight } from "./commit-finish";
 
@@ -34,6 +35,12 @@ const FAILED_SHOWN = 10;
 function dueIn(ms: number): string {
   const m = Math.max(0, Math.round(ms / 60_000));
   return m >= 120 ? `in ${Math.round(m / 60)}h` : `in ${m}m`;
+}
+
+/** "14:30" (UTC) — or "2026-10-25 14:30" when the resume is not today: a weekly limit can be days off. */
+function resumeClock(at: number, now: number): string {
+  const iso = new Date(at).toISOString();
+  return iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? iso.slice(11, 16) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
 }
 
 /** The deps + chat a release starts a todo with (the operator channel's own dispatch deps). */
@@ -434,7 +441,14 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     const lines = [`📋 ${name}${paused ? ` — paused (${paused.reason})` : ""}`];
     const t0 = now();
     for (const t of all) {
-      if (t.status === "running") lines.push(`  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`);
+      if (t.status !== "running") continue;
+      // Waiting out a rate limit (ADR-0047): still running, but say why it is quiet and when it goes on.
+      const wait = limitWait(ledger, t.orderId, t0);
+      lines.push(
+        wait
+          ? `  ⏳ #${t.id} waiting for limit reset · resumes ${resumeClock(wait.resumesAt, t0)} UTC — ${todoTitle(t.brief)}`
+          : `  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`,
+      );
     }
     all.filter((t) => t.status === "queued").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoTitle(t.brief)}`));
     // Parked continuations (ADR-0029): each waits on one decision.

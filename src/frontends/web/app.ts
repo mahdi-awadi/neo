@@ -79,6 +79,11 @@ const LOCALE = `${root.lang}-u-nu-latn`;
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
 }
+/** A resume time: the clock today, with the date when it is another day (a weekly limit, ADR-0047). */
+function resumeAt(at: number): string {
+  if (new Date(at).toDateString() === new Date().toDateString()) return clock(at);
+  return new Date(at).toLocaleString(LOCALE, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
 
 /** The page shell's static text: every `data-i18n*` attribute is filled from the catalogue. */
 function applyStatic(): void {
@@ -442,7 +447,9 @@ function renderTodos(): void {
       const row = document.createElement("div");
       row.className = "rrow";
       const lead =
-        x.status === "running"
+        x.status === "running" && x.limitResumesAt
+          ? tx("queue.limitWait", { time: ltr(resumeAt(x.limitResumesAt)) }) // ADR-0047: still running, waiting out a limit
+          : x.status === "running"
           ? t("queue.running", { age: age(Date.now() - (x.startedAt || x.createdAt)) })
           : x.status === "retry"
             ? t("queue.retryWait", { n: x.attempts, age: age(Math.max(0, (x.retryAt || Date.now()) - Date.now())) })

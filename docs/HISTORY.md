@@ -1086,3 +1086,14 @@ download link.
 - `src/frontends/web/md-links.ts` finds the paths in the browser and links them, LTR in RTL text.
 
 Restart-gated.
+
+A running todo shows its limit wait (2026-10-23, ADR-0047). While a dispatch waits out a usage or
+session limit, its todo stays `running`, but the queue now says why it is quiet.
+
+- `limitWait(ledger, orderId, now)` in `src/engine/api-retry.ts` reads the order's newest
+  `api_retry` event. A `rate_limit` wait still ahead gives `resumesAt = at + delayMs`.
+- `todo list` and Telegram `/todo` show `⏳ #id waiting for limit reset · resumes HH:MM UTC`. The
+  date comes first when the resume is not today.
+- The console Queue tab shows `queue.limitWait` (AR+EN), with the time as an LTR isolate.
+
+Restart-gated.

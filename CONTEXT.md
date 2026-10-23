@@ -79,6 +79,13 @@ and class-blind — it stops the operator and background work alike. Distinct fr
 throttle is the engine's own choice, a rate limit is not.
 _Avoid_: throttle, 429, quota error
 
+**Limit wait**:
+A running todo whose dispatch is waiting out a rate limit before it re-sends the brief into the same
+session. Derived from the order's newest `api_retry` event (`kind: rate_limit`, still before
+`at + delayMs`); never a todo status. The queue shows it as "waiting for limit reset · resumes HH:MM"
+(ADR-0047).
+_Avoid_: stuck, paused, limit_wait status
+
 **Cooldown**:
 A short engine-wide hold on starting new background work after a worker reports a rate limit, so
 retries and the scheduler do not amplify the storm. Never holds an interactive turn.

@@ -134,6 +134,7 @@
     "resume": "Resume",
     "pause": "Pause",
     "running": "▶ running {{age}}",
+    "limitWait": "⏳ waiting for limit reset · resumes {{time}}",
     "moveUp": "move up",
     "cancel": "Cancel",
     "confirmCancel": "Cancel #{{id}}?",

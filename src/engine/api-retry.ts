@@ -14,6 +14,7 @@
 //      operator's own interactive messages are never held: that is the reserved headroom.
 import type { ApiErrorKind } from "./session-runner";
 import type { RateLimitInfo } from "./usage";
+import type { Ledger } from "./ledger";
 
 /** Server-side conditions that clear on their own — the only ones worth waiting out. An auth,
  *  billing or invalid-request failure repeats identically however long we wait. */
@@ -175,6 +176,18 @@ export function apiExhaustionWarning(rateLimits: RateLimitInfo[] | undefined, no
     `⚠ Anthropic is rate-limiting the subscription until ${new Date(at).toUTCString()} ` +
     `(in ${humanDelay(at - now)}) — starting your turn anyway; it may fail until then.`
   );
+}
+
+/** A run's limit wait (ADR-0047): its order's newest `api_retry` is a rate limit whose re-send is
+ *  still ahead. `resumesAt` is that re-send (`at + delayMs`: the reset plus its jitter). Derived from
+ *  the ledger, so every queue view reads the same fact and no status ever changes for it. */
+export function limitWait(ledger: Pick<Ledger, "listEvents">, orderId: string | undefined, now: number): { resumesAt: number } | undefined {
+  if (!orderId) return undefined;
+  const last = ledger.listEvents({ kind: "api_retry", orderId, limit: 1 })[0];
+  const delayMs = last?.data?.delayMs;
+  if (!last || last.data?.kind !== "rate_limit" || typeof delayMs !== "number") return undefined;
+  const resumesAt = last.at + delayMs;
+  return resumesAt > now ? { resumesAt } : undefined;
 }
 
 /** What a held dispatch/loop fire reports back. */

@@ -598,3 +598,28 @@ test("onDone fires for a done todo only, and a throwing hook does not stop the n
   await settle();
   expect(seen).toEqual([[1, "done"]]);
 });
+
+// --- limit wait display (ADR-0047) ---------------------------------------------------------------
+
+test("list: a running todo waiting for a limit reset says so, with its resume time, and stays running", () => {
+  const { ledger, queue, root } = setup();
+  const folder = join(root, "eticket-v3");
+  const a = ledger.addTodo({ project: "eticket-v3", folder, brief: "fix the fare cache", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(a.id, { status: "running", orderId: "o-wait", startedAt: 0 });
+  const b = ledger.addTodo({ project: "waselni", folder: join(root, "waselni"), brief: "ship the build", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(b.id, { status: "running", orderId: "o-work", startedAt: 0 });
+  // clock is 1_000; the re-send is due at 500 + 10m = 600_500 → 00:10 UTC.
+  ledger.recordEvent("api_retry", { orderId: "o-wait", at: 500, data: { kind: "rate_limit", delayMs: 600_000 } });
+  const text = queue.list();
+  expect(text).toContain(`⏳ #${a.id} waiting for limit reset · resumes 00:10 UTC — fix the fare cache`);
+  expect(text).toContain(`▶ #${b.id} running 0m — ship the build`);
+  expect(ledger.todoById(a.id)?.status).toBe("running");
+});
+
+test("list: a limit wait that resumes on another day names the date too (a weekly limit)", () => {
+  const { ledger, queue, root } = setup();
+  const a = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "weekly wait", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(a.id, { status: "running", orderId: "o-week", startedAt: 0 });
+  ledger.recordEvent("api_retry", { orderId: "o-week", at: 0, data: { kind: "rate_limit", delayMs: 2 * 86_400_000 + 3_600_000 } });
+  expect(queue.list()).toContain(`⏳ #${a.id} waiting for limit reset · resumes 1970-01-03 01:00 UTC — weekly wait`);
+});

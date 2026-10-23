@@ -14,6 +14,7 @@ import { workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
 import { todoTitle } from "./todo-queue";
+import { limitWait } from "./api-retry";
 
 export interface DashProject {
   id: string;
@@ -89,12 +90,14 @@ export interface DashTodo {
   startedAt?: number;
   /** Why the project's queue is paused, when it is. */
   paused?: string;
+  /** A running todo waiting out a rate limit: when its brief is re-sent (ADR-0047). */
+  limitResumesAt?: number;
 }
 
 /** Running + queued todos (all projects, or one folder's): running first, then each queue in order;
  *  `position` is the 1-based queue position, 0 for a running todo. The one todo mapping — the console
  *  and the project dashboard both read it. */
-export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
+export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.now()): DashTodo[] {
   const nextPos = new Map<string, number>();
   const where = folder !== undefined ? { folder } : {};
   const rows = [
@@ -106,6 +109,7 @@ export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
   return rows.map((t) => {
     const position = t.status === "queued" ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
     if (t.status === "queued") nextPos.set(t.folder, position);
+    const wait = t.status === "running" ? limitWait(ledger, t.orderId, now) : undefined;
     return {
       id: t.id,
       project: t.project,
@@ -117,6 +121,7 @@ export function activeTodos(ledger: Ledger, folder?: string): DashTodo[] {
       paused: ledger.todoPaused(t.folder)?.reason,
       ...(t.status === "retry" || t.status === "failed" ? { attempts: t.attempts, ...(t.retryAt !== undefined ? { retryAt: t.retryAt } : {}) } : {}),
       ...(t.waitingOn ? { waitingOn: t.waitingOn } : {}),
+      ...(wait ? { limitResumesAt: wait.resumesAt } : {}),
     };
   });
 }
@@ -206,7 +211,7 @@ export function dashboardSnapshot(opts: {
     task: o.task,
     status: opts.ledger.getOutcome(o.id)?.status ?? "pending",
   }));
-  const todos = activeTodos(opts.ledger);
+  const todos = activeTodos(opts.ledger, undefined, now);
   const contextEvents: DashContextEvent[] = opts.ledger.listContextEvents({ limit: CONTEXT_EVENTS_SHOWN }).map((e) => ({
     project: basename(e.folder),
     folder: e.folder,

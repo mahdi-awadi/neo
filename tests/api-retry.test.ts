@@ -247,3 +247,41 @@ test("apiExhaustionWarning names the soonest rejecting window and stays quiet ot
   );
   expect(msg).toContain(new Date(soon * 1000).toUTCString());
 });
+
+// --- limit wait (ADR-0047): a running todo's dispatch waiting out a rate limit -----------------
+import { openLedger } from "../src/engine/ledger";
+import { limitWait } from "../src/engine/api-retry";
+
+function retryEvent(ledger: ReturnType<typeof openLedger>, orderId: string, at: number, kind: string, delayMs: number): void {
+  ledger.recordEvent("api_retry", { orderId, at, data: { scope: "dispatch", kind, attempt: 1, max: 3, delayMs, source: "reset" } });
+}
+
+test("limitWait: a rate_limit wait still ahead gives its re-send time (at + delayMs)", () => {
+  const ledger = openLedger(":memory:");
+  retryEvent(ledger, "o-1", 1_000, "rate_limit", 60_000);
+  expect(limitWait(ledger, "o-1", 30_000)).toEqual({ resumesAt: 61_000 });
+});
+
+test("limitWait: a wait that has passed is no longer a limit wait", () => {
+  const ledger = openLedger(":memory:");
+  retryEvent(ledger, "o-1", 1_000, "rate_limit", 60_000);
+  expect(limitWait(ledger, "o-1", 61_000)).toBeUndefined();
+});
+
+test("limitWait: an overload or server-error ladder wait is not a limit reset", () => {
+  const ledger = openLedger(":memory:");
+  retryEvent(ledger, "o-1", 1_000, "overloaded", 60_000);
+  retryEvent(ledger, "o-2", 1_000, "server_error", 60_000);
+  expect(limitWait(ledger, "o-1", 2_000)).toBeUndefined();
+  expect(limitWait(ledger, "o-2", 2_000)).toBeUndefined();
+});
+
+test("limitWait: only the order's newest api_retry counts; no order or no event → undefined", () => {
+  const ledger = openLedger(":memory:");
+  retryEvent(ledger, "o-1", 1_000, "rate_limit", 600_000);
+  retryEvent(ledger, "o-1", 5_000, "overloaded", 30_000);
+  retryEvent(ledger, "o-other", 1_000, "rate_limit", 600_000);
+  expect(limitWait(ledger, "o-1", 6_000)).toBeUndefined();
+  expect(limitWait(ledger, undefined, 6_000)).toBeUndefined();
+  expect(limitWait(ledger, "o-none", 6_000)).toBeUndefined();
+});

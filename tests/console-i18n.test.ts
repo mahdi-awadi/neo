@@ -119,7 +119,7 @@ test("Arabic pages are right-to-left; English pages left-to-right", () => {
 
 test("refs, paths, ids and times render as isolated LTR runs (<bdi dir=\"ltr\">)", () => {
   expect(APP).toMatch(/function ltr\(s: unknown\): string \{\n\s+return `<bdi dir="ltr" class="ref">\$\{esc\(s\)\}<\/bdi>`;/);
-  for (const use of ["ltr(r.ref)", "ltr(th.ref)", "ltr(p.folder)", "ltr(clock(m.at))", 'ltr("#" + x.id)']) expect(APP).toContain(use);
+  for (const use of ["ltr(r.ref)", "ltr(th.ref)", "ltr(p.folder)", "ltr(clock(m.at))", 'ltr("#" + x.id)', "ltr(resumeAt(x.limitResumesAt))"]) expect(APP).toContain(use);
   // Dates and times keep Latin digits, like every other number on the page.
   expect(APP).toContain("-u-nu-latn");
 });
