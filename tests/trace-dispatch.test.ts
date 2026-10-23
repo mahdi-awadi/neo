@@ -183,10 +183,10 @@ test("a decision raised by ask_operator inside a dispatched run is in the root t
     title: "Postgres or Mongo?",
     context: "The fares store needs a database; both fit.",
     options: [
-      { label: "Postgres", detail: "relational, existing infra", recommended: true },
-      { label: "Mongo", detail: "document store, new infra" },
+      { label: "Postgres", explanation: "The database we already run; no new setup." },
+      { label: "Mongo", explanation: "A new kind of database we would have to set up and look after." },
     ],
-    recommendation: "Postgres — we already run it.",
+    recommended: { option: "Postgres", reason: "We already run it." },
   });
   const open = s.ledger.listOpenDecisions();
   expect(open).toHaveLength(1);
@@ -415,14 +415,21 @@ test("a raised decision is a 'decision' line in its thread; the posted card gets
   await tool(s.runs[0]!.runDeps.mcpServers, "ask_operator")({
     title: "Postgres or Mongo?",
     context: "The fares store needs a database.",
-    options: [{ label: "Postgres", detail: "existing infra", recommended: true }, { label: "Mongo", detail: "new infra" }],
-    recommendation: "Postgres.",
+    options: [
+      { label: "Postgres", explanation: "The database we already run." },
+      { label: "Mongo", explanation: "A new database to set up." },
+    ],
+    recommended: { option: "Postgres", reason: "We already run it." },
   });
   expect(s.posts).toHaveLength(1);
   expect(s.posts[0]!.ref).toBe(s.trace.ref(c.threadId));
   const decision = s.ledger.messagesInThread(c.threadId, { limit: 100 }).find((m) => m.kind === "decision");
   expect(decision).toMatchObject({ causeId: c.msgId, threadId: c.threadId });
   expect(decision!.content).toContain("Postgres or Mongo?");
+  // ADR-0049: the thread line carries the whole card, so the web feed is self-explanatory too.
+  expect(decision!.content).toContain("The fares store needs a database.");
+  expect(decision!.content).toContain("1. Postgres ⭐ — The database we already run.");
+  expect(decision!.content).toContain("⭐ Recommended: 1. Postgres — We already run it.");
   // The card the channel posted is bound to the line: a reply to it joins the thread.
   const reply = s.trace.inbound({ chatId: 99, text: "Postgres", surface: "telegram", channelMsgId: 2, replyTo: { chatId: 99, channelMsgId: 1 } });
   expect(reply.threadId).toBe(c.threadId);

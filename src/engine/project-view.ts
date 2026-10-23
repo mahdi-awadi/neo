@@ -4,6 +4,7 @@
  *  tool all read it. Git facts are read LIVE through git-read (bounded, never throws); everything else
  *  comes from the ledger and the registry. Each part is its own unit (ADR-0010): a part that fails is
  *  reported and left empty — projectView never throws. Plain code, no AI. */
+import type { StructuredAsk } from "./structured-question";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { Ledger, PlanStatus, ThreadState, AttentionSeverity, AttentionSource } from "./ledger";
@@ -126,7 +127,8 @@ export interface ProjectView {
   queue: DashTodo[];
   git: ProjectGit;
   github: ProjectGithub;
-  decisions: Array<{ id: string; question: string; ageMs: number; ref?: string }>;
+  /** `spec`: a decision card's context, explained options and recommendation (ADR-0049). */
+  decisions: Array<{ id: string; question: string; ageMs: number; ref?: string; spec?: StructuredAsk }>;
   plans: ProjectPlan[];
   attention: AttentionItemView[];
   threads: ThreadSummary[];
@@ -288,7 +290,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     () =>
       d.ledger
         .openDecisionsFor(name, folder, DECISIONS_SHOWN)
-        .map((x) => ({ id: x.id, question: x.question, ageMs: now - x.createdAt, ...(x.cause ? { ref: msgRef(x.cause.threadId) } : {}) })),
+        .map((x) => ({ id: x.id, question: x.question, ageMs: now - x.createdAt, ...(x.cause ? { ref: msgRef(x.cause.threadId) } : {}), ...(x.spec ? { spec: x.spec } : {}) })),
     [],
   );
 

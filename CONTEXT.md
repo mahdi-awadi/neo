@@ -656,6 +656,14 @@ _Avoid_: log, history, audit
 
 ### What needs the operator
 
+**Decision card**:
+One question a worker raises for the operator, written for a non-technical reader: a title, the
+context (what is happening and why a choice is needed), 2–5 numbered options each with a short
+label and an explanation of its effect and risk, and the recommended option with a one-line reason.
+The engine rejects a card with a blank part, an over-long button label, or unexplained jargon (an ADR
+number or a code name). One decision per card (ADR-0049).
+_Avoid_: question (unqualified), prompt, poll
+
 **Attention item**:
 One fact about a project that needs someone to act — a failed CI run, a branch not pushed, a
 leftover worktree, an approval waiting for hours, a plan nobody executed. It is opened, refreshed

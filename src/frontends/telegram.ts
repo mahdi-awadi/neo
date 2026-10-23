@@ -50,6 +50,7 @@ import {
   isComplete,
   needsSubmit,
   answerText,
+  decisionBody,
   type StructuredAsk,
   type Selection,
   type DecisionTap,
@@ -65,18 +66,31 @@ export function projectTagPrefix(project?: string): string {
   return project ? `${projectHashtag(project)} ` : "";
 }
 
-/** The Decisions-group card (plain text): badge, #project tag, the question, then — when the decision
- *  has a thread and refs are on — its thread's ref (spec §4.3) as a code entity (tap to copy). Offsets
- *  are UTF-16 units, as Telegram counts them. Pure. */
+/** Telegram's hard cap on one message's text. */
+const TELEGRAM_TEXT_MAX = 4096;
+
+/** The Decisions-group card (plain text): badge, #project tag, the decision — the whole body
+ *  (`decisionBody`: context, numbered options with their explanations, the recommendation) when the
+ *  decision carries a spec (ADR-0049), else the bare question — then, when the decision has a thread
+ *  and refs are on, its thread's ref (spec §4.3) as a code entity (tap to copy). Kept within
+ *  Telegram's 4096-character limit. Offsets are UTF-16 units, as Telegram counts them. Pure. */
 export function decisionCard(
   rec: { project?: string; ref?: string },
   question: string,
   mode: "auto" | "off",
+  spec?: StructuredAsk,
 ): { text: string; entities?: MessageEntity[] } {
-  const body = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${question}`;
-  if (!rec.ref || !refSuffix("decision", false, rec.ref, mode)) return { text: body };
-  const text = `${body} · ${rec.ref}`;
-  return { text, entities: [{ type: "code", offset: text.length - rec.ref.length, length: rec.ref.length }] };
+  const showRef = !!rec.ref && !!refSuffix("decision", false, rec.ref, mode);
+  const suffix = showRef ? ` · ${rec.ref}` : "";
+  const full = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${spec ? decisionBody(spec) : question}`;
+  const room = TELEGRAM_TEXT_MAX - suffix.length;
+  // Cut on a code-point boundary: a lone high surrogate (half an emoji) renders as a broken character.
+  let cut = room - 1;
+  if (full.length > room && /[\uD800-\uDBFF]/.test(full[cut - 1] ?? "")) cut--;
+  const body = full.length > room ? `${full.slice(0, cut)}…` : full;
+  if (!showRef) return { text: body };
+  const text = body + suffix;
+  return { text, entities: [{ type: "code", offset: text.length - rec.ref!.length, length: rec.ref!.length }] };
 }
 
 /** The full first-chunk prefix for an outbound line: the priority's single colored accent (🟢/🔴/…
@@ -335,7 +349,7 @@ export function createTelegramBot(
   ): Promise<{ chatId: number; messageId: number } | undefined> {
     const target = cfg.decisionsChatId ?? admin.adminId();
     if (target === undefined) return undefined; // no operator claimed yet — the queue still holds it
-    const card = decisionCard(rec, question, (cfg.trace ?? DEFAULT_TRACE).showRefs);
+    const card = decisionCard(rec, question, (cfg.trace ?? DEFAULT_TRACE).showRefs, spec);
     // A structured ask (multi-select / multi-question) renders the richer keyboard; a flat single
     // choice keeps the legacy one-tap keyboard so its UX is unchanged.
     const keyboard = spec ? structuredKeyboard(rec.id, spec) : decisionKeyboard(rec.id, options);

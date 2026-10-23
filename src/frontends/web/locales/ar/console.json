@@ -379,5 +379,8 @@
   },
   "files": {
     "download": "تنزيل الملف"
+  },
+  "decision": {
+    "recommended": "موصى به"
   }
 }

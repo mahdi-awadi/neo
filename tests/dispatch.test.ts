@@ -922,8 +922,8 @@ function neoToolNames(servers: Record<string, unknown>): string[] {
 function neoToolHandler(
   servers: Record<string, unknown>,
   toolName: string,
-): ((args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }>) | undefined {
-  const neo = servers.neo as { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> }> } };
+): ((args: Record<string, unknown>, extra: unknown) => Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }>) | undefined {
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>, extra: unknown) => Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }> }> } };
   return neo.instance._registeredTools[toolName]?.handler;
 }
 
@@ -975,22 +975,21 @@ test("ask_operator attaches on operator paths ONLY when postDecision is wired (f
   expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: true, folder: "/home/acme" }))).toContain("ask_operator");
 });
 
-// A fully-matured decision the worker raises: one title, the problem/root cause, options that each
-// explain what they mean + their trade-off, and a recommendation. This is the shape the operator
-// asked for (no more bundled, contextless, bare-label "patch menus").
-const MATURED_ARGS = {
-  title: "Fix the log-ingestion consumer",
+// A decision card the worker raises (ADR-0049): plain title, the situation, options that each say what
+// happens if picked, and the recommended option with a reason.
+const CARD_ARGS = {
+  title: "How should we fix the missing server logs?",
   context:
-    "Vector is deployed but not consuming: the JetStream consumer was never created, so logs queue and drop after retention. Root cause is missing consumer wiring, not Vector.",
+    "The log collector is running but nothing reaches it, because the queue it reads from was never set up. Logs pile up and are deleted after a few days.",
   options: [
-    { label: "Redeploy Vector", detail: "quickest; but does not create the missing consumer, so ingestion still fails" },
-    { label: "JetStream + consumer", detail: "create the durable consumer Vector reads from; fixes the root cause with existing infra", recommended: true },
-    { label: "Dedicated Go consumer", detail: "most control; a new service to own and deploy" },
+    { label: "Restart the collector", explanation: "Quickest, but the queue is still missing, so logs still get lost." },
+    { label: "Set up the queue", explanation: "Creates the missing queue with the tools we already run. Fixes the cause; about an hour of work." },
+    { label: "Build a new service", explanation: "Most control, but one more service to run and look after." },
   ],
-  recommendation: "JetStream + consumer — fixes the root cause with infra we already run, no new service to maintain.",
+  recommended: { option: "Set up the queue", reason: "It fixes the cause with what we already run." },
 };
 
-test("ask_operator matures the question: ONE tracked decision carrying title/context/options+details/recommendation", async () => {
+function cardDeps() {
   const { d } = makeDeps();
   const posted: Array<{ id: string; question: string; options?: string[]; spec?: StructuredAsk }> = [];
   const deps: DispatchDeps = {
@@ -1000,77 +999,85 @@ test("ask_operator matures the question: ONE tracked decision carrying title/con
       return { chatId: 222, messageId: 900 };
     },
   };
-  const servers = neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme", orderId: "ord-1" });
-  const handler = neoToolHandler(servers, "ask_operator")!;
-  const res = await handler(MATURED_ARGS, {});
+  const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme", orderId: "ord-1" }), "ask_operator")!;
+  return { d, posted, handler };
+}
 
-  // One open decision, carrying the project/folder/order; the crisp title is the row's `question`,
-  // the rich content (context, per-option details, recommendation) rides on the structured spec.
+test("ask_operator raises ONE tracked decision carrying the checked card", async () => {
+  const { d, posted, handler } = cardDeps();
+  const res = await handler(CARD_ARGS, {});
   const open = d.ledger.listOpenDecisions();
   expect(open).toHaveLength(1);
   expect(open[0]).toMatchObject({ kind: "decision", project: "acme", folder: "/home/acme", orderId: "ord-1" });
-  expect(open[0]!.question).toBe(MATURED_ARGS.title);
+  expect(open[0]!.question).toBe(CARD_ARGS.title);
   const spec = open[0]!.spec!;
-  expect(spec.title).toBe(MATURED_ARGS.title);
-  expect(spec.context).toBe(MATURED_ARGS.context);
-  expect(spec.recommendation).toBe(MATURED_ARGS.recommendation);
-  expect(spec.questions[0]!.options).toEqual(["Redeploy Vector", "JetStream + consumer", "Dedicated Go consumer"]);
-  expect(spec.questions[0]!.optionDetails?.[1]).toContain("durable consumer");
+  expect(spec.context).toBe(CARD_ARGS.context);
+  expect(spec.recommendation).toBe(CARD_ARGS.recommended.reason);
+  expect(spec.questions[0]!.options).toEqual(["Restart the collector", "Set up the queue", "Build a new service"]);
+  expect(spec.questions[0]!.optionDetails?.[1]).toContain("missing queue");
   expect(spec.questions[0]!.recommended).toBe(1);
-  // Posted to the Decisions channel WITH the spec (not the flat options); message id captured back.
   expect(posted).toHaveLength(1);
   expect(posted[0]!.spec).toEqual(spec);
   expect(d.ledger.decisionByMessage(222, 900)?.id).toBe(open[0]!.id);
-  expect(d.ledger.listEvents({ kind: "decision_raised" })).toHaveLength(1);
-  // The worker is told to checkpoint + stop (single-shot; the answer resumes it as a follow-up).
+  expect(res.isError).toBeFalsy();
   expect(res.content[0]?.text?.toLowerCase()).toContain("stop");
 });
 
-test("ask_operator honours multiSelect and a distinct crisp question", async () => {
-  const { d } = makeDeps();
-  const deps: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 5, messageId: 6 }) };
-  const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme" }), "ask_operator")!;
-  await handler({ ...MATURED_ARGS, question: "How should we fix ingestion?", multiSelect: true }, {});
-  const spec = d.ledger.listOpenDecisions()[0]!.spec!;
-  expect(spec.questions[0]!.question).toBe("How should we fix ingestion?");
-  expect(spec.questions[0]!.multiSelect).toBe(true);
+test("ask_operator honours multiSelect", async () => {
+  const { d, handler } = cardDeps();
+  await handler({ ...CARD_ARGS, multiSelect: true }, {});
+  expect(d.ledger.listOpenDecisions()[0]!.spec!.questions[0]!.multiSelect).toBe(true);
 });
 
-// The HARD guarantee: the schema makes a shapeless question impossible to raise. Invalid inputs are
-// rejected at the tool boundary (Zod .parse), so a worker cannot bundle decisions or drop the
-// context/options/recommendation — it is forced to re-ask in the matured shape.
-test("ask_operator SCHEMA enforces the matured shape (shapeless questions rejected at the boundary)", () => {
+test("ask_operator bounces a card that is not self-explanatory: an error result, every problem named, nothing raised", async () => {
+  const { d, posted, handler } = cardDeps();
+  const res = await handler(
+    {
+      title: "Redis cut-over (ADR-0188 rollout): which first?",
+      context: "",
+      options: [
+        { label: "Fix WalletDetailPage", explanation: "" },
+        { label: "None for now", explanation: "Leave it." },
+      ],
+      recommended: { option: "Outbox in same tx", reason: "" },
+    },
+    {},
+  );
+  expect(res.isError).toBe(true);
+  const text = res.content[0]!.text!;
+  for (const part of ["ADR-0188", "context", "WalletDetailPage", "option 1 explanation", "recommended.option", "recommended.reason", "non-technical"]) expect(text).toContain(part);
+  expect(d.ledger.listOpenDecisions()).toHaveLength(0);
+  expect(posted).toHaveLength(0);
+});
+
+test("ask_operator SCHEMA types the card shape (the old bare and flat shapes no longer parse)", () => {
   const { d } = makeDeps();
   const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
   const servers = neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" });
   const neo = servers.neo as { instance: { _registeredTools: Record<string, { inputSchema: { parse: (v: unknown) => unknown } }> } };
   const schema = neo.instance._registeredTools["ask_operator"]!.inputSchema;
-  expect(() => schema.parse(MATURED_ARGS)).not.toThrow(); // a full matured decision validates
-  expect(() => schema.parse({ question: "Which DB — Postgres or Mongo?" })).toThrow(); // old bare question
-  expect(() => schema.parse({ question: "?", options: ["Postgres", "Mongo"] })).toThrow(); // flat string options
-  expect(() => schema.parse({ ...MATURED_ARGS, options: [MATURED_ARGS.options[0]] })).toThrow(); // <2 options
-  const { context: _c, ...noContext } = MATURED_ARGS;
-  expect(() => schema.parse(noContext)).toThrow(); // root cause is required
-  const { recommendation: _r, ...noRec } = MATURED_ARGS;
-  expect(() => schema.parse(noRec)).toThrow(); // recommendation is required
-  const bareOptions = { ...MATURED_ARGS, options: [{ label: "A" }, { label: "B" }] };
-  expect(() => schema.parse(bareOptions)).toThrow(); // each option needs a detail (trade-off)
+  expect(() => schema.parse(CARD_ARGS)).not.toThrow();
+  expect(() => schema.parse({ question: "Which DB — Postgres or Mongo?" })).toThrow();
+  expect(() => schema.parse({ ...CARD_ARGS, options: ["Postgres", "Mongo"] })).toThrow();
+  const { recommended: _r, ...noRec } = CARD_ARGS;
+  expect(() => schema.parse(noRec)).toThrow();
 });
 
-// The operator's rule (2026-09-03): questions raised via ask_operator were "shallow, patch-shaped,
-// not standard." The tool DESCRIPTION must force the worker to challenge itself first — root-cause,
-// standard fix (not a patch), self-critique — escalate only a genuine operator decision, ONE per call.
-test("ask_operator description forces self-challenge + one-decision-per-call", () => {
+// The operator's rules (2026-09-03, 2026-10-23): challenge yourself first, one decision per call, and
+// write the card for a non-technical reader.
+test("ask_operator description forces self-challenge, one decision per call, and a non-technical reader", () => {
   const { d } = makeDeps();
   const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
   const servers = neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" });
   const neo = servers.neo as { instance: { _registeredTools: Record<string, { description: string }> } };
   const desc = neo.instance._registeredTools["ask_operator"]!.description.toLowerCase();
-  expect(desc).toContain("root cause"); // trace the real cause first
-  expect(desc).toContain("industry-standard"); // the correct standard fix...
-  expect(desc).toContain("patch"); // ...not the quickest patch
-  expect(desc).toContain("do it and report"); // one right fix exists → don't ask
-  expect(desc).toContain("one decision"); // one decision per call — never bundle several
+  expect(desc).toContain("root cause");
+  expect(desc).toContain("industry-standard");
+  expect(desc).toContain("patch");
+  expect(desc).toContain("do it and report");
+  expect(desc).toContain("one decision");
+  expect(desc).toContain("non-technical");
+  expect(desc).toContain("operator's language");
 });
 
 test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {
@@ -1313,6 +1320,11 @@ test("briefWithProjectDocs states the plan approval rule", () => {
   expect(out).toContain("BIG plan");
   expect(out).toContain("`approval: required`");
   expect(out).toContain("STOP, end your turn — Approve & build resumes you");
+});
+
+test("the dispatch preamble tells every worker to write decisions for a non-technical reader (ADR-0049)", () => {
+  const out = briefWithProjectDocs("");
+  for (const part of ["non-technical", "operator's language", "One decision per card", "no jargon"]) expect(out).toContain(part);
 });
 
 test("the dispatch preamble stays terse — every worker pays for it on every run", () => {

@@ -15,10 +15,9 @@ import { noteProjectStart, type TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { neoMcpServers, raiseOperatorDecision, type DispatchDeps, type ReplyMeta } from "./dispatch";
+import { neoMcpServers, type DispatchDeps, type ReplyMeta } from "./dispatch";
 import type { TodoQueue } from "./todo-queue";
 import { flushDispatcherInbox, liveCompanyLink, takeDispatcherInbox, type DispatcherLink } from "./dispatch-report";
-import { questionSummary } from "./structured-question";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import {
@@ -818,19 +817,8 @@ function startSession(
           if (c) refreshThread(deps, c.threadId); // no longer waiting on the operator
         }
       },
-      // Service the worker's native AskUserQuestion by raising a tracked structured decision. Gated on
-      // postDecision (the operator surface wired it) — the same firewall gate as ask_operator.
-      onStructuredQuestion: deps.postDecision
-        ? async (ask) => {
-            // Passing the registry is what marks this session awaiting-operator (the worker
-            // check-points and STOPS after raising) — raiseOperatorDecision owns that, as the one
-            // path behind every blocking ask.
-            await raiseOperatorDecision(
-              { ledger, postDecision: deps.postDecision, registry, trace: deps.trace },
-              { project, folder: order.folder, orderId: order.id, chatId, question: questionSummary(ask), spec: ask, now, cause: runCause() },
-            );
-          }
-        : undefined,
+      // ask_operator is attached exactly when postDecision is wired; the native ask is redirected to it (ADR-0049).
+      askOperator: !!deps.postDecision,
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       onEvent: (kind, data) => ledger.recordEvent(kind, { orderId: order.id, folder: order.folder, data }),
       onContextWindow: (model, tokens) => ledger.recordModelWindow(model, tokens),

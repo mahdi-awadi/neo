@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
-import { maturedAsk, questionSummary, MAX_OPTIONS, type StructuredAsk, type MaturedDecisionInput } from "./structured-question";
+import { checkDecision, decisionBody, DECISION_LIMITS, MAX_OPTIONS, type StructuredAsk, type DecisionInput } from "./structured-question";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import { PAGE_MAX, type Cause, type Ledger, type MessageKind } from "./ledger";
 import type { Trace } from "./trace";
@@ -406,9 +406,9 @@ export function briefWithProjectDocs(task: string): string {
     "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +
     "ONLY a decision that is genuinely theirs: product/UX policy, cost, an irreversible or external " +
     "action, or a real trade-off between two sound options. If there is one correct standard fix, " +
-    "do it and report it — do not ask. When you must ask (via ask_operator), show your work: the " +
-    "root cause you found, the standard fix you recommend, and why; every option you offer must be " +
-    "defensible on its own — no patch-level options.\n\n" +
+    "do it and report it — do not ask. When you must ask (ask_operator), write for a non-technical " +
+    "reader in the operator's language: the situation, each option and what it does, your pick and " +
+    "why. One decision per card; no jargon, no patch-level options.\n\n" +
     "REQUIRED — stay alive; never park on a background wait. Neo watches your STREAMED tool/step " +
     "activity and ABORTS a sub-run after ~5 minutes without it, hung or not: a background wait or " +
     "Monitor, a long `sleep`, `gh run watch`, tailing logs, waiting on CI/build/deploy. So NEVER use " +
@@ -945,23 +945,8 @@ export async function dispatchToProject(
           }
         },
         onRateLimit: (info) => deps.usage?.noteRateLimit(info),
-        // A dispatched worker's native AskUserQuestion is serviced the same way (gated on postDecision).
-        onStructuredQuestion: deps.postDecision
-          ? async (ask) => {
-              // raiseOperatorDecision marks the session awaiting-operator (it is the one path
-              // behind every blocking ask), so nothing to do here but raise it.
-              await raiseOperatorDecision(deps, {
-                project: name,
-                folder,
-                orderId: order.id,
-                chatId: replyChat,
-                question: questionSummary(ask),
-                spec: ask,
-                now,
-                cause: liveCause(),
-              });
-            }
-          : undefined,
+        // ask_operator is attached exactly when postDecision is wired; the native ask is redirected to it (ADR-0049).
+        askOperator: !!deps.postDecision,
         onEvent: (kind, data) => event(kind, { orderId: order.id, folder, data }),
         onContextWindow: (model, tokens) => deps.ledger.recordModelWindow(model, tokens),
         autoApprove: () => deps.trust.isTrusted(folder),
@@ -1484,7 +1469,7 @@ export async function raiseOperatorDecision(
   const lineId =
     trace && cause
       ? faults.guard("dispatch.decisionLine", () =>
-          trace.outbound({ chatId: params.chatId, text: params.question, cause, kind: "decision", project: params.project, folder: params.folder, orderId: params.orderId }),
+          trace.outbound({ chatId: params.chatId, text: params.spec ? decisionBody(params.spec) : params.question, cause, kind: "decision", project: params.project, folder: params.folder, orderId: params.orderId }),
         )
       : undefined;
   const ref = trace && cause ? trace.ref(cause.threadId) : undefined;
@@ -1593,59 +1578,57 @@ export function neoMcpServers(
     tools.push(
       tool(
         "ask_operator",
-        "Raise ONE matured decision the operator must make before this work can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). " +
+        "Raise ONE decision the operator must make before this work can proceed (e.g. \"Postgres or Mongo?\", \"which design?\", \"I need the prod API key\"). " +
           "BEFORE you call this, challenge yourself: (1) trace the real root cause in the code, not the symptom; (2) determine the correct industry-standard fix, not the quickest patch; (3) criticize your own options and drop any that are only workarounds. " +
           "Escalate ONLY a decision that is genuinely the operator's: product/UX policy, cost, an irreversible or external action, or a real trade-off between two sound options. If there is one correct standard fix, do it and report — do NOT ask. " +
-          "Raise exactly one decision per call: each call carries a crisp `title`, the `context` (what happened + the root cause), 2–5 `options` that each state what they mean + their trade-off (no patch-level options), and your `recommendation` (which + why). If you have several independent decisions, call ask_operator once per decision — never bundle several into one. " +
-          "It goes to the operator's high-priority Decisions channel and is tracked until they answer. Set `multiSelect: true` when the operator may pick SEVERAL of the options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
+          "Raise exactly one decision per call — never bundle several; call ask_operator once per decision. " +
+          "WRITE THE CARD FOR A NON-TECHNICAL READER who has not seen your work, in the operator's language when you know it: a plain `title` (the question), a `context` that says what is happening and why a choice is needed, 2–5 `options` each with a short plain `label` (it is a button) and an `explanation` of what happens if it is picked — its effect and its risk or cost — and `recommended` (one of the labels + a one-line reason). " +
+          "No ADR numbers, code names, file paths or abbreviations unless you explain them in brackets right after; labels must be plain words. The engine rejects a card that breaks these rules and tells you what to rewrite. " +
+          "It goes to the operator's Decisions channel and is tracked until they answer. Set `multiSelect: true` when the operator may pick SEVERAL options (they tap each, then Submit). After calling this, CHECK-POINT your work (commit green work / write a WIP note) and STOP — their answer will resume this session as a follow-up message. Do NOT guess a default and continue.",
         {
-          title: z.string().describe("one-line title of the SINGLE decision"),
+          title: z.string().describe(`the question, in plain words (at most ${DECISION_LIMITS.title} characters)`),
           context: z
             .string()
-            .describe("1–3 plain lines: what happened + the ROOT CAUSE, so the operator sees WHY a decision is needed"),
+            .describe(`what is happening and why a decision is needed, for someone who has not seen your work (at most ${DECISION_LIMITS.context} characters)`),
           options: z
             .array(
               z.object({
-                label: z.string().describe("short button label the operator taps"),
-                detail: z
+                label: z.string().describe(`short plain button text (at most ${DECISION_LIMITS.label} characters, no code names)`),
+                explanation: z
                   .string()
-                  .describe("what this option concretely means + its trade-off (cost/risk/effort) — never a patch-level option"),
-                recommended: z.boolean().optional().describe("set on the ONE option you recommend"),
+                  .describe(`what happens if the operator picks this: its effect, and its risk or cost (at most ${DECISION_LIMITS.explanation} characters)`),
               }),
             )
-            .min(2)
-            .max(MAX_OPTIONS)
-            .describe("2–5 defensible options, each carrying its own trade-off detail"),
-          recommendation: z
-            .string()
-            .describe("which option you advise + one line WHY (the decision still stays with the operator)"),
+            .describe(`2–${MAX_OPTIONS} defensible options, each explained`),
+          recommended: z
+            .object({
+              option: z.string().describe("exactly one of the option labels"),
+              reason: z.string().describe(`one line: why you recommend it (at most ${DECISION_LIMITS.reason} characters)`),
+            })
+            .describe("the option you advise; the decision still stays with the operator"),
           multiSelect: z
             .boolean()
             .optional()
             .describe("set true when the operator may choose SEVERAL of the options (tap each, then Submit); default single choice"),
-          question: z
-            .string()
-            .optional()
-            .describe("optional crisp restatement of the question shown above the buttons; defaults to the title"),
         },
-        async (args: MaturedDecisionInput) => {
-          // The Zod schema already guarantees the matured shape; `maturedAsk` normalizes it into the
-          // StructuredAsk that rides on the decision row (belt-and-suspenders: undefined on degenerate
-          // input). The crisp title becomes the row's question; context/options+details/recommendation
-          // live on the spec.
-          const spec = maturedAsk(args);
-          if (!spec) {
+        async (args: DecisionInput) => {
+          // The engine's gate (ADR-0049): a card the operator could not understand is bounced back with
+          // every problem named, so the worker rewrites it — nothing is raised or posted.
+          const checked = checkDecision(args);
+          if (!checked.ok) {
             return {
+              isError: true,
               content: [
                 {
                   type: "text" as const,
                   text:
-                    "That decision was not well-formed — it needs a title, a root-cause context, 2+ options (each with a trade-off detail), " +
-                    "and a recommendation. Re-raise it as one fully matured decision.",
+                    "Not raised — the operator could not decide from this card. Rewrite it for a non-technical reader and call ask_operator again:\n" +
+                    checked.problems.map((p) => `- ${p}`).join("\n"),
                 },
               ],
             };
           }
+          const spec = checked.ask;
           const id = await raiseOperatorDecision(deps, {
             project: opts.projectName,
             folder: opts.folder,

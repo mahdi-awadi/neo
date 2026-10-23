@@ -1105,3 +1105,18 @@ desks raised "1 uncommitted file … HANDOFF.md". The file was `/home/neo`'s own
 - `uncommittedIn` returns undefined for a folder its repo ignores (a desk under `/home/neo/agent/`).
 
 Restart-gated.
+
+Decision cards explain themselves (2026-10-23, ADR-0049). The operator could not understand two
+eticket-v3 cards: they showed only a jargon title and bare buttons.
+
+- Root cause: the Telegram card rendered the title alone. `decisionBody()` existed, but nothing called
+  it. The schema also accepted blank text and jargon, and the native `AskUserQuestion` made bare cards.
+- `ask_operator` now takes `title`, `context`, `options[{label, explanation}]` and
+  `recommended {option, reason}`. `checkDecision()` rejects a blank part, a label over 40 characters,
+  a wrong recommended option, or unexplained jargon, and the tool returns every problem as an error.
+- The Telegram card, the decision's thread line and the console (thread and project views) show the
+  context, the numbered options with their explanations, and the recommendation.
+- The native `AskUserQuestion` is redirected to `ask_operator`. The preamble and the governor's
+  plain-text steer (loops) ask for the same parts, for a non-technical reader.
+
+Restart-gated.

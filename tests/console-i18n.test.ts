@@ -160,3 +160,11 @@ test("a missing key (an enum value the catalogue lacks) comes back HTML-escaped,
   expect(i.t("threads.state.<img src=x onerror=alert(1)>")).toBe("threads.state.&lt;img src=x onerror=alert(1)&gt;");
   expect(i.t("threads.state.open")).toBe("open");
 });
+
+test("decision cards render context, numbered options and the recommendation in both views, numbers LTR (ADR-0049)", () => {
+  expect(APP).toContain("function decisionCardHtml(spec: Any): string");
+  expect(APP).toContain('${d.status === "open" ? decisionCardHtml(d.spec) : ""}'); // thread view
+  expect(APP).toContain('${d.ref ? ltr(d.ref) : ""}${decisionCardHtml(d.spec)}'); // project view
+  expect(APP).toContain('ltr(i + 1 + ".")');
+  expect(APP).toContain('t("decision.recommended")');
+});

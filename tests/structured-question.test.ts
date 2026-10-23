@@ -2,7 +2,6 @@ import { test, expect } from "bun:test";
 import {
   singleQuestionAsk,
   normalizeAsk,
-  fromAskUserQuestionInput,
   encodeOptionTap,
   encodeSubmit,
   encodeOther,
@@ -13,8 +12,7 @@ import {
   needsSubmit,
   answerText,
   keyboardRows,
-  questionSummary,
-  maturedAsk,
+  checkDecision,
   decisionBody,
   MAX_OPTIONS,
   type StructuredAsk,
@@ -39,38 +37,6 @@ test("normalizeAsk drops empty questions and returns undefined when nothing is l
   expect(normalizeAsk({ questions: [] })).toBeUndefined();
   expect(normalizeAsk({ questions: [{ question: "", options: ["a", "b"] }] })).toBeUndefined();
   expect(normalizeAsk({ questions: [{ question: "q", options: [] }] })).toBeUndefined();
-});
-
-test("fromAskUserQuestionInput maps the native AskUserQuestion tool shape", () => {
-  const native = {
-    questions: [
-      {
-        question: "Which database?",
-        header: "DB",
-        multiSelect: false,
-        options: [
-          { label: "Postgres", description: "relational" },
-          { label: "Mongo", description: "document" },
-        ],
-      },
-      {
-        question: "Which regions?",
-        header: "Regions",
-        multiSelect: true,
-        options: [{ label: "US" }, { label: "EU" }, { label: "ME" }],
-      },
-    ],
-  };
-  const ask = fromAskUserQuestionInput(native)!;
-  expect(ask.questions).toHaveLength(2);
-  expect(ask.questions[0]).toMatchObject({ question: "Which database?", header: "DB", options: ["Postgres", "Mongo"], multiSelect: false });
-  expect(ask.questions[1]).toMatchObject({ header: "Regions", options: ["US", "EU", "ME"], multiSelect: true });
-});
-
-test("fromAskUserQuestionInput returns undefined for garbage", () => {
-  expect(fromAskUserQuestionInput(undefined)).toBeUndefined();
-  expect(fromAskUserQuestionInput({})).toBeUndefined();
-  expect(fromAskUserQuestionInput({ questions: [{ question: "q" }] })).toBeUndefined(); // no options
 });
 
 // --- callback encode / decode (backward compatible with the legacy dec:<id>:<idx>) ---
@@ -172,58 +138,91 @@ test("keyboardRows: multi-select marks selected options and shows a Submit butto
   expect(flat.some((b) => b.data === encodeSubmit("d2"))).toBe(true);
 });
 
-test("questionSummary: single question is the plain text; multi is a numbered list", () => {
-  expect(questionSummary(singleQuestionAsk("Postgres or Mongo?", ["a", "b"]))).toBe("Postgres or Mongo?");
-  const multi: StructuredAsk = {
-    questions: [
-      { question: "DB?", options: ["a", "b"] },
-      { question: "Region?", options: ["c", "d"] },
-    ],
-  };
-  const sum = questionSummary(multi);
-  expect(sum).toContain("1.");
-  expect(sum).toContain("DB?");
-  expect(sum).toContain("2.");
-  expect(sum).toContain("Region?");
-});
+// --- decision cards (ADR-0049): checked shape, plain words, one renderer ---
 
-// --- matured decisions (schema-enforced shape: title + context + option details + recommendation) ---
-
-const MATURED = {
-  title: "Fix the log-ingestion consumer",
-  context: "Vector is deployed but not consuming: the JetStream consumer was never created, so wire logs queue and drop after retention. Root cause is missing consumer wiring, not Vector.",
+/** The operator's 2026-10-23 Redis question, rewritten so a non-technical reader can decide. */
+const REDIS = {
+  title: "Which app should move to the new Redis logins first?",
+  context:
+    "We are switching the shared Redis cache (the fast memory store several apps use) from one shared password to a separate login per app. Each app needs a small update before the switch. The order matters only for risk: the first app to move is the test case.",
   options: [
-    { label: "Redeploy Vector", detail: "quickest; but does not create the missing consumer, so ingestion still fails" },
-    { label: "JetStream + consumer", detail: "create the durable consumer Vector reads from; fixes the root cause with existing infra", recommended: true },
-    { label: "Dedicated Go consumer", detail: "most control; a new service to own and deploy" },
+    { label: "adminli first", explanation: "Update the admin panel first. It has few users, so a mistake affects almost nobody. The bot waits about a day." },
+    { label: "Bot first", explanation: "Update the shared bot library first. Every app that uses it gets the change at once, so a mistake reaches more places." },
+    { label: "Both, then switch", explanation: "Update both, then switch everything in one step. Fastest, but if something breaks we must find which of the two caused it." },
   ],
-  recommendation: "JetStream + consumer — fixes the root cause with infra we already run, no new service to maintain.",
+  recommended: { option: "adminli first", reason: "Smallest risk: a mistake shows up where few people are affected." },
 };
 
-test("maturedAsk builds a single-question ask carrying title/context/recommendation + per-option details", () => {
-  const ask = maturedAsk(MATURED)!;
-  expect(ask.title).toBe(MATURED.title);
-  expect(ask.context).toBe(MATURED.context);
-  expect(ask.recommendation).toBe(MATURED.recommendation);
-  expect(ask.questions).toHaveLength(1);
-  const q = ask.questions[0]!;
-  expect(q.question).toBe(MATURED.title); // title doubles as the question when none given
-  expect(q.options).toEqual(["Redeploy Vector", "JetStream + consumer", "Dedicated Go consumer"]);
-  expect(q.optionDetails).toEqual([MATURED.options[0]!.detail, MATURED.options[1]!.detail, MATURED.options[2]!.detail]);
-  expect(q.recommended).toBe(1); // index of the option flagged recommended
+test("checkDecision accepts a complete card and builds the stored ask", () => {
+  const r = checkDecision(REDIS);
+  if (!r.ok) throw new Error(r.problems.join("; "));
+  expect(r.ask.title).toBe(REDIS.title);
+  expect(r.ask.context).toBe(REDIS.context);
+  expect(r.ask.recommendation).toBe(REDIS.recommended.reason);
+  const q = r.ask.questions[0]!;
+  expect(q.question).toBe(REDIS.title);
+  expect(q.options).toEqual(["adminli first", "Bot first", "Both, then switch"]);
+  expect(q.optionDetails).toEqual(REDIS.options.map((o) => o.explanation));
+  expect(q.recommended).toBe(0);
   expect(q.multiSelect).toBe(false);
+  const multi = checkDecision({ ...REDIS, multiSelect: true });
+  expect(multi.ok && multi.ask.questions[0]!.multiSelect).toBe(true);
 });
 
-test("maturedAsk keeps a distinct crisp question and honours multiSelect", () => {
-  const ask = maturedAsk({ ...MATURED, question: "How do we fix ingestion?", multiSelect: true })!;
-  expect(ask.questions[0]!.question).toBe("How do we fix ingestion?");
-  expect(ask.questions[0]!.multiSelect).toBe(true);
+const problemsOf = (input: unknown): string[] => {
+  const r = checkDecision(input as never);
+  return r.ok ? [] : r.problems;
+};
+
+test("checkDecision lists every missing, blank or out-of-range part", () => {
+  expect(problemsOf({ ...REDIS, context: "  " }).join("\n")).toContain("context");
+  expect(problemsOf({ ...REDIS, title: "" }).join("\n")).toContain("title");
+  const blankExpl = problemsOf({ ...REDIS, options: [REDIS.options[0], { label: "Bot first", explanation: "" }] });
+  expect(blankExpl.join("\n")).toContain("option 2");
+  expect(problemsOf({ ...REDIS, options: [REDIS.options[0]] }).join("\n")).toContain("2 to 5 options");
+  const six = Array.from({ length: 6 }, (_, i) => ({ label: `Choice ${i + 1}`, explanation: "what happens" }));
+  expect(problemsOf({ ...REDIS, options: six, recommended: { option: "Choice 1", reason: "r" } }).join("\n")).toContain("2 to 5 options");
+  expect(problemsOf({ ...REDIS, options: [{ label: "x".repeat(41), explanation: "e" }, REDIS.options[1]] }).join("\n")).toContain("40");
+  expect(problemsOf({ ...REDIS, options: [REDIS.options[0], REDIS.options[0]] }).join("\n")).toContain("twice");
+  expect(problemsOf({ ...REDIS, recommended: { option: "gopkg bot first", reason: "x" } }).join("\n")).toContain("recommended.option");
+  expect(problemsOf({ ...REDIS, recommended: { option: "adminli first", reason: " " } }).join("\n")).toContain("recommended.reason");
+  expect(problemsOf({ ...REDIS, context: "x".repeat(801) }).join("\n")).toContain("context");
+  expect(problemsOf({ title: "only a title" }).length).toBeGreaterThanOrEqual(3);
+  expect(problemsOf(undefined).length).toBeGreaterThan(0);
 });
 
-test("maturedAsk rejects degenerate input (fewer than 2 usable options, or empty title)", () => {
-  expect(maturedAsk({ ...MATURED, options: [MATURED.options[0]!] })).toBeUndefined();
-  expect(maturedAsk({ ...MATURED, title: "  " })).toBeUndefined();
-  expect(maturedAsk({ ...MATURED, options: [{ label: "", detail: "x" }, { label: "", detail: "y" }] })).toBeUndefined();
+test("checkDecision rejects unexplained jargon and names the field and the token", () => {
+  const p1 = problemsOf({ ...REDIS, title: "Redis cut-over (ADR-0188 rollout): which first?" });
+  expect(p1.join("\n")).toContain("ADR-0188");
+  const p2 = problemsOf({ ...REDIS, options: [REDIS.options[0], { label: "Fix WalletDetailPage", explanation: "fix it" }] });
+  expect(p2.join("\n")).toContain("WalletDetailPage");
+  expect(p2.join("\n")).toContain("option 2 label");
+  const p3 = problemsOf({ ...REDIS, context: "The `outbox` write is not in the same tx as user_list_limit in src/user.go." });
+  const j3 = p3.join("\n");
+  expect(j3).toContain("`outbox`");
+  expect(j3).toContain("user_list_limit");
+  expect(j3).toContain("src/user.go");
+  expect(problemsOf({ ...REDIS, context: REDIS.context + " See userListLimit." }).join("\n")).toContain("userListLimit");
+});
+
+test("checkDecision lets an explained term through, but never in a label", () => {
+  const ok = checkDecision({ ...REDIS, context: "This is step two of ADR-0188 (our plan to give each app its own Redis login). " + REDIS.context });
+  expect(ok.ok).toBe(true);
+  expect(problemsOf({ ...REDIS, options: [{ label: "ADR-0188 (plan) first", explanation: "e" }, REDIS.options[1]] }).join("\n")).toContain("option 1 label");
+  // Ordinary product and project names are not jargon.
+  expect(checkDecision({ ...REDIS, context: REDIS.context + " It touches WhatsApp, GitHub, PostgreSQL, eticket-v3 and the iPhone app." }).ok).toBe(true);
+});
+
+test("decisionBody renders the title, context, numbered options with explanations and the recommendation", () => {
+  const r = checkDecision(REDIS);
+  if (!r.ok) throw new Error("bad fixture");
+  const body = decisionBody(r.ask);
+  expect(body.startsWith(REDIS.title)).toBe(true);
+  expect(body).toContain(REDIS.context);
+  expect(body).toContain("1. adminli first ⭐ — Update the admin panel first.");
+  expect(body).toContain("2. Bot first — Update the shared bot library first.");
+  expect(body).toContain("3. Both, then switch — Update both");
+  expect(body).toContain("⭐ Recommended: 1. adminli first — Smallest risk");
 });
 
 test("normalizeAsk carries the new fields and re-aligns optionDetails + recommended when options are filtered", () => {
@@ -249,48 +248,37 @@ test("normalizeAsk carries the new fields and re-aligns optionDetails + recommen
   expect(q.recommended).toBe(1);
 });
 
-test("fromAskUserQuestionInput keeps each native option's description as optionDetails", () => {
-  const ask = fromAskUserQuestionInput({
-    questions: [
-      {
-        question: "Which database?",
-        header: "DB",
-        options: [
-          { label: "Postgres", description: "relational, strong consistency" },
-          { label: "Mongo", description: "document, flexible schema" },
-        ],
-      },
-    ],
-  })!;
-  expect(ask.questions[0]!.options).toEqual(["Postgres", "Mongo"]);
-  expect(ask.questions[0]!.optionDetails).toEqual(["relational, strong consistency", "document, flexible schema"]);
-});
-
-test("decisionBody renders title, context, each option with its detail, a starred recommendation, and a recommendation line", () => {
-  const body = decisionBody(maturedAsk(MATURED)!);
-  expect(body.startsWith(MATURED.title)).toBe(true); // title is the first line (badge/#project prepend before it)
-  expect(body).toContain(MATURED.context);
-  expect(body).toContain("Redeploy Vector — quickest");
-  expect(body).toContain("JetStream + consumer — create the durable consumer");
-  expect(body).toContain("⭐"); // the recommended option is marked
-  expect(body).toContain("Recommendation:");
-  expect(body).toContain("no new service to maintain");
-});
-
 test("decisionBody degrades gracefully: no title/context/recommendation → just the question + bare options", () => {
   const body = decisionBody(singleQuestionAsk("Postgres or Mongo?", ["Postgres", "Mongo"]));
   expect(body).toContain("Postgres or Mongo?");
   expect(body).toContain("Postgres");
   expect(body).toContain("Mongo");
-  expect(body).not.toContain("Recommendation:");
+  expect(body).not.toContain("Recommended:");
   expect(body).not.toContain("⭐");
 });
 
 test("keyboardRows stars the recommended option's button (single-select), labels stay short", () => {
-  const ask = maturedAsk(MATURED)!;
-  const flat = keyboardRows("d1", ask).flat();
-  const recBtn = flat.find((b) => b.data === encodeOptionTap("d1", 0, 1))!; // "JetStream + consumer"
-  expect(recBtn.label).toContain("⭐");
-  const otherBtn = flat.find((b) => b.data === encodeOptionTap("d1", 0, 0))!;
-  expect(otherBtn.label).not.toContain("⭐");
+  const r = checkDecision(REDIS);
+  if (!r.ok) throw new Error("bad fixture");
+  const flat = keyboardRows("d1", r.ask).flat();
+  expect(flat.find((b) => b.data === encodeOptionTap("d1", 0, 0))!.label).toContain("⭐");
+  expect(flat.find((b) => b.data === encodeOptionTap("d1", 0, 1))!.label).not.toContain("⭐");
+});
+
+test("checkDecision does not flag ordinary text: URLs, emails, ratios, framework names, times, money, Arabic", () => {
+  const plain = [
+    "Our site is built with Next.js and Node.js.",
+    "Terms page: https://waselni.com/terms.html and docs at https://example.com/a_b/c.md",
+    "Mail mahdi_awadi@example.com about it.",
+    "Split the cost 50/50.5 between the two.",
+    "The window opens at 10:30 and costs 1,250,000 IQD.",
+    "نقل التطبيق إلى تسجيل دخول جديد قبل الساعة 10:30.",
+  ];
+  for (const extra of plain) {
+    const r = checkDecision({ ...REDIS, context: `${REDIS.context} ${extra}` });
+    expect(r.ok ? [] : r.problems).toEqual([]);
+  }
+  expect(checkDecision({ ...REDIS, options: [{ label: "Upgrade Next.js", explanation: "e" }, REDIS.options[1]!], recommended: { option: "Bot first", reason: "r" } }).ok).toBe(true);
+  // A real file path is still jargon.
+  expect(problemsOf({ ...REDIS, context: `${REDIS.context} See handlers/user.go.` }).join("\n")).toContain("handlers/user.go");
 });

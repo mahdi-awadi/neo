@@ -348,6 +348,14 @@ test("plans: an old open plan still shows behind 60 newer finished ones", async 
   expect((await projectView(s.deps, "gold", NOW))!.plans.map((p) => p.id)).toEqual([open.id]);
 });
 
+test("decisions: a decision card carries its spec, so the console can show context, options and the recommendation (ADR-0049)", async () => {
+  const s = setup();
+  s.ledger.recordOrder(order(s.dir));
+  const spec = { title: "Which first?", context: "Why it matters.", recommendation: "Least risk.", questions: [{ question: "Which first?", options: ["A", "B"], optionDetails: ["does a", "does b"], recommended: 0, multiSelect: false }] };
+  s.ledger.openDecision({ kind: "decision", project: "gold", question: "Which first?", spec }, NOW - 1000);
+  expect((await projectView(s.deps, "gold", NOW))!.decisions[0]!.spec).toEqual(spec);
+});
+
 test("decisions: matched by the project's folder too; ledger reads stay bounded", async () => {
   const s = setup();
   s.ledger.recordOrder(order(s.dir));

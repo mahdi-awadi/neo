@@ -34,7 +34,6 @@ import {
 import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide, type OutOfFolderWrites, ProjectFence } from "./governor";
-import { fromAskUserQuestionInput, type StructuredAsk } from "./structured-question";
 import {
   filterSdkEnv,
   readOnlySandboxRequested,
@@ -175,11 +174,10 @@ export interface RunHandlers {
   /** Structured diagnostic events (session lifecycle). The engine wires this to ledger.recordEvent;
    *  a bare worker leaves it unset. NEVER carries message bodies — kinds + small metadata only. */
   onEvent?: (kind: string, data?: Record<string, unknown>) => void;
-  /** Service the SDK's native AskUserQuestion tool by raising a tracked structured decision (tappable
-   *  buttons on the Decisions channel). Wired only on operator surfaces (its presence = the same
-   *  firewall gate as ask_operator: the customer/ingress path leaves it unset, so its AskUserQuestion
-   *  still gets the plain steer). Absent → the tool is denied with the plain "ask in plain text" note. */
-  onStructuredQuestion?: (ask: StructuredAsk) => void | Promise<void>;
+  /** True when this run has the `ask_operator` tool (an operator surface — the same firewall gate:
+   *  the customer/ingress path leaves it unset). Then the native AskUserQuestion is redirected to
+   *  ask_operator (ADR-0049); absent → the governor's plain-text steer. */
+  askOperator?: boolean;
 }
 
 /** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
@@ -349,11 +347,11 @@ function userMessage(text: string): SdkUserMessage {
   return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
 }
 
-/** What the worker is told after its native AskUserQuestion was serviced into a tracked decision —
- *  the same fire-and-suspend steer ask_operator returns. Must mention STOP (the worker check-points
- *  and waits for the operator's tap/reply to resume it). */
-export const STRUCTURED_QUESTION_RAISED =
-  "Raised with the operator as a tracked decision with tappable options. Check-point your work (commit green work / write a WIP note) and STOP — the operator's answer will resume this session as a follow-up. Do not assume a default.";
+/** What the worker is told when it calls the native AskUserQuestion on an operator surface (ADR-0049):
+ *  that tool cannot carry the context and recommendation a decision card needs, so the worker must
+ *  raise it through ask_operator. Nothing is raised by the native call. */
+export const NATIVE_ASK_STEER =
+  "Not sent: AskUserQuestion cannot carry what the operator needs to decide. Raise this decision with the ask_operator tool instead, written for a non-technical reader: a plain title, a context (what is happening and why a choice is needed), 2–5 options each with a short label and an explanation of what happens if it is picked, and the recommended option with a one-line reason. One decision per call; then check-point and STOP.";
 
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
@@ -387,18 +385,11 @@ export function buildCanUseTool(
     // calls, so the moment the channel is healthy again the next tool call escalates normally
     // (self-heal — a transient break can't permanently wedge tool approvals).
     try {
-      // Feature 1: service the SDK's native structured-question tool through the decisions machinery
-      // instead of hard-denying it — but ONLY when the engine wired the hook (operator surfaces;
-      // absent on the customer/ingress path = firewall). Raise the tracked ask, then deny the tool
-      // with the same check-point + STOP steer ask_operator returns: the SDK can't render buttons
-      // headlessly, so the worker suspends and the operator's tap/reply resumes it as a follow-up.
-      if (tool === "AskUserQuestion" && handlers.onStructuredQuestion) {
-        const ask = fromAskUserQuestionInput(input);
-        if (ask) {
-          await handlers.onStructuredQuestion(ask);
-          return { behavior: "deny", message: STRUCTURED_QUESTION_RAISED };
-        }
-        // unparseable / empty → fall through to the plain steer below (never raise an empty ask)
+      // ADR-0049: the native structured-question tool cannot carry a decision card's context and
+      // recommendation. Where ask_operator is attached, steer the worker to it; nothing is raised here.
+      if (tool === "AskUserQuestion" && handlers.askOperator) {
+        report("deny");
+        return { behavior: "deny", message: NATIVE_ASK_STEER };
       }
       const verdict = decide(tool, input, { folder, outOfFolderWrites: writes, ...(projectFence ? { projectFence } : {}) });
       if ("allow" in verdict) {

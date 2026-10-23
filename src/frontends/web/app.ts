@@ -1058,6 +1058,31 @@ function messageHtml(m: Any, html?: string): string {
   const tone = m.tone ? ` tone-${esc(m.tone)}` : "";
   return `<div class="tmsg ${m.role === "user" ? "user" : ""}${tone}"><div class="tw">${who} · ${ltr(clock(m.at))}</div><div dir="auto" class="tx">${html ?? m.html ?? linesHtml(m.content)}</div></div>`;
 }
+/** A decision card's body (ADR-0049): the context, then each question's numbered options with what
+ *  each one does, the recommended one marked, and the recommendation. Worker text runs in its own
+ *  direction; numbers stay LTR. An old multi-question row lists each question first. Empty when the
+ *  decision has no spec. */
+function decisionCardHtml(spec: Any): string {
+  const qs: Any[] = spec?.questions ?? [];
+  if (!qs.length) return "";
+  let h = spec.context ? `<div dir="auto" class="rfo">${esc(spec.context)}</div>` : "";
+  for (const q of qs) {
+    if (qs.length > 1) h += `<div dir="auto">${esc(q.header ? `${q.header}: ${q.question}` : q.question)}</div>`;
+    h += (q.options as string[])
+      .map((label, i) => {
+        const star = q.recommended === i ? ` <span class="tchip">⭐ ${t("decision.recommended")}</span>` : "";
+        const detail = q.optionDetails?.[i] ? ` — <span dir="auto">${esc(q.optionDetails[i])}</span>` : "";
+        return `<div>${ltr(i + 1 + ".")} <bdi dir="auto">${esc(label)}</bdi>${star}${detail}</div>`;
+      })
+      .join("");
+  }
+  const q0 = qs.length === 1 ? qs[0] : undefined;
+  if (q0 && q0.recommended !== undefined) {
+    const why = spec.recommendation ? ` — <span dir="auto">${esc(spec.recommendation)}</span>` : "";
+    h += `<div>⭐ ${t("decision.recommended")}: ${ltr(q0.recommended + 1 + ".")} <bdi dir="auto">${esc(q0.options[q0.recommended])}</bdi>${why}</div>`;
+  }
+  return h;
+}
 function renderThreadPane(v: Any): void {
   const th = v.thread;
   // The operator may close any thread that is not closed yet (ADR-0038): it stops waiting.
@@ -1068,7 +1093,7 @@ function renderThreadPane(v: Any): void {
   h += `<div id="tmsgs">${(v.messages as Any[]).slice().reverse().map((m) => messageHtml(m)).join("")}</div>`;
   if (v.decisions.length) {
     h += `<div class="tsect"><h4>${t("threads.decisions")}</h4>`;
-    h += v.decisions.map((d: Any) => `<div class="tart"><span class="tchip">${t(`threads.decisionStatus.${d.status}`)}</span>${iso(d.question)}${d.answer ? ` → ${iso(d.answer)}` : ""}</div>`).join("");
+    h += v.decisions.map((d: Any) => `<div class="tart"><span class="tchip">${t(`threads.decisionStatus.${d.status}`)}</span>${iso(d.question)}${d.answer ? ` → ${iso(d.answer)}` : ""}${d.status === "open" ? decisionCardHtml(d.spec) : ""}</div>`).join("");
     h += "</div>";
   }
   if (v.todos.length) {
@@ -1275,7 +1300,7 @@ function renderProjectPane(v: Any): void {
   // DECIDE — open decisions, oldest first.
   h += pjSect(
     "pj.sect.decide",
-    (v.decisions as Any[]).map((d) => `<div class="tart"><span dir="auto">${esc(d.question)}</span><span class="rfo">${esc(age(d.ageMs))}</span>${d.ref ? ltr(d.ref) : ""}</div>`),
+    (v.decisions as Any[]).map((d) => `<div class="tart"><span dir="auto">${esc(d.question)}</span><span class="rfo">${esc(age(d.ageMs))}</span>${d.ref ? ltr(d.ref) : ""}${decisionCardHtml(d.spec)}</div>`),
   );
   // PLANS — status and steps; a plan whose file is gone says so (spec §11.7).
   h += pjSect(

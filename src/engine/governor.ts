@@ -223,7 +223,8 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
   // worker to ask in plain text — the channel surfaces that and the reply returns as a follow-up.
   if (tool === "AskUserQuestion") {
     return {
-      deny: "Neo has no structured-question UI. Ask the operator your question in plain text instead; their reply arrives as a normal follow-up message. Do not assume a default — wait for the answer.",
+      deny:
+        "Neo has no structured-question UI here. Ask the operator in plain text instead, written for a non-technical reader in their language: say what is happening and why a choice is needed, list the options numbered with what each one does and its risk, and say which you recommend and why. No code names or ADR numbers unless explained. Their reply arrives as a normal follow-up message. Do not assume a default — wait for the answer.",
     };
   }
 

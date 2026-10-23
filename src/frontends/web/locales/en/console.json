@@ -379,5 +379,8 @@
   },
   "files": {
     "download": "Download file"
+  },
+  "decision": {
+    "recommended": "Recommended"
   }
 }
