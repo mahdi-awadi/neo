@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,17 +69,21 @@ describe("mergedSdkEnv applies the scrub", () => {
   });
 });
 
-describe("loadDotEnv returns only the names it set", () => {
-  const dir = mkdtempSync(join(tmpdir(), "neo-denv-"));
-  afterEach(() => { delete process.env.WE_NEW_KEY; delete process.env.WE_OLD_KEY; });
-  test("skips keys already in the environment; no values", () => {
-    process.env.WE_OLD_KEY = "already";
-    writeFileSync(join(dir, ".env"), `WE_NEW_KEY=${SENTINEL}\nWE_OLD_KEY=other\n# c\n`);
-    const names = loadDotEnv(dir);
-    expect(names).toEqual(["WE_NEW_KEY"]);
-    expect(process.env.WE_OLD_KEY).toBe("already");
-    expect(JSON.stringify(names)).not.toContain(SENTINEL);
+describe("loadDotEnv returns every key name in the file", () => {
+  let dir = "";
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "neo-denv-")); });
+  afterEach(() => {
+    delete process.env.WE_NEW_KEY; delete process.env.WE_OLD_KEY;
     rmSync(dir, { recursive: true, force: true });
+  });
+  test("lists a key already in process.env (Bun preloaded it); fill-missing is unchanged; no values", () => {
+    process.env.WE_OLD_KEY = "already";
+    writeFileSync(join(dir, ".env"), `WE_NEW_KEY=${SENTINEL}\nWE_OLD_KEY=${SENTINEL}\n# c\n`);
+    const names = loadDotEnv(dir);
+    expect(names).toEqual(["WE_NEW_KEY", "WE_OLD_KEY"]);
+    expect(process.env.WE_OLD_KEY).toBe("already");
+    expect(process.env.WE_NEW_KEY).toBe(SENTINEL);
+    expect(JSON.stringify(names)).not.toContain(SENTINEL);
   });
 });
 

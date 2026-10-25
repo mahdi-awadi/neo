@@ -480,20 +480,23 @@ const DEFAULTS = {
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
 export function loadDotEnv(dir: string): string[] {
-  const set: string[] = [];
+  const names: string[] = [];
   const p = join(dir, ".env");
-  if (!existsSync(p)) return set;
+  if (!existsSync(p)) return names;
   for (const line of readFileSync(p, "utf8").split("\n")) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
     if (!m) continue;
     const key = m[1];
     const value = m[2];
-    if (process.env[key] === undefined) { process.env[key] = value; set.push(key); }
+    // Bun may already have loaded the file before any code runs, so the key counts as an engine
+    // key whether or not it was missing from process.env (ADR-0050 §7). Names only, never values.
+    if (!names.includes(key)) names.push(key);
+    if (process.env[key] === undefined) process.env[key] = value;
   }
-  return set; // key NAMES only — never a value
+  return names;
 }
 
-/** Key names the last loadConfig's file load set (names only; the daemon reports them). */
+/** Key names in the engine's own env file at the last loadConfig (names only; the daemon reports them). */
 let dotEnvKeys: string[] = [];
 export function loadedDotEnvKeys(): string[] { return [...dotEnvKeys]; }
 
