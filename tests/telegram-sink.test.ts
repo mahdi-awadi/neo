@@ -181,7 +181,7 @@ test("a reply to a mirrored project line joins its thread through the route, and
   const gold = r.registry.add({ id: "o-gold", source: "neo", folder: "/home/gold", task: "t", chatId: ADMIN, createdAt: 1 });
   r.registry.setStatus(gold.id, "running");
   const delivered: Array<{ text: string; cause?: { msgId: number; threadId: number } }> = [];
-  r.registry.attachControl(gold.id, { followUp: (text, cause) => void delivered.push({ text, cause }), interrupt: async () => {} });
+  r.registry.attachControl(gold.id, { followUp: (text, _timing, cause) => void delivered.push({ text, cause }), interrupt: async () => {} });
   // A gold line recorded on the web and mirrored to Telegram: its route remembers the line and thread.
   const root = r.trace.inbound({ chatId: 0, text: "ship gold", surface: "web" });
   const line = r.trace.outbound({ chatId: 0, text: "gold: tests green", cause: root, project: "gold" });

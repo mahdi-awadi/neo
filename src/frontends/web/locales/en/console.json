@@ -382,5 +382,17 @@
   },
   "decision": {
     "recommended": "Recommended"
+  },
+  "notes": {
+    "kind": {
+      "finding": "finding",
+      "fyi": "for your information",
+      "request": "request",
+      "question": "question"
+    },
+    "state": {
+      "acknowledged": "acknowledged",
+      "answered": "answered"
+    }
   }
 }

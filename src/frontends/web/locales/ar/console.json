@@ -382,5 +382,17 @@
   },
   "decision": {
     "recommended": "موصى به"
+  },
+  "notes": {
+    "kind": {
+      "finding": "ملاحظة فنية",
+      "fyi": "للعلم",
+      "request": "طلب",
+      "question": "سؤال"
+    },
+    "state": {
+      "acknowledged": "تم الاطلاع",
+      "answered": "تمت الإجابة"
+    }
   }
 }

@@ -87,7 +87,7 @@ export async function drainAndPersist(opts: {
   const running = registry.list().filter((s) => s.status === "running");
   for (const s of running) {
     const memoryFlush = memoryEnabledFor(opts.memory, s.order.folder, opts.companyFolder);
-    registry.getControl(s.id)?.followUp(wrapUpFollowUp(opts.drainMs, memoryFlush));
+    registry.getControl(s.id)?.followUp(wrapUpFollowUp(opts.drainMs, memoryFlush), "after-turn");
   }
 
   // Bounded drain: wait for turns to finish (their done-handlers mark the sessions idle).

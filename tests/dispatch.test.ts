@@ -319,9 +319,10 @@ test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) in
   );
   d.registry.setStatus(first.id, "running");
   const followUps: string[] = [];
+  const timings: string[] = [];
   // A live worker mid-turn (active) means dispatch must queue behind its turn, not refuse.
   d.registry.attachControl(first.id, {
-    followUp: (t: string) => void followUps.push(t),
+    followUp: (t: string, timing: string) => void (followUps.push(t), timings.push(timing)),
     queued: () => 1,
     active: () => true,
     interrupt: async () => {},
@@ -335,6 +336,7 @@ test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) in
   });
   expect(followUps.length).toBe(1); // the brief was queued into the live session
   expect(followUps[0]).toContain("run docker ps and report");
+  expect(timings[0]).toBe("after-turn"); // an engine brief must not steer the operator's in-flight turn
   expect(out.toLowerCase()).toContain("queued");
 });
 
@@ -1335,6 +1337,14 @@ test("the dispatch preamble stays terse — every worker pays for it on every ru
   expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5000);
 });
 
+test("the preamble names project_notes ask and tools_for for a missing fact, tool or key (ADR-0050)", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("project_notes ask");
+  expect(out).toContain("tools_for");
+  expect(out).toContain("never wait silently");
+  expect(out).toContain("never paste keys");
+});
+
 test("the codebase-memory line names the exact project and forbids listing, checking or indexing", () => {
   const line = codebaseMemoryLine({ project: "home-eticket-v3" });
   expect(line).toContain("`home-eticket-v3`");
@@ -2106,7 +2116,7 @@ test("notes: a fresh dispatch gets the notes block; a kept resume and a run with
   mkdirSync(join(root, "eticket-v3"));
   mkdirSync(join(root, "prod-ops"));
   const { d } = makeDeps();
-  const notes = createProjectNotes({ ledger: d.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const notes = createProjectNotes({ ledger: d.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
   const id = notes.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "finding", severity: "high", ref: "D16", title: "stale pnr", body: "b" }, 1).id!;
   const tasks: string[] = [];
   const fakeStart = (o: Order) => {
@@ -2122,7 +2132,7 @@ test("notes: a fresh dispatch gets the notes block; a kept resume and a run with
   expect(tasks[1]).not.toContain("[PROJECT NOTES");
 
   const { d: d3 } = makeDeps();
-  const notes3 = createProjectNotes({ ledger: d3.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const notes3 = createProjectNotes({ ledger: d3.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
   notes3.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "fyi", severity: "low", ref: "x", title: "t", body: "b" }, 1);
   const prior: Order = { id: "prior", source: "neo", folder: join(root, "eticket-v3"), task: "prior", chatId: SUB_CHAT, createdAt: 0 };
   const existing = d3.registry.add(prior, 0);

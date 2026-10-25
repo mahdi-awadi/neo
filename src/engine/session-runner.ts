@@ -34,6 +34,7 @@ import {
 import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide, type OutOfFolderWrites, ProjectFence } from "./governor";
+import { scrubWorkerEnv, type EnvScrubOptions } from "./worker-env";
 import {
   filterSdkEnv,
   readOnlySandboxRequested,
@@ -192,6 +193,9 @@ export interface RunDeps {
   codexFactory?: CodexFactory;
   /** Resume a prior SDK session id (idle-close → resume). */
   resume?: string;
+  /** With `resume`: fork that session — the run answers from its history under a NEW session id and
+   *  the parent never sees it (SDK `forkSession`; docs/sdk-notes.md). Consult runs only (ADR-0050). */
+  forkSession?: boolean;
   /** Reasoning effort for this session (the chief-of-staff runs "low" for fast routing). */
   effort?: EffortLevel;
   /** Extra in-process MCP servers/tools (e.g. the default project's `dispatch` tool). Claude-only;
@@ -215,11 +219,16 @@ export interface RunDeps {
   agents?: Record<string, AgentDefinition>;
   /** Extra env for the spawned worker, merged over process.env after SDK-specific filtering. */
   env?: Record<string, string>;
+  /** Removes engine-held keys from the worker env (ADR-0050 §7). Absent = the daemon's default. */
+  envScrub?: EnvScrubOptions;
   /** `governor.outOfFolderWrites` for this run (ADR-0012). Engine-side only — never sent to the
    *  SDK. Absent = "ask"; a customer-sourced order is always "ask". */
   outOfFolderWrites?: OutOfFolderWrites;
   /** The project fence (ADR-0031): set by profileDeps for dispatch and loop workers. Engine-side only. */
   projectFence?: ProjectFence;
+  /** Ends a single-shot run from outside (`runOrder` only): the Claude SDK's `abortController`
+   *  option, the Codex turn's `signal`. Engine-side; consult runs abort on stall (ADR-0050). */
+  abortController?: AbortController;
   /** Codex SDK controls. These are ignored by the Claude adapter. */
   codexSandboxMode?: CodexSandboxMode;
   codexApprovalPolicy?: CodexApprovalMode;
@@ -326,6 +335,9 @@ type SdkUserMessage = {
   type: "user";
   message: { role: "user"; content: string };
   parent_tool_use_id: string | null;
+  /** CLI command-queue priority. "next" = attach at the next tool boundary of the running turn
+   *  (steer mid-turn); "later" = wait for the turn to end (docs/sdk-notes.md, mid-turn priority). */
+  priority?: "next" | "later";
 };
 type QueryObject = AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void> };
 type QueryFn = (args: {
@@ -343,8 +355,8 @@ type CodexClientLike = {
 };
 export type CodexFactory = (options: CodexOptions) => CodexClientLike | Promise<CodexClientLike>;
 
-function userMessage(text: string): SdkUserMessage {
-  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+function userMessage(text: string, priority?: SdkUserMessage["priority"]): SdkUserMessage {
+  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, ...(priority ? { priority } : {}) };
 }
 
 /** What the worker is told when it calls the native AskUserQuestion on an operator surface (ADR-0049):
@@ -723,17 +735,23 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   return c;
 }
 
-function mergedSdkEnv(provider: Provider, env: Record<string, string>): Record<string, string> {
+/** Scrub options for every worker env (ADR-0050 §7). The daemon sets the default once; a
+ *  RunDeps value overrides it. Absent = no scrub. */
+let defaultEnvScrub: EnvScrubOptions | undefined;
+export function setDefaultEnvScrub(o: EnvScrubOptions | undefined): void { defaultEnvScrub = o; }
+
+export function mergedSdkEnv(provider: Provider, env: Record<string, string>, scrub: EnvScrubOptions | undefined = defaultEnvScrub): Record<string, string> {
   const merged: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) merged[key] = value;
   }
-  return filterSdkEnv(provider, { ...merged, ...env });
+  const filtered = filterSdkEnv(provider, { ...merged, ...env });
+  return scrub ? scrubWorkerEnv(filtered, scrub).env : filtered;
 }
 
 function codexClientOptions(deps: RunDeps): CodexOptions {
   const c: CodexOptions = {};
-  if (deps.env) c.env = mergedSdkEnv("codex", deps.env);
+  if (deps.env) c.env = mergedSdkEnv("codex", deps.env, deps.envScrub);
   return c;
 }
 
@@ -907,7 +925,9 @@ export function runConfig(deps: RunDeps, provider: Provider = deps.provider ?? "
     skills: deps.skills,
     maxTurns: deps.maxTurns || undefined,
     agents: deps.agents,
-    env: deps.env ? mergedSdkEnv(provider, deps.env) : undefined,
+    env: deps.env ? mergedSdkEnv(provider, deps.env, deps.envScrub) : undefined,
+    // A fork needs a session to fork from: never sent without `resume`.
+    forkSession: deps.forkSession && deps.resume ? true : undefined,
   };
   for (const field of supportedRunConfigFields(provider)) {
     const value = values[field];
@@ -935,7 +955,9 @@ async function runClaudeOrder(
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const run = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence) }), handlers);
+    const options = sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence);
+    if (d.abortController) options.abortController = d.abortController;
+    return consumeStream(query({ prompt: order.task, options }), handlers);
   };
   const first = await run(deps);
   if (!first.resumeMissing || !deps.resume) return first;
@@ -964,7 +986,7 @@ async function runCodexOrder(
   const client = await makeCodexClient(deps);
   const options = codexThreadOptions(order, deps);
   const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
-  return consumeCodexTurn(thread, order.task, handlers);
+  return consumeCodexTurn(thread, order.task, handlers, deps.abortController?.signal);
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
@@ -1063,7 +1085,11 @@ function startClaudeOrder(
   });
 
   return {
-    followUp: (text) => channel.push(userMessage(text)),
+    // The SDK drains this channel eagerly, so a follow-up reaches the CLI as soon as it is pushed.
+    // "steer" → priority "next" (attached at the running turn's next tool boundary); "after-turn" →
+    // "later". The replay path above re-pushes these same messages, priority included.
+    followUp: (text, timing) => channel.push(userMessage(text, timing === "steer" ? "next" : "later")),
+    steersMidTurn: true,
     interrupt: async () => {
       closeRequested = true;
       channel.close();
@@ -1134,7 +1160,7 @@ function startCodexOrder(
   })();
 
   return {
-    followUp: (text) => queue.push(text),
+    followUp: (text) => queue.push(text), // Codex runs one turn per input: the timing does not apply
     interrupt: async () => {
       interruptRequested = true;
       closeRequested = true;

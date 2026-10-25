@@ -6,7 +6,7 @@
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { DEFAULT_TRACE, type NeoConfig } from "../config";
-import type { Order, OrderSource, SessionInfo } from "../types";
+import type { FollowUpTiming, Order, OrderSource, SessionInfo } from "../types";
 import type { Cause, Ledger, MessageKind } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -15,7 +15,7 @@ import { noteProjectStart, type TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { neoMcpServers, type DispatchDeps, type ReplyMeta } from "./dispatch";
+import { neoMcpServers, withLiveNotes, type DispatchDeps, type ReplyMeta } from "./dispatch";
 import type { TodoQueue } from "./todo-queue";
 import { flushDispatcherInbox, liveCompanyLink, takeDispatcherInbox, type DispatcherLink } from "./dispatch-report";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
@@ -129,6 +129,8 @@ export interface PipelineDeps {
   postDecision?: DispatchDeps["postDecision"];
   /** Project notes (ADR-0043): gates the `project_notes` tool. Operator surfaces only. */
   notes?: DispatchDeps["notes"];
+  /** The tools catalogue (ADR-0044): gates the `tool_api` relay tool. Operator surfaces only. */
+  tools?: DispatchDeps["tools"];
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
   now?: () => number;
@@ -387,16 +389,19 @@ export async function handleMessage(
       return pending ? `${pending}\n\n${text.trim()}` : text.trim();
     };
     if (control && live.status === "running") {
-      // Live worker — the follow-up queues behind the in-flight turn. Report the REAL status, not a
-      // bare "busy": what it's doing, for how long, and how deep the queue is.
-      control.followUp(body(), cause);
+      // Live worker. The operator's own words steer: a Claude worker sees them at its next step
+      // mid-turn; one that can't steer (Codex) runs them after the in-flight turn, and the reply
+      // says which. Report the REAL status, not a bare "busy": what it's doing, for how long, and
+      // how deep the queue is.
+      control.followUp(withLiveNotes(deps, live.id, live.order.folder, body(), now()), "steer", cause);
       deliver(live.id);
       registry.touch(live.id, now());
       // The operator's message answers (or replaces) a raised DECISION. A pending approval is
       // left alone — it is still suspending the worker mid-tool and clears on their verdict.
       clearDecisionBlock(registry, live.id);
       if (oneShot) registry.clearFocus(chatId);
-      await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSession(registry, live, now(), deps.cfg.liveness)}`, undefined, undefined, { kind: "ack" });
+      const when = control.steersMidTurn ? "it'll see this at its next step" : "runs after its current turn";
+      await deps.reply(chatId, `↩︎ queued for ${live.name} (${when}) — ${describeSession(registry, live, now(), deps.cfg.liveness)}`, undefined, undefined, { kind: "ack" });
       return null;
     }
     // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
@@ -460,7 +465,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, cause: turnCause(registry, session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, sessionId: session.id, orderId: parsed.id, cause: turnCause(registry, session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -556,8 +561,10 @@ export async function deliverToCompany(
   if (control) {
     if (control.closed?.() === true) return false;
     // A dispatch result carries its thread: the company's turn that reads it is filed there.
-    if (opts.cause) control.followUp(text, opts.cause);
-    else control.followUp(text);
+    // A dispatch report is an engine brief for the company: it waits for the turn, never steers it.
+    const brief = withLiveNotes(deps, company.id, company.order.folder, text, now());
+    if (opts.cause) control.followUp(brief, "after-turn", opts.cause);
+    else control.followUp(brief, "after-turn");
     registry.touch(company.id, now());
     return true;
   }
@@ -633,7 +640,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, sessionId: id, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }
@@ -760,11 +767,22 @@ function startSession(
     if (snap) order = { ...order, task: `${snap}\n\n${order.task}` };
   }
   // The notes block (ADR-0043): same fresh-start gate as the snapshot; only where the operator surface
-  // wired deps.notes.
+  // wired deps.notes. The company folder reads as `main` there (block maps it by folder).
   if (!runDeps.resume && deps.notes) {
     const notesName = project ?? basename(order.folder);
-    const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now()), { project: notesName });
+    const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now(), order.folder), { project: notesName });
     if (block) order = { ...order, task: block + order.task };
+  }
+  // A resume is a delivery point too (ADR-0050 §4): notes from main and answers held while the session
+  // sat idle go in front of the resumed task.
+  if (runDeps.resume) order = { ...order, task: withLiveNotes(deps, registryId, order.folder, order.task, now()) };
+  // The tools hint (ADR-0044): fresh start only, and only where `hintPaths` lists this operator path. It
+  // matches the operator's raw order text and goes in front of the notes block, like the dispatch path.
+  const hintPath = registry.getDefault()?.id === registryId ? "company" : "project";
+  if (!runDeps.resume && deps.tools && deps.tools.cfg.hintPaths.includes(hintPath)) {
+    const hintName = project ?? basename(order.folder);
+    const hint = faults.guard("pipeline.toolsHint", () => deps.tools!.hint(order.task, { project: hintName, folder: order.folder }), { project: hintName });
+    if (hint) order = { ...order, task: hint + order.task };
   }
   const run = start(
     order,
@@ -891,7 +909,7 @@ function startSession(
             retryPending = false;
             registry.touch(registryId, now());
             deliverInput(registry.lastCauseOf(registryId)); // the retried brief answers the failed turn's cause
-            runRef?.followUp(apiRetryFollowUp(order.task));
+            runRef?.followUp(apiRetryFollowUp(order.task), "after-turn");
           }),
           { project, orderId: order.id, folder: order.folder },
         );
@@ -904,10 +922,10 @@ function startSession(
   // next settle decides afresh (with a full handoff turn if still needed).
   const control: SessionRun = {
     ...run,
-    followUp: (text: string, cause?: Cause) => {
+    followUp: (text: string, timing: FollowUpTiming, cause?: Cause) => {
       watch?.disarm();
       deliverInput(cause);
-      run.followUp(text);
+      run.followUp(text, timing);
     },
   };
   registry.attachControl(registryId, control);

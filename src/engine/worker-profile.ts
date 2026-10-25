@@ -5,6 +5,15 @@ import type { NeoConfig, ModelsCfg, WorkerPathName } from "../config";
 import type { RunDeps } from "./session-runner";
 import { filterSdkEnv, sdkProvider, supportsRunConfigField, withLongContext } from "./model-resolver";
 
+/** What a consult run may never use (ADR-0050 §6): it answers a question and never acts — no writes,
+ *  no shell, no helper agents, no slash commands. The read tools and the consult `neo` server stay.
+ *  The mutating codebase-memory tools are listed too (ruling R10), so a codebase-memory server that
+ *  reaches the run some other way (a project's .mcp.json) still cannot change an index or an ADR. */
+export const CONSULT_DISALLOWED_TOOLS: readonly string[] = [
+  "Write", "Edit", "NotebookEdit", "Bash", "Task", "Agent", "KillShell", "SlashCommand",
+  "mcp__codebase-memory__delete_project", "mcp__codebase-memory__index_repository", "mcp__codebase-memory__manage_adr", "mcp__codebase-memory__ingest_traces",
+];
+
 type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> &
   Partial<Pick<NeoConfig, "providers" | "models" | "governor" | "workRoot" | "handoffNotesDir">>;
 
@@ -55,9 +64,11 @@ export function profileDeps(
   if (path !== "ingress" && cfg.governor && d.outOfFolderWrites === undefined) {
     d.outOfFolderWrites = cfg.governor.outOfFolderWrites;
   }
-  // Dispatched and loop workers stay in their project, helpers included (ADR-0031). Neo's handoff
-  // notes are the one engine folder under the work root every worker writes.
-  if ((path === "dispatch" || path === "loop") && cfg.workRoot && d.projectFence === undefined) {
+  // A consult run is read-only (ADR-0050 §6): the deny-list is this path's default.
+  if (path === "consult" && d.disallowedTools === undefined) d.disallowedTools = [...CONSULT_DISALLOWED_TOOLS];
+  // Dispatched, loop and consult workers stay in their project, helpers included (ADR-0031). Neo's
+  // handoff notes are the one engine folder under the work root every worker writes.
+  if ((path === "dispatch" || path === "loop" || path === "consult") && cfg.workRoot && d.projectFence === undefined) {
     d.projectFence = { root: cfg.workRoot, allow: cfg.handoffNotesDir ? [resolve(cfg.handoffNotesDir)] : [] };
   }
   const env = filterSdkEnv(d.provider, { ...cfg.workerEnv, ...(base.env ?? {}) });

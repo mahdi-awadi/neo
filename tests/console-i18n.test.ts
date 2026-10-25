@@ -168,3 +168,17 @@ test("decision cards render context, numbered options and the recommendation in 
   expect(APP).toContain('ltr(i + 1 + ".")');
   expect(APP).toContain('t("decision.recommended")');
 });
+
+test("notes: kind `question` and state `answered` are catalogue keys in EN and AR, and the project pane renders them (ADR-0050)", () => {
+  for (const key of ["notes.kind.question", "notes.state.answered"]) {
+    expect(EN.get(key)).toBeTruthy();
+    expect(AR.get(key)).toBeTruthy();
+  }
+  // Every note kind and state the pane can show has a label in both languages.
+  for (const kind of ["finding", "fyi", "request", "question"]) expect(AR.get(`notes.kind.${kind}`)).toBeTruthy();
+  for (const state of ["acknowledged", "answered"]) expect(AR.get(`notes.state.${state}`)).toBeTruthy();
+  expect(APP).toContain('tx(`notes.kind.${it.noteKind}`)');
+  expect(APP).toContain('tx(`notes.state.${it.noteState}`)');
+  // The note id stays an LTR run inside the Arabic row.
+  expect(APP).toContain('ltr("#" + it.id)');
+});

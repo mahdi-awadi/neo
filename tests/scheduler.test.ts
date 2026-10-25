@@ -201,7 +201,7 @@ function fakeNeoConfig(companyFolder: string): NeoConfig {
     faults: DEFAULT_FAULTS,
     health: DEFAULT_HEALTH,
     sqliteBusyTimeoutMs: 5_000,
-    workers: { company: {}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {}, handoff: {}, secretary: {} },
+    workers: { company: {}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {}, handoff: {}, secretary: {}, consult: {} },
     workerEnv: {},
     memory: { scopes: ["company"], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
     telegramToolSteps: false,

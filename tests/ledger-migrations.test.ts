@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, existsSync } from "node:fs";
+import { copyFileSync, mkdtempSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { migrate, MIGRATIONS } from "../src/engine/ledger-migrations";
@@ -104,4 +104,32 @@ test("migration 12 adds the project-note columns and keeps old attention rows", 
   });
   const idx = db.query(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_attention_from'`).get();
   expect(idx).toEqual({ name: "idx_attention_from" });
+});
+
+// ADR-0050 rev. 2: questions and live notes ride on attention items too — three nullable columns and
+// an index for the live-delivery read. Checked v12 → v13 on a copy of a file ledger.
+test("migration 13 adds answer, delivered_at and from_session, and the (source, delivered_at) index, on a copy", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-mig-"));
+  const path = join(dir, "ledger.db");
+  const v12 = new Database(path);
+  migrate(v12, { path, migrations: MIGRATIONS.filter((x) => x.version <= 12) });
+  v12.run(
+    `INSERT INTO attention_items (project, folder, source, kind, key, title, severity, first_seen, last_seen, from_project) VALUES ('p', '/f', 'note', 'note_fyi', 'q:D1', 't', 'normal', 1, 1, 'q')`,
+  );
+  v12.close();
+  const copy = join(dir, "copy.db");
+  copyFileSync(path, copy);
+  const db = new Database(copy);
+  const r = migrate(db, { path: copy });
+  expect(r.from).toBe(12);
+  expect(version(db)).toBeGreaterThanOrEqual(13);
+  expect(db.query(`SELECT answer, delivered_at, from_session FROM attention_items`).get()).toEqual({ answer: null, delivered_at: null, from_session: null });
+  const idx = db.query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_attention_delivery'`).get() as { sql: string } | null;
+  expect(idx?.sql).toContain("(source, delivered_at)");
+  db.close();
+  const [row] = openLedger(copy).attentionRows("p", "note");
+  expect(row).toBeDefined();
+  expect(row!.answer).toBeUndefined();
+  expect(row!.deliveredAt).toBeUndefined();
+  expect(row!.fromSession).toBeUndefined();
 });

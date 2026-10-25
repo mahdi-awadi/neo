@@ -25,6 +25,7 @@ function world(over: { cfg?: Partial<NotesCfg>; deps?: Partial<NotesDeps> } = {}
     trace: { outbound: (p) => (lines.push({ text: p.text, cause: p.cause, kind: p.kind }), lines.length) },
     notifyNow: (row) => void nowLines.push(row.id),
     ...over.deps,
+    companyFolder: over.deps?.companyFolder ?? join(root, "agent"),
   });
   return { root, desks, ledger, notes, lines, nowLines };
 }

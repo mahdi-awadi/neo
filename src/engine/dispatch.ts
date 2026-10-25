@@ -7,7 +7,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { Order, SessionInfo } from "../types";
+import type { FollowUpTiming, Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
 import { checkDecision, decisionBody, DECISION_LIMITS, MAX_OPTIONS, type StructuredAsk, type DecisionInput } from "./structured-question";
@@ -74,7 +74,8 @@ import { createPlanWatch } from "./plan-watch";
 import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./commit-finish";
 import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
-import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type ProjectNotes } from "./project-notes";
+import { formatToolsReply, type Catalogue } from "./tools-catalogue";
+import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type NoteToolSender, type ProjectNotes } from "./project-notes";
 import {
   apiFailureNotice,
   apiHoldMessage,
@@ -143,6 +144,9 @@ export interface DispatchDeps {
   /** Project notes (ADR-0043). Its PRESENCE gates the `project_notes` tool: the daemon wires it on the
    *  operator surfaces only, and the ingress path strips it explicitly (it spreads these deps). */
   notes?: ProjectNotes;
+  /** The tools catalogue (ADR-0044). Its PRESENCE gates the `tool_api` relay tool: operator surfaces wire
+   *  it, the ingress path strips it, like `notes`. */
+  tools?: Catalogue;
   postDecision?: (
     /** `ref`: the ref of the decision's thread (trace only) — the card ends with it (spec §4.3). */
     rec: { id: string; project?: string; folder?: string; ref?: string },
@@ -373,7 +377,7 @@ export function briefWithProjectDocs(task: string): string {
   return (
     "Before starting, read this project's rule and doc .md files so you work by its rules: " +
     "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
-    "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
+    "plus the docs relevant to this task (e.g. under docs/). Follow them with CLAUDE.md.\n\n" +
     "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
     "  DESIGN — before writing code for any feature or non-trivial change, sharpen the domain model " +
     "with the `domain-modeling` and `codebase-design` skills: define the real terms precisely and " +
@@ -381,8 +385,8 @@ export function briefWithProjectDocs(task: string): string {
     "short ADR (rejected alternatives included). Then synthesize a concise spec for the change — its " +
     "acceptance criteria and edge cases — and design it as one clean seam (a lot of behavior behind a " +
     "small, testable interface). Use `superpowers:brainstorming` → `writing-plans` for the plan itself. " +
-    "For a bug, `superpowers:systematic-debugging` to root-cause first. (Skip the CONTEXT.md/ADR step " +
-    "only for a trivial mechanical edit, and say you did.)\n" +
+    "For a bug, `superpowers:systematic-debugging` to root-cause first. (Skip CONTEXT.md/ADR " +
+    "only for a trivial edit, and say so.)\n" +
     "  BUILD — implement against that spec with `superpowers:test-driven-development` (write the failing " +
     "test first, per acceptance criterion), then `superpowers:verification-before-completion` and " +
     "`requesting-code-review` before claiming done.\n\n" +
@@ -392,7 +396,7 @@ export function briefWithProjectDocs(task: string): string {
     "components or a bespoke mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, dev by default, " +
     "failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
     "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it: extend " +
-    "what is there, never a second implementation. Meet these in what you ship; a change that misses " +
+    "what is there, never a second implementation. A change that misses " +
     "one is not done.\n\n" +
     "REQUIRED — security: a NEW high or critical finding from the edit/commit/push scans blocks; fix " +
     "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
@@ -400,10 +404,11 @@ export function briefWithProjectDocs(task: string): string {
     "operator-supplied dev secret into `.env` (chmod 600, gitignored). Run `/security-review` before finishing auth, " +
     "payment, upload or input-handling work.\n\n" +
     "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
-    "may your helper agents. Work for another project (even one an old note lists): send it there with `project_notes`.\n\n" +
+    "may your helper agents. Work for another project (even one an old note lists): send it there with `project_notes`. " +
+    "Missing a fact, tool or key? `project_notes ask` (main or a project) and `tools_for` — never wait silently, never paste keys.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
-    "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +
+    "Drop options that are only workarounds. Escalate to the operator " +
     "ONLY a decision that is genuinely theirs: product/UX policy, cost, an irreversible or external " +
     "action, or a real trade-off between two sound options. If there is one correct standard fix, " +
     "do it and report it — do not ask. When you must ask (ask_operator), write for a non-technical " +
@@ -413,8 +418,8 @@ export function briefWithProjectDocs(task: string): string {
     "activity and ABORTS a sub-run after ~5 minutes without it, hung or not: a background wait or " +
     "Monitor, a long `sleep`, `gh run watch`, tailing logs, waiting on CI/build/deploy. So NEVER use " +
     "those: to wait on CI, a build, or a deploy, POLL in short FOREGROUND steps under 90 seconds " +
-    "each, so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
-    "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
+    "each, so every check is a fresh activity heartbeat. Finish WITHIN this run: a " +
+    "dispatched worker is single-shot, NOT re-invoked when a background job completes; " +
     "poll to a terminal state here.\n\n" +
     "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; the engine " +
     "sends it to the operator. A small plan: build on. A BIG plan (many tasks or steps; migrations, auth, " +
@@ -618,8 +623,11 @@ export async function dispatchToProject(
         : `its output streams to the operator as ${name}. It is a session the operator opened, so its result is NOT ` +
           `sent back to you automatically — check it with \`sessions\` or ask the operator.`;
       // The brief carries its cause into the session, so the turn that runs it is filed under it.
-      if (cause) control.followUp(order.task, cause);
-      else control.followUp(order.task);
+      // After the turn, never mid-turn: an engine brief must not steer the operator's in-flight work.
+      // Notes from main and answers held for this session go in front of it (ADR-0050 §4).
+      const brief = withLiveNotes(deps, existing.id, folder, order.task, now());
+      if (cause) control.followUp(brief, "after-turn", cause);
+      else control.followUp(brief, "after-turn");
       hooks.onLaunched?.(order.id, "delivered");
       deps.registry.touch(existing.id, now());
       // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
@@ -761,9 +769,27 @@ export async function dispatchToProject(
       }
       // The notes block (ADR-0043): the target's open notes and the state of the ones it sent, on a
       // genuine fresh start only — like the snapshot. No deps.notes (ingress) → none.
-      const notesBlock = deps.notes ? faults.guard("dispatch.notesBlock", () => deps.notes!.block(name, now()), { project: name }) : undefined;
+      const notesBlock = deps.notes ? faults.guard("dispatch.notesBlock", () => deps.notes!.block(name, now(), folder), { project: name }) : undefined;
       if (notesBlock) {
         order.task = notesBlock + order.task;
+        deps.ledger.recordOrder(order);
+      }
+      // The tools hint (ADR-0044): up to a few catalogue lines that match the raw brief, only on the worker
+      // paths in `hintPaths`. No deps.tools (ingress) → none. Recorded so the ledger equals what the worker gets.
+      const toolsHint =
+        deps.tools && deps.tools.cfg.hintPaths.includes("dispatch")
+          ? faults.guard("dispatch.toolsHint", () => deps.tools!.hint(task, { project: name, folder }), { project: name })
+          : undefined;
+      if (toolsHint) {
+        order.task = toolsHint + order.task;
+        deps.ledger.recordOrder(order);
+      }
+    } else {
+      // A kept resume is a delivery point (ADR-0050 §4): notes from main and answers held while the
+      // session sat idle go in front of the brief. (A fresh start lists them in the notes block.)
+      const withHeld = withLiveNotes(deps, session.id, folder, order.task, now());
+      if (withHeld !== order.task) {
+        order.task = withHeld;
         deps.ledger.recordOrder(order);
       }
     }
@@ -880,7 +906,7 @@ export async function dispatchToProject(
         .catch(() => {}); // best-effort, like a digest
       if (deps.dispatchSpinPolicy === "wrapup") {
         wrappingUp = true;
-        runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs));
+        runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs), "after-turn");
       }
     };
     // A dispatch is single-brief: once the session is SETTLED with nothing queued, the sub-run IS
@@ -904,7 +930,7 @@ export async function dispatchToProject(
         event("commit_finish_sent", { orderId: order.id, folder, data: { project: name, files } });
         void say(`📝 ${name} ended with uncommitted changes — asked it once to commit them`, undefined, { cause: liveCause() });
         lastActivityAt = now();
-        runRef.followUp(brief);
+        runRef.followUp(brief, "after-turn");
         return true;
       }, { folder }) === true;
     const run = start(
@@ -1019,7 +1045,7 @@ export async function dispatchToProject(
                 lastActivityAt = now();
                 retryPending = false;
                 // Inside the commit finish, the retry re-sends the commit request — never the whole task.
-                runRef?.followUp(commitBrief ?? apiRetryFollowUp(task));
+                runRef?.followUp(commitBrief ?? apiRetryFollowUp(task), "after-turn");
               });
               return; // keep the sub-run open — it hasn't done the work yet
             }
@@ -1051,7 +1077,7 @@ export async function dispatchToProject(
         // stay gated by memoryGate (off unless the folder is in scope). The sub-worker inherits THIS
         // dispatch's work class, so a sub-dispatch would follow the same originating trigger (inert
         // while recursive dispatch stays off — the invariant holds by construction, not by memory).
-        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, orderId: order.id, cause: liveCause }),
+        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, sessionId: session.id, orderId: order.id, cause: liveCause }),
         ...(teamAgents ? { agents: teamAgents } : {}),
       }),
     );
@@ -1059,12 +1085,12 @@ export async function dispatchToProject(
     // The registry's handle delivers a brief's cause with it (spec §4.2), like the pipeline's own.
     const control = {
       ...run,
-      followUp: (text: string, c?: Cause) => {
+      followUp: (text: string, timing: FollowUpTiming, c?: Cause) => {
         if (c) {
           deps.registry.deliver(session.id, c);
           refreshThread(deps, c.threadId);
         }
-        run.followUp(text);
+        run.followUp(text, timing);
       },
     };
     dispatchRuns.add(control);
@@ -1157,7 +1183,7 @@ export async function dispatchToProject(
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave
         // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
         wrappingUp = true;
-        run.followUp(wrapUpBrief(`dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m)`, graceMs));
+        run.followUp(wrapUpBrief(`dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m)`, graceMs), "after-turn");
         const graced = await doneOrTick(graceMs);
         if (graced !== "tick") {
           result = graced.done; // wrapped up in time — keep the worker's own result
@@ -1500,6 +1526,15 @@ export async function raiseOperatorDecision(
   return id;
 }
 
+/** `text` with the folder's held live notes in front (ADR-0050 §4): notes from main and answers the
+ *  session took no delivery of while it sat idle. "" held, or no `deps.notes` (ingress) → `text`. */
+export function withLiveNotes(deps: Pick<DispatchDeps, "notes">, sessionId: string, folder: string, text: string, at: number): string {
+  const notes = deps.notes;
+  if (!notes) return text;
+  const held = faults.guard("notes.takeLive", () => notes.takeLive(sessionId, folder, at), { folder });
+  return held ? `${held}\n\n${text}` : text;
+}
+
 /** Google Stitch MCP server (HTTP transport) — design generation for operator workers. */
 export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
 
@@ -1507,41 +1542,57 @@ export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
  *  updater (ADR-0009) so the server it verifies after an update is the one workers start. */
 export const PLAYWRIGHT_MCP = { command: "playwright-mcp", args: ["--headless", "--isolated"] };
 
+/** The options of `neoMcpServers`: who the tools are built for (folder, project, session, order,
+ *  work class, cause) and which extra servers attach. */
+export interface NeoToolOpts {
+  dispatch: boolean;
+  /** `consult` (ADR-0050 §6, ruling R4): a read-only consult run gets ONLY `tools_for` and the memory
+   *  read tool (`memory_search`) — no send_file, ask_operator, project_notes, tool_api, dispatch or
+   *  todo, and no stitch/playwright/codebase-memory. Absent = the full operator tool set. */
+  profile?: "consult";
+  /** The registry session the tools act for — the asker a late answer goes back to (ADR-0050). The
+   *  `project_notes` tool is attached only when this and `orderId` are known. */
+  sessionId?: string;
+  /** What TRIGGERED the worker these tools are built for — an operator turn (`interactive`) or
+   *  the scheduler (`background`). Decided ONCE here, at launch, and captured in the `dispatch`
+   *  tool's closure, so every dispatch this worker makes (and every sub-worker it spawns)
+   *  inherits it. Omitted ⇒ DEFAULT_WORK_CLASS (background) — see budget.ts for why that default
+   *  is the safe one. */
+  workClass?: WorkClass;
+  folder: string;
+  /** The project name + raising order id, recorded on any decision this worker raises (so the
+   *  digest/queue can show which project waits, and the answer can resume the right session). */
+  projectName?: string;
+  orderId?: string;
+  /** The cause of the turn calling a tool (ADR-0015), read at CALL time — never captured at
+   *  launch — so a dispatch, todo, decision or file is filed under the operator message the
+   *  worker is answering now, not its session's first order. Absent → no cause, as before. */
+  cause?: () => Cause | undefined;
+  stitch?: boolean;
+  stitchKey?: string;
+  /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
+  codebaseMemoryBin?: string;
+  /** Operator-only: attach the Playwright browser-automation MCP (headless chromium) so every
+   *  operator project worker can drive a real browser for web/UI testing. Never on the customer
+   *  path (browser automation there would let customer-tainted work reach arbitrary URLs). */
+  playwright?: boolean;
+}
+
+/** The deps a consult tool set reads: the catalogue and the memory gate's inputs, nothing else. */
+export type ConsultToolDeps = Pick<DispatchDeps, "tools" | "memory" | "companyFolder" | "contextPolicy">;
+
 /** Build the project's in-process MCP tools: `send_file` always; `dispatch` only for the company.
  *  When `opts.stitch` is set AND a `opts.stitchKey` is configured, the operator's Stitch HTTP MCP
- *  server is attached too. Stitch is OFF by default so the customer/ingress path never gets it. */
-export function neoMcpServers(
-  deps: DispatchDeps,
-  replyChat: number,
-  opts: {
-    dispatch: boolean;
-    /** What TRIGGERED the worker these tools are built for — an operator turn (`interactive`) or
-     *  the scheduler (`background`). Decided ONCE here, at launch, and captured in the `dispatch`
-     *  tool's closure, so every dispatch this worker makes (and every sub-worker it spawns)
-     *  inherits it. Omitted ⇒ DEFAULT_WORK_CLASS (background) — see budget.ts for why that default
-     *  is the safe one. */
-    workClass?: WorkClass;
-    folder: string;
-    /** The project name + raising order id, recorded on any decision this worker raises (so the
-     *  digest/queue can show which project waits, and the answer can resume the right session). */
-    projectName?: string;
-    orderId?: string;
-    /** The cause of the turn calling a tool (ADR-0015), read at CALL time — never captured at
-     *  launch — so a dispatch, todo, decision or file is filed under the operator message the
-     *  worker is answering now, not its session's first order. Absent → no cause, as before. */
-    cause?: () => Cause | undefined;
-    stitch?: boolean;
-    stitchKey?: string;
-    /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
-    codebaseMemoryBin?: string;
-    /** Operator-only: attach the Playwright browser-automation MCP (headless chromium) so every
-     *  operator project worker can drive a real browser for web/UI testing. Never on the customer
-     *  path (browser automation there would let customer-tainted work reach arbitrary URLs). */
-    playwright?: boolean;
-  },
-): Record<string, unknown> {
+ *  server is attached too. Stitch is OFF by default so the customer/ingress path never gets it.
+ *  `profile: "consult"` builds the read-only consult set from the same code (ADR-0050 ruling R4). */
+export function neoMcpServers(deps: DispatchDeps, replyChat: number, opts: NeoToolOpts): Record<string, unknown>;
+export function neoMcpServers(deps: ConsultToolDeps, replyChat: number, opts: NeoToolOpts & { profile: "consult" }): Record<string, unknown>;
+export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: number, opts: NeoToolOpts): Record<string, unknown> {
+  const consult = opts.profile === "consult";
+  // The consult set reads only the ConsultToolDeps fields (every other branch below is `!consult`).
+  const deps = given as DispatchDeps;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tools: SdkMcpToolDefinition<any>[] = [
+  const tools: SdkMcpToolDefinition<any>[] = consult ? [] : [
     tool(
       "send_file",
       "Send a file you produced in THIS project back to the operator (Telegram/web). `path` must be inside the project folder.",
@@ -1574,7 +1625,7 @@ export function neoMcpServers(
   // trade-offs + recommendation — the Zod schema makes a shapeless question impossible to raise),
   // posts it to the Decisions channel with tappable option buttons, captures the message id, and tells
   // the worker to check-point + stop — the operator's tap/reply resumes this session as a follow-up.
-  if (deps.postDecision) {
+  if (!consult && deps.postDecision) {
     tools.push(
       tool(
         "ask_operator",
@@ -1652,17 +1703,23 @@ export function neoMcpServers(
       ),
     );
   }
-  // `project_notes` (ADR-0043): one project tells another. Gated on `deps.notes`, which only operator
-  // surfaces wire (ingress strips it). The sender is this session's project — never a tool argument.
+  // `project_notes` (ADR-0043, ADR-0050): one project tells or asks another. Gated on `deps.notes`, which
+  // only operator surfaces wire (ingress strips it), and never on a consult run. The sender — project,
+  // folder, session, order, work class, cause — is this session's, from the closure: never a tool
+  // argument. Without a known session and order the tool is not attached (fail closed).
   const notes = deps.notes;
-  if (notes) {
+  const sessionId = opts.sessionId;
+  const orderId = opts.orderId;
+  if (!consult && notes && sessionId && orderId) {
     tools.push(
       tool(
         "project_notes",
         NOTES_TOOL_DESCRIPTION,
         {
-          action: z.enum(["send", "list", "show", "ack", "resolve", "withdraw"]),
-          to: z.string().optional().describe('target project folder name, e.g. "eticket-v3"'),
+          action: z.enum(["send", "ask", "list", "show", "ack", "resolve", "withdraw"]),
+          to: z.string().optional().describe('target: a project folder name, e.g. "eticket-v3", or "main" (the main agent)'),
+          question: z.string().optional().describe("ask: the question, in plain words — facts, tools or how-to, never work"),
+          need: z.enum(["info", "resource", "help"]).optional().describe("ask: info = a fact, resource = a shared tool or key, help = how to do something (default info)"),
           kind: z.enum(["finding", "fyi", "request"]).optional(),
           severity: z.enum(["high", "normal", "low"]).optional(),
           title: z.string().optional().describe("one line"),
@@ -1676,13 +1733,53 @@ export function neoMcpServers(
           reason: z.string().optional().describe("resolve not_needed/duplicate: why"),
         },
         async (args: NoteToolArgs) => {
-          const from = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder, chatId: replyChat, cause: opts.cause?.() };
+          const from: NoteToolSender = {
+            project: opts.projectName ?? basename(opts.folder), folder: opts.folder, chatId: replyChat, cause: opts.cause?.(),
+            sessionId, orderId, workClass: opts.workClass ?? DEFAULT_WORK_CLASS,
+          };
           return { content: [{ type: "text" as const, text: await runNoteAction(notes, from, args, Date.now()) }] };
         },
       ),
     );
   }
-  if (opts.dispatch) {
+  // `tool_api` (ADR-0044): an API call with a key the engine holds. Gated on `deps.tools`; the caller is
+  // this session's project and folder — never a tool argument. All guards live in `relayCall`.
+  const catalogue = deps.tools;
+  if (!consult && catalogue) {
+    tools.push(
+      tool(
+        "tool_api",
+        "Call a shared API tool through the engine, which adds the API key (you never see it). `card` is the tool card id, `operation` one of the operations the card lists, `body` the JSON payload. Refusals name the check that failed; nothing is sent then. Returns the HTTP status and body.",
+        {
+          card: z.string().describe("tool card id, e.g. from your neo-tool-* skill"),
+          operation: z.string().describe("an operation name declared on the card"),
+          body: z.unknown().optional().describe("JSON payload (POST operations)"),
+        },
+        async (args: { card: string; operation: string; body?: unknown }) => {
+          const caller = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder };
+          return { content: [{ type: "text" as const, text: await catalogue.relay(args.card, args.operation, args.body, caller) }] };
+        },
+      ),
+    );
+  }
+  if (catalogue) {
+    tools.push(
+      tool(
+        "tools_for",
+        "Find the shared tool, CLI, API, recipe or skill for a task. Describe the task in plain words; the reply lists the best matches with why they match, how to call them, and their cost and limits. Only for tools that Neo's catalogue knows.",
+        {
+          task: z.string().describe("what you need to do, in plain words"),
+          limit: z.number().int().min(1).max(10).optional().describe("how many matches to return (default from config)"),
+        },
+        async (args: { task: string; limit?: number }) => {
+          const caller = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder };
+          const matches = catalogue.find(args.task, { ...caller, ...(args.limit !== undefined ? { limit: args.limit } : {}) });
+          return { content: [{ type: "text" as const, text: formatToolsReply(matches, catalogue.cfg) }] };
+        },
+      ),
+    );
+  }
+  if (!consult && opts.dispatch) {
     tools.push(
       tool(
         "sessions",
@@ -1787,25 +1884,29 @@ export function neoMcpServers(
     // falls back to its conservative default window (see context-policy.ts's MODEL_WINDOW_TOKENS).
     // Same reasoning context-policy.ts's other "no model yet" call sites document.
     const windowTokens = windowTokensFor(undefined, deps.contextPolicy?.windowTokensByModel);
-    tools.push(...memoryTools(opts.folder, memCfg, windowTokens));
+    // A consult run reads memory; it never writes it.
+    const mem = memoryTools(opts.folder, memCfg, windowTokens);
+    tools.push(...(consult ? mem.filter((t) => t.name === "memory_search") : mem));
   }
   const server = createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
   const servers: Record<string, unknown> = { neo: server };
   // Operator-only: attach the Google Stitch HTTP MCP server when enabled and a key is configured.
   // (SDK McpHttpServerConfig shape: { type: "http", url, headers? }.) Never on the customer path.
-  if (opts.stitch && opts.stitchKey) {
+  if (!consult && opts.stitch && opts.stitchKey) {
     servers.stitch = { type: "http", url: STITCH_MCP_URL, headers: { "X-Goog-Api-Key": opts.stitchKey } };
   }
   // Operator-only local stdio MCP server: codebase-memory (the ONE code-intel MCP — see the
   // 2026-07-23 context-efficiency design's measured verdict). Attached only when a bin path is
   // configured; the customer/ingress path passes none → never gets it.
-  if (opts.codebaseMemoryBin) {
+  // Never on a consult run (ruling R10): the governor escalates every foreign MCP tool, and a consult
+  // denies every escalation, so its read tools could never run there.
+  if (!consult && opts.codebaseMemoryBin) {
     servers["codebase-memory"] = { type: "stdio", command: opts.codebaseMemoryBin, args: [], env: {} };
   }
   // Operator-only: Playwright browser-automation MCP (headless chromium) for web/UI testing across
   // all operator projects. Lazy — the browser only launches when a tool is actually called, so the
   // per-worker cost is just a lightweight stdio process. Never attached on the customer/ingress path.
-  if (opts.playwright) {
+  if (!consult && opts.playwright) {
     servers.playwright = { type: "stdio", ...PLAYWRIGHT_MCP, env: {} };
   }
   return servers;

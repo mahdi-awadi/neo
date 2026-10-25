@@ -4,15 +4,21 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { loadConfig } from "./config";
+import { isAbsolute, join } from "node:path";
+import { DEFAULT_TOOLS_CFG, nullUsage, openCatalogue, relayKeyNames } from "./engine/tools-catalogue";
+import { fsSkillSource } from "./engine/tool-skills";
+import { loadConfig, loadedDotEnvKeys } from "./config";
+import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env";
+import { runOrder, setDefaultEnvScrub } from "./engine/session-runner";
 import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
 import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
 import { runScan } from "./engine/producers/scan";
 import { attentionActions, runDigest, type AttentionAction } from "./engine/attention-actions";
-import { createProjectNotes, DEFAULT_NOTES_CFG, noteNowText } from "./engine/project-notes";
+import { createProjectNotes, DEFAULT_NOTES_CFG, noteNowText, notesWiring } from "./engine/project-notes";
+import { createConsultRunner } from "./engine/consult";
+import { SUB_CHAT } from "./engine/dispatch";
 import { DEFAULT_GITHUB_CFG } from "./engine/producers/github";
 import { createGitRead } from "./engine/git-read";
 import { restartNeededSince } from "./engine/updater";
@@ -155,17 +161,37 @@ async function main(): Promise<void> {
     const m = await operatorApi.sendMessage(target, text, buttons.length ? { reply_markup: attentionKeyboard(buttons, hours) } : {});
     return { chatId: target, messageId: m.message_id };
   };
-  // Project notes (ADR-0043): one project tells another. A request or a high finding is told to the
-  // operator at once (through the flood gate, like the digest); the rest wait for the digest.
-  const notes = createProjectNotes({
-    ledger,
-    cfg: cfg.notes ?? DEFAULT_NOTES_CFG,
-    workRoot: cfg.workRoot,
-    trace,
-    notifyNow: (row) => {
-      faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));
-    },
-  });
+  // The tools catalogue (ADR-0044): its cards and the API relay behind `tool_api`. A load error is
+  // recorded and the daemon goes on without the relay — it never crashes on a bad card.
+  const relayKeys = new Set<string>();
+  const toolsCfg = cfg.tools ?? DEFAULT_TOOLS_CFG;
+  const toolsDir = isAbsolute(toolsCfg.catalogueDir) ? toolsCfg.catalogueDir : join(neoFolder, toolsCfg.catalogueDir);
+  // Every card file's relay key stays in the engine whatever its status — also a card that fails to
+  // load, so a broken card never leaks its key to a worker (ADR-0050 §7).
+  faults.guard("tools.relayKeys", () => { for (const k of relayKeyNames(toolsDir)) relayKeys.add(k); }, {});
+  const tools = faults.guard("tools.catalogue", () => {
+    const catalogue = openCatalogue({
+      dir: toolsDir,
+      cfg: toolsCfg, skills: fsSkillSource(), usage: nullUsage, ledger, // the ledger-backed usage counts are ADR-0044 Phase 3
+    });
+    const { cards, errors } = catalogue;
+    for (const c of cards) if (c.relay?.envKey) relayKeys.add(c.relay.envKey);
+    if (errors.length) {
+      ledger.recordEvent("tools_catalogue_errors", { data: { count: errors.length, first: errors.slice(0, 5) } });
+      console.error(`[tools] ${errors.length} card error(s); relay off: ${errors[0]}`);
+      return undefined;
+    }
+    return catalogue;
+  }, {});
+  // Scrub the worker env (ADR-0050 §7): relay keys never reach a worker; the engine's own file keys
+  // are listed by name in `report` mode (the default) and removed only in `strip` mode.
+  {
+    const wcfg = (cfg.tools ?? DEFAULT_TOOLS_CFG).workerEnv;
+    const scrub: EnvScrubOptions = { engineKeys: new Set(loadedDotEnvKeys()), relayKeys, inherit: new Set(wcfg.inherit), mode: wcfg.engineSecrets };
+    setDefaultEnvScrub(scrub);
+    const names = scrub.mode === "report" ? reportableEngineKeys(scrub) : [];
+    if (names.length) ledger.recordEvent("worker_env_report", { data: { names } });
+  }
   // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
   // time, in the background — a tick only starts it (single-flight).
   let scanning = false;
@@ -201,6 +227,37 @@ async function main(): Promise<void> {
     reservePct: cfg.subscriptionInteractiveReservePct,
     windowMs: cfg.budgetWindowMs,
   });
+  // Project notes (ADR-0043): one project tells another. A request or a high finding is told to the
+  // operator at once (through the flood gate, like the digest); the rest wait for the digest.
+  // Questions (ADR-0050): a read-only consult run answers them; notes from main and late answers reach
+  // a worker of the folder at its next step (notesWiring: steered into a live turn, never into an idle
+  // session — the pipeline and dispatch prepend them to its next follow-up or resume).
+  const ownWork = cfg.providers?.ownWork;
+  const notes = createProjectNotes({
+    ledger,
+    cfg: cfg.notes ?? DEFAULT_NOTES_CFG,
+    workRoot: cfg.workRoot,
+    companyFolder: cfg.companyFolder,
+    trace,
+    notifyNow: (row) => {
+      faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));
+    },
+    consult: createConsultRunner({ runOrder, cfg, catalogue: tools, ledger, meter }),
+    catalogue: tools,
+    meter,
+    ...notesWiring({
+      registry,
+      notes: () => notes,
+      worker: ownWork,
+      lastSessionFor: (folder) => ledger.lastSessionRow(folder, SUB_CHAT),
+      occupancyPct: (folder, sid) => {
+        const sig = sessionContext(folder, sid, { windowTokensByModel: contextWindows(ledger, cfg.contextPolicy.windowTokensByModel) });
+        return sig.turns > 0 ? Math.round(sig.occupancy * 100) : undefined; // nothing measured → never forked
+      },
+    }),
+  });
+  // Questions a reload cut off get their "no answer: reload" now; held answers past the hold expire.
+  faults.guard("notes.sweepQuestions", () => notes.sweepQuestions(Date.now()));
   // Measured subscription usage from Claude Code's own transcripts (for /usage).
   const usage = createUsageMeter({
     projectsDir: join(homedir(), ".claude", "projects"),
@@ -434,6 +491,7 @@ async function main(): Promise<void> {
           ["attention.digest", () => runDigest({ ledger, trace, digestAt: (cfg.attention ?? DEFAULT_ATTENTION_CFG).digestAt, maxLines: (cfg.attention ?? DEFAULT_ATTENTION_CFG).listLines, consoleUrl: cfg.publicUrl || undefined, send: sendDigest }, Date.now())],
           // What is built but not running (spec §8.4): git + the boot record + the updater.
           ["notes.prune", () => notes.prune(Date.now())],
+          ["notes.sweepQuestions", () => notes.sweepQuestions(Date.now())],
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
@@ -459,7 +517,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder, notes }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder, notes, tools }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -470,7 +528,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon

@@ -12,7 +12,8 @@ export type RunConfigField =
   | "skills"
   | "maxTurns"
   | "agents"
-  | "env";
+  | "env"
+  | "forkSession";
 
 export interface ModelSelection {
   model?: string;
@@ -28,6 +29,7 @@ export interface SdkRunSelection extends ModelSelection {
   maxTurns?: number;
   agents?: unknown;
   env?: Record<string, string>;
+  forkSession?: boolean;
 }
 
 export interface ResolvedModelSelection extends ModelSelection {
@@ -148,6 +150,7 @@ export const SDK_COMPATIBILITY = {
       "maxTurns",
       "agents",
       "env",
+      "forkSession",
     ],
     unsupportedFields: [],
     env: { denyKeys: [], denyPrefixes: [] },
@@ -182,6 +185,7 @@ export const SDK_COMPATIBILITY = {
       { field: "skills", present: (deps) => deps.skills !== undefined },
       { field: "maxTurns", present: (deps) => !!deps.maxTurns },
       { field: "agents", present: (deps) => deps.agents !== undefined },
+      { field: "forkSession", present: (deps) => !!deps.forkSession },
       {
         field: "disallowedTools",
         present: (deps) => deps.disallowedTools !== undefined && !readOnlySandboxRequested(deps.disallowedTools),

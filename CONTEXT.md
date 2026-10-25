@@ -702,7 +702,8 @@ _Avoid_: stale checkout, extra folder
 A typed record that one project sends to another through the engine: a kind, a severity, a title, a
 body, refs and the sender's own `ref` (for example `D16`). It is an attention item on the **target
 project** (source `note`), so it shows on the dashboard and in the digest, and it can become a todo.
-A note never starts work by itself (ADR-0043).
+A note never starts work by itself (ADR-0043). A note from the main agent also reaches a running
+worker of the target at its next step (**Live note**, ADR-0050).
 _Avoid_: message, mail, inbox (the inbox is customer mail), handoff, brief
 
 **Sender project / target project**:
@@ -728,7 +729,117 @@ _Avoid_: done, closed (unqualified), acked
 The short list the engine puts at the start of a fresh session: the open notes for this project, and
 the state of the notes it sent. Titles, ids and senders only, capped in size; never on a resume, a
 tainted run or the customer path. It tells the worker that notes are information, not orders.
+A running worker gets new notes from main live instead (ADR-0050).
 _Avoid_: inbox, mailbox, notifications
+
+### Agents asking each other
+
+**Main agent**:
+The company session (chief of staff, `/home/neo/agent`) as a note target or sender. In a worker's
+`project_notes` call it is the target `main`, the one desk a note may address. It is the same session
+as the **dispatcher**; the word is used only for notes and questions.
+_Avoid_: company (in worker-facing text), parent, boss
+
+**Question (note)**:
+A project note of kind `question` that a worker sends with `project_notes ask` to the main agent or
+another project, with a **need**: `info` (a fact), `resource` (a shared tool or key) or `help` (how
+to do something). A consult run answers it, and the note resolves as `answered` with the answer on
+it. A question can make another agent answer; it can never make it act (ADR-0050).
+_Avoid_: message, request (that is the note kind that asks for work), dispatch
+
+**Consult run**:
+The short, read-only one-shot run that answers one question in the target's folder. It forks the
+target's last saved session when the target is between turns, so it knows what that agent knows;
+otherwise it starts fresh there. It can read, search and look up tools; it cannot write, run
+commands, send notes, dispatch or raise a decision. It is never a registry session, so it never
+makes a project busy.
+_Avoid_: sub-agent, helper, side session, fork (alone)
+
+**Live note**:
+A note from the main agent (`fyi` or `request`), or a held answer, that the engine hands to a
+running worker of the target folder at its next step instead of waiting for its next fresh start.
+It is framed as information, never a brief: it starts no work and never wakes an idle session. All
+other notes wait for the notes block (ADR-0043).
+_Avoid_: tell, push, order, interrupt
+
+**Next step (delivery)**:
+The running turn's next tool boundary, where the SDK attaches a user message sent with priority
+`next` (follow-up timing `steer`). A brief queued into a busy session uses timing `after-turn`
+(priority `later`) and never steers. A Codex session has no next step; it receives at its next turn.
+_Avoid_: safe point (that is the context checkpoint, ADR-0021), interrupt, inject
+
+**Answer wait**:
+How long `project_notes ask` holds the asking worker for the answer (`notes.questions.answerWaitMs`).
+The stall limit does not run during it, as with an operator decision. A later answer becomes a live
+note to the asker.
+_Avoid_: timeout (alone), deadline
+
+### Shared tools
+
+**Tools catalogue**:
+The single tracked list of the shared tools that Neo and every project can use, as one **tool card**
+per tool (ADR-0044). If a tool has no card, workers are not told about it.
+_Avoid_: registry, marketplace, tool list, toolbox
+
+**Tool card**:
+One tool's record in the catalogue: its purpose, when to use it, how to call it, the NAMES of its env
+keys (never the values), its limits and cost, its owner, its **tool kind** and its **card status**.
+_Avoid_: tool doc, manifest, plugin
+
+**Tool kind**:
+How a worker reaches a tool. `mcp` is an MCP server that a worker is given. `cli` is a command on this
+host. `api` is an external HTTP API whose key only the engine holds. A skill is not a tool kind:
+skills are how a worker learns about tools.
+_Avoid_: type, category, integration
+
+**Card status**:
+Where a card is in its life. `active`: workers are told about it. `candidate`: it was evaluated but is
+not offered (for example ScaleDown). `retired`: it is kept for history only. Only `active` cards
+reach workers.
+_Avoid_: enabled, state, stage
+
+**Tool skill**:
+The skill that the engine generates from an `active` card and installs in the user's skills, so that
+every Claude worker in every project sees the card's when-to-use line. It is never edited by hand.
+_Avoid_: tool prompt, tool instructions
+
+**API relay**:
+The engine's one worker tool that calls an `api`-kind card when a worker asks for it. The engine adds
+the key from its own env, so the key never reaches a worker or a project. The engine never calls an
+API on its own initiative. The worker decides; the engine acts.
+_Avoid_: proxy, gateway, wrapper
+
+**Data leaves host**:
+A card's flag for an API that sends the text of a call to a third party. A relay call to such a card
+refuses text that matches a secret pattern. Customer and tainted runs never get the API relay.
+_Avoid_: external, remote, egress (unqualified)
+
+**Recipe**:
+A tool card of kind `recipe`: a named chain of steps over other cards for a task that comes up
+again and again, such as a deploy check, a read-only prod query, an E2E test or a store build.
+_Avoid_: playbook, workflow (a workflow is a multi-agent script), runbook
+
+**Tool search**:
+The engine's ranked word search over the catalogue and the installed skill descriptions, for a piece
+of task text. It is BM25 plus a usage count, with no AI. A worker reaches it as `tools_for`. It
+returns candidates; the worker chooses.
+_Avoid_: tool recommendation, tool matching (both suggest that the engine judges)
+
+**Tools hint**:
+The few lines the engine puts at the start of a fresh brief, naming the best tool-search matches
+for that brief, plus "ask `tools_for` for more". If nothing scores above the threshold, there is no
+hint.
+_Avoid_: tool suggestions, tool context
+
+**Tool miss**:
+A tool search whose best score is below the threshold. It is recorded so that the gaps in the
+catalogue can be seen and filled, by a worker that improves the cards.
+_Avoid_: failed search, no result
+
+**Project capabilities**:
+What one project can use: the active cards whose scope includes it, plus its own MCP servers and
+skills. They are worked out read-only when they are asked for, and never stored in the project.
+_Avoid_: manifest (there is no file), permissions
 
 ### Plans
 

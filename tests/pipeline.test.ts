@@ -81,7 +81,7 @@ function cfg(): NeoConfig {
     faults: DEFAULT_FAULTS,
     health: DEFAULT_HEALTH,
     sqliteBusyTimeoutMs: 5_000,
-    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {}, consult: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
     telegramToolSteps: false,
@@ -91,7 +91,7 @@ function cfg(): NeoConfig {
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));
 
 // A controllable fake live session: completes only when finish() is called.
-function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
+function fakeStart(opts: { onStart?: (h: RunHandlers) => void; steersMidTurn?: boolean } = {}) {
   let resolveDone!: (r: RunResult) => void;
   const done = new Promise<RunResult>((res) => {
     resolveDone = res;
@@ -99,13 +99,14 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
   let resumeSeen: string | undefined;
   let providerSeen: unknown;
   const followUps: string[] = [];
+  const timings: string[] = [];
   const start = (_o: Order, h: RunHandlers, d?: { resume?: string; provider?: unknown }): SessionRun => {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
+    return { followUp: (t, timing) => void (followUps.push(t), timings.push(timing)), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done, steersMidTurn: opts.steersMidTurn };
   };
-  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
+  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps, timings: () => timings };
 }
 
 function harness(over: { meter?: Meter; start?: ReturnType<typeof fakeStart>["start"] } = {}) {
@@ -1517,10 +1518,53 @@ test("notes: a fresh operator session gets the notes block for its project", asy
     return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
   };
   const h = harness({ start });
-  const notes = createProjectNotes({ ledger: h.base.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const notes = createProjectNotes({ ledger: h.base.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
   const r = notes.send({ project: basename(sender), folder: sender, chatId: 1 }, { to: basename(dir), kind: "fyi", severity: "low", ref: "n", title: "heads up", body: "b" }, 1);
   expect(r.ok).toBe(true);
   await handleMessage(`/open ${dir} continue the work`, 9, { ...h.base, notes });
   expect(seenTask).toContain("[PROJECT NOTES");
   expect(seenTask).toContain("heads up");
+});
+
+// ADR-0044 (spec A4): an operator session gets the tools hint only when its path is in `hintPaths`.
+test("tools hint: an operator path gets it only when listed in hintPaths", async () => {
+  const { DEFAULT_TOOLS_CFG } = await import("../src/engine/tools-catalogue");
+  const run = async (hintPaths: string[]): Promise<string> => {
+    const dir = scratch();
+    let seenTask = "";
+    const start = (o: Order): SessionRun => {
+      seenTask = o.task;
+      return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+    };
+    const h = harness({ start });
+    const tools = { cfg: { ...DEFAULT_TOOLS_CFG, hintPaths }, hint: () => "Tools that may help:\n- x (cli): y\nAsk tools_for for more.\n\n" } as never;
+    await handleMessage(`/open ${dir} take a screenshot`, 9, { ...h.base, tools });
+    return seenTask;
+  };
+  expect(await run(["project"])).toContain("Ask tools_for for more.");
+  expect(await run(["dispatch"])).not.toContain("Ask tools_for");
+});
+
+test("an operator follow-up to a worker that steers mid-turn is sent as steer and says it lands at the next step", async () => {
+  const dir = scratch();
+  const f = fakeStart({ steersMidTurn: true });
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("it'll see this at its next step");
+  expect(f.followUps()).toContain("also write a README");
+  expect(f.timings().at(-1)).toBe("steer");
+});
+
+test("a follow-up to a worker that can't steer (Codex) says honestly it runs after the current turn", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("runs after its current turn");
 });

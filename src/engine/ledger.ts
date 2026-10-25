@@ -142,6 +142,8 @@ export interface AttentionDraft {
   /** A project note (ADR-0043): the sender project, and the operator message the note traces to. */
   fromProject?: string;
   causeMsgId?: number;
+  /** A question (ADR-0050): the asking worker's session — the one that takes a late answer while it lives. */
+  fromSession?: string;
 }
 
 export interface AttentionRow extends AttentionDraft {
@@ -155,6 +157,10 @@ export interface AttentionRow extends AttentionDraft {
   /** A project note: how it was resolved (JSON, read by project-notes.ts) and when its target acked it. */
   resolution?: string;
   ackedAt?: number;
+  /** A question's answer (ADR-0050), already secret-checked and cut. */
+  answer?: string;
+  /** When a live note or a held answer reached a worker; absent = still held for live delivery. */
+  deliveredAt?: number;
 }
 
 /** The fields reconcile, snooze, dismiss and toTodo change. `null` clears a field. */
@@ -173,6 +179,8 @@ export interface AttentionPatch {
   ackedAt?: number | null;
   /** A project note whose sender re-sent its ref with another kind (ADR-0043). */
   kind?: string;
+  answer?: string | null;
+  deliveredAt?: number | null;
 }
 
 /** Candidate folders one `folderNamed` read looks at. */
@@ -303,6 +311,9 @@ export interface Ledger {
    *  ID"). Ids recorded before ownership was tracked have no owner and are still returned — see
    *  canResumeWith for why unknown ownership is tried rather than discarded. */
   lastSessionFor(folder: string, chatId: number, provider?: Provider): string | undefined;
+  /** The same latest SDK session for a folder/chat, with the SDK that minted it (undefined = not
+   *  recorded). For a fork, which must know the SDK (ADR-0050): an unknown owner is never forked. */
+  lastSessionRow(folder: string, chatId: number): { sessionId: string; provider?: Provider } | undefined;
   listRecent(limit?: number): Order[];
   /** Every distinct folder an order was ever recorded for, sorted (the projects Neo has seen). */
   folders(): string[];
@@ -409,6 +420,19 @@ export interface Ledger {
   relinkAttentionTodo(from: number, to: number): void;
   /** How many notes `fromProject` raised since `since`, and how many are open from it to `project`. */
   noteCounts(fromProject: string, project: string, since: number): { sentSince: number; openToTarget: number };
+  /** Questions (ADR-0050), filtered by the asking order (its ref is `q-<order>-<n>`) and/or the
+   *  (sender, target) pair: `total` = raised at or after `since`, `open` = not resolved (any age). */
+  questionCounts(f: { fromOrder?: string; pair?: { from: string; to: string }; since: number }): { total: number; open: number };
+  /** The rows held for live delivery to one folder (ADR-0050 §4), oldest first: open `fyi`/`request`
+   *  notes from `main` to it, and resolved questions `project` asked (an answer or a failure line)
+   *  that were not withdrawn or dismissed. Only rows with `delivered_at` empty. */
+  heldLive(f: { folder: string; project: string }): AttentionRow[];
+  /** Mark rows delivered at `at`, in one transaction; only rows still held change. Returns those ids. */
+  markNotesDelivered(ids: number[], at: number): number[];
+  /** Every open question (ADR-0050) — the boot sweep fails the ones no consult answers any more. */
+  openQuestions(): AttentionRow[];
+  /** Held question rows (answers and failure lines) resolved before `before`. */
+  heldAnswers(before: number): AttentionRow[];
   /** The projects that have threads and how many, most recently active first (bounded). */
   threadProjects(limit: number): Array<{ project: string; threads: number }>;
   /** FTS5 search over every message, newest first, keyset-paged by id. Operator characters in `q`
@@ -470,6 +494,9 @@ export interface Ledger {
   ): void;
   /** Recent events, newest-first. Filter by kind and/or orderId; capped by `limit` (default 50). */
   listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): EngineEvent[];
+  /** How many events of `kind` happened at or after `since` (one parameterized COUNT). Optional filters:
+   *  `folder`, `project` (the event's `data.project`), and `unrefused` (skip events whose data has `refused`). */
+  countEvents(opts: { kind: string; since: number; folder?: string; project?: string; unrefused?: boolean }): number;
   /** Enqueue a pending decision/alert. Returns its id. The queue survives a daemon restart. */
   openDecision(rec: NewDecision, at?: number): string;
   /** Record the channel + message id a decision was posted to (after the frontend sends it), so a
@@ -781,6 +808,16 @@ export function openLedger(
         )
         .get(folder, chatId, provider ?? null) as { sdk_session_id: string } | null;
       return row?.sdk_session_id ?? undefined;
+    },
+    lastSessionRow(folder, chatId) {
+      const row = db
+        .query(
+          `SELECT sdk_session_id, sdk_provider FROM orders
+           WHERE folder = ? AND chat_id = ? AND sdk_session_id IS NOT NULL AND sdk_session_id != ''
+           ORDER BY created_at DESC LIMIT 1`,
+        )
+        .get(folder, chatId) as { sdk_session_id: string; sdk_provider: string | null } | null;
+      return row ? { sessionId: row.sdk_session_id, ...(row.sdk_provider ? { provider: row.sdk_provider as Provider } : {}) } : undefined;
     },
     lastOrderAt(folder) {
       return (db.query(`SELECT max(created_at) AS at FROM orders WHERE folder = ?`).get(folder) as { at: number | null }).at ?? undefined;
@@ -1116,17 +1153,17 @@ export function openLedger(
     insertAttention(d, at) {
       const r = db
         .query(
-          `INSERT INTO attention_items (project, folder, source, kind, key, title, detail, url, severity, first_seen, last_seen, from_project, cause_msg_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO attention_items (project, folder, source, kind, key, title, detail, url, severity, first_seen, last_seen, from_project, cause_msg_id, from_session)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         )
-        .get(d.project, d.folder, d.source, d.kind, d.key, d.title, d.detail ?? null, d.url ?? null, d.severity, at, at, d.fromProject ?? null, d.causeMsgId ?? null) as { id: number };
+        .get(d.project, d.folder, d.source, d.kind, d.key, d.title, d.detail ?? null, d.url ?? null, d.severity, at, at, d.fromProject ?? null, d.causeMsgId ?? null, d.fromSession ?? null) as { id: number };
       return r.id;
     },
     updateAttention(id, patch) {
       const cols: Record<keyof AttentionPatch, string> = {
         folder: "folder", title: "title", detail: "detail", url: "url", severity: "severity", lastSeen: "last_seen",
         resolvedAt: "resolved_at", snoozedUntil: "snoozed_until", todoId: "todo_id", dismissed: "dismissed",
-        resolution: "resolution", ackedAt: "acked_at", kind: "kind",
+        resolution: "resolution", ackedAt: "acked_at", kind: "kind", answer: "answer", deliveredAt: "delivered_at",
       };
       const sets: string[] = [];
       const params: Array<string | number | null> = [];
@@ -1206,6 +1243,58 @@ export function openLedger(
         )
         .get(fromProject, project, since) as { sent: number; open: number };
       return { sentSince: r.sent, openToTarget: r.open };
+    },
+    questionCounts(f) {
+      const where = ["source = 'note'", "kind = 'note_question'"];
+      const params: Array<string | number> = [];
+      if (f.fromOrder !== undefined) {
+        where.push(`key LIKE ? ESCAPE '\\'`);
+        params.push(`%:q-${f.fromOrder.replace(/[\\%_]/g, (c) => `\\${c}`)}-%`);
+      }
+      if (f.pair) (where.push("from_project = ?", "project = ?"), params.push(f.pair.from, f.pair.to));
+      const r = db
+        .query(
+          `SELECT coalesce(sum(first_seen >= ?), 0) AS total, coalesce(sum(resolved_at IS NULL), 0) AS open
+           FROM attention_items WHERE ${where.join(" AND ")}`,
+        )
+        .get(f.since, ...params) as { total: number; open: number };
+      return { total: r.total, open: r.open };
+    },
+    heldLive(f) {
+      return (
+        db
+          .query(
+            `SELECT * FROM attention_items WHERE source = 'note' AND delivered_at IS NULL AND (
+               (from_project = 'main' AND kind IN ('note_fyi', 'note_request') AND resolved_at IS NULL AND folder = ?1)
+               OR (kind = 'note_question' AND from_project = ?2 AND resolved_at IS NOT NULL AND dismissed = 0
+                   AND json_extract(resolution, '$.how') IN ('answered', 'not_needed'))
+             ) ORDER BY id`,
+          )
+          .all(f.folder, f.project) as AttentionDbRow[]
+      ).map(mapAttentionRow);
+    },
+    markNotesDelivered(ids, at) {
+      return db.transaction(() => {
+        const done: number[] = [];
+        const q = db.query(`UPDATE attention_items SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL`);
+        for (const id of ids) if (q.run(at, id).changes > 0) done.push(id);
+        return done;
+      })();
+    },
+    openQuestions() {
+      return (
+        db.query(`SELECT * FROM attention_items WHERE source = 'note' AND kind = 'note_question' AND resolved_at IS NULL ORDER BY id`).all() as AttentionDbRow[]
+      ).map(mapAttentionRow);
+    },
+    heldAnswers(before) {
+      return (
+        db
+          .query(
+            `SELECT * FROM attention_items WHERE source = 'note' AND kind = 'note_question' AND delivered_at IS NULL
+               AND resolved_at IS NOT NULL AND resolved_at < ? ORDER BY id`,
+          )
+          .all(before) as AttentionDbRow[]
+      ).map(mapAttentionRow);
     },
     pruneAttention(source, before) {
       db.query(`DELETE FROM attention_items WHERE source = ? AND resolved_at < ? AND dismissed = 0`).run(source, before);
@@ -1339,6 +1428,15 @@ export function openLedger(
           `DELETE FROM events WHERE rowid NOT IN (SELECT rowid FROM events ORDER BY at DESC, rowid DESC LIMIT ?)`,
         ).run(eventsKeep);
       }
+    },
+    countEvents({ kind, since, folder, project, unrefused }) {
+      const where = ["kind = ?", "at >= ?"];
+      const params: Array<string | number> = [kind, since];
+      if (folder !== undefined) { where.push("folder = ?"); params.push(folder); }
+      if (project !== undefined) { where.push("json_extract(data, '$.project') = ?"); params.push(project); }
+      if (unrefused) where.push("(data IS NULL OR json_extract(data, '$.refused') IS NULL)");
+      const r = db.query(`SELECT COUNT(*) AS n FROM events WHERE ${where.join(" AND ")}`).get(...params) as { n: number };
+      return r.n;
     },
     listEvents(opts = {}) {
       const where: string[] = [];
@@ -1917,6 +2015,7 @@ interface AttentionDbRow {
   first_seen: number; last_seen: number; resolved_at: number | null; snoozed_until: number | null;
   todo_id: number | null; dismissed: number;
   from_project: string | null; cause_msg_id: number | null; resolution: string | null; acked_at: number | null;
+  answer?: string | null; delivered_at?: number | null; from_session?: string | null;
 }
 
 function mapAttentionRow(r: AttentionDbRow): AttentionRow {
@@ -1933,6 +2032,9 @@ function mapAttentionRow(r: AttentionDbRow): AttentionRow {
     ...(r.cause_msg_id !== null && r.cause_msg_id !== undefined ? { causeMsgId: r.cause_msg_id } : {}),
     ...(r.resolution !== null && r.resolution !== undefined ? { resolution: r.resolution } : {}),
     ...(r.acked_at !== null && r.acked_at !== undefined ? { ackedAt: r.acked_at } : {}),
+    ...(r.answer !== null && r.answer !== undefined ? { answer: r.answer } : {}),
+    ...(r.delivered_at !== null && r.delivered_at !== undefined ? { deliveredAt: r.delivered_at } : {}),
+    ...(r.from_session !== null && r.from_session !== undefined ? { fromSession: r.from_session } : {}),
   };
 }
 

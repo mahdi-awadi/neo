@@ -16,6 +16,7 @@ import { readCommitFinishCfg, type CommitFinishCfg } from "./engine/commit-finis
 import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision-settle";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
+import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
@@ -84,7 +85,7 @@ export interface MemoryCfg {
 }
 
 export type WorkerPathName =
-  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff" | "secretary";
+  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff" | "secretary" | "consult";
 
 export interface NeoConfig {
   telegramToken: string;
@@ -273,6 +274,9 @@ export interface NeoConfig {
   /** Project notes (ADR-0043): sizes, caps and the notes block's bounds. Optional like `plans`;
    *  `loadConfig` always fills it. */
   notes?: NotesCfg;
+  /** The shared tools catalogue (ADR-0044): relay switch and caps, card limits, search knobs. Optional like
+   *  `plans`; `loadConfig` always fills it. */
+  tools?: ToolsCfg;
   /** The waiting sweep (ADR-0045): re-judge delay and reminder size. */
   waitingSweep?: WaitingSweepCfg;
   /** Markdown file links in the console (ADR-0046): the readable roots and the size cap. Optional like
@@ -458,6 +462,10 @@ const DEFAULTS = {
     // The secretary reviews the queue on the LATEST model (a config.json override recommends the
     // newest model); the empty default keeps today's model until the operator sets one.
     secretary: {},
+    // A consult run answers another agent's question, read-only (ADR-0050 §6). Its tool limits live in
+    // worker-profile.ts and its turn cap in notes.questions.consultMaxTurns; the empty default keeps the
+    // pinned model until the operator sets one here.
+    consult: {},
   } satisfies Record<WorkerPathName, WorkerProfile>,
   workerEnv: {} as Record<string, string>,
   // QUALITY INVARIANT: scopes:[] is the pin — the memory system is a total no-op until an
@@ -475,17 +483,26 @@ const DEFAULTS = {
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
-function loadDotEnv(dir: string): void {
+export function loadDotEnv(dir: string): string[] {
+  const names: string[] = [];
   const p = join(dir, ".env");
-  if (!existsSync(p)) return;
+  if (!existsSync(p)) return names;
   for (const line of readFileSync(p, "utf8").split("\n")) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
     if (!m) continue;
     const key = m[1];
     const value = m[2];
+    // Bun may already have loaded the file before any code runs, so the key counts as an engine
+    // key whether or not it was missing from process.env (ADR-0050 §7). Names only, never values.
+    if (!names.includes(key)) names.push(key);
     if (process.env[key] === undefined) process.env[key] = value;
   }
+  return names;
 }
+
+/** Key names in the engine's own env file at the last loadConfig (names only; the daemon reports them). */
+let dotEnvKeys: string[] = [];
+export function loadedDotEnvKeys(): string[] { return [...dotEnvKeys]; }
 
 /** Lowercase every key of a record, so a case-insensitive lookup can never miss an operator's entry. */
 function lowercaseKeys(o: Record<string, string>): Record<string, string> {
@@ -505,7 +522,7 @@ function wholeAtLeast(v: unknown, min: number, d: number): number {
 }
 
 export function loadConfig(dir: string = process.cwd()): NeoConfig {
-  loadDotEnv(dir);
+  dotEnvKeys = loadDotEnv(dir);
 
   let fileCfg: Partial<NeoConfig> = {};
   const cfgPath = join(dir, "config.json");
@@ -585,6 +602,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     decisionSettle: readDecisionSettleCfg(fileCfg.decisionSettle),
     attention: readAttentionCfg(fileCfg.attention),
     notes: readNotesCfg(fileCfg.notes),
+    tools: readToolsCfg(fileCfg.tools),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),
