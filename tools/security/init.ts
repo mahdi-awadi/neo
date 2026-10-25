@@ -45,8 +45,17 @@ function hookScript(hook: Hook, prev: string | undefined): string {
     "else",
     '  echo "[security] warn: security kit not installed at $kit — scan skipped" >&2',
     "fi",
+    // A recorded chained hook that cannot run fails closed (ADR-0051): skipping it would silently
+    // drop the project's own checks.
     ...(prev
-      ? [`prev="${isAbsolute(prev) ? prev : `$repo/${prev}`}"`, `if [[ -x "$prev" ]]; then exec "$prev" "$@"${pushInput ? ' <<<"$input"' : ""}; fi`]
+      ? [
+          `prev="${isAbsolute(prev) ? prev : `$repo/${prev}`}"`,
+          'if [[ ! -f "$prev" || ! -x "$prev" ]]; then',
+          `  echo "[security] BLOCK: the chained hook $prev is missing or not executable — restore it (commit it), or re-run: bun ~/.claude/security/init.ts \\"$repo\\"" >&2`,
+          "  exit 1",
+          "fi",
+          `exec "$prev" "$@"${pushInput ? ' <<<"$input"' : ""}`,
+        ]
       : []),
     "exit 0",
     "",
@@ -59,16 +68,20 @@ function previousHook(repo: string, hook: Hook, hooksPath: string): string | und
   if (existsSync(ours)) {
     const body = readFileSync(ours, "utf8");
     if (body.includes(MARK)) {
-      const m = body.match(/^# chained: (.+)$/m);
-      return m && m[1] !== "none" ? m[1] : undefined;
+      const chained = body.match(/^# chained: (.+)$/m)?.[1];
+      if (!chained || chained === "none") return undefined;
+      // A recorded chain that still exists is kept; one that is gone is re-detected (ADR-0051).
+      if (existsSync(resolve(repo, chained))) return chained;
+    } else {
+      renameSync(ours, `${ours}.pre-neo`); // a project hook already in .githooks: keep it, chained
+      return `.githooks/${hook}.pre-neo`;
     }
-    renameSync(ours, `${ours}.pre-neo`); // a project hook already in .githooks: keep it, chained
-    return `.githooks/${hook}.pre-neo`;
   }
   // core.hooksPath may be global and absolute; --git-path is absolute in a worktree. resolve() takes both.
   if (hooksPath && hooksPath !== ".githooks") return existsSync(resolve(repo, hooksPath, hook)) ? join(hooksPath, hook) : undefined;
   const legacy = git(repo, "rev-parse", "--git-path", `hooks/${hook}`).out;
-  return legacy && existsSync(resolve(repo, legacy)) ? legacy : undefined;
+  // Once core.hooksPath is .githooks, --git-path names our own hook: never chain to it.
+  return legacy && resolve(repo, legacy) !== ours && existsSync(resolve(repo, legacy)) ? legacy : undefined;
 }
 
 function installGithooks(repo: string, hooksPath: string): void {

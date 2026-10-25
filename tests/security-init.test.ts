@@ -119,6 +119,39 @@ describe("security init", () => {
     expect(existsSync(join(kit, "args"))).toBe(false);
   });
 
+  test("a chained hook that is missing or not executable fails the hook closed (ADR-0051)", () => {
+    const r = repo();
+    mkdirSync(join(r, ".githooks"));
+    writeFileSync(join(r, ".githooks", "pre-commit"), "#!/bin/sh\necho project-hook-ran\n");
+    chmodSync(join(r, ".githooks", "pre-commit"), 0o755);
+    initRepo(r, noBaseline);
+    const prev = join(r, ".githooks", "pre-commit.pre-neo");
+    const commit = () => Bun.spawnSync(["bash", join(r, ".githooks", "pre-commit")], { cwd: r, env: { ...process.env, NEO_SECURITY_KIT: "/nonexistent" } });
+    expect(commit().stdout.toString()).toContain("project-hook-ran");
+    chmodSync(prev, 0o644);
+    const notExec = commit();
+    expect(notExec.exitCode).toBe(1);
+    expect(notExec.stderr.toString()).toContain(".githooks/pre-commit.pre-neo");
+    Bun.spawnSync(["rm", prev]);
+    const missing = commit();
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr.toString()).toContain(".githooks/pre-commit.pre-neo");
+  });
+
+  test("re-running init when the recorded chained hook is gone re-detects the chain", () => {
+    const r = repo();
+    mkdirSync(join(r, ".githooks"));
+    writeFileSync(join(r, ".githooks", "pre-push"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(r, ".githooks", "pre-push"), 0o755);
+    initRepo(r, noBaseline);
+    Bun.spawnSync(["rm", join(r, ".githooks", "pre-push.pre-neo")]);
+    initRepo(r, noBaseline);
+    const body = readFileSync(join(r, ".githooks", "pre-push"), "utf8");
+    expect(body).toContain("# chained: none");
+    const run = Bun.spawnSync(["bash", join(r, ".githooks", "pre-push")], { cwd: r, stdin: new TextEncoder().encode(""), env: { ...process.env, NEO_SECURITY_KIT: "/nonexistent" } });
+    expect(run.exitCode).toBe(0);
+  });
+
   test("husky: a clone without the kit still commits (husky runs hooks with sh -e)", () => {
     const r = repo();
     mkdirSync(join(r, ".husky", "_"), { recursive: true });

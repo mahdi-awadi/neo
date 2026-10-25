@@ -532,8 +532,21 @@ _Avoid_: finding id, hash
 
 **Security baseline**:
 A project's findings recorded once (`.security/baseline.json`), by fingerprint. They are tracked,
-never blocking. Only a **new** high or critical finding blocks a layer.
+never blocking. Only a **new** high or critical finding blocks a layer. A baseline whose scan had a
+**missing part** is *incomplete*: its `incomplete` list names the parts, and later layers warn that
+old findings may show as new (ADR-0051).
 _Avoid_: allowlist, ignore list, suppression
+
+**Missing part**:
+A piece of one scan that produced no result: a semgrep part (a group of `semgrepChunkFiles` files)
+that timed out or failed, or a gitleaks scan with no output. It is recorded, never silently dropped
+(ADR-0051).
+_Avoid_: skipped file, partial finding
+
+**Chained hook**:
+The project's own git hook that ran before the kit was turned on. The kit's hook runs it after the
+scan. When it is recorded but missing, the kit's hook fails (exit 1), never skips it (ADR-0051).
+_Avoid_: old hook, legacy hook
 
 **Host environment**:
 What this server is: `dev` or `prod`. It is set once per host in the installed kit
