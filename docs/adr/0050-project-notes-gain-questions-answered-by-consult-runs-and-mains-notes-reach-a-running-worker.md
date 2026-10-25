@@ -1,6 +1,6 @@
 # Project notes gain questions answered by read-only consult runs, and main's notes reach a running worker at its next step
 
-**Status:** proposed (2026-10-25, revision 2; waits for the operator's approval). **Amends ADR-0043**
+**Status:** accepted (2026-10-25, revision 2; built on `feat/agent-messaging`, restart-gated). **Amends ADR-0043**
 (project notes). Finishes ADR-0044 (tools catalogue; approved together with this ADR). Adopts
 commit `c12c46f` (branch `origin/claude/project-thread-n3xiqw`, 2026-10-04, never merged): "operator
 follow-ups reach a busy Claude worker mid-turn". Related: ADR-0006, ADR-0007, ADR-0008,
@@ -37,6 +37,8 @@ Revision 2 builds on these two pieces and drops everything in revision 1 that du
      target's folder with a new `consult` worker profile:
      - the disallowed tools are Write, Edit, NotebookEdit, Bash, Task and Agent;
      - the `neo` server holds only `tools_for` and the memory read tool;
+     - no codebase-memory server: the governor escalates its reads, and a consult run denies every
+       escalation, so the server would be useless; its mutating tools are also disallowed;
      - every escalation is denied;
      - it is never put in the session registry, so it never makes a project busy.
    - It forks the target's last saved session (`resume` + `forkSession: true`) when the target is

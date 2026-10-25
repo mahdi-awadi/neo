@@ -702,7 +702,8 @@ _Avoid_: stale checkout, extra folder
 A typed record that one project sends to another through the engine: a kind, a severity, a title, a
 body, refs and the sender's own `ref` (for example `D16`). It is an attention item on the **target
 project** (source `note`), so it shows on the dashboard and in the digest, and it can become a todo.
-A note never starts work by itself (ADR-0043).
+A note never starts work by itself (ADR-0043). A note from the main agent also reaches a running
+worker of the target at its next step (**Live note**, ADR-0050).
 _Avoid_: message, mail, inbox (the inbox is customer mail), handoff, brief
 
 **Sender project / target project**:
@@ -728,6 +729,7 @@ _Avoid_: done, closed (unqualified), acked
 The short list the engine puts at the start of a fresh session: the open notes for this project, and
 the state of the notes it sent. Titles, ids and senders only, capped in size; never on a resume, a
 tainted run or the customer path. It tells the worker that notes are information, not orders.
+A running worker gets new notes from main live instead (ADR-0050).
 _Avoid_: inbox, mailbox, notifications
 
 ### Agents asking each other
@@ -743,7 +745,7 @@ A project note of kind `question` that a worker sends with `project_notes ask` t
 another project, with a **need**: `info` (a fact), `resource` (a shared tool or key) or `help` (how
 to do something). A consult run answers it, and the note resolves as `answered` with the answer on
 it. A question can make another agent answer; it can never make it act (ADR-0050).
-_Avoid_: ask_agent, message, request (that is the note kind that asks for work), dispatch
+_Avoid_: message, request (that is the note kind that asks for work), dispatch
 
 **Consult run**:
 The short, read-only one-shot run that answers one question in the target's folder. It forks the

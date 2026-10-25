@@ -149,7 +149,8 @@ Args: `to` (a project name, or `main`), `question`, `need` (`info` | `resource` 
 - `WorkerPathName` gains `"consult"`. Its defaults live in `config.workers.consult`, and the model is
   never hardcoded.
   - Disallowed tools: Write, Edit, NotebookEdit, Bash, Task, Agent, KillShell, SlashCommand.
-  - MCP: a `neo` server with only `tools_for` and the memory read tool; codebase-memory.
+  - MCP: a `neo` server with only `tools_for` and the memory read tool. No codebase-memory server: the
+    governor escalates its reads, and a consult run denies every escalation; its mutating tools are disallowed.
   - The project fence applies, and `maxTurns` = `questions.consultMaxTurns`.
 - `createConsultRunner({ runOrder, cfg, catalogue, ledger })`:
   - builds the order with the job's cause (so `/trace` shows it);
