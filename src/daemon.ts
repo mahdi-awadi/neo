@@ -5,7 +5,8 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { createCatalogue, DEFAULT_TOOLS_CFG, loadCards } from "./engine/tools-catalogue";
+import { DEFAULT_TOOLS_CFG, nullUsage, openCatalogue } from "./engine/tools-catalogue";
+import { fsSkillSource } from "./engine/tool-skills";
 import { loadConfig, loadedDotEnvKeys } from "./config";
 import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env";
 import { setDefaultEnvScrub } from "./engine/session-runner";
@@ -174,7 +175,11 @@ async function main(): Promise<void> {
   const relayKeys = new Set<string>();
   const tools = faults.guard("tools.catalogue", () => {
     const tcfg = cfg.tools ?? DEFAULT_TOOLS_CFG;
-    const { cards, errors } = loadCards(isAbsolute(tcfg.catalogueDir) ? tcfg.catalogueDir : join(neoFolder, tcfg.catalogueDir), tcfg);
+    const catalogue = openCatalogue({
+      dir: isAbsolute(tcfg.catalogueDir) ? tcfg.catalogueDir : join(neoFolder, tcfg.catalogueDir),
+      cfg: tcfg, skills: fsSkillSource(), usage: nullUsage, ledger, // the ledger-backed usage counts are ADR-0044 Phase 3
+    });
+    const { cards, errors } = catalogue;
     // Every card's relay key stays in the engine whatever its status (ADR-0050 §7).
     for (const c of cards) if (c.relay?.envKey) relayKeys.add(c.relay.envKey);
     if (errors.length) {
@@ -182,7 +187,7 @@ async function main(): Promise<void> {
       console.error(`[tools] ${errors.length} card error(s); relay off: ${errors[0]}`);
       return undefined;
     }
-    return createCatalogue({ cards, cfg: tcfg, ledger });
+    return catalogue;
   }, {});
   // Scrub the worker env (ADR-0050 §7): relay keys never reach a worker; the engine's own file keys
   // are listed by name in `report` mode (the default) and removed only in `strip` mode.

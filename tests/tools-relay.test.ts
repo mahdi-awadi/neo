@@ -12,7 +12,7 @@ import { runCompanyBrief } from "../src/engine/ingress";
 import { registerDefaultProject } from "../src/engine/default-project";
 import type { Order } from "../src/types";
 import type { RunHandlers, RunResult } from "../src/engine/session-runner";
-import { createCatalogue, DEFAULT_TOOLS_CFG, relayCall, type RelayCtx, type ToolCard } from "../src/engine/tools-catalogue";
+import { openCatalogue, DEFAULT_TOOLS_CFG, relayCall, type RelayCtx, type ToolCard } from "../src/engine/tools-catalogue";
 
 const SENTINEL = "SENTINEL-KEY-VALUE-123456";
 const NOW = 1_800_000_000_000;
@@ -170,7 +170,7 @@ const neoTools = (servers: Record<string, unknown>) =>
 function deps(withTools: boolean): { d: DispatchDeps; ledger: ReturnType<typeof openLedger>; calls: unknown[] } {
   const ledger = openLedger(":memory:");
   const calls: unknown[] = [];
-  const tools = createCatalogue({
+  const tools = openCatalogue({
     cards: [card({ scope: ["proj"] })], cfg: { ...DEFAULT_TOOLS_CFG, relayEnabled: true }, ledger, env: { DEMO_KEY: SENTINEL },
     fetch: async (u) => { calls.push(u); return new Response("ok"); },
   });

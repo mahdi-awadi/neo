@@ -7,6 +7,8 @@
 // repeats the entry.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
+import { safeFtsQuery } from "./memory-recall";
 import { findSecret } from "./secret-patterns";
 
 export type ToolKind = "mcp" | "cli" | "api" | "recipe";
@@ -396,29 +398,227 @@ export async function relayCall(cards: readonly ToolCard[], cardId: string, op: 
   return out.length > ctx.cfg.maxReplyChars ? out.slice(0, ctx.cfg.maxReplyChars) + "\n[cut]" : out;
 }
 
-/** The opened catalogue a dispatch dep carries (ADR-0044). Phase 2 widens it with search. */
+// ---------------------------------------------------------------------------------------------
+// Tool search (spec A3). An in-memory FTS5 index over the ACTIVE cards and the installed skills'
+// descriptions. The engine searches and counts; the worker judges. Plain code, no AI.
+
+/** One installed skill: its id and its description (the "when to use"). */
+export interface SkillRow {
+  id: string;
+  when: string;
+}
+
+/** Where skill descriptions come from: the filesystem in the daemon (`fsSkillSource`), a fake in tests.
+ *  `project` reads the CALLING project's own skills only, so another project's skills never show. */
+export interface SkillSource {
+  global(): SkillRow[];
+  project(folder: string): SkillRow[];
+}
+
+/** Per-card success counts and relay latency. The ledger adapter is ADR-0044 Phase 3; until then the
+ *  daemon wires `nullUsage` (no counts, no p50, so no boost). */
+export interface UsageSource {
+  okUses(cardIds: string[]): Map<string, number>;
+  p50(cardId: string): number | undefined;
+}
+
+export const nullUsage: UsageSource = { okUses: () => new Map(), p50: () => undefined };
+const noSkills: SkillSource = { global: () => [], project: () => [] };
+
+export interface ToolMatch {
+  id: string;
+  kind: ToolKind | "skill";
+  title: string;
+  /** The query words that matched, per field: "tags: deploy, coolify". */
+  why: string[];
+  /** The first lines of "## How to call" (at most `cfg.howMaxChars`). */
+  how: string;
+  cost?: string;
+  limits?: string;
+  /** Only for relay cards that have calls. */
+  p50Ms?: number;
+  /** Scope check for the calling project. */
+  allowed: boolean;
+  reason?: string;
+  score: number;
+}
+
+/** The opened catalogue a dispatch dep carries (ADR-0044): cards, search, and the API relay. */
 export interface Catalogue {
   cards: readonly ToolCard[];
+  errors: readonly string[];
   cfg: ToolsCfg;
+  find(text: string, ctx: { project: string; folder: string; limit?: number }): ToolMatch[];
   /** Relay one call for the calling project. The key is read inside, from the engine's env. */
   relay(cardId: string, op: string, body: unknown, caller: { project: string; folder: string }): Promise<string>;
 }
 
-export function createCatalogue(o: {
-  cards: readonly ToolCard[];
+const WORD_RE = /[\p{L}\p{N}]+/gu;
+const MAX_TERM_CHARS = 40;
+const MAX_MISS_TERMS = 24;
+const MAX_FIND_LIMIT = 10;
+/** The skills `tools/catalogue/install.ts` generates from the cards: indexing them would list a card twice. */
+const OWN_SKILL_RE = /^neo-(tool|recipe)-/;
+/** bm25 weights for (id, kind, when, tags, examples, body); id and kind are not searched. */
+const WEIGHTS = "0, 0, 4.0, 3.0, 2.0, 1.0";
+
+const words = (text: string): string[] => text.toLowerCase().match(WORD_RE) ?? [];
+
+/** The first lines of the card's "## How to call" section, cut to `max` chars. */
+function howToCall(body: string, max: number): string {
+  const m = /^## How to call\s*$/m.exec(body);
+  if (!m) return "";
+  const rest = body.slice(m.index + m[0].length);
+  const next = /^## /m.exec(rest);
+  const section = (next ? rest.slice(0, next.index) : rest).trim();
+  return section.length > max ? section.slice(0, max).trimEnd() + "…" : section;
+}
+
+type Row = { kind: ToolKind | "skill"; card?: ToolCard; id: string; when: string; tags: string; examples: string; body: string };
+
+function cardRow(c: ToolCard): Row {
+  const steps = c.steps?.map((s) => `${s.card} ${s.do}`).join("\n") ?? "";
+  return { kind: c.kind, card: c, id: c.id, when: c.when, tags: c.tags.join(" "), examples: c.examples.join("\n"), body: steps ? `${c.body}\n${steps}` : c.body };
+}
+const skillRow = (r: SkillRow): Row => ({ kind: "skill", id: r.id, when: r.when, tags: "", examples: "", body: "" });
+
+export function openCatalogue(o: {
+  /** The cards folder. Optional only so a test can pass `cards` already loaded. */
+  dir?: string;
+  cards?: readonly ToolCard[];
   cfg: ToolsCfg;
+  skills?: SkillSource;
+  usage?: UsageSource;
   ledger: RelayCtx["ledger"];
   env?: RelayCtx["env"];
   fetch?: RelayCtx["fetch"];
   now?: () => number;
 }): Catalogue {
+  const cfg = o.cfg;
+  const loaded = o.cards ? { cards: [...o.cards], errors: [] as string[] } : loadCards(o.dir ?? cfg.catalogueDir, cfg);
+  const cards = loaded.cards;
+  const skills = o.skills ?? noSkills;
+  const usage = o.usage ?? nullUsage;
+  const stop = new Set(cfg.stopWords.map((w) => w.toLowerCase()));
+
+  // Index once. Rows keep the catalogue order (cards by file name, then global skills), which is the tie order.
+  const db = new Database(":memory:");
+  db.run(`CREATE VIRTUAL TABLE t USING fts5(id UNINDEXED, kind UNINDEXED, "when", tags, examples, body)`);
+  db.run(`CREATE VIRTUAL TABLE v USING fts5vocab(t, 'row')`);
+  const rows: Row[] = []; // rowid - 1 -> row
+  const insert = db.query(`INSERT INTO t (rowid, id, kind, "when", tags, examples, body) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const add = (r: Row, list: Row[], base: number): void => {
+    list.push(r);
+    insert.run(base + list.length, r.id, r.kind, r.when, r.tags, r.examples, r.body);
+  };
+  for (const c of cards) if (c.status === "active") add(cardRow(c), rows, 0);
+  const globalSkillIds = new Set<string>();
+  const addSkills = (list: SkillRow[], into: Row[], base: number, seenSkill: Set<string>): void => {
+    for (const s of list) {
+      if (OWN_SKILL_RE.test(s.id) || seenSkill.has(s.id)) continue;
+      seenSkill.add(s.id);
+      add(skillRow(s), into, base);
+    }
+  };
+  try { addSkills(skills.global(), rows, 0, globalSkillIds); } catch { /* a skill source never breaks search */ }
+  const bm25 = db.query(`SELECT rowid, -bm25(t, ${WEIGHTS}) AS s FROM t WHERE t MATCH ?`);
+  const vocab = db.query(`SELECT term, doc FROM v`);
+
+  const recordMiss = (project: string, folder: string, terms: string[]): void => {
+    try { o.ledger.recordEvent("tools_miss", { folder, data: { project, terms } }); } catch { /* never breaks a search */ }
+  };
+
+  function find(text: string, ctx: { project: string; folder: string; limit?: number }): ToolMatch[] {
+    // Query words: lowercase, stop words dropped, no secret-shaped or very long token, no repeats.
+    const seen = new Set<string>();
+    const terms: string[] = [];
+    for (const w of words(text)) {
+      if (stop.has(w) || w.length > MAX_TERM_CHARS || seen.has(w)) continue;
+      seen.add(w);
+      if (findSecret(w)) continue;
+      terms.push(w);
+    }
+    // What a miss records: the longest words, in query order, never more than 24.
+    const missTerms = (): string[] => {
+      const cap = Math.min(cfg.queryMaxTerms, MAX_MISS_TERMS);
+      const keep = new Set(terms.map((t, i) => ({ t, i })).sort((a, b) => b.t.length - a.t.length || a.i - b.i).slice(0, cap).map((x) => x.i));
+      return terms.filter((_, i) => keep.has(i));
+    };
+    const miss = (): ToolMatch[] => { recordMiss(ctx.project, ctx.folder, missTerms()); return []; };
+    if (terms.length === 0) return miss();
+
+    // The calling project's own skills go into the index for this call only: the transaction is rolled back.
+    const projectRows: Row[] = [];
+    let hits: Array<{ rowid: number; s: number }> = [];
+    let used: string[] = [];
+    try {
+      db.run("BEGIN");
+      try {
+        try { addSkills(skills.project(ctx.folder), projectRows, rows.length, new Set(globalSkillIds)); } catch { /* skip */ }
+        // Only words the index knows can match; keep the rarest queryMaxTerms, by FTS document frequency.
+        const df = new Map((vocab.all() as Array<{ term: string; doc: number }>).map((r) => [r.term, r.doc]));
+        used = terms.filter((t) => df.has(t)).sort((a, b) => df.get(a)! - df.get(b)! || (a < b ? -1 : 1)).slice(0, cfg.queryMaxTerms);
+        if (used.length) hits = bm25.all(safeFtsQuery(used.join(" "), { mode: "any", stopWords: stop, maxTerms: cfg.queryMaxTerms })) as typeof hits;
+      } finally {
+        db.run("ROLLBACK");
+      }
+    } catch {
+      return miss(); // a search error fails open to "nothing found"
+    }
+    if (hits.length === 0) return miss();
+
+    const usedSet = new Set(used);
+    const all = [...rows, ...projectRows];
+    const cardIds = hits.map((h) => all[h.rowid - 1]?.card?.id).filter((x): x is string => !!x);
+    let counts = new Map<string, number>();
+    try { counts = usage.okUses(cardIds); } catch { /* no boost */ }
+    const ranked = hits
+      .map((h) => {
+        const r = all[h.rowid - 1]!;
+        const boost = r.card ? 1 + cfg.usageWeight * Math.log(1 + (counts.get(r.card.id) ?? 0)) : 1;
+        return { r, rowid: h.rowid, score: h.s * boost };
+      })
+      .sort((a, b) => b.score - a.score || a.rowid - b.rowid);
+
+    const out: ToolMatch[] = [];
+    const limit = Math.min(Math.max(1, Math.floor(ctx.limit ?? cfg.findLimit)), MAX_FIND_LIMIT);
+    for (const { r, score } of ranked) {
+      const c = r.card;
+      const allowed = !c || c.scope === "all" || c.scope.includes(ctx.project);
+      if (!allowed && !cfg.showDisallowed) continue;
+      const why: string[] = [];
+      for (const [field, value] of [["when", r.when], ["tags", r.tags], ["examples", r.examples], ["body", r.body]] as const) {
+        const here = new Set(words(value));
+        const matched = terms.filter((t) => usedSet.has(t) && here.has(t)); // query order
+        if (matched.length) why.push(`${field}: ${matched.join(", ")}`);
+      }
+      const p50 = c?.relay ? safe(() => usage.p50(c.id)) : undefined;
+      out.push({
+        id: r.id, kind: r.kind, title: r.id, why,
+        how: c ? howToCall(c.body, cfg.howMaxChars) : `Load the skill "${r.id}".`,
+        ...(c ? { cost: c.cost, limits: c.limits } : {}),
+        ...(p50 !== undefined ? { p50Ms: p50 } : {}),
+        allowed, ...(allowed ? {} : { reason: `only for projects: ${(c!.scope as string[]).join(", ")}` }),
+        score,
+      });
+    }
+    if (out.length === 0 || Math.max(...out.map((m) => m.score)) < cfg.minScore) return miss();
+    return out.slice(0, limit);
+  }
+
   return {
-    cards: o.cards,
-    cfg: o.cfg,
+    cards,
+    errors: loaded.errors,
+    cfg,
+    find,
     relay: (cardId, op, body, caller) =>
-      relayCall(o.cards, cardId, op, body, {
-        ...caller, cfg: o.cfg, env: o.env ?? process.env, ledger: o.ledger,
+      relayCall(cards, cardId, op, body, {
+        ...caller, cfg, env: o.env ?? process.env, ledger: o.ledger,
         fetch: o.fetch ?? ((url, init) => fetch(url, init)), now: o.now ?? Date.now,
       }),
   };
+}
+
+function safe<T>(f: () => T): T | undefined {
+  try { return f(); } catch { return undefined; }
 }
