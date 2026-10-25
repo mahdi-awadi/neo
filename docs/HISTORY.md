@@ -1146,6 +1146,20 @@ enabled, and ScaleDown is still a candidate card, not active.
 
 Migration v13. Restart-gated.
 
+Security kit: semgrep in parts, incomplete baselines, fail-closed chained hook (2026-10-25, ADR-0051).
+Found while turning the kit on in eticket-v3: its baseline's single 30-minute semgrep run timed out twice
+and the baseline was written without semgrep findings, silently. A missing `.githooks/pre-commit.pre-neo`
+made the kit's hook exit 0.
+
+- Semgrep runs in parts (`semgrepChunkFiles`, default 200), each under `semgrepTimeoutSec` (default
+  1800), both per repo in `.security/config.json`.
+- A part with no result is a missing part: `baseline.json` and reports list it under `incomplete`, and
+  later layers warn against an incomplete baseline.
+- A recorded chained hook that is missing or not executable exits 1. A `.git/hooks` chain is found
+  through the common git dir, so it also runs from a linked worktree.
+
+Not live until the operator re-installs the kit (`install.ts`) and re-runs `init.ts` on each repo.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

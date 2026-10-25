@@ -1,4 +1,24 @@
-# HANDOFF — agent questions + live notes (ADR-0050) and tools catalogue (ADR-0044 P1–P2): on dev, restart-gated
+# HANDOFF — security kit fixes (ADR-0051): on `dev`, not installed
+
+Two fixes to `tools/security/`, found while turning the kit on in eticket-v3. Commits on `dev`:
+`007c038`, `03f8645` and `7dd162a`, plus the docs commit.
+- Semgrep runs in parts (`semgrepChunkFiles`, default 200), each under `semgrepTimeoutSec` (default
+  1800), per repo in `.security/config.json`. A part with no result is recorded as missing:
+  `baseline.json` and reports get an `incomplete` list, and later layers warn against an incomplete
+  baseline.
+- A recorded chained hook that is missing or not executable exits 1 (it was exit 0). A `.git/hooks`
+  chain is found through the common git dir, so it runs from a linked worktree too.
+- Checks: `tsc` clean; `bun test` 2255 pass, 0 fail; push scan of the 3 commits: 0 high/critical.
+
+Operator steps: re-install the kit (`bun tools/security/install.ts --host-env dev`, from a `dev`
+checkout); in eticket-v3, set `semgrepTimeoutSec`/`semgrepChunkFiles` if needed, re-run
+`bun ~/.claude/security/init.ts /home/eticket-v3`, then `bash ~/.claude/security/scan.sh baseline
+/home/eticket-v3` and check that `incomplete` is `[]`; re-run `init.ts` on every other repo that has
+the kit, so its hooks get the fail-closed template.
+
+---
+
+# Earlier: agent questions + live notes (ADR-0050) and tools catalogue (ADR-0044 P1–P2): on dev, restart-gated
 
 ## Done (merged to `dev`; branch `feat/agent-messaging` kept; worktree removed)
 - **Tools catalogue (ADR-0044 P1–P2):**
