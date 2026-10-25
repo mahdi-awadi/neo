@@ -1331,7 +1331,9 @@ function renderProjectPane(v: Any): void {
     row.dataset.att = String(it.id);
     // A project note names its sender (ADR-0043).
     const from = it.fromProject ? `<span class="rfo" dir="auto">${tx("pj.noteFrom", { project: esc(it.fromProject) })}</span>` : "";
-    row.innerHTML = `<span>${SEV_ICON[it.severity] ?? ""}</span>${ltr("#" + it.id)}<span dir="auto">${esc(it.title)}</span>${from}<span class="rfo">${esc(age(it.ageMs))}</span>`;
+    // A note's kind (`question` too) and, once it moved on, its state (`acknowledged`, `answered`) — ADR-0050.
+    const chip = it.noteKind ? `<span class="rfo">${tx(`notes.kind.${it.noteKind}`)}${it.noteState && it.noteState !== "open" ? " · " + tx(`notes.state.${it.noteState}`) : ""}</span>` : "";
+    row.innerHTML = `<span>${SEV_ICON[it.severity] ?? ""}</span>${ltr("#" + it.id)}${chip}<span dir="auto">${esc(it.title)}</span>${from}<span class="rfo">${esc(age(it.ageMs))}</span>`;
     attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), () => {
       $("pjatth").textContent = tx("pj.sect.attention", { n: box.querySelectorAll(".tart[data-att]").length });
       loadProjects();

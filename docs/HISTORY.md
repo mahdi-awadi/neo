@@ -1120,3 +1120,22 @@ eticket-v3 cards: they showed only a jargon title and bare buttons.
   plain-text steer (loops) ask for the same parts, for a non-technical reader.
 
 Restart-gated.
+
+Agents ask each other through project notes (2026-10-25, ADR-0050 rev. 2, with ADR-0044 P1-P2).
+On 2026-10-24 eticket-v3 needed the ScaleDown key and tool. The main agent knew; the worker could not ask.
+
+- `project_notes ask` stores a note of kind `question` (need: `info`, `resource` or `help`). The target
+  is a project or `main` (the company folder only). A read-only consult run answers it: it forks an idle
+  known-Claude session of the target, or starts fresh. It has no codebase-memory server, because the
+  governor escalates that server's reads and a consult denies every escalation. Its cost goes on the meter.
+- The asker waits up to `notes.questions.answerWaitMs`. A late answer is held and reaches the asker at its
+  next step. Notes from `main` (`fyi`, `request`) reach a running worker live the same way.
+- Follow-ups carry a timing, `followUp(text, "steer" | "after-turn")` (port of `c12c46f`).
+- Tools catalogue: cards in `docs/tools/`, `tools_for`, the dispatch hint, BM25 search, and a fail-closed
+  API relay (`tools.relayEnabled`, default false). The worker env drops relay keys and reports the engine's
+  key names (`worker_env_report`); `strip` exists and is not enabled.
+- The rev. 1 design (`agent_messages`, `ask_agent`, `tell_agent`) was never built. A test guards against its return.
+- The console shows note kind `question` and state `answered` (i18n keys `notes.kind.*`, `notes.state.*`).
+  `/trace` shows a question and its answer as one line. The preamble names `project_notes ask` and `tools_for`.
+
+Migration v13. Restart-gated.

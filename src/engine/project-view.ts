@@ -21,6 +21,7 @@ import { listOpen } from "./attention";
 import { attentionActions, type AttentionAction } from "./attention-actions";
 import { msgRef } from "./trace";
 import { faults } from "./fault";
+import { noteKindOf, noteState } from "./project-notes";
 import { createGitRead } from "./git-read";
 import { DEFAULT_GITHUB_CFG, type GithubCfg } from "./producers/github";
 import { humanAge } from "./liveness";
@@ -59,6 +60,9 @@ export interface AttentionItemView {
   url?: string;
   /** A project note (ADR-0043): the project that sent it. */
   fromProject?: string;
+  /** A project note's kind (`finding`, `fyi`, `request`, `question`) and state (ADR-0050). */
+  noteKind?: string;
+  noteState?: string;
   /** Since the item was first seen. */
   ageMs: number;
   todoId?: number;
@@ -329,6 +333,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
         ...(r.detail !== undefined ? { detail: r.detail } : {}),
         ...(r.url !== undefined ? { url: r.url } : {}),
         ...(r.fromProject !== undefined ? { fromProject: r.fromProject } : {}),
+        ...(r.source === "note" ? { noteKind: noteKindOf(r), noteState: noteState(r) } : {}),
         ageMs: now - r.firstSeen,
         ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
         actions: attentionActions(r),

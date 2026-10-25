@@ -377,7 +377,7 @@ export function briefWithProjectDocs(task: string): string {
   return (
     "Before starting, read this project's rule and doc .md files so you work by its rules: " +
     "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
-    "plus the docs relevant to this task (e.g. under docs/). Follow them together with CLAUDE.md.\n\n" +
+    "plus the docs relevant to this task (e.g. under docs/). Follow them with CLAUDE.md.\n\n" +
     "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
     "  DESIGN — before writing code for any feature or non-trivial change, sharpen the domain model " +
     "with the `domain-modeling` and `codebase-design` skills: define the real terms precisely and " +
@@ -385,8 +385,8 @@ export function briefWithProjectDocs(task: string): string {
     "short ADR (rejected alternatives included). Then synthesize a concise spec for the change — its " +
     "acceptance criteria and edge cases — and design it as one clean seam (a lot of behavior behind a " +
     "small, testable interface). Use `superpowers:brainstorming` → `writing-plans` for the plan itself. " +
-    "For a bug, `superpowers:systematic-debugging` to root-cause first. (Skip the CONTEXT.md/ADR step " +
-    "only for a trivial mechanical edit, and say you did.)\n" +
+    "For a bug, `superpowers:systematic-debugging` to root-cause first. (Skip CONTEXT.md/ADR " +
+    "only for a trivial edit, and say so.)\n" +
     "  BUILD — implement against that spec with `superpowers:test-driven-development` (write the failing " +
     "test first, per acceptance criterion), then `superpowers:verification-before-completion` and " +
     "`requesting-code-review` before claiming done.\n\n" +
@@ -396,7 +396,7 @@ export function briefWithProjectDocs(task: string): string {
     "components or a bespoke mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, dev by default, " +
     "failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
     "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it: extend " +
-    "what is there, never a second implementation. Meet these in what you ship; a change that misses " +
+    "what is there, never a second implementation. A change that misses " +
     "one is not done.\n\n" +
     "REQUIRED — security: a NEW high or critical finding from the edit/commit/push scans blocks; fix " +
     "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
@@ -404,10 +404,11 @@ export function briefWithProjectDocs(task: string): string {
     "operator-supplied dev secret into `.env` (chmod 600, gitignored). Run `/security-review` before finishing auth, " +
     "payment, upload or input-handling work.\n\n" +
     "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
-    "may your helper agents. Work for another project (even one an old note lists): send it there with `project_notes`.\n\n" +
+    "may your helper agents. Work for another project (even one an old note lists): send it there with `project_notes`. " +
+    "Missing a fact, tool or key? `project_notes ask` (main or a project) and `tools_for` — never wait silently, never paste keys.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
-    "Criticize your own options and drop any that are only workarounds. Escalate to the operator " +
+    "Drop options that are only workarounds. Escalate to the operator " +
     "ONLY a decision that is genuinely theirs: product/UX policy, cost, an irreversible or external " +
     "action, or a real trade-off between two sound options. If there is one correct standard fix, " +
     "do it and report it — do not ask. When you must ask (ask_operator), write for a non-technical " +
@@ -417,8 +418,8 @@ export function briefWithProjectDocs(task: string): string {
     "activity and ABORTS a sub-run after ~5 minutes without it, hung or not: a background wait or " +
     "Monitor, a long `sleep`, `gh run watch`, tailing logs, waiting on CI/build/deploy. So NEVER use " +
     "those: to wait on CI, a build, or a deploy, POLL in short FOREGROUND steps under 90 seconds " +
-    "each, so every check is a fresh activity heartbeat. And finish the job WITHIN this run: a " +
-    "dispatched worker is single-shot and is NOT re-invoked when a background job later completes, so " +
+    "each, so every check is a fresh activity heartbeat. Finish WITHIN this run: a " +
+    "dispatched worker is single-shot, NOT re-invoked when a background job completes; " +
     "poll to a terminal state here.\n\n" +
     "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; the engine " +
     "sends it to the operator. A small plan: build on. A BIG plan (many tasks or steps; migrations, auth, " +

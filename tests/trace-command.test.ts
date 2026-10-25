@@ -145,3 +145,17 @@ test("GET /api/trace/:ref returns the same tree as JSON; an unknown or bad ref i
   expect((await w.get("/api/trace/hello")).status).toBe(404);
   expect((await w.get(`/api/trace/${w.trace.ref(out)}`, false)).status).toBe(401);
 });
+
+test("a question and its answer render as one line: note #N question → answered 42s (ADR-0050)", () => {
+  const { trace, tick } = setup();
+  const root = trace.inbound({ chatId: 7, text: "needs the key", surface: "web" });
+  tick();
+  trace.outbound({ chatId: 7, text: "note #9 → main: where is the ScaleDown key?", cause: root, kind: "notice" });
+  tick();
+  trace.outbound({ chatId: 7, text: "↩ main answered note #9 in 42s", cause: root, kind: "notice" });
+  trace.outbound({ chatId: 7, text: "note #10 → main: a plain note", cause: root, kind: "notice" });
+  const out = renderTrace(trace.tree(root.msgId), trace.ref);
+  expect(out).toContain("note #9 question → answered 42s");
+  expect(out).not.toContain("↩ main answered");
+  expect(out).toContain("note #10 → main: a plain note"); // an unanswered or plain note is unchanged
+});

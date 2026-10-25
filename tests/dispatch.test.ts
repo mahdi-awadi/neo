@@ -1337,6 +1337,14 @@ test("the dispatch preamble stays terse — every worker pays for it on every ru
   expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5000);
 });
 
+test("the preamble names project_notes ask and tools_for for a missing fact, tool or key (ADR-0050)", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("project_notes ask");
+  expect(out).toContain("tools_for");
+  expect(out).toContain("never wait silently");
+  expect(out).toContain("never paste keys");
+});
+
 test("the codebase-memory line names the exact project and forbids listing, checking or indexing", () => {
   const line = codebaseMemoryLine({ project: "home-eticket-v3" });
   expect(line).toContain("`home-eticket-v3`");

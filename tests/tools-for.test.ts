@@ -191,11 +191,8 @@ describe("the hint in dispatchToProject", () => {
     const { cat } = open();
     const { root, tasks, start } = fresh();
     await dispatchToProject("waselni", "zzqqxx wwvvuu", deps(cat), 99, { start: start as never, now: () => 1, root });
-    expect(tasks[0]).not.toContain("tools_for");
+    expect(tasks[0]).not.toContain("Ask tools_for");
     expect(tasks[0]).not.toMatch(/^\s*Tools/);
   });
 });
 
-test("the preamble still fits the cap (no sentence added by this task)", () => {
-  expect((briefWithProjectDocs("x") + codebaseMemoryLine({})).length).toBeLessThan(5000);
-});

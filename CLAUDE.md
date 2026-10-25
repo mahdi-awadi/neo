@@ -61,8 +61,8 @@ registry (every plan sent once with Approve/Changes/Execute, `/plans`; ADR-0019;
 (per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
 memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
 default off — `memory.scopes`), and project notes (one project tells another through the
-`project_notes` tool; the note is an attention item on the target, only → todo starts work; ADR-0043;
-restart-gated). Full phase-by-phase narrative: `docs/HISTORY.md`.
+`project_notes` tool; only → todo starts work; ADR-0043), with questions answered by read-only consult
+runs, live notes from main and the tools catalogue (ADR-0050, ADR-0044; restart-gated). Full phase-by-phase narrative: `docs/HISTORY.md`.
 
 Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
 not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,
@@ -198,6 +198,7 @@ Greptile) are noted but not adopted; these principles are:
 - `tools/browser/` + `docs/browser.md` — the shared, memory-capped browser workers attach to (ADR-0032).
 - `src/engine/project-notes.ts` — project notes (ADR-0043): send/list/show/ack/resolve/withdraw, the
   notes block a fresh session starts with, resolution from facts; the `project_notes` worker tool.
+  Questions + consult runs: `src/engine/consult.ts` (ADR-0050); tool cards: `docs/tools/`, `tools_for` (ADR-0044).
 - `tools/threads/sweep.ts` + `src/engine/waiting-sweep.ts` — the hourly waiting sweep (ADR-0045): closes
   decisions only on checked evidence and reminds the operator once per change (loop `waiting-sweep`).
 - `tools/disk/` — the disk-cleanup kit the `disk-cleanup` loop runs: Tier A automatic, Tier B only on
