@@ -229,3 +229,19 @@ Two traps this sets, both hit in production:
 - The failure is **not an API failure**: 0 turns, $0, nothing sent. Waiting/retrying cannot fix it;
   only starting fresh can. Neo detects it (`RESUME_MISSING_RE`), restarts cold once, and tags every
   minted id with its provider so the mismatch is prevented next time (`canResumeWith`).
+
+## Mid-turn priority and forking an idle session (verified 2026-10-25, SDK 0.3.292)
+
+Probe: `spike/notes-live-probe.ts` (ADR-0050 P0), run in an empty temp folder.
+
+- **`priority: "next"` steers a running turn.** A streaming-input run read six files, one Read call
+  each. After its first tool call we pushed a user message with `priority: "next"` that carried a
+  code. The run stayed **one turn**, and its final line included the code. So a message pushed with
+  `"next"` reaches the model at the running turn's next tool boundary. `"later"` waits for the turn
+  to end (the CLI command-queue priority; ported from `c12c46f`).
+- **`resume` + `forkSession: true` on an idle session** answered from the parent's history (the
+  files it read and the code it was given) under a **new session id**. Resuming the parent afterwards
+  showed that it never saw the fork's question. So a fork is a side copy and leaves the parent intact.
+- Not probed: forking while the parent is mid-tool-call. Neo forks only idle targets (ADR-0050).
+- As root, `bypassPermissions` is refused ("cannot be used with root"). Probes use `allowedTools`
+  with an allow-all `canUseTool`.
