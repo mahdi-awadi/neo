@@ -413,6 +413,16 @@ function projectNotes(db: Database): void {
   db.run(`CREATE INDEX idx_attention_from ON attention_items (from_project, source)`);
 }
 
+/** Version 13 — questions and live notes (ADR-0050 rev. 2): a question's answer, when a live note or a
+ *  held answer reached a worker (empty = still held), and the asking session (who takes the answer).
+ *  The index serves the live-delivery read (held rows of source `note`). */
+function noteQuestions(db: Database): void {
+  db.run(`ALTER TABLE attention_items ADD COLUMN answer TEXT`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN delivered_at INTEGER`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN from_session TEXT`);
+  db.run(`CREATE INDEX idx_attention_delivery ON attention_items (source, delivered_at)`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -426,6 +436,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 10, name: "todo waiting on a decision", up: todoWaiting },
   { version: 11, name: "plan approval gate", up: planGate },
   { version: 12, name: "project notes", up: projectNotes },
+  { version: 13, name: "note questions and live delivery", up: noteQuestions },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

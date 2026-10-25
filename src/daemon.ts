@@ -165,6 +165,7 @@ async function main(): Promise<void> {
     ledger,
     cfg: cfg.notes ?? DEFAULT_NOTES_CFG,
     workRoot: cfg.workRoot,
+    companyFolder: cfg.companyFolder,
     trace,
     notifyNow: (row) => {
       faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));

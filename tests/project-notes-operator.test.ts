@@ -20,7 +20,7 @@ function rig() {
   for (const p of ["prod-ops", "eticket-v3"]) mkdirSync(join(root, p));
   const ledger = openLedger(":memory:");
   const trace = createTrace({ ledger, registry: createRegistry() });
-  const notes = createProjectNotes({ ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), trace });
+  const notes = createProjectNotes({ ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent"), trace });
   const submitted: Array<{ brief: string; cause?: { msgId: number; threadId: number } }> = [];
   const q = {
     launcher: () => ({ deps: {} as never, replyChat: 1 }),

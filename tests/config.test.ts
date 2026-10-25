@@ -439,6 +439,11 @@ test("project notes limits default, config.json overrides them, a bad value keep
     maxTitleChars: 120, maxBodyChars: 4000, maxRefs: 10, maxRefChars: 200, maxReasonChars: 500,
     maxPerSenderPerDay: 30, maxOpenPerPair: 50, blockMax: 8, blockMaxChars: 1500, sentLookbackDays: 14,
     listMax: 30, keepResolvedDays: 180, gitTimeoutMs: 10000,
+    questions: {
+      enabled: true, answerWaitMs: 240000, consultMaxTurns: 12, forkMaxOccupancyPct: 60, maxOpenPerPair: 1,
+      maxPerOrderPerHour: 6, backgroundMaxPerOrder: 2, maxConcurrentConsults: 2, questionMaxChars: 1500, answerMaxChars: 4000,
+    },
+    live: { deliverMaxChars: 6000, holdMaxMs: 86400000 },
   });
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ notes: { maxBodyChars: 2000, blockMax: -1, listMax: "x" } }));

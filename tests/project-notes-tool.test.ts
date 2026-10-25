@@ -23,7 +23,7 @@ function setup() {
   const root = mkdtempSync(join(tmpdir(), "neo-notes-tool-"));
   for (const p of ["prod-ops", "eticket-v3"]) mkdirSync(join(root, p));
   const ledger = openLedger(":memory:");
-  const notes = createProjectNotes({ ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "no-desks") });
+  const notes = createProjectNotes({ ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "no-desks"), companyFolder: join(root, "agent") });
   const d: DispatchDeps = {
     ledger,
     registry: createRegistry(),

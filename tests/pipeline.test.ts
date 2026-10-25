@@ -1518,7 +1518,7 @@ test("notes: a fresh operator session gets the notes block for its project", asy
     return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
   };
   const h = harness({ start });
-  const notes = createProjectNotes({ ledger: h.base.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const notes = createProjectNotes({ ledger: h.base.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
   const r = notes.send({ project: basename(sender), folder: sender, chatId: 1 }, { to: basename(dir), kind: "fyi", severity: "low", ref: "n", title: "heads up", body: "b" }, 1);
   expect(r.ok).toBe(true);
   await handleMessage(`/open ${dir} continue the work`, 9, { ...h.base, notes });

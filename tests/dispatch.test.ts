@@ -2108,7 +2108,7 @@ test("notes: a fresh dispatch gets the notes block; a kept resume and a run with
   mkdirSync(join(root, "eticket-v3"));
   mkdirSync(join(root, "prod-ops"));
   const { d } = makeDeps();
-  const notes = createProjectNotes({ ledger: d.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const notes = createProjectNotes({ ledger: d.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
   const id = notes.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "finding", severity: "high", ref: "D16", title: "stale pnr", body: "b" }, 1).id!;
   const tasks: string[] = [];
   const fakeStart = (o: Order) => {
@@ -2124,7 +2124,7 @@ test("notes: a fresh dispatch gets the notes block; a kept resume and a run with
   expect(tasks[1]).not.toContain("[PROJECT NOTES");
 
   const { d: d3 } = makeDeps();
-  const notes3 = createProjectNotes({ ledger: d3.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none") });
+  const notes3 = createProjectNotes({ ledger: d3.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
   notes3.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "fyi", severity: "low", ref: "x", title: "t", body: "b" }, 1);
   const prior: Order = { id: "prior", source: "neo", folder: join(root, "eticket-v3"), task: "prior", chatId: SUB_CHAT, createdAt: 0 };
   const existing = d3.registry.add(prior, 0);
