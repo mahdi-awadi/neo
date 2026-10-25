@@ -19,6 +19,9 @@ type Handler = (args: Record<string, unknown>, extra: unknown) => Promise<{ cont
 const neoTools = (servers: Record<string, unknown>) =>
   (servers.neo as { instance: { _registeredTools: Record<string, { handler: Handler; inputSchema?: unknown }> } }).instance._registeredTools;
 
+/** The session and order the tool takes from its closure (required at the tool boundary, ADR-0050). */
+const ids = { sessionId: "s-test", orderId: "o-test" };
+
 function setup() {
   const root = mkdtempSync(join(tmpdir(), "neo-notes-tool-"));
   for (const p of ["prod-ops", "eticket-v3"]) mkdirSync(join(root, p));
@@ -39,14 +42,14 @@ function setup() {
 test("project_notes attaches only when deps.notes is wired", () => {
   const { root, d } = setup();
   const folder = join(root, "prod-ops");
-  expect(Object.keys(neoTools(neoMcpServers(d, 1, { dispatch: false, folder, projectName: "prod-ops" })))).toContain("project_notes");
-  expect(Object.keys(neoTools(neoMcpServers({ ...d, notes: undefined }, 1, { dispatch: false, folder })))).not.toContain("project_notes");
+  expect(Object.keys(neoTools(neoMcpServers(d, 1, { dispatch: false, folder, projectName: "prod-ops", ...ids })))).toContain("project_notes");
+  expect(Object.keys(neoTools(neoMcpServers({ ...d, notes: undefined }, 1, { dispatch: false, folder, ...ids })))).not.toContain("project_notes");
 });
 
 test("send through the tool: the sender is the session's project and the cause is the call's", async () => {
   const { root, ledger, d } = setup();
   const tools = neoTools(
-    neoMcpServers(d, 9, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops", cause: () => ({ msgId: 5, threadId: 4 }) }),
+    neoMcpServers(d, 9, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops", ...ids, cause: () => ({ msgId: 5, threadId: 4 }) }),
   );
   const out = await tools.project_notes!.handler(
     { action: "send", to: "eticket-v3", kind: "finding", severity: "normal", ref: "D16", title: "stale pnr", body: "b", refs: ["x"], from: "someone-else" },
@@ -58,15 +61,15 @@ test("send through the tool: the sender is the session's project and the cause i
 
 test("the tool's input has no sender field: a worker cannot name or fake the sender", () => {
   const { root, d } = setup();
-  const t = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops" })).project_notes!;
+  const t = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops", ...ids })).project_notes!;
   const fields = Object.keys((JSON.parse(JSON.stringify(t.inputSchema)) as { def: { shape: Record<string, unknown> } }).def.shape);
   expect(fields).toContain("to");
-  for (const f of ["from", "sender", "fromProject", "project"]) expect(fields).not.toContain(f);
+  for (const f of ["from", "sender", "fromProject", "project", "sessionId", "orderId", "workClass"]) expect(fields).not.toContain(f);
 });
 
 test("send with a missing field says what is missing and stores nothing", async () => {
   const { root, ledger, d } = setup();
-  const t = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops" })).project_notes!;
+  const t = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops", ...ids })).project_notes!;
   const out = await t.handler({ action: "send", to: "eticket-v3", kind: "finding" }, {});
   expect(out.content[0]?.text).toMatch(/send needs/);
   expect(ledger.attentionRows("eticket-v3", "note")).toEqual([]);
@@ -88,8 +91,8 @@ test("a customer (ingress) brief never gets project_notes, even when the operato
 
 test("the tool's read and close actions: list, show, ack, resolve, withdraw", async () => {
   const { root, d } = setup();
-  const sender = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops" })).project_notes!;
-  const target = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "eticket-v3"), projectName: "eticket-v3" })).project_notes!;
+  const sender = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "prod-ops"), projectName: "prod-ops", ...ids })).project_notes!;
+  const target = neoTools(neoMcpServers(d, 1, { dispatch: false, folder: join(root, "eticket-v3"), projectName: "eticket-v3", ...ids })).project_notes!;
   const text = async (t: typeof sender, args: Record<string, unknown>) => (await t.handler(args, {})).content[0]?.text ?? "";
   const sent = await text(sender, { action: "send", to: "eticket-v3", kind: "fyi", severity: "low", ref: "n1", title: "heads up", body: "the body" });
   const id = Number(sent.match(/#(\d+)/)![1]);

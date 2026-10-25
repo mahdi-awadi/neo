@@ -246,7 +246,7 @@ test("worker profiles: QUALITY INVARIANT — absent config changes no worker's m
   // (ADR-0005) — a path names a model only to DIFFER from the pinned default.
   expect(cfg.workers).toEqual({
     company: { effort: "low" }, project: {}, dispatch: {}, loop: {},
-    judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {},
+    judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {}, consult: {},
   });
   expect(cfg.workerEnv).toEqual({});
 });

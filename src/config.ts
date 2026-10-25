@@ -85,7 +85,7 @@ export interface MemoryCfg {
 }
 
 export type WorkerPathName =
-  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff" | "secretary";
+  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff" | "secretary" | "consult";
 
 export interface NeoConfig {
   telegramToken: string;
@@ -462,6 +462,10 @@ const DEFAULTS = {
     // The secretary reviews the queue on the LATEST model (a config.json override recommends the
     // newest model); the empty default keeps today's model until the operator sets one.
     secretary: {},
+    // A consult run answers another agent's question, read-only (ADR-0050 §6). Its tool limits live in
+    // worker-profile.ts and its turn cap in notes.questions.consultMaxTurns; the empty default keeps the
+    // pinned model until the operator sets one here.
+    consult: {},
   } satisfies Record<WorkerPathName, WorkerProfile>,
   workerEnv: {} as Record<string, string>,
   // QUALITY INVARIANT: scopes:[] is the pin — the memory system is a total no-op until an

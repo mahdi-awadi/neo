@@ -193,6 +193,9 @@ export interface RunDeps {
   codexFactory?: CodexFactory;
   /** Resume a prior SDK session id (idle-close → resume). */
   resume?: string;
+  /** With `resume`: fork that session — the run answers from its history under a NEW session id and
+   *  the parent never sees it (SDK `forkSession`; docs/sdk-notes.md). Consult runs only (ADR-0050). */
+  forkSession?: boolean;
   /** Reasoning effort for this session (the chief-of-staff runs "low" for fast routing). */
   effort?: EffortLevel;
   /** Extra in-process MCP servers/tools (e.g. the default project's `dispatch` tool). Claude-only;
@@ -920,6 +923,8 @@ export function runConfig(deps: RunDeps, provider: Provider = deps.provider ?? "
     maxTurns: deps.maxTurns || undefined,
     agents: deps.agents,
     env: deps.env ? mergedSdkEnv(provider, deps.env, deps.envScrub) : undefined,
+    // A fork needs a session to fork from: never sent without `resume`.
+    forkSession: deps.forkSession && deps.resume ? true : undefined,
   };
   for (const field of supportedRunConfigFields(provider)) {
     const value = values[field];

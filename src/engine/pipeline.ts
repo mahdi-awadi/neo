@@ -15,7 +15,7 @@ import { noteProjectStart, type TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { neoMcpServers, type DispatchDeps, type ReplyMeta } from "./dispatch";
+import { neoMcpServers, withLiveNotes, type DispatchDeps, type ReplyMeta } from "./dispatch";
 import type { TodoQueue } from "./todo-queue";
 import { flushDispatcherInbox, liveCompanyLink, takeDispatcherInbox, type DispatcherLink } from "./dispatch-report";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
@@ -393,7 +393,7 @@ export async function handleMessage(
       // mid-turn; one that can't steer (Codex) runs them after the in-flight turn, and the reply
       // says which. Report the REAL status, not a bare "busy": what it's doing, for how long, and
       // how deep the queue is.
-      control.followUp(body(), "steer", cause);
+      control.followUp(withLiveNotes(deps, live.id, live.order.folder, body(), now()), "steer", cause);
       deliver(live.id);
       registry.touch(live.id, now());
       // The operator's message answers (or replaces) a raised DECISION. A pending approval is
@@ -465,7 +465,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, cause: turnCause(registry, session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, sessionId: session.id, orderId: parsed.id, cause: turnCause(registry, session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -562,8 +562,9 @@ export async function deliverToCompany(
     if (control.closed?.() === true) return false;
     // A dispatch result carries its thread: the company's turn that reads it is filed there.
     // A dispatch report is an engine brief for the company: it waits for the turn, never steers it.
-    if (opts.cause) control.followUp(text, "after-turn", opts.cause);
-    else control.followUp(text, "after-turn");
+    const brief = withLiveNotes(deps, company.id, company.order.folder, text, now());
+    if (opts.cause) control.followUp(brief, "after-turn", opts.cause);
+    else control.followUp(brief, "after-turn");
     registry.touch(company.id, now());
     return true;
   }
@@ -639,7 +640,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, sessionId: id, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }
@@ -766,12 +767,15 @@ function startSession(
     if (snap) order = { ...order, task: `${snap}\n\n${order.task}` };
   }
   // The notes block (ADR-0043): same fresh-start gate as the snapshot; only where the operator surface
-  // wired deps.notes.
+  // wired deps.notes. The company folder reads as `main` there (block maps it by folder).
   if (!runDeps.resume && deps.notes) {
     const notesName = project ?? basename(order.folder);
     const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now(), order.folder), { project: notesName });
     if (block) order = { ...order, task: block + order.task };
   }
+  // A resume is a delivery point too (ADR-0050 §4): notes from main and answers held while the session
+  // sat idle go in front of the resumed task.
+  if (runDeps.resume) order = { ...order, task: withLiveNotes(deps, registryId, order.folder, order.task, now()) };
   // The tools hint (ADR-0044): fresh start only, and only where `hintPaths` lists this operator path. It
   // matches the operator's raw order text and goes in front of the notes block, like the dispatch path.
   const hintPath = registry.getDefault()?.id === registryId ? "company" : "project";

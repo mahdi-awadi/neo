@@ -103,7 +103,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `alertRepeatMs` | `900000` (15m) | Re-alert about the same session only after this long. |
 | `contextPolicy` | `{ sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9, handoffNoteMaxChars: 20000, handoffOrientationMaxSteps: 70, maxTurns: 200, maxAgeMs: 604800000, handoffTimeoutMs: 180000, staleResumePct: 0.35, cacheTtlFallbackMs: 3600000, cacheTtlMinObservations: 5, cacheObsWindow: 50 }` | Session context lifecycle. See "Context sweet spot" below for the band and the handoff knobs, and "Context policy: learned cache TTL + per-model window" for `staleResumePct`/`cacheTtlFallbackMs`/`cacheTtlMinObservations`/`cacheObsWindow`/`windowTokensByModel`. |
 | `models` | `{ default: "claude-opus-5-5[1m]", aliases: { opus: "claude-opus-5-5[1m]", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-4-5", fable: "claude-fable-5-1" } }` | Which model workers run. `default` applies to every launch path that does not name one itself; `aliases` maps a tier word to a pinned id. See "Worker models" below. |
-| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. A path that names no `model` takes `models.default`. |
+| `workers` | `{ company: {effort:"low"}, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: {effort:"low"}, handoff: {}, secretary: {}, consult: {} }` | Per-launch-path worker profiles. See "Worker profiles" below. A path that names no `model` takes `models.default`. |
 | `workerEnv` | `{}` | Extra env vars merged over `process.env` for every spawned worker after SDK-specific filtering. Claude Code env knobs such as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `MAX_MCP_OUTPUT_TOKENS`, and `CLAUDE_CODE_SUBAGENT_MODEL` apply only on the Claude adapter. |
 | `memory` | `{ scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 }` | Per-project long-term memory (store/inject/recall). `scopes: []` = off. See "Memory system" below. |
 
@@ -176,8 +176,8 @@ defaulted to — a cost and capability change with no config edit and no record 
 
 ## Worker profiles (`workers`)
 
-Each of the eight launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
-`handoff`, `secretary` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
+Each of the nine launch paths — `company`, `project`, `dispatch`, `loop`, `judge`, `ingress`,
+`handoff`, `secretary`, `consult` — takes an optional `{ model?, effort?, skills?, maxTurns? }` profile (`WorkerProfile` /
 `WorkerPathName` in `src/config.ts`). `profileDeps(cfg, path, base)` (`src/engine/worker-profile.ts`)
 looks up `cfg.workers[path]` and fills the configured own-work provider plus
 `model`/`effort`/`skills`/`maxTurns` onto the caller's `RunDeps` only where the caller didn't
@@ -192,6 +192,13 @@ include every field you want to keep.
 `ingress` set anything (`effort: "low"`, both pre-existing in code before this became config); every
 other path is `{}` (full inherit — same model/effort/skills/maxTurns as before this feature
 existed). Changing a path's profile in `config.json` is opt-in and the only way behavior changes.
+
+`consult` is the read-only run that answers a `project_notes ask` (ADR-0050 §6). Its profile sets
+only the model/effort/skills (the empty default takes `models.default`). The path itself always
+denies `Write`, `Edit`, `NotebookEdit`, `Bash`, `Task`, `Agent`, `KillShell` and `SlashCommand`,
+keeps the project fence, and gets a `neo` server with only `tools_for` and `memory_search`. Its turn
+cap is `notes.questions.consultMaxTurns`, and it is bounded by `dispatchStallMs`: a consult with no
+activity for that long ends as "no answer: stall" and frees its slot.
 
 ### Economy mode (opt-in, measured)
 
