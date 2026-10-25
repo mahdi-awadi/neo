@@ -38,19 +38,24 @@ export interface InstallResult {
   written: string[];
   /** Stale marked folders removed. */
   removed: string[];
+  /** Active ids whose `neo-*` folder exists without the marker: left alone (it is not ours). */
+  skipped: string[];
   errors: string[];
 }
 
 export function installCatalogue(opts: { src: string; claudeDir: string; cfg: ToolsCfg; dryRun?: boolean }): InstallResult {
   const { cards, errors } = loadCards(opts.src, opts.cfg);
-  if (errors.length) return { written: [], removed: [], errors };
+  if (errors.length) return { written: [], removed: [], skipped: [], errors };
   const skills = join(opts.claudeDir, "skills");
   const want = renderSkills(cards);
   const wanted = new Set(want.map((s) => s.dir));
   const written: string[] = [];
   const removed: string[] = [];
+  const skipped: string[] = [];
 
   for (const s of want) {
+    const dir = join(skills, s.dir);
+    if (existsSync(dir) && !existsSync(join(dir, MARKER))) { skipped.push(s.dir); continue; }
     for (const [name, content] of Object.entries(s.files)) {
       const path = join(skills, s.dir, name);
       if (existsSync(path) && readFileSync(path, "utf8") === content) continue;
@@ -67,7 +72,7 @@ export function installCatalogue(opts: { src: string; claudeDir: string; cfg: To
       if (!opts.dryRun) rmSync(join(skills, d.name), { recursive: true, force: true });
     }
   }
-  return { written, removed: removed.sort(), errors: [] };
+  return { written, removed: removed.sort(), skipped, errors: [] };
 }
 
 if (import.meta.main) {
@@ -82,5 +87,6 @@ if (import.meta.main) {
     console.error("[catalogue] not installed: fix the cards above (nothing was changed)");
     process.exit(1);
   }
+  for (const d of r.skipped) console.warn(`[catalogue] skipped ${d}: the folder exists without the .neo-tool marker, so it is not ours`);
   console.log(`[catalogue] ${dryRun ? "would write" : "wrote"} ${r.written.length} file(s), ${dryRun ? "would remove" : "removed"} ${r.removed.length} folder(s) in ${join(claudeDir, "skills")}`);
 }

@@ -101,6 +101,36 @@ describe("installCatalogue", () => {
     expect(r.written.length).toBeGreaterThan(0);
     expect(existsSync(join(claudeDir, "skills"))).toBe(false);
   });
+  test("an unmarked folder with an active id is skipped, untouched and reported", () => {
+    const claudeDir = mk();
+    const dir = join(claudeDir, "skills", "neo-tool-demo");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), "hand written");
+    const r = installCatalogue({ src: src({ demo: text("demo") }), claudeDir, cfg: DEFAULT_TOOLS_CFG });
+    expect(r.skipped).toEqual(["neo-tool-demo"]);
+    expect(r.written).toEqual([]);
+    expect(readdirSync(dir)).toEqual(["SKILL.md"]);
+    expect(readFileSync(join(dir, "SKILL.md"), "utf8")).toBe("hand written");
+  });
+  test("dryRun does not remove a stale marked folder but reports it", () => {
+    const claudeDir = mk();
+    const old = join(claudeDir, "skills", "neo-tool-old");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, ".neo-tool"), "");
+    const r = installCatalogue({ src: src({ demo: text("demo") }), claudeDir, cfg: DEFAULT_TOOLS_CFG, dryRun: true });
+    expect(r.removed).toEqual(["neo-tool-old"]);
+    expect(existsSync(old)).toBe(true);
+  });
+  test("catalogue errors leave a stale marked folder in place", () => {
+    const claudeDir = mk();
+    const old = join(claudeDir, "skills", "neo-tool-old");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, ".neo-tool"), "");
+    const r = installCatalogue({ src: src({ broken: "no front matter" }), claudeDir, cfg: DEFAULT_TOOLS_CFG });
+    expect(r.errors.length).toBeGreaterThan(0);
+    expect(r.removed).toEqual([]);
+    expect(existsSync(old)).toBe(true);
+  });
   test("the real docs/tools catalogue installs into a temp dir", () => {
     const claudeDir = mk();
     const r = installCatalogue({ src: join(import.meta.dir, "..", "docs", "tools"), claudeDir, cfg: DEFAULT_TOOLS_CFG });
