@@ -32,7 +32,9 @@ Two defects in the security kit came up when it was turned on for eticket-v3:
    blocks on this (ADR-0024: a scanner outage never stops work).
 3. **A chained hook fails closed.** When our hook records a chained hook and that file is not an
    executable file, the hook prints why and exits 1. Re-running `init.ts` re-detects the chain, so
-   a hook that was removed on purpose drops out of the chain by a deliberate operator step.
+   a hook that was removed on purpose drops out of the chain by a deliberate operator step. A hook
+   in git's own hooks folder is recorded as `.git/hooks/<hook>` and found through
+   `git rev-parse --git-common-dir`, so it runs from a linked worktree too (there `.git` is a file).
 
 ## Rejected
 

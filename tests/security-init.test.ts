@@ -138,6 +138,25 @@ describe("security init", () => {
     expect(missing.stderr.toString()).toContain(".githooks/pre-commit.pre-neo");
   });
 
+  test("a chained .git/hooks hook runs from a linked worktree, and init there keeps the chain", () => {
+    const r = repo();
+    writeFileSync(join(r, ".git", "hooks", "pre-commit"), "#!/bin/sh\necho legacy-hook-ran\n");
+    chmodSync(join(r, ".git", "hooks", "pre-commit"), 0o755);
+    initRepo(r, noBaseline);
+    Bun.spawnSync(["git", "-C", r, "add", "-A"]);
+    // The temp repo's own hooks stay out of this setup commit.
+    Bun.spawnSync(["git", "-C", r, "-c", "core.hooksPath=/dev/null", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "hooks"]);
+    const wt = `${r}-wt`;
+    Bun.spawnSync(["git", "-C", r, "worktree", "add", "-q", wt]);
+    const commit = () => Bun.spawnSync(["bash", join(wt, ".githooks", "pre-commit")], { cwd: wt, env: { ...process.env, NEO_SECURITY_KIT: "/nonexistent" } });
+    const run = commit();
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain("legacy-hook-ran");
+    const before = readFileSync(join(wt, ".githooks", "pre-commit"), "utf8");
+    initRepo(wt, noBaseline);
+    expect(readFileSync(join(wt, ".githooks", "pre-commit"), "utf8")).toBe(before);
+  });
+
   test("re-running init when the recorded chained hook is gone re-detects the chain", () => {
     const r = repo();
     mkdirSync(join(r, ".githooks"));

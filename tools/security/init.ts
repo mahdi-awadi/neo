@@ -21,8 +21,24 @@ function git(repo: string, ...args: string[]): { ok: boolean; out: string } {
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim() };
 }
 
-/** Our .githooks script: scan, then run the hook that was there before (`prev`: repo-relative, or
- *  absolute for a global or worktree hooks folder). */
+/** A chained hook in git's own hooks folder is recorded as `.git/hooks/<hook>`: it lives in the
+ *  common git dir, which a linked worktree reaches through its `.git` file, not a `.git/` folder. */
+const GIT_DIR_PREFIX = ".git/";
+const commonDir = (repo: string) => git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").out;
+
+/** Where a recorded chained hook is on disk, from `repo`. */
+function chainedPath(repo: string, prev: string): string {
+  return prev.startsWith(GIT_DIR_PREFIX) ? join(commonDir(repo), prev.slice(GIT_DIR_PREFIX.length)) : resolve(repo, prev);
+}
+
+/** The same, as a bash expression evaluated by the hook at run time. */
+function chainedPathExpr(prev: string): string {
+  if (prev.startsWith(GIT_DIR_PREFIX)) return `$(git rev-parse --path-format=absolute --git-common-dir)/${prev.slice(GIT_DIR_PREFIX.length)}`;
+  return isAbsolute(prev) ? prev : `$repo/${prev}`;
+}
+
+/** Our .githooks script: scan, then run the hook that was there before (`prev`: repo-relative,
+ *  `.git/hooks/<hook>`, or absolute for a global hooks folder). */
 function hookScript(hook: Hook, prev: string | undefined): string {
   const pushInput = hook === "pre-push"; // pre-push gets the refs on stdin; the chained hook needs them too
   const scan =
@@ -49,7 +65,7 @@ function hookScript(hook: Hook, prev: string | undefined): string {
     // drop the project's own checks.
     ...(prev
       ? [
-          `prev="${isAbsolute(prev) ? prev : `$repo/${prev}`}"`,
+          `prev="${chainedPathExpr(prev)}"`,
           'if [[ ! -f "$prev" || ! -x "$prev" ]]; then',
           `  echo "[security] BLOCK: the chained hook $prev is missing or not executable — restore it (commit it), or re-run: bun ~/.claude/security/init.ts \\"$repo\\"" >&2`,
           "  exit 1",
@@ -71,17 +87,17 @@ function previousHook(repo: string, hook: Hook, hooksPath: string): string | und
       const chained = body.match(/^# chained: (.+)$/m)?.[1];
       if (!chained || chained === "none") return undefined;
       // A recorded chain that still exists is kept; one that is gone is re-detected (ADR-0051).
-      if (existsSync(resolve(repo, chained))) return chained;
+      if (existsSync(chainedPath(repo, chained))) return chained;
     } else {
       renameSync(ours, `${ours}.pre-neo`); // a project hook already in .githooks: keep it, chained
       return `.githooks/${hook}.pre-neo`;
     }
   }
-  // core.hooksPath may be global and absolute; --git-path is absolute in a worktree. resolve() takes both.
+  // core.hooksPath may be global and absolute. resolve() takes both.
   if (hooksPath && hooksPath !== ".githooks") return existsSync(resolve(repo, hooksPath, hook)) ? join(hooksPath, hook) : undefined;
-  const legacy = git(repo, "rev-parse", "--git-path", `hooks/${hook}`).out;
-  // Once core.hooksPath is .githooks, --git-path names our own hook: never chain to it.
-  return legacy && resolve(repo, legacy) !== ours && existsSync(resolve(repo, legacy)) ? legacy : undefined;
+  // git's own hooks folder, in the common git dir (the same for every worktree).
+  const legacy = `${GIT_DIR_PREFIX}hooks/${hook}`;
+  return existsSync(chainedPath(repo, legacy)) ? legacy : undefined;
 }
 
 function installGithooks(repo: string, hooksPath: string): void {
