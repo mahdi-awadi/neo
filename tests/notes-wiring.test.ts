@@ -267,3 +267,44 @@ test("fork facts come from the registry: a session in a turn is never forked; an
   expect(w.liveSession(s.id)).toBe(false);
   expect(w.liveSession("gone")).toBe(false);
 });
+
+test("fix R1: only a KNOWN Claude session is forkable — a Codex or unknown-SDK session starts fresh", () => {
+  const r = rig();
+  const s = r.open(join(r.root, "eticket-v3"), control(false));
+  const w = notesWiring({ registry: r.registry, notes: () => r.notes, worker: "subscription", occupancyPct: () => 10 });
+  r.registry.setSdkSessionId(s.id, "codex-thread", "codex");
+  expect(w.forkFacts(s.order.folder).sameSdk).toBe(false);
+  r.registry.setSdkSessionId(s.id, "who-minted-me"); // no provider recorded
+  expect(w.forkFacts(s.order.folder).sameSdk).toBe(false);
+  r.registry.setSdkSessionId(s.id, "sdk-claude", "subscription");
+  expect(w.forkFacts(s.order.folder).sameSdk).toBe(true);
+  // Codex never forks, even its own sessions.
+  const codex = notesWiring({ registry: r.registry, notes: () => r.notes, worker: "codex", occupancyPct: () => 10 });
+  r.registry.setSdkSessionId(s.id, "codex-thread", "codex");
+  expect(codex.forkFacts(s.order.folder).sameSdk).toBe(false);
+});
+
+test("fix R1: the ledger fallback forks only an id whose SDK is recorded and is Claude", () => {
+  const r = rig();
+  const folder = join(r.root, "gold-none");
+  const rows: Record<string, { sessionId: string; provider?: "subscription" | "codex" } | undefined> = {
+    known: { sessionId: "sdk-1", provider: "subscription" },
+    codex: { sessionId: "t-1", provider: "codex" },
+    unknown: { sessionId: "old-1" },
+  };
+  for (const [k, sameSdk] of [["known", true], ["codex", false], ["unknown", false]] as const) {
+    const w = notesWiring({ registry: r.registry, notes: () => r.notes, worker: "subscription", lastSessionFor: () => rows[k], occupancyPct: () => 10 });
+    expect(w.forkFacts(folder)).toMatchObject({ inTurn: false, lastSessionId: rows[k]!.sessionId, sameSdk });
+  }
+});
+
+test("ledger.lastSessionRow returns the latest session with its SDK (or none recorded)", () => {
+  const l = openLedger(":memory:");
+  l.recordOrder({ id: "a", source: "neo", folder: "/p/x", task: "t", chatId: -2, createdAt: 1 });
+  l.recordSession("a", "sdk-a", "subscription");
+  expect(l.lastSessionRow("/p/x", -2)).toEqual({ sessionId: "sdk-a", provider: "subscription" });
+  l.recordOrder({ id: "b", source: "neo", folder: "/p/x", task: "t", chatId: -2, createdAt: 2 });
+  l.recordSession("b", "sdk-b");
+  expect(l.lastSessionRow("/p/x", -2)).toEqual({ sessionId: "sdk-b" });
+  expect(l.lastSessionRow("/p/none", -2)).toBeUndefined();
+});

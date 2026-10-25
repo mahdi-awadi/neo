@@ -1547,7 +1547,7 @@ export interface NeoToolOpts {
   dispatch: boolean;
   /** `consult` (ADR-0050 §6, ruling R4): a read-only consult run gets ONLY `tools_for` and the memory
    *  read tool (`memory_search`) — no send_file, ask_operator, project_notes, tool_api, dispatch or
-   *  todo, and no stitch/playwright. Absent = the full operator tool set. */
+   *  todo, and no stitch/playwright/codebase-memory. Absent = the full operator tool set. */
   profile?: "consult";
   /** The registry session the tools act for — the asker a late answer goes back to (ADR-0050). The
    *  `project_notes` tool is attached only when this and `orderId` are known. */
@@ -1897,7 +1897,9 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   // Operator-only local stdio MCP server: codebase-memory (the ONE code-intel MCP — see the
   // 2026-07-23 context-efficiency design's measured verdict). Attached only when a bin path is
   // configured; the customer/ingress path passes none → never gets it.
-  if (opts.codebaseMemoryBin) {
+  // Never on a consult run (ruling R10): the governor escalates every foreign MCP tool, and a consult
+  // denies every escalation, so its read tools could never run there.
+  if (!consult && opts.codebaseMemoryBin) {
     servers["codebase-memory"] = { type: "stdio", command: opts.codebaseMemoryBin, args: [], env: {} };
   }
   // Operator-only: Playwright browser-automation MCP (headless chromium) for web/UI testing across

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { loadConfig, type NeoConfig } from "../src/config";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
-import { CONSULT_DISALLOWED_TOOLS, consultPrompt, createConsultRunner } from "../src/engine/consult";
+import { CONSULT_CHAT, CONSULT_DISALLOWED_TOOLS, consultPrompt, createConsultRunner } from "../src/engine/consult";
 import { DEFAULT_TOOLS_CFG, type Catalogue, type ToolMatch } from "../src/engine/tools-catalogue";
 import type { RunDeps, RunHandlers, RunResult } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
@@ -38,7 +38,7 @@ type Handler = { name: string };
 const neoToolNames = (servers: Record<string, unknown> | undefined): string[] =>
   Object.keys((servers?.neo as { instance: { _registeredTools: Record<string, Handler> } }).instance._registeredTools).sort();
 
-test("criterion 7: read-only tools, a neo server with only tools_for + memory_search, deny, fork, no saveSession, no registry", async () => {
+test("criterion 7: read-only tools, a neo server with only tools_for + memory_search, deny, fork, no session saved (ledger.recordSession), no registry", async () => {
   const folder = scratch("neo-consult-target-");
   const f = fakeRun();
   const ledger = openLedger(":memory:");
@@ -48,7 +48,7 @@ test("criterion 7: read-only tools, a neo server with only tools_for + memory_se
   const watched = {
     recordOrder: (o: Order, opts?: { cause?: { msgId: number; threadId: number } }) => (recorded.push({ id: o.id, cause: opts?.cause }), ledger.recordOrder(o, opts)),
     recordOutcome: ledger.recordOutcome.bind(ledger),
-    saveSession: () => void saved++,
+    recordSession: () => void saved++, // the ledger's session save — the runner must never reach it
   };
   const runner = createConsultRunner({ runOrder: f.run, cfg: cfgFor(folder), catalogue, ledger: watched });
 
@@ -57,7 +57,10 @@ test("criterion 7: read-only tools, a neo server with only tools_for + memory_se
   expect(out).toEqual({ ok: true, answer: "The key lives in the ScaleDown card." });
   expect(f.calls.length).toBe(1);
   const { order, handlers, deps } = f.calls[0]!;
-  expect([...(deps.disallowedTools ?? [])].sort()).toEqual(["Agent", "Bash", "Edit", "KillShell", "NotebookEdit", "SlashCommand", "Task", "Write"]);
+  expect([...(deps.disallowedTools ?? [])].sort()).toEqual([
+    "Agent", "Bash", "Edit", "KillShell", "NotebookEdit", "SlashCommand", "Task", "Write",
+    "mcp__codebase-memory__delete_project", "mcp__codebase-memory__index_repository", "mcp__codebase-memory__ingest_traces", "mcp__codebase-memory__manage_adr",
+  ].sort());
   expect([...CONSULT_DISALLOWED_TOOLS].sort()).toEqual([...(deps.disallowedTools ?? [])].sort());
   expect(neoToolNames(deps.mcpServers)).toEqual(["memory_search", "tools_for"]);
   expect(await handlers.onEscalation("Write outside project")).toBe("deny");
@@ -73,6 +76,7 @@ test("criterion 7: read-only tools, a neo server with only tools_for + memory_se
   // Closed with a fixed line — never the answer text.
   expect(ledger.getOutcome(order.id)).toEqual({ status: "done", summary: "consult answered" });
   expect(saved).toBe(0);
+  expect(ledger.lastSessionRow(folder, CONSULT_CHAT)).toBeUndefined(); // no SDK session saved for the consult order
   expect(registry.list()).toEqual([]);
 });
 
@@ -150,3 +154,55 @@ test("RunDeps.forkSession reaches the Claude SDK options only with a resume id, 
   expect(runConfig({ forkSession: true }, "subscription").forkSession).toBeUndefined();
   expect(runConfig({ resume: "t1", forkSession: true }, "codex").forkSession).toBeUndefined();
 });
+
+test("fix R1: on Codex a consult never resumes — no fork exists there, so it starts fresh", async () => {
+  const folder = scratch("neo-consult-target-");
+  const f = fakeRun();
+  const cfg = cfgFor(folder, { providers: { ownWork: "codex", customerWork: "gemini" } });
+  await createConsultRunner({ runOrder: f.run, cfg, ledger: openLedger(":memory:") })({ folder, forkFrom: "codex-thread-1", prompt: "P", workClass: "interactive" });
+  expect(f.calls[0]!.deps.resume).toBeUndefined();
+  expect(f.calls[0]!.deps.forkSession).toBeUndefined();
+});
+
+test("fix R1: the consult runner never emits `resume` without `forkSession: true`", async () => {
+  const folder = scratch("neo-consult-target-");
+  for (const ownWork of ["subscription", "codex"] as const) {
+    for (const forkFrom of [undefined, "sdk-parent"]) {
+      const f = fakeRun();
+      const cfg = cfgFor(folder, { providers: { ownWork, customerWork: "gemini" } });
+      await createConsultRunner({ runOrder: f.run, cfg, ledger: openLedger(":memory:") })({ folder, ...(forkFrom ? { forkFrom } : {}), prompt: "P", workClass: "interactive" });
+      const d = f.calls[0]!.deps;
+      if (d.resume !== undefined) expect(d.forkSession).toBe(true);
+    }
+  }
+});
+
+test("fix R10: the governor escalates codebase-memory read tools, so a consult (deny-all) gets no codebase-memory server", async () => {
+  const { decide } = await import("../src/engine/governor");
+  for (const t of ["search_graph", "search_code", "get_code_snippet", "get_architecture", "query_graph", "trace_path"]) {
+    expect("escalate" in decide(`mcp__codebase-memory__${t}`, {}, { folder: "/p/x" })).toBe(true);
+  }
+  const folder = scratch("neo-consult-target-");
+  const f = fakeRun();
+  await createConsultRunner({ runOrder: f.run, cfg: cfgFor(folder, { codebaseMemoryBin: "/usr/local/bin/codebase-memory-mcp" }), ledger: openLedger(":memory:") })({ folder, prompt: "P", workClass: "interactive" });
+  expect(Object.keys(f.calls[0]!.deps.mcpServers ?? {})).toEqual(["neo"]);
+});
+
+test("fix R11: each consult's cost reaches the budget meter — also a run the stall bound gave up on", async () => {
+  const folder = scratch("neo-consult-target-");
+  const { createMeter } = await import("../src/engine/budget");
+  const meter = createMeter({ windowBudgetUsd: 100, reservePct: 0.2 });
+  const f = fakeRun({ ok: true, sessionId: "s", summary: "answer", costUsd: 0.25 });
+  await createConsultRunner({ runOrder: f.run, cfg: cfgFor(folder), ledger: openLedger(":memory:"), meter })({ folder, prompt: "P", workClass: "interactive" });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(meter.spent()).toBeCloseTo(0.25);
+
+  // A silent run: the consult gives up at the stall limit; its cost is noted when the SDK run ends.
+  let finish!: (r: RunResult) => void;
+  const late = (): Promise<RunResult> => new Promise<RunResult>((res) => (finish = res));
+  const out = await createConsultRunner({ runOrder: late, cfg: cfgFor(folder, { dispatchStallMs: 20 }), ledger: openLedger(":memory:"), meter })({ folder, prompt: "P", workClass: "interactive" });
+  expect(out.ok).toBe(false);
+  finish({ ok: true, sessionId: "s", summary: "too late", costUsd: 0.5 });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(meter.spent()).toBeCloseTo(0.75);
+}, 5_000);

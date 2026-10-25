@@ -311,6 +311,9 @@ export interface Ledger {
    *  ID"). Ids recorded before ownership was tracked have no owner and are still returned — see
    *  canResumeWith for why unknown ownership is tried rather than discarded. */
   lastSessionFor(folder: string, chatId: number, provider?: Provider): string | undefined;
+  /** The same latest SDK session for a folder/chat, with the SDK that minted it (undefined = not
+   *  recorded). For a fork, which must know the SDK (ADR-0050): an unknown owner is never forked. */
+  lastSessionRow(folder: string, chatId: number): { sessionId: string; provider?: Provider } | undefined;
   listRecent(limit?: number): Order[];
   /** Every distinct folder an order was ever recorded for, sorted (the projects Neo has seen). */
   folders(): string[];
@@ -805,6 +808,16 @@ export function openLedger(
         )
         .get(folder, chatId, provider ?? null) as { sdk_session_id: string } | null;
       return row?.sdk_session_id ?? undefined;
+    },
+    lastSessionRow(folder, chatId) {
+      const row = db
+        .query(
+          `SELECT sdk_session_id, sdk_provider FROM orders
+           WHERE folder = ? AND chat_id = ? AND sdk_session_id IS NOT NULL AND sdk_session_id != ''
+           ORDER BY created_at DESC LIMIT 1`,
+        )
+        .get(folder, chatId) as { sdk_session_id: string; sdk_provider: string | null } | null;
+      return row ? { sessionId: row.sdk_session_id, ...(row.sdk_provider ? { provider: row.sdk_provider as Provider } : {}) } : undefined;
     },
     lastOrderAt(folder) {
       return (db.query(`SELECT max(created_at) AS at FROM orders WHERE folder = ?`).get(folder) as { at: number | null }).at ?? undefined;

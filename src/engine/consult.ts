@@ -11,6 +11,8 @@ import type { Ledger } from "./ledger";
 import type { Order } from "../types";
 import { runOrder, type RunDeps, type RunResult } from "./session-runner";
 import { profileDeps } from "./worker-profile";
+import { supportsRunConfigField } from "./model-resolver";
+import type { Meter } from "./budget";
 import { neoMcpServers } from "./dispatch";
 import type { Catalogue, ToolMatch } from "./tools-catalogue";
 import { DEFAULT_NOTES_CFG, type ConsultRunner, type Need } from "./project-notes";
@@ -47,8 +49,10 @@ export interface ConsultRunnerDeps {
   cfg: NeoConfig;
   catalogue?: Catalogue;
   /** The order is recorded with the asker's cause and closed with a fixed outcome line (never the
-   *  answer text: a withheld secret must not reach the ledger by this side door). Never saveSession. */
+   *  answer text: a withheld secret must not reach the ledger by this side door). Never recordSession (the spec's "saveSession"). */
   ledger: Pick<Ledger, "recordOrder" | "recordOutcome">;
+  /** The budget meter the reserve check reads (ruling R11): every consult's cost is noted on it. */
+  meter?: Pick<Meter, "note">;
 }
 
 /** The consult runner the notes module calls. */
@@ -64,11 +68,15 @@ export function createConsultRunner(deps: ConsultRunnerDeps): ConsultRunner {
       mcpServers: neoMcpServers(
         { tools: deps.catalogue, memory: cfg.memory, companyFolder: cfg.companyFolder, contextPolicy: cfg.contextPolicy },
         CONSULT_CHAT,
-        { profile: "consult", dispatch: false, folder: job.folder, workClass: job.workClass, ...(cfg.codebaseMemoryBin ? { codebaseMemoryBin: cfg.codebaseMemoryBin } : {}) },
+        { profile: "consult", dispatch: false, folder: job.folder, workClass: job.workClass },
       ),
-      ...(job.forkFrom ? { resume: job.forkFrom, forkSession: true } : {}),
+      // A consult resumes a session ONLY to fork it, and only on an SDK that forks (Claude). Codex has
+      // no fork: resuming its thread would write the consult into the target's real conversation.
+      ...(job.forkFrom && supportsRunConfigField(cfg.providers?.ownWork, "forkSession") ? { resume: job.forkFrom, forkSession: true } : {}),
     };
     const runDeps = profileDeps(cfg, "consult", base);
+    // Never a plain resume, whatever a profile adds.
+    if (!runDeps.forkSession) delete runDeps.resume;
 
     // The stall bound: no streamed event for the dispatch stall limit → the consult gives up. The
     // heartbeat (every SDK event) keeps a busy run alive, and the turn cap bounds that one.
@@ -93,6 +101,9 @@ export function createConsultRunner(deps: ConsultRunnerDeps): ConsultRunner {
       },
       runDeps,
     );
+    // The cost reaches the budget meter when the run ends — also for a run the stall bound gave up on,
+    // whose SDK query still finishes (and spends) in the background.
+    void run.then((r) => deps.meter?.note({ costUsd: r.costUsd }, Date.now())).catch(() => {});
     const settled = (r: { ok: boolean; answer: string; reason?: string }, outcome: string) => {
       deps.ledger.recordOutcome(order.id, r.ok ? "done" : "failed", outcome);
       return r;

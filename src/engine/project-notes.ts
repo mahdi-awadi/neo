@@ -18,7 +18,7 @@ import type { BlockedOn } from "./liveness";
 import { DEFAULT_WORK_CLASS, heldByReserve, type Meter, type WorkClass } from "./budget";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
 import { consultPrompt } from "./consult";
-import { canResumeWith } from "./sdk-choice";
+import { sdkProvider, supportsRunConfigField } from "./model-resolver";
 import type { Registry } from "./registry";
 import type { Provider } from "../types";
 import { raise } from "./attention";
@@ -928,8 +928,9 @@ export interface NotesWiringDeps {
   notes: () => ProjectNotes | undefined;
   /** The SDK a consult runs on (config providers.ownWork): a fork must be of a session it minted. */
   worker?: Provider;
-  /** The folder's last saved SDK session when the registry holds none (ledger.lastSessionFor). */
-  lastSessionFor?: (folder: string) => string | undefined;
+  /** The folder's last saved SDK session and the SDK that minted it, when the registry holds none
+   *  (ledger.lastSessionRow). */
+  lastSessionFor?: (folder: string) => { sessionId: string; provider?: Provider } | undefined;
   /** The last measured context occupancy (%) of `sdkSessionId`; undefined when unmeasured. */
   occupancyPct?: (folder: string, sdkSessionId: string) => number | undefined;
   now?: () => number;
@@ -948,11 +949,13 @@ export function notesWiring(d: NotesWiringDeps): Required<Pick<NotesDeps, "liveS
     forkFacts: (folder) => {
       const s = d.registry.findByFolder(folder);
       const inTurn = s ? d.registry.getControl(s.id)?.active?.() === true : false;
-      // The registry's own id first (it knows which SDK minted it); else the ledger's, which is read
-      // for this SDK already.
-      const own = s?.sdkSessionId || undefined;
-      const lastSessionId = own ?? d.lastSessionFor?.(folder);
-      const sameSdk = own ? canResumeWith(s?.sdkProvider, d.worker) : true;
+      // The registry's own id first, else the ledger's. A fork needs the SDK that minted the id to be
+      // KNOWN, to be the SDK the consult runs on, and to support forkSession (Claude): resuming a
+      // Codex thread without a fork would write the consult into the target's real thread.
+      const own = s?.sdkSessionId ? { sessionId: s.sdkSessionId, provider: s.sdkProvider } : undefined;
+      const last = own ?? d.lastSessionFor?.(folder);
+      const lastSessionId = last?.sessionId;
+      const sameSdk = last?.provider !== undefined && last.provider === sdkProvider(d.worker) && supportsRunConfigField(last.provider, "forkSession");
       const occupancyPct = lastSessionId ? d.occupancyPct?.(folder, lastSessionId) : undefined;
       return { inTurn, sameSdk, ...(lastSessionId ? { lastSessionId } : {}), ...(occupancyPct !== undefined ? { occupancyPct } : {}) };
     },

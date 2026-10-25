@@ -239,14 +239,14 @@ async function main(): Promise<void> {
     notifyNow: (row) => {
       faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));
     },
-    consult: createConsultRunner({ runOrder, cfg, catalogue: tools, ledger }),
+    consult: createConsultRunner({ runOrder, cfg, catalogue: tools, ledger, meter }),
     catalogue: tools,
     meter,
     ...notesWiring({
       registry,
       notes: () => notes,
       worker: ownWork,
-      lastSessionFor: (folder) => ledger.lastSessionFor(folder, SUB_CHAT, ownWork),
+      lastSessionFor: (folder) => ledger.lastSessionRow(folder, SUB_CHAT),
       occupancyPct: (folder, sid) => {
         const sig = sessionContext(folder, sid, { windowTokensByModel: contextWindows(ledger, cfg.contextPolicy.windowTokensByModel) });
         return sig.turns > 0 ? Math.round(sig.occupancy * 100) : undefined; // nothing measured → never forked

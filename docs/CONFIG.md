@@ -195,9 +195,13 @@ existed). Changing a path's profile in `config.json` is opt-in and the only way 
 
 `consult` is the read-only run that answers a `project_notes ask` (ADR-0050 §6). Its profile sets
 only the model/effort/skills (the empty default takes `models.default`). The path itself always
-denies `Write`, `Edit`, `NotebookEdit`, `Bash`, `Task`, `Agent`, `KillShell` and `SlashCommand`,
-keeps the project fence, and gets a `neo` server with only `tools_for` and `memory_search`. Its turn
-cap is `notes.questions.consultMaxTurns`, and it is bounded by `dispatchStallMs`: a consult with no
+denies `Write`, `Edit`, `NotebookEdit`, `Bash`, `Task`, `Agent`, `KillShell`, `SlashCommand` and the
+mutating codebase-memory tools (`delete_project`, `index_repository`, `manage_adr`, `ingest_traces`),
+keeps the project fence, and gets a `neo` server with only `tools_for` and `memory_search` — no
+codebase-memory server (the governor escalates foreign MCP tools and a consult denies every
+escalation). It resumes a session only to fork it, and only on the Claude SDK; a Codex or unknown-SDK
+target gets a fresh consult. Its cost is noted on the budget meter. Its turn cap is
+`notes.questions.consultMaxTurns`, and it is bounded by `dispatchStallMs`: a consult with no
 activity for that long ends as "no answer: stall" and frees its slot.
 
 ### Economy mode (opt-in, measured)
