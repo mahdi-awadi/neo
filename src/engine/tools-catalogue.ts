@@ -375,7 +375,7 @@ export async function relayCall(cards: readonly ToolCard[], cardId: string, op: 
     });
   } catch (e) {
     const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
-    audit({ bytesOut, status: 0, ms: ctx.now() - t0, refused: timedOut ? "timeout" : "network" });
+    audit({ bytesOut, status: 0, ms: ctx.now() - t0, error: timedOut ? "timeout" : "network" });
     return `tool_api refused (${timedOut ? `timeout after ${ctx.cfg.timeoutMs} ms` : "network error"})`;
   }
   let text = "";

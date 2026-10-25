@@ -142,7 +142,17 @@ test("a hanging fetch times out into a reply, not a throw", async () => {
   }, { timeoutMs: 20 });
   const r = await relayCall([card()], "demo-api", "ping", undefined, ctx);
   expect(r).toContain("timeout");
-  expect(ledger.listEvents({ kind: "tool_api" })[0]!.data).toMatchObject({ refused: "timeout" });
+  expect(ledger.listEvents({ kind: "tool_api" })[0]!.data).toMatchObject({ error: "timeout" });
+});
+
+test("timed-out calls were sent, so they count toward the cap", async () => {
+  const { ledger, ctx } = setup({
+    fetch: (_u, init) => new Promise((_res, rej) => init.signal!.addEventListener("abort", () => rej(init.signal!.reason))),
+  }, { timeoutMs: 10, maxCallsPerProjectPerDay: 2 });
+  expect(await relayCall([card()], "demo-api", "ping", undefined, ctx)).toContain("timeout");
+  expect(await relayCall([card()], "demo-api", "ping", undefined, ctx)).toContain("timeout");
+  expect(await relayCall([card()], "demo-api", "ping", undefined, ctx)).toContain("check 7");
+  expect(ledger.listEvents({ kind: "tool_api" }).every((e) => e.data?.refused === undefined)).toBe(true);
 });
 
 test("a fetch error never leaks into the reply", async () => {
