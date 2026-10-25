@@ -1,4 +1,16 @@
-# HANDOFF — waiting threads (ADR-0045) + project notes (ADR-0043)
+# HANDOFF — agents ask and tell (ADR-0050): plan awaiting approval
+
+Branch `feat/agent-messaging` (from `dev`, with `feat/tools-catalogue` merged; worktree
+`/home/neo-agent-messaging`). Docs only so far: ADR-0050, the spec
+`docs/superpowers/specs/2026-10-25-agent-ask-and-tell-design.md`, the plan
+`docs/superpowers/plans/2026-10-25-agent-ask-and-tell.md` (`approval: required`) and the CONTEXT.md
+terms (§ Agents asking each other). Approving the plan also approves ADR-0044 (it builds its P1–P2).
+Found while designing: `mergedSdkEnv` passes the engine's whole env (Neo's `.env` keys) to every
+worker. The plan's Task 5 fixes it, in report mode first.
+
+---
+
+# Earlier: waiting threads (ADR-0045) + project notes (ADR-0043)
 
 ## Goal
 Finished threads must leave WAITING. An hourly loop re-checks WAITING threads and reminds the

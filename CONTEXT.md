@@ -730,6 +730,51 @@ the state of the notes it sent. Titles, ids and senders only, capped in size; ne
 tainted run or the customer path. It tells the worker that notes are information, not orders.
 _Avoid_: inbox, mailbox, notifications
 
+### Agents asking each other
+
+**Main agent**:
+The company session (chief of staff, `/home/neo/agent`) when another worker asks it something. In a
+worker's tool call it is the target `main`. It is the same session as the **dispatcher**; the word is
+used only for asks and tells.
+_Avoid_: company (in worker-facing text), parent, boss
+
+**Agent ask**:
+One question a worker sends through the engine to the main agent or to another project, with a
+**need**: `info` (a fact), `resource` (a shared tool or key) or `help` (how to do something). A
+consult run answers it. An ask can make another agent answer; it can never make it act (ADR-0050).
+_Avoid_: message, request (that is a note kind), dispatch, brief
+
+**Consult run**:
+The short, read-only worker run that answers one agent ask in the target's folder. It starts from a
+fork of the target's latest session when there is one, so it knows what that agent knows, and it
+never touches the target's own session. It can read, search and look up tools; it cannot write, run
+commands, ask, tell, dispatch or raise a decision. Its session is thrown away after the answer.
+_Avoid_: sub-agent, helper, side session, fork (alone)
+
+**Agent tell**:
+Information the main agent sends to a project's worker through the engine. It is never a brief: it
+starts no work, joins no queue and never wakes an idle session. The engine holds it until a
+**delivery point**; a project with no session gets it as an `fyi` project note.
+_Avoid_: push, order, instruction, broadcast
+
+**Delivery point**:
+Where the engine hands a held agent message (a tell, or an answer that came after the ask's wait) to
+a running worker: right after one of its tool calls returns (the tool boundary), or at the start of
+its next turn. Never in the middle of a tool call, and never as a new turn by itself.
+_Avoid_: safe point (that is the context checkpoint, ADR-0021), interrupt, inject
+
+**Answer wait**:
+How long an `ask_agent` call holds the asking worker for the answer (`agents.answerWaitMs`). While it
+waits, the stall limit does not run, as with an operator decision. An answer that comes later goes
+to the asker at its next delivery point.
+_Avoid_: timeout (alone), deadline
+
+**Ask chain**:
+The asks that led to an ask, from the worker that started it. Its length is the **depth**. A consult
+run has no ask tool, so the depth is 1 unless config raises it; a target already in the chain is
+refused.
+_Avoid_: hop count, call stack, recursion
+
 ### Shared tools
 
 **Tools catalogue**:
