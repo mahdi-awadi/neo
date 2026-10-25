@@ -113,13 +113,22 @@ export function renderTrace(tree: TraceTree, ref: (id: number) => string, opts: 
   // A question and its answer are two lines in the ledger ("note #N → x: title", "↩ x answered note #N in 42s");
   // /trace shows them as one: "note #N question → answered 42s" (ADR-0050).
   const answered = new Map<number, string>();
+  const sentIds = new Set<number>();
+  for (const m of tree.messages) {
+    const sent = SENT_NOTE_LINE.exec(m.content);
+    if (sent) sentIds.add(Number(sent[1]));
+  }
   for (const m of tree.messages) {
     const a = ANSWERED_LINE.exec(m.content);
-    if (a) answered.set(Number(a[1]), a[2]!);
+    if (a && sentIds.has(Number(a[1]))) answered.set(Number(a[1]), a[2]!);
   }
   const children: Array<{ at: number; line: string }> = [
     ...tree.messages
-      .filter((m) => m.id !== rootId && !ANSWERED_LINE.test(m.content))
+      .filter((m) => {
+        if (m.id === rootId) return false;
+        const a = ANSWERED_LINE.exec(m.content);
+        return !(a && answered.has(Number(a[1]))); // folded into its send line; an orphan answer stays
+      })
       .map((m) => {
         const sent = SENT_NOTE_LINE.exec(m.content);
         const secs = sent ? answered.get(Number(sent[1])) : undefined;

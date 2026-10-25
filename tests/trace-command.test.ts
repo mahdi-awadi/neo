@@ -159,3 +159,11 @@ test("a question and its answer render as one line: note #N question → answere
   expect(out).not.toContain("↩ main answered");
   expect(out).toContain("note #10 → main: a plain note"); // an unanswered or plain note is unchanged
 });
+
+test("an answer line whose send line is not in the tree stays visible", () => {
+  const { trace } = setup();
+  const root = trace.inbound({ chatId: 7, text: "late answer", surface: "web" });
+  trace.outbound({ chatId: 7, text: "↩ main answered note #77 in 5s", cause: root, kind: "notice" });
+  const out = renderTrace(trace.tree(root.msgId), trace.ref);
+  expect(out).toContain("↩ main answered note #77 in 5s");
+});

@@ -1134,8 +1134,28 @@ On 2026-10-24 eticket-v3 needed the ScaleDown key and tool. The main agent knew;
 - Tools catalogue: cards in `docs/tools/`, `tools_for`, the dispatch hint, BM25 search, and a fail-closed
   API relay (`tools.relayEnabled`, default false). The worker env drops relay keys and reports the engine's
   key names (`worker_env_report`); `strip` exists and is not enabled.
-- The rev. 1 design (`agent_messages`, `ask_agent`, `tell_agent`) was never built. A test guards against its return.
+- The rev. 1 design (own table and tools) was dropped before it was built. A test guards against its return.
 - The console shows note kind `question` and state `answered` (i18n keys `notes.kind.*`, `notes.state.*`).
   `/trace` shows a question and its answer as one line. The preamble names `project_notes ask` and `tools_for`.
 
+Operator steps still open: the tool skills are not installed (`bun tools/catalogue/install.ts` is an
+operator step), the relay is off (`tools.relayEnabled` is false), `workerEnv.engineSecrets: "strip"` is not
+enabled, and ScaleDown is still a candidate card, not active.
+
 Migration v13. Restart-gated.
+
+## Status list moved from CLAUDE.md (2026-10-25)
+
+Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
+customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
+rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
+down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), the toolchain auto-updater
+(ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011), pre-approved out-of-folder writes + approval
+reminders/timeout (ADR-0012),
+the Telegram flood gate, the trace spine (message ids, threads, causes, `/trace`; ADR-0015/0016; restart-gated), the plan
+registry (every plan sent once with Approve/Changes/Execute, `/plans`; ADR-0019; restart-gated), the context sweet spot (boundary handoffs + safe checkpoints, ADR-0021), and context-efficiency Phase 1
+(per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
+memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
+default off — `memory.scopes`), and project notes (one project tells another through the
+`project_notes` tool; only → todo starts work; ADR-0043), with questions answered by read-only consult
+runs, live notes from main and the tools catalogue (ADR-0050, ADR-0044; restart-gated). Full phase-by-phase narrative: `docs/HISTORY.md`.

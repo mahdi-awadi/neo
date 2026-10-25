@@ -1,6 +1,6 @@
 # Shared tools are cards that become skills, and API keys stay in the engine
 
-**Status:** accepted (2026-10-25; P1-P2 built, restart-gated; P3 usage metering not built). Related: ADR-0024 (security
+**Status:** accepted (2026-10-25; P1-P2 built, restart-gated; P3 usage metering not built; the skill install, the relay and the ScaleDown card are still operator steps: nothing installed, `tools.relayEnabled` false, ScaleDown a candidate). Related: ADR-0024 (security
 kit), ADR-0031 (project fence), ADR-0032 (shared browser), ADR-0043 (`project_notes`, the same tool
 gate), context-efficiency spec §8 (no engine-side AI).
 

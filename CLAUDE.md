@@ -50,19 +50,9 @@ prompt:
 
 ## Current status
 
-Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
-customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
-rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
-down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), the toolchain auto-updater
-(ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011), pre-approved out-of-folder writes + approval
-reminders/timeout (ADR-0012),
-the Telegram flood gate, the trace spine (message ids, threads, causes, `/trace`; ADR-0015/0016; restart-gated), the plan
-registry (every plan sent once with Approve/Changes/Execute, `/plans`; ADR-0019; restart-gated), the context sweet spot (boundary handoffs + safe checkpoints, ADR-0021), and context-efficiency Phase 1
-(per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
-memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
-default off — `memory.scopes`), and project notes (one project tells another through the
-`project_notes` tool; only → todo starts work; ADR-0043), with questions answered by read-only consult
-runs, live notes from main and the tools catalogue (ADR-0050, ADR-0044; restart-gated). Full phase-by-phase narrative: `docs/HISTORY.md`.
+Phases 1-3 are done and many engine features are live or restart-gated (project notes with
+questions and live notes, the tools catalogue, loops, plans, context policy, memory Phase 2). The
+feature-by-feature list is in `docs/HISTORY.md` ("Status list moved from CLAUDE.md").
 
 Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
 not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,
