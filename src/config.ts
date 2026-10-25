@@ -16,6 +16,7 @@ import { readCommitFinishCfg, type CommitFinishCfg } from "./engine/commit-finis
 import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision-settle";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
+import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
@@ -273,6 +274,9 @@ export interface NeoConfig {
   /** Project notes (ADR-0043): sizes, caps and the notes block's bounds. Optional like `plans`;
    *  `loadConfig` always fills it. */
   notes?: NotesCfg;
+  /** The shared tools catalogue (ADR-0044): relay switch and caps, card limits, search knobs. Optional like
+   *  `plans`; `loadConfig` always fills it. */
+  tools?: ToolsCfg;
   /** The waiting sweep (ADR-0045): re-judge delay and reminder size. */
   waitingSweep?: WaitingSweepCfg;
   /** Markdown file links in the console (ADR-0046): the readable roots and the size cap. Optional like
@@ -585,6 +589,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     decisionSettle: readDecisionSettleCfg(fileCfg.decisionSettle),
     attention: readAttentionCfg(fileCfg.attention),
     notes: readNotesCfg(fileCfg.notes),
+    tools: readToolsCfg(fileCfg.tools),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),
