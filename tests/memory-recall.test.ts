@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendDailyLog } from "../src/engine/memory";
-import { openMemoryIndex } from "../src/engine/memory-recall";
+import { openMemoryIndex, safeFtsQuery } from "../src/engine/memory-recall";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-mem-recall-"));
 
@@ -105,4 +105,24 @@ test("openMemoryIndex caches Database handles per canonical folder", () => {
   // Both handles should see data written after either was opened (same underlying DB).
   expect(a.search("sanity check", 5).length).toBeGreaterThanOrEqual(1);
   expect(b.search("sanity check", 5).length).toBeGreaterThanOrEqual(1);
+});
+
+test("safeFtsQuery default mode is all-words (implicit AND), quotes escaped", () => {
+  expect(safeFtsQuery('foo "bar" baz')).toBe('"foo" """bar""" "baz"');
+  expect(safeFtsQuery("   ")).toBe('""');
+});
+
+test("safeFtsQuery any mode joins with OR", () => {
+  expect(safeFtsQuery("alpha beta", { mode: "any" })).toBe('"alpha" OR "beta"');
+});
+
+test("safeFtsQuery any mode drops stop words (case-insensitive); only stop words gives the empty query", () => {
+  const stop = new Set(["the", "a"]);
+  expect(safeFtsQuery("The cat A hat", { mode: "any", stopWords: stop })).toBe('"cat" OR "hat"');
+  expect(safeFtsQuery("the a", { mode: "any", stopWords: stop })).toBe('""');
+});
+
+test("safeFtsQuery cuts to maxTerms keeping the longest, in original order; quotes escaped", () => {
+  expect(safeFtsQuery("a bbbb cc dddddd", { mode: "any", maxTerms: 2 })).toBe('"bbbb" OR "dddddd"');
+  expect(safeFtsQuery('x"y', { mode: "any" })).toBe('"x""y"');
 });
