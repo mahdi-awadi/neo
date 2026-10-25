@@ -253,3 +253,14 @@ test("an emergency clear after a handoff consumes it — a stale note is never i
   l.recordContextEvent("/p/a", "clear", 0.95, 20);
   expect(l.pendingHandoff("/p/a")).toBeUndefined();
 });
+
+test("countEvents filters by kind, folder and since", () => {
+  const l = openLedger(":memory:");
+  l.recordEvent("tool_api", { folder: "/a", at: 100 });
+  l.recordEvent("tool_api", { folder: "/a", at: 50 });
+  l.recordEvent("tool_api", { folder: "/b", at: 100 });
+  l.recordEvent("other", { folder: "/a", at: 100 });
+  expect(l.countEvents({ kind: "tool_api", folder: "/a", since: 100 })).toBe(1);
+  expect(l.countEvents({ kind: "tool_api", folder: "/a", since: 0 })).toBe(2);
+  expect(l.countEvents({ kind: "tool_api", folder: "/c", since: 0 })).toBe(0);
+});

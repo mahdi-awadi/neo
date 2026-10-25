@@ -129,6 +129,8 @@ export interface PipelineDeps {
   postDecision?: DispatchDeps["postDecision"];
   /** Project notes (ADR-0043): gates the `project_notes` tool. Operator surfaces only. */
   notes?: DispatchDeps["notes"];
+  /** The tools catalogue (ADR-0044): gates the `tool_api` relay tool. Operator surfaces only. */
+  tools?: DispatchDeps["tools"];
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
   now?: () => number;

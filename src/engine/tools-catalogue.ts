@@ -301,3 +301,113 @@ export function loadCards(dir: string, cfg: ToolsCfg): { cards: ToolCard[]; erro
   }
   return { cards, errors };
 }
+
+// ---------------------------------------------------------------------------------------------
+// The API relay (spec §4). A worker never holds an API key: it asks `relayCall`, and the engine adds the
+// key from its own env. Every guard fails closed, in a fixed order; the first refusal is returned as plain
+// text and NOTHING is sent. A reply, an event and a log line never hold a key value or the body.
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_BODY_DEPTH = 20;
+
+export interface RelayCtx {
+  /** The calling project and folder — from the session, never from tool arguments. */
+  project: string;
+  folder: string;
+  cfg: ToolsCfg;
+  /** Where the key VALUES are read from (the engine's `process.env`). */
+  env: Record<string, string | undefined>;
+  ledger: Pick<import("./ledger").Ledger, "recordEvent" | "countEvents">;
+  fetch: (url: string, init: RequestInit) => Promise<Response>;
+  now: () => number;
+}
+
+/** True when some string (a value or a key, at any depth) in `v` matches a known secret shape. A body that
+ *  nests deeper than the cap counts as a hit: fail closed. */
+function bodyHoldsSecret(v: unknown, depth = 0): boolean {
+  if (typeof v === "string") return findSecret(v) !== undefined;
+  if (v === null || typeof v !== "object") return false;
+  if (depth >= MAX_BODY_DEPTH) return true;
+  if (Array.isArray(v)) return v.some((x) => bodyHoldsSecret(x, depth + 1));
+  return Object.entries(v).some(([k, x]) => findSecret(k) !== undefined || bodyHoldsSecret(x, depth + 1));
+}
+
+/** Run one relayed API call. Always resolves to text; never throws. */
+export async function relayCall(cards: readonly ToolCard[], cardId: string, op: string, body: unknown, ctx: RelayCtx): Promise<string> {
+  const t0 = ctx.now();
+  const audit = (extra: Record<string, unknown>): void => {
+    try {
+      ctx.ledger.recordEvent("tool_api", { folder: ctx.folder, at: t0, data: { card: cardId, operation: op, project: ctx.project, ...extra } });
+    } catch { /* the audit trail never breaks a call */ }
+  };
+  const refuse = (check: number, why: string, record = true): string => {
+    if (record) audit({ refused: `check ${check}` });
+    return `tool_api refused (check ${check}: ${why})`;
+  };
+
+  if (!ctx.cfg.relayEnabled) return refuse(1, "the relay is disabled", false);
+  const card = cards.find((c) => c.id === cardId);
+  if (!card || card.status !== "active" || card.kind !== "api" || !card.relay) return refuse(2, "no active api card with that id");
+  const relay = card.relay;
+  const operation = relay.operations.find((o) => o.name === op);
+  if (!operation) return refuse(3, `operation not declared on ${card.id}`);
+  if (card.scope !== "all" && !card.scope.includes(ctx.project)) return refuse(4, `${card.id} is not available to this project`);
+  let payload: string | undefined;
+  try { payload = body === undefined ? undefined : JSON.stringify(body); } catch { return refuse(5, "body is not serialisable"); }
+  const bytesOut = payload === undefined ? 0 : Buffer.byteLength(payload, "utf8");
+  if (bytesOut > relay.maxBodyBytes) return refuse(5, `body is larger than ${relay.maxBodyBytes} bytes`);
+  if (card.dataLeavesHost && bodyHoldsSecret(body)) return refuse(6, "the body looks like it holds a secret and this tool sends data off the host");
+  const used = ctx.ledger.countEvents({ kind: "tool_api", folder: ctx.folder, since: t0 - DAY_MS });
+  if (used >= ctx.cfg.maxCallsPerProjectPerDay) return refuse(7, `daily cap of ${ctx.cfg.maxCallsPerProjectPerDay} relay calls reached`, false);
+  const key = ctx.env[relay.envKey];
+  if (!key) return refuse(8, `key ${relay.envKey} is not set`);
+
+  const headers: Record<string, string> = { [relay.authHeader]: key, "content-type": "application/json" };
+  let res: Response;
+  try {
+    // redirect: "manual" — a redirect would carry the key to another host.
+    res = await ctx.fetch(relay.baseUrl.replace(/\/+$/, "") + operation.path, {
+      method: operation.method,
+      headers,
+      ...(operation.method === "POST" && payload !== undefined ? { body: payload } : {}),
+      redirect: "manual",
+      signal: AbortSignal.timeout(ctx.cfg.timeoutMs),
+    });
+  } catch (e) {
+    const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+    audit({ bytesOut, status: 0, ms: ctx.now() - t0, refused: timedOut ? "timeout" : "network" });
+    return `tool_api refused (${timedOut ? `timeout after ${ctx.cfg.timeoutMs} ms` : "network error"})`;
+  }
+  let text = "";
+  try { text = await res.text(); } catch { text = ""; }
+  audit({ bytesOut, status: res.status, ms: ctx.now() - t0 });
+  const out = `HTTP ${res.status}\n${text}`;
+  return out.length > ctx.cfg.maxReplyChars ? out.slice(0, ctx.cfg.maxReplyChars) + "\n[cut]" : out;
+}
+
+/** The opened catalogue a dispatch dep carries (ADR-0044). Phase 2 widens it with search. */
+export interface Catalogue {
+  cards: readonly ToolCard[];
+  cfg: ToolsCfg;
+  /** Relay one call for the calling project. The key is read inside, from the engine's env. */
+  relay(cardId: string, op: string, body: unknown, caller: { project: string; folder: string }): Promise<string>;
+}
+
+export function createCatalogue(o: {
+  cards: readonly ToolCard[];
+  cfg: ToolsCfg;
+  ledger: RelayCtx["ledger"];
+  env?: RelayCtx["env"];
+  fetch?: RelayCtx["fetch"];
+  now?: () => number;
+}): Catalogue {
+  return {
+    cards: o.cards,
+    cfg: o.cfg,
+    relay: (cardId, op, body, caller) =>
+      relayCall(o.cards, cardId, op, body, {
+        ...caller, cfg: o.cfg, env: o.env ?? process.env, ledger: o.ledger,
+        fetch: o.fetch ?? ((url, init) => fetch(url, init)), now: o.now ?? Date.now,
+      }),
+  };
+}

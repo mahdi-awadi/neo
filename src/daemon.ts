@@ -4,7 +4,8 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { createCatalogue, DEFAULT_TOOLS_CFG, loadCards } from "./engine/tools-catalogue";
 import { loadConfig } from "./config";
 import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
@@ -166,6 +167,18 @@ async function main(): Promise<void> {
       faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));
     },
   });
+  // The tools catalogue (ADR-0044): its cards and the API relay behind `tool_api`. A load error is
+  // recorded and the daemon goes on without the relay — it never crashes on a bad card.
+  const tools = faults.guard("tools.catalogue", () => {
+    const tcfg = cfg.tools ?? DEFAULT_TOOLS_CFG;
+    const { cards, errors } = loadCards(isAbsolute(tcfg.catalogueDir) ? tcfg.catalogueDir : join(neoFolder, tcfg.catalogueDir), tcfg);
+    if (errors.length) {
+      ledger.recordEvent("tools_catalogue_errors", { data: { count: errors.length, first: errors.slice(0, 5) } });
+      console.error(`[tools] ${errors.length} card error(s); relay off: ${errors[0]}`);
+      return undefined;
+    }
+    return createCatalogue({ cards, cfg: tcfg, ledger });
+  }, {});
   // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
   // time, in the background — a tick only starts it (single-flight).
   let scanning = false;
@@ -459,7 +472,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder, notes }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder, notes, tools }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -470,7 +483,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon

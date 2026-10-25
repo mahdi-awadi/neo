@@ -97,7 +97,9 @@ export async function runCompanyBrief(
                 governor: undefined,
                 // A customer-driven run never sends or reads project notes (ADR-0043): these deps are
                 // the operator's, spread, so notes is stripped here — for this run and its dispatches.
-                notes: undefined },
+                notes: undefined,
+                // Nor does it reach the API relay (ADR-0044): keys stay behind operator surfaces.
+                tools: undefined },
               CUSTOMER_CHAT,
               // BACKGROUND: a customer brief is not the operator's turn — nobody is waiting at the
               // keyboard — so dispatches this run makes stay under the interactive reserve.

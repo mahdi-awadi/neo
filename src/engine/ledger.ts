@@ -470,6 +470,8 @@ export interface Ledger {
   ): void;
   /** Recent events, newest-first. Filter by kind and/or orderId; capped by `limit` (default 50). */
   listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): EngineEvent[];
+  /** How many events of `kind` in `folder` happened at or after `since` (one parameterized COUNT). */
+  countEvents(opts: { kind: string; folder: string; since: number }): number;
   /** Enqueue a pending decision/alert. Returns its id. The queue survives a daemon restart. */
   openDecision(rec: NewDecision, at?: number): string;
   /** Record the channel + message id a decision was posted to (after the frontend sends it), so a
@@ -1339,6 +1341,10 @@ export function openLedger(
           `DELETE FROM events WHERE rowid NOT IN (SELECT rowid FROM events ORDER BY at DESC, rowid DESC LIMIT ?)`,
         ).run(eventsKeep);
       }
+    },
+    countEvents({ kind, folder, since }) {
+      const r = db.query(`SELECT COUNT(*) AS n FROM events WHERE kind = ? AND folder = ? AND at >= ?`).get(kind, folder, since) as { n: number };
+      return r.n;
     },
     listEvents(opts = {}) {
       const where: string[] = [];

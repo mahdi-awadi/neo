@@ -74,6 +74,7 @@ import { createPlanWatch } from "./plan-watch";
 import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./commit-finish";
 import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
+import type { Catalogue } from "./tools-catalogue";
 import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type ProjectNotes } from "./project-notes";
 import {
   apiFailureNotice,
@@ -143,6 +144,9 @@ export interface DispatchDeps {
   /** Project notes (ADR-0043). Its PRESENCE gates the `project_notes` tool: the daemon wires it on the
    *  operator surfaces only, and the ingress path strips it explicitly (it spreads these deps). */
   notes?: ProjectNotes;
+  /** The tools catalogue (ADR-0044). Its PRESENCE gates the `tool_api` relay tool: operator surfaces wire
+   *  it, the ingress path strips it, like `notes`. */
+  tools?: Catalogue;
   postDecision?: (
     /** `ref`: the ref of the decision's thread (trace only) — the card ends with it (spec §4.3). */
     rec: { id: string; project?: string; folder?: string; ref?: string },
@@ -1678,6 +1682,26 @@ export function neoMcpServers(
         async (args: NoteToolArgs) => {
           const from = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder, chatId: replyChat, cause: opts.cause?.() };
           return { content: [{ type: "text" as const, text: await runNoteAction(notes, from, args, Date.now()) }] };
+        },
+      ),
+    );
+  }
+  // `tool_api` (ADR-0044): an API call with a key the engine holds. Gated on `deps.tools`; the caller is
+  // this session's project and folder — never a tool argument. All guards live in `relayCall`.
+  const catalogue = deps.tools;
+  if (catalogue) {
+    tools.push(
+      tool(
+        "tool_api",
+        "Call a shared API tool through the engine, which adds the API key (you never see it). `card` is the tool card id, `operation` one of the operations the card lists, `body` the JSON payload. Refusals name the check that failed; nothing is sent then. Returns the HTTP status and body.",
+        {
+          card: z.string().describe("tool card id, e.g. from your neo-tool-* skill"),
+          operation: z.string().describe("an operation name declared on the card"),
+          body: z.unknown().optional().describe("JSON payload (POST operations)"),
+        },
+        async (args: { card: string; operation: string; body?: unknown }) => {
+          const caller = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder };
+          return { content: [{ type: "text" as const, text: await catalogue.relay(args.card, args.operation, args.body, caller) }] };
         },
       ),
     );
