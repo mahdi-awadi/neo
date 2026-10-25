@@ -733,47 +733,44 @@ _Avoid_: inbox, mailbox, notifications
 ### Agents asking each other
 
 **Main agent**:
-The company session (chief of staff, `/home/neo/agent`) when another worker asks it something. In a
-worker's tool call it is the target `main`. It is the same session as the **dispatcher**; the word is
-used only for asks and tells.
+The company session (chief of staff, `/home/neo/agent`) as a note target or sender. In a worker's
+`project_notes` call it is the target `main`, the one desk a note may address. It is the same session
+as the **dispatcher**; the word is used only for notes and questions.
 _Avoid_: company (in worker-facing text), parent, boss
 
-**Agent ask**:
-One question a worker sends through the engine to the main agent or to another project, with a
-**need**: `info` (a fact), `resource` (a shared tool or key) or `help` (how to do something). A
-consult run answers it. An ask can make another agent answer; it can never make it act (ADR-0050).
-_Avoid_: message, request (that is a note kind), dispatch, brief
+**Question (note)**:
+A project note of kind `question` that a worker sends with `project_notes ask` to the main agent or
+another project, with a **need**: `info` (a fact), `resource` (a shared tool or key) or `help` (how
+to do something). A consult run answers it, and the note resolves as `answered` with the answer on
+it. A question can make another agent answer; it can never make it act (ADR-0050).
+_Avoid_: ask_agent, message, request (that is the note kind that asks for work), dispatch
 
 **Consult run**:
-The short, read-only worker run that answers one agent ask in the target's folder. It starts from a
-fork of the target's latest session when there is one, so it knows what that agent knows, and it
-never touches the target's own session. It can read, search and look up tools; it cannot write, run
-commands, ask, tell, dispatch or raise a decision. Its session is thrown away after the answer.
+The short, read-only one-shot run that answers one question in the target's folder. It forks the
+target's last saved session when the target is between turns, so it knows what that agent knows;
+otherwise it starts fresh there. It can read, search and look up tools; it cannot write, run
+commands, send notes, dispatch or raise a decision. It is never a registry session, so it never
+makes a project busy.
 _Avoid_: sub-agent, helper, side session, fork (alone)
 
-**Agent tell**:
-Information the main agent sends to a project's worker through the engine. It is never a brief: it
-starts no work, joins no queue and never wakes an idle session. The engine holds it until a
-**delivery point**; a project with no session gets it as an `fyi` project note.
-_Avoid_: push, order, instruction, broadcast
+**Live note**:
+A note from the main agent (`fyi` or `request`), or a held answer, that the engine hands to a
+running worker of the target folder at its next step instead of waiting for its next fresh start.
+It is framed as information, never a brief: it starts no work and never wakes an idle session. All
+other notes wait for the notes block (ADR-0043).
+_Avoid_: tell, push, order, interrupt
 
-**Delivery point**:
-Where the engine hands a held agent message (a tell, or an answer that came after the ask's wait) to
-a running worker: right after one of its tool calls returns (the tool boundary), or at the start of
-its next turn. Never in the middle of a tool call, and never as a new turn by itself.
+**Next step (delivery)**:
+The running turn's next tool boundary, where the SDK attaches a user message sent with priority
+`next` (follow-up timing `steer`). A brief queued into a busy session uses timing `after-turn`
+(priority `later`) and never steers. A Codex session has no next step; it receives at its next turn.
 _Avoid_: safe point (that is the context checkpoint, ADR-0021), interrupt, inject
 
 **Answer wait**:
-How long an `ask_agent` call holds the asking worker for the answer (`agents.answerWaitMs`). While it
-waits, the stall limit does not run, as with an operator decision. An answer that comes later goes
-to the asker at its next delivery point.
+How long `project_notes ask` holds the asking worker for the answer (`notes.questions.answerWaitMs`).
+The stall limit does not run during it, as with an operator decision. A later answer becomes a live
+note to the asker.
 _Avoid_: timeout (alone), deadline
-
-**Ask chain**:
-The asks that led to an ask, from the worker that started it. Its length is the **depth**. A consult
-run has no ask tool, so the depth is 1 unless config raises it; a target already in the chain is
-refused.
-_Avoid_: hop count, call stack, recursion
 
 ### Shared tools
 

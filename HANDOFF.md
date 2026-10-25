@@ -1,10 +1,16 @@
-# HANDOFF — agents ask and tell (ADR-0050): plan awaiting approval
+# HANDOFF — agent questions and live notes on project_notes (ADR-0050 rev. 2): plan awaiting approval
 
 Branch `feat/agent-messaging` (from `dev`, with `feat/tools-catalogue` merged; worktree
-`/home/neo-agent-messaging`). Docs only so far: ADR-0050, the spec
-`docs/superpowers/specs/2026-10-25-agent-ask-and-tell-design.md`, the plan
-`docs/superpowers/plans/2026-10-25-agent-ask-and-tell.md` (`approval: required`) and the CONTEXT.md
-terms (§ Agents asking each other). Approving the plan also approves ADR-0044 (it builds its P1–P2).
+`/home/neo-agent-messaging`). Docs only so far. Rev. 2 (operator correction: reuse, don't
+duplicate) builds on `project_notes` (ADR-0043) and ports `c12c46f` (SDK follow-up priority, from
+`origin/claude/project-thread-n3xiqw`, never merged). Rev. 1's own table and tools are dropped.
+Files: ADR-0050, the spec `docs/superpowers/specs/2026-10-25-agent-questions-on-project-notes-design.md`,
+the plan `docs/superpowers/plans/2026-10-25-agent-questions-on-project-notes.md`
+(`approval: required`) and the CONTEXT.md terms (§ Agents asking each other). Approving the plan
+also approves ADR-0044 (it builds its P1–P2). `origin/claude/project-thread-n3xiqw` also holds 4
+other unmerged commits (typed-answer routing, yes/no answers an Allow/Deny, Telegram line order,
+api-retry backoff). They are outside this plan; the operator decides on them and on deleting the
+branch.
 Found while designing: `mergedSdkEnv` passes the engine's whole env (Neo's `.env` keys) to every
 worker. The plan's Task 5 fixes it, in report mode first.
 
