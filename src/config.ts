@@ -479,17 +479,23 @@ const DEFAULTS = {
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
-function loadDotEnv(dir: string): void {
+export function loadDotEnv(dir: string): string[] {
+  const set: string[] = [];
   const p = join(dir, ".env");
-  if (!existsSync(p)) return;
+  if (!existsSync(p)) return set;
   for (const line of readFileSync(p, "utf8").split("\n")) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
     if (!m) continue;
     const key = m[1];
     const value = m[2];
-    if (process.env[key] === undefined) process.env[key] = value;
+    if (process.env[key] === undefined) { process.env[key] = value; set.push(key); }
   }
+  return set; // key NAMES only — never a value
 }
+
+/** Key names the last loadConfig's file load set (names only; the daemon reports them). */
+let dotEnvKeys: string[] = [];
+export function loadedDotEnvKeys(): string[] { return [...dotEnvKeys]; }
 
 /** Lowercase every key of a record, so a case-insensitive lookup can never miss an operator's entry. */
 function lowercaseKeys(o: Record<string, string>): Record<string, string> {
@@ -509,7 +515,7 @@ function wholeAtLeast(v: unknown, min: number, d: number): number {
 }
 
 export function loadConfig(dir: string = process.cwd()): NeoConfig {
-  loadDotEnv(dir);
+  dotEnvKeys = loadDotEnv(dir);
 
   let fileCfg: Partial<NeoConfig> = {};
   const cfgPath = join(dir, "config.json");

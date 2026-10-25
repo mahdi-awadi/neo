@@ -81,6 +81,9 @@ export interface ToolsCfg {
   hintMaxChars: number;
   hintPaths: string[];
   skillifyMin: number;
+  /** What a worker inherits from the engine's own environment (ADR-0050 §7). `report` (default)
+   *  removes only relay keys and lists the engine's key names; `strip` also removes them, except `inherit`. */
+  workerEnv: { engineSecrets: "report" | "strip"; inherit: string[] };
 }
 
 export const DEFAULT_TOOLS_CFG: ToolsCfg = {
@@ -89,6 +92,7 @@ export const DEFAULT_TOOLS_CFG: ToolsCfg = {
   stopWords: ["a", "an", "and", "the", "to", "of", "in", "on", "for", "with", "is", "it", "this", "that", "do", "use", "me", "my", "please"],
   queryMaxTerms: 24, minScore: 0.5, usageWeight: 0.3, usageCacheMs: 600_000, showDisallowed: false, findLimit: 5,
   replyMaxChars: 4000, howMaxChars: 400, hintMaxCards: 3, hintMaxChars: 500, hintPaths: ["dispatch"], skillifyMin: 3,
+  workerEnv: { engineSecrets: "report", inherit: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY"] },
 };
 
 /** Config `tools` from config.json: a value of the right type is kept (numbers: finite and positive,
@@ -98,7 +102,14 @@ export function readToolsCfg(raw: unknown): ToolsCfg {
   const out: Record<string, unknown> = { ...DEFAULT_TOOLS_CFG };
   for (const [k, d] of Object.entries(DEFAULT_TOOLS_CFG)) {
     const v = r[k];
-    if (typeof d === "number") {
+    if (k === "workerEnv") {
+      const w = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+      const dw = DEFAULT_TOOLS_CFG.workerEnv;
+      out[k] = {
+        engineSecrets: w.engineSecrets === "strip" || w.engineSecrets === "report" ? w.engineSecrets : dw.engineSecrets,
+        inherit: Array.isArray(w.inherit) && w.inherit.every((x) => typeof x === "string") ? [...(w.inherit as string[])] : [...dw.inherit],
+      };
+    } else if (typeof d === "number") {
       if (typeof v === "number" && Number.isFinite(v) && (v > 0 || (k === "usageWeight" && v === 0))) out[k] = v;
     } else if (typeof d === "boolean") {
       if (typeof v === "boolean") out[k] = v;

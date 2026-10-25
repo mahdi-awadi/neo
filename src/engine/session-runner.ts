@@ -34,6 +34,7 @@ import {
 import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide, type OutOfFolderWrites, ProjectFence } from "./governor";
+import { scrubWorkerEnv, type EnvScrubOptions } from "./worker-env";
 import {
   filterSdkEnv,
   readOnlySandboxRequested,
@@ -215,6 +216,8 @@ export interface RunDeps {
   agents?: Record<string, AgentDefinition>;
   /** Extra env for the spawned worker, merged over process.env after SDK-specific filtering. */
   env?: Record<string, string>;
+  /** Removes engine-held keys from the worker env (ADR-0050 §7). Absent = the daemon's default. */
+  envScrub?: EnvScrubOptions;
   /** `governor.outOfFolderWrites` for this run (ADR-0012). Engine-side only — never sent to the
    *  SDK. Absent = "ask"; a customer-sourced order is always "ask". */
   outOfFolderWrites?: OutOfFolderWrites;
@@ -723,17 +726,23 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   return c;
 }
 
-function mergedSdkEnv(provider: Provider, env: Record<string, string>): Record<string, string> {
+/** Scrub options for every worker env (ADR-0050 §7). The daemon sets the default once; a
+ *  RunDeps value overrides it. Absent = no scrub. */
+let defaultEnvScrub: EnvScrubOptions | undefined;
+export function setDefaultEnvScrub(o: EnvScrubOptions | undefined): void { defaultEnvScrub = o; }
+
+export function mergedSdkEnv(provider: Provider, env: Record<string, string>, scrub: EnvScrubOptions | undefined = defaultEnvScrub): Record<string, string> {
   const merged: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) merged[key] = value;
   }
-  return filterSdkEnv(provider, { ...merged, ...env });
+  const filtered = filterSdkEnv(provider, { ...merged, ...env });
+  return scrub ? scrubWorkerEnv(filtered, scrub).env : filtered;
 }
 
 function codexClientOptions(deps: RunDeps): CodexOptions {
   const c: CodexOptions = {};
-  if (deps.env) c.env = mergedSdkEnv("codex", deps.env);
+  if (deps.env) c.env = mergedSdkEnv("codex", deps.env, deps.envScrub);
   return c;
 }
 
@@ -907,7 +916,7 @@ export function runConfig(deps: RunDeps, provider: Provider = deps.provider ?? "
     skills: deps.skills,
     maxTurns: deps.maxTurns || undefined,
     agents: deps.agents,
-    env: deps.env ? mergedSdkEnv(provider, deps.env) : undefined,
+    env: deps.env ? mergedSdkEnv(provider, deps.env, deps.envScrub) : undefined,
   };
   for (const field of supportedRunConfigFields(provider)) {
     const value = values[field];

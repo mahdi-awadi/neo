@@ -6,7 +6,9 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createCatalogue, DEFAULT_TOOLS_CFG, loadCards } from "./engine/tools-catalogue";
-import { loadConfig } from "./config";
+import { loadConfig, loadedDotEnvKeys } from "./config";
+import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env";
+import { setDefaultEnvScrub } from "./engine/session-runner";
 import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
 import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
@@ -169,9 +171,12 @@ async function main(): Promise<void> {
   });
   // The tools catalogue (ADR-0044): its cards and the API relay behind `tool_api`. A load error is
   // recorded and the daemon goes on without the relay — it never crashes on a bad card.
+  const relayKeys = new Set<string>();
   const tools = faults.guard("tools.catalogue", () => {
     const tcfg = cfg.tools ?? DEFAULT_TOOLS_CFG;
     const { cards, errors } = loadCards(isAbsolute(tcfg.catalogueDir) ? tcfg.catalogueDir : join(neoFolder, tcfg.catalogueDir), tcfg);
+    // Every card's relay key stays in the engine whatever its status (ADR-0050 §7).
+    for (const c of cards) if (c.relay?.envKey) relayKeys.add(c.relay.envKey);
     if (errors.length) {
       ledger.recordEvent("tools_catalogue_errors", { data: { count: errors.length, first: errors.slice(0, 5) } });
       console.error(`[tools] ${errors.length} card error(s); relay off: ${errors[0]}`);
@@ -179,6 +184,15 @@ async function main(): Promise<void> {
     }
     return createCatalogue({ cards, cfg: tcfg, ledger });
   }, {});
+  // Scrub the worker env (ADR-0050 §7): relay keys never reach a worker; the engine's own file keys
+  // are listed by name in `report` mode (the default) and removed only in `strip` mode.
+  {
+    const wcfg = (cfg.tools ?? DEFAULT_TOOLS_CFG).workerEnv;
+    const scrub: EnvScrubOptions = { engineKeys: new Set(loadedDotEnvKeys()), relayKeys, inherit: new Set(wcfg.inherit), mode: wcfg.engineSecrets };
+    setDefaultEnvScrub(scrub);
+    const names = scrub.mode === "report" ? reportableEngineKeys(scrub) : [];
+    if (names.length) ledger.recordEvent("worker_env_report", { data: { names } });
+  }
   // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
   // time, in the background — a tick only starts it (single-flight).
   let scanning = false;
