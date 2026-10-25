@@ -1137,6 +1137,8 @@ On 2026-10-24 eticket-v3 needed the ScaleDown key and tool. The main agent knew;
 - The rev. 1 design (own table and tools) was dropped before it was built. A test guards against its return.
 - The console shows note kind `question` and state `answered` (i18n keys `notes.kind.*`, `notes.state.*`).
   `/trace` shows a question and its answer as one line. The preamble names `project_notes ask` and `tools_for`.
+- The push scan found two HIGH advisories in transitive deps (body-parser 2.3.0, zod 4.4.3). They were
+  already on `dev` and master. `package.json` `overrides` now set body-parser `^2.4.0` and zod `^4.6.6`.
 
 Operator steps still open: the tool skills are not installed (`bun tools/catalogue/install.ts` is an
 operator step), the relay is off (`tools.relayEnabled` is false), `workerEnv.engineSecrets: "strip"` is not

@@ -97,6 +97,13 @@ Revision 2 builds on these two pieces and drops everything in revision 1 that du
 
 ## Consequences
 
+- **Known limit (security review, 2026-10-25):** these guarantees hold at the tool boundary only.
+  - What it covers: the relay holds the keys, `main` is reserved, and answers reach workers as quoted
+    data.
+  - What it does not cover: own-work workers run as the same OS user as the engine (root), and they
+    have Bash. Such a worker could read Neo's env file by path, or write a ledger row directly.
+  - What closes the gap: running workers under a separate uid. That is a host change, decided by the
+    operator; it is not part of this ADR.
 - One tool (`project_notes`) for all agent-to-agent traffic: findings, information, requests,
   questions and answers. The preamble line that already points to it stays (reworded).
 - ADR-0043 point 4 is amended: live delivery happens only for notes from `main` and for answers.
