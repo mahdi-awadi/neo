@@ -470,8 +470,9 @@ export interface Ledger {
   ): void;
   /** Recent events, newest-first. Filter by kind and/or orderId; capped by `limit` (default 50). */
   listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): EngineEvent[];
-  /** How many events of `kind` in `folder` happened at or after `since` (one parameterized COUNT). */
-  countEvents(opts: { kind: string; folder: string; since: number }): number;
+  /** How many events of `kind` happened at or after `since` (one parameterized COUNT). Optional filters:
+   *  `folder`, `project` (the event's `data.project`), and `unrefused` (skip events whose data has `refused`). */
+  countEvents(opts: { kind: string; since: number; folder?: string; project?: string; unrefused?: boolean }): number;
   /** Enqueue a pending decision/alert. Returns its id. The queue survives a daemon restart. */
   openDecision(rec: NewDecision, at?: number): string;
   /** Record the channel + message id a decision was posted to (after the frontend sends it), so a
@@ -1342,8 +1343,13 @@ export function openLedger(
         ).run(eventsKeep);
       }
     },
-    countEvents({ kind, folder, since }) {
-      const r = db.query(`SELECT COUNT(*) AS n FROM events WHERE kind = ? AND folder = ? AND at >= ?`).get(kind, folder, since) as { n: number };
+    countEvents({ kind, since, folder, project, unrefused }) {
+      const where = ["kind = ?", "at >= ?"];
+      const params: Array<string | number> = [kind, since];
+      if (folder !== undefined) { where.push("folder = ?"); params.push(folder); }
+      if (project !== undefined) { where.push("json_extract(data, '$.project') = ?"); params.push(project); }
+      if (unrefused) where.push("(data IS NULL OR json_extract(data, '$.refused') IS NULL)");
+      const r = db.query(`SELECT COUNT(*) AS n FROM events WHERE ${where.join(" AND ")}`).get(...params) as { n: number };
       return r.n;
     },
     listEvents(opts = {}) {

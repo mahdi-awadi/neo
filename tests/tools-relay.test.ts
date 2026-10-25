@@ -9,6 +9,9 @@ import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import { neoMcpServers, type DispatchDeps } from "../src/engine/dispatch";
 import { runCompanyBrief } from "../src/engine/ingress";
+import { registerDefaultProject } from "../src/engine/default-project";
+import type { Order } from "../src/types";
+import type { RunHandlers, RunResult } from "../src/engine/session-runner";
 import { createCatalogue, DEFAULT_TOOLS_CFG, relayCall, type RelayCtx, type ToolCard } from "../src/engine/tools-catalogue";
 
 const SENTINEL = "SENTINEL-KEY-VALUE-123456";
@@ -75,13 +78,25 @@ test("check 6: a secret in the body, nested, when data leaves the host", async (
   expect(ok).toContain("HTTP 200");
 });
 
-test("check 7: the daily cap counts this folder's events in 24 h only", async () => {
+test("check 7: the daily cap counts this project's un-refused events in 24 h only", async () => {
   const { ledger, calls, ctx } = setup({}, { maxCallsPerProjectPerDay: 3 });
-  for (let i = 0; i < 2; i++) ledger.recordEvent("tool_api", { folder: "/w/proj", at: NOW - HOUR });
-  ledger.recordEvent("tool_api", { folder: "/w/proj", at: NOW - 25 * HOUR }); // too old
-  ledger.recordEvent("tool_api", { folder: "/w/other", at: NOW - HOUR }); // another project
+  const ev = (project: string, folder: string, at: number, extra: Record<string, unknown> = {}) =>
+    ledger.recordEvent("tool_api", { folder, at, data: { card: "demo-api", project, ...extra } });
+  ev("proj", "/w/proj", NOW - HOUR);
+  ev("proj", "/w/proj-b", NOW - HOUR); // a second folder of the same project shares the cap
+  ev("proj", "/w/proj", NOW - 25 * HOUR); // too old
+  ev("other", "/w/other", NOW - HOUR); // another project
+  for (let i = 0; i < 10; i++) ev("proj", "/w/proj", NOW - HOUR, { refused: "check 3" }); // refusals do not count
   expect(await relayCall([card()], "demo-api", "ping", undefined, ctx)).toContain("HTTP 200");
   expect(await relayCall([card()], "demo-api", "ping", undefined, ctx)).toContain("check 7");
+  expect(calls.length).toBe(1);
+});
+
+test("refused events alone never block a good call", async () => {
+  const { ledger, calls, ctx } = setup({}, { maxCallsPerProjectPerDay: 2 });
+  for (let i = 0; i < 5; i++) await relayCall([card()], "demo-api", "nope", {}, ctx); // 5 check-3 refusals, recorded
+  expect(ledger.listEvents({ kind: "tool_api" }).length).toBe(5);
+  expect(await relayCall([card()], "demo-api", "ping", undefined, ctx)).toContain("HTTP 200");
   expect(calls.length).toBe(1);
 });
 
@@ -170,8 +185,16 @@ test("tool_api exists only when deps.tools is wired; the caller comes from the s
   expect(calls.length).toBe(1);
 });
 
-test("the ingress path strips tools", () => {
-  const src = require("node:fs").readFileSync(join(import.meta.dir, "../src/engine/ingress.ts"), "utf8") as string;
-  expect(src).toMatch(/notes: undefined,[\s\S]*tools: undefined/);
-  expect(typeof runCompanyBrief).toBe("function");
+test("a customer (ingress) brief never gets tool_api, even when the operator deps carry tools", async () => {
+  const { d } = deps(true);
+  expect(d.tools).toBeDefined();
+  registerDefaultProject(d.registry, d.ledger, undefined, () => 1);
+  let seen: { mcpServers?: Record<string, unknown> } | undefined;
+  const fakeRun = async (_o: Order, _h: RunHandlers, x?: { mcpServers?: Record<string, unknown> }): Promise<RunResult> => {
+    seen = x;
+    return { ok: true, sessionId: "co-1", summary: "ok", costUsd: 0 };
+  };
+  await runCompanyBrief("customer asks", { ...d, cfg: { workers: {}, workerEnv: {} } as never, run: fakeRun as never, now: () => 2 });
+  expect(seen?.mcpServers).toBeDefined();
+  expect(Object.keys(neoTools(seen!.mcpServers!))).not.toContain("tool_api");
 });

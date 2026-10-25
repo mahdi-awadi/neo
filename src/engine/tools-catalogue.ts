@@ -357,7 +357,7 @@ export async function relayCall(cards: readonly ToolCard[], cardId: string, op: 
   const bytesOut = payload === undefined ? 0 : Buffer.byteLength(payload, "utf8");
   if (bytesOut > relay.maxBodyBytes) return refuse(5, `body is larger than ${relay.maxBodyBytes} bytes`);
   if (card.dataLeavesHost && bodyHoldsSecret(body)) return refuse(6, "the body looks like it holds a secret and this tool sends data off the host");
-  const used = ctx.ledger.countEvents({ kind: "tool_api", folder: ctx.folder, since: t0 - DAY_MS });
+  const used = ctx.ledger.countEvents({ kind: "tool_api", project: ctx.project, unrefused: true, since: t0 - DAY_MS });
   if (used >= ctx.cfg.maxCallsPerProjectPerDay) return refuse(7, `daily cap of ${ctx.cfg.maxCallsPerProjectPerDay} relay calls reached`, false);
   const key = ctx.env[relay.envKey];
   if (!key) return refuse(8, `key ${relay.envKey} is not set`);
