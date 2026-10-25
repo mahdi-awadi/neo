@@ -308,3 +308,14 @@ test("ledger.lastSessionRow returns the latest session with its SDK (or none rec
   expect(l.lastSessionRow("/p/x", -2)).toEqual({ sessionId: "sdk-b" });
   expect(l.lastSessionRow("/p/none", -2)).toBeUndefined();
 });
+
+test("final review: through the real registry, a pending approval survives an ask", async () => {
+  const r = rig({ consult: async () => ({ ok: true, answer: "port 8080" }) });
+  const s = r.open(join(r.root, "prod-ops"));
+  const approval = { kind: "approval" as const, label: "Write outside project", since: 5 };
+  r.registry.noteBlocked(s.id, approval);
+  const from: SenderCtx = { project: "prod-ops", folder: s.order.folder, chatId: 1, sessionId: s.id, orderId: s.order.id, workClass: "interactive" };
+  const text = await r.notes.ask(from, { to: "eticket-v3", question: "Which port?" }, Date.now());
+  expect(text).toContain("port 8080");
+  expect(r.registry.get(s.id)!.blockedOn).toEqual(approval);
+});
