@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { filterNew, normalize, severityFromCvss, summarize } from "../tools/security/findings";
+import { filterNew, incompleteWarning, normalize, parseMissing, severityFromCvss, summarize } from "../tools/security/findings";
 
 describe("security findings", () => {
   test("semgrep ERROR maps to high, WARNING to medium, fingerprint ignores line numbers", () => {
@@ -118,5 +118,22 @@ describe("security findings", () => {
     const r = Bun.spawnSync(["bun", join(import.meta.dir, "../tools/security/findings.ts"), "report", "--baseline", join(d, "baseline.json"), `semgrep:${join(d, "sg.json")}`]);
     expect(r.exitCode).toBe(3);
     expect(r.stderr.toString()).toContain("baseline");
+  });
+
+  test("missing parts: parsed from tool<TAB>detail lines; a baseline without them warns nothing (ADR-0051)", () => {
+    expect(parseMissing("semgrep\tpart 2/5: no output\n\ngitleaks\thistory scan: no report\nodd line\n")).toEqual([
+      { tool: "semgrep", detail: "part 2/5: no output" },
+      { tool: "gitleaks", detail: "history scan: no report" },
+      { tool: "scan", detail: "odd line" },
+    ]);
+    expect(incompleteWarning(undefined)).toBeUndefined();
+    expect(incompleteWarning({ fingerprints: [] })).toBeUndefined();
+    expect(incompleteWarning({ fingerprints: [], incomplete: [] })).toBeUndefined();
+    const w = incompleteWarning({ fingerprints: [], incomplete: [1, 2, 3, 4, 5].map((n) => ({ tool: "semgrep", detail: `part ${n}/5` })) });
+    expect(w).toContain("baseline is incomplete");
+    expect(w).toContain("+2 more");
+    expect(w).toContain("semgrepTimeoutSec");
+    // A malformed list (bad merge) warns; it never throws and so never blocks the layer.
+    expect(incompleteWarning({ fingerprints: [], incomplete: "oops" as never })).toContain("unreadable");
   });
 });

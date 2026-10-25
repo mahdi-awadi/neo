@@ -10,7 +10,8 @@
 #
 # Exit 1 = new high/critical findings (blocks). Exit 0 = clean, only baselined/low findings, or a scan
 # that could not run (it warns). Reports are written only for repos with .security/config.json.
-# Per-project settings live in <repo>/.security/config.json (devUrls, images, testCmd, zapAuth).
+# Per-project settings live in <repo>/.security/config.json (devUrls, images, testCmd, zapAuth,
+# semgrepChunkFiles, semgrepTimeoutSec). A scan part with no result is recorded as missing (ADR-0051).
 set -uo pipefail
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
@@ -21,30 +22,51 @@ work="$(mktemp -d /tmp/neo-sec.XXXXXX)"; trap 'rm -rf "$work"' EXIT
 specs=()
 
 src="$repo" # where the scanned files are read from (staged: a copy of the index)
-# Inner limit for one semgrep/gitleaks run in its warm container, so a hook killed by its own timeout
+# Inner limit for one gitleaks run in its warm container, so a hook killed by its own timeout
 # never leaves a scan running there. The write-time hook allows 60 s.
 inner_timeout=$([[ "$mode" == file ]] && echo 50 || echo 1800)
 
 cfg_get() { # key → the value (arrays one per line)
   [[ -f "$cfg" ]] && bun -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=c[process.argv[2]];if(v!==undefined)console.log(Array.isArray(v)?v.join("\n"):typeof v==="object"?JSON.stringify(v):v)' "$cfg" "$1" 2>/dev/null
 }
+cfg_int() { # key default → a positive integer from config.json, else the default
+  local v; v="$(cfg_get "$1")"
+  if [[ "$v" =~ ^[1-9][0-9]{0,6}$ ]]; then echo "$v"; else echo "$2"; fi
+}
+
+# Semgrep runs in parts (ADR-0051): each part is staged, scanned and removed on its own, under its own
+# time limit, so a slow part loses only its own files. Per repo in .security/config.json.
+semgrep_part="$(cfg_int semgrepChunkFiles 200)"
+semgrep_timeout=$([[ "$mode" == file ]] && echo 50 || cfg_int semgrepTimeoutSec 1800)
+# A scan that produced no result is a missing part, recorded in the baseline/report (ADR-0051).
+missing_part() { printf '%s\t%s\n' "$1" "$2" >> "$work/missing"; } # tool detail
 
 if ! sec_have_docker; then sec_warn "docker unavailable — security scan skipped"; exit 0; fi
 
 # Semgrep and file-gitleaks run in the background (both in warm containers); report() waits for them.
 run_semgrep() { # repo-relative files...
   (($#)) || return 0
-  local rel=("$@")
+  local rel=("$@") n=$((($# + semgrep_part - 1) / semgrep_part)) k
   local deep=(); [[ "${SEC_DEEP:-0}" == 1 ]] && deep=(--deep)
-  specs+=("semgrep:$work/semgrep.json")
+  for ((k = 1; k <= n; k++)); do specs+=("semgrep:$work/semgrep-$k.json"); done
   (
-    mapfile -t configs < <(bun "$SEC_KIT/rules.ts" configs "${deep[@]}" --base /kit/rules "${rel[@]}")
-    sec_warm "$SEC_SEMGREP_CTR" "$SEMGREP_IMAGE" || { sec_warn "semgrep container did not start — skipped"; exit 0; }
-    id="$(sec_stage "$SEC_SEMGREP_CTR" "$src" "${rel[@]}")" || { sec_warn "could not stage files for semgrep — skipped"; exit 0; }
-    docker exec -w "/scan/$id" "$SEC_SEMGREP_CTR" timeout "$inner_timeout" semgrep scan --experimental --metrics=off \
-      --disable-version-check --quiet --json --timeout 20 "${configs[@]}" "${rel[@]}" > "$work/semgrep.json" 2>"$work/semgrep.err" \
-      || [[ -s "$work/semgrep.json" ]] || sec_warn "semgrep did not finish (timeout or error) — its findings are missing"
-    sec_unstage "$SEC_SEMGREP_CTR" "$id"
+    sec_warm "$SEC_SEMGREP_CTR" "$SEMGREP_IMAGE" || {
+      sec_warn "semgrep container did not start — skipped"; missing_part semgrep "all $n parts: the container did not start"; exit 0
+    }
+    for ((k = 1; k <= n; k++)); do
+      part=("${rel[@]:$(((k - 1) * semgrep_part)):$semgrep_part}")
+      mapfile -t configs < <(bun "$SEC_KIT/rules.ts" configs "${deep[@]}" --base /kit/rules "${part[@]}")
+      id="$(sec_stage "$SEC_SEMGREP_CTR" "$src" "${part[@]}")" || {
+        sec_warn "could not stage semgrep part $k/$n — skipped"; missing_part semgrep "part $k/$n (${#part[@]} files): could not stage its files"; continue
+      }
+      docker exec -w "/scan/$id" "$SEC_SEMGREP_CTR" timeout "$semgrep_timeout" semgrep scan --experimental --metrics=off \
+        --disable-version-check --quiet --json --timeout 20 "${configs[@]}" "${part[@]}" > "$work/semgrep-$k.json" 2>"$work/semgrep-$k.err"
+      if [[ ! -s "$work/semgrep-$k.json" ]]; then # semgrep exits non-zero with findings too: only no output is a miss
+        sec_warn "semgrep part $k/$n did not finish (timeout ${semgrep_timeout}s or error) — its findings are missing"
+        missing_part semgrep "part $k/$n (${#part[@]} files, from ${part[0]}): no output — timeout ${semgrep_timeout}s or error"
+      fi
+      sec_unstage "$SEC_SEMGREP_CTR" "$id"
+    done
   ) &
 }
 
@@ -54,11 +76,16 @@ run_gitleaks_files() { # repo-relative files...
   ((${#rel[@]})) || return 0
   specs+=("gitleaks:$work/gitleaks-files.json")
   (
-    sec_warm "$SEC_GITLEAKS_CTR" "$GITLEAKS_IMAGE" || { sec_warn "gitleaks container did not start — skipped"; exit 0; }
-    id="$(sec_stage "$SEC_GITLEAKS_CTR" "$src" "${rel[@]}")" || { sec_warn "could not stage files for gitleaks — skipped"; exit 0; }
+    sec_warm "$SEC_GITLEAKS_CTR" "$GITLEAKS_IMAGE" || {
+      sec_warn "gitleaks container did not start — skipped"; missing_part gitleaks "file scan: the container did not start"; exit 0
+    }
+    id="$(sec_stage "$SEC_GITLEAKS_CTR" "$src" "${rel[@]}")" || {
+      sec_warn "could not stage files for gitleaks — skipped"; missing_part gitleaks "file scan: could not stage its files"; exit 0
+    }
     docker exec -w "/scan/$id" "$SEC_GITLEAKS_CTR" timeout "$inner_timeout" gitleaks dir . --no-banner --exit-code 0 --report-format json \
       --report-path "/tmp/$id.json" >/dev/null 2>&1
     docker exec "$SEC_GITLEAKS_CTR" cat "/tmp/$id.json" > "$work/gitleaks-files.json" 2>/dev/null
+    [[ -s "$work/gitleaks-files.json" ]] || missing_part gitleaks "file scan (${#rel[@]} files): no output — timeout ${inner_timeout}s or error"
     docker exec "$SEC_GITLEAKS_CTR" rm -f "/tmp/$id.json" >/dev/null 2>&1
     sec_unstage "$SEC_GITLEAKS_CTR" "$id"
   ) &
@@ -73,7 +100,9 @@ run_gitleaks_git() { # log-opts
   mkdir -p "$work/gl"
   docker run --rm "${mounts[@]}" -v "$work/gl:/out" -w "$repo" "$GITLEAKS_IMAGE" git "$repo" --no-banner \
     --exit-code 0 --log-opts="$1" --report-format json --report-path /out/gitleaks-git.json >"$work/gl/err" 2>&1
-  [[ -f "$work/gl/gitleaks-git.json" ]] || sec_warn "gitleaks history scan failed: $(tail -1 "$work/gl/err")"
+  [[ -f "$work/gl/gitleaks-git.json" ]] || {
+    sec_warn "gitleaks history scan failed: $(tail -1 "$work/gl/err")"; missing_part gitleaks "history scan ($1): no report"
+  }
   specs+=("gitleaks:$work/gl/gitleaks-git.json")
 }
 
@@ -120,7 +149,8 @@ report() { # label
     mkdir -p "$repo/.security/reports"
     out=(--out "$repo/.security/reports/$1-$(date +%Y%m%d-%H%M%S).json")
   fi
-  bun "$SEC_KIT/findings.ts" report --root "$repo" --src "$src" --baseline "$baseline" "${out[@]}" --label "$1" "${specs[@]}"
+  bun "$SEC_KIT/findings.ts" report --root "$repo" --src "$src" --baseline "$baseline" "${out[@]}" --label "$1" \
+    --missing "$work/missing" "${specs[@]}"
   rc=$?
   ls -1t "$repo/.security/reports/$1-"*.json 2>/dev/null | tail -n +31 | xargs -r rm -f # keep 30 per layer
   [[ $rc -eq 3 ]] && return 0 # the baseline is unreadable: findings.ts warned; never block on that
@@ -191,6 +221,6 @@ case "$mode" in
       report nightly; exit $?
     fi
     wait; mkdir -p "$repo/.security"
-    bun "$SEC_KIT/findings.ts" baseline --root "$repo" --baseline "$baseline" "${specs[@]}" ;;
+    bun "$SEC_KIT/findings.ts" baseline --root "$repo" --baseline "$baseline" --missing "$work/missing" "${specs[@]}" ;;
   *) sed -n '2,12p' "$0"; exit 2 ;;
 esac

@@ -41,6 +41,7 @@ reads `host.json` on every call, so a change needs no restart. This host is set 
 - A secret's value is never copied into a finding or a report, only a hash of it.
 - No Docker, a scanner that cannot start or finish, or an unreadable baseline (a merge conflict in
   `baseline.json`): the layer warns and passes. A scanner outage never stops editing or committing.
+  What the scan missed is recorded (`incomplete`), never dropped silently (ADR-0051).
 - A fingerprint uses the matched code, read from the scanned file (semgrep without a login reports
   only "requires login" for it).
 - Getting past a check (`--no-verify`, editing the baseline, turning a hook off) is not allowed for
@@ -61,7 +62,9 @@ bun ~/.claude/security/sweep.ts check --root /home   # the nightly loop's goal
 ```
 
 The git hooks find the kit at `$NEO_SECURITY_KIT`, default `~/.claude/security`. Without it they
-warn and still run any hook they chain.
+warn and still run any hook they chain. A chained hook (for example `.githooks/pre-commit.pre-neo`)
+that is missing or not executable fails the hook with exit 1 (ADR-0051): commit it, or re-run
+`init.ts`, which drops a chained hook that is gone.
 
 `/security-scan` (a Claude Code command) runs the push layer on the branch, triages, then the
 built-in `/security-review`.
@@ -73,6 +76,15 @@ built-in `/security-review`.
 | `devUrls` | Dev URLs for the nightly ZAP baseline scan and testssl. Never production. |
 | `images` | Docker images to scan nightly (vulnerabilities, secrets) and to write an SBOM for. |
 | `testCmd` | The project's security test command, run at pre-push (for example authz tests). |
+| `semgrepChunkFiles` | Files per semgrep part (default 200). Lower it when a part times out (ADR-0051). |
+| `semgrepTimeoutSec` | Time limit for one semgrep part, in seconds (default 1800; write-time is always 50). |
+
+Semgrep runs in parts: each part is staged, scanned and removed on its own, under its own time
+limit, so a slow part loses only its own files. A value that is not a positive integer uses the
+default. A semgrep part or a gitleaks scan with no result is a **missing part**: `baseline.json` and
+every report list them under `incomplete`, and every layer that compares against an incomplete
+baseline warns that old findings may show as new. To complete it, raise `semgrepTimeoutSec` or
+lower `semgrepChunkFiles`, then run `scan.sh baseline <repo>` again.
 
 Reports go to `.security/reports/<layer>-<time>.json` (30 kept per layer, gitignored); SBOMs to
 `.security/sbom/`. Commit `config.json` and `baseline.json`. A repo without `config.json` (never
@@ -84,7 +96,7 @@ A write-time scan loads per-language merged rule files (`rules.ts build`, run by
 `update-rules.sh`), runs osemgrep in a warm `neo-sec-semgrep-<kit hash>` container, and runs gitleaks at
 the same time in `neo-sec-gitleaks-<kit hash>` (one pair per kit copy). Both containers have no network, a read-only root and only the rules
 mounted; the files to scan are streamed in and removed after. For `src/frontends/web.ts` the semgrep
-CPU time fell from 37.2 s to 5.9 s. A run inside a container stops itself after 50 s (write-time) or 30 min, so a hook that times out
+CPU time fell from 37.2 s to 5.9 s. A run inside a container stops itself after 50 s (write-time) or 30 min (semgrep: per part, `semgrepTimeoutSec`), so a hook that times out
 leaves nothing running. `docker rm -f` on them is always safe: the next scan starts them again.
 
 ## Rules

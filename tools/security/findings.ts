@@ -25,8 +25,43 @@ export interface Finding {
   fingerprint: string;
 }
 
+/** A piece of a scan that produced no result (ADR-0051): a semgrep part that timed out, a gitleaks
+ *  scan with no output. */
+export interface MissingPart {
+  tool: string;
+  detail: string;
+}
+
 export interface Baseline {
   fingerprints: string[];
+  /** Missing parts of the scan that recorded it; absent in a baseline older than ADR-0051. */
+  incomplete?: MissingPart[];
+}
+
+/** `scan.sh`'s missing-part file: one `tool<TAB>detail` line per part. */
+export function parseMissing(text: string): MissingPart[] {
+  return text
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => {
+      const i = l.indexOf("\t");
+      return i < 0 ? { tool: "scan", detail: l.trim() } : { tool: l.slice(0, i), detail: l.slice(i + 1).trim() };
+    });
+}
+
+/** The warning for a layer that compares against an incomplete baseline, or undefined. */
+export function incompleteWarning(baseline: Baseline | undefined): string | undefined {
+  const raw: unknown = baseline?.incomplete;
+  if (raw === undefined) return undefined;
+  // A hand-edited or merged baseline may hold anything here: an unreadable list is still a warning.
+  const parts: MissingPart[] = Array.isArray(raw) ? raw.map((p) => ({ tool: String(p?.tool ?? "scan"), detail: String(p?.detail ?? p) })) : [{ tool: "baseline", detail: "unreadable incomplete list" }];
+  if (!parts.length) return undefined;
+  const list = parts.slice(0, 3).map((p) => `${p.tool}: ${p.detail}`).join("; ");
+  return (
+    `[security] warn: the baseline is incomplete (${list}${parts.length > 3 ? `; +${parts.length - 3} more` : ""}) — ` +
+    "findings it missed may show as new. Re-record it: scan.sh baseline <repo> (raise semgrepTimeoutSec or lower " +
+    "semgrepChunkFiles in .security/config.json)"
+  );
 }
 
 const RANK: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1 };
@@ -168,6 +203,7 @@ if (import.meta.main) {
   let label = "scan";
   let root: string | undefined;
   let src: string | undefined;
+  let missingPath: string | undefined;
   const specs: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--baseline") baselinePath = rest[++i];
@@ -175,14 +211,18 @@ if (import.meta.main) {
     else if (rest[i] === "--label") label = rest[++i];
     else if (rest[i] === "--root") root = rest[++i];
     else if (rest[i] === "--src") src = rest[++i]; // where the scanned files are (staged: the index copy)
+    else if (rest[i] === "--missing") missingPath = rest[++i]; // scan.sh's missing parts (ADR-0051)
     else specs.push(rest[i]);
   }
   const all = specs.flatMap((spec) => load(spec, { root, src }));
+  const incomplete = missingPath && existsSync(missingPath) ? parseMissing(readFileSync(missingPath, "utf8")) : [];
   if (cmd === "baseline") {
     if (!baselinePath) throw new Error("--baseline required");
     const fingerprints = [...new Set(all.map((f) => f.fingerprint))].sort();
-    writeFileSync(baselinePath, `${JSON.stringify({ created: new Date().toISOString(), fingerprints, findings: all }, null, 2)}\n`);
+    const created = new Date().toISOString();
+    writeFileSync(baselinePath, `${JSON.stringify({ created, fingerprints, incomplete, findings: all }, null, 2)}\n`);
     console.log(`[security] baseline written: ${fingerprints.length} findings tracked → ${baselinePath}`);
+    for (const p of incomplete) console.error(`[security] warn: the baseline is INCOMPLETE — ${p.tool}: ${p.detail}`);
     process.exit(0);
   }
   let baseline: Baseline | undefined;
@@ -198,7 +238,9 @@ if (import.meta.main) {
   }
   const fresh = filterNew(all, baseline).sort((a, b) => RANK[b.severity] - RANK[a.severity]);
   const { block, counts } = summarize(fresh);
-  if (outPath) writeFileSync(outPath, `${JSON.stringify({ label, at: new Date().toISOString(), counts, findings: fresh }, null, 2)}\n`);
+  if (outPath) writeFileSync(outPath, `${JSON.stringify({ label, at: new Date().toISOString(), counts, incomplete, findings: fresh }, null, 2)}\n`);
+  const warn = incompleteWarning(baseline);
+  if (warn) console.error(warn);
   const known = all.length - fresh.length;
   console.log(`[security] ${label}: new ${counts.critical} critical, ${counts.high} high, ${counts.medium} medium, ${counts.low} low (${known} baselined)`);
   for (const f of fresh.filter((x) => RANK[x.severity] >= 2).slice(0, 40)) {
