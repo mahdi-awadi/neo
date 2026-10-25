@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findSecret } from "../src/engine/secret-patterns";
-import { DEFAULT_TOOLS_CFG, loadCards, parseCard, readToolsCfg } from "../src/engine/tools-catalogue";
+import { DEFAULT_TOOLS_CFG, loadCards, parseCard, readToolsCfg, relayKeyNames } from "../src/engine/tools-catalogue";
 
 const cfg = DEFAULT_TOOLS_CFG;
 const BODY = "## How to call\nrun it\n\n## When NOT to use\nnever\n";
@@ -176,4 +176,26 @@ test("eticket-data-mcp is scoped to eticket-v3; active cards carry usage globs",
   const { cards } = loadCards(REAL, DEFAULT_TOOLS_CFG);
   expect(cards.find((c) => c.id === "eticket-data-mcp")!.scope).toEqual(["eticket-v3"]);
   for (const c of cards.filter((x) => x.status === "active")) expect(c.usage?.tools?.length || c.usage?.commands?.length).toBeTruthy();
+});
+
+// Final review, Important #3 (T5): every card file that names a relay key keeps it in the engine — a
+// card that fails to parse or to validate too, so a broken card never leaks its key to a worker.
+test("final review: relayKeyNames reads relay.envKey from valid AND invalid cards, never a plain env list", () => {
+  const relay = (envKey: string) => ({ baseUrl: "https://api.example.com", authHeader: "x-api-key", envKey, maxBodyBytes: 100, operations: [{ name: "ping", method: "GET", path: "/p" }] });
+  const d = dir({
+    "good.md": card({ id: "good", kind: "api", env: ["GOOD_KEY"], relay: relay("GOOD_KEY") }),
+    // Valid YAML, invalid card (no owner, unknown status): the key is still collected.
+    "half.md": card({ id: "half", kind: "api", owner: undefined, status: "bogus", env: ["HALF_KEY"], relay: relay("HALF_KEY") }),
+    // Broken YAML: a best-effort line scan still finds the key.
+    "broken.md": "---\nid: broken\nkind: api\nwhen: [unclosed\nrelay:\n  envKey: BROKEN_KEY\n---\nbody\n",
+    // No relay: its env keys are the worker's own (an MCP may need them) — never collected.
+    "plain.md": card({ id: "plain", env: ["PLAIN_KEY"] }),
+    // Not a key name: ignored.
+    "odd.md": "---\nrelay:\n  envKey: not a key\n---\n",
+  });
+  const loaded = loadCards(d, cfg);
+  expect(loaded.cards.map((c) => c.id)).not.toContain("half");
+  expect(loaded.cards.map((c) => c.id)).not.toContain("broken");
+  expect(relayKeyNames(d).sort()).toEqual(["BROKEN_KEY", "GOOD_KEY", "HALF_KEY"]);
+  expect(relayKeyNames(join(d, "missing"))).toEqual([]);
 });

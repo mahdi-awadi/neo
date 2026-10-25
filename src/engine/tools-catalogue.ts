@@ -278,6 +278,34 @@ function parseRelay(raw: unknown, env: string[], err: (m: string) => void): Rela
   return { baseUrl, authHeader: raw.authHeader as string, envKey: raw.envKey as string, maxBodyBytes: raw.maxBodyBytes as number, operations: ops };
 }
 
+/** A relay key named in a card's front matter, found by a line scan (for a card whose YAML is broken). */
+const ENV_KEY_LINE_RE = /^\s*envKey\s*:\s*["']?([A-Z][A-Z0-9_]*)["']?\s*(?:#.*)?$/gm;
+
+/** The relay key names (`relay.envKey`) of EVERY card file in `dir`, valid or not (ADR-0050 §7): a card
+ *  that fails to parse or to validate still keeps its key out of the worker env. A card's front matter
+ *  is parsed when it can be; when it cannot, its lines are scanned. Never a card's plain `env` list:
+ *  those keys may be the worker's own. Never throws; an unreadable folder gives []. */
+export function relayKeyNames(dir: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isFile() && d.name.endsWith(".md") && d.name !== "README.md").map((d) => d.name);
+  } catch {
+    return [];
+  }
+  const keys = new Set<string>();
+  for (const name of names) {
+    let text: string;
+    try { text = readFileSync(join(dir, name), "utf8"); } catch { continue; }
+    const front = FRONT_RE.exec(text)?.[1] ?? text;
+    let fm: unknown;
+    try { fm = Bun.YAML.parse(front); } catch { fm = undefined; }
+    const parsed = isObj(fm) && isObj(fm.relay) ? fm.relay.envKey : undefined;
+    if (typeof parsed === "string" && ENV_NAME_RE.test(parsed)) keys.add(parsed);
+    for (const m of front.matchAll(ENV_KEY_LINE_RE)) keys.add(m[1]!);
+  }
+  return [...keys];
+}
+
 /** Load every `*.md` card in `dir`. Cross-file rules run after all cards are read: duplicate ids, and
  *  every recipe step must name an active card that is not itself a recipe. */
 export function loadCards(dir: string, cfg: ToolsCfg): { cards: ToolCard[]; errors: string[] } {
@@ -345,6 +373,9 @@ function bodyHoldsSecret(v: unknown, depth = 0): boolean {
   return Object.entries(v).some(([k, x]) => findSecret(k) !== undefined || bodyHoldsSecret(x, depth + 1));
 }
 
+/** What the key value becomes when an upstream echoes it in a reply. */
+const KEY_WITHHELD = "[key withheld]";
+
 /** Run one relayed API call. Always resolves to text; never throws. */
 export async function relayCall(cards: readonly ToolCard[], cardId: string, op: string, body: unknown, ctx: RelayCtx): Promise<string> {
   const t0 = ctx.now();
@@ -394,7 +425,9 @@ export async function relayCall(cards: readonly ToolCard[], cardId: string, op: 
   let text = "";
   try { text = await res.text(); } catch { text = ""; }
   audit({ bytesOut, status: res.status, ms: ctx.now() - t0 });
-  const out = `HTTP ${res.status}\n${text}`;
+  // A reply never holds the key (spec §4): an upstream that echoes the auth header (a 401 debug body)
+  // has the value withheld — before the cut, so a cut through the key leaves none of it.
+  const out = `HTTP ${res.status}\n${text.split(key).join(KEY_WITHHELD)}`;
   return out.length > ctx.cfg.maxReplyChars ? out.slice(0, ctx.cfg.maxReplyChars) + "\n[cut]" : out;
 }
 

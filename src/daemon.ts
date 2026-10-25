@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { DEFAULT_TOOLS_CFG, nullUsage, openCatalogue } from "./engine/tools-catalogue";
+import { DEFAULT_TOOLS_CFG, nullUsage, openCatalogue, relayKeyNames } from "./engine/tools-catalogue";
 import { fsSkillSource } from "./engine/tool-skills";
 import { loadConfig, loadedDotEnvKeys } from "./config";
 import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env";
@@ -164,14 +164,17 @@ async function main(): Promise<void> {
   // The tools catalogue (ADR-0044): its cards and the API relay behind `tool_api`. A load error is
   // recorded and the daemon goes on without the relay — it never crashes on a bad card.
   const relayKeys = new Set<string>();
+  const toolsCfg = cfg.tools ?? DEFAULT_TOOLS_CFG;
+  const toolsDir = isAbsolute(toolsCfg.catalogueDir) ? toolsCfg.catalogueDir : join(neoFolder, toolsCfg.catalogueDir);
+  // Every card file's relay key stays in the engine whatever its status — also a card that fails to
+  // load, so a broken card never leaks its key to a worker (ADR-0050 §7).
+  faults.guard("tools.relayKeys", () => { for (const k of relayKeyNames(toolsDir)) relayKeys.add(k); }, {});
   const tools = faults.guard("tools.catalogue", () => {
-    const tcfg = cfg.tools ?? DEFAULT_TOOLS_CFG;
     const catalogue = openCatalogue({
-      dir: isAbsolute(tcfg.catalogueDir) ? tcfg.catalogueDir : join(neoFolder, tcfg.catalogueDir),
-      cfg: tcfg, skills: fsSkillSource(), usage: nullUsage, ledger, // the ledger-backed usage counts are ADR-0044 Phase 3
+      dir: toolsDir,
+      cfg: toolsCfg, skills: fsSkillSource(), usage: nullUsage, ledger, // the ledger-backed usage counts are ADR-0044 Phase 3
     });
     const { cards, errors } = catalogue;
-    // Every card's relay key stays in the engine whatever its status (ADR-0050 §7).
     for (const c of cards) if (c.relay?.envKey) relayKeys.add(c.relay.envKey);
     if (errors.length) {
       ledger.recordEvent("tools_catalogue_errors", { data: { count: errors.length, first: errors.slice(0, 5) } });

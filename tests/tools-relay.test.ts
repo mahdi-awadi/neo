@@ -208,3 +208,21 @@ test("a customer (ingress) brief never gets tool_api, even when the operator dep
   expect(seen?.mcpServers).toBeDefined();
   expect(Object.keys(neoTools(seen!.mcpServers!))).not.toContain("tool_api");
 });
+
+// Final review, Important #3: the key value never comes back in the reply, and a broken card's key
+// still stays in the engine.
+test("final review: an upstream that echoes the key header has the key value redacted from the reply", async () => {
+  const echo = async (_u: string, init: RequestInit) => {
+    const key = (init.headers as Record<string, string>)["x-api-key"];
+    return new Response(`unauthorized: bad x-api-key ${key}; again: ${key}`, { status: 401 });
+  };
+  const { ctx } = setup({ fetch: echo });
+  const r = await relayCall([card()], "demo-api", "ping", undefined, ctx);
+  expect(r.startsWith("HTTP 401")).toBe(true);
+  expect(r).not.toContain(SENTINEL);
+  expect(r).toContain("[key withheld]");
+  // Redacted BEFORE the cut: a cut through the key can leave no part of it.
+  const cutCtx = setup({ fetch: echo }, { maxReplyChars: "HTTP 401\nunauthorized: bad x-api-key ".length + 10 }).ctx;
+  const c = await relayCall([card()], "demo-api", "ping", undefined, cutCtx);
+  expect(c).not.toContain(SENTINEL.slice(0, 10));
+});
