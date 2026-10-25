@@ -91,7 +91,7 @@ function cfg(): NeoConfig {
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));
 
 // A controllable fake live session: completes only when finish() is called.
-function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
+function fakeStart(opts: { onStart?: (h: RunHandlers) => void; steersMidTurn?: boolean } = {}) {
   let resolveDone!: (r: RunResult) => void;
   const done = new Promise<RunResult>((res) => {
     resolveDone = res;
@@ -99,13 +99,14 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
   let resumeSeen: string | undefined;
   let providerSeen: unknown;
   const followUps: string[] = [];
+  const timings: string[] = [];
   const start = (_o: Order, h: RunHandlers, d?: { resume?: string; provider?: unknown }): SessionRun => {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
+    return { followUp: (t, timing) => void (followUps.push(t), timings.push(timing)), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done, steersMidTurn: opts.steersMidTurn };
   };
-  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
+  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps, timings: () => timings };
 }
 
 function harness(over: { meter?: Meter; start?: ReturnType<typeof fakeStart>["start"] } = {}) {
@@ -1542,4 +1543,28 @@ test("tools hint: an operator path gets it only when listed in hintPaths", async
   };
   expect(await run(["project"])).toContain("Ask tools_for for more.");
   expect(await run(["dispatch"])).not.toContain("Ask tools_for");
+});
+
+test("an operator follow-up to a worker that steers mid-turn is sent as steer and says it lands at the next step", async () => {
+  const dir = scratch();
+  const f = fakeStart({ steersMidTurn: true });
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("it'll see this at its next step");
+  expect(f.followUps()).toContain("also write a README");
+  expect(f.timings().at(-1)).toBe("steer");
+});
+
+test("a follow-up to a worker that can't steer (Codex) says honestly it runs after the current turn", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("runs after its current turn");
 });

@@ -120,8 +120,9 @@ export function liveCompanyLink(registry: Registry, lifecycle?: { draining(): bo
       const company = registry.getDefault();
       const control = company ? registry.getControl(company.id) : undefined;
       if (!control || control.closed?.() === true) return false;
-      if (opts.cause) control.followUp(text, opts.cause);
-      else control.followUp(text);
+      // A dispatch result is an engine brief for the company: it waits for the turn, never steers it.
+      if (opts.cause) control.followUp(text, "after-turn", opts.cause);
+      else control.followUp(text, "after-turn");
       return true;
     },
   };

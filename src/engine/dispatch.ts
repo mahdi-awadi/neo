@@ -7,7 +7,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { Order, SessionInfo } from "../types";
+import type { FollowUpTiming, Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
 import { checkDecision, decisionBody, DECISION_LIMITS, MAX_OPTIONS, type StructuredAsk, type DecisionInput } from "./structured-question";
@@ -622,8 +622,9 @@ export async function dispatchToProject(
         : `its output streams to the operator as ${name}. It is a session the operator opened, so its result is NOT ` +
           `sent back to you automatically — check it with \`sessions\` or ask the operator.`;
       // The brief carries its cause into the session, so the turn that runs it is filed under it.
-      if (cause) control.followUp(order.task, cause);
-      else control.followUp(order.task);
+      // After the turn, never mid-turn: an engine brief must not steer the operator's in-flight work.
+      if (cause) control.followUp(order.task, "after-turn", cause);
+      else control.followUp(order.task, "after-turn");
       hooks.onLaunched?.(order.id, "delivered");
       deps.registry.touch(existing.id, now());
       // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
@@ -894,7 +895,7 @@ export async function dispatchToProject(
         .catch(() => {}); // best-effort, like a digest
       if (deps.dispatchSpinPolicy === "wrapup") {
         wrappingUp = true;
-        runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs));
+        runRef?.followUp(wrapUpBrief(`noticed this dispatch is repeating itself (${label})`, graceMs), "after-turn");
       }
     };
     // A dispatch is single-brief: once the session is SETTLED with nothing queued, the sub-run IS
@@ -918,7 +919,7 @@ export async function dispatchToProject(
         event("commit_finish_sent", { orderId: order.id, folder, data: { project: name, files } });
         void say(`📝 ${name} ended with uncommitted changes — asked it once to commit them`, undefined, { cause: liveCause() });
         lastActivityAt = now();
-        runRef.followUp(brief);
+        runRef.followUp(brief, "after-turn");
         return true;
       }, { folder }) === true;
     const run = start(
@@ -1033,7 +1034,7 @@ export async function dispatchToProject(
                 lastActivityAt = now();
                 retryPending = false;
                 // Inside the commit finish, the retry re-sends the commit request — never the whole task.
-                runRef?.followUp(commitBrief ?? apiRetryFollowUp(task));
+                runRef?.followUp(commitBrief ?? apiRetryFollowUp(task), "after-turn");
               });
               return; // keep the sub-run open — it hasn't done the work yet
             }
@@ -1073,12 +1074,12 @@ export async function dispatchToProject(
     // The registry's handle delivers a brief's cause with it (spec §4.2), like the pipeline's own.
     const control = {
       ...run,
-      followUp: (text: string, c?: Cause) => {
+      followUp: (text: string, timing: FollowUpTiming, c?: Cause) => {
         if (c) {
           deps.registry.deliver(session.id, c);
           refreshThread(deps, c.threadId);
         }
-        run.followUp(text);
+        run.followUp(text, timing);
       },
     };
     dispatchRuns.add(control);
@@ -1171,7 +1172,7 @@ export async function dispatchToProject(
         // Graceful wrap-up: give the worker a short grace window to commit green work and leave
         // a WIP note (the commit-per-task recovery we used to do by hand), then hard-abort.
         wrappingUp = true;
-        run.followUp(wrapUpBrief(`dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m)`, graceMs));
+        run.followUp(wrapUpBrief(`dispatch stall limit reached (no activity for ${Math.round(stallMs / 60000)}m)`, graceMs), "after-turn");
         const graced = await doneOrTick(graceMs);
         if (graced !== "tick") {
           result = graced.done; // wrapped up in time — keep the worker's own result

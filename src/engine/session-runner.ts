@@ -329,6 +329,9 @@ type SdkUserMessage = {
   type: "user";
   message: { role: "user"; content: string };
   parent_tool_use_id: string | null;
+  /** CLI command-queue priority. "next" = attach at the next tool boundary of the running turn
+   *  (steer mid-turn); "later" = wait for the turn to end (docs/sdk-notes.md, mid-turn priority). */
+  priority?: "next" | "later";
 };
 type QueryObject = AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void> };
 type QueryFn = (args: {
@@ -346,8 +349,8 @@ type CodexClientLike = {
 };
 export type CodexFactory = (options: CodexOptions) => CodexClientLike | Promise<CodexClientLike>;
 
-function userMessage(text: string): SdkUserMessage {
-  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+function userMessage(text: string, priority?: SdkUserMessage["priority"]): SdkUserMessage {
+  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, ...(priority ? { priority } : {}) };
 }
 
 /** What the worker is told when it calls the native AskUserQuestion on an operator surface (ADR-0049):
@@ -1072,7 +1075,11 @@ function startClaudeOrder(
   });
 
   return {
-    followUp: (text) => channel.push(userMessage(text)),
+    // The SDK drains this channel eagerly, so a follow-up reaches the CLI as soon as it is pushed.
+    // "steer" → priority "next" (attached at the running turn's next tool boundary); "after-turn" →
+    // "later". The replay path above re-pushes these same messages, priority included.
+    followUp: (text, timing) => channel.push(userMessage(text, timing === "steer" ? "next" : "later")),
+    steersMidTurn: true,
     interrupt: async () => {
       closeRequested = true;
       channel.close();
@@ -1143,7 +1150,7 @@ function startCodexOrder(
   })();
 
   return {
-    followUp: (text) => queue.push(text),
+    followUp: (text) => queue.push(text), // Codex runs one turn per input: the timing does not apply
     interrupt: async () => {
       interruptRequested = true;
       closeRequested = true;

@@ -177,7 +177,7 @@ test("a follow-up queued during the dead resume survives into the fresh session"
   const { q, received } = missingConversationQuery();
   const { h } = handlers();
   const run = startOrder(order({ task: "first" }), h, { query: q as never, resume: CODEX_ID });
-  run.followUp("second"); // queued while the dead resume was still failing
+  run.followUp("second", "steer"); // queued while the dead resume was still failing
   run.close();
   await run.done;
   expect(received).toEqual(["first", "second"]);

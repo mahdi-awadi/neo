@@ -319,9 +319,10 @@ test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) in
   );
   d.registry.setStatus(first.id, "running");
   const followUps: string[] = [];
+  const timings: string[] = [];
   // A live worker mid-turn (active) means dispatch must queue behind its turn, not refuse.
   d.registry.attachControl(first.id, {
-    followUp: (t: string) => void followUps.push(t),
+    followUp: (t: string, timing: string) => void (followUps.push(t), timings.push(timing)),
     queued: () => 1,
     active: () => true,
     interrupt: async () => {},
@@ -335,6 +336,7 @@ test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) in
   });
   expect(followUps.length).toBe(1); // the brief was queued into the live session
   expect(followUps[0]).toContain("run docker ps and report");
+  expect(timings[0]).toBe("after-turn"); // an engine brief must not steer the operator's in-flight turn
   expect(out.toLowerCase()).toContain("queued");
 });
 

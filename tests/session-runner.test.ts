@@ -158,7 +158,7 @@ test("runOrder lets the human approve an escalated tool (allow, with updatedInpu
 test("startOrder delivers the initial task and a follow-up as user messages", async () => {
   const f = fakeStreaming();
   const run = startOrder(order("do it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: f.q });
-  run.followUp("more please");
+  run.followUp("more please", "steer");
   await run.interrupt();
   await run.done;
   expect(f.received).toEqual(["do it", "more please"]);
@@ -387,8 +387,8 @@ test("onActivity reports every tool_use and text block; queued() counts waiting 
     { onMessage: () => {}, onEscalation: async () => "deny", onActivity: (l) => void labels.push(l) },
     { query: fakeQuery as never },
   );
-  run.followUp("extra 1");
-  run.followUp("extra 2");
+  run.followUp("extra 1", "steer");
+  run.followUp("extra 2", "steer");
   expect(run.queued()).toBeGreaterThanOrEqual(0); // channel drains as the fake iterates; the method exists and returns a number
   await run.done;
   expect(labels).toContain("Bash: bun test");
@@ -424,7 +424,7 @@ test("startOrder.active() tracks turn-in-flight, and a follow-up queued mid-turn
   expect(received).toEqual(["first brief"]);
 
   // A brief arriving mid-turn must QUEUE behind the in-flight turn, not be dropped or run concurrently.
-  run.followUp("second brief");
+  run.followUp("second brief", "steer");
   await tick();
   expect(received).toEqual(["first brief"]); // still queued behind the live turn
 
@@ -793,7 +793,7 @@ test("startOrder queues follow-ups as sequential Codex SDK turns on the same thr
     { provider: "codex", codexFactory: f.factory, resume: "codex-prev" },
   );
   while (turns.length === 0) await new Promise((r) => setTimeout(r, 1));
-  run.followUp("second");
+  run.followUp("second", "steer");
   while (turns.length < 2) await new Promise((r) => setTimeout(r, 1));
   run.close();
   const result = await run.done;
@@ -1155,7 +1155,7 @@ test("onTurnEnd: a live Codex session ends a turn after each one", async () => {
   let ends = 0;
   const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnEnd: () => void ends++ }, { provider: "codex", codexFactory: f.factory });
   while (ends === 0) await new Promise((r) => setTimeout(r, 1));
-  run.followUp("y");
+  run.followUp("y", "steer");
   while (ends < 2) await new Promise((r) => setTimeout(r, 1));
   run.close();
   await run.done;
@@ -1176,7 +1176,7 @@ test("onTurnStart: a live Codex session reports one consumed input per turn; Cla
     { provider: "codex", codexFactory: f.factory },
   );
   while (seen.length < 2) await new Promise((r) => setTimeout(r, 1));
-  run.followUp("y");
+  run.followUp("y", "steer");
   while (seen.length < 4) await new Promise((r) => setTimeout(r, 1));
   run.close();
   await run.done;
@@ -1224,4 +1224,95 @@ test("error_max_turns and error_during_execution results carry no api error kind
     expect(res.ok).toBe(false);
     expect(res.apiError).toBeUndefined();
   }
+});
+
+// --- follow-up timing (ADR-0050 §5, port of c12c46f): a follow-up reaches the worker MID-turn ----
+
+// Models the real SDK: Query.streamInput drains the prompt iterable eagerly while the turn runs; the
+// CLI attaches queued "next"-priority user messages between tool calls instead of at the turn end.
+function fakeEagerSdk() {
+  const received: Array<{ content: string; priority?: string; duringTurn: boolean }> = [];
+  let turnOpen = false;
+  let finishTurn!: () => void;
+  const turnGate = new Promise<void>((r) => (finishTurn = r));
+  const q = (args: { prompt: any; options: any }) => {
+    void (async () => {
+      for await (const m of args.prompt as AsyncIterable<any>) {
+        received.push({ content: m.message.content, priority: m.priority, duringTurn: turnOpen });
+      }
+    })();
+    return (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-1" };
+      turnOpen = true;
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "make" } }] } };
+      await turnGate; // a long tool run
+      turnOpen = false;
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "sess-1" };
+    })();
+  };
+  return { q, received, finishTurn };
+}
+
+test("a steer follow-up pushed during a running turn reaches the SDK mid-turn with priority 'next'", async () => {
+  const sdk = fakeEagerSdk();
+  const run = startOrder(order("build it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: sdk.q as any });
+  await new Promise((r) => setTimeout(r, 5));
+  run.followUp("also update the README", "steer");
+  await new Promise((r) => setTimeout(r, 5));
+  const fu = sdk.received.find((m) => m.content === "also update the README");
+  expect(fu).toBeDefined();
+  expect(fu!.duringTurn).toBe(true);
+  expect(fu!.priority).toBe("next");
+  expect(run.steersMidTurn).toBe(true);
+  sdk.finishTurn();
+  run.close();
+  await run.done;
+});
+
+test("an after-turn follow-up is sent with priority 'later' so it can't steer the running turn", async () => {
+  const sdk = fakeEagerSdk();
+  const run = startOrder(order("build it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: sdk.q as any });
+  await new Promise((r) => setTimeout(r, 5));
+  run.followUp("company brief", "after-turn");
+  await new Promise((r) => setTimeout(r, 5));
+  expect(sdk.received.find((m) => m.content === "company brief")!.priority).toBe("later");
+  sdk.finishTurn();
+  run.close();
+  await run.done;
+});
+
+test("the resume-replay path keeps each message's priority when a dead resume id forces a cold restart", async () => {
+  const seen: Array<Array<{ content: string; priority?: string }>> = [];
+  let call = 0;
+  const q = (args: { prompt: any; options: any }) => {
+    const mine: Array<{ content: string; priority?: string }> = [];
+    seen.push(mine);
+    const n = call++;
+    void (async () => {
+      for await (const m of args.prompt as AsyncIterable<any>) mine.push({ content: m.message.content, priority: m.priority });
+    })();
+    return (async function* () {
+      if (n === 0) throw new Error("No conversation found with session ID: dead");
+      yield { type: "system", subtype: "init", session_id: "fresh" };
+      yield { type: "result", subtype: "success", result: "ok", total_cost_usd: 0, session_id: "fresh" };
+    })();
+  };
+  const run = startOrder(order("first"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as any, resume: "dead" });
+  run.followUp("second", "steer");
+  await new Promise((r) => setTimeout(r, 20));
+  run.close();
+  await run.done;
+  const replayed = seen[1] ?? [];
+  expect(replayed.map((m) => m.content)).toContain("second");
+  expect(replayed.find((m) => m.content === "second")?.priority).toBe("next");
+});
+
+test("Codex cannot steer: steersMidTurn is not set and the timing is ignored", async () => {
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexFactory: () => ({ startThread: () => ({ id: "t", runStreamed: async () => ({ events: (async function* () {})() }) }) }) as never,
+  } as never);
+  expect(run.steersMidTurn).toBeFalsy();
+  run.close();
+  await run.done.catch(() => {});
 });
