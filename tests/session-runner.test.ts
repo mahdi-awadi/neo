@@ -1316,3 +1316,33 @@ test("Codex cannot steer: steersMidTurn is not set and the timing is ignored", a
   run.close();
   await run.done.catch(() => {});
 });
+
+test("final review (T8): runOrder hands deps.abortController to the Claude SDK options", async () => {
+  let seen: Record<string, unknown> = {};
+  const q = (args: { prompt: unknown; options: Record<string, unknown> }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  const ac = new AbortController();
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never, abortController: ac });
+  expect(seen.abortController).toBe(ac);
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect("abortController" in seen).toBe(false);
+});
+
+test("final review (T8): runOrder hands deps.abortController's signal to a Codex turn", async () => {
+  const signals: Array<AbortSignal | undefined> = [];
+  const thread = {
+    id: null,
+    async runStreamed(_input: string, turnOptions?: { signal?: AbortSignal }) {
+      signals.push(turnOptions?.signal);
+      return { events: (async function* () { yield { type: "turn.completed", usage: {} }; })() };
+    },
+  };
+  const client = { startThread: () => thread, resumeThread: () => thread };
+  const ac = new AbortController();
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { provider: "codex", codexFactory: async () => client as never, abortController: ac });
+  expect(signals[0]).toBe(ac.signal);
+});

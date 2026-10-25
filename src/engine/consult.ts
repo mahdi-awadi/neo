@@ -4,7 +4,7 @@
  *  the project fence, a turn cap — and every escalation is denied. When the notes module asks for a
  *  fork, it resumes the target's idle session with `forkSession` (a side copy; the parent never sees
  *  it). A consult is never a registry session and never saves its SDK session: it answers, then it is
- *  gone. It is bounded by the dispatch stall limit, so a run that goes silent frees its slot. */
+ *  gone. It is bounded by the dispatch stall limit: a run that goes silent is aborted and frees its slot. */
 
 import type { NeoConfig } from "../config";
 import type { Ledger } from "./ledger";
@@ -63,7 +63,10 @@ export function createConsultRunner(deps: ConsultRunnerDeps): ConsultRunner {
     const order: Order = { id: crypto.randomUUID(), source: "neo", folder: job.folder, task: job.prompt, chatId: CONSULT_CHAT, createdAt: Date.now() };
     // Filed under the asker's cause, so /trace shows the consult in the asker's thread.
     deps.ledger.recordOrder(order, job.cause ? { cause: job.cause } : undefined);
+    // The consult's own abort: a run the stall bound gives up on is ended, not left spending.
+    const abort = new AbortController();
     const base: RunDeps = {
+      abortController: abort,
       maxTurns: notesCfg.questions.consultMaxTurns,
       mcpServers: neoMcpServers(
         { tools: deps.catalogue, memory: cfg.memory, companyFolder: cfg.companyFolder, contextPolicy: cfg.contextPolicy },
@@ -101,8 +104,8 @@ export function createConsultRunner(deps: ConsultRunnerDeps): ConsultRunner {
       },
       runDeps,
     );
-    // The cost reaches the budget meter when the run ends — also for a run the stall bound gave up on,
-    // whose SDK query still finishes (and spends) in the background.
+    // The cost reaches the budget meter when the run ends — also for a run the stall bound gave up on
+    // and aborted (the SDK reports what it spent up to the abort).
     void run.then((r) => deps.meter?.note({ costUsd: r.costUsd }, Date.now())).catch(() => {});
     const settled = (r: { ok: boolean; answer: string; reason?: string }, outcome: string) => {
       deps.ledger.recordOutcome(order.id, r.ok ? "done" : "failed", outcome);
@@ -110,7 +113,10 @@ export function createConsultRunner(deps: ConsultRunnerDeps): ConsultRunner {
     };
     try {
       const out: RunResult | "stall" = await Promise.race([run, stalled]);
-      if (out === "stall") return settled({ ok: false, answer: "", reason: `stall: no activity for ${Math.round(stallMs / 1000)}s (dispatchStallMs)` }, "consult: no answer (stall)");
+      if (out === "stall") {
+        abort.abort();
+        return settled({ ok: false, answer: "", reason: `stall: no activity for ${Math.round(stallMs / 1000)}s (dispatchStallMs)` }, "consult: no answer (stall)");
+      }
       const answer = (out.summary ?? "").trim();
       if (out.ok && !out.apiError && answer) return settled({ ok: true, answer }, "consult answered");
       const reason = out.apiError ? `api: ${out.apiError}${answer ? ` — ${answer}` : ""}` : answer || "the consult run failed";

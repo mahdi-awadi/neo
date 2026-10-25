@@ -206,3 +206,21 @@ test("fix R11: each consult's cost reaches the budget meter — also a run the s
   await new Promise((r) => setTimeout(r, 0));
   expect(meter.spent()).toBeCloseTo(0.75);
 }, 5_000);
+
+test("final review (T8): a stalled consult aborts its SDK run, so the slot reflects reality", async () => {
+  const folder = scratch("neo-consult-target-");
+  const f = fakeRun(undefined, true);
+  const out = await createConsultRunner({ runOrder: f.run, cfg: cfgFor(folder, { dispatchStallMs: 20 }), ledger: openLedger(":memory:") })({ folder, prompt: "P", workClass: "interactive" });
+  expect(out.ok).toBe(false);
+  const ac = f.calls[0]!.deps.abortController;
+  expect(ac).toBeDefined();
+  expect(ac!.signal.aborted).toBe(true);
+}, 5_000);
+
+test("final review (T8): an answered consult is never aborted (negative control)", async () => {
+  const folder = scratch("neo-consult-target-");
+  const f = fakeRun();
+  const out = await createConsultRunner({ runOrder: f.run, cfg: cfgFor(folder), ledger: openLedger(":memory:") })({ folder, prompt: "P", workClass: "interactive" });
+  expect(out.ok).toBe(true);
+  expect(f.calls[0]!.deps.abortController?.signal.aborted).toBe(false);
+});

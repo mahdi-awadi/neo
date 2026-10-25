@@ -226,6 +226,9 @@ export interface RunDeps {
   outOfFolderWrites?: OutOfFolderWrites;
   /** The project fence (ADR-0031): set by profileDeps for dispatch and loop workers. Engine-side only. */
   projectFence?: ProjectFence;
+  /** Ends a single-shot run from outside (`runOrder` only): the Claude SDK's `abortController`
+   *  option, the Codex turn's `signal`. Engine-side; consult runs abort on stall (ADR-0050). */
+  abortController?: AbortController;
   /** Codex SDK controls. These are ignored by the Claude adapter. */
   codexSandboxMode?: CodexSandboxMode;
   codexApprovalPolicy?: CodexApprovalMode;
@@ -952,7 +955,9 @@ async function runClaudeOrder(
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const run = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence) }), handlers);
+    const options = sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence);
+    if (d.abortController) options.abortController = d.abortController;
+    return consumeStream(query({ prompt: order.task, options }), handlers);
   };
   const first = await run(deps);
   if (!first.resumeMissing || !deps.resume) return first;
@@ -981,7 +986,7 @@ async function runCodexOrder(
   const client = await makeCodexClient(deps);
   const options = codexThreadOptions(order, deps);
   const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
-  return consumeCodexTurn(thread, order.task, handlers);
+  return consumeCodexTurn(thread, order.task, handlers, deps.abortController?.signal);
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
