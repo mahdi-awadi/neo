@@ -768,6 +768,14 @@ function startSession(
     const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now()), { project: notesName });
     if (block) order = { ...order, task: block + order.task };
   }
+  // The tools hint (ADR-0044): fresh start only, and only where `hintPaths` lists this operator path. It
+  // matches the operator's raw order text and goes in front of the notes block, like the dispatch path.
+  const hintPath = registry.getDefault()?.id === registryId ? "company" : "project";
+  if (!runDeps.resume && deps.tools && deps.tools.cfg.hintPaths.includes(hintPath)) {
+    const hintName = project ?? basename(order.folder);
+    const hint = faults.guard("pipeline.toolsHint", () => deps.tools!.hint(order.task, { project: hintName, folder: order.folder }), { project: hintName });
+    if (hint) order = { ...order, task: hint + order.task };
+  }
   const run = start(
     order,
     {

@@ -74,7 +74,7 @@ import { createPlanWatch } from "./plan-watch";
 import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./commit-finish";
 import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
-import type { Catalogue } from "./tools-catalogue";
+import { formatToolsReply, type Catalogue } from "./tools-catalogue";
 import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type ProjectNotes } from "./project-notes";
 import {
   apiFailureNotice,
@@ -768,6 +768,16 @@ export async function dispatchToProject(
       const notesBlock = deps.notes ? faults.guard("dispatch.notesBlock", () => deps.notes!.block(name, now()), { project: name }) : undefined;
       if (notesBlock) {
         order.task = notesBlock + order.task;
+        deps.ledger.recordOrder(order);
+      }
+      // The tools hint (ADR-0044): up to a few catalogue lines that match the raw brief, only on the worker
+      // paths in `hintPaths`. No deps.tools (ingress) → none. Recorded so the ledger equals what the worker gets.
+      const toolsHint =
+        deps.tools && deps.tools.cfg.hintPaths.includes("dispatch")
+          ? faults.guard("dispatch.toolsHint", () => deps.tools!.hint(task, { project: name, folder }), { project: name })
+          : undefined;
+      if (toolsHint) {
+        order.task = toolsHint + order.task;
         deps.ledger.recordOrder(order);
       }
     }
@@ -1702,6 +1712,23 @@ export function neoMcpServers(
         async (args: { card: string; operation: string; body?: unknown }) => {
           const caller = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder };
           return { content: [{ type: "text" as const, text: await catalogue.relay(args.card, args.operation, args.body, caller) }] };
+        },
+      ),
+    );
+  }
+  if (catalogue) {
+    tools.push(
+      tool(
+        "tools_for",
+        "Find the shared tool, CLI, API, recipe or skill for a task. Describe the task in plain words; the reply lists the best matches with why they match, how to call them, and their cost and limits. Only for tools that Neo's catalogue knows.",
+        {
+          task: z.string().describe("what you need to do, in plain words"),
+          limit: z.number().int().min(1).max(10).optional().describe("how many matches to return (default from config)"),
+        },
+        async (args: { task: string; limit?: number }) => {
+          const caller = { project: opts.projectName ?? basename(opts.folder), folder: opts.folder };
+          const matches = catalogue.find(args.task, { ...caller, ...(args.limit !== undefined ? { limit: args.limit } : {}) });
+          return { content: [{ type: "text" as const, text: formatToolsReply(matches, catalogue.cfg) }] };
         },
       ),
     );

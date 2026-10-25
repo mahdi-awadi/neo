@@ -1524,3 +1524,22 @@ test("notes: a fresh operator session gets the notes block for its project", asy
   expect(seenTask).toContain("[PROJECT NOTES");
   expect(seenTask).toContain("heads up");
 });
+
+// ADR-0044 (spec A4): an operator session gets the tools hint only when its path is in `hintPaths`.
+test("tools hint: an operator path gets it only when listed in hintPaths", async () => {
+  const { DEFAULT_TOOLS_CFG } = await import("../src/engine/tools-catalogue");
+  const run = async (hintPaths: string[]): Promise<string> => {
+    const dir = scratch();
+    let seenTask = "";
+    const start = (o: Order): SessionRun => {
+      seenTask = o.task;
+      return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+    };
+    const h = harness({ start });
+    const tools = { cfg: { ...DEFAULT_TOOLS_CFG, hintPaths }, hint: () => "Tools that may help:\n- x (cli): y\nAsk tools_for for more.\n\n" } as never;
+    await handleMessage(`/open ${dir} take a screenshot`, 9, { ...h.base, tools });
+    return seenTask;
+  };
+  expect(await run(["project"])).toContain("Ask tools_for for more.");
+  expect(await run(["dispatch"])).not.toContain("Ask tools_for");
+});

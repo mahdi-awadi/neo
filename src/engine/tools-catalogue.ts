@@ -429,6 +429,8 @@ export interface ToolMatch {
   id: string;
   kind: ToolKind | "skill";
   title: string;
+  /** The card's (or skill's) "when to use" line. */
+  when: string;
   /** The query words that matched, per field: "tags: deploy, coolify". */
   why: string[];
   /** The first lines of "## How to call" (at most `cfg.howMaxChars`). */
@@ -451,6 +453,27 @@ export interface Catalogue {
   find(text: string, ctx: { project: string; folder: string; limit?: number }): ToolMatch[];
   /** Relay one call for the calling project. The key is read inside, from the engine's env. */
   relay(cardId: string, op: string, body: unknown, caller: { project: string; folder: string }): Promise<string>;
+  /** The dispatch tools hint for a brief (spec A4): at most `hintMaxCards` lines `- <id> (<kind>): <when>` that the
+   *  project may use, within `hintMaxChars`, ending with `Ask tools_for for more.`; "" when nothing scores. */
+  hint(brief: string, ctx: { project: string; folder: string }): string;
+}
+
+const HINT_HEAD = "Tools that may help:";
+const HINT_TAIL = "Ask tools_for for more.";
+
+/** The `tools_for` reply text: one block per match, cut to `cfg.replyMaxChars`. */
+export function formatToolsReply(matches: readonly ToolMatch[], cfg: ToolsCfg): string {
+  if (matches.length === 0) return "no tool found for that task. Describe it with other words, or check the installed skills.";
+  const blocks = matches.map((m) => {
+    const lines = [`${m.id} · ${m.kind} · ${m.allowed ? "allowed" : `not allowed (${m.reason ?? "out of scope"})`}`];
+    if (m.why.length) lines.push(`why: ${m.why.join("; ")}`);
+    if (m.how) lines.push(`how: ${m.how}`);
+    const extra = [m.cost ? `cost: ${m.cost}` : "", m.limits ? `limits: ${m.limits}` : "", m.p50Ms !== undefined ? `p50: ${m.p50Ms} ms` : ""].filter(Boolean);
+    if (extra.length) lines.push(extra.join(" · "));
+    return lines.join("\n");
+  });
+  const text = blocks.join("\n\n");
+  return text.length > cfg.replyMaxChars ? text.slice(0, Math.max(0, cfg.replyMaxChars - 1)).trimEnd() + "…" : text;
 }
 
 const WORD_RE = /[\p{L}\p{N}]+/gu;
@@ -594,7 +617,7 @@ export function openCatalogue(o: {
       }
       const p50 = c?.relay ? safe(() => usage.p50(c.id)) : undefined;
       out.push({
-        id: r.id, kind: r.kind, title: r.id, why,
+        id: r.id, kind: r.kind, title: r.id, when: r.when, why,
         how: c ? howToCall(c.body, cfg.howMaxChars) : `Load the skill "${r.id}".`,
         ...(c ? { cost: c.cost, limits: c.limits } : {}),
         ...(p50 !== undefined ? { p50Ms: p50 } : {}),
@@ -606,11 +629,31 @@ export function openCatalogue(o: {
     return out.slice(0, limit);
   }
 
+  function hint(brief: string, ctx: { project: string; folder: string }): string {
+    if (cfg.hintMaxCards < 1) return "";
+    const found = find(brief, { ...ctx, limit: cfg.hintMaxCards }).filter((m) => m.allowed).slice(0, cfg.hintMaxCards);
+    const lines: string[] = [];
+    const size = (l: string[]): number => [HINT_HEAD, ...l, HINT_TAIL].join("\n").length;
+    for (const m of found) {
+      const prefix = `- ${m.id} (${m.kind}): `;
+      let line = prefix + m.when.replace(/\s+/g, " ").trim();
+      const room = cfg.hintMaxChars - size(lines) - 1; // the newline this line adds
+      if (line.length > room) {
+        if (room < prefix.length + 8) break;
+        line = line.slice(0, room - 1).trimEnd() + "…";
+      }
+      lines.push(line);
+    }
+    if (lines.length === 0) return "";
+    return [HINT_HEAD, ...lines, HINT_TAIL].join("\n") + "\n\n";
+  }
+
   return {
     cards,
     errors: loaded.errors,
     cfg,
     find,
+    hint,
     relay: (cardId, op, body, caller) =>
       relayCall(cards, cardId, op, body, {
         ...caller, cfg, env: o.env ?? process.env, ledger: o.ledger,
