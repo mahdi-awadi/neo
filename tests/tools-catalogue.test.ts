@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { findSecret } from "../src/engine/secret-patterns";
 import { DEFAULT_TOOLS_CFG, loadCards, parseCard, readToolsCfg } from "../src/engine/tools-catalogue";
 
 const cfg = DEFAULT_TOOLS_CFG;
@@ -143,4 +144,36 @@ test("defaults match the spec", () => {
     showDisallowed: false, findLimit: 5, replyMaxChars: 4000, howMaxChars: 400, hintMaxCards: 3, hintMaxChars: 500,
     hintPaths: ["dispatch"], skillifyMin: 3,
   });
+});
+
+// The real catalogue: a bad card in docs/tools fails `bun test` (spec §7 AC1).
+const REAL = join(import.meta.dir, "..", "docs", "tools");
+
+test("the real docs/tools loads with zero errors", () => {
+  const { cards, errors } = loadCards(REAL, DEFAULT_TOOLS_CFG);
+  expect(errors).toEqual([]);
+  const active = cards.filter((c) => c.status === "active").map((c) => c.id).sort();
+  expect(active).toEqual([
+    "chrome-devtools", "codebase-memory", "create-loop", "disk-kit", "eticket-data-mcp", "playwright",
+    "project-notes", "security-kit", "shared-browser", "stitch",
+  ]);
+});
+
+test("scaledown is a candidate api card that sends data off the host; no card holds a key value", () => {
+  const { cards } = loadCards(REAL, DEFAULT_TOOLS_CFG);
+  const sd = cards.find((c) => c.id === "scaledown")!;
+  expect(sd.status).toBe("candidate");
+  expect(sd.kind).toBe("api");
+  expect(sd.dataLeavesHost).toBe(true);
+  expect(sd.relay).toEqual({
+    baseUrl: "https://api.scaledown.xyz", authHeader: "x-api-key", envKey: "SCALEDOWN_API_KEY", maxBodyBytes: 262144,
+    operations: [{ name: "compress", method: "POST", path: "/compress/raw/" }],
+  });
+  for (const c of cards) expect(findSecret(c.body)).toBeUndefined();
+});
+
+test("eticket-data-mcp is scoped to eticket-v3; active cards carry usage globs", () => {
+  const { cards } = loadCards(REAL, DEFAULT_TOOLS_CFG);
+  expect(cards.find((c) => c.id === "eticket-data-mcp")!.scope).toEqual(["eticket-v3"]);
+  for (const c of cards.filter((x) => x.status === "active")) expect(c.usage?.tools?.length || c.usage?.commands?.length).toBeTruthy();
 });
