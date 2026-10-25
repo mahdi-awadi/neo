@@ -372,8 +372,9 @@ export interface ProjectNotes {
   resolve(project: string, id: number, r: ResolveInput, now: number): Promise<NoteResult>;
   /** The sender takes the note back. */
   withdraw(project: string, id: number, now: number): NoteResult;
-  /** The notes block a fresh session of `project` starts with; "" when there is nothing to say. */
-  block(project: string, now: number): string;
+  /** The notes block a fresh session of `project` starts with; "" when there is nothing to say. With
+   *  `folder`, the company folder reads as `main`, and any other folder that would go by `main` gets none. */
+  block(project: string, now: number, folder?: string): string;
   /** A todo ended: when it is `done` and was made from open notes, they resolve `fixed` with the todo
    *  and the target's HEAD at the end. Any other status changes nothing. */
   onTodoEnd(todo: Pick<TodoRow, "id" | "status">, now: number): Promise<void>;
@@ -387,10 +388,18 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
   /** Questions whose consult runs in THIS engine (a reload empties it: the boot sweep fails the rest). */
   const inflight = new Set<number>();
 
+  /** `main` is an engine fact, never a name: a session is `main` only when its folder IS the company
+   *  folder. Since `send`/`ask` refuse every other session that would go by `main` (`spoofsMain`), a
+   *  row with `from_project = 'main'` was written only from the company folder — the fact `heldLive`
+   *  relies on to deliver a note live in the trusted frame. */
+  const isCompany = (folder: string): boolean => folder === deps.companyFolder;
+  const spoofsMain = (from: SenderCtx): boolean => !isCompany(from.folder) && (from.project === MAIN || basename(from.folder) === MAIN);
+  const MAIN_RESERVED = `the sender name ${MAIN} is reserved for the company folder — a project named ${MAIN} cannot send notes or ask (ADR-0050)`;
   /** The company is `main` in notes, whatever its session's project name. */
-  const senderOf = (from: SenderCtx): string => (from.folder === deps.companyFolder ? MAIN : from.project);
-  /** The name a folder's notes go by (the company folder → `main`). */
-  const projectOf = (folder: string): string => (folder === deps.companyFolder ? MAIN : basename(folder));
+  const senderOf = (from: SenderCtx): string => (isCompany(from.folder) ? MAIN : from.project);
+  /** The name a folder's notes go by (the company folder → `main`); undefined for a folder that would
+   *  go by `main` without being the company folder (it takes nothing). */
+  const projectOf = (folder: string): string | undefined => (isCompany(folder) ? MAIN : basename(folder) === MAIN ? undefined : basename(folder));
   /** The folder of a project name as a note names it. */
   const folderOf = (project: string): string => (project === MAIN ? deps.companyFolder : join(deps.workRoot, project));
 
@@ -485,6 +494,7 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
    *  cause, the `note_sent` event and the trace line. `question` lets `ask` store kind `question`. */
   const sendNote = (from: SenderCtx, input: NoteInput, now: number, opts: { question?: { fromSession?: string } } = {}): NoteResult => {
     const what = opts.question ? "question" : "note";
+    if (spoofsMain(from)) return refuse(from, input.to, MAIN_RESERVED, what);
     const bad = invalid(input, !!opts.question);
     if (bad) return refuse(from, input.to, bad, what);
     const t = target(from, input.to);
@@ -541,8 +551,10 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
     !row.fromSession || row.fromSession === sessionId || !(deps.liveSession?.(row.fromSession) ?? false);
 
   /** The held rows a session (or a fresh start) of `folder` takes now, oldest first. */
-  const heldFor = (folder: string, sessionId: string | undefined): AttentionRow[] =>
-    ledger.heldLive({ folder, project: projectOf(folder) }).filter((r) => takeable(r, sessionId));
+  const heldFor = (folder: string, sessionId: string | undefined): AttentionRow[] => {
+    const project = projectOf(folder);
+    return project === undefined ? [] : ledger.heldLive({ folder, project }).filter((r) => takeable(r, sessionId));
+  };
 
   /** Store a consult's outcome on question `id`: the answer (secret-checked, cut) and `answered`, or the
    *  failure as `not_needed`. `delivered`: the asker got it in the tool result (else it is held). A
@@ -605,6 +617,7 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
       const need = q.need ?? "info";
       const question = q.question ?? "";
       const no = (reason: string) => refuse(from, to, reason, "question").text;
+      if (spoofsMain(from)) return no(MAIN_RESERVED);
       if (!qc.enabled) return no("questions are off (notes.questions.enabled)");
       const consult = deps.consult;
       if (!consult) return no("questions are off: no consult runner is wired in this engine");
@@ -756,7 +769,9 @@ export function createProjectNotes(deps: NotesDeps): ProjectNotes {
       close(row, { how: "withdrawn", by: project, at: now }, now);
       return { ok: true, text: `note #${id} withdrawn` };
     },
-    block(project, now) {
+    block(name, now, folder) {
+      const project = folder === undefined ? name : isCompany(folder) ? MAIN : projectOf(folder) === undefined || name === MAIN ? undefined : name;
+      if (project === undefined) return "";
       // Held live rows first (ADR-0050 §4): notes from `main` and answers this project asked for. A fresh
       // start is a delivery point, so the ones shown are marked delivered.
       const held = heldFor(folderOf(project), undefined);

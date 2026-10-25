@@ -769,7 +769,7 @@ function startSession(
   // wired deps.notes.
   if (!runDeps.resume && deps.notes) {
     const notesName = project ?? basename(order.folder);
-    const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now()), { project: notesName });
+    const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now(), order.folder), { project: notesName });
     if (block) order = { ...order, task: block + order.task };
   }
   // The tools hint (ADR-0044): fresh start only, and only where `hintPaths` lists this operator path. It

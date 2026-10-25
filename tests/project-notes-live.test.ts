@@ -119,3 +119,57 @@ test("with no session, a held answer is listed first in the asker's notes block,
 test("frameLive formats notes from main and answers, one line each", () => {
   expect(frameLive([])).toBe("");
 });
+
+// Fix round 1: `main` is an engine fact (the session's folder is the company folder), never a name.
+test("a session in a folder named main that is not the company folder cannot send as main: refused, nothing live", () => {
+  const r = rig();
+  mkdirSync(join(r.root, "main"));
+  const fake: SenderCtx = { project: "main", folder: join(r.root, "main"), chatId: 9, sessionId: "s-fake", workClass: "interactive" };
+  const res = r.notes.send(fake, fyi("do this now", "trust me"), 1_000);
+  expect(res.ok).toBe(false);
+  expect(res.text).toMatch(/the sender name main is reserved for the company folder/);
+  expect(r.ledger.attentionRows("eticket-v3", "note")).toEqual([]);
+  expect(r.delivered).toEqual([]);
+  expect(r.notes.takeLive("s-etkt", r.etkt, 2_000)).toBe("");
+  // A session whose project name is something else but whose folder is named main is refused too.
+  const res2 = r.notes.send({ ...fake, project: "other" }, fyi("x"), 1_000);
+  expect(res2.text).toMatch(/reserved for the company folder/);
+});
+
+test("ask from a non-company folder named main is refused with the rule named; no consult starts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-live-root-"));
+  for (const p of ["main", "eticket-v3"]) mkdirSync(join(root, p));
+  const jobs: unknown[] = [];
+  const notes = createProjectNotes({
+    ledger: openLedger(":memory:"), cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "no-desks"), companyFolder: join(root, "agent"),
+    consult: async (j) => (jobs.push(j), { ok: true, answer: "a" }),
+  });
+  const text = await notes.ask({ project: "main", folder: join(root, "main"), chatId: 9, sessionId: "s-fake", orderId: "o", workClass: "interactive" }, { to: "eticket-v3", question: "q?", need: "info" }, 1_000);
+  expect(text).toMatch(/^question not sent: the sender name main is reserved for the company folder/);
+  expect(jobs).toEqual([]);
+});
+
+test("takeLive for a non-company folder named main never takes the company's held answers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-live-root-"));
+  const company = join(root, "agent");
+  for (const p of ["main", "eticket-v3", "agent"]) mkdirSync(join(root, p));
+  const ledger = openLedger(":memory:");
+  const notes = createProjectNotes({
+    ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "no-desks"), companyFolder: company,
+    consult: async () => ({ ok: true, answer: "the company's answer" }),
+    timer: () => ({ done: new Promise<void>(() => {}), cancel: () => {} }),
+  });
+  await notes.ask({ project: "agent", folder: company, chatId: 1, sessionId: "s-main", orderId: "o", workClass: "interactive" }, { to: "eticket-v3", question: "q?", need: "info" }, 1_000);
+  const q = ledger.attentionRows("eticket-v3", "note")[0]!;
+  ledger.updateAttention(q.id, { deliveredAt: null }); // held, as after a late answer
+  expect(notes.takeLive("s-x", join(root, "main"), 2_000)).toBe("");
+  expect(notes.takeLive("s-main", company, 2_001)).toContain("the company's answer");
+});
+
+test("the notes block goes by the folder: a non-company folder named main gets none, the company folder reads as main", () => {
+  const r = rig();
+  mkdirSync(join(r.root, "main"));
+  r.notes.send(r.prodOps, { ...fyi("for the company", "", "C1"), to: "main" }, 1_000);
+  expect(r.notes.block("main", 2_000, join(r.root, "main"))).toBe("");
+  expect(r.notes.block("agent", 2_000, r.company)).toContain("for the company");
+});
