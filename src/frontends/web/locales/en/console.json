@@ -204,7 +204,8 @@
       "loop": "loop",
       "attention": "attention",
       "ingress": "ingress",
-      "legacy": "legacy"
+      "legacy": "legacy",
+      "dispatcher": "dispatcher"
     },
     "since": {
       "all": "any time",
@@ -235,7 +236,8 @@
       "open": "open",
       "answered": "answered",
       "dismissed": "dismissed",
-      "superseded": "superseded"
+      "superseded": "superseded",
+      "expired": "expired"
     },
     "todoStatus": {
       "queued": "queued",

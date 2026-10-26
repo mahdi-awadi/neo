@@ -10,6 +10,8 @@ import { CACHE_OBS_WINDOW } from "./context-policy";
 import type { StructuredAsk } from "./structured-question";
 import type { Priority } from "./priority";
 import type { SettleFacts } from "./decision-settle";
+import { faults } from "./fault";
+import { reviewedPath } from "./plan-review";
 
 /** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
  *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
@@ -65,7 +67,8 @@ export interface MessageRow extends NewMessage {
 }
 
 export type ThreadState = "open" | "waiting" | "done" | "failed";
-export type ThreadOrigin = "operator" | "loop" | "attention" | "ingress" | "legacy";
+export type { ThreadOrigin } from "./thread-origins";
+import type { ThreadOrigin } from "./thread-origins";
 
 /** A new thread; `id` is its root message id. */
 export interface NewThread {
@@ -233,8 +236,9 @@ export interface NewDecision {
 
 export interface DecisionRow extends NewDecision {
   id: string;
-  /** `superseded`: closed by the engine because it no longer needs an answer (ADR-0038). */
-  status: "open" | "answered" | "dismissed" | "superseded";
+  /** `superseded`: closed by the engine because it no longer needs an answer (ADR-0038). `expired`:
+   *  closed because its work moved on without the answer (ADR-0053). */
+  status: "open" | "answered" | "dismissed" | "superseded" | "expired";
   createdAt: number;
   answeredAt?: number;
   /** The answer — or, for a decision closed without one (dismissed, superseded), why it closed. */
@@ -300,7 +304,7 @@ export interface Ledger {
   /** `cause` links the order to the message that started it; `parentOrderId` is the company order
    *  that dispatched it (spec §3.3). Both optional: an order without them stores NULL. */
   recordOrder(order: Order, opts?: { cause?: Cause; parentOrderId?: string }): void;
-  recordOutcome(orderId: string, status: string, summary: string): void;
+  recordOutcome(orderId: string, status: string, summary: string, at?: number): void;
   getOutcome(orderId: string): { status: string; summary: string } | undefined;
   /** Persist the worker's SDK session id against an order, so it can later be resumed. `provider`
    *  records WHICH SDK minted it — a session id is only meaningful to the SDK that issued it. */
@@ -353,6 +357,9 @@ export interface Ledger {
   /** One thread's facts for settling its decisions (ADR-0038, decision-settle.ts). Operator
    *  messages carry their message id; trace turns it into a ref. */
   decisionSettleFacts(threadId: number): Omit<SettleFacts, "operatorMessages"> & { operatorMessages: Array<{ id: number; at: number }> };
+  /** The same facts for given decisions, thread or not (ADR-0053's cleanup): the thread-only facts
+   *  (chat lines, the thread's done ends) are empty, so only plan, parked and expiry rules apply. */
+  decisionSettleFactsByIds(ids: string[]): Omit<SettleFacts, "operatorMessages"> & { operatorMessages: Array<{ id: number; at: number }> };
   /** The operator closes a thread (ADR-0038): `closed_by_operator`, its open decisions dismissed with
    *  `reason`, the todos parked on them cancelled. `stillActive`: its queued/running todos, untouched. */
   closeThread(threadId: number, reason: string, at: number): { closed: boolean; missing?: boolean; decisions: number; todosCancelled: number[]; stillActive: number[] };
@@ -514,11 +521,17 @@ export interface Ledger {
   resolveDecision(id: string, answer: string, at?: number): void;
   /** Close an alert (or a decision) without an answer — the operator acknowledged it. */
   dismissDecision(id: string): void;
-  /** The engine closes an open decision that no longer needs an answer, keeping why in `answer`
-   *  (ADR-0038). Only an `open` row changes. */
   /** Close an open decision that no longer needs an answer (ADR-0038/0045), keeping `reason` in its
-   *  answer. Todos parked on it (ADR-0029) are cancelled with the same reason; their ids come back. */
-  supersedeDecision(id: string, reason: string, at?: number): { todosCancelled: number[] };
+   *  answer. Only an `open` row changes. Todos parked on it (ADR-0029) are cancelled with the same
+   *  reason and their ids come back — or, with `moveParkedTo`, wait on that decision instead
+   *  (the question moved to a newer card, ADR-0053). */
+  supersedeDecision(id: string, reason: string, at?: number, opts?: { moveParkedTo?: string }): { todosCancelled: number[] };
+  /** Close an open decision whose work moved on without its answer (ADR-0053): status `expired`,
+   *  `reason` in its answer. Only an `open` row changes. */
+  expireDecision(id: string, reason: string, at?: number): void;
+  /** Hear every decision that leaves `open` (answered, dismissed, superseded, expired), with its
+   *  thread — the trace re-derives that thread (ADR-0053). Returns the unsubscribe. */
+  onDecisionClosed(listener: (e: { id: string; threadId?: number }) => void): () => void;
   /** Stamp the reminder fields (lastRemindedAt + reminderCount++) after a secretary digest. */
   noteDecisionsReminded(ids: string[], at?: number): void;
   /** Dispatcher inbox (ADR-0007): queue one final dispatch result for the company. Returns its id.
@@ -734,6 +747,70 @@ export function openLedger(
   let eventInserts = 0;
   let decisionCloses = 0;
   let toolActionInserts = 0;
+  /** Who hears a decision leave `open` (ADR-0053: the trace re-derives its thread). */
+  const closeListeners = new Set<(e: { id: string; threadId?: number }) => void>();
+  const decisionOpen = (id: string): boolean => !!db.query(`SELECT 1 FROM decisions WHERE id = ? AND status = 'open'`).get(id);
+  /** The settle facts that come from the decisions themselves (ADR-0038/0053): plan cards, parked
+   *  todos, and for expiry, when each one's order ended and when later work in its folder ended done. */
+  const settleFactsOf = (open: SettleDbRow[]): Pick<SettleFacts, "open" | "planOf" | "parked" | "replaced" | "planBuilding" | "ended"> => {
+    const planOf: Record<string, PlanStatus> = {};
+    const parked: string[] = [];
+    const replaced: Record<string, { version: number; currentId?: string }> = {};
+    const planBuilding: string[] = [];
+    const ended: Record<string, { endedAt: number; laterDoneAt?: number }> = {};
+    const ids = open.map((d) => d.id);
+    if (ids.length) {
+      const marks = ids.map(() => "?").join(",");
+      for (const r of db.query(`SELECT decision_id, status, todo_id FROM plans WHERE decision_id IN (${marks})`).all(...ids) as Array<{ decision_id: string; status: PlanStatus; todo_id: number | null }>) {
+        planOf[r.decision_id] = r.status;
+        if (r.todo_id !== null) planBuilding.push(r.decision_id);
+      }
+      for (const r of db.query(`SELECT DISTINCT waiting_on FROM project_todos WHERE status = 'waiting' AND waiting_on IN (${marks})`).all(...ids) as Array<{ waiting_on: string }>) {
+        parked.push(r.waiting_on);
+      }
+    }
+    const planAt = db.query(`SELECT status, version, decision_id FROM plans WHERE folder = ? AND path = ?`);
+    const endOf = db.query(`SELECT o.at AS at, ord.folder AS folder FROM outcomes o JOIN orders ord ON ord.id = o.order_id WHERE o.order_id = ?`);
+    const laterDone = db.query(
+      `SELECT MIN(o.at) AS at FROM outcomes o JOIN orders ord ON ord.id = o.order_id WHERE ord.folder = ? AND o.status = 'done' AND o.at > ? AND o.order_id != ?`,
+    );
+    for (const d of open) {
+      // An older card of a plan: it names the plan, which now has another (or no) review decision.
+      const path = planOf[d.id] === undefined && d.folder ? reviewedPath(d.question) : undefined;
+      if (path) {
+        const p = planAt.get(d.folder, path) as { status: PlanStatus; version: number; decision_id: string | null } | null;
+        if (p && p.decision_id !== d.id) {
+          if (p.decision_id) replaced[d.id] = { version: p.version, currentId: p.decision_id };
+          else planOf[d.id] = p.status;
+        }
+      }
+      if (d.order_id) {
+        const e = endOf.get(d.order_id) as { at: number; folder: string } | null;
+        if (e) {
+          const later = laterDone.get(e.folder, e.at, d.order_id) as { at: number | null } | null;
+          ended[d.id] = { endedAt: e.at, ...(later?.at != null ? { laterDoneAt: later.at } : {}) };
+        }
+      }
+    }
+    return {
+      open: open.map((d) => ({
+        id: d.id,
+        question: d.question,
+        createdAt: d.created_at,
+        ...(d.folder ? { folder: d.folder } : {}),
+        ...(d.order_id ? { orderId: d.order_id } : {}),
+        text: [d.question, ...(d.options ? (JSON.parse(d.options) as string[]) : []), ...(d.spec ? [d.spec] : [])].join(" | "),
+      })),
+      planOf, parked, replaced, planBuilding, ended,
+    };
+  };
+  /** Tell the listeners a decision closed. A listener is an observer: its fault is reported, never thrown. */
+  const noteClosed = (id: string): void => {
+    if (closeListeners.size === 0) return;
+    const row = db.query(`SELECT thread_id FROM decisions WHERE id = ?`).get(id) as { thread_id: number | null } | null;
+    const e = { id, ...(row?.thread_id != null ? { threadId: row.thread_id } : {}) };
+    for (const l of closeListeners) faults.guard("ledger.decisionClosed", () => l(e), { decision: id });
+  };
 
   const insertMessage = (m: NewMessage): number => {
     const r = db
@@ -780,10 +857,10 @@ export function openLedger(
         opts.cause?.msgId ?? null, opts.cause?.threadId ?? null, opts.parentOrderId ?? null,
       );
     },
-    recordOutcome(orderId, status, summary) {
+    recordOutcome(orderId, status, summary, at = Date.now()) {
       db.query(
         `INSERT OR REPLACE INTO outcomes (order_id, status, summary, at) VALUES (?, ?, ?, ?)`,
-      ).run(orderId, status, summary, Date.now());
+      ).run(orderId, status, summary, at);
     },
     getOutcome(orderId) {
       const row = db
@@ -964,23 +1041,9 @@ export function openLedger(
       const none = { open: [], asked: [], operatorMessages: [], doneEnds: [], planOf: {}, parked: [] };
       // Most lines join a thread with nothing open: answer from the one indexed probe.
       if (!db.query(`SELECT 1 FROM decisions WHERE thread_id = ? AND status = 'open' LIMIT 1`).get(threadId)) return none;
-      const decisions = db
-        .query(`SELECT id, question, created_at, status, folder FROM decisions WHERE thread_id = ?`)
-        .all(threadId) as Array<{ id: string; question: string; created_at: number; status: string; folder: string | null }>;
-      const open = decisions.filter((d) => d.status === "open");
+      const decisions = db.query(`SELECT ${SETTLE_COLS} FROM decisions WHERE thread_id = ?`).all(threadId) as SettleDbRow[];
       const asked = decisions.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at }));
-      const ids = open.map((d) => d.id);
-      const marks = ids.map(() => "?").join(",");
-      const planOf: Record<string, PlanStatus> = {};
-      const parked: string[] = [];
-      if (ids.length) {
-        for (const r of db.query(`SELECT decision_id, status FROM plans WHERE decision_id IN (${marks})`).all(...ids) as Array<{ decision_id: string; status: PlanStatus }>) {
-          planOf[r.decision_id] = r.status;
-        }
-        for (const r of db.query(`SELECT DISTINCT waiting_on FROM project_todos WHERE status = 'waiting' AND waiting_on IN (${marks})`).all(...ids) as Array<{ waiting_on: string }>) {
-          parked.push(r.waiting_on);
-        }
-      }
+      const own = settleFactsOf(decisions.filter((d) => d.status === "open"));
       // The operator's own chat lines: typed on Telegram or the web (an approval verdict is an engine
       // line), and not the answer to one of this thread's decisions (a tap writes its answer as a line).
       const operatorMessages = db
@@ -998,10 +1061,13 @@ export function openLedger(
            SELECT ended_at AS at, folder FROM project_todos WHERE thread_id = ?1 AND status = 'done' AND ended_at IS NOT NULL`,
         )
         .all(threadId) as Array<{ at: number; folder: string }>;
-      return {
-        open: open.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at, ...(d.folder ? { folder: d.folder } : {}) })),
-        asked, operatorMessages, doneEnds, planOf, parked,
-      };
+      return { ...own, asked, operatorMessages, doneEnds };
+    },
+    decisionSettleFactsByIds(ids) {
+      if (ids.length === 0) return { open: [], asked: [], operatorMessages: [], doneEnds: [], planOf: {}, parked: [] };
+      const rows = db.query(`SELECT ${SETTLE_COLS} FROM decisions WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as SettleDbRow[];
+      const open = rows.filter((d) => d.status === "open");
+      return { ...settleFactsOf(open), asked: open.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at })), operatorMessages: [], doneEnds: [] };
     },
     closeThread(threadId, reason, at) {
       return db.transaction(() => {
@@ -1666,23 +1732,41 @@ export function openLedger(
       return row ? mapDecisionRow(row) : undefined;
     },
     resolveDecision(id, answer, at = Date.now()) {
+      const wasOpen = decisionOpen(id);
       db.query(`UPDATE decisions SET status = 'answered', answer = ?, answered_at = ? WHERE id = ?`).run(answer, at, id);
+      if (wasOpen) noteClosed(id);
       pruneDecisions();
     },
     dismissDecision(id) {
+      const wasOpen = decisionOpen(id);
       db.query(`UPDATE decisions SET status = 'dismissed', answered_at = ? WHERE id = ?`).run(Date.now(), id);
+      if (wasOpen) noteClosed(id);
       pruneDecisions();
     },
-    supersedeDecision(id, reason, at = Date.now()) {
-      const todosCancelled = db.transaction(() => {
+    supersedeDecision(id, reason, at = Date.now(), opts = {}) {
+      const { changed, todosCancelled } = db.transaction(() => {
         const r = db.query(`UPDATE decisions SET status = 'superseded', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'`).run(reason, at, id);
-        if (r.changes === 0) return [];
+        if (r.changes === 0) return { changed: false, todosCancelled: [] };
+        if (opts.moveParkedTo) {
+          db.query(`UPDATE project_todos SET waiting_on = ? WHERE status = 'waiting' AND waiting_on = ?`).run(opts.moveParkedTo, id);
+          return { changed: true, todosCancelled: [] };
+        }
         const parked = (db.query(`SELECT id FROM project_todos WHERE status = 'waiting' AND waiting_on = ? ORDER BY id`).all(id) as Array<{ id: number }>).map((t) => t.id);
         db.query(`UPDATE project_todos SET status = 'cancelled', ended_at = ?, result = ?, waiting_on = NULL WHERE status = 'waiting' AND waiting_on = ?`).run(at, reason, id);
-        return parked;
+        return { changed: true, todosCancelled: parked };
       })();
+      if (changed) noteClosed(id);
       pruneDecisions();
       return { todosCancelled };
+    },
+    expireDecision(id, reason, at = Date.now()) {
+      const r = db.query(`UPDATE decisions SET status = 'expired', answer = ?, answered_at = ? WHERE id = ? AND status = 'open'`).run(reason, at, id);
+      if (r.changes > 0) noteClosed(id);
+      pruneDecisions();
+    },
+    onDecisionClosed(listener) {
+      closeListeners.add(listener);
+      return () => void closeListeners.delete(listener);
     },
     noteDecisionsReminded(ids, at = Date.now()) {
       if (ids.length === 0) return;
@@ -1880,6 +1964,18 @@ export function openLedger(
 }
 
 /** The columns a MessageRow is read from; callers append WHERE/ORDER. */
+/** The decision columns the settle facts read (ADR-0038/0053). */
+const SETTLE_COLS = `id, question, created_at, status, folder, order_id, options, spec`;
+interface SettleDbRow {
+  id: string;
+  question: string;
+  created_at: number;
+  status: string;
+  folder: string | null;
+  order_id: string | null;
+  options: string | null;
+  spec: string | null;
+}
 const MESSAGE_COLS = `SELECT id, chat_id, role, content, at, thread_id, cause_id, surface, channel_msg_id, project, folder, order_id, kind, priority FROM messages`;
 interface PlanDbRow {
   id: number; project: string; folder: string; path: string; title: string; sha256: string; status: string;

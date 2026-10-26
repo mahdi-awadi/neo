@@ -140,8 +140,23 @@ test("a changed plan is sent again as v2 and the old card's decision is closed",
   put(dir, PLAN, BODY + "- [ ] three\n");
   await onRunEndPlans(deps, { project: "gold", folder: dir, cause, chatId: 42 });
   expect(posts.map((p) => p.caption.split("\n")[0])).toEqual(["📄 plan · gold · Fare list port · thread m4g2", "📄 plan · gold · Fare list port · v2 · thread m4g2"]);
-  expect(ledger.decisionById(firstDecision)!.status).toBe("dismissed");
+  // ADR-0053: superseded with the reason (never a silent dismiss), so its thread stops waiting on it.
+  expect(ledger.decisionById(firstDecision)).toMatchObject({ status: "superseded", answer: "replaced by plan card v2" });
   expect(ledger.planByPath(dir, PLAN)!.decisionId).not.toBe(firstDecision);
+});
+
+test("ADR-0053 B2: a todo parked on the old card now waits on the new card", async () => {
+  const dir = repo();
+  const { ledger, deps } = rig();
+  put(dir, PLAN, BODY);
+  await onRunEndPlans(deps, { project: "gold", folder: dir, cause, chatId: 42 });
+  const first = ledger.planByPath(dir, PLAN)!.decisionId!;
+  const todo = ledger.addTodo({ project: "gold", folder: dir, brief: "continue", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(todo.id, { status: "waiting", waitingOn: first });
+  put(dir, PLAN, BODY + "- [ ] three\n");
+  await onRunEndPlans(deps, { project: "gold", folder: dir, cause, chatId: 42 });
+  const second = ledger.planByPath(dir, PLAN)!.decisionId!;
+  expect(ledger.todoById(todo.id)).toMatchObject({ status: "waiting", waitingOn: second });
 });
 
 test("no cause → the caption has no thread; no poster or send off → registered as draft, never sent", async () => {

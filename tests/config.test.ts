@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../src/config";
+import { DEFAULT_DECISION_SETTLE } from "../src/engine/decision-settle";
 
 const dir = () => mkdtempSync(join(tmpdir(), "neo-cfg-"));
 
@@ -425,13 +426,19 @@ test("AC6: commitFinish defaults on with the handoff notes ignored; config.json 
 });
 
 test("ADR-0038: decisionSettle defaults on; config.json can turn it off; a bad value keeps the default", () => {
-  expect(loadConfig(dir()).decisionSettle).toEqual({ enabled: true });
+  expect(loadConfig(dir()).decisionSettle).toEqual(DEFAULT_DECISION_SETTLE);
   const off = dir();
   writeFileSync(join(off, "config.json"), JSON.stringify({ decisionSettle: { enabled: false } }));
-  expect(loadConfig(off).decisionSettle).toEqual({ enabled: false });
+  expect(loadConfig(off).decisionSettle).toEqual({ ...DEFAULT_DECISION_SETTLE, enabled: false });
   const bad = dir();
-  writeFileSync(join(bad, "config.json"), JSON.stringify({ decisionSettle: { enabled: "no" } }));
-  expect(loadConfig(bad).decisionSettle).toEqual({ enabled: true });
+  writeFileSync(join(bad, "config.json"), JSON.stringify({ decisionSettle: { enabled: "no", expireAfterDays: -1, keepPatterns: ["(unclosed"] } }));
+  expect(loadConfig(bad).decisionSettle).toEqual(DEFAULT_DECISION_SETTLE);
+});
+
+test("ADR-0053: decisionSettle.expireAfterDays and keepPatterns come from config.json", () => {
+  const set = dir();
+  writeFileSync(join(set, "config.json"), JSON.stringify({ decisionSettle: { expireAfterDays: 0, keepPatterns: ["\\bprod\\b"] } }));
+  expect(loadConfig(set).decisionSettle).toEqual({ enabled: true, expireAfterDays: 0, keepPatterns: ["\\bprod\\b"] });
 });
 
 test("project notes limits default, config.json overrides them, a bad value keeps the default (ADR-0043)", () => {

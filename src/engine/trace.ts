@@ -8,7 +8,7 @@ import type { Priority } from "./priority";
 import type { Registry } from "./registry";
 import { faults } from "./fault";
 import { deriveThreadState } from "./thread-state";
-import { staleDecisions } from "./decision-settle";
+import { applyStale, staleDecisions, type DecisionSettleCfg } from "./decision-settle";
 import { todoTitle } from "./todo-title";
 
 export type { Cause };
@@ -171,13 +171,31 @@ export function createTrace(deps: {
   /** Config `decisionSettle.enabled` (ADR-0038), read live: supersede a thread's stale decisions
    *  before deriving its state. Default on. */
   settleDecisions?: boolean | (() => boolean);
+  /** Config `decisionSettle` (ADR-0053), read live: expiry days and the keep patterns. Absent → no
+   *  expiry (the ADR-0038 rules only). */
+  settleCfg?: () => DecisionSettleCfg | undefined;
 }): Trace {
   const { ledger, registry } = deps;
   const now = deps.now ?? Date.now;
+  /** Threads being re-derived now: a decision the settle closes must not re-enter its own refresh. */
+  const refreshing = new Set<number>();
 
   /** `touchedAt`: a line just joined the thread — tell the listeners even when the state holds, so
    *  the console moves the row to the top. */
   function refreshThread(threadId: number, touchedAt?: number): void {
+    if (refreshing.has(threadId)) return; // the outer refresh derives after its settle
+    refreshing.add(threadId);
+    try {
+      derive(threadId, touchedAt);
+    } finally {
+      refreshing.delete(threadId);
+    }
+  }
+  // Every decision that closes, by any path, re-derives its thread (ADR-0053).
+  ledger.onDecisionClosed((e) => {
+    if (e.threadId !== undefined) refreshThread(e.threadId);
+  });
+  function derive(threadId: number, touchedAt?: number): void {
     const thread = ledger.threadById(threadId);
     if (!thread) return; // pruned: artifacts keep the ids, nothing to update
     if (settleOn()) settle(threadId);
@@ -206,15 +224,19 @@ export function createTrace(deps: {
     const v = deps.settleDecisions;
     return typeof v === "function" ? v() : v !== false;
   };
-  /** Supersede the thread's decisions that no longer need an answer (ADR-0038). Best-effort: a fault
-   *  costs the settle, never the state derive. */
+  /** Close the thread's decisions that no longer need an answer (ADR-0038, ADR-0053). Best-effort: a
+   *  fault costs the settle, never the state derive. */
   function settle(threadId: number): void {
     faults.guard("trace.settleDecisions", () => {
       const f = ledger.decisionSettleFacts(threadId);
       if (f.open.length === 0) return;
-      const stale = staleDecisions({ ...f, operatorMessages: f.operatorMessages.map((m) => ({ ref: msgRef(m.id), at: m.at })) });
+      const cfg = deps.settleCfg?.();
       const at = now();
-      for (const s of stale) ledger.supersedeDecision(s.id, s.reason, at);
+      const stale = staleDecisions(
+        { ...f, operatorMessages: f.operatorMessages.map((m) => ({ ref: msgRef(m.id), at: m.at })) },
+        cfg ? { now: at, expireAfterDays: cfg.expireAfterDays, keepPatterns: cfg.keepPatterns } : {},
+      );
+      applyStale(ledger, stale, at);
       if (stale.length) ledger.recordEvent("decisions_superseded", { data: { threadId, decisions: stale } });
     }, { threadId });
   }

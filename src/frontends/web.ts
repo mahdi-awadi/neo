@@ -25,6 +25,7 @@ import { basename, join } from "node:path";
 import { createConsoleI18n, isLang, LANGS, type Lang } from "./web/i18n";
 import { BRAND, ICONS } from "./web/brand";
 import type { ThreadFilter, ThreadOrigin, ThreadState } from "../engine/ledger";
+import { THREAD_ORIGINS as ORIGIN_LIST } from "../engine/thread-origins";
 
 const WEB_CHAT_ID = 0; // the web operator's session-routing key (Telegram ids are never 0)
 const COOKIE = "neo_session";
@@ -507,7 +508,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 const PAGE_DEFAULT = 50;
 const NO_STORE = { headers: { "cache-control": "no-store" } };
 const THREAD_STATES = new Set<string>(["open", "waiting", "done", "failed"]);
-const THREAD_ORIGINS = new Set<string>(["operator", "loop", "attention", "ingress", "legacy"]);
+const THREAD_ORIGINS = new Set<string>(ORIGIN_LIST);
 
 /** A file name as an RFC 5987 `filename*` value: `encodeURIComponent` leaves `'()*` raw, which that
  *  grammar does not allow. */

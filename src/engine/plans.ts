@@ -12,6 +12,7 @@ import type { TodoQueue } from "./todo-queue";
 import type { Registry } from "./registry";
 import { finishedUnit, isSpec, judgeExecute, planSteps, specRefs, verdictText, type Progress } from "./plan-execute";
 import { classifyPlan } from "./plan-gate";
+import { reviewQuestion } from "./plan-review";
 
 /** Spec default for config `plans.paths`. */
 export const DEFAULT_PLAN_PATHS: string[] = ["docs/**/plans/**/*.md", "docs/**/specs/**/*.md", "specs/**/*.md", "plans/**/*.md"];
@@ -505,7 +506,7 @@ function openReview(deps: PlanDeps, plan: PlanRow, at: { chatId: number; message
     folder: plan.folder,
     orderId: run.orderId,
     chatId: run.chatId,
-    question: `Plan waiting for your approval: ${plan.path} — ${plan.title}`,
+    question: reviewQuestion(plan.path, plan.title),
     options: planActions({ status: "sent", gate: "approval" }).map((a) => PLAN_LABELS[a]),
     cause: run.cause,
   });
@@ -535,18 +536,21 @@ async function postVersion(deps: PlanDeps, plan: PlanRow, run: PlanRun, postPlan
   // decision and the card follow the row as it is now, not as it was posted.
   const now = ledger.planById(plan.id) ?? plan;
   const previous = now.decisionId ? ledger.decisionById(now.decisionId) : undefined;
-  if (previous?.status === "open") ledger.dismissDecision(previous.id);
   const final = { ...now, status: now.status === "draft" ? ("sent" as const) : now.status };
   const waits = planState(final) === "awaiting" || planState(final) === "approved";
+  const decisionId = waits ? openReview(deps, now, posted, run) : undefined;
   const sent = ledger.upsertPlan({
     ...final,
-    decisionId: waits ? openReview(deps, now, posted, run) : undefined,
+    decisionId,
     cardChatId: posted.chatId,
     cardMessageId: posted.messageId,
     sentAt: Date.now(),
     sentSha256: plan.sha256,
     version,
   });
+  // The older card's question moved to this one (ADR-0053): closed with the reason, and a todo parked
+  // on it now waits on the new card. Closing it re-derives its own thread, which may be another one.
+  if (previous?.status === "open") ledger.supersedeDecision(previous.id, `replaced by plan card v${version}`, Date.now(), decisionId ? { moveParkedTo: decisionId } : {});
   if (planState(sent) !== planState(shown) || sent.status !== shown.status) await refreshCard(deps, sent);
   ledger.recordEvent("plan_sent", { folder: plan.folder, orderId: run.orderId, cause, data: { project: plan.project, planId: plan.id, path: plan.path, version, gate: plan.gate } });
   if (trace && cause) {

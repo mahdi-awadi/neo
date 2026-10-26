@@ -204,7 +204,8 @@
       "loop": "حلقة",
       "attention": "تنبيه",
       "ingress": "وارد",
-      "legacy": "قديمة"
+      "legacy": "قديمة",
+      "dispatcher": "الموزّع"
     },
     "since": {
       "all": "أي وقت",
@@ -235,7 +236,8 @@
       "open": "مفتوح",
       "answered": "مُجاب",
       "dismissed": "مُغلق",
-      "superseded": "لم يعد مطلوبًا"
+      "superseded": "لم يعد مطلوبًا",
+      "expired": "انتهت صلاحيته"
     },
     "todoStatus": {
       "queued": "في الطابور",

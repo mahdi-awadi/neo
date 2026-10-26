@@ -77,3 +77,53 @@ test("review: answered in chat needs done work in the decision's own folder (a '
   const nf = { id: "n", question: "q", createdAt: 10 }; // no folder
   expect(staleDecisions(base({ open: [nf], asked: [nf], operatorMessages: [{ ref: "m", at: 20 }], doneEnds: [end(30)] }))).toEqual([]);
 });
+
+// --- ADR-0053 ------------------------------------------------------------------------------------
+const DAY = 86_400_000;
+const KEEP = ["\\b(prod|production|deploy|release|delete|payments?)\\b"];
+const opts = (now: number, expireAfterDays = 7) => ({ now, expireAfterDays, keepPatterns: KEEP });
+
+test("ADR-0053 C1: an older plan card is superseded, and a todo parked on it moves to the current card", () => {
+  const d = dec("old", 10);
+  expect(staleDecisions(base({ open: [d], asked: [d], replaced: { old: { version: 3, currentId: "new" } }, parked: ["old"] }))).toEqual([
+    { id: "old", reason: "replaced by plan card v3", moveParkedTo: "new" },
+  ]);
+});
+
+test("ADR-0053 C2/C3: a settled plan closes its card even when a todo is parked on it — but not a held plan resumed by Approve & build", () => {
+  const d = dec("p", 10);
+  for (const status of ["done", "abandoned"] as const) {
+    expect(staleDecisions(base({ open: [d], asked: [d], planOf: { p: status }, parked: ["p"] })).map((x) => x.id)).toEqual(["p"]);
+  }
+  // Executing as another todo (Execute queued the build): the parked continuation is cancelled with the reason.
+  expect(staleDecisions(base({ open: [d], asked: [d], planOf: { p: "executing" }, planBuilding: ["p"], parked: ["p"] }))).toEqual([{ id: "p", reason: "plan executing" }]);
+  // Approve & build on a held plan: executing, no build todo — the frontend's answer resumes the parked worker.
+  expect(staleDecisions(base({ open: [d], asked: [d], planOf: { p: "executing" }, parked: ["p"] }))).toEqual([]);
+});
+
+test("ADR-0053 C4: a question expires once its order ended and later work in its folder finished, after expireAfterDays", () => {
+  const d = { ...dec("e", 10, "Which colour for the header?"), orderId: "o1" };
+  const ended = { e: { endedAt: 50, laterDoneAt: 60 } };
+  const f = base({ open: [d], asked: [d], ended });
+  expect(staleDecisions(f, opts(10 + 8 * DAY))).toEqual([{ id: "e", reason: "expired: its work ended and later work in gold finished", expired: true }]);
+  // Too young, expiry off, no later done work, parked, or no order: it stays open.
+  expect(staleDecisions(f, opts(10 + 6 * DAY))).toEqual([]);
+  expect(staleDecisions(f, opts(10 + 8 * DAY, 0))).toEqual([]);
+  expect(staleDecisions(base({ open: [d], asked: [d], ended: { e: { endedAt: 50 } } }), opts(10 + 8 * DAY))).toEqual([]);
+  expect(staleDecisions({ ...f, parked: ["e"] }, opts(10 + 8 * DAY))).toEqual([]);
+  const noOrder = dec("e", 10, "Which colour for the header?");
+  expect(staleDecisions(base({ open: [noOrder], asked: [noOrder], ended }), opts(10 + 8 * DAY))).toEqual([]);
+  // Without the clock (old callers), nothing expires.
+  expect(staleDecisions(f)).toEqual([]);
+});
+
+test("ADR-0053 C4: an irreversible or prod question never expires", () => {
+  const d = { ...dec("e", 10, "Release the hotfix to prod now?"), orderId: "o1" };
+  expect(staleDecisions(base({ open: [d], asked: [d], ended: { e: { endedAt: 50, laterDoneAt: 60 } } }), opts(10 + 30 * DAY))).toEqual([]);
+  // The words may be in the options rather than the title.
+  const o = { ...dec("o", 10, "Next step?"), orderId: "o1", text: "Next step? | Deploy to production | Wait" };
+  expect(staleDecisions(base({ open: [o], asked: [o], ended: { o: { endedAt: 50, laterDoneAt: 60 } } }), opts(10 + 30 * DAY))).toEqual([]);
+  // A plan card never expires: it follows its plan.
+  const p = { ...dec("p", 10, "Plan waiting for your approval: docs/a.md — A"), orderId: "o1" };
+  expect(staleDecisions(base({ open: [p], asked: [p], planOf: { p: "sent" }, ended: { p: { endedAt: 50, laterDoneAt: 60 } } }), opts(10 + 30 * DAY))).toEqual([]);
+});

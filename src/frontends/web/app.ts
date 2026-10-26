@@ -14,6 +14,7 @@ import { linkMdPaths } from "./md-links";
 import { type Attachment, type SendBody, createAttachments, formatSize } from "./attachments";
 import { bindComposeBoxes, clearBox } from "./compose-box";
 import { linesHtml } from "./text-lines";
+import { THREAD_ORIGINS } from "../../engine/thread-origins";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
 const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
@@ -953,7 +954,7 @@ function openThreads(): void {
   if (TH.started) return;
   TH.started = true;
   fillSelect("tstate", ["", "open", "waiting", "done", "failed"], (v) => `threads.state.${v || "all"}`);
-  fillSelect("torigin", ["", "operator", "loop", "attention", "ingress", "legacy"], (v) => `threads.origin.${v || "all"}`);
+  fillSelect("torigin", ["", ...THREAD_ORIGINS], (v) => `threads.origin.${v || "all"}`);
   fillSelect("tsince", ["", "day", "week", "month"], (v) => `threads.since.${v || "all"}`);
   ["tstate", "torigin", "tsince"].forEach((id) => ($(id).onchange = () => loadThreads(true)));
   let timer: ReturnType<typeof setTimeout> | undefined;
