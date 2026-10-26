@@ -15,15 +15,24 @@ export interface DecisionSettleCfg {
   keepPatterns: string[];
 }
 
-/** Questions about actions that cannot be undone, or that touch prod, money or access (ADR-0053). */
+/** Questions about an action that cannot be undone, or that touches prod, money, access or the outside
+ *  world (ADR-0053). Matched on what the operator decides — the title, the questions and the button
+ *  labels (`decisionText`) — never on the explanations, where such words appear in passing. */
 export const DEFAULT_KEEP_PATTERNS: readonly string[] = [
-  "\\b(prod|production|live|release|releases|deploy|deploys|deployment|rollback|hotfix)\\b",
+  "\\b(prod|production|release|deploy|deploys|deployment|go-ahead|rollback|roll back|hotfix|downtime)\\b",
+  "\\b(restart|reload|merge|merging|push|publish)\\b",
   "\\bmigrat(e|es|ed|ion|ions)\\b",
-  "\\b(delete|deletes|deletion|purge|truncate|drop|wipe|reset|force[- ]push)\\b",
-  "\\b(auth|authentication|authorization|login|passwords?|permissions?|secrets?|credentials?|keys?|tokens?)\\b",
-  "\\b(payments?|finance|financial|money|wallets?|invoices?|refunds?|billing|balances?|prices?|charges?)\\b",
-  "\\b(dns|domains?|certificates?|customers?|send|email|whatsapp|sms)\\b",
+  "\\b(delete|purge|truncate|drop|wipe|destroy|rotate|rotation|force[- ]push)\\b",
+  "\\b(credentials?|secrets?|tokens?|passwords?|admin login|api key)\\b",
+  "\\b(payments?|pay|paid|refunds?|billing|charge|money|exchange rate)\\b",
+  "\\b(dns|cname|sql|pii)\\b",
 ];
+
+/** What the operator decides on a card, for the keep patterns: the question, the structured title and
+ *  questions, and the button labels — not the context or the per-option explanations. */
+export function decisionText(question: string, options?: string[], spec?: { title?: string; questions?: Array<{ question: string; options: string[] }> }): string {
+  return [question, ...(options ?? []), ...(spec?.title ? [spec.title] : []), ...(spec?.questions ?? []).flatMap((q) => [q.question, ...q.options])].join(" | ");
+}
 
 export const DEFAULT_DECISION_SETTLE: DecisionSettleCfg = { enabled: true, expireAfterDays: 7, keepPatterns: [...DEFAULT_KEEP_PATTERNS] };
 
@@ -52,6 +61,12 @@ function validRegex(p: string): boolean {
 /** True when `text` names an irreversible, prod, money or access action (a keep pattern matches). */
 export function keepsOpen(text: string, patterns: readonly string[]): boolean {
   return patterns.some((p) => new RegExp(p, "i").test(text));
+}
+
+/** A decision the operator can still answer (tap, reply, typed answer): an open one, and an `expired`
+ *  one — expiry only stops it counting as waiting; a late answer still resumes its project (ADR-0053). */
+export function answerable(d: { status: string }): boolean {
+  return d.status === "open" || d.status === "expired";
 }
 
 /** One open decision, as the rules see it. */

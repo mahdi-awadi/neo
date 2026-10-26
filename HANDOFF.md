@@ -1,3 +1,16 @@
+# HANDOFF — decision threads and closing (ADR-0053): on `dev`, restart-gated
+
+Bugs: (A) the dispatcher filed new work under the last ended turn's thread (`pipeline.ts`
+`turnCause`/`runCause` → `lastCauseOf`); (B) a thread's stored state was not re-derived when a
+decision closed (`plans.ts` dismissed the old card silently); (C) plan cards closed only through their
+buttons, and a todo parked on a card waited forever. Fix in ADR-0053 / spec
+`docs/superpowers/specs/2026-10-26-decision-threads-and-closing.md`.
+Operator steps after the restart onto `dev`: run `bun tools/threads/settle-decisions.ts
+data/ledger.db` (dry run), check the list, then `--apply` (it refuses on a ledger older than the code).
+The keep-open list (prod/irreversible questions, awaiting plans) still needs the operator's answers.
+
+---
+
 # HANDOFF — a session held at a big plan takes no brief (ADR-0052): on `dev`, restart-gated
 
 Bug: a todo for a folder whose live session was held at a big plan (ADR-0036) was delivered into it

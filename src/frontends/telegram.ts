@@ -43,6 +43,7 @@ import type { ApiCooldown } from "../engine/api-retry";
 import { faults } from "../engine/fault";
 import { applyPlanAction, isPlanAction, planDepsFrom, PLAN_LABELS, type EditPlanCard, type PlanAction, type PostPlan } from "../engine/plans";
 import type { PlanStatus } from "../engine/ledger";
+import { answerable } from "../engine/decision-settle";
 import {
   keyboardRows,
   parseDecisionCallback,
@@ -421,7 +422,7 @@ export function createTelegramBot(
   async function handleDecisionTap(ctx: Context, tap: DecisionTap): Promise<void> {
     const chatId = ctx.chat?.id ?? 0;
     const dec = ledger.decisionById(tap.id);
-    if (!dec || dec.status !== "open") {
+    if (!dec || !answerable(dec)) {
       await ackCallback(ctx, "already answered");
       try {
         await ctx.editMessageReplyMarkup();
@@ -685,7 +686,7 @@ export function createTelegramBot(
     if (answerDecId !== undefined) {
       pendingDecisionAnswer.delete(chatId);
       const dec = ledger.decisionById(answerDecId);
-      if (dec && dec.status === "open") await answerAndResume(dec, ctx.message.text, chatId, ctx.message);
+      if (dec && answerable(dec)) await answerAndResume(dec, ctx.message.text, chatId, ctx.message);
       else say(chatId, "That decision is no longer open.");
       return;
     }
@@ -729,7 +730,7 @@ export function createTelegramBot(
     const replyToId = ctx.message.reply_to_message?.message_id;
     if (replyToId !== undefined) {
       const dec = ledger.decisionByMessage(chatId, replyToId);
-      if (dec && dec.status === "open" && dec.kind === "decision") {
+      if (dec && answerable(dec) && dec.kind === "decision") {
         await answerAndResume(dec, ctx.message.text, chatId, ctx.message);
         return;
       }

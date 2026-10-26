@@ -127,3 +127,10 @@ test("ADR-0053 C4: an irreversible or prod question never expires", () => {
   const p = { ...dec("p", 10, "Plan waiting for your approval: docs/a.md — A"), orderId: "o1" };
   expect(staleDecisions(base({ open: [p], asked: [p], planOf: { p: "sent" }, ended: { p: { endedAt: 50, laterDoneAt: 60 } } }), opts(10 + 30 * DAY))).toEqual([]);
 });
+
+test("ADR-0053: an expired question still takes the operator's late answer; answered, dismissed or superseded ones do not", async () => {
+  const { answerable } = await import("../src/engine/decision-settle");
+  expect(answerable({ status: "open" })).toBe(true);
+  expect(answerable({ status: "expired" })).toBe(true);
+  for (const status of ["answered", "dismissed", "superseded"] as const) expect(answerable({ status })).toBe(false);
+});

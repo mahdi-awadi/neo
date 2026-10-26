@@ -1171,6 +1171,20 @@ Each delivery also cleared the hold's registry block, so `sessions` showed the s
 
 Restart-gated.
 
+A decision lands on the thread of its work, and closes when its question is gone (2026-10-26, ADR-0053).
+The console showed 23 WAITING threads; the ledger had 110 open decisions back to 2026-09-03.
+- New work (dispatch, todo add, ask_operator) takes only a live cause, never an ended turn's
+  (`workCause`); the dispatcher names a thread with `thread`; else a `dispatcher` thread root.
+- Every decision close re-derives its thread (`ledger.onDecisionClosed`). An older plan card is
+  superseded with its reason, and a parked todo moves to the new card.
+- Settle rules: replaced cards; a settled plan closes its card even when a todo is parked on it;
+  `expired` for a question whose work moved on (keep patterns protect prod/irreversible ones; an
+  expired card still takes a late answer). The company `plan` tool records a chat Approve/Drop.
+- One-time cleanup `tools/threads/settle-decisions.ts` (dry run by default; `--apply` only after
+  the restart). Dry run on 2026-10-26: 26 closable, 84 kept, 8 threads leave waiting, #611 released.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

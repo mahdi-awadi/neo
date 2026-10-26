@@ -610,6 +610,9 @@ _Avoid_: message id (in operator text), ticket number
 The operator message (and its thread) that a piece of work traces back to. Set once where the work
 starts, then copied into everything that work produces: replies, orders, todos, decisions, tool
 actions, dispatch results, files and plans. The message-level form of the **originating trigger**.
+New work (a dispatch, a todo, a decision) takes only a **live** cause: the input the session works on
+now, or the thread the dispatcher names with `thread`. It never takes the cause of a turn that has
+already ended (ADR-0053).
 _Avoid_: parent, source, context
 
 **Thread**:
@@ -621,7 +624,8 @@ _Avoid_: conversation, chat, session, ticket
 
 **Thread root**:
 The first message of a thread. For background work (a loop fire, an attention todo, an ingress
-brief) the engine writes the root itself, so every thread has one.
+brief), or work the dispatcher starts with no live cause (origin `dispatcher`, ADR-0053), the engine
+writes the root itself, so every thread has one.
 _Avoid_: first message, parent
 
 **Thread state**:
@@ -634,9 +638,18 @@ _Avoid_: status (unqualified), progress
 **Superseded decision**:
 An open decision the engine closed because it no longer needs an answer: the same question was
 asked again later in the thread, the operator went on in chat and the thread's work then finished,
-or its plan was done, dropped or executed. It keeps the reason in its answer (ADR-0038). The waiting
-sweep also supersedes a decision that was **acted on** (ADR-0045).
-_Avoid_: stale, expired, auto-answered
+its plan was done, dropped or executed, or it is an older card of a plan (`replaced by plan card
+v<N>`). It keeps the reason in its answer (ADR-0038, ADR-0053). The waiting sweep also supersedes a
+decision that was **acted on** (ADR-0045).
+_Avoid_: stale, auto-answered
+
+**Expired decision**:
+An open question whose work moved on without its answer (ADR-0053): it is older than
+`decisionSettle.expireAfterDays`, its order ended, and later work in the same folder ended `done`.
+It stops counting as waiting, but its card still takes the operator's answer, which resumes the
+project. A plan card, a governor escalation, a question a todo is parked on, and a question about an
+irreversible or prod action (`keepPatterns`) never expire.
+_Avoid_: stale, timed out, closed
 
 **Acted-on decision**:
 An open decision whose project repository holds a commit, on any branch and made after the question

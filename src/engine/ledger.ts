@@ -9,7 +9,7 @@ import type { Order, OrderSource, Provider, RouteTarget } from "../types";
 import { CACHE_OBS_WINDOW } from "./context-policy";
 import type { StructuredAsk } from "./structured-question";
 import type { Priority } from "./priority";
-import type { SettleFacts } from "./decision-settle";
+import { decisionText, type SettleFacts } from "./decision-settle";
 import { faults } from "./fault";
 import { reviewedPath } from "./plan-review";
 
@@ -799,7 +799,7 @@ export function openLedger(
         createdAt: d.created_at,
         ...(d.folder ? { folder: d.folder } : {}),
         ...(d.order_id ? { orderId: d.order_id } : {}),
-        text: [d.question, ...(d.options ? (JSON.parse(d.options) as string[]) : []), ...(d.spec ? [d.spec] : [])].join(" | "),
+        text: decisionText(d.question, d.options ? (JSON.parse(d.options) as string[]) : undefined, d.spec ? (JSON.parse(d.spec) as StructuredAsk) : undefined),
       })),
       planOf, parked, replaced, planBuilding, ended,
     };
