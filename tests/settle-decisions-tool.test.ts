@@ -99,3 +99,23 @@ test("dry run: works on a copy — the ledger file is not changed, and the repor
   expect(report).toContain("KEEP OPEN (3)");
   expect(report).toContain("threads leaving waiting");
 });
+
+test("--apply: refuses a ledger older than this code (never migrates a live ledger); on a current one it backs up, then applies", async () => {
+  const { applyTo } = await import("../tools/threads/settle-decisions");
+  const { existsSync, readdirSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "neo-settle-apply-"));
+  const path = join(dir, "ledger.db");
+  const r = rig(path);
+  const s = seed(r);
+  const raw = new Database(path);
+  const v = (raw.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+  raw.run(`PRAGMA user_version = ${v - 1}`);
+  expect(applyTo(path, { now: NOW, cfg: DEFAULT_DECISION_SETTLE })).toStartWith("REFUSED");
+  expect(r.ledger.decisionById(s.colour)?.status).toBe("open");
+  raw.run(`PRAGMA user_version = ${v}`);
+  raw.close();
+  expect(applyTo(path, { now: NOW, cfg: DEFAULT_DECISION_SETTLE })).toContain("CLOSABLE (3)");
+  expect(readdirSync(dir).some((f) => f.startsWith("ledger.db.bak-settle-"))).toBe(true);
+  expect(new Database(path, { readonly: true }).query(`SELECT status FROM decisions WHERE id = ?`).get(s.colour)).toEqual({ status: "expired" });
+  expect(existsSync(path)).toBe(true);
+});

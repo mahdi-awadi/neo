@@ -143,7 +143,7 @@ export function dryRun(path: string, opts: { now: number; cfg: DecisionSettleCfg
   const copy = join(dir, "ledger.db");
   try {
     const src = new Database(path, { readonly: true });
-    src.run(`VACUUM INTO '${copy.replaceAll("'", "''")}'`);
+    src.query("VACUUM INTO ?").run(copy);
     src.close();
     const ledger = openLedger(copy); // migrates the COPY only
     const plan = planCleanup(ledger, opts);
@@ -164,7 +164,7 @@ export function applyTo(path: string, opts: { now: number; cfg: DecisionSettleCf
     return `REFUSED: ${path} is at ledger v${at}, this code is v${newest}. Run --apply after the daemon restarted onto this code (never migrate a live ledger from a tool).`;
   }
   const backup = `${path}.bak-settle-${new Date(opts.now).toISOString().replace(/[:.]/g, "-")}`;
-  probe.run(`VACUUM INTO '${backup.replaceAll("'", "''")}'`);
+  probe.query("VACUUM INTO ?").run(backup);
   probe.close();
   const ledger = openLedger(path);
   const plan = planCleanup(ledger, opts);
