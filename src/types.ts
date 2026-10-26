@@ -81,6 +81,10 @@ export interface SessionControl {
   /** True once the input channel was closed (graceful close or interrupt): a follow-up pushed now
    *  is dropped, so a caller must refuse to deliver instead. Optional for old fakes (absent → open). */
   closed?(): boolean;
+  /** The path of the big plan the worker is held at (ADR-0036), else undefined. A held worker denies
+   *  every tool but reads, so a brief delivered now could only be answered with STOP: a caller must
+   *  not deliver one (ADR-0052). Optional for old fakes (absent → not held). */
+  held?(): string | undefined;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */

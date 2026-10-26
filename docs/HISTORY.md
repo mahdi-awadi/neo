@@ -1160,6 +1160,17 @@ made the kit's hook exit 0.
 
 Not live until the operator re-installs the kit (`install.ts`) and re-runs `init.ts` on each repo.
 
+A session held at a big plan takes no brief (2026-10-26, ADR-0052).
+contantme todos #659/#660/#665/#666/#680 were marked `done` ("delivered into the operator's open
+session") but did nothing: the session was held at its master plan, so every delivered turn met STOP.
+Each delivery also cleared the hold's registry block, so `sessions` showed the session idle.
+
+- `SessionControl.held()` (from the plan watch) names the plan a live session is held at.
+- Dispatch refuses a brief for a held session (`plan_held`); `projectBusy` counts it busy, so the todo
+  waits `queued` and starts once the hold lifts. A delivery no longer clears a plan hold's block.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

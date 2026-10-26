@@ -105,13 +105,20 @@ export interface TodoQueue {
 export { todoTitle };
 
 /** True when the project's session cannot take a brief now: preparing (running, no live handle yet),
- *  closing, in a turn, or holding a follow-up. Mirrors dispatch's reuse guard. */
+ *  closing, in a turn, holding a follow-up, or held at a big plan (ADR-0052). Mirrors dispatch's
+ *  reuse guard. */
 export function projectBusy(registry: Registry, folder: string): boolean {
   const s = registry.findByFolder(folder);
   if (!s || s.status !== "running") return false;
   const c = registry.getControl(s.id);
   if (!c) return true;
-  return c.closed?.() === true || c.active?.() === true || (c.queued?.() ?? 0) > 0;
+  return c.closed?.() === true || c.active?.() === true || (c.queued?.() ?? 0) > 0 || c.held?.() !== undefined;
+}
+
+/** The big plan the folder's live session is held at (ADR-0052), else undefined. */
+function heldPlanOf(registry: Registry, folder: string): string | undefined {
+  const s = registry.findByFolder(folder);
+  return s?.status === "running" ? registry.getControl(s.id)?.held?.() : undefined;
 }
 
 /** A dispatch hold that would refuse a release right now (checked first, so a held queue writes no
@@ -494,6 +501,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       refresh(deps, p.cause); // a queued todo is the thread's open work
       if (mustWait) {
         const position = describePosition(t);
+        const heldAt = heldPlanOf(registry, folder);
         ledger.recordEvent("todo_queued", { folder, data: { project, id: t.id, position, paused: !!paused }, cause: p.cause });
         await deps.reply(replyChat, `→ queued #${t.id} for ${project} (position ${position}): ${todoTitle(p.brief)}`, project, undefined, {
           kind: "ack",
@@ -504,7 +512,9 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           `queued as #${t.id} for ${project}, position ${position}` +
           (paused
             ? ` — its queue is PAUSED (${paused.reason}); it starts after the queue is resumed.`
-            : ` — ${project} is busy, so this brief waits and starts by itself when the work ahead of it is done. `) +
+            : heldAt !== undefined
+              ? ` — ${project} is held at its big plan ${heldAt} until the operator taps Approve & build (or Changes / Drop) on its card; this brief starts by itself once the hold lifts. `
+              : ` — ${project} is busy, so this brief waits and starts by itself when the work ahead of it is done. `) +
           `Do NOT forward it again; you get its result like any dispatch. Tell the operator its number and position.`
         );
       }

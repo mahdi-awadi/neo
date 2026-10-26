@@ -293,6 +293,28 @@ test("an operator-opened session mid-turn is busy; once between turns the queue 
   expect(ledger.todoById(1)?.result).toContain("operator");
 });
 
+test("a session held at a big plan is busy: the todo waits queued (never `done`) and runs once the hold lifts", async () => {
+  const { queue, ledger, registry, deps } = setup();
+  const folder = join(deps.workRoot!, "eticket-v3");
+  const s = registry.add({ id: "op", source: "neo", folder, task: "op work", chatId: 1, createdAt: 0 }, 0);
+  registry.setStatus(s.id, "running");
+  let held: string | undefined = "docs/superpowers/plans/master.md";
+  const pushed: string[] = [];
+  registry.attachControl(s.id, { followUp: (t: string) => void pushed.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, closed: () => false, held: () => held });
+  expect(projectBusy(registry, folder)).toBe(true);
+
+  const out = await queue.submit({ project: "eticket-v3", brief: "build the mocks", workClass: "interactive" }, deps, 1);
+  expect(out).toContain("queued as #1");
+  expect(out).toContain("held at its big plan docs/superpowers/plans/master.md"); // the operator must act, not wait
+  await queue.pump();
+  expect(pushed).toHaveLength(0);
+  expect(ledger.todoById(1)?.status).toBe("queued");
+
+  held = undefined; // Approve & build or Drop: the plan is no longer awaiting
+  await queue.pump();
+  expect(pushed).toHaveLength(1);
+});
+
 // --- AC5: control --------------------------------------------------------------------------------
 
 test("control: cancel a queued todo, refuse to cancel a running one, move one up, pause absorbs new briefs", async () => {

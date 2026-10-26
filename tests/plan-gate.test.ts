@@ -100,6 +100,16 @@ test("AC3: a big plan written mid-run is sent at once and holds the worker until
   expect(r.watch.steer("Bash", { command: "bun test" })).toBeUndefined();
 });
 
+test("held() names the plan a worker is held on, and is empty once that plan no longer awaits the operator", async () => {
+  const r = rig();
+  expect(r.watch.held()).toBeUndefined();
+  await r.write(PLAN, BIG);
+  expect(r.watch.held()).toBe(PLAN);
+  const plan = r.ledger.planByPath(r.dir, PLAN)!;
+  await applyPlanAction(r.deps, plan.id, "drop", 1);
+  expect(r.watch.held()).toBeUndefined();
+});
+
 test("AC4: a small plan is sent for information (Stop only) and the worker goes on", async () => {
   const r = rig();
   await r.write(PLAN, SMALL);

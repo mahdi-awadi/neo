@@ -180,6 +180,21 @@ test("delivering a brief clears a raised decision but never a pending approval",
   expect(d.registry.get(s.id)!.blockedOn).toMatchObject({ kind: "approval" });
 });
 
+// A plan hold (ADR-0036) is answered only by the operator's Approve & build / Changes / Drop. A message
+// into the session does not lift it, so its block must stay — or `sessions` reads the held worker as idle.
+test("delivering a message never clears the block of a worker held at a big plan", () => {
+  const { d } = makeDeps();
+  const s = d.registry.add({ id: "o-held", source: "neo", folder: "/p/acme", task: "t", chatId: -2, createdAt: 0 }, 0);
+  let held: string | undefined = "docs/superpowers/plans/master.md";
+  d.registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, held: () => held });
+  d.registry.noteBlocked(s.id, { kind: "decision", label: "plan approval: Master plan", since: 0 });
+  clearDecisionBlock(d.registry, s.id);
+  expect(d.registry.get(s.id)!.blockedOn).toMatchObject({ kind: "decision" });
+  held = undefined;
+  clearDecisionBlock(d.registry, s.id);
+  expect(d.registry.get(s.id)!.blockedOn).toBeUndefined();
+});
+
 // A dispatch landing on a project that is blocked on the operator must say THAT — "is working"
 // would send the company looking for progress that cannot happen until the operator answers.
 test("dispatch to a project awaiting the operator names that state, not 'working'", async () => {

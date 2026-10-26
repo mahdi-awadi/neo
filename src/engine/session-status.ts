@@ -45,10 +45,12 @@ export function liveSignals(registry: Registry, s: SessionInfo): LivenessSignals
  * A brief/answer has been delivered into this session — clear a raised DECISION block, because the
  * message either answers it or supersedes it. Deliberately leaves an `approval` block alone: that
  * one is suspending the worker mid-tool and clears itself when the operator answers, so dropping it
- * here would hand the stall monitor a worker that is still legitimately waiting.
+ * here would hand the stall monitor a worker that is still legitimately waiting. A worker held at a big
+ * plan keeps its block too: only the operator's tap on the plan card lifts that hold (ADR-0052).
  */
 export function clearDecisionBlock(registry: Registry, id: string): void {
   try {
+    if (registry.getControl(id)?.held?.() !== undefined) return;
     if (registry.get(id)?.blockedOn?.kind === "decision") registry.noteBlocked(id, undefined);
   } catch {
     // observer only — never break the delivery path

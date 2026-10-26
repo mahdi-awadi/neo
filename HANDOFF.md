@@ -1,3 +1,14 @@
+# HANDOFF — a session held at a big plan takes no brief (ADR-0052): on `dev`, restart-gated
+
+Bug: a todo for a folder whose live session was held at a big plan (ADR-0036) was delivered into it
+and marked `done` at once; the worker could only answer STOP (contantme #659/#660/#665/#666/#680).
+Fix: `SessionControl.held()` from the plan watch; dispatch refuses (`plan_held`); `projectBusy`
+counts a held session busy, so the todo waits `queued` and starts once the hold lifts;
+`clearDecisionBlock` keeps a plan hold's block. Needs a daemon restart to go live.
+Still open: contantme plan #1645 (master plan) waits for the operator's Approve & build / Drop.
+
+---
+
 # HANDOFF — security kit fixes (ADR-0051): on `dev`, not installed
 
 Two fixes to `tools/security/`, found while turning the kit on in eticket-v3. Commits on `dev`:

@@ -23,6 +23,8 @@ export interface PlanWatch {
   onToolResult(id: string | undefined, isError: boolean): void;
   /** The STOP reason while the worker is held, else undefined (no opinion). */
   steer(tool: string, input: unknown): string | undefined;
+  /** The path of the plan the worker is held at, else undefined (ADR-0052: dispatch reads it). */
+  held(): string | undefined;
   /** Settles when every card this watch started posting has landed (or failed). */
   settled(): Promise<void>;
 }
@@ -81,6 +83,15 @@ export function createPlanWatch(
     }
   };
 
+  /** The plan the worker is held at, read fresh: the hold lifts once the plan no longer awaits. */
+  const holding = (): PlanRow | undefined => {
+    if (held === undefined) return undefined;
+    const plan = deps.ledger.planById(held);
+    if (plan && awaiting(plan)) return plan;
+    held = undefined;
+    return undefined;
+  };
+
   return {
     onToolUse(id, tool, input) {
       const path = writtenPath(tool, input);
@@ -95,15 +106,14 @@ export function createPlanWatch(
     steer(tool, input) {
       // Never throws: a throw here would also skip the context checkpoint's steer for this call.
       return faults.guard("planWatch.steer", () => {
-        if (held === undefined) return undefined;
-        const plan = deps.ledger.planById(held);
-        if (!plan || !awaiting(plan)) {
-          held = undefined;
-          return undefined;
-        }
+        const plan = holding();
+        if (!plan) return undefined;
         if (READ_TOOLS.has(tool) || tool.startsWith("mcp__neo__") || writtenPath(tool, input)) return undefined;
         return stopReason(deps, plan);
       });
+    },
+    held() {
+      return faults.guard("planWatch.held", () => holding()?.path);
     },
     async settled() {
       while (inFlight.size) await Promise.all([...inFlight]);

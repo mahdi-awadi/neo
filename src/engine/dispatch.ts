@@ -614,6 +614,18 @@ export async function dispatchToProject(
         `nothing was lost. Retry in a moment; it will start a fresh run once the current one has ended.`
       );
     }
+    // A worker held at a big plan (ADR-0036) denies every tool but reads until the operator acts, so a
+    // brief pushed into it could only be answered with STOP — and would read as delivered (ADR-0052).
+    const heldAt = control?.held?.();
+    if (control?.followUp && heldAt !== undefined) {
+      event("dispatch_refused", { orderId: order.id, folder, data: { project: name, workClass, reason: "plan_held", plan: heldAt } });
+      hooks.onRefused?.("plan_held");
+      return (
+        `${name} is held at its big plan ${heldAt} until the operator taps Approve & build (or Changes / Drop) — ` +
+        `I did NOT deliver this brief, because the worker could not act on it. Through the todo queue it waits ` +
+        `and starts by itself once the hold lifts.`
+      );
+    }
     if (control?.followUp) {
       const turnActive = control.active?.() === true; // the REAL "a turn is being processed" signal
       // What the dispatcher will hear back: a dispatch-owned run reports progress + its result; an
@@ -1092,6 +1104,7 @@ export async function dispatchToProject(
         }
         run.followUp(text, timing);
       },
+      held: () => planWatch?.held(),
     };
     dispatchRuns.add(control);
     deps.registry.attachControl(session.id, control);

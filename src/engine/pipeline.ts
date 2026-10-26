@@ -927,6 +927,7 @@ function startSession(
       deliverInput(cause);
       run.followUp(text, timing);
     },
+    held: () => planWatch?.held(),
   };
   registry.attachControl(registryId, control);
 

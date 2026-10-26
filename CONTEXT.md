@@ -894,7 +894,8 @@ _Avoid_: size, risk level
 A big plan its writing worker is stopped at (ADR-0036). The worker's tool calls are denied with a
 STOP reason until the operator acts, except reads, Neo's own tools and edits to plan files. Its
 decision is blocking: a todo run parks on it. **Approve & build** answers that decision, so the same
-worker resumes.
+worker resumes. A held session takes no new brief: dispatch refuses it (`plan_held`), and a todo for
+that folder waits queued until the hold lifts (ADR-0052).
 _Avoid_: paused plan, blocked plan
 
 **Approve & build**:

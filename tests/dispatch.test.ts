@@ -1635,6 +1635,35 @@ test("a brief for a session that is closing is refused out loud, never pushed in
   expect(d.ledger.listEvents({ kind: "dispatch_refused" })[0]?.data).toMatchObject({ reason: "closing" });
 });
 
+test("a brief for a session held at a big plan is refused, never delivered into a worker that can only say STOP", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const pushed: string[] = [];
+  const launched: string[] = [];
+  const s = d.registry.add({ id: "o1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: 1, createdAt: 0 }, 0);
+  d.registry.setStatus(s.id, "running");
+  d.registry.noteBlocked(s.id, { kind: "decision", label: "plan approval: Master plan", since: 0 });
+  d.registry.attachControl(s.id, {
+    followUp: (t) => void pushed.push(t),
+    interrupt: async () => {},
+    active: () => false,
+    closed: () => false,
+    held: () => "docs/superpowers/plans/master.md",
+  });
+  const out = await dispatchToProject("eticket-v3", "build the mocks", d, 1, {
+    root,
+    now: () => 0,
+    hooks: { onLaunched: (_o, mode) => void launched.push(mode), onRefused: (r) => void launched.push(`refused:${r}`) },
+  });
+  expect(pushed).toHaveLength(0);
+  expect(launched).toEqual(["refused:plan_held"]);
+  expect(out).toContain("docs/superpowers/plans/master.md");
+  expect(d.ledger.listEvents({ kind: "dispatch_refused" })[0]?.data).toMatchObject({ reason: "plan_held" });
+  // The hold's block stays: `sessions` keeps saying the operator owes an answer.
+  expect(d.registry.get(s.id)?.blockedOn?.kind).toBe("decision");
+});
+
 test("a progress digest reaches the operator and the live company while the worker is active", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
