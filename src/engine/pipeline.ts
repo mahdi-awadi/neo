@@ -465,7 +465,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, sessionId: session.id, orderId: parsed.id, cause: turnCause(registry, session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, sessionId: session.id, orderId: parsed.id, cause: turnCause(registry, session.id), workCause: () => registry.causeOf(session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
@@ -612,7 +612,9 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
   };
 }
 
-/** The cause a session's tool call is filed under (ADR-0015): its current turn's, read at call time. */
+/** The cause a session's tool LINE is filed under (ADR-0015): its current turn's, read at call time,
+ *  else the last ended turn's. New work uses `registry.causeOf` alone (`workCause`, ADR-0053): an
+ *  ended turn is not the thread of work started after it. */
 function turnCause(registry: Registry, id: string): () => Cause | undefined {
   return () => registry.causeOf(id) ?? registry.lastCauseOf(id);
 }
@@ -640,7 +642,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, sessionId: id, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, sessionId: id, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), workCause: () => registry.causeOf(id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }

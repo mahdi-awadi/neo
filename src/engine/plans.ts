@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Cause, Ledger, PlanGate, PlanRow, PlanStatus } from "./ledger";
+import { PAGE_MAX } from "./ledger";
 import { git as defaultGit } from "./dispatch-report";
 import { faults } from "./fault";
 import type { Trace } from "./trace";
@@ -651,10 +652,19 @@ export async function offerPlanFile(deps: PlanDeps, p: PlanRun & { path: string 
   }
 }
 
-/** Close the plan's open decision with the action taken, and re-derive its thread. */
+/** Close the plan's open decision with the action taken, and re-derive its thread. A todo parked on the
+ *  card (ADR-0029) is released first: the plan is now built as its own todo, done or dropped, so that
+ *  wait is over — it is cancelled with the reason, never left waiting on a closed card (ADR-0053). */
 function answerCard(deps: PlanDeps, plan: PlanRow, action: PlanAction): void {
   const dec = plan.decisionId ? deps.ledger.decisionById(plan.decisionId) : undefined;
-  if (dec?.status === "open") deps.ledger.resolveDecision(dec.id, PLAN_LABELS[action]);
+  if (dec?.status === "open") {
+    const row = deps.ledger.planById(plan.id) ?? plan;
+    const reason = row.status === "executing" && row.todoId !== undefined ? `plan executing as #${row.todoId}` : `plan ${planState(row)}`;
+    for (const t of deps.ledger.listTodos({ statuses: ["waiting"], limit: PAGE_MAX })) {
+      if (t.waitingOn === dec.id) deps.ledger.updateTodo(t.id, { status: "cancelled", endedAt: Date.now(), result: reason, waitingOn: null });
+    }
+    deps.ledger.resolveDecision(dec.id, PLAN_LABELS[action]);
+  }
   const trace = deps.trace;
   if (trace && plan.threadId !== undefined) faults.guard("plans.refreshThread", () => trace.refreshThread(plan.threadId!));
 }

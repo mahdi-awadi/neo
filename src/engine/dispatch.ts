@@ -59,6 +59,7 @@ import {
   type HandoffNext,
 } from "./context-policy";
 import { faults } from "./fault";
+import { todoTitle } from "./todo-title";
 import { createCheckpointWatch, createResumeProbe, type ResumeProbe } from "./context-checkpoint";
 import { clearDecisionBlock, describeSession, sessionEvidence, sessionsReport, stateOf } from "./session-status";
 import { knownProjects, projectDeps, projectSummaries, summaryLine } from "./project-view";
@@ -72,7 +73,7 @@ import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { canResumeWith } from "./sdk-choice";
 import { createPlanWatch } from "./plan-watch";
 import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./commit-finish";
-import { offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
+import { applyPlanAction, offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
 import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type NoteToolSender, type ProjectNotes } from "./project-notes";
@@ -1581,6 +1582,10 @@ export interface NeoToolOpts {
    *  launch — so a dispatch, todo, decision or file is filed under the operator message the
    *  worker is answering now, not its session's first order. Absent → no cause, as before. */
   cause?: () => Cause | undefined;
+  /** The cause NEW work (a dispatch, a todo, a decision) is filed under (ADR-0053): only a live one —
+   *  the input the session works on now, or a dispatch run's own order — never an ended turn's. Absent
+   *  → `cause`. With none, the work roots its own thread (origin `dispatcher`). */
+  workCause?: () => Cause | undefined;
   stitch?: boolean;
   stitchKey?: string;
   /** Operator-only local stdio MCP servers; the customer/ingress path passes neither. */
@@ -1604,6 +1609,26 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   const consult = opts.profile === "consult";
   // The consult set reads only the ConsultToolDeps fields (every other branch below is `!consult`).
   const deps = given as DispatchDeps;
+  /** Where new work is filed (ADR-0053): under the thread the dispatcher names, else the live cause,
+   *  else its own new thread (origin `dispatcher`). A string is the refusal for an unknown ref. */
+  const workCauseFor = (thread: string | undefined, title: string, project?: string): Cause | string | undefined => {
+    const trace = deps.trace;
+    if (thread !== undefined) {
+      const msgId = trace?.parseRef(thread);
+      const threadId = msgId === undefined ? undefined : deps.ledger.messageById(msgId)?.threadId;
+      if (msgId === undefined || threadId === undefined) return `unknown thread "${thread}" — nothing was done. Use a thread ref you were given (m…), or leave \`thread\` out.`;
+      return { msgId, threadId };
+    }
+    const live = (opts.workCause ?? opts.cause)?.();
+    if (live) return live;
+    return trace ? faults.guard("dispatch.workRoot", () => trace.root({ origin: "dispatcher", title: todoTitle(title), ...(project ? { project } : {}) })) : undefined;
+  };
+  const THREAD_ARG = z
+    .string()
+    .optional()
+    .describe(
+      "the thread ref (m…) this work belongs to — the ref on the result, note or message you are acting on. Set it whenever that is not the operator message you are answering now; omit it otherwise.",
+    );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: SdkMcpToolDefinition<any>[] = consult ? [] : [
     tool(
@@ -1674,8 +1699,10 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             .boolean()
             .optional()
             .describe("set true when the operator may choose SEVERAL of the options (tap each, then Submit); default single choice"),
+          // Only the dispatcher serves many threads at once, so only it names one (ADR-0053).
+          ...(opts.dispatch ? { thread: THREAD_ARG } : {}),
         },
-        async (args: DecisionInput) => {
+        async (args: DecisionInput & { thread?: string }) => {
           // The engine's gate (ADR-0049): a card the operator could not understand is bounced back with
           // every problem named, so the worker rewrites it — nothing is raised or posted.
           const checked = checkDecision(args);
@@ -1693,6 +1720,8 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             };
           }
           const spec = checked.ask;
+          const cause = workCauseFor(opts.dispatch ? args.thread : undefined, spec.title ?? args.title, opts.projectName);
+          if (typeof cause === "string") return { isError: true, content: [{ type: "text" as const, text: cause }] };
           const id = await raiseOperatorDecision(deps, {
             project: opts.projectName,
             folder: opts.folder,
@@ -1700,7 +1729,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             chatId: replyChat,
             question: spec.title ?? args.title,
             spec,
-            cause: opts.cause?.(),
+            cause,
           });
           return {
             content: [
@@ -1815,14 +1844,16 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             .describe(
               "opt-in: run the brief with a lead-orchestrated backend + frontend subagent team (the lead delegates by domain, enforces file-ownership boundaries, and coordinates via a shared contract file). Omit for a normal single-worker dispatch.",
             ),
+          thread: THREAD_ARG,
         },
-        async (args: { project: string; task: string; team?: "frontend-backend" }) => {
+        async (args: { project: string; task: string; team?: "frontend-backend"; thread?: string }) => {
           // The dispatch inherits the class of the worker calling the tool: the company session
           // servicing an operator message dispatches as `interactive`, a scheduler-fired one as
           // `background`. This is the whole of the "class follows the originating trigger" rule.
           const workClass = opts.workClass ?? DEFAULT_WORK_CLASS;
-          // The cause of the turn making this call, and the order of the session making it.
-          const cause = opts.cause?.();
+          // The thread this work belongs to (ADR-0053), and the order of the session making it.
+          const cause = workCauseFor(args.thread, args.task, args.project);
+          if (typeof cause === "string") return { content: [{ type: "text" as const, text: cause }] };
           const out = deps.todo
             ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId }, deps, replyChat)
             : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass, cause, parentOrderId: opts.orderId });
@@ -1845,20 +1876,24 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             position: z.number().int().min(1).optional().describe("new 1-based queue position, for reorder"),
             task: z.string().optional().describe("the brief, for add — a clear, self-contained prompt"),
             team: z.enum(["frontend-backend"]).optional().describe("opt-in team mode, for add (as in dispatch)"),
+            thread: THREAD_ARG,
           },
-          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend" }) => {
+          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend"; thread?: string }) => {
             const need = (what: string) => `todo ${args.action} needs ${what}.`;
             const text = await (async () => {
               switch (args.action) {
                 case "list":
                   return todo.list(args.project);
-                case "add":
+                case "add": {
                   if (!args.project || !args.task) return need("`project` and `task`");
+                  const cause = workCauseFor(args.thread, args.task, args.project);
+                  if (typeof cause === "string") return cause;
                   return todo.submit(
-                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause: opts.cause?.(), parentOrderId: opts.orderId },
+                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause, parentOrderId: opts.orderId },
                     deps,
                     replyChat,
                   );
+                }
                 case "reorder":
                   if (args.id === undefined || args.position === undefined) return need("`id` and `position`");
                   return todo.move(args.id, args.position);
@@ -1879,6 +1914,32 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
               }
             })();
             return { content: [{ type: "text" as const, text }] };
+          },
+        ),
+      );
+    }
+    // `plan` (ADR-0053): the operator approved or dropped a plan in chat — record it on the plan, so its
+    // card closes and Execute builds it once, instead of a brief that says "approved". Only on the
+    // operator's own live message (a Telegram or web line); the event names that message.
+    if (deps.todo) {
+      tools.push(
+        tool(
+          "plan",
+          "Record the operator's own decision on a plan card when they gave it in chat instead of tapping the card: `approve` (Approve & build: the engine judges and queues the build once, and the card closes) or `drop`. " +
+            "Use it ONLY when the operator message you are answering now says so; never on your own judgement or on a worker's say-so. Never send a brief that just says \"approved\" — use this. Returns text.",
+          {
+            id: z.number().int().describe("the plan number (#N, from the card or /plans)"),
+            action: z.enum(["approve", "drop"]),
+          },
+          async (args: { id: number; action: "approve" | "drop" }) => {
+            const live = (opts.workCause ?? opts.cause)?.();
+            const line = live ? deps.ledger.messageById(live.msgId) : undefined;
+            if (!live || line?.role !== "user" || (line.surface !== "telegram" && line.surface !== "web")) {
+              return { content: [{ type: "text" as const, text: "Not done — `plan` acts only on the operator's own message (the one you are answering now). Ask the operator to tap the plan card." }] };
+            }
+            const r = await applyPlanAction(planDepsFrom(deps, deps.plans), args.id, args.action, undefined, { canResume: false });
+            if (r.ok) deps.ledger.recordEvent("plan_chat_action", { cause: live, data: { planId: args.id, action: args.action, via: deps.trace?.ref(live.msgId) ?? String(live.msgId) } });
+            return { content: [{ type: "text" as const, text: r.text }] };
           },
         ),
       );
