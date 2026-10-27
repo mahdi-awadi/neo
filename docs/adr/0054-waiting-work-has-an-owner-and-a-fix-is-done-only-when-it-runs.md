@@ -1,7 +1,7 @@
 # ADR-0054: waiting work has an owner and a next action, and a fix is done only when it runs
 
-Status: **proposed** (2026-10-27). Awaits the operator's approval of
-`docs/superpowers/plans/2026-10-27-waiting-work-ship-and-settle.md`. Amends ADR-0018 (restart
+Status: **accepted** (2026-10-27; plan `docs/superpowers/plans/2026-10-27-waiting-work-ship-and-settle.md`
+approved and built on branch `fix/waiting-work`; restart-gated). Amends ADR-0018 (restart
 producer), ADR-0038 (settle rules), ADR-0045 (waiting sweep) and ADR-0053 (expiry, cleanup).
 
 ## Context
@@ -55,3 +55,19 @@ The third report (`docs/investigations/2026-10-27-waiting-threads-third-report.m
   standard fix.
 - **Re-home misfiled decisions by project.** This is a guess (ADR-0053). Instead the console counts
   waiting per decision project, so a gold question shows under gold.
+
+## As built (2026-10-27)
+
+- **Owner without git.** `waitingWork()` decides the owner from the ledger and the sweep's
+  judgements, never by running git. A web request stays cheap. A question in a repo that is not yet
+  judged and is not prod work is owned by the `sweep`. Prod work, a judged question, a governor
+  escalation and a plan card are owned by the `operator`. A parked todo is owned by the `engine`.
+- **Orphaned waits.** At boot, `todo.releaseOrphans()` handles a todo parked on a decision that
+  already closed (live #611 on `aa76e69d`). An answered question resumes the todo with its answer.
+  A plan card, or a question closed without an answer, cancels the todo with the reason.
+- **No `delivered` outcome.** A delivered brief runs under the live session's own order. The boot
+  sweep ends a silent order after one daemon life, and dates its `interrupted` outcome at its last
+  activity, not at the boot. A boot date made every later `done` look too early for expiry.
+- **One gap computation.** `integrationGap()` feeds the restart item, the first line of `/list`
+  (`/status`), the console header chip and the handoff's "Not live" fact
+  (`setDeployFacts`, set at boot like `setNeoNotesDir`).

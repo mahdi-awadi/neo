@@ -313,9 +313,10 @@ catalogues. Test: `tests/commands.test.ts`, `tests/web-channel.test.ts`.
 **Files:** `CLAUDE.md` ("How to work here": a fix is reported "built on dev, not live" until
 `git merge-base --is-ancestor <commit> <boot head>`), `src/engine/dispatch.ts` (the handoff "Engine
 facts" block adds "dev +N not running"). Test: `tests/handoff.test.ts`.
+As built: `context-policy.ts` `setDeployFacts`/`deployFactFor` (set at boot); the facts block gets `- Not live: …` for the Neo repo only. Test: `tests/context-policy.test.ts`.
 
-- [ ] **Step 1:** Test `handoff facts include the integration gap`.
-- [ ] **Step 2:** Implement. Run. Expect PASS. Commit.
+- [x] **Step 1:** Test `handoff facts include the integration gap`.
+- [x] **Step 2:** Implement. Run. Expect PASS. Commit.
 - [ ] **Step 3:** Ship Phase C + D as in Task A1 ([OPERATOR] merge and restart). Then check that
   `/status` shows "dev +0".
 

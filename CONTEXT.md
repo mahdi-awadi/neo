@@ -672,14 +672,14 @@ thread ref, the project, and the open question. It is sent only when the list is
 different from the last one sent.
 _Avoid_: digest (that is the daily attention digest), nag, notification
 
-**Waiting item** (proposed, ADR-0054):
+**Waiting item** (ADR-0054):
 One thing that holds work back: an open decision, a todo parked on a decision, or a plan held for
 Approve & build. It always has an **owner** (`operator`, `sweep` or `engine`) and a **next
 action** (the one-line ask, "judge against the repo", or "resumes when X"). A thread is WAITING
 only while it has a waiting item. The Queue and Threads views read the same list.
 _Avoid_: pending, blocked, stuck
 
-**Interrupted order** (proposed, ADR-0054):
+**Interrupted order** (ADR-0054):
 An order that never recorded an outcome and had no activity after a later engine boot. At boot the
 engine records its outcome as `interrupted`, so a question it raised can expire.
 _Avoid_: orphan, lost order
@@ -979,7 +979,7 @@ branch not merged yet, an update that needs a restart. Computed from git and the
 remembered by hand. Wider than a **restart-gated update**, which is one kind of it.
 _Avoid_: pending restart, waiting fix
 
-**Integration branch** (proposed, ADR-0054):
+**Integration branch** (ADR-0054):
 The branch where finished work collects before it runs (`restart.integrationBranch`, default `dev`).
 Its commits that are not in the running build are reported as one restart-gated item. A fix is
 **live** when its commit is in the running build. Until then it is "built on dev", never "done".

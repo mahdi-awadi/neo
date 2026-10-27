@@ -2,6 +2,7 @@
 // transcript JSONL (same source of truth as usage.ts) and decides, at safe boundaries only,
 // whether to keep it, hand off + clear it, or clear it immediately. Fail OPEN on read errors:
 // a measurement problem must never destroy a session.
+import type { IntegrationGap } from "./producers/restart";
 import { existsSync, readFileSync, writeFileSync, statSync, openSync, readSync, closeSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -143,6 +144,27 @@ export function encodeCwd(folder: string): string {
 /** Where Neo keeps its handoff notes (ADR-0029): OUTSIDE every project repo, so Neo never writes a
  *  project's own HANDOFF.md. Set at boot from config `handoffNotesDir`; tests point it at a tmp dir. */
 let neoNotesDir = resolve("data/handoffs");
+/** The engine's own repo and its deploy gap (ADR-0054), set once at boot like the notes dir: a handoff
+ *  of the Neo repo then says plainly which finished work does not run, so "done on dev" is never
+ *  mistaken for live. */
+let deployFacts: { neoFolder: string; gap: () => IntegrationGap | undefined } | undefined;
+export function setDeployFacts(f: { neoFolder: string; gap: () => IntegrationGap | undefined }): void {
+  deployFacts = { neoFolder: resolve(f.neoFolder), gap: f.gap };
+}
+
+const withNotLive = (folder: string): { notRunning?: string } => {
+  const f = deployFactFor(folder);
+  return f ? { notRunning: f } : {};
+};
+
+/** The "Not live" fact for a handoff of `folder`: only the Neo repo, only when something does not run. */
+export function deployFactFor(folder: string): string | undefined {
+  if (!deployFacts || resolve(folder) !== deployFacts.neoFolder) return undefined;
+  const g = deployFacts.gap();
+  if (!g) return undefined;
+  return `${g.commits} commit${g.commits === 1 ? ` on ${g.integration} is` : `s on ${g.integration} are`} not running (oldest ${g.days} day${g.days === 1 ? "" : "s"}); the running build is ${g.running} on ${g.branch}`;
+}
+
 export function setNeoNotesDir(dir: string): void {
   neoNotesDir = resolve(dir);
   try {
@@ -468,6 +490,8 @@ export interface HandoffFacts {
   branch?: string;
   head?: string;
   uncommitted?: string[];
+  /** The Neo repo only (ADR-0054): finished work that the running build does not have. */
+  notRunning?: string;
   occupancy: number;
   at: number;
   boundary: ContextBoundary;
@@ -487,6 +511,7 @@ export function engineFactsBlock(f: HandoffFacts): string {
     `- Branch: ${f.branch ?? "(not a git repo)"}`,
     `- HEAD: ${f.head ?? "(none)"}`,
     `- Uncommitted: ${f.uncommitted === undefined ? "(unknown)" : dirty}`,
+    ...(f.notRunning ? [`- Not live: ${f.notRunning}`] : []),
     `- Handed off: ${new Date(f.at).toISOString()} at ${Math.round(f.occupancy * 100)}% of the context window (${f.reason ?? "policy"}, ${f.boundary})`,
   ].join("\n");
 }
@@ -861,7 +886,7 @@ export function completeHandoff(
     const git = (deps.facts ?? gitFacts)(folder);
     const note = finalizeHandoffNote(
       folder,
-      { ...git, occupancy: opts.occupancy, at: now(), boundary, reason },
+      { ...git, ...withNotLive(folder), occupancy: opts.occupancy, at: now(), boundary, reason },
       {
         before: opts.before,
         // No file written (Codex's sandbox, a denied out-of-folder write): a reply that IS a note wins.

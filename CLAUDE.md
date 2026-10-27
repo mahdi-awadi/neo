@@ -63,6 +63,9 @@ then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board).
 
 - **Stack:** Bun + TypeScript. `bun install` · `bun test` · `bunx tsc --noEmit` · `bun run
   src/daemon.ts`.
+- **Done means live (ADR-0054).** A fix on `dev` is "built on dev, not live" until the running build
+  contains it (`git merge-base --is-ancestor <commit> <boot head>`). `/list`, `/gated` and the
+  console header show how far `dev` is ahead. Never report it as fixed before then.
 - **Follow `MVP-PLAN.md`** in order. Write the failing test first, then the minimal code (TDD).
   `bunx tsc --noEmit` + `bun test` must be green before any task is "done." Commit per logical piece.
 - **Port the proven code from `/home/operant`** — don't rebuild it: `store.ts` → `ledger.ts`,

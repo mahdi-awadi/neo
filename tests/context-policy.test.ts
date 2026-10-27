@@ -613,3 +613,19 @@ test("contextLabel: an occupancy over 1 reads `ctx ?%` (impossible — spec §8.
   expect(contextLabel(2.35)).toBe("ctx ?%");
   expect(contextLabel(0.42)).toBe("ctx 42%");
 });
+
+// --- ADR-0054 D3: "done" means live ----------------------------------------------------------------
+test("ADR-0054 D3: the engine facts say when finished work on the Neo repo is not running", async () => {
+  const { engineFactsBlock, setDeployFacts, deployFactFor } = await import("../src/engine/context-policy");
+  const base = { branch: "dev", head: "6b8c06a docs", uncommitted: [], occupancy: 0.4, at: 0, boundary: "resume" as const };
+  expect(engineFactsBlock(base)).not.toContain("Not live");
+  const gap = { running: "4452b94", branch: "master", integration: "dev", commits: 87, days: 11, high: true, adrs: [] };
+  setDeployFacts({ neoFolder: "/home/neo", gap: () => gap });
+  expect(deployFactFor("/home/neo")).toBe("87 commits on dev are not running (oldest 11 days); the running build is 4452b94 on master");
+  expect(deployFactFor("/home/eticket-v3")).toBeUndefined(); // only the engine's own repo
+  expect(engineFactsBlock({ ...base, notRunning: deployFactFor("/home/neo") })).toContain(
+    "- Not live: 87 commits on dev are not running (oldest 11 days); the running build is 4452b94 on master",
+  );
+  setDeployFacts({ neoFolder: "/home/neo", gap: () => undefined });
+  expect(deployFactFor("/home/neo")).toBeUndefined();
+});

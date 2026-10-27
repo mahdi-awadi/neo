@@ -36,7 +36,7 @@ import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
 import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } from "./engine/dispatch-report";
 import { nextRetry } from "./engine/todo-retry";
-import { setNeoNotesDir } from "./engine/context-policy";
+import { setDeployFacts, setNeoNotesDir } from "./engine/context-policy";
 import { createApiCooldown } from "./engine/api-retry";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
@@ -175,6 +175,8 @@ async function main(): Promise<void> {
     }
     return gapMemo.gap;
   };
+  // A handoff of the Neo repo says which finished work does not run (ADR-0054).
+  setDeployFacts({ neoFolder, gap: deployGap });
   // The daily attention digest (AC5.5): a high item → the Decisions group, else the operator's DM.
   const sendDigest = async (text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<{ chatId: number; messageId: number } | void> => {
     const target = priority === "result" ? (cfg.decisionsChatId ?? admin.adminId()) : admin.adminId();
