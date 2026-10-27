@@ -1,36 +1,27 @@
-# HANDOFF — waiting work (ADR-0054): built and verified, ONE operator release
+# HANDOFF — waiting work (ADR-0054): LIVE since 2026-10-27
 
-Plan `docs/superpowers/plans/2026-10-27-waiting-work-ship-and-settle.md` (approved) is built on
-`fix/waiting-work` (11 commits, code-reviewed; full `bun test` green; `tsc` clean). Report:
-`docs/investigations/2026-10-27-waiting-threads-third-report.md`.
+Released on operator approval #117ff497: master fast-forwarded to d85b638 and booted 2026-10-27 03:51
+(`engine_boots` head d85b638, branch master, ledger v13, no faults). The `waiting-sweep` loop is
+loaded (hourly). `settle-decisions` was applied on decision #9ee6123d: 38 cards closed, 4bb30cac and
+666f1438 kept with the new `--keep` flag (backup `data/ledger.db.bak-settle-2026-10-27T05-41-26-015Z`);
+a second dry run closes 0. Plan `2026-10-27-waiting-work-ship-and-settle.md` is fully ticked.
 
-What changed:
-- **No chat guess.** The ADR-0038 "answered in chat" rule is gone. The dispatcher records a chat
-  answer with the `decision` tool.
-- **Every order ends.** At boot, an order silent through the previous daemon life ends as
-  `interrupted`, so expiry works.
-- **A plan done by any path closes its card.** Sweep commit evidence, or the checked cleanup, marks
-  the plan done.
-- **The sweep judges every open decision**: threadless ones, plan cards and kept prod questions.
-- **One waiting-work model**, with an owner and a next action, read by the Threads rows and Queue
-  (AR+EN, RTL-checked). Waiting is counted per decision project. Orphaned parked todos are released
-  at boot (#611).
-- **Overdue questions** are listed first, with their age.
-- **A fix is done only when it runs.** The restart item, `/list`, the console header chip and the
-  handoff "Not live" fact all say "dev +N not running". On the live repo today: high, 87 commits,
-  11 days.
+On `dev` after the release (restart-gated, not live; master not moved):
+- f281544, 96df985: `settle-decisions --keep <id>,<id>` (tool only; no restart needed to use it).
+- 84ad3c5: a loop's judge run counts toward `budgetUsd`; the goal's `timeoutMs` aborts the judge.
+  Needs a restart.
 
-Operator steps (one release):
-1. Fast-forward `master` to `dev`, check out `master` in `/home/neo` (it is on `dev` now), restart.
-2. `bun tools/create-loop.ts docs/loops/waiting-sweep.json`.
-3. `bun tools/threads/settle-decisions.ts data/ledger.db` (dry run). The preview on a copy shows 40
-   closable and 75 kept; d83217cb stays open. Check the list, then run it with `--apply`.
+Still open (operator):
+- /home/neo is on `master` (the approved release). A 2026-10-27 reload note says the operator wants it
+  kept on `dev`: confirm which branch the folder should stay on.
+- ADR-0050 rollout steps 3–6 (tool skills install, worker env strip, relay, remote branch delete).
+- ADR-0044 Phases 3–5 (usage ranking, recipes, skillify, enrichment loop) are not approved.
+- Plans awaiting approval: claude-app feature parity, research P0-P8.
+- todo #700 duplicates a built plan; 5 stale `chore/agent-sdk-*` branches; the open real questions.
+- Many older plans (June–October) still show unticked boxes for work that is built; not audited.
 
-Still open, not engine work:
-- todo #700 duplicates a built plan;
-- 7 real questions are waiting (see the plan);
-- 5 stale `chore/agent-sdk-*` branches can be deleted.
-
+Tests: under load avg 80–220 the full suite gives 2,301–2,304 pass with 3–10 timing failures, each
+passing alone or with `--timeout 30000` (one also fails on master under the same load).
 ---
 
 # HANDOFF — decision threads and closing (ADR-0053): on `dev`, restart-gated
