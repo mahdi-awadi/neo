@@ -67,8 +67,10 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
   (Done 2026-10-27: `dev` already had master by `a7a6b53`, so `release/2026-10-27` = fast-forward of
   master to `dev` `24cb50b`. `tsc` clean; `bun test` 2,280 pass, 0 fail; the ledger copy migrates
   v11 → v13 with no row count changed in 22 tables.)
-- [ ] **Step 5 [OPERATOR]:** Approve fast-forwarding `master` to `release/2026-10-27`.
-- [ ] **Step 6 [OPERATOR]:** Restart the daemon (`systemctl restart neo`).
+- [x] **Step 5 [OPERATOR]:** Approve fast-forwarding `master` to `release/2026-10-27`.
+  (Approved 2026-10-27, decision #117ff497: "Release now". `master` fast-forwarded to `dev`.)
+- [x] **Step 6 [OPERATOR]:** Restart the daemon (`systemctl restart neo`).
+  (Issued 2026-10-27 on operator approval #117ff497, with `/home/neo` checked out on `master`.)
 - [ ] **Step 7:** Post-boot check, read-only:
   - the newest `engine_boots` row has `head_sha` = the release head and `branch` = `master`;
   - the ledger `user_version` = 13;
