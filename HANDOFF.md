@@ -1,11 +1,35 @@
-# HANDOFF — waiting threads, third report (2026-10-27): plan awaits approval
+# HANDOFF — waiting work (ADR-0054): built and verified, ONE operator release
 
-Report: `docs/investigations/2026-10-27-waiting-threads-third-report.md`. Plan (approval required):
-`docs/superpowers/plans/2026-10-27-waiting-work-ship-and-settle.md`. ADR-0054 is proposed.
-- The fixes for WAITING threads (ADR-0038/0045/0052/0053) never ran: the daemon runs master `4452b94`.
-- On dev they are incomplete: they settle 9 of 22 stale decisions and wrongly close d83217cb.
-  **Do not run `settle-decisions --apply` before plan task B1.**
-- The restart producer never reported `dev` (its `branchPrefixes` are `fix/`, `feat/` and `chore/`).
+Plan `docs/superpowers/plans/2026-10-27-waiting-work-ship-and-settle.md` (approved) is built on
+`fix/waiting-work` (9 commits; full `bun test` 2,305 pass / 0 fail; `tsc` clean). Report:
+`docs/investigations/2026-10-27-waiting-threads-third-report.md`.
+
+What changed:
+- **No chat guess.** The ADR-0038 "answered in chat" rule is gone. The dispatcher records a chat
+  answer with the `decision` tool.
+- **Every order ends.** At boot, an order silent through the previous daemon life ends as
+  `interrupted`, so expiry works.
+- **A plan done by any path closes its card.** A later todo that names the plan, or sweep evidence,
+  marks the plan done.
+- **The sweep judges every open decision**: threadless ones, plan cards and kept prod questions.
+- **One waiting-work model**, with an owner and a next action, read by the Threads rows and Queue
+  (AR+EN, RTL-checked). Waiting is counted per decision project. Orphaned parked todos are released
+  at boot (#611).
+- **Overdue questions** are listed first, with their age.
+- **A fix is done only when it runs.** The restart item, `/list`, the console header chip and the
+  handoff "Not live" fact all say "dev +N not running". On the live repo today: high, 87 commits,
+  11 days.
+
+Operator steps (one release):
+1. Fast-forward `master` to `dev`, check out `master` in `/home/neo` (it is on `dev` now), restart.
+2. `bun tools/create-loop.ts docs/loops/waiting-sweep.json`.
+3. `bun tools/threads/settle-decisions.ts data/ledger.db` (dry run). The preview on a copy shows 40
+   closable and 75 kept; d83217cb stays open. Check the list, then run it with `--apply`.
+
+Still open, not engine work:
+- todo #700 duplicates a built plan;
+- 7 real questions are waiting (see the plan);
+- 5 stale `chore/agent-sdk-*` branches can be deleted.
 
 ---
 

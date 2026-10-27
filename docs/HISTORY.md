@@ -1185,6 +1185,26 @@ The console showed 23 WAITING threads; the ledger had 110 open decisions back to
 
 Restart-gated.
 
+Waiting work has an owner, and a fix is done only when it runs (2026-10-27, ADR-0054).
+This was the third report (`docs/investigations/2026-10-27-waiting-threads-third-report.md`).
+- 23 of the 30 open decisions on waiting threads were done or moot in their repos.
+- None of the earlier fixes (ADR-0038/0045/0052/0053) ran: the daemon was on master and they sat
+  on `dev`.
+- The restart producer could not see `dev`.
+
+The changes:
+- The "answered in chat" guess is gone, and the dispatcher records chat answers with `decision`.
+- Orders silent across a restart end as `interrupted`.
+- A plan done by any path closes its card.
+- The sweep judges every open decision.
+- `waitingWork()` gives every item an owner and a next action, in Threads and Queue.
+- Orphaned parked todos are released at boot.
+- Overdue questions come first in the reminder.
+- `integrationGap()` says "dev +N not running" in the restart item, in `/list`, in the console
+  header and in the handoff facts.
+
+Restart-gated (one release).
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

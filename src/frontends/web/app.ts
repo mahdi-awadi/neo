@@ -519,8 +519,10 @@ function renderRecent(): void {
   let h = `<div class="card"><h3>${t("recent.title")}</h3>`;
   if (!S.recent.length) h += `<div class="empty">${t("recent.empty")}</div>`;
   S.recent.forEach((o: Any) => {
-    const ic = o.status === "done" ? "✓" : o.status === "error" ? "✗" : "⏳";
-    h += `<div class="rrow"><span>${ic}</span><div style="flex:1;min-width:0"><div>${esc(o.task)}</div><div class="rfo">${ltr(o.folder)}</div></div></div>`;
+    // `interrupted` (ADR-0054): a restart cut it off — not running, so never the ⏳ of pending work.
+    const ic = o.status === "done" ? "✓" : o.status === "error" ? "✗" : o.status === "interrupted" ? "⊘" : "⏳";
+    const tip = o.status === "interrupted" ? ` title="${esc(tx("recent.interrupted"))}"` : "";
+    h += `<div class="rrow"><span${tip}>${ic}</span><div style="flex:1;min-width:0"><div>${esc(o.task)}</div><div class="rfo">${ltr(o.folder)}</div></div></div>`;
   });
   v.innerHTML = h + "</div>" + renderContextEvents();
 }

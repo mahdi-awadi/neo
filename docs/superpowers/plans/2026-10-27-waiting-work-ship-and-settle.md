@@ -324,11 +324,17 @@ As built: `context-policy.ts` `setDeployFacts`/`deployFactFor` (set at boot); th
 
 ## Operator approvals needed
 
-1. **This plan** (it changes engine behaviour and needs restarts).
-2. **Release 1 (Phase A):** fast-forward `master` to `release/2026-10-27`, then restart. Load the
-   `waiting-sweep` loop.
-3. **Release 2 (after B):** merge and restart, then `settle-decisions --apply` after you check the
-   dry-run list.
-4. **Release 3 (after C + D):** merge and restart.
-5. **Not this plan, but open:** todo #700 duplicates the built oldest-code plan (stop it or let it
-   run), and 7 real questions: 4fc5a9c1, d83217cb, 708b51b4, daa64d3a, bf799a94, 12a2836a, f0282349.
+**Update 2026-10-27 (as built):** every task is built and verified on `fix/waiting-work` and merged
+into `dev`. So the three releases become **one**, and there is one restart instead of three:
+
+1. **Merge + restart (A1 steps 5–6, B5 step 1, D3 step 3):** fast-forward `master` to `dev`, put
+   the live checkout on `master` (`/home/neo` is on `dev` today, so a restart now would run `dev`),
+   then restart the daemon. Its first boot ends 965 dead orders as `interrupted` and releases the
+   orphaned todo #611 (its card `aa76e69d` was answered Done).
+2. **Load the loop (A2):** `bun tools/create-loop.ts docs/loops/waiting-sweep.json`.
+3. **Settle (B5):** dry run, then check the list (preview on a copy: 40 closable, 75 kept;
+   `d83217cb` stays open), then `--apply`.
+4. **Not this plan, still open:**
+   - todo #700 duplicates the built oldest-code plan;
+   - 7 real questions are waiting: 4fc5a9c1, d83217cb, 708b51b4, daa64d3a, bf799a94, 12a2836a, f0282349;
+   - 5 stale local branches `chore/agent-sdk-0.3.295…0.3.308` can be deleted (later pins replaced them).

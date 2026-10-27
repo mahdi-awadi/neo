@@ -159,7 +159,8 @@
       "deferred": "deferred",
       "resumed": "resumed",
       "fresh": "fresh start"
-    }
+    },
+    "interrupted": "cut off by an engine restart"
   },
   "inbox": {
     "titleEmpty": "Inbox — customer messages",
