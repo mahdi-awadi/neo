@@ -268,9 +268,9 @@ judged `keep` or when it has no repo; `engine` for a parked todo (it resumes by 
 than this goes at the top of the reminder with its age ("9d"). The fingerprint includes the age
 bucket, so the reminder is sent again once when an item crosses the limit, and never every hour.
 
-- [ ] **Step 1:** Test `an item crossing escalateAfterDays changes the fingerprint once`.
-- [ ] **Step 2:** Test `the reminder lists kept prod questions with age, oldest first`.
-- [ ] **Step 3:** Run. Expect FAIL. Implement. Run. Expect PASS. Commit.
+- [x] **Step 1:** Test `an item crossing escalateAfterDays changes the fingerprint once`.
+- [x] **Step 2:** Test `the reminder lists kept prod questions with age, oldest first`.
+- [x] **Step 3:** Run. Expect FAIL. Implement. Run. Expect PASS. Commit.
 
 ---
 

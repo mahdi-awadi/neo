@@ -5,7 +5,7 @@ import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createTrace } from "../src/engine/trace";
 import type { GitRunner } from "../src/engine/git-read";
-import { check, closeWithEvidence, keepJudged, waitingDecisions, DEFAULT_WAITING_SWEEP_CFG, readWaitingSweepCfg, type SweepDeps } from "../src/engine/waiting-sweep";
+import { check, closeWithEvidence, keepJudged, reminder, waitingDecisions, DEFAULT_WAITING_SWEEP_CFG, readWaitingSweepCfg, type SweepDeps, type WaitingDecision } from "../src/engine/waiting-sweep";
 
 const ASKED = 1_000_000; // ms
 const sec = (ms: number) => String(Math.floor(ms / 1000));
@@ -56,7 +56,7 @@ function ask(s: ReturnType<typeof setup>, question = "Which bank?", folder = "/h
 
 test("config falls back to the defaults on bad values", () => {
   expect(readWaitingSweepCfg({ rejudgeAfterMs: -1, reminderMaxLines: "x" })).toEqual(DEFAULT_WAITING_SWEEP_CFG);
-  expect(DEFAULT_WAITING_SWEEP_CFG).toEqual({ rejudgeAfterMs: 21_600_000, reminderMaxLines: 15 });
+  expect(DEFAULT_WAITING_SWEEP_CFG).toEqual({ rejudgeAfterMs: 21_600_000, reminderMaxLines: 15, escalateAfterDays: 3 });
 });
 
 test("AC1: no WAITING thread → met, nothing to say", () => {
@@ -215,4 +215,33 @@ test("ADR-0054 B4: an awaiting plan card is offered for judging (evidence can no
   const id = ask(s, "Plan waiting for your approval: docs/a.md");
   s.led.upsertPlan({ project: "p", folder: "/home/p", title: "t", sha256: "x", stepsTotal: 1, stepsDone: 0, threadId: s.root.threadId, createdAt: ASKED, updatedAt: ASKED, path: "docs/a.md", status: "sent", decisionId: id } as never);
   expect(check(s.deps).toJudge.map((d) => d.id)).toContain(id);
+});
+
+// --- ADR-0054 C2: no silent wait; escalate by age ------------------------------------------------
+const DAY = 86_400_000;
+const wd = (id: string, threadId: number, createdAt: number, project = "p"): WaitingDecision => ({ id, threadId, threadUpdatedAt: createdAt, project, question: `q ${id}`, createdAt, plan: false });
+
+test("ADR-0054 C2: escalateAfterDays defaults to 3 and reads like the other knobs", () => {
+  expect(DEFAULT_WAITING_SWEEP_CFG.escalateAfterDays).toBe(3);
+  expect(readWaitingSweepCfg({ escalateAfterDays: 5 }).escalateAfterDays).toBe(5);
+  expect(readWaitingSweepCfg({ escalateAfterDays: -1 }).escalateAfterDays).toBe(3);
+});
+
+test("ADR-0054 C2: an item crossing escalateAfterDays changes the fingerprint once", () => {
+  const list = [wd("aaaaaaaa-1", 1, 0)];
+  const ref = (id: number) => `m${id}`;
+  const young = reminder(list, {}, DEFAULT_WAITING_SWEEP_CFG, ref, 2 * DAY);
+  const crossed = reminder(list, {}, DEFAULT_WAITING_SWEEP_CFG, ref, 4 * DAY);
+  const later = reminder(list, {}, DEFAULT_WAITING_SWEEP_CFG, ref, 9 * DAY);
+  expect(crossed.fingerprint).not.toBe(young.fingerprint);
+  expect(later.fingerprint).toBe(crossed.fingerprint); // re-sent once on crossing, never every hour
+});
+
+test("ADR-0054 C2: the reminder lists overdue items first, oldest first, with their age", () => {
+  const list = [wd("fresh000-1", 1, 8 * DAY), wd("old00000-2", 2, 0, "eticket-v3"), wd("mid00000-3", 3, 2 * DAY, "prod-ops")];
+  const r = reminder(list, { "old00000-2": { at: 0, commitAt: 0, ask: "run the prod migration?" } }, DEFAULT_WAITING_SWEEP_CFG, (id) => `m${id}`, 9 * DAY);
+  const lines = r.text.split("\n").slice(1);
+  expect(lines[0]).toBe("• ⚠ 9d m2 eticket-v3 — run the prod migration?");
+  expect(lines[1]).toBe("• ⚠ 7d m3 prod-ops — q mid00000-3");
+  expect(lines[2]).toBe("• m1 p — q fresh000-1");
 });

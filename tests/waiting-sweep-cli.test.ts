@@ -28,7 +28,8 @@ function world() {
   const t = createTrace({ ledger: led, registry: createRegistry() });
   const root = t.inbound({ chatId: 7, text: "pick a bank", surface: "telegram" });
   const folder = repo();
-  const id = led.openDecision({ kind: "decision", question: "Which bank?", cause: root, folder, project: "p" }, 1_000);
+  // Asked a minute ago: older than the repo's commit, younger than escalateAfterDays (ADR-0054).
+  const id = led.openDecision({ kind: "decision", question: "Which bank?", cause: root, folder, project: "p" }, Date.now() - 60_000);
   t.refreshThread(root.threadId);
   return { ledgerPath, led, t, root, folder, id };
 }

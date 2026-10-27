@@ -14,9 +14,12 @@ export interface WaitingSweepCfg {
   rejudgeAfterMs: number;
   /** Most threads the reminder lists before "…and N more". */
   reminderMaxLines: number;
+  /** A question older than this many days is overdue (ADR-0054): listed first with its age, and the
+   *  reminder is sent once more when it crosses the line. */
+  escalateAfterDays: number;
 }
 
-export const DEFAULT_WAITING_SWEEP_CFG: WaitingSweepCfg = { rejudgeAfterMs: 6 * 3_600_000, reminderMaxLines: 15 };
+export const DEFAULT_WAITING_SWEEP_CFG: WaitingSweepCfg = { rejudgeAfterMs: 6 * 3_600_000, reminderMaxLines: 15, escalateAfterDays: 3 };
 
 /** Parse the config value; a missing or bad field keeps its default. */
 export function readWaitingSweepCfg(raw: unknown): WaitingSweepCfg {
@@ -173,8 +176,10 @@ const clip = (s: string, n: number) => {
 
 /** The operator reminder: one line per thread, capped; "" when nothing waits. The fingerprint covers
  *  every decision and ask, so any change (new, closed, re-asked) makes a new reminder. */
-export function reminder(list: WaitingDecision[], judged: Record<string, Judged>, cfg: WaitingSweepCfg, ref: (threadId: number) => string): { text: string; fingerprint: string } {
+export function reminder(list: WaitingDecision[], judged: Record<string, Judged>, cfg: WaitingSweepCfg, ref: (threadId: number) => string, now: number = Date.now()): { text: string; fingerprint: string } {
   if (list.length === 0) return { text: "", fingerprint: "" };
+  const overdueAt = now - cfg.escalateAfterDays * DAY_MS;
+  const overdue = (d: WaitingDecision) => d.createdAt <= overdueAt;
   // One line per thread; a decision with no thread is its own line, named by its id.
   const groups = new Map<string, { label: string; ds: WaitingDecision[] }>();
   for (const d of list) {
@@ -183,19 +188,28 @@ export function reminder(list: WaitingDecision[], judged: Record<string, Judged>
     g.ds.push(d);
     groups.set(key, g);
   }
-  const lines = [...groups.values()].map(({ label, ds }) => {
+  // Overdue first, oldest first (ADR-0054); the rest keep their order.
+  const oldest = (ds: WaitingDecision[]) => Math.min(...ds.map((d) => d.createdAt));
+  const ordered = [...groups.values()]
+    .map((g, i) => ({ ...g, i, at: oldest(g.ds), late: g.ds.some(overdue) }))
+    .sort((a, b) => (a.late === b.late ? (a.late ? a.at - b.at : a.i - b.i) : a.late ? -1 : 1));
+  const lines = ordered.map(({ label, ds, at, late }) => {
     const lead = ds.find((d) => judged[d.id]?.ask) ?? ds[0]!;
     const more = ds.length > 1 ? ` (+${ds.length - 1} more)` : "";
-    return `• ${label} ${lead.project ?? "-"} — ${clip(judged[lead.id]?.ask || lead.question, 120)}${more}`;
+    const age = late ? `⚠ ${Math.floor((now - at) / DAY_MS)}d ` : "";
+    return `• ${age}${label} ${lead.project ?? "-"} — ${clip(judged[lead.id]?.ask || lead.question, 120)}${more}`;
   });
   const shown = lines.slice(0, cfg.reminderMaxLines);
   const rest = lines.length - shown.length;
   const text = [`⏳ Waiting on you (${lines.length}):`, ...shown, ...(rest > 0 ? [`…and ${rest} more`] : [])].join("\n");
+  // The overdue flag is in the fingerprint, the age is not: crossing the line re-sends once, then quiet.
   const fingerprint = createHash("sha256")
-    .update(list.map((d) => `${d.threadId ?? "-"}:${d.id}:${judged[d.id]?.ask ?? ""}`).sort().join("\n"))
+    .update(list.map((d) => `${d.threadId ?? "-"}:${d.id}:${judged[d.id]?.ask ?? ""}:${overdue(d) ? "late" : ""}`).sort().join("\n"))
     .digest("hex");
   return { text, fingerprint };
 }
+
+const DAY_MS = 86_400_000;
 
 /** The loop's goal. Re-derive every WAITING thread, then: decisions to judge → not met (a worker
  *  runs); none → met, and `out` is the reminder when it changed (else ""). */
@@ -213,7 +227,7 @@ export function check(deps: SweepDeps): { met: boolean; out: string; toJudge: Wa
   for (const d of toJudge) kept[d.id] = { at: now, commitAt: d.latestCommitAt ?? 0, ask: judged[d.id]?.ask ?? "", offeredAt: now };
   if (toJudge.length || Object.keys(kept).length !== Object.keys(judged).length) deps.ledger.setMeta(JUDGED_KEY, kept, now);
   if (toJudge.length) return { met: false, out: "", toJudge };
-  const r = reminder(list, kept, deps.cfg, deps.ref);
+  const r = reminder(list, kept, deps.cfg, deps.ref, now);
   const last = deps.ledger.getMeta(REMINDER_KEY)?.value as { fingerprint?: string } | undefined;
   if (r.fingerprint === (last?.fingerprint ?? "")) return { met: true, out: "", toJudge };
   deps.ledger.setMeta(REMINDER_KEY, { fingerprint: r.fingerprint }, now);
