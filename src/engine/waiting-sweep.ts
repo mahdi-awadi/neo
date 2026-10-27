@@ -68,7 +68,7 @@ export interface Judged {
   offeredAt?: number;
 }
 
-const JUDGED_KEY = "waitingSweep.judged";
+export const JUDGED_KEY = "waitingSweep.judged";
 const REMINDER_KEY = "waitingSweep.reminder";
 const PAGE = 100;
 

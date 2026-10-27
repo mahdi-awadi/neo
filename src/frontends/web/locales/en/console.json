@@ -396,5 +396,23 @@
       "acknowledged": "acknowledged",
       "answered": "answered"
     }
+  },
+  "waiting": {
+    "title": "Waiting on someone",
+    "owner": {
+      "operator": "you",
+      "sweep": "sweep",
+      "engine": "engine"
+    },
+    "next": {
+      "answer": "answer: {{ask}}",
+      "acknowledge": "acknowledge: {{ask}}",
+      "approve": "approve & build or drop: {{ask}}",
+      "judge": "the sweep checks the repo: {{ask}}",
+      "resumes": "resumes when {{on}} is answered"
+    },
+    "keep": "prod / irreversible",
+    "more": "+{{n}} more",
+    "since": "waiting {{age}}"
   }
 }

@@ -891,3 +891,16 @@ test("staging with no project to receive it is refused", () => {
   const t = traced();
   expect(t.ch.stage({ name: "a.txt", bytes: new Uint8Array([1]) })).toEqual({ error: "no active project" });
 });
+
+test("ADR-0054 C1: a WAITING thread row carries its waiting items — owner and next action", () => {
+  const eng = engine(fakeStart(() => {}).start);
+  const root = eng.ledger.insertMessage({ chatId: 42, role: "user", content: "fix the wallet", at: 1_000, surface: "web", kind: "text" });
+  eng.ledger.insertThread({ id: root, origin: "operator", title: "fix the wallet", state: "waiting", createdAt: 1_000 });
+  eng.ledger.setMessageThread(root, root);
+  const d = eng.ledger.openDecision({ kind: "decision", question: "Run the prod migration?", folder: "/home/p", project: "p", cause: { msgId: root, threadId: root } }, 1_000);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const row = ch.threads({ state: "waiting" }, { limit: 10 }).rows.find((r) => r.id === root) as unknown as { waiting?: Array<{ id: string; owner: string; next: string }> };
+  expect(row?.waiting).toEqual([expect.objectContaining({ id: d, owner: "operator", next: "answer" })]);
+  // The Queue view reads the same list.
+  expect((ch.state() as unknown as { waiting: Array<{ id: string }> }).waiting.map((i) => i.id)).toContain(d);
+});

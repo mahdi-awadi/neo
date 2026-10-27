@@ -15,6 +15,8 @@ import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
 import { todoTitle } from "./todo-queue";
 import { limitWait } from "./api-retry";
+import { waitingWork, type WaitingItem } from "./waiting-work";
+import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
 
 export interface DashProject {
   id: string;
@@ -67,6 +69,8 @@ export interface DashState {
   todos: DashTodo[];
   /** Newest context resets and resumes across projects (ADR-0021). */
   contextEvents: DashContextEvent[];
+  /** Everything that holds work back, each with its owner and next action (ADR-0054). */
+  waiting: WaitingItem[];
 }
 
 /** Failed todos the console shows (newest first). All of them stay in the ledger (ADR-0027). */
@@ -160,6 +164,8 @@ export function dashboardSnapshot(opts: {
   windowTokensByModel?: Record<string, number>;
   /** The sweet-spot lines (cfg.contextPolicy), for each row's band. */
   contextPolicy?: BandCfg;
+  /** cfg.decisionSettle.keepPatterns, for the waiting items' `keep` (default DEFAULT_KEEP_PATTERNS). */
+  keepPatterns?: readonly string[];
 }): DashState {
   const now = opts.now ?? Date.now();
   const activeId = opts.registry.findByChat(opts.chatId)?.id;
@@ -223,9 +229,17 @@ export function dashboardSnapshot(opts: {
     ...(typeof e.detail?.steps === "number" ? { steps: e.detail.steps } : {}),
     ...(typeof e.detail?.success === "boolean" ? { success: e.detail.success } : {}),
   }));
+  // One bad row must not blank the whole console: the waiting list fails soft to empty.
+  let waiting: WaitingItem[] = [];
+  try {
+    waiting = waitingWork(opts.ledger, { keepPatterns: opts.keepPatterns ?? DEFAULT_KEEP_PATTERNS });
+  } catch {
+    // skip on error
+  }
   return {
     todos,
     contextEvents,
+    waiting,
     projects,
     sdk: workerSdkState(opts.sdkProvider ?? "subscription"),
     usage: opts.usage ? opts.usage.snapshot(now) : null,

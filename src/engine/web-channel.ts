@@ -43,6 +43,8 @@ import { applyPlanAction, planActions, planDepsFrom, planState, type PlanAction,
 import { answerDecision, routeThreadMessage } from "./reply-routing";
 import { projectDeps, projectSummaries, projectView, type ProjectSummary, type ProjectView } from "./project-view";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
+import { waitingWork, type WaitingItem } from "./waiting-work";
+import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -136,7 +138,7 @@ export interface WebChannel {
    *  list) — runs the shared /todo command, so the console and Telegram share one set of rules. */
   todo(args: string): { ok: boolean; text: string };
   /** The thread list (ADR-0017): newest-updated first, filtered, keyset-paged; each row has its ref. */
-  threads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: Array<ThreadListRow & { ref?: string }>; next?: string };
+  threads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: Array<ThreadListRow & { ref?: string; waiting?: WaitingItem[] }>; next?: string };
   /** One thread: a page of its messages (newest first) and what it produced. Undefined: no such thread. */
   thread(id: number, page: { before?: number; limit: number }): ThreadView | undefined;
   /** The projects that have threads, with their thread counts (the console's project rail). */
@@ -471,12 +473,25 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         reposRoot: opts.engine.cfg.workRoot, // scan the operator's configured project root
         sdkProvider: opts.engine.cfg.providers.ownWork,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
+        ...(opts.engine.cfg.decisionSettle ? { keepPatterns: opts.engine.cfg.decisionSettle.keepPatterns } : {}),
       });
     },
     threads(f, page) {
       const trace = opts.engine.trace;
       const r = opts.engine.ledger.listThreads(f, page);
-      return { ...r, rows: r.rows.map((t) => ({ ...t, ...(trace ? { ref: trace.ref(t.id) } : {}) })) };
+      // A WAITING row says who owes what (ADR-0054): its decision items, read once per page.
+      const byThread = new Map<number, WaitingItem[]>();
+      if (r.rows.some((t) => t.state === "waiting")) {
+        const keepPatterns = opts.engine.cfg.decisionSettle?.keepPatterns ?? DEFAULT_KEEP_PATTERNS;
+        for (const i of waitingWork(opts.engine.ledger, { keepPatterns })) {
+          if (i.threadId === undefined || i.kind === "parked_todo") continue;
+          byThread.set(i.threadId, [...(byThread.get(i.threadId) ?? []), i]);
+        }
+      }
+      return {
+        ...r,
+        rows: r.rows.map((t) => ({ ...t, ...(trace ? { ref: trace.ref(t.id) } : {}), ...(t.state === "waiting" && byThread.has(t.id) ? { waiting: byThread.get(t.id)! } : {}) })),
+      };
     },
     thread(id, page) {
       const { ledger, trace } = opts.engine;

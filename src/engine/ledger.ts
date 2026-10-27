@@ -2061,7 +2061,16 @@ function threadListQuery(f: ThreadFilter, cursor: { at: number; id: number } | u
   const where: string[] = [];
   const params: Array<string | number> = [];
   if (id !== undefined) (where.push("t.id = ?"), params.push(id));
-  if (f.project !== undefined) (where.push("t.project = ?"), params.push(f.project));
+  if (f.project !== undefined && f.state === "waiting") {
+    // Waiting is counted per DECISION project (ADR-0054): a gold question on an eticket thread makes
+    // it wait for gold, not eticket. A thread waiting with no open decision (an approval) counts for
+    // its own project.
+    where.push(
+      `(EXISTS (SELECT 1 FROM decisions d WHERE d.thread_id = t.id AND d.status = 'open' AND COALESCE(d.project, t.project) = ?)
+        OR (t.project = ? AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.thread_id = t.id AND d.status = 'open')))`,
+    );
+    params.push(f.project, f.project);
+  } else if (f.project !== undefined) (where.push("t.project = ?"), params.push(f.project));
   if (f.state !== undefined) (where.push("t.state = ?"), params.push(f.state));
   if (f.origin !== undefined) (where.push("t.origin = ?"), params.push(f.origin));
   if (f.since !== undefined) (where.push("t.updated_at >= ?"), params.push(f.since));

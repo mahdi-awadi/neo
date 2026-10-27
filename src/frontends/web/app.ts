@@ -42,7 +42,7 @@ const val = (id: string): string => ($(id) as HTMLInputElement).value;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
-let S: Any = { projects: [], sdk: { provider: "subscription", label: "", choices: [] }, usage: null, loops: [], recent: [], repos: [], todos: [] };
+let S: Any = { projects: [], sdk: { provider: "subscription", label: "", choices: [] }, usage: null, loops: [], recent: [], repos: [], todos: [], waiting: [] };
 
 function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -418,11 +418,22 @@ function renderTodos(): void {
   const bd = $("tbadge");
   bd.textContent = q ? " " + q : "";
   bd.className = "ibadge" + (q ? " on" : "");
+  // What holds work back, with who owes it (ADR-0054). Parked todos show in their queue below.
+  const W: Any[] = (S.waiting || []).filter((i: Any) => i.kind !== "parked_todo");
+  const waitingCard = W.length
+    ? `<div class="card"><h3>${t("waiting.title")} ${ltr(W.length)}</h3>` +
+      W.map(
+        (i) =>
+          `<div class="rrow"><div style="flex:1;min-width:0"><div class="tw">${waitingLine(i)}</div>` +
+          `<div class="tm">${ltr("#" + String(i.id).slice(0, 8))}${i.project ? " · " + iso(i.project) : ""} · ${t("waiting.since", { age: age(Date.now() - i.since) })}</div></div></div>`,
+      ).join("") +
+      `</div>`
+    : "";
   if (!T.length) {
-    v.innerHTML = `<div class="card"><h3>${t("queue.title")}</h3><div class="empty">${t("queue.empty")}</div></div>`;
+    v.innerHTML = waitingCard + `<div class="card"><h3>${t("queue.title")}</h3><div class="empty">${t("queue.empty")}</div></div>`;
     return;
   }
-  v.innerHTML = "";
+  v.innerHTML = waitingCard;
   const by: Record<string, Any[]> = {};
   const order: string[] = [];
   T.forEach((x) => {
@@ -977,11 +988,26 @@ function loadThreadProjects(): void {
     })
     .catch(() => {});
 }
+/** One waiting item (ADR-0054): who owes it and the next action. Ids stay left-to-right. */
+function waitingLine(i: Any): string {
+  const next =
+    i.next === "resumes"
+      ? tx("waiting.next.resumes", { on: ltr("#" + i.on) }) // ltr()/iso() output is already escaped
+      : tx(`waiting.next.${i.next}`, { ask: iso(String(i.ask ?? "").replace(/\s+/g, " ").slice(0, 160)) }); // iso(): escaped, isolated
+  return (
+    `<span class="tchip own-${esc(i.owner)}">${t(`waiting.owner.${i.owner}`)}</span>` +
+    (i.keep ? `<span class="tchip keep">${t("waiting.keep")}</span>` : "") +
+    `<span class="wn" dir="auto">${next}</span>`
+  );
+}
 function threadRowHtml(r: Any): string {
   const counts = r.messages === undefined ? "" : " · " + t("threads.counts", { messages: r.messages, decisions: r.openDecisions, todos: r.activeTodos });
+  const W: Any[] = r.waiting || [];
+  const waiting = W.length ? `<div class="tw">${waitingLine(W[0])}${W.length > 1 ? `<span>${t("waiting.more", { n: W.length - 1 })}</span>` : ""}</div>` : "";
   return (
     `<div class="tt"><span class="tchip st-${esc(r.state)}">${t(`threads.state.${r.state}`)}</span>${r.ref ? ltr(r.ref) : ""}<span class="ttl" dir="auto">${r.title ? esc(r.title) : t("threads.untitled")}</span></div>` +
-    `<div class="tm">${r.project ? iso(r.project) + " · " : ""}${iso(age(Date.now() - r.updatedAt))}${counts}</div>`
+    `<div class="tm">${r.project ? iso(r.project) + " · " : ""}${iso(age(Date.now() - r.updatedAt))}${counts}</div>` +
+    waiting
   );
 }
 function threadRow(r: Any): HTMLElement {

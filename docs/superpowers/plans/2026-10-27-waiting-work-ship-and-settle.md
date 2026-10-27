@@ -213,7 +213,22 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
   the owner and next action on each WAITING thread row)
 - Test: `tests/waiting-work.test.ts`, `tests/web-channel.test.ts`
 
-**Interfaces:**
+**As built (2026-10-27):**
+- `waitingWork(ledger, { keepPatterns })` in `src/engine/waiting-work.ts`; items have `kind`
+  (`decision` | `plan` | `parked_todo`), `owner`, `next` (an i18n key: `answer` | `acknowledge` |
+  `approve` | `judge` | `resumes`), `ask`, `on`, `since`, `keep`. The owner comes from the ledger and
+  the sweep's judgements, never git, so a web request stays cheap.
+- `trace.ts` is unchanged: the WAITING derive is already "has an open decision", and the invariant
+  test proves that the model and the derive agree.
+- `listThreads({ project, state: "waiting" })` counts a thread for each open decision's own project.
+- Added: `todo.releaseOrphans()` at boot. A todo parked on a closed decision (live #611, parked on
+  `aa76e69d`, which the operator tapped Done on master) is resumed with the answer, or cancelled
+  with the reason.
+- Console: the owner, the next action and a "prod / irreversible" chip on WAITING rows, and a
+  "Waiting on someone" card in Queue, AR+EN (`waiting.*`). RTL screenshots were checked: refs, ids
+  and `+964 …` stay LTR.
+
+**Interfaces (planned):**
 ```ts
 export type WaitingOwner = "operator" | "sweep" | "engine";
 export interface WaitingItem {
@@ -231,16 +246,16 @@ export function waitingWork(ledger: Ledger, opts: { now: number; cfg: DecisionSe
 Owner rule: `sweep` while the repo has a commit newer than the last judgement; `operator` after it is
 judged `keep` or when it has no repo; `engine` for a parked todo (it resumes by itself).
 
-- [ ] **Step 1:** Test `every WAITING thread has a waiting item, and every item's thread is
+- [x] **Step 1:** Test `every WAITING thread has a waiting item, and every item's thread is
   WAITING`. Use a fixture ledger with decisions, parked todos, held plans, and a thread whose only
   decision is dismissed (mb1et's shape).
-- [ ] **Step 2:** Test `a gold decision on an eticket thread counts as waiting for gold`. The
+- [x] **Step 2:** Test `a gold decision on an eticket thread counts as waiting for gold`. The
   `/api/threads?project=gold&state=waiting` result includes the thread;
   `project=eticket-v3&state=waiting` does not, unless an eticket item exists.
-- [ ] **Step 3:** Test `nextAction is never empty`.
-- [ ] **Step 4:** Run. Expect FAIL. Implement. Then render the owner and next action in the console
+- [x] **Step 3:** Test `nextAction is never empty`.
+- [x] **Step 4:** Run. Expect FAIL. Implement. Then render the owner and next action in the console
   (AR+EN keys `threads.waiting.owner.*`, `queue.waiting.*`).
-- [ ] **Step 5:** Run. Expect PASS. Take an RTL console screenshot of a WAITING row: the ref and
+- [x] **Step 5:** Run. Expect PASS. Take an RTL console screenshot of a WAITING row: the ref and
   numbers stay LTR. Commit: `feat(threads): one waiting-work model with owner and next action (ADR-0054)`.
 
 ### Task C2: no silent wait; escalate by age

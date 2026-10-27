@@ -111,6 +111,8 @@ async function main(): Promise<void> {
     onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
   });
   const cutTodos = todo.recover({ now: bootAt });
+  // A todo parked on a decision that already closed is never left waiting (ADR-0054).
+  faults.guard("boot.releaseOrphans", () => todo.releaseOrphans());
   const engineProducerDeps: EngineProducerDeps = {
     ledger,
     registry,

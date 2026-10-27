@@ -7,7 +7,9 @@
 // failed todo is never dropped and can be retried (ADR-0027, rules in todo-retry.ts).
 // Deterministic: no AI decides anything here.
 import { basename } from "node:path";
-import type { Cause, Ledger, TodoRow } from "./ledger";
+import { PAGE_MAX, type Cause, type Ledger, type TodoRow } from "./ledger";
+import { answerable } from "./decision-settle";
+import { reviewedPath } from "./plan-review";
 import type { Registry } from "./registry";
 import { heldByReserve, type WorkClass } from "./budget";
 import { dispatchToProject, resolveProject, DESKS_DIR, planWaitTail, type DispatchDeps, type DispatchOpts, type ReplyMeta, type TodoEnd } from "./dispatch";
@@ -90,6 +92,10 @@ export interface TodoQueue {
   /** A decision was answered (ADR-0029): the continuation parked on it goes to the head of its queue
    *  with the answer in its brief. Returns that todo, or undefined when nothing was parked on it. */
   decisionAnswered(decisionId: string, question: string, answer: string): TodoRow | undefined;
+  /** Boot (ADR-0054): a todo parked on a decision that already closed is never left waiting. An
+   *  answered question resumes it with the answer; a closed plan card or a question closed without an
+   *  answer cancels it with the reason. Returns the todos moved. Idempotent. */
+  releaseOrphans(): { resumed: number[]; cancelled: number[] };
   up(id: number): string;
   move(id: number, position: number): string;
   pause(project: string): string;
@@ -477,7 +483,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     return lines.join("\n");
   };
 
-  return {
+  const api: TodoQueue = {
     async submit(p, deps, replyChat) {
       lastSeen = { deps, replyChat };
       promoteDue();
@@ -531,6 +537,27 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     async pump() {
       promoteDue();
       await pumpAll();
+    },
+
+    releaseOrphans() {
+      const resumed: number[] = [];
+      const cancelled: number[] = [];
+      for (const t of ledger.listTodos({ statuses: ["waiting"], limit: PAGE_MAX })) {
+        if (!t.waitingOn) continue;
+        const dec = ledger.decisionById(t.waitingOn);
+        if (dec && answerable(dec)) continue; // still open (or expired: a late answer still resumes it)
+        // A plan card follows its plan (ADR-0036): answered there, the plan is built, done or dropped.
+        if (dec?.status === "answered" && dec.answer && reviewedPath(dec.question) === undefined) {
+          api.decisionAnswered(dec.id, dec.question, dec.answer);
+          resumed.push(t.id);
+          continue;
+        }
+        const why = dec ? `${dec.status}${dec.answer ? `: ${dec.answer}` : ""}` : "not found";
+        ledger.updateTodo(t.id, { status: "cancelled", endedAt: now(), result: `its decision #${t.waitingOn.slice(0, 8)} closed (${why})`, waitingOn: null });
+        cancelled.push(t.id);
+      }
+      if (resumed.length || cancelled.length) ledger.recordEvent("todos_orphans_released", { data: { resumed, cancelled } });
+      return { resumed, cancelled };
     },
 
     decisionAnswered(decisionId, question, answer) {
@@ -679,4 +706,5 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     launcher,
     _pendingParents: () => parents.size,
   };
+  return api;
 }
