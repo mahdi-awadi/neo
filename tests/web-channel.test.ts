@@ -904,3 +904,11 @@ test("ADR-0054 C1: a WAITING thread row carries its waiting items — owner and 
   // The Queue view reads the same list.
   expect((ch.state() as unknown as { waiting: Array<{ id: string }> }).waiting.map((i) => i.id)).toContain(d);
 });
+
+test("ADR-0054 D2: the console state carries the deploy gap for the header", () => {
+  const gap = { running: "4452b94", branch: "master", integration: "dev", commits: 87, days: 11, high: true, adrs: [] };
+  const ch = createWebChannel({ engine: engine(fakeStart(() => {}).start), chatId: 42, deployGap: () => gap });
+  expect((ch.state() as unknown as { deploy?: unknown }).deploy).toEqual(gap);
+  const none = createWebChannel({ engine: engine(fakeStart(() => {}).start), chatId: 42 });
+  expect((none.state() as unknown as { deploy?: unknown }).deploy).toBeUndefined();
+});

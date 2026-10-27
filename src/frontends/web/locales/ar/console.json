@@ -414,5 +414,9 @@
     "keep": "إنتاج / لا رجعة فيه",
     "more": "+{{n}} أخرى",
     "since": "بانتظار منذ {{age}}"
+  },
+  "deploy": {
+    "gap": "{{integration}} {{n}} لا تعمل · {{days}} ي",
+    "title": "يعمل {{running}} على {{branch}} — {{n}} تعديلات على {{integration}} ليست مفعّلة (أقدمها منذ {{days}} يوم)"
   }
 }

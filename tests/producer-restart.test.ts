@@ -199,3 +199,23 @@ test("ADR-0054 D1: running ON the integration branch gives no integration item",
   const boot = bootOf(dir);
   expect((restartDrafts(deps(dir, boot, { integrationBranch: "dev", now: Date.now() })) as Array<{ key: string }>).map((x) => x.key)).not.toContain("integration");
 });
+
+test("ADR-0054 D2: integrationGap is the one computation — the item, /list and the console read it", async () => {
+  const { integrationGap } = await import("../src/engine/producers/restart");
+  const dir = repo();
+  const boot = bootOf(dir);
+  expect(integrationGap(deps(dir, boot, { integrationBranch: "dev", now: Date.now() }))).toBeUndefined(); // no dev branch
+  sh(dir, "checkout", "-q", "-b", "dev");
+  commit(dir, "b.txt", "fix: a (ADR-0054)");
+  sh(dir, "checkout", "-q", "master");
+  const now = lastCommitAt(dir, "dev") + 3 * DAY;
+  expect(integrationGap(deps(dir, boot, { integrationBranch: "dev", maxUndeployedDays: 2, now }))).toMatchObject({
+    running: boot.headSha.slice(0, 7),
+    branch: "master",
+    integration: "dev",
+    commits: 1,
+    days: 3,
+    high: true,
+    adrs: ["ADR-0054"],
+  });
+});

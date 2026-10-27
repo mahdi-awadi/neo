@@ -299,12 +299,14 @@ merged into the integration branch produce no `merge:` item.
 
 ### Task D2: say it where the operator looks
 
+**As built:** `/status` is an alias of `/list`, so `/list` starts with the gap line. One computation, `integrationGap()` in `producers/restart.ts`, serves the restart item, `/list` and the console header chip (`deploy.*`, AR+EN, `+87` kept LTR, checked in an RTL screenshot); the daemon reads it at most once a minute.
+
 **Files:** `src/engine/commands.ts` (`/status`), `src/frontends/web/app.ts` (header) + AR+EN
 catalogues. Test: `tests/commands.test.ts`, `tests/web-channel.test.ts`.
 
-- [ ] **Step 1:** Test `/status shows running sha, branch and "dev +N not running"` when the
+- [x] **Step 1:** Test `/status shows running sha, branch and "dev +N not running"` when the
   integration item exists, and shows nothing extra when it does not.
-- [ ] **Step 2:** Run. Expect FAIL. Implement. Run. Expect PASS. Commit.
+- [x] **Step 2:** Run. Expect FAIL. Implement. Run. Expect PASS. Commit.
 
 ### Task D3: "done" means live in handoffs and docs
 

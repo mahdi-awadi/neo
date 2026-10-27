@@ -12,7 +12,7 @@ import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env"
 import { runOrder, setDefaultEnvScrub } from "./engine/session-runner";
 import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
-import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
+import { bootFacts, DEFAULT_RESTART_CFG, gatedText, integrationGap, restartDrafts, type IntegrationGap, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
 import { runScan } from "./engine/producers/scan";
 import { attentionActions, runDigest, type AttentionAction } from "./engine/attention-actions";
@@ -164,6 +164,17 @@ async function main(): Promise<void> {
     configHash: configHashNow(),
   });
   const gated = (): string => gatedText(restartDeps());
+  // The deploy gap for /list and the console header (ADR-0054). It reads git, and the console polls
+  // every 15 s, so one read serves a minute.
+  let gapMemo: { at: number; gap: IntegrationGap | undefined } | undefined;
+  const deployGap = (): IntegrationGap | undefined => {
+    const now = Date.now();
+    if (!gapMemo || now - gapMemo.at > 60_000) {
+      const g = faults.guard("restart.integrationGap", () => integrationGap(restartDeps()));
+      gapMemo = { at: now, gap: g && g !== "error" ? g : undefined };
+    }
+    return gapMemo.gap;
+  };
   // The daily attention digest (AC5.5): a high item → the Decisions group, else the operator's DM.
   const sendDigest = async (text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<{ chatId: number; messageId: number } | void> => {
     const target = priority === "result" ? (cfg.decisionsChatId ?? admin.adminId()) : admin.adminId();
@@ -528,7 +539,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, editPlan, neoFolder, notes, tools }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -539,7 +550,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon

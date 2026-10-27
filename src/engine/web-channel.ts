@@ -164,7 +164,7 @@ export interface WebChannel {
   _testSendFile(path: string, caption?: string): string;
 }
 
-export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; neoFolder?: string }): WebChannel {
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; neoFolder?: string }): WebChannel {
   // The replay window (ADR-0014): only the newest cfg.webFeedWindow feed events are kept. The
   // feed is a live view — the ledger and Telegram keep the record — so older events just drop out.
   const replay: Array<{ id: number; e: WebEvent }> = [];
@@ -318,6 +318,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         requestReload: opts.requestReload,
         updates: opts.updates,
         gated: opts.gated,
+        deployGap: opts.deployGap,
         cfg: opts.engine.cfg,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
         todo: opts.engine.todo,
@@ -465,7 +466,9 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       return result.ok ? { ok: true, sdk: result.sdk } : { ok: false, error: result.error, sdk: result.sdk };
     },
     state() {
+      const deploy = opts.deployGap?.();
       return dashboardSnapshot({
+        ...(deploy ? { deploy } : {}),
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,

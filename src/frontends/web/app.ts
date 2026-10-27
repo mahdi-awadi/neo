@@ -131,6 +131,7 @@ function renderAll(): void {
   renderRepos();
   if (changed("sdk", S.sdk)) renderSdk();
   if (changed("projects", S.projects)) renderProjects();
+  if (changed("deploy", S.deploy ?? null)) renderDeploy();
   renderTodos(); // clock-dependent ("running 4m"): always
   if (changed("loops", S.loops)) renderLoops();
   if (changed("usage", S.usage)) renderUsage();
@@ -267,6 +268,17 @@ function renderProjects(): void {
     if (p.active) active = p;
   });
   $("who").textContent = active ? tx("projects.active", { name: active.name }) : tx("projects.openNoneActive", { count: S.projects.length });
+}
+/** Finished work that does not run (ADR-0054): a header chip, loud once it is older than the limit. */
+function renderDeploy(): void {
+  const el = $("deploy");
+  const g = S.deploy;
+  el.hidden = !g;
+  if (!g) return;
+  // The sign stays with its number (`+87`, never `87+` in RTL): one LTR isolate. ltr() escapes.
+  el.innerHTML = tx("deploy.gap", { integration: ltr(g.integration), n: ltr("+" + g.commits), days: ltr(g.days) });
+  el.title = tx("deploy.title", { integration: g.integration, n: g.commits, days: g.days, running: g.running, branch: g.branch });
+  el.className = "tchip " + (g.high ? "deploy-high" : "own-sweep");
 }
 
 function openProject(): void {

@@ -249,7 +249,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"]; notes?: ProjectNotes; tools?: Catalogue },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"]; notes?: ProjectNotes; tools?: Catalogue },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -632,6 +632,7 @@ export function createTelegramBot(
     todo: reload?.todo,
     updates: reload?.updates,
     gated: reload?.gated,
+    deployGap: reload?.deployGap,
     trace,
     neoFolder: reload?.neoFolder,
     gitRead: reload?.gitRead,

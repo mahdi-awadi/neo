@@ -414,5 +414,9 @@
     "keep": "prod / irreversible",
     "more": "+{{n}} more",
     "since": "waiting {{age}}"
+  },
+  "deploy": {
+    "gap": "{{integration}} {{n}} not running · {{days}}d",
+    "title": "running {{running}} on {{branch}} — {{n}} commits on {{integration}} are not live (oldest {{days}} days)"
   }
 }

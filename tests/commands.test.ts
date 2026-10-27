@@ -567,3 +567,10 @@ test("/gated shows the restart-gated list the engine computes; unavailable witho
   expect(handleCommand("/gated", 1, { ...deps(), gated: () => "✓ running build = HEAD (abc1234 on master)" })!.text).toContain("running build = HEAD");
   expect(handleCommand("/gated", 1, deps())!.text).toContain("unavailable");
 });
+
+test("ADR-0054 D2: /list (and /status) starts with the deploy gap when finished work is not running", () => {
+  const gap = { running: "4452b94", branch: "master", integration: "dev", commits: 87, days: 11, high: true, adrs: ["ADR-0053"] };
+  const out = handleCommand("/status", 1, { ...deps(), deployGap: () => gap })!.text;
+  expect(out.split("\n")[0]).toBe("⚠ running 4452b94 on master · dev +87 not running (oldest 11 days)");
+  expect(handleCommand("/list", 1, { ...deps(), deployGap: () => undefined })!.text).not.toContain("not running");
+});

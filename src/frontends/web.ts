@@ -51,6 +51,8 @@ export interface WebAppDeps {
   updates?: CommandDeps["updates"];
   /** The restart-gated list for /gated (spec §8.4). */
   gated?: CommandDeps["gated"];
+  /** Finished work that does not run (ADR-0054): /list and the console header. */
+  deployGap?: CommandDeps["deployGap"];
   /** Operator-channel broadcast bus — mirror this surface to/from Telegram (see operator-bus.ts). */
   bus?: OperatorBus;
   /** Neo's own repo (the project dashboard's Neo card). Absent → the daemon's working folder. */
@@ -63,7 +65,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated, neoFolder: deps.neoFolder });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated, deployGap: deps.deployGap, neoFolder: deps.neoFolder });
 
   function sessionToken(req: Request): string | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));

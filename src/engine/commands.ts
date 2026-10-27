@@ -4,6 +4,7 @@
 // caller falls through to the order pipeline. `select` is the set of tappable projects for
 // /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
+import { gapLine, type IntegrationGap } from "./producers/restart";
 import { attentionActions, renderAttention, type AttentionAction } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
 import type { AttentionRow } from "./ledger";
@@ -65,6 +66,8 @@ export interface CommandDeps {
   updates?: Pick<Updater, "status" | "run" | "rollback" | "running">;
   /** The restart-gated list (spec §8.4, `/gated`): what is built but not running. Absent → unavailable. */
   gated?: () => string;
+  /** Finished work that does not run (ADR-0054): `/list` starts with it. Absent or undefined → none. */
+  deployGap?: () => IntegrationGap | undefined;
   /** The cause seam (for /trace, ADR-0015). Absent → /trace says it is unavailable. */
   trace?: Trace;
   /** The Telegram message this command replied to: a bare `/trace` traces that message's thread. */
@@ -559,7 +562,9 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
   const { registry, trust, signals, ledger } = deps;
   const windowTokensByModel = contextWindows(ledger, deps.windowTokensByModel);
   const sessions = registry.list();
-  if (sessions.length === 0) return { text: "No open projects." };
+  // A fix is done only when it runs (ADR-0054): say so first, every time the operator asks.
+  const gap = gapLine(deps.deployGap?.());
+  if (sessions.length === 0) return { text: gap ? `${gap}\nNo open projects.` : "No open projects." };
   // The chat's focused project (if any) is the one messages currently address; mark it ▶ (one-shot,
   // reverts after the next message) or 📌 (pinned). With none focused, the company is the target.
   const focus = registry.getFocus(chatId);
@@ -601,7 +606,7 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
       return `${star}${stateIcon(state)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"`;
     })
     .join("\n");
-  return { text, select };
+  return { text: gap ? `${gap}\n${text}` : text, select };
 }
 
 function focusSession(name: string, chatId: number, registry: Registry, mode: "once" | "pinned"): string {
