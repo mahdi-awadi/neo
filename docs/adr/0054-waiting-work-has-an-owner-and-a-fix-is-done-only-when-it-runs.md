@@ -30,7 +30,9 @@ The third report (`docs/investigations/2026-10-27-waiting-threads-third-report.m
 
    The ADR-0038 rule "answered in chat" is removed: it guesses, and it hid d83217cb. A plan card
    may now close on evidence too: the evidence marks its **plan** done, and the card follows the
-   plan (ADR-0036 still holds).
+   plan (ADR-0036 still holds). "A todo names the plan" is not evidence the engine acts on alone:
+   merge and review orders cite plans too (#639, #687). That rule stays in the one-time cleanup,
+   whose list a person checks.
 3. **Every order ends.** At boot, an order with no outcome and no activity since the previous boot
    gets the outcome `interrupted`, dated at its last activity. Expiry counts it as ended. The thread
    state ignores it: a restart is not a failure of the work.
@@ -71,3 +73,10 @@ The third report (`docs/investigations/2026-10-27-waiting-threads-third-report.m
 - **One gap computation.** `integrationGap()` feeds the restart item, the first line of `/list`
   (`/status`), the console header chip and the handoff's "Not live" fact
   (`setDeployFacts`, set at boot like `setNeoNotesDir`).
+- **Review fixes.** The `decision` tool:
+  - records the answer without a one-shot focus, so the operator's next line still goes to the company;
+  - refuses governor escalations and alerts, whose answer is Allow/Deny on the card;
+  - treats an expired plan card as a plan card.
+
+  `waitingWork()` reads plan cards with one indexed query (the console polls it). The boot sweep has
+  its own fault guard, so it can never cost the boot record.

@@ -77,6 +77,8 @@ test("apply: closes with reasons, releases the parked todo, re-derives the threa
   const out = applyCleanup(r.ledger, r.trace, planCleanup(r.ledger, { now: NOW, cfg: DEFAULT_DECISION_SETTLE }), NOW);
   expect(r.ledger.decisionById(s.colour)).toMatchObject({ status: "expired" });
   expect(r.ledger.decisionById(s.plan)).toMatchObject({ status: "superseded", answer: expect.stringContaining("plan built by todo #") });
+  // ADR-0054: the plan itself is marked done too, so its card cannot come back as "awaits approval".
+  expect(r.ledger.listPlans("gold").find((p) => p.decisionId === s.plan)?.status).toBe("done");
   expect(r.ledger.todoById(s.parked)).toMatchObject({ status: "cancelled" });
   expect(r.ledger.decisionById(s.prod)?.status).toBe("open");
   expect(out.closed).toBe(3);

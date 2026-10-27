@@ -157,21 +157,14 @@ test("review: a new decision in a closed thread reopens it, so the question is n
   expect(led.threadById(root.threadId)).toMatchObject({ closedByOperator: false, state: "waiting" });
 });
 
-test("ADR-0054 B3: a todo naming the plan, ended done after the card, settles it in the engine; a delivery that never ran does not", () => {
+test("ADR-0054 review: a todo that only NAMES a plan never closes its card automatically (merge/review orders cite plans too)", () => {
   const { led, t, root } = setup();
-  const q = "Plan waiting for your approval: docs/superpowers/plans/fix.md — Fix all";
-  const card = led.openDecision({ kind: "decision", question: q, cause: root, folder: "/f" }, PAST);
+  const card = led.openDecision({ kind: "decision", question: "Plan waiting for your approval: docs/superpowers/plans/fix.md — Fix all", cause: root, folder: "/f" }, PAST);
   const plan = led.upsertPlan({ project: "p", folder: "/f", path: "docs/superpowers/plans/fix.md", title: "Fix all", sha256: "x", stepsTotal: 2, stepsDone: 0, status: "sent", gate: "approval", decisionId: card, threadId: root.threadId } as never);
-  // A delivery marked done at once (started == ended, ADR-0052) never ran: no evidence.
-  const fake = led.addTodo({ project: "p", folder: "/f", brief: "build docs/superpowers/plans/fix.md", workClass: "interactive", createdBy: "operator", cause: root }, PAST + 1);
-  led.updateTodo(fake.id, { status: "done", startedAt: PAST + 5, endedAt: PAST + 5 });
+  // #639's shape: a merge order that cites the plan, really ran and ended done.
+  const cite = led.addTodo({ project: "p", folder: "/f", brief: "Run the migration, then push and merge (plan docs/superpowers/plans/fix.md)", workClass: "interactive", createdBy: "operator", cause: root }, PAST + 2);
+  led.updateTodo(cite.id, { status: "done", startedAt: PAST + 10, endedAt: PAST + 500 });
   t.refreshThread(root.threadId);
   expect(led.decisionById(card)?.status).toBe("open");
-  // A todo that really ran and names the plan built it.
-  const real = led.addTodo({ project: "p", folder: "/f", brief: "Operator APPROVED. Execute docs/superpowers/plans/fix.md", workClass: "interactive", createdBy: "operator", cause: root }, PAST + 2);
-  led.updateTodo(real.id, { status: "done", startedAt: PAST + 10, endedAt: PAST + 500 });
-  t.refreshThread(root.threadId);
-  expect(led.decisionById(card)).toMatchObject({ status: "superseded", answer: `plan built by todo #${real.id} (it names the plan and ended done)` });
-  expect(led.planById(plan.id)?.status).toBe("done");
-  expect(led.threadById(root.threadId)?.state).not.toBe("waiting");
+  expect(led.planById(plan.id)?.status).toBe("sent");
 });

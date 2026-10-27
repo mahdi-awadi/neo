@@ -134,6 +134,8 @@ async function main(): Promise<void> {
       return undefined; // no config.json: nothing to compare
     }
   };
+  // The previous daemon life's start, read before this boot is recorded (ADR-0054, below).
+  const prevBoot = faults.guard("boot.previous", () => ledger.lastBoot());
   const thisBoot = faults.guard("boot.record", () => {
     const facts = bootFacts(neoFolder);
     if (!facts) return undefined;
@@ -144,15 +146,17 @@ async function main(): Promise<void> {
       // not installed here: the boot record just has no SDK version
     }
     const boot: BootRow = { at: Date.now(), ...facts, ...(sdkVersion ? { sdkVersion } : {}), ...(configHashNow() ? { configHash: configHashNow() } : {}) };
-    // Every order ends (ADR-0054): one silent through the whole previous daemon life was cut off.
-    const prev = ledger.lastBoot();
-    if (prev) {
-      const n = ledger.endInterruptedOrders(prev.at);
-      if (n) ledger.recordEvent("orders_interrupted", { data: { count: n, since: prev.at } });
-    }
     ledger.recordBoot(boot);
     return boot;
   });
+  // Every order ends (ADR-0054): one silent through the whole previous daemon life was cut off. Its own
+  // guard: a failure here never costs the boot record.
+  if (prevBoot) {
+    faults.guard("boot.interruptedOrders", () => {
+      const n = ledger.endInterruptedOrders(prevBoot.at);
+      if (n) ledger.recordEvent("orders_interrupted", { data: { count: n, since: prevBoot.at } });
+    });
+  }
   const restartDeps = (): RestartDeps => ({
     folder: neoFolder,
     boot: thisBoot,

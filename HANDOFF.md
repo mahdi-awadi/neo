@@ -1,7 +1,7 @@
 # HANDOFF — waiting work (ADR-0054): built and verified, ONE operator release
 
 Plan `docs/superpowers/plans/2026-10-27-waiting-work-ship-and-settle.md` (approved) is built on
-`fix/waiting-work` (9 commits; full `bun test` 2,305 pass / 0 fail; `tsc` clean). Report:
+`fix/waiting-work` (11 commits, code-reviewed; full `bun test` green; `tsc` clean). Report:
 `docs/investigations/2026-10-27-waiting-threads-third-report.md`.
 
 What changed:
@@ -9,8 +9,8 @@ What changed:
   answer with the `decision` tool.
 - **Every order ends.** At boot, an order silent through the previous daemon life ends as
   `interrupted`, so expiry works.
-- **A plan done by any path closes its card.** A later todo that names the plan, or sweep evidence,
-  marks the plan done.
+- **A plan done by any path closes its card.** Sweep commit evidence, or the checked cleanup, marks
+  the plan done.
 - **The sweep judges every open decision**: threadless ones, plan cards and kept prod questions.
 - **One waiting-work model**, with an owner and a next action, read by the Threads rows and Queue
   (AR+EN, RTL-checked). Waiting is counted per decision project. Orphaned parked todos are released

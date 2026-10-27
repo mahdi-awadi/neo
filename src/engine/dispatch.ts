@@ -76,7 +76,8 @@ import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./co
 import { applyPlanAction, offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
-import { answerDecision } from "./reply-routing";
+import { repliedContextBrief } from "./reply-routing";
+import { reviewedPath } from "./plan-review";
 import { answerable } from "./decision-settle";
 import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type NoteToolSender, type ProjectNotes } from "./project-notes";
 import {
@@ -1971,14 +1972,20 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             }
             const dec = deps.ledger.decisionByPrefix(args.id);
             if (!dec || !answerable(dec)) return text(`Not done — no open decision #${args.id.slice(0, 8)}.`);
+            // A governor escalation (no order) or an alert is answered by its card's Allow/Deny or OK, which
+            // releases the waiting tool call — never by chat text (ADR-0054 review).
+            if (!dec.orderId || dec.kind === "alert") return text(`Not done — #${dec.id.slice(0, 8)} is an approval or an alert: ask the operator to tap Allow or Deny (or OK) on its card.`);
+            // A plan card follows its plan — including an expired card whose plan row is gone.
             const card = deps.ledger.decisionSettleFactsByIds([dec.id]);
-            if (card.planOf[dec.id] !== undefined || card.replaced?.[dec.id] !== undefined) return text(`Not done — #${dec.id.slice(0, 8)} is a plan card: use \`plan\` (approve or drop).`);
-            const resumed = answerDecision(
-              { registry: deps.registry, ledger: deps.ledger, ...(deps.providers?.ownWork ? { worker: deps.providers.ownWork } : {}), parked: (d, a) => !!todoQueue.decisionAnswered(d.id, d.question, a) },
-              dec,
-              args.answer,
-              dec.chatId ?? replyChat,
-            );
+            if (card.planOf[dec.id] !== undefined || card.replaced?.[dec.id] !== undefined || reviewedPath(dec.question) !== undefined) {
+              return text(`Not done — #${dec.id.slice(0, 8)} is a plan card: use \`plan\` (approve or drop).`);
+            }
+            // The answer is the operator's; a continuation parked on it resumes through the queue. No
+            // one-shot focus is set here (that is the frontends' answer path, which sends the next line):
+            // the dispatcher dispatches the resume brief itself (ADR-0054 review).
+            deps.ledger.resolveDecision(dec.id, args.answer);
+            const parked = !!todoQueue.decisionAnswered(dec.id, dec.question, args.answer);
+            const resumed = !parked && dec.folder ? { brief: repliedContextBrief(dec.question, args.answer) } : undefined;
             deps.ledger.recordEvent("decision_chat_answer", { cause: live, data: { id: dec.id, via: deps.trace?.ref(live.msgId) ?? String(live.msgId) } });
             const where = dec.project ?? "the project";
             return text(

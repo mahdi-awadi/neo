@@ -1195,7 +1195,7 @@ This was the third report (`docs/investigations/2026-10-27-waiting-threads-third
 The changes:
 - The "answered in chat" guess is gone, and the dispatcher records chat answers with `decision`.
 - Orders silent across a restart end as `interrupted`.
-- A plan done by any path closes its card.
+- A plan done by any path closes its card: the plan settles, the sweep has evidence, or the checked cleanup runs.
 - The sweep judges every open decision.
 - `waitingWork()` gives every item an owner and a next action, in Threads and Queue.
 - Orphaned parked todos are released at boot.

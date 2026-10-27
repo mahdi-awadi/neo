@@ -160,8 +160,12 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
   The plan whose current card is `decisionId`, while it awaits (draft/sent/approved), becomes `done`;
   event `plan_done_by_evidence`; the card follows (ADR-0036). One method for both callers, so no
   `plans.ts` change was needed.
-- Produces: `SettleFacts.planBuilt` (card → todo id) and `StaleDecision.planDone`; `applyStale` marks
-  the plan done before it supersedes the card.
+- Produces: `StaleDecision.planDone`; `applyStale` marks the plan done before it supersedes the card.
+- **Changed after review:** "a later todo that names the plan ended done" stays a **cleanup-only** rule
+  (a person checks the dry-run list), and its close now marks the plan done. It is not an automatic
+  engine rule. On the live data, #639 (a merge order) and #687 (a rewrite of another plan) cite plan
+  paths without building them. Automatic closes come only from hard signals: the plan settled, or a
+  build todo. The sweep closes a plan card on commit evidence.
 - Changes: `closeWithEvidence` on a plan card calls `markPlanDoneByCard`. It no longer refuses.
 
 - [x] **Step 1:** Test `evidence close of a plan card marks the plan done`. Expect the plan

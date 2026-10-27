@@ -36,11 +36,11 @@ export interface WaitingItem {
 
 /** Every waiting item, oldest first. */
 export function waitingWork(
-  ledger: Pick<Ledger, "listOpenDecisions" | "decisionSettleFactsByIds" | "listTodos" | "getMeta">,
+  ledger: Pick<Ledger, "listOpenDecisions" | "planCardIds" | "listTodos" | "getMeta">,
   opts: { keepPatterns: readonly string[] },
 ): WaitingItem[] {
   const open = ledger.listOpenDecisions();
-  const facts = ledger.decisionSettleFactsByIds(open.map((d) => d.id));
+  const cards = ledger.planCardIds(open.map((d) => d.id));
   const raw = ledger.getMeta(JUDGED_KEY)?.value;
   const judged = (raw && typeof raw === "object" ? raw : {}) as Record<string, Judged>;
   const items: WaitingItem[] = [];
@@ -50,7 +50,7 @@ export function waitingWork(
     const project = d.project ?? (d.folder ? basename(d.folder) : undefined);
     const keep = keepsOpen(decisionText(d.question, d.options, d.spec), opts.keepPatterns);
     const base = { id: d.id, ...(project ? { project } : {}), ...(d.cause ? { threadId: d.cause.threadId } : {}), since: d.createdAt, keep };
-    if (facts.planOf[d.id] !== undefined) {
+    if (cards.has(d.id)) {
       items.push({ ...base, kind: "plan", owner: "operator", next: "approve", ask: d.question });
       continue;
     }

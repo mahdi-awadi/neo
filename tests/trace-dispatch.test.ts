@@ -572,7 +572,7 @@ test("ADR-0054 B1: the dispatcher records the operator's chat answer through `de
   const s = setup();
   const folder = join(s.root, "eticket-v3");
   const c = s.inbound("yes, start the three defects");
-  const d = s.ledger.openDecision({ kind: "decision", question: "Start the three follow-up defects?", folder, cause: c });
+  const d = s.ledger.openDecision({ kind: "decision", question: "Start the three follow-up defects?", folder, orderId: "o-asker", cause: c });
   const parked = s.ledger.addTodo({ project: "eticket-v3", folder, brief: "continue", workClass: "interactive", createdBy: "operator", cause: c }, 1);
   s.ledger.updateTodo(parked.id, { status: "waiting", waitingOn: d });
   const id8 = d.slice(0, 8);
@@ -592,17 +592,36 @@ test("ADR-0054 B1: the dispatcher records the operator's chat answer through `de
   expect(s.ledger.listEvents({ kind: "decision_chat_answer" })[0]?.data).toMatchObject({ id: d, via: s.trace.ref(c.msgId) });
   // Answered once: a second answer is refused.
   expect(await tool(servers, "decision")({ id: id8, action: "answer", answer: "no" })).toContain("no open decision");
+  // Review #1: recording an answer never steers the operator's NEXT message into the project.
+  expect(s.registry.getFocus(7)).toBeUndefined();
+});
+
+test("ADR-0054 review: `decision` refuses a governor escalation and an alert — their answers are not chat text", async () => {
+  const s = setup();
+  const folder = join(s.root, "eticket-v3");
+  const c = s.inbound("allow it");
+  const esc = s.ledger.openDecision({ kind: "decision", question: "Allow git push?", folder, cause: c }); // no order: the governor's
+  const alert = s.ledger.openDecision({ kind: "alert", question: "CI failed", folder, orderId: "o-1", cause: c });
+  const servers = neoMcpServers({ ...s.deps }, 7, { dispatch: true, workClass: "interactive", folder: join(s.root, "agent"), orderId: "co-1", cause: () => c, workCause: () => c });
+  expect(await tool(servers, "decision")({ id: esc.slice(0, 8), action: "answer", answer: "allow" })).toContain("tap Allow or Deny");
+  expect(await tool(servers, "decision")({ id: alert.slice(0, 8), action: "answer", answer: "ok" })).toContain("tap Allow or Deny");
+  expect(s.ledger.decisionById(esc)?.status).toBe("open");
+  expect(s.ledger.decisionById(alert)?.status).toBe("open");
 });
 
 test("ADR-0054 B1: `decision` never answers a plan card — that is `plan`'s job", async () => {
   const s = setup();
   const folder = join(s.root, "eticket-v3");
   const c = s.inbound("approve it");
-  const d = s.ledger.openDecision({ kind: "decision", question: "Plan waiting for your approval: docs/superpowers/plans/x.md — X", folder, cause: c });
+  const d = s.ledger.openDecision({ kind: "decision", question: "Plan waiting for your approval: docs/superpowers/plans/x.md — X", folder, orderId: "o-1", cause: c });
   s.ledger.upsertPlan({ project: "eticket-v3", folder, path: "docs/superpowers/plans/x.md", title: "X", sha256: "x", stepsTotal: 1, stepsDone: 0, status: "sent", gate: "approval", decisionId: d, threadId: c.threadId } as never);
   const servers = neoMcpServers({ ...s.deps }, 7, { dispatch: true, workClass: "interactive", folder: join(s.root, "agent"), orderId: "co-1", cause: () => c, workCause: () => c });
   expect(await tool(servers, "decision")({ id: d.slice(0, 8), action: "answer", answer: "approve" })).toContain("use `plan`");
   expect(s.ledger.decisionById(d)?.status).toBe("open");
+  // Review #5: an EXPIRED plan card (its plan row gone) is still a plan card.
+  const lone = s.ledger.openDecision({ kind: "decision", question: "Plan waiting for your approval: docs/superpowers/plans/gone.md — Gone", folder, orderId: "o-1", cause: c });
+  s.ledger.expireDecision(lone, "expired: test", Date.now());
+  expect(await tool(servers, "decision")({ id: lone.slice(0, 8), action: "answer", answer: "approve" })).toContain("use `plan`");
 });
 
 test("A1 through the pipeline: once the company's turn ended, its next dispatch is not filed under that ended turn", async () => {

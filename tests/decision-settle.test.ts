@@ -105,14 +105,3 @@ test("ADR-0053: an expired question still takes the operator's late answer; answ
   expect(answerable({ status: "expired" })).toBe(true);
   for (const status of ["answered", "dismissed", "superseded"] as const) expect(answerable({ status })).toBe(false);
 });
-
-// --- ADR-0054 B3 ---------------------------------------------------------------------------------
-test("ADR-0054 B3: an awaiting plan that a later todo built closes its card and marks the plan done", () => {
-  const d = dec("p", 10, "Plan waiting for your approval: docs/superpowers/plans/x.md — X");
-  expect(staleDecisions(base({ open: [d], asked: [d], planOf: { p: "sent" }, planBuilt: { p: 42 } }), { keepPatterns: KEEP })).toEqual([
-    { id: "p", reason: "plan built by todo #42 (it names the plan and ended done)", planDone: true },
-  ]);
-  // A plan card about prod work is left to the operator, even when a todo names it.
-  const prod = dec("q", 10, "Plan waiting for your approval: docs/superpowers/plans/prod.md — prod release");
-  expect(staleDecisions(base({ open: [prod], asked: [prod], planOf: { q: "sent" }, planBuilt: { q: 42 } }), { keepPatterns: KEEP })).toEqual([]);
-});

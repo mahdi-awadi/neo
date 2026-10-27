@@ -99,9 +99,6 @@ export interface SettleFacts {
   planBuilding?: string[];
   /** Decision id → when its order ended, and when a later order in the same folder ended `done`. */
   ended?: Record<string, { endedAt: number; laterDoneAt?: number }>;
-  /** An awaiting plan's current card → the first later todo in the plan's folder that names the plan,
-   *  really ran (ended after it started) and ended `done`: the plan was built (ADR-0054). */
-  planBuilt?: Record<string, number>;
 }
 
 /** What one settle closes. `expired`: status `expired`, else `superseded`. `moveParkedTo`: a todo
@@ -111,7 +108,8 @@ export interface StaleDecision {
   reason: string;
   expired?: true;
   moveParkedTo?: string;
-  /** The card's plan was built: mark the PLAN done too, so the card cannot come back (ADR-0054). */
+  /** The card's plan was built (cleanup evidence): mark the PLAN done too, so the card cannot come back
+   *  (ADR-0054). Never set by the automatic rules: "a todo names the plan" is evidence a person checks. */
   planDone?: true;
 }
 
@@ -144,12 +142,6 @@ export function staleDecisions(f: SettleFacts, opts: { now?: number; expireAfter
       // Approve & build on a held plan (executing, no build todo) is answered by the frontend, which
       // resumes the parked worker — so that one is left to it.
       if (settled && (!parked.has(d.id) || plan !== "executing" || building.has(d.id))) out.push({ id: d.id, reason: `plan ${settled}` });
-      // Built by other work (ADR-0054): a later todo that names the plan ran and ended done. A plan card's
-      // buttons are the engine's own, so only its question is matched: prod work stays the operator's.
-      const builtBy = settled ? undefined : f.planBuilt?.[d.id];
-      if (builtBy !== undefined && !keepsOpen(d.question, opts.keepPatterns ?? DEFAULT_KEEP_PATTERNS)) {
-        out.push({ id: d.id, reason: `plan built by todo #${builtBy} (it names the plan and ended done)`, planDone: true });
-      }
       continue;
     }
     if (parked.has(d.id)) continue;
