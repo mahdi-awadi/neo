@@ -117,11 +117,14 @@ test("AC3: close refuses without good evidence, and names the rule", () => {
   expect(s.led.decisionById(id)?.status).toBe("open");
 });
 
-test("AC3: close refuses a plan card (it follows its plan)", () => {
+test("ADR-0054 B3: an evidence close of a plan card marks its PLAN done, and the card follows", () => {
   const s = setup(fakeGit({ latest: ASKED + 5_000, commits: { def5678: ASKED + 5_000 } }));
   const id = ask(s, "Plan waiting for your approval: docs/a.md");
-  s.led.upsertPlan({ project: "p", folder: "/home/p", title: "t", sha256: "x", stepsTotal: 1, stepsDone: 0, threadId: s.root.threadId, createdAt: ASKED, updatedAt: ASKED, path: "docs/a.md", status: "sent", decisionId: id } as never);
-  expect(closeWithEvidence(s.deps, id.slice(0, 8), { commit: "def5678" }, "built anyway, see ADR")).toEqual({ ok: false, why: "a plan card closes with its plan (/plans), not here" });
+  const plan = s.led.upsertPlan({ project: "p", folder: "/home/p", title: "t", sha256: "x", stepsTotal: 1, stepsDone: 0, threadId: s.root.threadId, createdAt: ASKED, updatedAt: ASKED, path: "docs/a.md", status: "sent", decisionId: id } as never);
+  expect(closeWithEvidence(s.deps, id.slice(0, 8), { commit: "def5678" }, "built and released by hotfix PR #227")).toMatchObject({ ok: true });
+  expect(s.led.planById(plan.id)?.status).toBe("done");
+  expect(s.led.decisionById(id)).toMatchObject({ status: "superseded", answer: "plan done by later work: built and released by hotfix PR #227 (commit def5678)" });
+  expect(s.led.listEvents({ kind: "plan_done_by_evidence" })[0]?.data).toMatchObject({ planId: plan.id });
 });
 
 test("AC3: a good close supersedes with the evidence, cancels the parked todo, and the thread is done", () => {

@@ -1,6 +1,6 @@
 # A waiting sweep closes decisions on checked evidence, and reminds the operator once
 
-**Status:** accepted (2026-10-22; built on `dev`, restart-gated). Amends ADR-0038 (a thread waits
+**Status:** accepted (2026-10-22; built on `dev`, restart-gated). Amended by ADR-0054: an evidence close of a plan card now marks its plan done, and the card follows. Amends ADR-0038 (a thread waits
 only on a live question). Builds on ADR-0029 (a run parks on its decision), ADR-0043 (closing is
 checked against a real commit) and the loop runtime (`docs/loops.md`).
 

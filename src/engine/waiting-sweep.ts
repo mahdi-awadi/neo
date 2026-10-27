@@ -30,7 +30,7 @@ export function readWaitingSweepCfg(raw: unknown): WaitingSweepCfg {
 }
 
 export interface SweepDeps {
-  ledger: Pick<Ledger, "threadsByState" | "threadById" | "decisionSettleFacts" | "decisionById" | "supersedeDecision" | "getMeta" | "setMeta">;
+  ledger: Pick<Ledger, "threadsByState" | "threadById" | "decisionSettleFacts" | "decisionById" | "supersedeDecision" | "markPlanDoneByCard" | "getMeta" | "setMeta">;
   /** Re-derive one thread (trace.refreshThread: ADR-0038 settle, then the state rule). */
   refresh: (threadId: number) => void;
   git: GitRunner;
@@ -206,7 +206,8 @@ const SHA = /^[0-9a-f]{7,40}$/;
 
 /** Close a decision on evidence the engine checks: a commit (exists, newer than the question) or a
  *  tracked file last changed after the question. Supersedes it with the reason and evidence, cancels
- *  the todos parked on it, re-derives its thread. A plan card is refused (it follows its plan). */
+ *  the todos parked on it, re-derives its thread. A plan card follows its plan (ADR-0036): the evidence
+ *  marks the PLAN done, then the card closes (ADR-0054). */
 export function closeWithEvidence(
   deps: SweepDeps,
   id8: string,
@@ -215,7 +216,6 @@ export function closeWithEvidence(
 ): { ok: true; thread: string; todosCancelled: number[] } | { ok: false; why: string } {
   const d = findOne(deps, id8);
   if (typeof d === "string") return { ok: false, why: d };
-  if (d.plan) return { ok: false, why: "a plan card closes with its plan (/plans), not here" };
   if ((ev.commit === undefined) === (ev.file === undefined)) return { ok: false, why: "give exactly one of --commit or --file" };
   const why = reason.trim();
   if (why.length < 10 || why.length > 300) return { ok: false, why: "reason must be 10–300 characters" };
@@ -240,7 +240,10 @@ export function closeWithEvidence(
     if (at === undefined || at <= d.createdAt) return { ok: false, why: `file ${path} was last changed before the question` };
     label = `file ${path}`;
   }
-  const { todosCancelled } = deps.ledger.supersedeDecision(d.id, `done by later work: ${why} (${label})`, deps.now());
+  if (d.plan && deps.ledger.markPlanDoneByCard(d.id, `${why} (${label})`, deps.now()) === undefined) {
+    return { ok: false, why: "its plan no longer awaits approval — it closes with its plan (/plans)" };
+  }
+  const { todosCancelled } = deps.ledger.supersedeDecision(d.id, `${d.plan ? "plan done" : "done"} by later work: ${why} (${label})`, deps.now());
   const judged = judgedMap(deps);
   if (judged[d.id]) {
     delete judged[d.id];

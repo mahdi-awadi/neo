@@ -383,6 +383,10 @@ export interface Ledger {
   /** Insert, or update the row for (folder, path); returns the stored row. An omitted `version` keeps the
    *  stored one; `updatedAt` is always now (a caller that spreads a read row cannot freeze it). */
   upsertPlan(p: PlanDraft): PlanRow;
+  /** The plan whose CURRENT card is `decisionId`, while it still awaits (draft/sent/approved), becomes
+   *  `done` because other work built it (ADR-0054); `evidence` goes in the event. Returns its id, or
+   *  undefined when no awaiting plan has that card. */
+  markPlanDoneByCard(decisionId: string, evidence: string, at?: number): number | undefined;
   /** The newest todo an Execute made for this plan. */
   todoForPlan(planId: number): TodoRow | undefined;
   /** Newest-updated first, bounded (default 50, max 100); `project` filters. */
@@ -760,18 +764,30 @@ export function openLedger(
   const decisionOpen = (id: string): boolean => !!db.query(`SELECT 1 FROM decisions WHERE id = ? AND status = 'open'`).get(id);
   /** The settle facts that come from the decisions themselves (ADR-0038/0053): plan cards, parked
    *  todos, and for expiry, when each one's order ended and when later work in its folder ended done. */
-  const settleFactsOf = (open: SettleDbRow[]): Pick<SettleFacts, "open" | "planOf" | "parked" | "replaced" | "planBuilding" | "ended"> => {
+  const settleFactsOf = (open: SettleDbRow[]): Pick<SettleFacts, "open" | "planOf" | "parked" | "replaced" | "planBuilding" | "ended" | "planBuilt"> => {
     const planOf: Record<string, PlanStatus> = {};
     const parked: string[] = [];
     const replaced: Record<string, { version: number; currentId?: string }> = {};
     const planBuilding: string[] = [];
     const ended: Record<string, { endedAt: number; laterDoneAt?: number }> = {};
+    const planBuilt: Record<string, number> = {};
     const ids = open.map((d) => d.id);
     if (ids.length) {
       const marks = ids.map(() => "?").join(",");
-      for (const r of db.query(`SELECT decision_id, status, todo_id FROM plans WHERE decision_id IN (${marks})`).all(...ids) as Array<{ decision_id: string; status: PlanStatus; todo_id: number | null }>) {
+      const createdOf = new Map(open.map((d) => [d.id, d.created_at]));
+      // The first later todo that names the plan, really ran (a delivery marked done at once did not,
+      // ADR-0052) and ended done: the plan was built by other work (ADR-0054).
+      const builtBy = db.query(
+        `SELECT id FROM project_todos WHERE folder = ?1 AND status = 'done' AND created_at > ?2 AND instr(brief, ?3) > 0
+           AND started_at IS NOT NULL AND ended_at > started_at ORDER BY created_at LIMIT 1`,
+      );
+      for (const r of db.query(`SELECT decision_id, status, todo_id, folder, path FROM plans WHERE decision_id IN (${marks})`).all(...ids) as Array<{ decision_id: string; status: PlanStatus; todo_id: number | null; folder: string; path: string }>) {
         planOf[r.decision_id] = r.status;
         if (r.todo_id !== null) planBuilding.push(r.decision_id);
+        if (r.status === "draft" || r.status === "sent" || r.status === "approved") {
+          const t = builtBy.get(r.folder, createdOf.get(r.decision_id) ?? 0, r.path) as { id: number } | null;
+          if (t) planBuilt[r.decision_id] = t.id;
+        }
       }
       for (const r of db.query(`SELECT DISTINCT waiting_on FROM project_todos WHERE status = 'waiting' AND waiting_on IN (${marks})`).all(...ids) as Array<{ waiting_on: string }>) {
         parked.push(r.waiting_on);
@@ -809,7 +825,7 @@ export function openLedger(
         ...(d.order_id ? { orderId: d.order_id } : {}),
         text: decisionText(d.question, d.options ? (JSON.parse(d.options) as string[]) : undefined, d.spec ? (JSON.parse(d.spec) as StructuredAsk) : undefined),
       })),
-      planOf, parked, replaced, planBuilding, ended,
+      planOf, parked, replaced, planBuilding, ended, planBuilt,
     };
   };
   /** Tell the listeners a decision closed. A listener is an observer: its fault is reported, never thrown. */
@@ -1142,6 +1158,18 @@ export function openLedger(
     planById(id) {
       const r = db.query(`SELECT * FROM plans WHERE id = ?`).get(id) as PlanDbRow | null;
       return r ? mapPlanRow(r) : undefined;
+    },
+    markPlanDoneByCard(decisionId, evidence, at = Date.now()) {
+      const row = db
+        .query(`UPDATE plans SET status = 'done', updated_at = ? WHERE decision_id = ? AND status IN ('draft', 'sent', 'approved') RETURNING id, folder, project`)
+        .get(at, decisionId) as { id: number; folder: string; project: string } | null;
+      if (!row) return undefined;
+      db.query(`INSERT INTO events (kind, at, folder, data) VALUES ('plan_done_by_evidence', ?, ?, ?)`).run(
+        at,
+        row.folder,
+        JSON.stringify({ project: row.project, planId: row.id, decisionId, evidence }),
+      );
+      return row.id;
     },
     upsertPlan(p) {
       const now = Date.now();

@@ -156,19 +156,22 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
 - Test: `tests/waiting-sweep.test.ts`, `tests/plans.test.ts`, `tests/decision-settle.test.ts`
 
 **Interfaces:**
-- Produces: `markPlanDone(deps: PlanDeps, planId: number, evidence: { commit?: string; file?: string; todoId?: number }, at: number): void`.
-  It sets the plan to `done` with the evidence, records event `plan_done_by_evidence`, and the card
-  follows (ADR-0036).
-- Changes: `closeWithEvidence` on a plan card calls `markPlanDone`. It no longer refuses.
+- Produces (as built): `ledger.markPlanDoneByCard(decisionId: string, evidence: string, at?: number): number | undefined`.
+  The plan whose current card is `decisionId`, while it awaits (draft/sent/approved), becomes `done`;
+  event `plan_done_by_evidence`; the card follows (ADR-0036). One method for both callers, so no
+  `plans.ts` change was needed.
+- Produces: `SettleFacts.planBuilt` (card → todo id) and `StaleDecision.planDone`; `applyStale` marks
+  the plan done before it supersedes the card.
+- Changes: `closeWithEvidence` on a plan card calls `markPlanDoneByCard`. It no longer refuses.
 
-- [ ] **Step 1:** Test `evidence close of a plan card marks the plan done`. Expect the plan
+- [x] **Step 1:** Test `evidence close of a plan card marks the plan done`. Expect the plan
   `done`, the card `superseded` ("plan done: commit c67c5b4f"), and no new card on the next `onRunEndPlans`.
-- [ ] **Step 2:** Test `a todo naming the plan, ended done after the card, settles it in the engine`
+- [x] **Step 2:** Test `a todo naming the plan, ended done after the card, settles it in the engine`
   (same fixture as the settle-decisions test for #551/9f6a2b95). A `delivered` todo with
   `started_at == ended_at` does **not** count.
-- [ ] **Step 3:** Run. Expect FAIL. Implement. Make `settle-decisions.ts` reuse the engine rule
+- [x] **Step 3:** Run. Expect FAIL. Implement. Make `settle-decisions.ts` reuse the engine rule
   (one implementation).
-- [ ] **Step 4:** Run. Expect PASS. Commit: `fix(plans): a plan done by any path closes its card (ADR-0054)`.
+- [x] **Step 4:** Run. Expect PASS. Commit: `fix(plans): a plan done by any path closes its card (ADR-0054)`.
 
 ### Task B4: kept questions are judged, not frozen
 

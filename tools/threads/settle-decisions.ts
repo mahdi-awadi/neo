@@ -1,8 +1,7 @@
 // One-time cleanup (ADR-0053): close the open decisions whose question is gone, with the reason kept,
 // and re-derive the threads. It applies the engine's own settle rules (decision-settle.ts) to every
-// open decision — threadless ones too — plus one cleanup-only rule for plan cards: a todo in the
-// plan's folder, created after the card, that names the plan and ended `done`, built it (the signal
-// Execute already uses, ADR-0034). It NEVER closes an unanswered decision that matches the keep
+// open decision — threadless ones too — including "a later todo that names the plan ran and ended
+// done built it" (ADR-0054: an engine rule now, no longer cleanup-only). It NEVER closes an unanswered decision that matches the keep
 // patterns (irreversible, prod, money, auth): those are listed to keep open.
 //
 //   bun tools/threads/settle-decisions.ts <ledger.db>           dry run (default): works on a copy
@@ -68,18 +67,9 @@ export function planCleanup(ledger: Ledger, opts: { now: number; cfg: DecisionSe
     const row = path ? ledger.planByPath(d.folder!, path) : undefined;
     const plan = row?.decisionId === d.id ? row : undefined;
     if (plan && ACTIVE_PLAN.has(plan.status)) {
-      // Cleanup-only: a later todo that names the plan and ended done built it.
-      // The first such todo that really ran (a delivery marked done at once, ADR-0052, did not).
-      const built = todos
-        .filter((t) => t.status === "done" && t.folder === plan.folder && t.createdAt > d.createdAt && t.brief.includes(plan.path))
-        .filter((t) => t.startedAt !== undefined && t.endedAt !== undefined && t.endedAt > t.startedAt)
-        .sort((a, b) => a.createdAt - b.createdAt)[0];
-      // A plan card's buttons are the engine's own (Approve & build / Changes / Drop): only its question counts.
-      if (built && !keepsOpen(d.question, opts.cfg.keepPatterns)) {
-        close.push({ id: d.id, reason: `plan built by todo #${built.id} (it names the plan and ended done)`, ...where });
-        continue;
-      }
-      keep.push({ id: d.id, ...where, why: built ? `plan built by todo #${built.id}? it touches irreversible or prod work — tap Done or Drop on its card` : "plan awaits Approve & build" });
+      // Built by other work, the engine rule closes it (ADR-0054); here only when its question is prod work.
+      const built = ledger.decisionSettleFactsByIds([d.id]).planBuilt?.[d.id];
+      keep.push({ id: d.id, ...where, why: built !== undefined ? `plan built by todo #${built}? it touches irreversible or prod work — tap Done or Drop on its card` : "plan awaits Approve & build" });
       continue;
     }
     if (!d.orderId) keep.push({ id: d.id, ...where, why: "governor escalation (no order) — the operator answers it" });
