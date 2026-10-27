@@ -1,3 +1,14 @@
+# HANDOFF — waiting threads, third report (2026-10-27): plan awaits approval
+
+Report: `docs/investigations/2026-10-27-waiting-threads-third-report.md`. Plan (approval required):
+`docs/superpowers/plans/2026-10-27-waiting-work-ship-and-settle.md`. ADR-0054 is proposed.
+- The fixes for WAITING threads (ADR-0038/0045/0052/0053) never ran: the daemon runs master `4452b94`.
+- On dev they are incomplete: they settle 9 of 22 stale decisions and wrongly close d83217cb.
+  **Do not run `settle-decisions --apply` before plan task B1.**
+- The restart producer never reported `dev` (its `branchPrefixes` are `fix/`, `feat/` and `chore/`).
+
+---
+
 # HANDOFF — decision threads and closing (ADR-0053): on `dev`, restart-gated
 
 Bugs: (A) the dispatcher filed new work under the last ended turn's thread (`pipeline.ts`
