@@ -206,8 +206,11 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
   days); the five are kept and the sweep now judges them. Two closes come from the cleanup-only
   "todo names the plan" rule on #639 and #687 (4bb30cac, 666f1438): the person who checks the
   list must look at those two.)
-- [ ] **Step 3 [OPERATOR]:** Check the list, then run it with `--apply`. The tool backs up first.
-- [ ] **Step 4:** Re-run the dry run. Expect CLOSABLE (0): it is idempotent.
+- [x] **Step 3 [OPERATOR]:** Check the list, then run it with `--apply`. The tool backs up first.
+  (Operator, decision #9ee6123d: close 38, keep 4bb30cac and 666f1438. Applied 2026-10-27 05:41 with
+  `--apply --keep 4bb30cac,666f1438`; backup `data/ledger.db.bak-settle-2026-10-27T05-41-26-015Z`;
+  threads m8k9f, m7hji, ma71j, m9snq left waiting.)
+- [x] **Step 4:** Re-run the dry run. Expect CLOSABLE (0): it is idempotent. (CLOSABLE (0), KEEP OPEN (82).)
 
 **Done:** the 10 eticket-v3 threads in the screenshot are WAITING only where a C4 question
 (4fc5a9c1, d83217cb, 708b51b4) or daa64d3a is still open.
