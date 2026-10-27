@@ -58,7 +58,7 @@ function listText(d: SweepDeps): string {
     const commits = (d.git(x.repo!, ["log", "--all", "--since", since, `--max-count=${LIST_COMMITS}`, "--format=%h %ad %s", "--date=short"]) ?? "").trim();
     const prev = judged[x.id] ? `\n  last judged ${new Date(judged[x.id]!.at).toISOString()}: ${judged[x.id]!.ask}` : "";
     return [
-      `#${x.id.slice(0, 8)} · ${d.ref(x.threadId)} · ${x.project ?? "-"} · ${x.repo} · asked ${new Date(x.createdAt).toISOString()}${prev}`,
+      `#${x.id.slice(0, 8)} · ${x.threadId !== undefined ? d.ref(x.threadId) : "no thread"} · ${x.project ?? "-"} · ${x.repo} · asked ${new Date(x.createdAt).toISOString()}${prev}`,
       `  Q: ${x.question.replace(/\s+/g, " ").trim()}`,
       `  commits since the question (newest ${LIST_COMMITS}):`,
       ...(commits ? commits.split("\n").map((l) => `    ${l}`) : ["    (none)"]),

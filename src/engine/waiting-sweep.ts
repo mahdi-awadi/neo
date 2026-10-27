@@ -30,7 +30,7 @@ export function readWaitingSweepCfg(raw: unknown): WaitingSweepCfg {
 }
 
 export interface SweepDeps {
-  ledger: Pick<Ledger, "threadsByState" | "threadById" | "decisionSettleFacts" | "decisionById" | "supersedeDecision" | "markPlanDoneByCard" | "getMeta" | "setMeta">;
+  ledger: Pick<Ledger, "threadsByState" | "threadById" | "decisionSettleFacts" | "decisionSettleFactsByIds" | "listOpenDecisions" | "decisionById" | "supersedeDecision" | "markPlanDoneByCard" | "getMeta" | "setMeta">;
   /** Re-derive one thread (trace.refreshThread: ADR-0038 settle, then the state rule). */
   refresh: (threadId: number) => void;
   git: GitRunner;
@@ -40,16 +40,18 @@ export interface SweepDeps {
   ref: (threadId: number) => string;
 }
 
-/** One open decision of a WAITING thread, with what the sweep needs to judge it. */
+/** One open decision — of a WAITING thread, or with no thread at all (ADR-0054) — with what the sweep
+ *  needs to judge it. */
 export interface WaitingDecision {
   id: string;
-  threadId: number;
+  /** None: the decision is older than the trace spine (or an escalation with no cause). */
+  threadId?: number;
   threadUpdatedAt: number;
   project?: string;
   folder?: string;
   question: string;
   createdAt: number;
-  /** A plan card: it follows its plan (ADR-0036), never judged or closed here. */
+  /** A plan card: it follows its plan (ADR-0036); an evidence close marks the plan done (ADR-0054). */
   plan: boolean;
   /** The repository the decision's folder is in, when it is in one. */
   repo?: string;
@@ -135,13 +137,31 @@ export function waitingDecisions(deps: SweepDeps): WaitingDecision[] {
       });
     }
   }
+  // Decisions with no thread are judged too (ADR-0054): nothing else would ever look at them again.
+  const loose = deps.ledger.listOpenDecisions().filter((d) => !d.cause);
+  const lf = deps.ledger.decisionSettleFactsByIds(loose.map((d) => d.id));
+  for (const d of loose) {
+    const facts = d.folder ? repoFacts(d.folder) : {};
+    out.push({
+      id: d.id,
+      threadUpdatedAt: d.createdAt,
+      ...(d.project ? { project: d.project } : {}),
+      ...(d.folder ? { folder: d.folder } : {}),
+      question: d.question,
+      createdAt: d.createdAt,
+      plan: lf.planOf[d.id] !== undefined,
+      ...(facts.repo ? { repo: facts.repo } : {}),
+      ...(facts.latest !== undefined ? { latestCommitAt: facts.latest } : {}),
+    });
+  }
   return out;
 }
 
 /** A decision needs a worker's judgement: never judged, or its repo moved since and the last
- *  judgement is old enough. Plan cards and decisions outside a repository never do. */
+ *  judgement is old enough. A decision outside a repository never does. A plan card does (ADR-0054):
+ *  evidence that it was built marks its plan done. */
 export function needsJudging(d: WaitingDecision, j: Judged | undefined, cfg: WaitingSweepCfg, now: number): boolean {
-  if (d.plan || !d.repo) return false;
+  if (!d.repo) return false;
   if (!j) return true;
   return d.latestCommitAt !== undefined && d.latestCommitAt > j.commitAt && now - j.at >= cfg.rejudgeAfterMs;
 }
@@ -155,18 +175,24 @@ const clip = (s: string, n: number) => {
  *  every decision and ask, so any change (new, closed, re-asked) makes a new reminder. */
 export function reminder(list: WaitingDecision[], judged: Record<string, Judged>, cfg: WaitingSweepCfg, ref: (threadId: number) => string): { text: string; fingerprint: string } {
   if (list.length === 0) return { text: "", fingerprint: "" };
-  const byThread = new Map<number, WaitingDecision[]>();
-  for (const d of list) byThread.set(d.threadId, [...(byThread.get(d.threadId) ?? []), d]);
-  const lines = [...byThread.entries()].map(([threadId, ds]) => {
+  // One line per thread; a decision with no thread is its own line, named by its id.
+  const groups = new Map<string, { label: string; ds: WaitingDecision[] }>();
+  for (const d of list) {
+    const key = d.threadId !== undefined ? `t${d.threadId}` : `d${d.id}`;
+    const g = groups.get(key) ?? { label: d.threadId !== undefined ? ref(d.threadId) : `#${d.id.slice(0, 8)}`, ds: [] };
+    g.ds.push(d);
+    groups.set(key, g);
+  }
+  const lines = [...groups.values()].map(({ label, ds }) => {
     const lead = ds.find((d) => judged[d.id]?.ask) ?? ds[0]!;
     const more = ds.length > 1 ? ` (+${ds.length - 1} more)` : "";
-    return `• ${ref(threadId)} ${lead.project ?? "-"} — ${clip(judged[lead.id]?.ask || lead.question, 120)}${more}`;
+    return `• ${label} ${lead.project ?? "-"} — ${clip(judged[lead.id]?.ask || lead.question, 120)}${more}`;
   });
   const shown = lines.slice(0, cfg.reminderMaxLines);
   const rest = lines.length - shown.length;
   const text = [`⏳ Waiting on you (${lines.length}):`, ...shown, ...(rest > 0 ? [`…and ${rest} more`] : [])].join("\n");
   const fingerprint = createHash("sha256")
-    .update(list.map((d) => `${d.threadId}:${d.id}:${judged[d.id]?.ask ?? ""}`).sort().join("\n"))
+    .update(list.map((d) => `${d.threadId ?? "-"}:${d.id}:${judged[d.id]?.ask ?? ""}`).sort().join("\n"))
     .digest("hex");
   return { text, fingerprint };
 }
@@ -199,7 +225,7 @@ function findOne(deps: SweepDeps, id8: string): WaitingDecision | string {
   const key = id8.trim().toLowerCase();
   const hits = key.length >= 8 ? waitingDecisions(deps).filter((d) => d.id.toLowerCase().startsWith(key)) : [];
   if (hits.length === 1) return hits[0]!;
-  return hits.length === 0 ? `no open decision #${key} in a waiting thread` : `#${key} names ${hits.length} decisions — give more of the id`;
+  return hits.length === 0 ? `no open decision #${key} to judge` : `#${key} names ${hits.length} decisions — give more of the id`;
 }
 
 const SHA = /^[0-9a-f]{7,40}$/;
@@ -249,8 +275,8 @@ export function closeWithEvidence(
     delete judged[d.id];
     deps.ledger.setMeta(JUDGED_KEY, judged, deps.now());
   }
-  deps.refresh(d.threadId);
-  return { ok: true, thread: deps.ref(d.threadId), todosCancelled };
+  if (d.threadId !== undefined) deps.refresh(d.threadId);
+  return { ok: true, thread: d.threadId !== undefined ? deps.ref(d.threadId) : "no thread", todosCancelled };
 }
 
 /** Record that a worker judged a decision still open, with the one-line ask the reminder shows. */

@@ -101,7 +101,7 @@ test("AC3: close refuses without good evidence, and names the rule", () => {
   const id = ask(s);
   const id8 = id.slice(0, 8);
   const r = (ev: { commit?: string; file?: string }, reason = "built in the wallet ADR") => closeWithEvidence(s.deps, id8, ev, reason);
-  expect(closeWithEvidence(s.deps, "zzzzzzzz", { commit: "def5678" }, "built in the wallet ADR")).toEqual({ ok: false, why: "no open decision #zzzzzzzz in a waiting thread" });
+  expect(closeWithEvidence(s.deps, "zzzzzzzz", { commit: "def5678" }, "built in the wallet ADR")).toEqual({ ok: false, why: "no open decision #zzzzzzzz to judge" });
   expect(r({ commit: "beefbee" })).toEqual({ ok: false, why: "commit beefbee is not in /home/p" });
   expect(r({ commit: "abc1234" })).toEqual({ ok: false, why: "commit abc1234 is older than the question" });
   expect(r({ commit: "--all" })).toEqual({ ok: false, why: "commit must be a hex sha" });
@@ -109,7 +109,7 @@ test("AC3: close refuses without good evidence, and names the rule", () => {
   expect(r({ file: "/etc/passwd" })).toEqual({ ok: false, why: "file must be a path inside the repository" });
   expect(r({ file: "*" })).toEqual({ ok: false, why: "file must be a plain path (no wildcards or pathspec magic)" });
   expect(r({ file: ":(glob)**" })).toEqual({ ok: false, why: "file must be a plain path (no wildcards or pathspec magic)" });
-  expect(closeWithEvidence(s.deps, id.slice(0, 6), { commit: "def5678" }, "built in the wallet ADR")).toEqual({ ok: false, why: `no open decision #${id.slice(0, 6)} in a waiting thread` });
+  expect(closeWithEvidence(s.deps, id.slice(0, 6), { commit: "def5678" }, "built in the wallet ADR")).toEqual({ ok: false, why: `no open decision #${id.slice(0, 6)} to judge` });
   expect(r({ file: "docs/none.md" })).toEqual({ ok: false, why: "file docs/none.md is not tracked in /home/p" });
   expect(r({ file: "docs/old.md" })).toEqual({ ok: false, why: "file docs/old.md was last changed before the question" });
   expect(r({})).toEqual({ ok: false, why: "give exactly one of --commit or --file" });
@@ -186,4 +186,33 @@ test("review: judgements of decisions that left the list are dropped", () => {
   s.t.refreshThread(s.root.threadId);
   check(s.deps);
   expect(Object.keys((s.led.getMeta("waitingSweep.judged")?.value ?? {}) as object)).toEqual([]);
+});
+
+// --- ADR-0054 B4: kept questions are judged, not frozen -------------------------------------------
+test("ADR-0054 B4: a kept prod question with a newer commit in its repo needs judging", () => {
+  const s = setup(fakeGit({ latest: ASKED + 5_000 }));
+  const id = ask(s, "Go-ahead: add Asfoor's prod Qi binding and run one test top-up?");
+  expect(check(s.deps).toJudge.map((d) => d.id)).toContain(id);
+});
+
+test("ADR-0054 B4: a decision with no thread is judged too, and the reminder names it by its id", () => {
+  const s = setup(fakeGit({ latest: ASKED + 5_000, commits: { def5678: ASKED + 5_000 } }));
+  const loose = s.led.openDecision({ kind: "decision", question: "Which bank for refunds?", folder: "/home/p", project: "p" }, ASKED);
+  const r1 = check(s.deps);
+  expect(r1.met).toBe(false);
+  expect(r1.toJudge.map((d) => d.id)).toEqual([loose]);
+  expect(keepJudged(s.deps, loose.slice(0, 8), "pick the refund bank")).toEqual({ ok: true });
+  const r2 = check(s.deps);
+  expect(r2.met).toBe(true);
+  expect(r2.out).toContain(`• #${loose.slice(0, 8)} p — pick the refund bank`);
+  // And it can be closed on evidence, though it has no thread to re-derive.
+  expect(closeWithEvidence(s.deps, loose.slice(0, 8), { commit: "def5678" }, "refund bank chosen in ADR-0190")).toMatchObject({ ok: true });
+  expect(s.led.decisionById(loose)?.status).toBe("superseded");
+});
+
+test("ADR-0054 B4: an awaiting plan card is offered for judging (evidence can now close it)", () => {
+  const s = setup(fakeGit({ latest: ASKED + 5_000 }));
+  const id = ask(s, "Plan waiting for your approval: docs/a.md");
+  s.led.upsertPlan({ project: "p", folder: "/home/p", title: "t", sha256: "x", stepsTotal: 1, stepsDone: 0, threadId: s.root.threadId, createdAt: ASKED, updatedAt: ASKED, path: "docs/a.md", status: "sent", decisionId: id } as never);
+  expect(check(s.deps).toJudge.map((d) => d.id)).toContain(id);
 });

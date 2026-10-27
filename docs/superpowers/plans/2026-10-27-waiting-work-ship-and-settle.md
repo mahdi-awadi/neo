@@ -176,15 +176,16 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
 ### Task B4: kept questions are judged, not frozen
 
 **Files:**
-- Modify: `src/engine/waiting-sweep.ts:107-150` (`waitingDecisions` / `needsJudging`)
+- Modify: `src/engine/waiting-sweep.ts:107-150` (`waitingDecisions` / `needsJudging` / `reminder`), `tools/threads/sweep.ts`, `docs/loops/waiting-sweep.prompt.md`
+- As built: decisions with no thread are judged and listed by `#id`; plan cards are judged too (B3 lets evidence close them).
 - Test: `tests/waiting-sweep.test.ts`
 
-- [ ] **Step 1:** Test `a keep-pattern decision with a newer commit in its repo needs judging`.
+- [x] **Step 1:** Test `a keep-pattern decision with a newer commit in its repo needs judging`.
   Today's 2aa143d2 shape ("prod Qi binding", commit `aa65cce57` after it) must be in `toJudge`.
   The same decision with no newer commit must not be.
-- [ ] **Step 2:** Run. Today `waitingDecisions` reads only threaded decisions, so the threadless
+- [x] **Step 2:** Run. Today `waitingDecisions` reads only threaded decisions, so the threadless
   shape fails. Make it read every open decision (`listOpenDecisions`). Run. Expect PASS.
-- [ ] **Step 3:** Commit: `test(threads): kept prod questions are still judged on evidence (ADR-0054)`.
+- [x] **Step 3:** Commit: `test(threads): kept prod questions are still judged on evidence (ADR-0054)`.
 
 ### Task B5: one-time settle on the live ledger
 
