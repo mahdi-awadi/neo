@@ -88,3 +88,17 @@ test("runLoop accumulates spentUsd across iterations", async () => {
   expect(out.met).toBe(true);
   expect(out.spentUsd).toBe(1.5);
 });
+
+test("runLoop counts a goal check's own cost (a judge run) toward the budget", async () => {
+  let iterations = 0;
+  const out = await runLoop({
+    check: async () => ({ met: false, detail: "judge: continue", costUsd: 0.6 }),
+    iterate: async () => (iterations++, { sessionId: "s", summary: "", costUsd: 0.5 }),
+    maxIterations: 10,
+    budgetUsd: 2,
+  });
+  // check 0.6 → iter 0.5 (1.1) → check 0.6 (1.7) → iter 0.5 (2.2) → check 0.6 (2.8) → over budget
+  expect(out.reason).toBe("over-budget");
+  expect(iterations).toBe(2);
+  expect(out.spentUsd).toBeCloseTo(2.8);
+});

@@ -10,11 +10,12 @@ export interface LoopSpec {
    * (undefined on the first), and the 1-based iteration number. Returns the new session id +
    * the run's cost (USD), so the loop can enforce a budget ceiling. */
   iterate: (resumeId: string | undefined, n: number) => Promise<{ sessionId: string; summary: string; costUsd?: number }>;
-  /** Verifiable goal check — deterministic, engine-side. Returns whether it's met + a one-liner. */
-  check: () => Promise<{ met: boolean; detail: string; output?: string }>;
+  /** Verifiable goal check — deterministic, engine-side. Returns whether it's met + a one-liner,
+   *  and what the check itself cost (a judge run), which counts toward `budgetUsd`. */
+  check: () => Promise<{ met: boolean; detail: string; output?: string; costUsd?: number }>;
   /** Hard bound: give up after this many iterations even if the goal isn't met. */
   maxIterations: number;
-  /** Optional cost ceiling (USD), summed across iterations. */
+  /** Optional cost ceiling (USD), summed across iterations and goal checks. */
   budgetUsd?: number;
   /** Optional kill-switch / throttle checked before each iteration (usage cap, /kill, etc.). */
   shouldStop?: () => boolean;
@@ -42,6 +43,7 @@ export async function runLoop(spec: LoopSpec): Promise<LoopOutcome> {
 
   for (let n = 0; ; n++) {
     const goal = await spec.check();
+    spentUsd += goal.costUsd ?? 0;
     lastDetail = goal.detail;
     const lastOutput = goal.output;
     if (goal.met) return { met: true, iterations: n, reason: "goal-met", lastDetail, ...(lastOutput !== undefined ? { lastOutput } : {}), spentUsd };

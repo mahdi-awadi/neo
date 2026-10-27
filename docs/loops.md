@@ -135,6 +135,8 @@ To actually remove the human, prefer **scheduled** or **action** triggers over m
 - **Verifiable** — a deterministic check. Best kind, least brittle. e.g. "100% test coverage",
   "every page < 50ms", "no unaddressed errors in logs", "`bun test` + `tsc` green".
 - **LLM-as-judge** — the model decides it's done. Flexible but brittle (taste left to the model).
+  The judge run's cost counts toward the loop's `budgetUsd`, and the goal's `timeoutMs` aborts a
+  judge run that takes longer (not met) (2026-10-27).
   e.g. "refactor until satisfied", "docs are complete". Mitigate by giving explicit criteria
   ("be strict about simplicity", "every line DRY", a scoring rubric).
 

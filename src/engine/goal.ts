@@ -6,8 +6,9 @@ import { runOrder, type RunDeps } from "./session-runner";
 import type { Order } from "../types";
 
 /** `output`: a command goal's whole stdout (capped at GOAL_OUTPUT_MAX), for a loop that reports its
- *  goal (ADR-0045). `detail` stays the one-line summary. */
-export type GoalCheck = () => Promise<{ met: boolean; detail: string; output?: string }>;
+ *  goal (ADR-0045). `detail` stays the one-line summary. `costUsd`: what the check itself spent (a
+ *  judge run), so the loop's budget counts it. */
+export type GoalCheck = () => Promise<{ met: boolean; detail: string; output?: string; costUsd?: number }>;
 
 /** The most stdout a command goal keeps as `output`. */
 export const GOAL_OUTPUT_MAX = 4000;
@@ -74,7 +75,8 @@ function judgePrompt(criteria: string): string {
 }
 
 /** LLM-as-judge goal: a fresh, read-only worker returns the verdict. The engine stays AI-free —
- * it only parses the worker's strict last line. Unparseable ⇒ not met (never falsely "done"). */
+ * it only parses the worker's strict last line. Unparseable ⇒ not met (never falsely "done").
+ * `timeoutMs` aborts the judge run (not met); its cost is reported either way. */
 export function judgeGoal(opts: {
   criteria: string;
   cwd: string;
@@ -95,15 +97,26 @@ export function judgeGoal(opts: {
       createdAt: Date.now(),
     };
     let text = "";
-    const result = await run(
-      order,
-      { onMessage: (t) => void (text += `${t}\n`), onEscalation: async () => "deny" },
-      opts.runDeps ?? { disallowedTools: READONLY_DENY },
-    );
+    let timedOut = false;
+    const abort = opts.timeoutMs ? new AbortController() : undefined;
+    const timer = abort ? setTimeout(() => ((timedOut = true), abort.abort()), opts.timeoutMs) : undefined;
+    const base = opts.runDeps ?? { disallowedTools: READONLY_DENY };
+    let result;
+    try {
+      result = await run(
+        order,
+        { onMessage: (t) => void (text += `${t}\n`), onEscalation: async () => "deny" },
+        abort ? { ...base, abortController: abort } : base,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    const cost = result.costUsd !== undefined ? { costUsd: result.costUsd } : {};
+    if (timedOut) return { met: false, detail: `judge: timed out after ${opts.timeoutMs}ms`, ...cost };
     const blob = `${text}\n${result.summary}`;
     const met = /^\s*VERDICT:\s*DONE\b/im.test(blob);
     const reason = (blob.match(/VERDICT:\s*(?:DONE|CONTINUE)\s*[—-]?\s*(.*)$/im)?.[1] ?? "").trim();
-    return { met, detail: `judge: ${met ? "done" : "continue"}${reason ? ` — ${reason}` : ""}` };
+    return { met, detail: `judge: ${met ? "done" : "continue"}${reason ? ` — ${reason}` : ""}`, ...cost };
   };
 }
 
