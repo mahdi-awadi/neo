@@ -157,6 +157,9 @@ async function main(): Promise<void> {
     folder: neoFolder,
     boot: thisBoot,
     branchPrefixes: (cfg.restart ?? DEFAULT_RESTART_CFG).branchPrefixes,
+    // Finished work that does not run is one loud item (ADR-0054).
+    integrationBranch: (cfg.restart ?? DEFAULT_RESTART_CFG).integrationBranch,
+    maxUndeployedDays: (cfg.restart ?? DEFAULT_RESTART_CFG).maxUndeployedDays,
     updates: thisBoot ? restartNeededSince(ledger, thisBoot.at) : [],
     configHash: configHashNow(),
   });

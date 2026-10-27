@@ -400,10 +400,19 @@ test("spin guards default (3 digests, policy alert, tool loop 8); a bad value ke
 });
 
 test("restart.branchPrefixes defaults to fix/ feat/ chore/; a bad list keeps the default", () => {
-  expect(loadConfig(dir()).restart).toEqual({ branchPrefixes: ["fix/", "feat/", "chore/"] });
+  expect(loadConfig(dir()).restart).toEqual({ branchPrefixes: ["fix/", "feat/", "chore/"], integrationBranch: "dev", maxUndeployedDays: 2 });
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ restart: { branchPrefixes: [""] } }));
   expect(loadConfig(d).restart?.branchPrefixes).toEqual(["fix/", "feat/", "chore/"]);
+});
+
+test("ADR-0054: restart.integrationBranch and maxUndeployedDays read from config; an option-like branch keeps the default", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ restart: { integrationBranch: "staging", maxUndeployedDays: 5 } }));
+  expect(loadConfig(d).restart).toMatchObject({ integrationBranch: "staging", maxUndeployedDays: 5 });
+  const e = dir();
+  writeFileSync(join(e, "config.json"), JSON.stringify({ restart: { integrationBranch: "--output=x", maxUndeployedDays: -1 } }));
+  expect(loadConfig(e).restart).toMatchObject({ integrationBranch: "dev", maxUndeployedDays: 2 });
 });
 
 test("github scan defaults and per-project settings from config.json (bad fields drop)", () => {

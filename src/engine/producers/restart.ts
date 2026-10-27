@@ -4,25 +4,36 @@
  *  updater results that need a restart, and a config.json that changed since boot. Plain code, no AI. */
 import { basename } from "node:path";
 import type { AttentionDraft, BootRow } from "../ledger";
-import { branchOf, commitsAfter, git, hasCommit, headOf, isAncestor, unmergedBranches, type GitRunner } from "../git-read";
+import { branchOf, branchTip, commitsAfter, git, hasCommit, headOf, isAncestor, unmergedBranches, type GitRunner } from "../git-read";
 
 /** Commits listed in one item's detail. */
 const COMMITS_SHOWN = 20;
 
 export const RESTART_KINDS = ["restart_gated"] as const;
 
-/** Config `restart` (config.json): which local branches are work waiting to merge. */
+/** Config `restart` (config.json): which local branches are work waiting to merge, and the branch
+ *  where finished work collects before it runs (ADR-0054). */
 export interface RestartCfg {
   branchPrefixes: string[];
+  /** The integration branch: its commits that are not in the running build are one item. */
+  integrationBranch: string;
+  /** The item turns `high` once its oldest unrun commit is older than this many days. */
+  maxUndeployedDays: number;
 }
 
-export const DEFAULT_RESTART_CFG: RestartCfg = { branchPrefixes: ["fix/", "feat/", "chore/"] };
+export const DEFAULT_RESTART_CFG: RestartCfg = { branchPrefixes: ["fix/", "feat/", "chore/"], integrationBranch: "dev", maxUndeployedDays: 2 };
 
-/** Config `restart`: a non-empty list of non-empty strings is kept, anything else is the default. */
+/** Config `restart`: a bad or missing field keeps its default. */
 export function readRestartCfg(raw: unknown): RestartCfg {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const p = r.branchPrefixes;
-  return { branchPrefixes: Array.isArray(p) && p.length > 0 && p.every((x) => typeof x === "string" && x.length > 0) ? (p as string[]) : DEFAULT_RESTART_CFG.branchPrefixes };
+  const b = r.integrationBranch;
+  const days = r.maxUndeployedDays;
+  return {
+    branchPrefixes: Array.isArray(p) && p.length > 0 && p.every((x) => typeof x === "string" && x.length > 0) ? (p as string[]) : DEFAULT_RESTART_CFG.branchPrefixes,
+    integrationBranch: typeof b === "string" && /^[\w./-]+$/.test(b) && !b.startsWith("-") ? b : DEFAULT_RESTART_CFG.integrationBranch,
+    maxUndeployedDays: typeof days === "number" && Number.isInteger(days) && days >= 0 ? days : DEFAULT_RESTART_CFG.maxUndeployedDays,
+  };
 }
 
 export interface RestartDeps {
@@ -36,6 +47,11 @@ export interface RestartDeps {
   updates: Array<{ id: string; from?: string; to?: string }>;
   /** config.json's hash now; compared with the boot's. */
   configHash?: string;
+  /** The integration branch (config `restart.integrationBranch`, ADR-0054); none → not checked. */
+  integrationBranch?: string;
+  /** Days before the integration item turns `high` (config `restart.maxUndeployedDays`). */
+  maxUndeployedDays?: number;
+  now?: number;
   run?: GitRunner;
 }
 
@@ -78,8 +94,35 @@ export function restartDrafts(d: RestartDeps): AttentionDraft[] | "error" {
   const into = boot.branch === "HEAD" ? boot.headSha : boot.branch;
   const unmerged = unmergedBranches(d.folder, into, run) ?? unmergedBranches(d.folder, boot.headSha, run);
   if (!unmerged) return "error";
+  // Finished work on the integration branch that does not run (ADR-0054): one item, never silent.
+  const integ = d.integrationBranch;
+  const integTip = integ && integ !== boot.branch ? branchTip(d.folder, integ, run) : undefined;
+  if (integ && integTip) {
+    const commits = commitsAfter(d.folder, boot.headSha, COMMITS_SHOWN * 50, run, integTip);
+    if (!commits) return "error";
+    if (commits.length) {
+      const now = d.now ?? Date.now();
+      const oldestAt = Math.min(...commits.map((c) => c.at ?? now));
+      const days = Math.max(0, Math.floor((now - oldestAt) / 86_400_000));
+      const adrs = [...new Set(commits.flatMap((c) => c.subject.match(/ADR-\d{4}/g) ?? []))].sort();
+      const n = commits.length;
+      out.push({
+        ...at,
+        key: "integration",
+        severity: days > (d.maxUndeployedDays ?? DEFAULT_RESTART_CFG.maxUndeployedDays) ? "high" : "normal",
+        title: `${n} commit${n === 1 ? " on " + integ + " is" : "s on " + integ + " are"} not running (oldest ${days} day${days === 1 ? "" : "s"})`,
+        detail: [
+          ...(adrs.length ? [`ADRs: ${adrs.join(", ")}`] : []),
+          ...commits.slice(0, COMMITS_SHOWN).map((c) => `${c.sha} ${c.subject}`),
+          ...(n > COMMITS_SHOWN ? ["(+more)"] : []),
+        ].join("\n"),
+      });
+    }
+  }
   for (const u of unmerged) {
     if (u.branch === branch || u.branch === boot.branch || !d.branchPrefixes.some((p) => u.branch.startsWith(p))) continue;
+    // Already merged into the integration branch: that item covers it (ADR-0054), no second line.
+    if (integTip && isAncestor(d.folder, u.branch, integTip, run)) continue;
     out.push({ ...at, key: `merge:${u.branch}`, title: `waiting to merge: ${u.branch} — ${u.subject}` });
   }
   for (const u of d.updates) {

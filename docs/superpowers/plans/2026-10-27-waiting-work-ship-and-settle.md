@@ -289,12 +289,12 @@ bucket, so the reminder is sent again once when an item crosses the limit, and n
 `maxUndeployedDays`. The detail lists ADR numbers found in the commit subjects. Branches already
 merged into the integration branch produce no `merge:` item.
 
-- [ ] **Step 1:** Test `dev ahead of the running build gives one integration item`. Fixture repo:
+- [x] **Step 1:** Test `dev ahead of the running build gives one integration item`. Fixture repo:
   master = boot, `dev` +3 commits, one of them "(ADR-0053)". Expect 1 item, with detail
   containing "ADR-0053".
-- [ ] **Step 2:** Test `severity is high after maxUndeployedDays`.
-- [ ] **Step 3:** Test `a feature branch merged into dev gives no merge item`.
-- [ ] **Step 4:** Run. Expect FAIL. Implement. Run. Expect PASS. Commit:
+- [x] **Step 2:** Test `severity is high after maxUndeployedDays`.
+- [x] **Step 3:** Test `a feature branch merged into dev gives no merge item`.
+- [x] **Step 4:** Run. Expect FAIL. Implement. Run. Expect PASS. Commit:
   `feat(restart): report fixes on the integration branch that are not running (ADR-0054)`.
 
 ### Task D2: say it where the operator looks

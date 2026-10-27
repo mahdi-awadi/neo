@@ -28,6 +28,12 @@ export function headOf(folder: string, run: GitRunner = git): string | undefined
   return run(folder, ["rev-parse", "HEAD"])?.trim() || undefined;
 }
 
+/** A local branch's tip, or undefined when there is no such branch. Read as `refs/heads/<branch>`
+ *  only, so a branch name is never taken as an option. */
+export function branchTip(folder: string, branch: string, run: GitRunner = git): string | undefined {
+  return run(folder, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`])?.trim() || undefined;
+}
+
 /** The checked-out branch (`HEAD` when detached). */
 export function branchOf(folder: string, run: GitRunner = git): string | undefined {
   return run(folder, ["rev-parse", "--abbrev-ref", "HEAD"])?.trim() || undefined;
@@ -37,21 +43,24 @@ export function branchOf(folder: string, run: GitRunner = git): string | undefin
 export interface CommitLine {
   sha: string;
   subject: string;
+  /** Committer time, ms. */
+  at?: number;
 }
 
 const SEP = "\u001f"; // a field separator no subject contains
 
 /** Commits reachable from HEAD but not from `since`, newest first, at most `limit`. Undefined when
  *  git fails (e.g. `since` is not in this repo any more). */
-export function commitsAfter(folder: string, since: string, limit: number, run: GitRunner = git): CommitLine[] | undefined {
-  const out = run(folder, ["log", `--max-count=${limit}`, `--format=%h${SEP}%s`, `${since}..HEAD`]);
+export function commitsAfter(folder: string, since: string, limit: number, run: GitRunner = git, to = "HEAD"): CommitLine[] | undefined {
+  const out = run(folder, ["log", `--max-count=${limit}`, `--format=%h${SEP}%s${SEP}%ct`, `${since}..${to}`]);
   if (out === undefined) return undefined;
   return out
     .split("\n")
     .filter(Boolean)
     .map((l) => {
-      const [sha, subject] = l.split(SEP);
-      return { sha: sha!, subject: subject ?? "" };
+      const [sha, subject, ct] = l.split(SEP);
+      const at = Number(ct) * 1000;
+      return { sha: sha!, subject: subject ?? "", ...(Number.isFinite(at) && at > 0 ? { at } : {}) };
     });
 }
 
