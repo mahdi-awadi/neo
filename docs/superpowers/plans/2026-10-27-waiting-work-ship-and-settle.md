@@ -71,7 +71,9 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
   (Approved 2026-10-27, decision #117ff497: "Release now". `master` fast-forwarded to `dev`.)
 - [x] **Step 6 [OPERATOR]:** Restart the daemon (`systemctl restart neo`).
   (Issued 2026-10-27 on operator approval #117ff497, with `/home/neo` checked out on `master`.)
-- [ ] **Step 7:** Post-boot check, read-only:
+- [x] **Step 7:** Post-boot check, read-only:
+  (2026-10-27 03:51 boot: `head_sha` d85b638, `branch` master, SDK 0.3.310, `user_version` 13,
+  0 `fault` lines in the journal.)
   - the newest `engine_boots` row has `head_sha` = the release head and `branch` = `master`;
   - the ledger `user_version` = 13;
   - the journal has no `fault` lines in the first 5 minutes.
@@ -80,8 +82,9 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
 
 ### Task A2: load the waiting-sweep loop
 
-- [ ] **Step 1 [OPERATOR]:** `bun tools/create-loop.ts docs/loops/waiting-sweep.json`.
-- [ ] **Step 2:** Run `bun tools/threads/sweep.ts check` once. Expected: it prints the list of
+- [x] **Step 1 [OPERATOR]:** `bun tools/create-loop.ts docs/loops/waiting-sweep.json`.
+  (Run 2026-10-27 under release approval #117ff497; stored in `loop_defs`.)
+- [x] **Step 2:** Run `bun tools/threads/sweep.ts check` once. Expected: it prints the list of
   decisions to judge, or meets its goal.
 
 **Done:** `loop_defs` has `waiting-sweep`, enabled, cron `0 * * * *`.
@@ -195,10 +198,14 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
 
 ### Task B5: one-time settle on the live ledger
 
-- [ ] **Step 1:** Ship B1–B4 the way Task A1 does (release branch, verify, [OPERATOR] merge and restart).
-- [ ] **Step 2:** `bun tools/threads/settle-decisions.ts data/ledger.db` (dry run). Expect:
+- [x] **Step 1:** Ship B1–B4 the way Task A1 does (release branch, verify, [OPERATOR] merge and restart).
+- [x] **Step 2:** `bun tools/threads/settle-decisions.ts data/ledger.db` (dry run). Expect:
   - d83217cb is **not** in CLOSABLE;
   - 2aa143d2, 1f7d20a3, ae0daf27, 544144fb and 469c565d are closable, or listed for the sweep.
+  (2026-10-27 on the live v13 ledger: CLOSABLE 40, KEEP OPEN 78; d83217cb kept (younger than 7
+  days); the five are kept and the sweep now judges them. Two closes come from the cleanup-only
+  "todo names the plan" rule on #639 and #687 (4bb30cac, 666f1438): the person who checks the
+  list must look at those two.)
 - [ ] **Step 3 [OPERATOR]:** Check the list, then run it with `--apply`. The tool backs up first.
 - [ ] **Step 4:** Re-run the dry run. Expect CLOSABLE (0): it is idempotent.
 
@@ -323,8 +330,9 @@ As built: `context-policy.ts` `setDeployFacts`/`deployFactFor` (set at boot); th
 
 - [x] **Step 1:** Test `handoff facts include the integration gap`.
 - [x] **Step 2:** Implement. Run. Expect PASS. Commit.
-- [ ] **Step 3:** Ship Phase C + D as in Task A1 ([OPERATOR] merge and restart). Then check that
+- [x] **Step 3:** Ship Phase C + D as in Task A1 ([OPERATOR] merge and restart). Then check that
   `/status` shows "dev +0".
+  (2026-10-27: boot head d85b638 contains `dev`, so the gap is 0.)
 
 ---
 

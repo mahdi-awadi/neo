@@ -1,0 +1,123 @@
+DRY RUN on a copy of data/ledger.db — nothing was written
+CLOSABLE (40)
+  #17cbfcf4 · video-app · no thread · expired: its work ended and later work in video-app finished
+  #25c28c2e · adminli · no thread · expired: its work ended and later work in adminli finished
+  #1279efd1 · eticket-v3 · no thread · expired: its work ended and later work in eticket-v3 finished
+  #d5a329e8 · eticket-v3 · no thread · expired: its work ended and later work in eticket-v3 finished
+  #ac03d9a9 · agent · no thread · expired: its work ended and later work in agent finished
+  #5144829f · agent · no thread · expired: its work ended and later work in agent finished
+  #14f3dca4 · agent · no thread · expired: its work ended and later work in agent finished
+  #85739989 · eticket-v3 · no thread · expired: its work ended and later work in eticket-v3 finished
+  #9c5b0ae0 · waselni · no thread · expired: its work ended and later work in waselni finished
+  #c468bec7 · waselni · no thread · expired: its work ended and later work in waselni finished
+  #55cd6021 · eticket-v3 · no thread · expired: its work ended and later work in eticket-v3 finished
+  #4694e71e · eticket-v3 · no thread · expired: its work ended and later work in eticket-v3 finished
+  #1560395f · adminli · no thread · expired: its work ended and later work in adminli finished
+  #32a89b5f · agent · no thread · expired: its work ended and later work in agent finished
+  #ba191975 · agent · no thread · expired: its work ended and later work in agent finished
+  #077a8978 · agent · no thread · expired: its work ended and later work in agent finished
+  #c6bd8d74 · adminli · no thread · expired: its work ended and later work in adminli finished
+  #b6a4fb74 · adminli · no thread · expired: its work ended and later work in adminli finished
+  #b94cd846 · agent · no thread · expired: its work ended and later work in agent finished
+  #cd660d24 · eticket-v3 · no thread · expired: its work ended and later work in eticket-v3 finished
+  #4a7da570 · agent · no thread · expired: its work ended and later work in agent finished
+  #f2e7213e · gold · no thread · expired: its work ended and later work in gold finished
+  #2541a5e3 · gold · no thread · expired: its work ended and later work in gold finished
+  #7d957d71 · waselni · no thread · expired: its work ended and later work in waselni finished
+  #dba89453 · prod-ops · no thread · expired: its work ended and later work in prod-ops finished
+  #3c22dbc4 · prod-ops · no thread · expired: its work ended and later work in prod-ops finished
+  #7ce4feac · gold · no thread · expired: its work ended and later work in gold finished
+  #3dc8e82b · gold · no thread · expired: its work ended and later work in gold finished
+  #9bfddbcf · gold · no thread · expired: its work ended and later work in gold finished
+  #b1fcd24b · gold · no thread · expired: its work ended and later work in gold finished
+  #77154fca · eticket-v3 · no thread · superseded: plan executing
+  #ba954c7c · eticket-v3 · m7hji · expired: its work ended and later work in eticket-v3 finished
+  #da926828 · gold · m8k9f · expired: its work ended and later work in gold finished
+  #789a27fb · eticket-v3 · m9snq · expired: its work ended and later work in eticket-v3 finished
+  #73c66293 · eticket-v3 · m9snq · expired: its work ended and later work in eticket-v3 finished
+  #f5559e7d · eticket-v3 · ma71j · expired: its work ended and later work in eticket-v3 finished
+  #9f6a2b95 · adminli · maq81 · superseded: plan built by todo #551 (it names the plan and ended done)
+  #eeb030d9 · adminli · maq81 · superseded: plan built by todo #702 (it names the plan and ended done)
+  #4bb30cac · eticket-v3 · mb10k · superseded: plan built by todo #639 (it names the plan and ended done)
+  #666f1438 · contantme · mbhgg · superseded: plan built by todo #687 (it names the plan and ended done)
+KEEP OPEN (78)
+  #52bd5abd · video-app · no thread · irreversible or prod question, unanswered
+  #197484eb · agent · no thread · irreversible or prod question, unanswered
+  #57357de9 · agent · no thread · irreversible or prod question, unanswered
+  #514dbdc9 · agent · no thread · irreversible or prod question, unanswered
+  #f1804951 · waselni · no thread · irreversible or prod question, unanswered
+  #f7575aab · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #47331f02 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #10db0c22 · agent · no thread · irreversible or prod question, unanswered
+  #8558c301 · video-app · no thread · irreversible or prod question, unanswered
+  #c80faee8 · agent · no thread · irreversible or prod question, unanswered
+  #06b0c355 · agent · no thread · irreversible or prod question, unanswered
+  #2ef9fa43 · agent · no thread · irreversible or prod question, unanswered
+  #449316ec · agent · no thread · irreversible or prod question, unanswered
+  #4dc633e3 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #94064f62 · agent · no thread · irreversible or prod question, unanswered
+  #327bf926 · agent · no thread · irreversible or prod question, unanswered
+  #9d724551 · agent · no thread · irreversible or prod question, unanswered
+  #71a13370 · agent · no thread · irreversible or prod question, unanswered
+  #0232d6c1 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #1721331e · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #61c96bb7 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #0e066daa · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #a90390fa · agent · no thread · irreversible or prod question, unanswered
+  #4f8439ec · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #a7137b30 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #52f40b4e · agent · no thread · irreversible or prod question, unanswered
+  #e9d35710 · agent · no thread · irreversible or prod question, unanswered
+  #03f9e19d · agent · no thread · irreversible or prod question, unanswered
+  #7c9c7c54 · video-app · no thread · irreversible or prod question, unanswered
+  #39157a31 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #28f9bda7 · waselni · no thread · irreversible or prod question, unanswered
+  #07a19626 · dev · no thread · irreversible or prod question, unanswered
+  #77d4296a · agent · no thread · irreversible or prod question, unanswered
+  #d126e9ff · agent · no thread · irreversible or prod question, unanswered
+  #1008d105 · agent · no thread · irreversible or prod question, unanswered
+  #4578a850 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #22b330b0 · agent · no thread · irreversible or prod question, unanswered
+  #d3db29b4 · prod-ops · no thread · irreversible or prod question, unanswered
+  #47571c66 · prod-ops · no thread · irreversible or prod question, unanswered
+  #7f483179 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #3bbc20c6 · eticket-v3 · no thread · irreversible or prod question, unanswered
+  #17a7ae4f · ? · no thread · governor escalation (no order) — the operator answers it
+  #7c1819a6 · ? · no thread · governor escalation (no order) — the operator answers it
+  #a1b13247 · eticket-v3 · m7ijm · irreversible or prod question, unanswered
+  #81396fd2 · booking-timeline · m7wys · irreversible or prod question, unanswered
+  #d3226770 · eticket-v3 · m7nk8 · irreversible or prod question, unanswered
+  #01441714 · eticket-v3 · m9ytv · irreversible or prod question, unanswered
+  #b2cd43d9 · eticket-v3 · m9ytv · irreversible or prod question, unanswered
+  #1f7d20a3 · prod-ops · maby3 · irreversible or prod question, unanswered
+  #daa64d3a · gold · magha · irreversible or prod question, unanswered
+  #708b51b4 · eticket-v3 · maex6 · irreversible or prod question, unanswered
+  #2aa143d2 · eticket-v3 · maex6 · irreversible or prod question, unanswered
+  #544144fb · eticket-v3 · maex6 · plan awaits Approve & build
+  #df1056b5 · mirshad · no thread · younger than 7 days
+  #ae0daf27 · mirshad · magha · irreversible or prod question, unanswered
+  #94a0c900 · eticket-v3 · maq81 · irreversible or prod question, unanswered
+  #cc66eb96 · traefik · maq81 · younger than 7 days
+  #f7966fb7 · eticket-v3 · maq81 · plan awaits Approve & build
+  #51071d74 · eticket-v3 · maq81 · plan awaits Approve & build
+  #d83217cb · eticket-v3 · mast7 · younger than 7 days
+  #12a2836a · prod-ops · mb3zd · irreversible or prod question, unanswered
+  #f0282349 · prod-ops · mb5lr · irreversible or prod question, unanswered
+  #99cbadfa · prod-ops · mb10k · irreversible or prod question, unanswered
+  #be78cb62 · eticket-v3 · mb10k · younger than 7 days
+  #8d780b6d · eticket-v3 · mb10k · plan awaits Approve & build
+  #3d2efae1 · waselni · mbgjp · irreversible or prod question, unanswered
+  #bf799a94 · agent · mbh5v · irreversible or prod question, unanswered
+  #4fc5a9c1 · eticket-v3 · mbhoy · irreversible or prod question, unanswered
+  #469c565d · waselni · mbjrt · plan awaits Approve & build
+  #6fe20eba · agent · mblnc · irreversible or prod question, unanswered
+  #2564a2e0 · video-app · mbmaj · plan awaits Approve & build
+  #f1bf5778 · neo · mbnhg · plan awaits Approve & build
+  #e603c96f · neo · mbnhg · plan awaits Approve & build
+  #80db145d · video-app · mbmu9 · plan awaits Approve & build
+  #7e4feefa · adminli · mbmw0 · plan awaits Approve & build
+  #f8565820 · waselni · mbmw0 · plan awaits Approve & build
+  #729c4638 · waselni · mbmw0 · plan awaits Approve & build
+  #b604a94d · waselni · mbmw0 · plan awaits Approve & build
+threads leaving waiting (5): m8k9f→done, mbhgg→done, m7hji→done, ma71j→done, m9snq→done
+todos cancelled: none
