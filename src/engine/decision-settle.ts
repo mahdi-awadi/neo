@@ -89,11 +89,6 @@ export interface SettleFacts {
   open: OpenDecisionFact[];
   /** Every decision of the thread, any status (a re-ask may already be answered). */
   asked: Array<{ id: string; question: string; createdAt: number }>;
-  /** The operator's own chat lines in the thread (`ref` names one in the reason): typed on Telegram
-   *  or the web, never an answer to one of the thread's decisions nor an approval verdict. */
-  operatorMessages: Array<{ ref: string; at: number }>;
-  /** When, and in which folder, each order or todo of the thread ended `done`. */
-  doneEnds: Array<{ at: number; folder: string }>;
   /** Decision id → the status of the plan whose CURRENT review decision it is. */
   planOf: Record<string, PlanStatus>;
   /** Decisions a `waiting` todo is parked on (ADR-0029). */
@@ -129,10 +124,6 @@ export function staleDecisions(f: SettleFacts, opts: { now?: number; expireAfter
   const parked = new Set(f.parked);
   const building = new Set(f.planBuilding ?? []);
   const out: StaleDecision[] = [];
-  const isPlanCard = (id: string) => f.planOf[id] !== undefined || f.replaced?.[id] !== undefined;
-  // "Answered in chat" applies only to the thread's one live question: a chat line next to a batch
-  // (Q1 … Q7) cannot say which question it answers, so a batch is never closed by it.
-  const live = f.open.filter((d) => !parked.has(d.id) && !isPlanCard(d.id));
   for (const d of f.open) {
     const replaced = f.replaced?.[d.id];
     if (replaced) {
@@ -156,12 +147,8 @@ export function staleDecisions(f: SettleFacts, opts: { now?: number; expireAfter
       out.push({ id: d.id, reason: `asked again as #${again.id.slice(0, 8)}` });
       continue;
     }
-    const said = d.folder && live.length === 1 ? f.operatorMessages.filter((m) => m.at > d.createdAt).sort((a, b) => a.at - b.at)[0] : undefined;
-    // The work the question was about must finish: a done end in the decision's own project folder.
-    if (said && f.doneEnds.some((e) => e.at > said.at && e.folder === d.folder)) {
-      out.push({ id: d.id, reason: `answered in chat (${said.ref}); the thread's work then finished` });
-      continue;
-    }
+    // No "answered in chat" guess (ADR-0054): a chat answer is recorded by the dispatcher's `decision`
+    // tool, which reads the operator's words; a text heuristic closed real questions (d83217cb).
     const why = expiry(d, f, opts);
     if (why) out.push({ id: d.id, reason: why, expired: true });
   }

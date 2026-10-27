@@ -46,12 +46,12 @@ export function planCleanup(ledger: Ledger, opts: { now: number; cfg: DecisionSe
   const threads = [...new Set(open.flatMap((d) => (d.cause ? [d.cause.threadId] : [])))];
   for (const t of threads) {
     const f = ledger.decisionSettleFacts(t);
-    for (const s of staleDecisions({ ...f, operatorMessages: f.operatorMessages.map((m) => ({ ref: msgRef(m.id), at: m.at })) }, settleOpts)) found.set(s.id, s);
+    for (const s of staleDecisions(f, settleOpts)) found.set(s.id, s);
   }
   // No thread (before the trace existed): the plan, parked and expiry rules.
   const loose = open.filter((d) => !d.cause).map((d) => d.id);
   const f = ledger.decisionSettleFactsByIds(loose);
-  for (const s of staleDecisions({ ...f, operatorMessages: [] }, settleOpts)) found.set(s.id, s);
+  for (const s of staleDecisions(f, settleOpts)) found.set(s.id, s);
 
   const close: Closable[] = [];
   const keep: KeepOpen[] = [];

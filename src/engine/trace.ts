@@ -232,10 +232,7 @@ export function createTrace(deps: {
       if (f.open.length === 0) return;
       const cfg = deps.settleCfg?.();
       const at = now();
-      const stale = staleDecisions(
-        { ...f, operatorMessages: f.operatorMessages.map((m) => ({ ref: msgRef(m.id), at: m.at })) },
-        cfg ? { now: at, expireAfterDays: cfg.expireAfterDays, keepPatterns: cfg.keepPatterns } : {},
-      );
+      const stale = staleDecisions(f, cfg ? { now: at, expireAfterDays: cfg.expireAfterDays, keepPatterns: cfg.keepPatterns } : {});
       applyStale(ledger, stale, at);
       if (stale.length) ledger.recordEvent("decisions_superseded", { data: { threadId, decisions: stale } });
     }, { threadId });

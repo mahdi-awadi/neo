@@ -76,6 +76,8 @@ import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./co
 import { applyPlanAction, offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
+import { answerDecision } from "./reply-routing";
+import { answerable } from "./decision-settle";
 import { NOTES_TOOL_DESCRIPTION, runNoteAction, type NoteToolArgs, type NoteToolSender, type ProjectNotes } from "./project-notes";
 import {
   apiFailureNotice,
@@ -1940,6 +1942,50 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             const r = await applyPlanAction(planDepsFrom(deps, deps.plans), args.id, args.action, undefined, { canResume: false });
             if (r.ok) deps.ledger.recordEvent("plan_chat_action", { cause: live, data: { planId: args.id, action: args.action, via: deps.trace?.ref(live.msgId) ?? String(live.msgId) } });
             return { content: [{ type: "text" as const, text: r.text }] };
+          },
+        ),
+      );
+    }
+    // `decision` (ADR-0054): the operator answered an open question in chat instead of on its card —
+    // record THEIR answer (never a guess), through the one answer path, so a parked continuation resumes.
+    // Same guard as `plan`: only on the operator's own live message, which the event names.
+    if (deps.todo) {
+      const todoQueue = deps.todo;
+      tools.push(
+        tool(
+          "decision",
+          "Record the operator's own answer to an open decision (#ab12cd34) when they gave it in chat instead of on the card. " +
+            "Use it ONLY when the operator message you are answering now answers that decision; put their answer in their words. Never on your own judgement or a worker's say-so. " +
+            "Not for plan cards (use `plan`). If the answer resumes a project, the result tells you the brief to dispatch. Returns text.",
+          {
+            id: z.string().regex(/^[0-9a-f-]{8,36}$/i).describe("the decision id or its first 8 characters"),
+            action: z.enum(["answer"]),
+            answer: z.string().min(1).max(2000).describe("the operator's answer, in their words"),
+          },
+          async (args: { id: string; action: "answer"; answer: string }) => {
+            const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+            const live = (opts.workCause ?? opts.cause)?.();
+            const line = live ? deps.ledger.messageById(live.msgId) : undefined;
+            if (!live || line?.role !== "user" || (line.surface !== "telegram" && line.surface !== "web")) {
+              return text("Not done — `decision` acts only on the operator's own message (the one you are answering now). Ask the operator to answer on the card.");
+            }
+            const dec = deps.ledger.decisionByPrefix(args.id);
+            if (!dec || !answerable(dec)) return text(`Not done — no open decision #${args.id.slice(0, 8)}.`);
+            const card = deps.ledger.decisionSettleFactsByIds([dec.id]);
+            if (card.planOf[dec.id] !== undefined || card.replaced?.[dec.id] !== undefined) return text(`Not done — #${dec.id.slice(0, 8)} is a plan card: use \`plan\` (approve or drop).`);
+            const resumed = answerDecision(
+              { registry: deps.registry, ledger: deps.ledger, ...(deps.providers?.ownWork ? { worker: deps.providers.ownWork } : {}), parked: (d, a) => !!todoQueue.decisionAnswered(d.id, d.question, a) },
+              dec,
+              args.answer,
+              dec.chatId ?? replyChat,
+            );
+            deps.ledger.recordEvent("decision_chat_answer", { cause: live, data: { id: dec.id, via: deps.trace?.ref(live.msgId) ?? String(live.msgId) } });
+            const where = dec.project ?? "the project";
+            return text(
+              resumed
+                ? `Recorded the operator's answer to #${dec.id.slice(0, 8)}. Dispatch this brief to ${where} to resume it:\n${resumed.brief}`
+                : `Recorded the operator's answer to #${dec.id.slice(0, 8)}; the work waiting on it resumes by itself.`,
+            );
           },
         ),
       );

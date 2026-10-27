@@ -14,18 +14,19 @@ function setup(opts: { settle?: boolean } = {}) {
 }
 const PAST = 1_000; // decisions and messages before the outcome (recordOutcome stamps Date.now())
 
-test("AC2: answered in chat — the operator wrote after the decision and the thread's work ended done", () => {
+test("ADR-0054: a chat line and later finished work never close a question (no chat guess)", () => {
   const { led, t, root } = setup();
-  const d = led.openDecision({ kind: "decision", question: "Which bank?", cause: root, folder: "/f" }, PAST);
+  const d = led.openDecision({ kind: "decision", question: "Start the three follow-up defects?", cause: root, folder: "/f" }, PAST);
   t.refreshThread(root.threadId);
   expect(led.threadById(root.threadId)?.state).toBe("waiting");
-  const said = led.insertMessage({ chatId: 7, role: "user", content: "use the IQD bank", at: PAST + 10, surface: "telegram", kind: "text", threadId: root.threadId });
+  // The operator writes something else in the thread (d83217cb: "Explain why we should cut off")…
+  const said = led.insertMessage({ chatId: 7, role: "user", content: "Explain why we should cut off", at: PAST + 10, surface: "telegram", kind: "text", threadId: root.threadId });
+  // …and other work in the same folder finishes.
   led.recordOrder({ id: "o2", source: "neo", folder: "/f", task: "go", chatId: 7, createdAt: PAST + 20 }, { cause: { msgId: said, threadId: root.threadId } });
   led.recordOutcome("o2", "done", "ok");
   t.refreshThread(root.threadId);
-  expect(led.decisionById(d)).toMatchObject({ status: "superseded", answer: `answered in chat (${t.ref(said)}); the thread's work then finished` });
-  expect(led.threadById(root.threadId)?.state).toBe("done");
-  expect(led.listOpenDecisions().map((x) => x.id)).not.toContain(d);
+  expect(led.decisionById(d)?.status).toBe("open");
+  expect(led.threadById(root.threadId)?.state).toBe("waiting");
 });
 
 test("AC1: asked again — the older open decision is superseded by the newer one", () => {

@@ -637,10 +637,10 @@ _Avoid_: status (unqualified), progress
 
 **Superseded decision**:
 An open decision the engine closed because it no longer needs an answer: the same question was
-asked again later in the thread, the operator went on in chat and the thread's work then finished,
-its plan was done, dropped or executed, or it is an older card of a plan (`replaced by plan card
+asked again later in the thread, its plan was done, dropped or executed, or it is an older card of a plan (`replaced by plan card
 v<N>`). It keeps the reason in its answer (ADR-0038, ADR-0053). The waiting sweep also supersedes a
-decision that was **acted on** (ADR-0045).
+decision that was **acted on** (ADR-0045). An answer the operator gives in chat is not a supersede: the
+dispatcher records it as their answer with the `decision` tool (ADR-0054).
 _Avoid_: stale, auto-answered
 
 **Expired decision**:

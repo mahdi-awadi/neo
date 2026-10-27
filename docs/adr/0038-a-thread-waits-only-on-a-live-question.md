@@ -1,6 +1,6 @@
 # A thread waits only on a live question
 
-**Status:** accepted (2026-10-15) · amends ADR-0016 (thread state). Builds on ADR-0019/0036 (plan
+**Status:** accepted (2026-10-15); the "answered in chat" rule is **removed by ADR-0054** (2026-10-27): it closed a real question (d83217cb) · amends ADR-0016 (thread state). Builds on ADR-0019/0036 (plan
 cards), ADR-0029 (a run parks on its open decision).
 
 On 2026-10-15 the console's Threads tab, filtered to `waiting`, listed 19 threads whose work had

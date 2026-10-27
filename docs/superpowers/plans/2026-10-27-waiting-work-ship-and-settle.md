@@ -53,17 +53,20 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
 
 **Files:** none new. Git only: branch `release/2026-10-27` in a temporary worktree.
 
-- [ ] **Step 1:** `git worktree add /tmp/neo-release -b release/2026-10-27 master`, then
+- [x] **Step 1:** `git worktree add /tmp/neo-release -b release/2026-10-27 master`, then
   `git -C /tmp/neo-release merge --no-ff dev`.
   Expected: no conflicts (checked 2026-10-27: `git merge-tree` is clean; master has only 2 SDK pins).
-- [ ] **Step 2:** In the worktree, run `bunx tsc --noEmit` → no output. Run `bun test` → 0 fail, or
+- [x] **Step 2:** In the worktree, run `bunx tsc --noEmit` → no output. Run `bun test` → 0 fail, or
   only the two known timing flakes, which must pass when run again alone.
   (2026-10-27 trial: 2,278 pass, 2 fail; on re-run 112 pass, 0 fail.)
-- [ ] **Step 3:** Migration dry run. Copy the live ledger with `VACUUM INTO` to `/tmp`. Open the
+- [x] **Step 3:** Migration dry run. Copy the live ledger with `VACUUM INTO` to `/tmp`. Open the
   copy with the release code's `openLedger`. Expected: `PRAGMA user_version` = 13, and every
   v11 row count is unchanged.
-- [ ] **Step 4:** Merge `master` into `dev` as well, so the two SDK pins are on `dev`. Then
+- [x] **Step 4:** Merge `master` into `dev` as well, so the two SDK pins are on `dev`. Then
   `release/2026-10-27` = `dev` + pins. Commit. Remove the worktree.
+  (Done 2026-10-27: `dev` already had master by `a7a6b53`, so `release/2026-10-27` = fast-forward of
+  master to `dev` `24cb50b`. `tsc` clean; `bun test` 2,280 pass, 0 fail; the ledger copy migrates
+  v11 → v13 with no row count changed in 22 tables.)
 - [ ] **Step 5 [OPERATOR]:** Approve fast-forwarding `master` to `release/2026-10-27`.
 - [ ] **Step 6 [OPERATOR]:** Restart the daemon (`systemctl restart neo`).
 - [ ] **Step 7:** Post-boot check, read-only:
@@ -101,18 +104,18 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
   It calls `ledger.resolveDecision(id, answer, at)` only while the live input is an operator message
   (the same guard as `plan`). The event `decision_answered_in_chat` carries `{ id, msgId }`.
 
-- [ ] **Step 1:** Test `staleDecisions never supersedes on chat alone`. Fixture: one open question,
+- [x] **Step 1:** Test `staleDecisions never supersedes on chat alone`. Fixture: one open question,
   then an operator line "Explain why we should cut off", then a todo in the same folder ended
   `done`. Expect `[]`.
-- [ ] **Step 2:** Test `decision answer records the operator's chat answer`. With a live operator
+- [x] **Step 2:** Test `decision answer records the operator's chat answer`. With a live operator
   input, `decision {id, action:"answer", answer:"yes, start them"}` sets status `answered` with
   that answer. Without a live operator input, the tool returns an error and the row stays `open`.
-- [ ] **Step 3:** Run both. Expect FAIL.
-- [ ] **Step 4:** Delete the branch from `staleDecisions`. Add the tool. Describe it in the
+- [x] **Step 3:** Run both. Expect FAIL.
+- [x] **Step 4:** Delete the branch from `staleDecisions`. Add the tool. Describe it in the
   dispatcher's tool list text.
-- [ ] **Step 5:** Run both, then the whole of `tests/decision-settle.test.ts`. Expect PASS. Update any
+- [x] **Step 5:** Run both, then the whole of `tests/decision-settle.test.ts`. Expect PASS. Update any
   old test that asserted the chat rule.
-- [ ] **Step 6:** Commit: `fix(threads): no close on a chat guess; the dispatcher records chat answers (ADR-0054)`.
+- [x] **Step 6:** Commit: `fix(threads): no close on a chat guess; the dispatcher records chat answers (ADR-0054)`.
 
 ### Task B2: every order ends
 

@@ -356,10 +356,10 @@ export interface Ledger {
   threadFacts(id: number): ThreadFacts;
   /** One thread's facts for settling its decisions (ADR-0038, decision-settle.ts). Operator
    *  messages carry their message id; trace turns it into a ref. */
-  decisionSettleFacts(threadId: number): Omit<SettleFacts, "operatorMessages"> & { operatorMessages: Array<{ id: number; at: number }> };
+  decisionSettleFacts(threadId: number): SettleFacts;
   /** The same facts for given decisions, thread or not (ADR-0053's cleanup): the thread-only facts
    *  (chat lines, the thread's done ends) are empty, so only plan, parked and expiry rules apply. */
-  decisionSettleFactsByIds(ids: string[]): Omit<SettleFacts, "operatorMessages"> & { operatorMessages: Array<{ id: number; at: number }> };
+  decisionSettleFactsByIds(ids: string[]): SettleFacts;
   /** The operator closes a thread (ADR-0038): `closed_by_operator`, its open decisions dismissed with
    *  `reason`, the todos parked on them cancelled. `stillActive`: its queued/running todos, untouched. */
   closeThread(threadId: number, reason: string, at: number): { closed: boolean; missing?: boolean; decisions: number; todosCancelled: number[]; stillActive: number[] };
@@ -517,6 +517,9 @@ export interface Ledger {
   decisionByMessage(chatId: number, messageId: number): DecisionRow | undefined;
   /** A decision by its id (the tappable-answer callback carries the id directly). */
   decisionById(id: string): DecisionRow | undefined;
+  /** A decision by the start of its id (the `#ab12cd34` the operator sees); undefined when none or
+   *  more than one match. `prefix` must be hex/dash only — the caller validates it. */
+  decisionByPrefix(prefix: string): DecisionRow | undefined;
   /** Mark a decision answered + record the answer (the operator answered / a button was tapped). */
   resolveDecision(id: string, answer: string, at?: number): void;
   /** Close an alert (or a decision) without an answer — the operator acknowledged it. */
@@ -1038,36 +1041,19 @@ export function openLedger(
       };
     },
     decisionSettleFacts(threadId) {
-      const none = { open: [], asked: [], operatorMessages: [], doneEnds: [], planOf: {}, parked: [] };
+      const none = { open: [], asked: [], planOf: {}, parked: [] };
       // Most lines join a thread with nothing open: answer from the one indexed probe.
       if (!db.query(`SELECT 1 FROM decisions WHERE thread_id = ? AND status = 'open' LIMIT 1`).get(threadId)) return none;
       const decisions = db.query(`SELECT ${SETTLE_COLS} FROM decisions WHERE thread_id = ?`).all(threadId) as SettleDbRow[];
       const asked = decisions.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at }));
       const own = settleFactsOf(decisions.filter((d) => d.status === "open"));
-      // The operator's own chat lines: typed on Telegram or the web (an approval verdict is an engine
-      // line), and not the answer to one of this thread's decisions (a tap writes its answer as a line).
-      const operatorMessages = db
-        .query(
-          `SELECT id, at FROM messages
-           WHERE thread_id = ?1 AND role = 'user' AND surface IN ('telegram', 'web')
-             AND content NOT IN (SELECT answer FROM decisions WHERE thread_id = ?1 AND answer IS NOT NULL)
-           ORDER BY at`,
-        )
-        .all(threadId) as Array<{ id: number; at: number }>;
-      const doneEnds = db
-        .query(
-          `SELECT o.at AS at, ord.folder AS folder FROM outcomes o JOIN orders ord ON ord.id = o.order_id WHERE ord.thread_id = ?1 AND o.status = 'done'
-           UNION ALL
-           SELECT ended_at AS at, folder FROM project_todos WHERE thread_id = ?1 AND status = 'done' AND ended_at IS NOT NULL`,
-        )
-        .all(threadId) as Array<{ at: number; folder: string }>;
-      return { ...own, asked, operatorMessages, doneEnds };
+      return { ...own, asked };
     },
     decisionSettleFactsByIds(ids) {
-      if (ids.length === 0) return { open: [], asked: [], operatorMessages: [], doneEnds: [], planOf: {}, parked: [] };
+      if (ids.length === 0) return { open: [], asked: [], planOf: {}, parked: [] };
       const rows = db.query(`SELECT ${SETTLE_COLS} FROM decisions WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as SettleDbRow[];
       const open = rows.filter((d) => d.status === "open");
-      return { ...settleFactsOf(open), asked: open.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at })), operatorMessages: [], doneEnds: [] };
+      return { ...settleFactsOf(open), asked: open.map((d) => ({ id: d.id, question: d.question, createdAt: d.created_at })) };
     },
     closeThread(threadId, reason, at) {
       return db.transaction(() => {
@@ -1730,6 +1716,11 @@ export function openLedger(
     decisionById(id) {
       const row = db.query(`SELECT * FROM decisions WHERE id = ?`).get(id) as DecisionDbRow | null;
       return row ? mapDecisionRow(row) : undefined;
+    },
+    decisionByPrefix(prefix) {
+      if (!/^[0-9a-f-]+$/i.test(prefix)) return undefined;
+      const rows = db.query(`SELECT * FROM decisions WHERE substr(id, 1, ?1) = ?2 LIMIT 2`).all(prefix.length, prefix.toLowerCase()) as DecisionDbRow[];
+      return rows.length === 1 ? mapDecisionRow(rows[0]!) : undefined;
     },
     resolveDecision(id, answer, at = Date.now()) {
       const wasOpen = decisionOpen(id);

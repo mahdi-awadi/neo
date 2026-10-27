@@ -264,8 +264,8 @@ export interface NeoConfig {
    *  asked once, in the same session, to commit them. `enabled` (default true), `ignore` (repo-relative
    *  globs never counted: the handoff notes). Optional like `plans`; `loadConfig` always fills it. */
   commitFinish?: CommitFinishCfg;
-  /** Settle stale decisions (ADR-0038): a decision asked again, answered in chat (and the thread's
-   *  work then finished), or whose plan is settled is superseded, so its thread stops waiting.
+  /** Settle stale decisions (ADR-0038, ADR-0054): a decision asked again, or whose plan is settled, is
+   *  superseded, so its thread stops waiting. A chat answer is recorded by the `decision` tool.
    *  Optional like `plans`; `loadConfig` always fills it. */
   decisionSettle?: DecisionSettleCfg;
   /** Attention items (ADR-0018): how long a paused queue, a waiting thread or an open decision may
