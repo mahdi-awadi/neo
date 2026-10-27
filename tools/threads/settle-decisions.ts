@@ -8,6 +8,7 @@
 //
 //   bun tools/threads/settle-decisions.ts <ledger.db>           dry run (default): works on a copy
 //   bun tools/threads/settle-decisions.ts <ledger.db> --apply   back up, then write
+//   … --keep <id>,<id>   the operator keeps these open (short #ids from the dry run are enough)
 //
 // The dry run copies the ledger (`VACUUM INTO`, safe while the daemon holds it open), runs the very
 // same apply on the copy and reports it, so the report is what --apply would do. --apply runs only on
@@ -36,10 +37,17 @@ export interface KeepOpen {
   why: string;
 }
 
+export interface CleanupOpts {
+  now: number;
+  cfg: DecisionSettleCfg;
+  /** Ids (or the short #id prefixes the report prints) the operator keeps open, whatever the rules say. */
+  keep?: string[];
+}
+
 const ACTIVE_PLAN = new Set(["draft", "sent", "approved"]);
 
 /** What the cleanup would close, and what stays open with why. Reads only. */
-export function planCleanup(ledger: Ledger, opts: { now: number; cfg: DecisionSettleCfg }): { close: Closable[]; keep: KeepOpen[] } {
+export function planCleanup(ledger: Ledger, opts: CleanupOpts): { close: Closable[]; keep: KeepOpen[] } {
   const open = ledger.listOpenDecisions();
   const settleOpts = { now: opts.now, expireAfterDays: opts.cfg.expireAfterDays, keepPatterns: opts.cfg.keepPatterns };
   const found = new Map<string, StaleDecision>();
@@ -59,6 +67,10 @@ export function planCleanup(ledger: Ledger, opts: { now: number; cfg: DecisionSe
   const todos = ledger.listTodos({ statuses: ["done", "waiting"], limit: PAGE_MAX * 10 });
   for (const d of open) {
     const where = { ...(d.project ? { project: d.project } : {}), ...(d.cause ? { thread: d.cause.threadId } : {}) };
+    if (opts.keep?.some((k) => k && d.id.startsWith(k))) {
+      keep.push({ id: d.id, ...where, why: "kept by the operator (--keep)" });
+      continue;
+    }
     const text = decisionText(d.question, d.options, d.spec);
     const s = found.get(d.id);
     if (s) {
@@ -94,7 +106,7 @@ export function planCleanup(ledger: Ledger, opts: { now: number; cfg: DecisionSe
 }
 
 /** Why a plain question did not expire: too young, its order still open, or nothing finished since. */
-function notMovedOn(ledger: Ledger, d: { orderId?: string; createdAt: number; folder?: string }, opts: { now: number; cfg: DecisionSettleCfg }): string {
+function notMovedOn(ledger: Ledger, d: { orderId?: string; createdAt: number; folder?: string }, opts: CleanupOpts): string {
   if (opts.cfg.expireAfterDays <= 0) return "expiry is off (decisionSettle.expireAfterDays = 0)";
   if (opts.now - d.createdAt < opts.cfg.expireAfterDays * 86_400_000) return `younger than ${opts.cfg.expireAfterDays} days`;
   if (!d.orderId || !ledger.getOutcome(d.orderId)) return "the work that asked it has not ended";
@@ -141,7 +153,7 @@ function report(plan: { close: Closable[]; keep: KeepOpen[] }, out: ReturnType<t
 }
 
 /** The dry run: copy the ledger, apply on the copy, report. The ledger file is never written. */
-export function dryRun(path: string, opts: { now: number; cfg: DecisionSettleCfg }): string {
+export function dryRun(path: string, opts: CleanupOpts): string {
   const dir = mkdtempSync(join(tmpdir(), "neo-settle-dry-"));
   const copy = join(dir, "ledger.db");
   try {
@@ -158,7 +170,7 @@ export function dryRun(path: string, opts: { now: number; cfg: DecisionSettleCfg
 }
 
 /** --apply: only on a ledger at this code's schema; a `VACUUM INTO` backup first. */
-export function applyTo(path: string, opts: { now: number; cfg: DecisionSettleCfg }): string {
+export function applyTo(path: string, opts: CleanupOpts): string {
   const newest = Math.max(...MIGRATIONS.map((m) => m.version));
   const probe = new Database(path, { readonly: true });
   const at = (probe.query("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -176,10 +188,27 @@ export function applyTo(path: string, opts: { now: number; cfg: DecisionSettleCf
   return report(plan, out, `APPLIED to ${path} (backup ${backup})`);
 }
 
+/** `<ledger> [--apply] [--keep a,b]`; undefined on anything else. */
+export function parseArgs(argv: string[]): { path: string; apply: boolean; keep: string[] } | undefined {
+  const [path, ...rest] = argv;
+  if (!path || path.startsWith("--")) return undefined;
+  let apply = false;
+  let keep: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--apply") apply = true;
+    else if (rest[i] === "--keep" && rest[i + 1] && !rest[i + 1]!.startsWith("--")) {
+      keep = rest[++i]!.split(",").map((k) => k.trim().replace(/^#/, "")).filter(Boolean);
+      // A short prefix could keep many cards by accident: at least the 8-character #id the report prints.
+      if (keep.some((k) => k.length < 8)) return undefined;
+    } else return undefined;
+  }
+  return { path, apply, keep };
+}
+
 if (import.meta.main) {
-  const [path, flag] = process.argv.slice(2);
-  if (!path || !existsSync(path) || (flag !== undefined && flag !== "--apply")) {
-    console.error("usage: bun tools/threads/settle-decisions.ts <ledger.db> [--apply]");
+  const args = parseArgs(process.argv.slice(2));
+  if (!args || !existsSync(args.path)) {
+    console.error("usage: bun tools/threads/settle-decisions.ts <ledger.db> [--apply] [--keep <id>,<id>]");
     process.exit(2);
   }
   let cfg = DEFAULT_DECISION_SETTLE;
@@ -188,6 +217,6 @@ if (import.meta.main) {
   } catch {
     // no readable config here: the defaults
   }
-  const opts = { now: Date.now(), cfg };
-  console.log(flag === "--apply" ? applyTo(path, opts) : dryRun(path, opts));
+  const opts = { now: Date.now(), cfg, keep: args.keep };
+  console.log(args.apply ? applyTo(args.path, opts) : dryRun(args.path, opts));
 }

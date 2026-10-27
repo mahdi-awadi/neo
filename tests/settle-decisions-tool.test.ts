@@ -121,3 +121,25 @@ test("--apply: refuses a ledger older than this code (never migrates a live ledg
   expect(new Database(path, { readonly: true }).query(`SELECT status FROM decisions WHERE id = ?`).get(s.colour)).toEqual({ status: "expired" });
   expect(existsSync(path)).toBe(true);
 });
+
+test("--keep: an id the operator keeps stays open (listed with why), matched by its short #id", () => {
+  const r = rig();
+  const s = seed(r);
+  const p = planCleanup(r.ledger, { now: NOW, cfg: DEFAULT_DECISION_SETTLE, keep: [s.plan.slice(0, 8)] });
+  expect(p.close.map((c) => c.id).sort()).toEqual([s.colour, s.old].sort());
+  expect(p.keep.find((k) => k.id === s.plan)?.why).toBe("kept by the operator (--keep)");
+  applyCleanup(r.ledger, r.trace, p, NOW);
+  expect(r.ledger.decisionById(s.plan)?.status).toBe("open");
+  expect(r.ledger.listPlans("gold").find((x) => x.decisionId === s.plan)?.status).toBe("sent");
+});
+
+test("parseArgs: <ledger> [--apply] [--keep a,b]; anything else is a usage error", async () => {
+  const { parseArgs } = await import("../tools/threads/settle-decisions");
+  expect(parseArgs(["l.db"])).toEqual({ path: "l.db", apply: false, keep: [] });
+  expect(parseArgs(["l.db", "--apply", "--keep", "4bb30cac,#666f1438"])).toEqual({ path: "l.db", apply: true, keep: ["4bb30cac", "666f1438"] });
+  expect(parseArgs(["l.db", "--keep"])).toBeUndefined();
+  expect(parseArgs(["l.db", "--force"])).toBeUndefined();
+  // A short prefix could keep many cards by accident: the 8-character #id the report prints, at least.
+  expect(parseArgs(["l.db", "--keep", "4bb3"])).toBeUndefined();
+  expect(parseArgs([])).toBeUndefined();
+});

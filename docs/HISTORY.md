@@ -1182,6 +1182,8 @@ The console showed 23 WAITING threads; the ledger had 110 open decisions back to
   expired card still takes a late answer). The company `plan` tool records a chat Approve/Drop.
 - One-time cleanup `tools/threads/settle-decisions.ts` (dry run by default; `--apply` only after
   the restart). Dry run on 2026-10-26: 26 closable, 84 kept, 8 threads leave waiting, #611 released.
+  `--keep <id>,<id>` (2026-10-27) keeps the cards the operator picks open (the 8-character #ids of
+  the dry-run list).
 
 Restart-gated.
 
