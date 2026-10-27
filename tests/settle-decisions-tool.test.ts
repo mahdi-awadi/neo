@@ -143,3 +143,13 @@ test("parseArgs: <ledger> [--apply] [--keep a,b]; anything else is a usage error
   expect(parseArgs(["l.db", "--keep", "4bb3"])).toBeUndefined();
   expect(parseArgs([])).toBeUndefined();
 });
+
+test("--keep: repeated flags add up, case is ignored, and an id that matches nothing is reported", async () => {
+  const { parseArgs } = await import("../tools/threads/settle-decisions");
+  expect(parseArgs(["l.db", "--keep", "AAAAAAAA", "--keep", "bbbbbbbb"])?.keep).toEqual(["aaaaaaaa", "bbbbbbbb"]);
+  const r = rig();
+  const s = seed(r);
+  const p = planCleanup(r.ledger, { now: NOW, cfg: DEFAULT_DECISION_SETTLE, keep: [s.plan.slice(0, 8), "deadbeef"] });
+  expect(p.unmatchedKeep).toEqual(["deadbeef"]);
+  expect(p.keep.some((k) => k.id === s.plan)).toBe(true);
+});

@@ -47,7 +47,7 @@ export interface CleanupOpts {
 const ACTIVE_PLAN = new Set(["draft", "sent", "approved"]);
 
 /** What the cleanup would close, and what stays open with why. Reads only. */
-export function planCleanup(ledger: Ledger, opts: CleanupOpts): { close: Closable[]; keep: KeepOpen[] } {
+export function planCleanup(ledger: Ledger, opts: CleanupOpts): { close: Closable[]; keep: KeepOpen[]; unmatchedKeep: string[] } {
   const open = ledger.listOpenDecisions();
   const settleOpts = { now: opts.now, expireAfterDays: opts.cfg.expireAfterDays, keepPatterns: opts.cfg.keepPatterns };
   const found = new Map<string, StaleDecision>();
@@ -102,7 +102,9 @@ export function planCleanup(ledger: Ledger, opts: CleanupOpts): { close: Closabl
     else if (todos.some((t) => t.status === "waiting" && t.waitingOn === d.id)) keep.push({ id: d.id, ...where, why: "a todo is parked on it" });
     else keep.push({ id: d.id, ...where, why: notMovedOn(ledger, d, opts) });
   }
-  return { close, keep };
+  // A --keep id that matched no open decision (a typo, or already closed): reported, never silent.
+  const unmatchedKeep = (opts.keep ?? []).filter((k) => !open.some((d) => d.id.startsWith(k)));
+  return { close, keep, unmatchedKeep };
 }
 
 /** Why a plain question did not expire: too young, its order still open, or nothing finished since. */
@@ -140,9 +142,11 @@ function cleanupTrace(ledger: Ledger, now: number): Trace {
   return createTrace({ ledger, registry: createRegistry(), now: () => now, settleDecisions: false });
 }
 
-function report(plan: { close: Closable[]; keep: KeepOpen[] }, out: ReturnType<typeof applyCleanup>, mode: string): string {
+function report(plan: { close: Closable[]; keep: KeepOpen[]; unmatchedKeep: string[] }, out: ReturnType<typeof applyCleanup>, mode: string): string {
   const ref = (t?: number) => (t !== undefined ? msgRef(t) : "no thread");
-  const lines = [`${mode}`, `CLOSABLE (${plan.close.length})`];
+  const lines = [`${mode}`];
+  if (plan.unmatchedKeep.length) lines.push(`--keep matched no open decision: ${plan.unmatchedKeep.map((k) => `#${k}`).join(", ")}`);
+  lines.push(`CLOSABLE (${plan.close.length})`);
   for (const c of plan.close) lines.push(`  #${c.id.slice(0, 8)} · ${c.project ?? "?"} · ${ref(c.thread)} · ${c.expired ? c.reason : `superseded: ${c.reason}`}`);
   lines.push(`KEEP OPEN (${plan.keep.length})`);
   for (const k of plan.keep) lines.push(`  #${k.id.slice(0, 8)} · ${k.project ?? "?"} · ${ref(k.thread)} · ${k.why}`);
@@ -197,7 +201,7 @@ export function parseArgs(argv: string[]): { path: string; apply: boolean; keep:
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--apply") apply = true;
     else if (rest[i] === "--keep" && rest[i + 1] && !rest[i + 1]!.startsWith("--")) {
-      keep = rest[++i]!.split(",").map((k) => k.trim().replace(/^#/, "")).filter(Boolean);
+      keep.push(...rest[++i]!.split(",").map((k) => k.trim().replace(/^#/, "").toLowerCase()).filter(Boolean));
       // A short prefix could keep many cards by accident: at least the 8-character #id the report prints.
       if (keep.some((k) => k.length < 8)) return undefined;
     } else return undefined;

@@ -76,7 +76,8 @@ function judgePrompt(criteria: string): string {
 
 /** LLM-as-judge goal: a fresh, read-only worker returns the verdict. The engine stays AI-free —
  * it only parses the worker's strict last line. Unparseable ⇒ not met (never falsely "done").
- * `timeoutMs` aborts the judge run (not met); its cost is reported either way. */
+ * `timeoutMs` aborts the judge run (not met). Its cost is the run's `costUsd`; the Claude SDK sends
+ * that only with its final result, so a timed-out Claude judge run reports 0. */
 export function judgeGoal(opts: {
   criteria: string;
   cwd: string;
