@@ -305,6 +305,11 @@ export interface Ledger {
    *  that dispatched it (spec §3.3). Both optional: an order without them stores NULL. */
   recordOrder(order: Order, opts?: { cause?: Cause; parentOrderId?: string }): void;
   recordOutcome(orderId: string, status: string, summary: string, at?: number): void;
+  /** Boot sweep (ADR-0054): every order with no outcome and no activity (its newest event, else its
+   *  creation) since `prevBootAt` — the start of the previous daemon life — was cut off by a restart.
+   *  It gets the outcome `interrupted`, dated at that last activity: the latest moment it is known to
+   *  have run, so "later work ended done" (expiry) is judged from it. Returns how many. Idempotent. */
+  endInterruptedOrders(prevBootAt: number): number;
   getOutcome(orderId: string): { status: string; summary: string } | undefined;
   /** Persist the worker's SDK session id against an order, so it can later be resumed. `provider`
    *  records WHICH SDK minted it — a session id is only meaningful to the SDK that issued it. */
@@ -865,6 +870,19 @@ export function openLedger(
         `INSERT OR REPLACE INTO outcomes (order_id, status, summary, at) VALUES (?, ?, ?, ?)`,
       ).run(orderId, status, summary, at);
     },
+    endInterruptedOrders(prevBootAt) {
+      return db
+        .query(
+          `INSERT INTO outcomes (order_id, status, summary, at)
+           SELECT o.id, 'interrupted', 'no outcome before an engine restart',
+                  max(o.created_at, coalesce((SELECT max(e.at) FROM events e WHERE e.order_id = o.id), 0))
+           FROM orders o
+           WHERE o.created_at < ?1
+             AND NOT EXISTS (SELECT 1 FROM outcomes x WHERE x.order_id = o.id)
+             AND NOT EXISTS (SELECT 1 FROM events e WHERE e.order_id = o.id AND e.at >= ?1)`,
+        )
+        .run(prevBootAt).changes;
+    },
     getOutcome(orderId) {
       const row = db
         .query(`SELECT status, summary FROM outcomes WHERE order_id = ?`)
@@ -1022,11 +1040,12 @@ export function openLedger(
         .get(id) as { open_decisions: number; active_todos: number; closed: number | null };
       // The newest end among this thread's orders (their outcome) and todos. An order outcome is
       // 'done' or 'error'; a todo ends 'done', 'failed' or 'cancelled' — a cancel is not a failure.
+      // 'interrupted' (a restart cut it off, ADR-0054) is bookkeeping, not a result: it is skipped.
       const end = db
         .query(
           `SELECT ok FROM (
              SELECT o.at AS at, o.status = 'done' AS ok FROM outcomes o JOIN orders ord ON ord.id = o.order_id
-             WHERE ord.thread_id = ?1
+             WHERE ord.thread_id = ?1 AND o.status != 'interrupted'
              UNION ALL
              SELECT ended_at AS at, status != 'failed' AS ok FROM project_todos
              WHERE thread_id = ?1 AND status IN ('done', 'failed', 'cancelled') AND ended_at IS NOT NULL

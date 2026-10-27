@@ -32,8 +32,8 @@ The third report (`docs/investigations/2026-10-27-waiting-threads-third-report.m
    may now close on evidence too: the evidence marks its **plan** done, and the card follows the
    plan (ADR-0036 still holds).
 3. **Every order ends.** At boot, an order with no outcome and no activity since the previous boot
-   gets the outcome `interrupted`. A brief delivered into a live session gets the outcome
-   `delivered`. Expiry counts both as ended.
+   gets the outcome `interrupted`, dated at its last activity. Expiry counts it as ended. The thread
+   state ignores it: a restart is not a failure of the work.
 4. **Key words keep a question open; they do not hide it.** A keep-pattern question never expires
    on age. The sweep judges it like any other, and the reminder lists it with its age until it is
    answered or closed on evidence.

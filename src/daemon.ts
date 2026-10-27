@@ -142,6 +142,12 @@ async function main(): Promise<void> {
       // not installed here: the boot record just has no SDK version
     }
     const boot: BootRow = { at: Date.now(), ...facts, ...(sdkVersion ? { sdkVersion } : {}), ...(configHashNow() ? { configHash: configHashNow() } : {}) };
+    // Every order ends (ADR-0054): one silent through the whole previous daemon life was cut off.
+    const prev = ledger.lastBoot();
+    if (prev) {
+      const n = ledger.endInterruptedOrders(prev.at);
+      if (n) ledger.recordEvent("orders_interrupted", { data: { count: n, since: prev.at } });
+    }
     ledger.recordBoot(boot);
     return boot;
   });

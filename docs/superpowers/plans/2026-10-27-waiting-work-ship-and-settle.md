@@ -122,26 +122,28 @@ ADR-0054 (proposed) `docs/adr/0054-waiting-work-has-an-owner-and-a-fix-is-done-o
 **Files:**
 - Modify: `src/engine/ledger.ts` (new method next to `recordOutcome`, line ~860)
 - Modify: `src/daemon.ts:145` (after `recordBoot`)
-- Modify: `src/engine/dispatch.ts:660` (the `dispatch_delivered` path)
 - Modify: `src/engine/decision-settle.ts` (expiry counts the new outcomes as ended)
-- Test: `tests/ledger.test.ts`, `tests/decision-settle.test.ts`
+- Test: `tests/interrupted-orders.test.ts`
 
 **Interfaces:**
-- Produces: `ledger.endInterruptedOrders(prevBootAt: number, at: number): number`. It records
-  outcome `interrupted` for every order with no outcome whose newest event (or `created_at`) is
-  before `prevBootAt`, and returns the count.
-- Produces: the outcome status `delivered`, recorded when a brief is delivered into a live session.
+- Produces: `ledger.endInterruptedOrders(prevBootAt: number): number`. It records outcome
+  `interrupted` for every order with no outcome whose newest event (or `created_at`) is before
+  `prevBootAt`, dated at that last activity, and returns the count. The thread-end derive skips
+  `interrupted` (bookkeeping, not a result), so no thread turns `failed` because of it.
+- Changed while building: no `delivered` outcome. A delivered brief runs under the live session's
+  own order, so it raises no decision, and the boot sweep ends it after one daemon life. Dating the
+  outcome at the boot (the first draft) made every later `done` look too early for expiry.
 
-- [ ] **Step 1:** Test `endInterruptedOrders closes only orders silent since the previous boot`.
+- [x] **Step 1:** Test `endInterruptedOrders closes only orders silent since the previous boot`.
   Fixture: order X has its last event before the previous boot; order Y has an event after it;
   order Z already has an outcome. Expect 1, X → `interrupted`, Y and Z unchanged.
-- [ ] **Step 2:** Test `a resumed order is not interrupted`. An order with a `session_start` after
+- [x] **Step 2:** Test `a resumed order is not interrupted`. An order with a `session_start` after
   `prevBootAt` stays without an outcome.
-- [ ] **Step 3:** Test `expiry counts interrupted as ended`. A question older than 7 days on an
+- [x] **Step 3:** Test `expiry counts interrupted as ended`. A question older than 7 days on an
   `interrupted` order, with later `done` work in the folder, expires. A keep-pattern question does
   not expire.
-- [ ] **Step 4:** Run. Expect FAIL. Implement. Call it in `daemon.ts` with the previous boot's `at`.
-- [ ] **Step 5:** Run. Expect PASS. Commit: `fix(orders): an order silent across a restart ends as interrupted (ADR-0054)`.
+- [x] **Step 4:** Run. Expect FAIL. Implement. Call it in `daemon.ts` with the previous boot's `at`.
+- [x] **Step 5:** Run. Expect PASS. Commit: `fix(orders): an order silent across a restart ends as interrupted (ADR-0054)`.
 
 ### Task B3: a plan card closes when its plan is done by any path
 
