@@ -5,9 +5,9 @@ the project as a headless coding-agent worker (Claude Agent SDK by default, Open
 optionally), governs the work deterministically, and streams progress back over a channel (Telegram
 first). No `cd`, no terminal, no tmux.
 
-**Core principle:** AI *decides*; the engine *acts and governs*. The engine itself contains **no
-AI** — it routes, governs, meters, and records. AI lives only inside SDK workers (Claude, on your
-subscription) and customer-message reading (Gemini).
+**Core principle:** AI *decides*, anywhere it helps (operator, 2026-10-28): a worker, the chief of staff
+picking a lane, a judge (Claude, Jev or ScaleDown; provider in config). The engine *acts, governs and
+enforces* every decision deterministically, failing closed. Customer-tainted input never reaches Claude.
 
 Neo is the clean successor to **operant** (at `/home/operant`). Same goals, rebuilt on the Agent
 SDK so the old tmux/socket/scraper spine is gone.
@@ -121,7 +121,8 @@ runs in a digest-pinned Docker image; a missing Docker only warns.
   `config.json` (e.g. `companyFolder`), personal agent notes in `CLAUDE.local.md` (auto-loaded by
   Claude Code, gitignored). Tools that inject into tracked files must be told not to — keep any
   tool-generated instruction blocks in `CLAUDE.local.md`, never in tracked docs.
-- **No AI in the engine.** Determinism by default; AI only inside SDK workers + Gemini reads.
+- **AI decides, code enforces.** An AI decision (worker, chief of staff, judge) is always checked and
+  enforced by deterministic engine code, with a fail-closed fallback (operator, 2026-10-28).
 - Operator is addressed as **Neo** (not "Mahdi" — that's only the repo-author handle).
 - End commit messages with: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
   **Name the model that actually wrote the commit** — if you are a different one, say so instead of

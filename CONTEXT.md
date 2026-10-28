@@ -205,6 +205,24 @@ todo at a time; the rest wait in order and are never merged or dropped. The oper
 can reorder, cancel, pause and resume it.
 _Avoid_: backlog, task list, session queue
 
+**Lane** (ADR-0057, proposed):
+Where a todo runs in its project. The **main lane** is the project's one session, the one the todo
+queue feeds: it owns the working tree, the branch and the containers. A **side lane** is a separate,
+single-brief session that runs at the same time as the main lane. The governor keeps it out of the
+main lane's way. The chief of staff picks the lane when it writes the brief (`lane: "side" | "queue"`);
+a brief with no lane goes to the main lane's queue.
+_Avoid_: parallel task, background job, fork
+
+**Lane kind** (ADR-0057, proposed):
+What a side-lane todo declares it will do, so the governor knows what to allow:
+- `read-only`: reads and checks; writes no files except temporary ones.
+- `ops`: runs commands against running services (a DB row through `docker exec`, an API call, a
+  log check). Never edits project files, never runs git writes, never starts or stops containers.
+- `test`: runs tests or checks as they are. Same limits as `ops`.
+- `code`: changes code in its own temporary git worktree on a `side/<todo>` branch. The engine
+  removes the worktree when the task ends. A main-lane todo later merges the branch.
+_Avoid_: type, category, mode
+
 **Busy project**:
 A project that cannot take a new brief now: a todo of its is running, its session is preparing or
 closing, or its session is in a turn or has a follow-up waiting. A brief for a busy project is
