@@ -575,9 +575,11 @@ export interface Ledger {
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
-    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief">> & {
+    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief" | "lane">> & {
       retryAt?: number | null;
       waitingOn?: string | null;
+      /** `null` clears it (a side todo moved to the main lane, ADR-0057). */
+      laneKind?: LaneKind | null;
     },
   ): void;
   /** The decisions order `orderId` raised that are still open, oldest first; `plan` marks a plan
@@ -1920,6 +1922,7 @@ export function openLedger(
       const cols: Record<string, string> = {
         status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at",
         attempts: "attempts", retryAt: "retry_at", failure: "failure", brief: "brief", waitingOn: "waiting_on",
+        lane: "lane", laneKind: "lane_kind",
       };
       const sets = Object.entries(patch).filter(([k, v]) => k in cols && v !== undefined);
       if (sets.length === 0) return;

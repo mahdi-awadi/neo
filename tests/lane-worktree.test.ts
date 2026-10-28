@@ -31,13 +31,26 @@ test("create: a worktree on side/<id> from the main checkout's branch HEAD", () 
   expect(sh(p, "rev-parse", "--abbrev-ref", "HEAD")).toBe("dev"); // the main checkout is untouched
 });
 
-test("create: a detached main checkout or an existing branch is an error, never a guess", () => {
+test("create: a detached main checkout is an error, never a guess", () => {
   const p = repo();
   sh(p, "checkout", "-q", "--detach");
   expect(createLaneWorktree(p, "1", root())).toMatchObject({ error: expect.stringContaining("detached") });
-  const q = repo();
-  sh(q, "branch", "side/2");
-  expect(createLaneWorktree(q, "2", root())).toMatchObject({ error: expect.any(String) });
+});
+
+test("create: a retried lane whose side branch survived continues on it (its commits are kept)", () => {
+  const p = repo();
+  const r = root();
+  const first = createLaneWorktree(p, "2", r);
+  if ("error" in first) throw new Error(first.error);
+  writeFileSync(join(first.path, "b.txt"), "b\n");
+  sh(first.path, "add", "-A");
+  sh(first.path, "commit", "-qm", "half");
+  sh(p, "worktree", "remove", first.path); // e.g. a restart's boot sweep removed the clean worktree
+  const again = createLaneWorktree(p, "2", r);
+  if ("error" in again) throw new Error(again.error);
+  expect(again.baseSha).toBe(first.baseSha); // counted from where the branch left dev
+  expect(existsSync(join(again.path, "b.txt"))).toBe(true);
+  expect(endLaneWorktree(p, again)).toMatchObject({ commits: 1, removed: true, branchDeleted: false });
 });
 
 test("end: no commits → worktree removed and branch deleted", () => {

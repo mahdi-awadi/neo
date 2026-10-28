@@ -1,6 +1,7 @@
 // Neo engine — entry point. Loads config, opens the ledger, owns the shared live-session
 // registry + budget meter + idle watchdog + admin store, and starts the operator frontends:
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
+import { DEFAULT_LANES_CFG } from "./engine/lanes";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -108,6 +109,7 @@ async function main(): Promise<void> {
   // read when a todo ends.
   const todo = createTodoQueue({
     ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs,
+    lanes: () => cfg.lanes ?? DEFAULT_LANES_CFG,
     onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
   });
   const cutTodos = todo.recover({ now: bootAt });

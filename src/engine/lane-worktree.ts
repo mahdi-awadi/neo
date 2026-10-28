@@ -5,7 +5,7 @@
 import { mkdirSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { branchOf, headOf, uncommittedFrom, type GitRunner } from "./git-read";
+import { branchOf, branchTip, headOf, uncommittedFrom, type GitRunner } from "./git-read";
 
 const GIT_TIMEOUT_MS = 60_000;
 
@@ -44,14 +44,23 @@ export function createLaneWorktree(projectFolder: string, key: string, root: str
   } catch {
     return { error: `cannot create ${root}` };
   }
-  // `--` ends options, so neither the branch nor the path is read as one.
+  // A retried lane whose branch survived (a restart) continues on it: its commits are kept, counted from
+  // where the branch left the base. `--` ends options, so neither the branch nor the path is read as one.
+  if (branchTip(projectFolder, branch, run)) {
+    const forkSha = run(projectFolder, ["merge-base", "--", baseSha, `refs/heads/${branch}`])?.trim();
+    if (!forkSha) return { error: `cannot find where ${branch} left ${base}` };
+    if (run(projectFolder, ["worktree", "add", "--", path, branch]) === undefined) return { error: `git worktree add failed for the existing ${branch}` };
+    return { path, branch, base, baseSha: forkSha };
+  }
   if (run(projectFolder, ["worktree", "add", "-b", branch, "--", path, baseSha]) === undefined) {
-    return { error: `git worktree add failed for ${branch} (does the branch already exist?)` };
+    return { error: `git worktree add failed for ${branch}` };
   }
   return { path, branch, base, baseSha };
 }
 
 export interface LaneWorktreeEnd {
+  /** The worktree folder (gone when `removed`). */
+  path: string;
   branch: string;
   base: string;
   /** Commits on the side branch after its start. */
@@ -67,7 +76,7 @@ export function endLaneWorktree(projectFolder: string, wt: LaneWorktree, run: Gi
   const count = Number(run(projectFolder, ["rev-list", "--count", `${wt.baseSha}..refs/heads/${wt.branch}`])?.trim() ?? "0") || 0;
   const status = run(wt.path, ["status", "--porcelain", "--untracked-files=all"]);
   const dirty = status === undefined ? undefined : uncommittedFrom(status, "");
-  const base = { branch: wt.branch, base: wt.base, commits: count };
+  const base = { path: wt.path, branch: wt.branch, base: wt.base, commits: count };
   if (status === undefined || (dirty && dirty.length)) {
     return { ...base, removed: false, branchDeleted: false, ...(dirty?.length ? { dirty } : {}) };
   }

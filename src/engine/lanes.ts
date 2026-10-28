@@ -164,3 +164,28 @@ export function lanePreamble(kind: LaneKind, project: string, wt?: { path: strin
   };
   return `${head} ${rules[kind]} If the brief needs anything else, do what you can and say in your result that the rest needs the main lane (lane "queue").`;
 }
+
+/** Whether a side todo may start now (ADR-0057): `ok`; `wait` for a side slot (a cap or a hold), or
+ *  `queue` — it cannot be a side lane at all here, so it goes to the main lane's queue. */
+export function canStartSide(
+  s: { sideRunning: number; hostRunning: number; codex: boolean; hold?: string },
+  cfg: LanesCfg,
+): { ok: true } | { wait: string } | { queue: string } {
+  if (!cfg.enabled) return { queue: "side lanes are off (lanes.enabled)" };
+  if (s.codex) return { queue: "side lanes need the Claude worker SDK's governor hook, and the worker SDK is Codex" };
+  if (s.hold) return { wait: s.hold };
+  if (s.sideRunning >= cfg.maxSidePerProject) {
+    return { wait: `${cfg.maxSidePerProject} side lane${cfg.maxSidePerProject === 1 ? "" : "s"} already run${cfg.maxSidePerProject === 1 ? "s" : ""} in this project (lanes.maxSidePerProject)` };
+  }
+  if (s.hostRunning >= cfg.maxDispatchesHost) return { wait: `the host already has ${s.hostRunning} dispatch runs going (lanes.maxDispatchesHost ${cfg.maxDispatchesHost})` };
+  return { ok: true };
+}
+
+/** The main-lane todo that merges a finished `code` side lane's branch (ADR-0057). */
+export function mergeBrief(branch: string, base: string, todoId: number, title: string): string {
+  return (
+    `Merge branch \`${branch}\` into \`${base}\`. It holds the work of code side lane #${todoId} (${title}), done in a ` +
+    `separate worktree while this project was busy. Review its commits (\`git log ${base}..${branch}\`), merge it, run the ` +
+    `relevant tests, then delete the branch. If it conflicts with what changed on ${base} meanwhile, resolve it properly.`
+  );
+}
