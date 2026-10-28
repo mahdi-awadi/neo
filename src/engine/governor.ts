@@ -8,6 +8,8 @@ import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Verdict } from "../types";
+import { GIT_WRITE, gitCall, walkBash, writeTargets } from "./bash-walk";
+import { laneVerdict, type SessionLane } from "./lanes";
 
 /** `governor.outOfFolderWrites`: the operator's standing answer to an out-of-folder file write
  *  (ADR-0012). "allow" = no escalation; "ask" = a fence escalation (ADR-0011). */
@@ -47,6 +49,8 @@ export interface GovernorCtx {
   outOfFolderWrites?: OutOfFolderWrites;
   /** Set for dispatch and loop workers; absent = no cross-project check (operator sessions). */
   projectFence?: ProjectFence;
+  /** A side-lane session (ADR-0057): its kind's rules are checked first and a breach is DENIED. */
+  lane?: SessionLane;
 }
 
 /** The OTHER project root `target` lies in (e.g. "/home/eticket-v3"), or undefined when it is in the
@@ -99,87 +103,25 @@ function worktreeOf(dir: string, repo: string): boolean {
 const CROSS = (dir: string) =>
   `write into another project (${dir}). Stay in your own project; send work for another project there with the \`project_notes\` tool.`;
 
-/** Git subcommands that change a repository (a branch, a commit, a worktree, the index or the tree). */
-const GIT_WRITE = /^(commit|checkout|switch|branch|merge|rebase|reset|tag|stash|worktree|cherry-pick|revert|am|apply|add|rm|mv|restore|push|pull|init)$/;
-/** Shell commands that write the file paths they are given. */
-const WRITE_CMD = /^(cp|mv|tee|mkdir|touch|rm|rmdir|rsync|install|ln|truncate)$/;
-
 /** The other project a shell command writes into, or undefined (ADR-0031). Defense in depth: it reads
- *  the usual shapes (git -C / cd + git, --git-dir/--work-tree, redirections, cp/mv/tee/mkdir/sed -i). */
-function bashForeignWrite(command: string, folder: string, fence: ProjectFence, depth = 0): string | undefined {
-  // Code run by a nested shell (`sh -c '…'`, `bash -c "…"`, `eval '…'`) is checked as a command of its
-  // own, then removed so its quoted text is not read as words here.
-  const NESTED = /\b(?:(?:ba|z|da)?sh\s+(?:-\w+\s+)*-c|eval)\s+("(?:[^"\\]|\\.)*"|'[^']*')/g;
-  if (depth < 3) {
-    for (const m of command.matchAll(NESTED)) {
-      const hit = bashForeignWrite(m[1]!.slice(1, -1), folder, fence, depth + 1);
+ *  the usual shapes (git -C / cd + git, --git-dir/--work-tree, redirections, cp/mv/tee/mkdir/sed -i)
+ *  through the shared shell reader (bash-walk.ts). */
+function bashForeignWrite(command: string, folder: string, fence: ProjectFence): string | undefined {
+  return walkBash(command, folder, (seg) => {
+    // Resolved against the shell's current folder, judged against the SESSION's own project.
+    const at = (p: string) => foreignProject(resolve(resolve(seg.cwd), p), folder, fence);
+    for (const r of seg.redirects) {
+      const hit = at(r);
       if (hit) return hit;
     }
-  }
-  const home = homedir();
-  const expand = (p: string) => p.replace(/^~(?=\/|$)/, home).replace(/\$\{?HOME\}?/g, home);
-  let cwd = folder;
-  for (const statement of command.replace(NESTED, " ").split(/&&|\|\||[;\n]/)) {
-    for (const raw of statement.split("|")) {
-      const seg = raw.trim().replace(/^[({]\s*/, "").replace(/\s*[)}]$/, "");
-      let words = seg.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((w) => expand(w.replace(/["']/g, ""))) ?? [];
-      // Leading VAR=value words; GIT_DIR / GIT_WORK_TREE name the repository git will write.
-      let gitRepo: string | undefined;
-      while (words.length && /^\w+=/.test(words[0]!)) {
-        const [k, ...v] = words[0]!.split("=");
-        if (k === "GIT_DIR" || k === "GIT_WORK_TREE") gitRepo = v.join("=").replace(/\/\.git$/, "");
-        words = words.slice(1);
-      }
-      if (words[0] === "env") {
-        words = words.slice(1);
-        if (words[0] === "-C" && words[1]) {
-          cwd = resolve(resolve(cwd), words[1]);
-          words = words.slice(2);
-        }
-      }
-      if (words.length === 0) continue;
-      // Resolved against the shell's current folder, judged against the SESSION's own project.
-      const at = (p: string) => foreignProject(resolve(resolve(cwd), p), folder, fence);
-      if ((words[0] === "cd" || words[0] === "pushd") && words[1]) {
-        cwd = resolve(resolve(cwd), words[1]);
-        continue;
-      }
-      // A redirection writes its target (`> file`, `>> file`, `2>file`); a `>` inside quotes is text.
-      const unquoted = seg.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, " ");
-      for (const m of unquoted.matchAll(/\d?>>?\s*(?!&)([^\s;&|]+)/g)) {
-        const hit = at(expand(m[1]!));
-        if (hit) return hit;
-      }
-      if (words[0] === "git") {
-        let repo = gitRepo ? resolve(resolve(cwd), gitRepo) : cwd;
-        let i = 1;
-        for (; i < words.length && words[i]!.startsWith("-"); i++) {
-          const w = words[i]!;
-          if (w === "-C" && words[i + 1]) repo = resolve(resolve(cwd), words[++i]!);
-          else if ((w === "--git-dir" || w === "--work-tree") && words[i + 1]) repo = resolve(resolve(cwd), words[++i]!.replace(/\/\.git$/, ""));
-          else if (/^--(git-dir|work-tree)=/.test(w)) repo = resolve(resolve(cwd), w.slice(w.indexOf("=") + 1).replace(/\/\.git$/, ""));
-          else if (w === "-c" || w === "--namespace") i++; // its value is not the subcommand
-        }
-        if (GIT_WRITE.test(words[i] ?? "")) {
-          const hit = at(repo);
-          if (hit) return hit;
-        }
-        continue;
-      }
-      const writes = WRITE_CMD.test(words[0]!) || (words[0] === "sed" && words.some((w) => w === "-i" || w.startsWith("-i")));
-      if (!writes) continue;
-      // `-t DIR` names the target; otherwise cp/mv/rsync/install/ln write their LAST argument and
-      // the others write every path they name.
-      const t = words.indexOf("-t");
-      const paths = words.slice(1).filter((w, i, all) => !w.startsWith("-") && all[i - 1] !== "-t");
-      const targets = t > 0 && words[t + 1] ? [words[t + 1]!] : /^(cp|mv|rsync|install|ln)$/.test(words[0]!) ? paths.slice(-1) : paths;
-      for (const p of targets) {
-        const hit = at(p);
-        if (hit) return hit;
-      }
+    const git = gitCall(seg);
+    if (git) return GIT_WRITE.test(git.sub) ? at(git.repo) : undefined;
+    for (const p of writeTargets(seg)) {
+      const hit = at(p);
+      if (hit) return hit;
     }
-  }
-  return undefined;
+    return undefined;
+  });
 }
 
 /** Risky bash patterns that must never auto-run — they escalate to Neo. Defense-in-depth
@@ -226,6 +168,13 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
       deny:
         "Neo has no structured-question UI here. Ask the operator in plain text instead, written for a non-technical reader in their language: say what is happening and why a choice is needed, list the options numbered with what each one does and its risk, and say which you recommend and why. No code names or ADR numbers unless explained. Their reply arrives as a normal follow-up message. Do not assume a default — wait for the answer.",
     };
+  }
+
+  // A side lane (ADR-0057) never interferes with its project's main task: denied, never escalated —
+  // the answer is always no. The normal rules below still apply to what the lane allows.
+  if (ctx.lane) {
+    const why = laneVerdict(tool, input, { folder: ctx.folder, lane: ctx.lane });
+    if (why) return { deny: why };
   }
 
   if (SAFE_TOOLS.has(tool)) return { allow: true };

@@ -19,6 +19,7 @@
 //
 // Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
+import type { SessionLane } from "./lanes";
 import { basename } from "node:path";
 import { query as realQuery, type AgentDefinition, type HookInput } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -226,6 +227,8 @@ export interface RunDeps {
   outOfFolderWrites?: OutOfFolderWrites;
   /** The project fence (ADR-0031): set by profileDeps for dispatch and loop workers. Engine-side only. */
   projectFence?: ProjectFence;
+  /** A side-lane run (ADR-0057): the governor denies what its kind may not do. Engine-side only. */
+  lane?: SessionLane;
   /** Ends a single-shot run from outside (`runOrder` only): the Claude SDK's `abortController`
    *  option, the Codex turn's `signal`. Engine-side; consult runs abort on stall (ADR-0050). */
   abortController?: AbortController;
@@ -374,6 +377,7 @@ export function buildCanUseTool(
   source: OrderSource,
   outOfFolderWrites: OutOfFolderWrites = "ask",
   projectFence?: ProjectFence,
+  lane?: SessionLane,
 ) {
   // Customer work never gets the operator's standing write approval (ADR-0012).
   const writes: OutOfFolderWrites = source === "customer" ? "ask" : outOfFolderWrites;
@@ -403,7 +407,7 @@ export function buildCanUseTool(
         report("deny");
         return { behavior: "deny", message: NATIVE_ASK_STEER };
       }
-      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes, ...(projectFence ? { projectFence } : {}) });
+      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}) });
       if ("allow" in verdict) {
         report("allow");
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
@@ -457,7 +461,7 @@ type GovernorHookOutput = Record<string, never> | {
 //
 // An armed context checkpoint (ADR-0021) speaks first, through `steer`: its reason DENIES the call,
 // telling the worker to write its handoff note and end the turn. A throwing steer has no opinion.
-export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolderWrites = "ask", steer?: RunHandlers["contextSteer"], projectFence?: ProjectFence) {
+export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolderWrites = "ask", steer?: RunHandlers["contextSteer"], projectFence?: ProjectFence, lane?: SessionLane) {
   return async (input: HookInput, _toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
     let steered: string | undefined;
@@ -469,7 +473,7 @@ export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolder
     if (steered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: steered } };
     let reason: string;
     try {
-      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites, ...(projectFence ? { projectFence } : {}) });
+      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}) });
       if ("allow" in verdict) return {};
       reason = "deny" in verdict ? verdict.deny : verdict.escalate;
     } catch (err) {
@@ -485,6 +489,7 @@ function sdkOptions(
   extra: Record<string, unknown> = {},
   outOfFolderWrites: OutOfFolderWrites = "ask",
   projectFence?: ProjectFence,
+  lane?: SessionLane,
 ): Record<string, unknown> {
   // The hook and canUseTool must judge alike, so the customer rule is applied once, here too.
   const writes: OutOfFolderWrites = order.source === "customer" ? "ask" : outOfFolderWrites;
@@ -505,10 +510,10 @@ function sdkOptions(
     // Governance goes LAST so no per-run field can replace it. permissionMode is explicit: from SDK
     // 0.3.286 an unset mode can start the session in auto mode, which skips canUseTool.
     permissionMode: "default",
-    canUseTool: buildCanUseTool(handlers, order.folder, order.source, writes, projectFence),
+    canUseTool: buildCanUseTool(handlers, order.folder, order.source, writes, projectFence, lane),
     // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls — so the
     // project fence (ADR-0031) holds for a worker's helper agents too.
-    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, writes, handlers.contextSteer, projectFence)] }] },
+    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, writes, handlers.contextSteer, projectFence, lane)] }] },
   };
 }
 
@@ -955,7 +960,7 @@ async function runClaudeOrder(
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const run = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    const options = sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence);
+    const options = sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence, d.lane);
     if (d.abortController) options.abortController = d.abortController;
     return consumeStream(query({ prompt: order.task, options }), handlers);
   };
@@ -1058,7 +1063,7 @@ function startClaudeOrder(
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
     // Long-running sessions need the CLI's settled signal (see tracked.onSessionState above).
     const withState: RunDeps = { ...d, env: { ...(d.env ?? {}), [SESSION_STATE_EVENTS_ENV]: "1" } };
-    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState), withState.outOfFolderWrites, withState.projectFence) });
+    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState), withState.outOfFolderWrites, withState.projectFence, withState.lane) });
     return consumeStream(queryObj, tracked);
   };
 
