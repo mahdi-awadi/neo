@@ -3,7 +3,7 @@
 // tracked, governed Neo sub-project (registry → dashboard, escalations → operator, metered),
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
-import { DEFAULT_LANES_CFG, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
+import { DEFAULT_LANES_CFG, LANE_GUIDE, LANE_KINDS, laneArgError, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
 import { createLaneWorktree, endLaneWorktree, type LaneWorktree, type LaneWorktreeEnd } from "./lane-worktree";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
@@ -1472,6 +1472,14 @@ export async function dispatchToProject(
   return `dispatched to ${name} — running in the background with no time limit; its output streams to the operator, you get a progress digest every few minutes, and you will receive its result as a follow-up message when it ends.`;
 }
 
+/** The `lane` / `kind` arguments of the `dispatch` and `todo` tools (ADR-0057). */
+const LANE_ARG = z.enum(["side", "queue"]).optional().describe('"side" = run beside a busy project\'s main task (needs `kind`); "queue" (default) = wait in its main queue');
+const KIND_ARG = z.enum(LANE_KINDS).optional().describe("what a side lane does: ops | test | read-only | code — the engine enforces it");
+/** The lane fields the todo queue takes from a tool call: only a side lane with its kind. */
+function laneArgs(a: { lane?: "side" | "queue"; kind?: LaneKind }): { lane?: "side"; kind?: LaneKind } {
+  return a.lane === "side" && a.kind ? { lane: "side", kind: a.kind } : {};
+}
+
 /** The ref of a result's thread, for the dispatcher's `[dispatch result · m4g2]` (trace only). */
 function resultRef(deps: Pick<DispatchDeps, "trace">, cause: Cause | undefined): string | undefined {
   return cause && deps.trace ? deps.trace.ref(cause.threadId) : undefined;
@@ -1883,7 +1891,8 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
         "Open one of the operator's projects and run a self-contained task in it. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt. " +
           "If the project is busy (mid-task), the brief is QUEUED in that project's todo queue and the reply says \"queued as #N for <project>, position P\": it starts by itself when the current task is done, so confirm the number and position to the operator and never re-send or forward it. " +
           "The run has NO time limit — it works until it is done, even for hours; only a worker that goes completely silent (hung) is stopped. While it runs you get a `[dispatch progress]` line every few minutes (FYI — no reply needed), and you ALWAYS get a `[dispatch result]` message when it ends — including when it was cut short, in which case the result says where it stopped (last commit / latest note) so you can dispatch a follow-up that resumes from there. " +
-          "Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run.",
+          "Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run. " +
+          LANE_GUIDE,
         {
           project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
@@ -1893,9 +1902,13 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             .describe(
               "opt-in: run the brief with a lead-orchestrated backend + frontend subagent team (the lead delegates by domain, enforces file-ownership boundaries, and coordinates via a shared contract file). Omit for a normal single-worker dispatch.",
             ),
+          lane: LANE_ARG,
+          kind: KIND_ARG,
           thread: THREAD_ARG,
         },
-        async (args: { project: string; task: string; team?: "frontend-backend"; thread?: string }) => {
+        async (args: { project: string; task: string; team?: "frontend-backend"; lane?: "side" | "queue"; kind?: LaneKind; thread?: string }) => {
+          const laneError = laneArgError(args.lane, args.kind);
+          if (laneError) return { content: [{ type: "text" as const, text: laneError }] };
           // The dispatch inherits the class of the worker calling the tool: the company session
           // servicing an operator message dispatches as `interactive`, a scheduler-fired one as
           // `background`. This is the whole of the "class follows the originating trigger" rule.
@@ -1904,7 +1917,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           const cause = workCauseFor(args.thread, args.task, args.project);
           if (typeof cause === "string") return { content: [{ type: "text" as const, text: cause }] };
           const out = deps.todo
-            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId }, deps, replyChat)
+            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId, ...laneArgs(args) }, deps, replyChat)
             : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass, cause, parentOrderId: opts.orderId });
           return { content: [{ type: "text" as const, text: out }] };
         },
@@ -1917,7 +1930,8 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           "todo",
           "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
             "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued or retry todos only — a running one is stopped by the operator with /kill), `retry` (`id`: re-run a failed todo, or a waiting retry now — the SAME todo; never dispatch a new brief to redo a failed one), `pause` / `resume` (`project`). " +
-            "A todo that stopped for a passing reason (stall, restart, API or account error) is kept as `retry` and re-runs by itself. Returns text.",
+            "A todo that stopped for a passing reason (stall, restart, API or account error) is kept as `retry` and re-runs by itself. " +
+            "For `add`, " + LANE_GUIDE + " Returns text.",
           {
             action: z.enum(["list", "add", "reorder", "cancel", "retry", "pause", "resume"]),
             project: z.string().optional().describe("project folder name, e.g. \"eticket-v3\""),
@@ -1925,9 +1939,11 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             position: z.number().int().min(1).optional().describe("new 1-based queue position, for reorder"),
             task: z.string().optional().describe("the brief, for add — a clear, self-contained prompt"),
             team: z.enum(["frontend-backend"]).optional().describe("opt-in team mode, for add (as in dispatch)"),
+            lane: LANE_ARG,
+            kind: KIND_ARG,
             thread: THREAD_ARG,
           },
-          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend"; thread?: string }) => {
+          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend"; lane?: "side" | "queue"; kind?: LaneKind; thread?: string }) => {
             const need = (what: string) => `todo ${args.action} needs ${what}.`;
             const text = await (async () => {
               switch (args.action) {
@@ -1935,10 +1951,12 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
                   return todo.list(args.project);
                 case "add": {
                   if (!args.project || !args.task) return need("`project` and `task`");
+                  const laneError = laneArgError(args.lane, args.kind);
+                  if (laneError) return laneError;
                   const cause = workCauseFor(args.thread, args.task, args.project);
                   if (typeof cause === "string") return cause;
                   return todo.submit(
-                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause, parentOrderId: opts.orderId },
+                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause, parentOrderId: opts.orderId, ...laneArgs(args) },
                     deps,
                     replyChat,
                   );

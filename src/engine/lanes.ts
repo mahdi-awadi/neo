@@ -189,3 +189,18 @@ export function mergeBrief(branch: string, base: string, todoId: number, title: 
     `relevant tests, then delete the branch. If it conflicts with what changed on ${base} meanwhile, resolve it properly.`
   );
 }
+
+/** How the chief of staff picks a lane — the `dispatch` and `todo` tool descriptions carry it (ADR-0057). */
+export const LANE_GUIDE =
+  'Lanes: set `lane: "side"` with a `kind` for a SHORT task that does not edit the files, branch or containers the project\'s main task uses — ' +
+  "it then runs at once BESIDE a busy project instead of waiting in its queue (or waits only for a free side slot). Kinds: " +
+  "`ops` (DB rows, users, passwords, API calls, docker status), `test` (run a test or check on the code as it is), " +
+  "`read-only` (look and report), `code` (a small change that needs no running stack — made in its own worktree on a side branch; the engine queues a main-lane todo to merge it). " +
+  "The engine enforces the kind: a side lane that edits the project, runs git writes or restarts containers is denied. " +
+  'Anything else, or when unsure: `lane: "queue"` (the default) — the brief waits its turn in the main lane.';
+
+/** The refusal for `lane: "side"` without a valid kind, else undefined. */
+export function laneArgError(lane: unknown, kind: unknown): string | undefined {
+  if (lane !== "side") return undefined;
+  return isLaneKind(kind) ? undefined : `lane "side" needs a \`kind\`: one of ${LANE_KINDS.map((k) => `"${k}"`).join(", ")}. Nothing was queued.`;
+}
