@@ -5,7 +5,6 @@
 // project's settings allow rules; ADR-0006) and the `canUseTool` callback. Autonomous paths (loops,
 // customer-driven briefs) auto-deny escalations, so for them default-escalate = default-deny.
 import { readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Verdict } from "../types";
 import { GIT_WRITE, gitCall, walkBash, writeTargets } from "./bash-walk";

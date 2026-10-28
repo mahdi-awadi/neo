@@ -149,3 +149,18 @@ export function laneVerdict(tool: string, input: Record<string, unknown>, ctx: {
     return undefined;
   });
 }
+
+/** What a side-lane worker is told first (ADR-0057). The governor enforces the same rules; this lets
+ *  the worker plan around them instead of discovering them by denial. */
+export function lanePreamble(kind: LaneKind, project: string, wt?: { path: string; branch: string; base: string }): string {
+  const head = `SIDE LANE (${kind}) — you run BESIDE ${project}'s main task, which owns its working tree, its branch and its containers. Do only this one brief, then end with your result.`;
+  const rules: Record<LaneKind, string> = {
+    "read-only": "Read and check only. Write no files except under the temp dir; no git writes; never start, stop, restart or rebuild containers or services.",
+    ops: "Run commands against the running services (DB rows through `docker exec`, API calls, logs, status). Never edit the project's files, never run git writes, never start, stop, restart or rebuild containers or services.",
+    test: "Run the tests or checks as the code is now. Never edit the project's files, never run git writes, never start, stop, restart or rebuild containers or services.",
+    code: wt
+      ? `Work only in your own git worktree ${wt.path} on branch ${wt.branch} (from ${wt.base}). Commit your change there. Never touch the main folder, never switch branches, never push, never start, stop, restart or rebuild containers. The engine removes the worktree when you end and queues a main-lane todo to merge ${wt.branch} into ${wt.base}.`
+      : "Work only in your own git worktree.",
+  };
+  return `${head} ${rules[kind]} If the brief needs anything else, do what you can and say in your result that the rest needs the main lane (lane "queue").`;
+}

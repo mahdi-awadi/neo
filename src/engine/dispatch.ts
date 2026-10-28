@@ -3,6 +3,8 @@
 // tracked, governed Neo sub-project (registry → dashboard, escalations → operator, metered),
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
+import { DEFAULT_LANES_CFG, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
+import { createLaneWorktree, endLaneWorktree, type LaneWorktree, type LaneWorktreeEnd } from "./lane-worktree";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
@@ -213,6 +215,8 @@ export interface DispatchDeps {
    *  approval reminder/timeout. Absent ⇒ writes "ask" (so the customer ingress path, which does not
    *  thread it, keeps the fence) and the default approval patience. */
   governor?: NeoConfig["governor"];
+  /** Side lanes (ADR-0057): where a `code` lane's worktree goes. Absent = DEFAULT_LANES_CFG. */
+  lanes?: LanesCfg;
   /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
   workerEnv?: Record<string, string>;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
@@ -274,6 +278,8 @@ export interface TodoEnd {
   summary: string;
   continuation?: string;
   failure?: string;
+  /** A `code` side lane's worktree end (ADR-0057): the queue merges or raises it. */
+  lane?: LaneWorktreeEnd;
 }
 
 /** Liveness stall limit (ms) — 5 minutes of NO activity aborts a sub-run. */
@@ -499,6 +505,9 @@ export async function dispatchToProject(
     cause?: Cause;
     /** The company order that dispatched this one (`orders.parent_order_id`). */
     parentOrderId?: string;
+    /** Run as a side lane beside the project's main task (ADR-0057): its own fresh session, governed
+     *  by its kind; `todoId` names it (and a `code` lane's branch). Absent = the main lane. */
+    lane?: { kind: LaneKind; todoId?: number };
   } = {},
 ): Promise<string> {
   const now = opts.now ?? (() => Date.now());
@@ -555,6 +564,27 @@ export async function dispatchToProject(
     return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
   }
 
+  // A side lane (ADR-0057) is enforced by the Claude governor hook; the Codex SDK has no such hook.
+  const sideKind = opts.lane?.kind;
+  if (sideKind && providerCfg.providers?.ownWork === "codex") {
+    event("dispatch_refused", { data: { project, workClass, reason: "lane_unsupported", kind: sideKind } });
+    hooks.onRefused?.("lane_unsupported");
+    return `Side lanes need the Claude worker SDK (its governor hook enforces the lane); the worker SDK is Codex, so this brief was not run as a side lane. Queue it instead (lane "queue").`;
+  }
+  const orderId = crypto.randomUUID();
+  // A `code` side lane works in its own temporary worktree on `side/<key>` — never in the main folder.
+  let laneWt: LaneWorktree | undefined;
+  if (sideKind === "code") {
+    const wt = createLaneWorktree(folder, String(opts.lane?.todoId ?? orderId.slice(0, 8)), (deps.lanes ?? DEFAULT_LANES_CFG).worktreeRoot);
+    if ("error" in wt) {
+      event("dispatch_refused", { data: { project, workClass, reason: "lane_worktree", error: wt.error } });
+      hooks.onRefused?.("lane_worktree");
+      return `I could not make a worktree for this code side lane (${wt.error}), so it did not run. Queue it in the main lane instead (lane "queue").`;
+    }
+    laneWt = wt;
+  }
+  const sessionLane = sideKind ? { kind: sideKind, projectFolder: folder, ...(opts.lane?.todoId !== undefined ? { todoId: opts.lane.todoId } : {}) } : undefined;
+
   // Build + record the order with its BASE task (project-docs preamble only — no memory snapshot
   // yet). This happens BEFORE the busy-guard check below (existing && wasRunning can still refuse
   // this dispatch with an early return), so a refused dispatch still leaves a plain intent record
@@ -562,11 +592,12 @@ export async function dispatchToProject(
   // the background continuation, once the resume id that will actually be used for this run is
   // settled (see the comment down there) — never here, so a resumed sub-session never gets a
   // repeated "authoritative ground truth" block stacked mid-conversation.
+  const laneTask = sideKind ? `${lanePreamble(sideKind, project, laneWt)}\n\n${task}` : task;
   const order: Order = {
-    id: crypto.randomUUID(),
+    id: orderId,
     source: "neo",
-    folder,
-    task: briefWithProjectDocs(teamAgents ? teamLeadPreamble(task) : task),
+    folder: laneWt?.path ?? folder,
+    task: briefWithProjectDocs(teamAgents ? teamLeadPreamble(laneTask) : laneTask),
     chatId: SUB_CHAT,
     createdAt: now(),
   };
@@ -576,9 +607,10 @@ export async function dispatchToProject(
   noteProjectStart(deps, order);
   // Reuse an already-open session for this folder (resume it) instead of duplicating it as
   // "<name>-2"; only register a fresh entry when nothing is open for the folder.
-  const existing = deps.registry.findByFolder(folder);
+  // A side lane never reuses the main session: it is a fresh, single-brief session of its own.
+  const existing = sideKind ? undefined : deps.registry.findByFolder(folder);
   const wasRunning = existing?.status === "running";
-  const session = existing ?? deps.registry.add(order, now());
+  const session = existing ?? deps.registry.add(order, now(), sessionLane ? { lane: sessionLane } : undefined);
   const name = session.name;
   // The cause a line of this run is filed under: the newest brief delivered into the session (a
   // later brief pushed into it brings its own), else this dispatch's own.
@@ -698,10 +730,11 @@ export async function dispatchToProject(
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
   // versa) is rejected outright, and before the ownership check that read as an API failure.
   const worker = providerCfg.providers?.ownWork;
-  const resume =
-    (canResumeWith(existing?.sdkProvider, worker) ? existing?.sdkSessionId : undefined) ||
-    deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
-    undefined;
+  const resume = sideKind
+    ? undefined // a side lane always starts fresh — never the main session's context
+    : (canResumeWith(existing?.sdkProvider, worker) ? existing?.sdkSessionId : undefined) ||
+      deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
+      undefined;
   const start = opts.start ?? startOrder;
   // No wall-clock limit (ADR-0007): some tasks take hours. Only true silence (the stall limit) aborts.
   const stallMs = deps.dispatchStallMs ?? DISPATCH_STALL_MS_DEFAULT;
@@ -720,7 +753,8 @@ export async function dispatchToProject(
   // the gate's occasional real await (the "handoff" verdict runs a bounded worker turn) never
   // delays the string this function returns to the calling company session.
   void (async () => {
-    const policy = deps.contextPolicy;
+    // A side lane is a short, single brief: no context gate, checkpoint or end-of-run handoff.
+    const policy = sideKind ? undefined : deps.contextPolicy;
     const notify = (t: string, pr?: "alert") => void say(t, pr, { cause: liveCause() });
     // Never measure (or resume) a folder another gate is handing off — e.g. the previous dispatch's
     // end-of-run handoff. Its resume id is read again AFTER the wait: the handoff clears it.
@@ -784,7 +818,7 @@ export async function dispatchToProject(
       }
       // The notes block (ADR-0043): the target's open notes and the state of the ones it sent, on a
       // genuine fresh start only — like the snapshot. No deps.notes (ingress) → none.
-      const notesBlock = deps.notes ? faults.guard("dispatch.notesBlock", () => deps.notes!.block(name, now(), folder), { project: name }) : undefined;
+      const notesBlock = deps.notes && !sideKind ? faults.guard("dispatch.notesBlock", () => deps.notes!.block(name, now(), folder), { project: name }) : undefined;
       if (notesBlock) {
         order.task = notesBlock + order.task;
         deps.ledger.recordOrder(order);
@@ -839,7 +873,7 @@ export async function dispatchToProject(
     // The plan gate (ADR-0036): a big plan this worker writes holds it until Approve & build. Only
     // where a card can be posted, and only a Claude worker can be steered (the PreToolUse hook).
     const planWatch =
-      deps.postPlan && (deps.plans ?? DEFAULT_PLANS_CFG).send && worker !== "codex"
+      deps.postPlan && (deps.plans ?? DEFAULT_PLANS_CFG).send && worker !== "codex" && !sideKind
         ? createPlanWatch(planDepsFrom(deps, deps.plans), () => ({ project: name, folder, startSha: planStart, cause: liveCause(), orderId: order.id, chatId: replyChat }), {
             onHold: (p) => deps.registry.noteBlocked(session.id, { kind: "decision", label: `plan approval: ${p.title}`, since: now() }),
           })
@@ -850,7 +884,8 @@ export async function dispatchToProject(
     // denies subagents the codebase-memory index tools), so the engine does it here before the worker
     // starts. Best-effort — a failure never blocks the dispatch; the worker falls back to file reads.
     // Placed before startedAt so a first-time index doesn't eat the dispatch stall budget.
-    if (deps.codebaseMemory) {
+    // A side lane never (re)indexes: it uses the project's existing index read-only.
+    if (deps.codebaseMemory && !sideKind) {
       let index: IndexResult = {};
       try {
         index = await deps.codebaseMemory.ensureIndexed(folder, () =>
@@ -866,7 +901,7 @@ export async function dispatchToProject(
 
     // The commit finish (ADR-0037) records the folder's dirty paths NOW, before the worker starts, so
     // only the run's own changes count at its end. Best-effort: a git fault costs only the check.
-    const commitFinish = deps.commitFinish?.enabled ? faults.guard("dispatch.commitFinish", () => createCommitFinish(folder, deps.commitFinish!), { folder }) : undefined;
+    const commitFinish = deps.commitFinish?.enabled && !sideKind ? faults.guard("dispatch.commitFinish", () => createCommitFinish(folder, deps.commitFinish!), { folder }) : undefined;
     let lastTurn: RunResult | undefined; // the latest turn's end — the commit finish needs a good one
     let firstEnd: RunResult | undefined; // the run's end before the commit-finish follow-up
     let wrappingUp = false; // a stall or spin wrap-up was sent: that end is not a settled finish
@@ -1094,6 +1129,8 @@ export async function dispatchToProject(
         // while recursive dispatch stays off — the invariant holds by construction, not by memory).
         mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, sessionId: session.id, orderId: order.id, cause: liveCause }),
         ...(teamAgents ? { agents: teamAgents } : {}),
+        // The governor denies what this side lane's kind may not do (ADR-0057).
+        ...(sessionLane ? { lane: sessionLane } : {}),
       }),
     );
     runRef = run;
@@ -1297,7 +1334,8 @@ export async function dispatchToProject(
         // and any sdkSessionId was persisted above for resume.
         deps.registry.remove(session.id);
       } else {
-        deps.registry.setStatus(session.id, "idle");
+        // A side lane is single-brief: it closes with its run, never idles for reuse (ADR-0057).
+        deps.registry.setStatus(session.id, sideKind ? "done" : "idle");
         deps.registry.touch(session.id, now());
         deps.registry.noteBlocked(session.id, undefined); // the run is over — nothing is blocked
         deps.registry.detachControl(session.id);
@@ -1381,9 +1419,11 @@ export async function dispatchToProject(
     } catch {
       // observer only
     }
+    // A `code` side lane's worktree goes now (kept when dirty); the queue merges or raises the branch.
+    const laneEnd = laneWt ? faults.guard("dispatch.laneWorktree", () => endLaneWorktree(folder, laneWt!), { folder }) : undefined;
     // Last: the result is out, so the todo queue may release the project's next brief (ADR-0008).
     try {
-      await hooks.onEnd?.({ orderId: order.id, ok: good, summary, ...(continuation ? { continuation } : {}), ...(failure ? { failure } : {}) });
+      await hooks.onEnd?.({ orderId: order.id, ok: good, summary, ...(continuation ? { continuation } : {}), ...(failure ? { failure } : {}), ...(laneEnd ? { lane: laneEnd } : {}) });
     } catch {
       // observer only
     }
@@ -1415,13 +1455,20 @@ export async function dispatchToProject(
       // observer only
     }
     for (const threadId of answered) refreshThread(deps, threadId);
+    const laneEnd = laneWt ? faults.guard("dispatch.laneWorktree", () => endLaneWorktree(folder, laneWt!), { folder }) : undefined;
     try {
-      await hooks.onEnd?.({ orderId: order.id, ok: false, summary, failure: "launch" });
+      await hooks.onEnd?.({ orderId: order.id, ok: false, summary, failure: "launch", ...(laneEnd ? { lane: laneEnd } : {}) });
     } catch {
       // observer only
     }
   });
 
+  if (sideKind) {
+    return (
+      `started as a side lane (${sideKind}) of ${project}, named ${name}, beside its main task — ` +
+      `it runs now in its own session; its output streams to the operator and you get its result when it ends.`
+    );
+  }
   return `dispatched to ${name} — running in the background with no time limit; its output streams to the operator, you get a progress digest every few minutes, and you will receive its result as a follow-up message when it ends.`;
 }
 

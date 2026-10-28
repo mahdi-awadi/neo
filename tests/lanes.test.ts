@@ -1,7 +1,5 @@
 // ADR-0057: side lanes — the lane model, its config and how the ledger and registry hold it.
 import { test, expect } from "bun:test";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { DEFAULT_LANES_CFG, LANE_KINDS, isLaneKind, readLanesCfg } from "../src/engine/lanes";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
@@ -14,7 +12,10 @@ test("lane kinds are the four the spec names", () => {
 });
 
 test("readLanesCfg: defaults, and a bad value keeps its default", () => {
-  expect(DEFAULT_LANES_CFG).toEqual({ enabled: true, maxSidePerProject: 1, maxDispatchesHost: 3, worktreeRoot: join(tmpdir(), "neo-lanes"), noLaneClassifier: "none" });
+  // The worktree root is `<os tmpdir>/neo-lanes`, read when the module loads (the test runner may move
+  // TMPDIR later, so only its shape is pinned here).
+  expect(DEFAULT_LANES_CFG).toMatchObject({ enabled: true, maxSidePerProject: 1, maxDispatchesHost: 3, noLaneClassifier: "none" });
+  expect(DEFAULT_LANES_CFG.worktreeRoot).toMatch(/^\/.*\/neo-lanes$/);
   expect(readLanesCfg(undefined)).toEqual(DEFAULT_LANES_CFG);
   expect(readLanesCfg({ enabled: false, maxSidePerProject: 2, maxDispatchesHost: 5, worktreeRoot: "/var/tmp/lanes" })).toMatchObject({ enabled: false, maxSidePerProject: 2, maxDispatchesHost: 5, worktreeRoot: "/var/tmp/lanes" });
   expect(readLanesCfg({ enabled: "yes", maxSidePerProject: -1, maxDispatchesHost: 1.5, worktreeRoot: "relative/path", noLaneClassifier: "claude" })).toEqual(DEFAULT_LANES_CFG);
