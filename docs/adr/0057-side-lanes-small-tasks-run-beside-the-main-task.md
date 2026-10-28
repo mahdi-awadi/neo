@@ -1,7 +1,7 @@
 # ADR-0057: side lanes — small, independent tasks run beside a project's main task
 
-**Status:** proposed (2026-10-28). It waits for the operator's approval of the plan
-`docs/superpowers/plans/2026-10-28-side-lanes.md`. Spec: `docs/superpowers/specs/2026-10-28-side-lanes-design.md`.
+**Status:** accepted (2026-10-28; the operator approved the plan
+`docs/superpowers/plans/2026-10-28-side-lanes.md` and it is built on `dev`, restart-gated). Spec: `docs/superpowers/specs/2026-10-28-side-lanes-design.md`.
 Amends ADR-0008 (one todo at a time per project). Related: ADR-0001 (work class and reserve), ADR-0012
 (out-of-folder writes), ADR-0031 (project fence), ADR-0037 (commit finish).
 
@@ -50,7 +50,7 @@ to run at the same time.
    that skip session reuse, the commit-finish nudge (ADR-0037), the context handoff and the main
    project's notes block.
 7. **Visible everywhere.** `/list`, `/todo`, the console Queue tab and the `todo` tool show side lanes
-   in their own section, with the kind: `⇉ #812 side·ops running 3m — create dev super-admin`.
+   in their own section, with the kind: `▷ #812 side·ops running 3m — create dev super-admin`.
 
 ## Rejected
 
@@ -67,6 +67,17 @@ to run at the same time.
   install.
 - **Escalating a forbidden side-lane action to the operator.** The answer is always "no"; asking only
   blocks the lane.
+
+## As built (differences from the first draft)
+
+- The shell reader moved to `src/engine/bash-walk.ts`, shared by the project fence and the lane rules
+  (`laneVerdict` in `lanes.ts`). This avoids an import cycle between `governor.ts` and `lanes.ts`.
+- The PreToolUse hook turns the lane's deny into "ask", as it does for every non-allow verdict, so the
+  call reaches `canUseTool`, which denies it. A project's settings allow rule cannot skip it.
+- A side todo that dispatch refuses (no worktree, or the Codex SDK) is moved to the main queue, so no
+  work is lost.
+- A retried `code` lane whose `side/<id>` branch survived a restart continues on that branch.
+- Writes to `/dev/null`, `/dev/stdout` and `/dev/stderr` are never refused.
 
 ## Known limits
 

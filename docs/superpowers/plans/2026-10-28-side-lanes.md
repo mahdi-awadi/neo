@@ -41,21 +41,21 @@ of ADR-0008, and the engine deleting worktrees and branches.
 **Files:** create `src/engine/lanes.ts`; modify `src/engine/ledger.ts`, `src/engine/ledger-migrations.ts`,
 `src/config.ts`, `src/engine/registry.ts`, `docs/CONFIG.md`. Test: `tests/lanes.test.ts`, `tests/ledger-migrations.test.ts`.
 
-- [ ] Step 1: failing tests:
+- [x] Step 1: failing tests:
   - `readLanesCfg` defaults, and a bad value keeps its default;
   - `addTodo` stores `lane`/`laneKind`, and an old row reads as `main`;
   - migration v13→v14 keeps every row count;
   - `registry.findByFolder` skips a session whose `lane` is `side`, and `sideLanes(folder)` lists it.
-- [ ] Step 2: implement: the `LANE_KINDS` const, the `Lane` type, migration v14 (`lane TEXT NOT NULL
+- [x] Step 2: implement: the `LANE_KINDS` const, the `Lane` type, migration v14 (`lane TEXT NOT NULL
   DEFAULT 'main'`, `lane_kind TEXT`), `SessionInfo.lane`, `Registry.sideLanes`.
-- [ ] Step 3: green, commit `feat(lanes): lane model, config and ledger v14 (ADR-0057)`.
+- [x] Step 3: green, commit `feat(lanes): lane model, config and ledger v14 (ADR-0057)`.
 
 ## Task 2: Governor lane rules
 
 **Files:** `src/engine/lanes.ts` (`laneVerdict`), `src/engine/governor.ts` (`GovernorCtx.lane`, call
 first in `decide`), `src/engine/session-runner.ts` (pass `lane` into the ctx). Test: `tests/lanes-governor.test.ts`.
 
-- [ ] Step 1: failing tests, one per spec criterion 6 and 7 rule, each **denied** with the lane message:
+- [x] Step 1: failing tests, one per spec criterion 6 and 7 rule, each **denied** with the lane message:
   - Edit in the folder; `echo x > src/a.ts`; `git commit`, `git -C <folder> reset`;
   - `docker compose restart api`, `docker restart x`, `systemctl restart y`;
   - `read-only` Write in `/tmp` allowed, elsewhere denied;
@@ -64,9 +64,9 @@ first in `decide`), `src/engine/session-runner.ts` (pass `lane` into the ctx). T
   - Allowed cases: `docker ps`, `docker compose logs`, `docker exec db psql …`, `git status`,
     `bun test`.
   - No lane: every existing governor test unchanged.
-- [ ] Step 2: implement by reusing the Bash parser (export its segment walk, rather than adding a
+- [x] Step 2: implement by reusing the Bash parser (export its segment walk, rather than adding a
   second one).
-- [ ] Step 3: green, commit `feat(lanes): the governor keeps a side lane out of the main lane's way (ADR-0057)`.
+- [x] Step 3: green, commit `feat(lanes): the governor keeps a side lane out of the main lane's way (ADR-0057)`.
 
 ## Task 3: Dispatch starts a side lane
 
@@ -75,7 +75,7 @@ first in `decide`), `src/engine/session-runner.ts` (pass `lane` into the ctx). T
 side runs), plus a new `src/engine/lane-worktree.ts` (create and remove the worktree, raise the merge
 todo). Test: `tests/dispatch-lanes.test.ts`.
 
-- [ ] Step 1: failing tests:
+- [x] Step 1: failing tests:
   - a side dispatch to a busy folder starts a second session, and the main session gets no follow-up;
   - the side session is not returned by `findByFolder`;
   - its governor ctx carries the lane;
@@ -83,7 +83,7 @@ todo). Test: `tests/dispatch-lanes.test.ts`.
   - at the end, a clean worktree is removed, a branch with commits queues a merge todo, a branch
     without commits is deleted, and a dirty worktree is kept and raised as `dirty`;
   - with provider `codex`, the side brief is refused to the queue.
-- [ ] Step 2: implement. Step 3: green, commit `feat(lanes): dispatch runs a side lane as its own session (ADR-0057)`.
+- [x] Step 2: implement. Step 3: green, commit `feat(lanes): dispatch runs a side lane as its own session (ADR-0057)`.
 
 ## Task 4: The todo queue releases side lanes
 
@@ -91,7 +91,7 @@ todo). Test: `tests/dispatch-lanes.test.ts`.
 count only main, retry and continuation keep the lane), `src/engine/lanes.ts` (`canStartSide`). Test:
 `tests/todo-lanes.test.ts`.
 
-- [ ] Step 1: failing tests for spec criteria 1–5, 9 and 13:
+- [x] Step 1: failing tests for spec criteria 1–5, 9 and 13:
   - free project → main lane;
   - busy project with a free slot → side starts now;
   - per-project cap, host cap and reserve → queued side todo, and the pump starts it when the slot frees;
@@ -100,7 +100,7 @@ count only main, retry and continuation keep the lane), `src/engine/lanes.ts` (`
   - boot `recover` handles a side todo;
   - boot sweep of orphan worktrees (clean removed, dirty raised);
   - no lane → the existing queue tests unchanged.
-- [ ] Step 2: implement. Step 3: green, commit `feat(lanes): the todo queue starts side todos in free side slots (ADR-0057)`.
+- [x] Step 2: implement. Step 3: green, commit `feat(lanes): the todo queue starts side todos in free side slots (ADR-0057)`.
 
 ## Task 5: Tools and the chief of staff's rules
 
@@ -108,11 +108,11 @@ count only main, retry and continuation keep the lane), `src/engine/lanes.ts` (`
 `lane`, `kind`), `agent/CLAUDE.md` ("Busy projects"; untracked, edit in place), `CLAUDE.md` (the queue
 line). Test: `tests/dispatch.test.ts`.
 
-- [ ] Step 1: failing tests:
+- [x] Step 1: failing tests:
   - the tool schema accepts `lane`/`kind`;
   - `side` without `kind` is refused, with the four kinds named;
   - the description names when to pick `side` and each kind.
-- [ ] Step 2: implement; write the chief-of-staff rules (spec "Inputs"). Step 3: green, commit.
+- [x] Step 2: implement; write the chief-of-staff rules (spec "Inputs"). Step 3: green, commit.
 
 ## Task 6: Visibility
 
@@ -120,18 +120,18 @@ line). Test: `tests/dispatch.test.ts`.
 `src/engine/dashboard.ts` (`DashTodo.lane`/`kind`), `src/frontends/web/app.ts` (Queue tab group),
 the locales `en`/`ar` `console.json`. Test: `tests/todo-queue.test.ts`, `tests/console-*.test.ts`.
 
-- [ ] Step 1: failing tests: `/todo` and `/list` show a "Side lanes" group with kind/state/age; the
+- [x] Step 1: failing tests: `/todo` and `/list` show a "Side lanes" group with kind/state/age; the
   console snapshot carries `lane`/`kind`; AR+EN keys exist.
-- [ ] Step 2: implement, then take RTL and LTR screenshots of the Queue tab (headless Chrome).
+- [x] Step 2: implement, then take RTL and LTR screenshots of the Queue tab (headless Chrome).
   Step 3: green, commit.
 
 ## Task 7: Docs, review, ADR accepted
 
-- [ ] Step 1: update `docs/CONFIG.md` (`lanes`), `docs/HISTORY.md`, and `docs/loops.md` if it is
+- [x] Step 1: update `docs/CONFIG.md` (`lanes`), `docs/HISTORY.md`, and `docs/loops.md` if it is
   touched. Mark ADR-0057 accepted.
-- [ ] Step 2: run `/security-review`, because the governor changed. Then superpowers:requesting-code-review.
+- [x] Step 2: run `/security-review`, because the governor changed. Then superpowers:requesting-code-review.
   Fix the findings.
-- [ ] Step 3: full `bun test` (in the background, polled) and `tsc` green. Commit. Remove the worktree.
+- [x] Step 3: full `bun test` (in the background, polled) and `tsc` green. Commit. Remove the worktree.
 
 ## Operator steps after the build
 

@@ -205,7 +205,7 @@ todo at a time; the rest wait in order and are never merged or dropped. The oper
 can reorder, cancel, pause and resume it.
 _Avoid_: backlog, task list, session queue
 
-**Lane** (ADR-0057, proposed):
+**Lane** (ADR-0057):
 Where a todo runs in its project. The **main lane** is the project's one session, the one the todo
 queue feeds: it owns the working tree, the branch and the containers. A **side lane** is a separate,
 single-brief session that runs at the same time as the main lane. The governor keeps it out of the
@@ -213,7 +213,7 @@ main lane's way. The chief of staff picks the lane when it writes the brief (`la
 a brief with no lane goes to the main lane's queue.
 _Avoid_: parallel task, background job, fork
 
-**Lane kind** (ADR-0057, proposed):
+**Lane kind** (ADR-0057):
 What a side-lane todo declares it will do, so the governor knows what to allow:
 - `read-only`: reads and checks; writes no files except temporary ones.
 - `ops`: runs commands against running services (a DB row through `docker exec`, an API call, a

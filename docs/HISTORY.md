@@ -1237,6 +1237,28 @@ Neo's logo is "Core", and the console shows the running build under it (2026-10-
 
 Restart-gated.
 
+Side lanes: small, independent todos run beside a project's main task (2026-10-28, ADR-0057).
+
+- Operator order: small side jobs ("create a dev super-admin", "run a test", "check docker") waited
+  hours in eticket-v3's queue behind long builds.
+- The chief of staff picks the lane while it writes the brief: `dispatch` / `todo add` take `lane:
+  "side" | "queue"` and a `kind` (`ops`, `test`, `read-only`, `code`). A brief with no lane queues as
+  before. CLAUDE.md now says AI decides and code enforces.
+- The governor enforces the kind (`laneVerdict`, shared shell reader `bash-walk.ts`) and denies, never
+  escalates. Shared-folder kinds never write the project's files, run git writes or restart
+  containers. `code` works in a temporary worktree on `side/<todo>`. The engine removes it at the end
+  (kept if dirty) and queues a main-lane todo to merge the branch.
+- The todo queue starts a side todo at once when the project is busy and a side slot is free
+  (`lanes.maxSidePerProject`, `lanes.maxDispatchesHost`, the reserve). Otherwise the todo waits for a
+  slot, not for the main queue. A free project runs it in the main lane. The Codex SDK, or
+  `lanes.enabled: false`, sends side briefs to the queue.
+- A side lane is its own fresh session (registry `lane`, skipped by `findByFolder`). It has no resume,
+  context handoff, notes block, indexing or commit-finish nudge.
+- `/list`, `/todo` and the console Queue tab show side lanes in their own group (AR+EN). The ledger
+  migrates to v14 (`project_todos.lane`, `lane_kind`).
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
