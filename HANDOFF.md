@@ -1,3 +1,19 @@
+# HANDOFF — side lanes (ADR-0057): built on dev, restart-gated
+
+The operator approved the plan `docs/superpowers/plans/2026-10-28-side-lanes.md` (2026-10-28) and it is
+built: commits 802a4e1, 81070ac, 53d4057, 96dd789, cddaed4, 8db5f68, fb4f8aa, 77f83d7 (review fixes).
+Full `bun test` is green (2,385 pass) and `tsc` is clean. Not live: it needs merge + restart (ledger
+v13 → v14).
+- The chief of staff's rules are in `agent/CLAUDE.md` ("Side lanes"; untracked, edited in place). Until
+  the restart, the running engine ignores `lane`, so briefs just queue.
+- Off switch: `lanes.enabled: false` in config.json.
+- Known limits (ADR-0057): the Bash text reader does not see interpreters, `$VAR` paths, `make`,
+  `npm install`, `curl -o`. A `code` lane cannot run a dockerized stack.
+- Engine gap found (not fixed): the plan watcher only registers plans written inside the run's own
+  folder (`plan-watch.ts:47`). A plan written in a worktree (`/tmp/...`) gets no card.
+
+---
+
 # HANDOFF — waiting work (ADR-0054): LIVE since 2026-10-27
 
 Released on operator approval #117ff497: master fast-forwarded to d85b638 and booted 2026-10-27 03:51
