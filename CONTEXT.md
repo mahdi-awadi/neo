@@ -469,6 +469,23 @@ and never output, it is paused while the session is awaiting the operator, and i
 evidence it acted on before it fires.
 _Avoid_: timeout, kill, watchdog
 
+**Running tool call** (ADR-0058, proposed):
+One tool call a worker has started and that has not returned yet (a Bash command, a subagent), known by
+its tool-use id. The engine keeps a live list of them per session; the console's "Running now" strip,
+`/stop`, `/bg` and the company's `tool_control` tool act on it.
+_Avoid_: job, process, task (the SDK's word for a backgrounded call)
+
+**Stop (a tool call)** (ADR-0058, proposed):
+The operator ends ONE running tool call and nothing else: its process tree on the host, and the
+processes its `docker exec` calls started inside containers. The worker gets a result saying the
+operator stopped it and not to retry; the session goes on. Not `/kill`, which ends the session.
+_Avoid_: kill (for one call), abort, cancel
+
+**Send to background** (ADR-0058, proposed):
+The operator detaches a running tool call: it keeps running, its output goes to a log file, and the
+worker gets a result at once that says where the log is. The SDK's own Ctrl+B (`backgroundTasks`).
+_Avoid_: detach, nohup, fork
+
 **Long check**:
 A worker's verification step that takes minutes: a vet/test/lint loop across modules, a build, an
 image pull, a CI wait. It starts in the background (a background Bash command or a subagent), with
