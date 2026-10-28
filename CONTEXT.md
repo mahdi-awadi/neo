@@ -451,6 +451,13 @@ and never output, it is paused while the session is awaiting the operator, and i
 evidence it acted on before it fires.
 _Avoid_: timeout, kill, watchdog
 
+**Long check**:
+A worker's verification step that takes minutes: a vet/test/lint loop across modules, a build, an
+image pull, a CI wait. It starts in the background (a background Bash command or a subagent), with
+one log per module. The worker keeps working, reads the result before its turn ends, and never wraps
+it in `timeout` (ADR-0055).
+_Avoid_: blocking check, timeout wrapper
+
 ### Keeping the toolchain current
 
 **Update item**:

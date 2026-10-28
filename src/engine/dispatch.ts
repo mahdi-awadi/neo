@@ -418,13 +418,12 @@ export function briefWithProjectDocs(task: string): string {
     "do it and report it — do not ask. When you must ask (ask_operator), write for a non-technical " +
     "reader in the operator's language: the situation, each option and what it does, your pick and " +
     "why. One decision per card; no jargon, no patch-level options.\n\n" +
-    "REQUIRED — stay alive; never park on a background wait. Neo watches your STREAMED tool/step " +
-    "activity and ABORTS a sub-run after ~5 minutes without it, hung or not: a background wait or " +
-    "Monitor, a long `sleep`, `gh run watch`, tailing logs, waiting on CI/build/deploy. So NEVER use " +
-    "those: to wait on CI, a build, or a deploy, POLL in short FOREGROUND steps under 90 seconds " +
-    "each, so every check is a fresh activity heartbeat. Finish WITHIN this run: a " +
-    "dispatched worker is single-shot, NOT re-invoked when a background job completes; " +
-    "poll to a terminal state here.\n\n" +
+    "REQUIRED — stay alive, never blocked. Neo ABORTS a run after ~5 min with no streamed step. Start " +
+    "long checks (vet/test/lint loops across modules, builds, image pulls, CI waits) in the background " +
+    "(background Bash or a subagent), each module its own log; never wrap a real test in `timeout`. " +
+    "Keep working on other steps and read each result when ready; with nothing left, POLL in FOREGROUND " +
+    "steps under 90 s. No Monitor, no long silent wait. You are single-shot: never end your turn while a " +
+    "check runs or its result is unread.\n\n" +
     "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; the engine " +
     "sends it to the operator. A small plan: build on. A BIG plan (many tasks or steps; migrations, auth, " +
     "money, deploy, deletes; or front matter `approval: required`) waits: when a call is denied with " +

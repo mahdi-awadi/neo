@@ -1290,9 +1290,19 @@ test("briefWithProjectDocs preamble requires superpowers and the rest, then the 
   // Liveness contract (2026-09-13 engine-bug fix): the stall detector sees only streamed activity, so
   // a worker that parks on a background wait/Monitor (or one long silent step) is killed though not
   // hung. The preamble must forbid background waits and require short foreground polling.
-  expect(low).toContain("background wait"); // never park on a background wait...
-  expect(low).toContain("monitor"); // ...or a Monitor
-  expect(low).toContain("poll"); // poll instead
+  // Operator order 2026-10-28: a long check must not block the work. It starts in the background
+  // (a background Bash command or a subagent), one log per module; the worker keeps going and reads
+  // the result when it is ready, and never ends its turn while a check runs unread.
+  expect(low).not.toContain("never park on a background wait"); // the old rule forbade exactly this
+  expect(low).toContain("in the background"); // long checks start in the background...
+  expect(low).toContain("subagent"); // ...as a background Bash command or a subagent
+  expect(low).toContain("vet/test/lint"); // what counts as long: module loops, builds, pulls, CI
+  expect(low).toContain("own log"); // each module its own log
+  expect(low).toContain("keep working"); // the worker does not sit and wait
+  expect(low).toContain("never end your turn while a check"); // ...but reads every result first
+  expect(out).toContain("`timeout`"); // the ban on timeout wrappers around real tests stays
+  expect(low).toContain("monitor"); // never a Monitor or one long silent wait
+  expect(low).toContain("poll"); // with nothing else to do: poll...
   expect(low).toContain("foreground"); // ...in short FOREGROUND steps
   expect(low).toContain("single-shot"); // finish within this run — not re-invoked later
   expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last

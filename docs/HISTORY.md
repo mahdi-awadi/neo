@@ -1207,6 +1207,19 @@ The changes:
 
 Restart-gated (one release).
 
+Long checks run in the background and never block the worker (2026-10-28, ADR-0055).
+
+- Operator order: an eticket-v3 worker ran `go vet` over 7 modules in a foreground loop with
+  `timeout` wrappers, and the session waited for all of it.
+- The preamble's one "stay alive" rule is rewritten, not doubled. Long checks (vet/test/lint loops,
+  builds, image pulls, CI waits) start in the background (background Bash or a subagent), with one
+  log per module. The worker keeps working and reads each result when it is ready. It polls in
+  foreground steps under 90 s only when nothing else is left. It never ends its turn while a check
+  runs or its result is unread, and it never wraps a real test in `timeout`.
+- The stall detector is unchanged. Test: the preamble assertion in `tests/dispatch.test.ts`.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
