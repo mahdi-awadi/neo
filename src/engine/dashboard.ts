@@ -1,6 +1,7 @@
 // Structured snapshot the web dashboard renders — projects, usage, loops, recent orders, and
 // the known repos (for the New-project picker). The dashboard is all UI controls over this
 // data + the action endpoints; no command typing. Deterministic, AI-free.
+import type { LaneKind } from "./lanes";
 import { readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Registry } from "./registry";
@@ -101,6 +102,9 @@ export interface DashTodo {
   paused?: string;
   /** A running todo waiting out a rate limit: when its brief is re-sent (ADR-0047). */
   limitResumesAt?: number;
+  /** A side-lane todo (ADR-0057) and its kind. Absent = the main lane. */
+  lane?: "side";
+  kind?: LaneKind;
 }
 
 /** Running + queued todos (all projects, or one folder's): running first, then each queue in order;
@@ -116,8 +120,10 @@ export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.
     ...ledger.listTodos({ ...where, statuses: ["failed"], limit: FAILED_SHOWN }),
   ];
   return rows.map((t) => {
-    const position = t.status === "queued" ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
-    if (t.status === "queued") nextPos.set(t.folder, position);
+    // A queue position counts the main lane only; a side todo waits for a side slot, not a place (ADR-0057).
+    const queuedMain = t.status === "queued" && t.lane === "main";
+    const position = queuedMain ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
+    if (queuedMain) nextPos.set(t.folder, position);
     const wait = t.status === "running" ? limitWait(ledger, t.orderId, now) : undefined;
     return {
       id: t.id,
@@ -131,6 +137,7 @@ export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.
       ...(t.status === "retry" || t.status === "failed" ? { attempts: t.attempts, ...(t.retryAt !== undefined ? { retryAt: t.retryAt } : {}) } : {}),
       ...(t.waitingOn ? { waitingOn: t.waitingOn } : {}),
       ...(wait ? { limitResumesAt: wait.resumesAt } : {}),
+      ...(t.lane === "side" && t.laneKind ? { lane: "side" as const, kind: t.laneKind } : {}),
     };
   });
 }

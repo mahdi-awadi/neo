@@ -574,7 +574,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     const lines = [`📋 ${name}${paused ? ` — paused (${paused.reason})` : ""}`];
     const t0 = now();
     for (const t of all) {
-      if (t.status !== "running") continue;
+      if (t.status !== "running" || t.lane === "side") continue;
       // Waiting out a rate limit (ADR-0047): still running, but say why it is quiet and when it goes on.
       const wait = limitWait(ledger, t.orderId, t0);
       lines.push(
@@ -583,7 +583,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           : `  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`,
       );
     }
-    all.filter((t) => t.status === "queued").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoTitle(t.brief)}`));
+    all.filter((t) => t.status === "queued" && t.lane === "main").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoTitle(t.brief)}`));
     // Parked continuations (ADR-0029): each waits on one decision.
     for (const t of ledger.listTodos({ folder, statuses: ["waiting"] })) {
       lines.push(`  ⏸ #${t.id} waiting on decision #${(t.waitingOn ?? "?").slice(0, 8)} — ${todoTitle(t.brief)}`);
@@ -594,6 +594,18 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     }
     for (const t of ledger.listTodos({ folder, statuses: ["failed"], limit: FAILED_SHOWN })) {
       lines.push(`  ✗ #${t.id} failed — ${todoTitle(t.brief)} (/todo retry ${t.id})`);
+    }
+    // Side lanes (ADR-0057): their own group, with the kind — running ones, then those waiting for a slot.
+    const side = all.filter((t) => t.lane === "side");
+    if (side.length) {
+      lines.push("  Side lanes:");
+      for (const t of side) {
+        lines.push(
+          t.status === "running"
+            ? `  ▷ #${t.id} side·${t.laneKind} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`
+            : `  ▷ #${t.id} side·${t.laneKind} waits for a side slot — ${todoTitle(t.brief)}`,
+        );
+      }
     }
     if (history) {
       for (const t of ledger.listTodos({ folder, statuses: ["done", "cancelled"], limit: HISTORY_SHOWN })) {

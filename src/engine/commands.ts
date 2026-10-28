@@ -576,8 +576,8 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
     folder: s.order.folder,
     status: s.status,
   }));
-  const text = sessions
-    .map((s) => {
+  // Main sessions first; side lanes (ADR-0057) in their own group after them, with their kind.
+  const line = (s: (typeof sessions)[number]): string => {
       const star = s.id === activeId ? (focus!.mode === "pinned" ? "📌 " : "▶ ") : "";
       const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
@@ -603,9 +603,12 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
       } catch {
         // skip on error
       }
-      return `${star}${stateIcon(state)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"`;
-    })
-    .join("\n");
+      const lane = s.lane ? `▷ side·${s.lane.kind}${s.lane.todoId !== undefined ? ` #${s.lane.todoId}` : ""} · ` : "";
+      return `${star}${stateIcon(state)} ${lock}${lane}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"`;
+  };
+  const main = sessions.filter((s) => !s.lane).map(line);
+  const side = sessions.filter((s) => s.lane).map(line);
+  const text = [...main, ...(side.length ? ["Side lanes:", ...side] : [])].join("\n");
   return { text: gap ? `${gap}\n${text}` : text, select };
 }
 

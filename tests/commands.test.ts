@@ -574,3 +574,17 @@ test("ADR-0054 D2: /list (and /status) starts with the deploy gap when finished 
   expect(out.split("\n")[0]).toBe("⚠ running 4452b94 on master · dev +87 not running (oldest 11 days)");
   expect(handleCommand("/list", 1, { ...deps(), deployGap: () => undefined })!.text).not.toContain("not running");
 });
+
+// ADR-0057: side lanes show in their own group with their kind, after the main sessions.
+test("/list groups side-lane sessions under 'Side lanes', with their kind", () => {
+  const registry = createRegistry();
+  registry.add(order({ id: "m", folder: "/proj/app", task: "build the feature" }));
+  registry.add(order({ id: "s", folder: "/proj/app", task: "check docker" }), 2, { lane: { kind: "ops", projectFolder: "/proj/app", todoId: 9 } });
+  const out = handleCommand("/list", 1, deps({ registry }))!.text;
+  const [mainPart, sidePart] = out.split("Side lanes");
+  expect(mainPart).toContain("app ·");
+  expect(mainPart).not.toContain("app-side-ops");
+  expect(sidePart).toContain("▷ side·ops");
+  expect(sidePart).toContain("app-side-ops");
+  expect(sidePart).toContain("#9");
+});

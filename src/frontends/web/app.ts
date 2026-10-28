@@ -479,11 +479,30 @@ function renderTodos(): void {
     pr.textContent = tx(paused ? "queue.resume" : "queue.pause");
     pr.onclick = () => todoAct(paused ? "resume" : "pause", p);
     card.appendChild(pr);
-    by[p]!.forEach((x) => {
+    // Main-lane rows first, then the project's side lanes (ADR-0057) under their own heading.
+    const rows: Any[] = by[p]!;
+    rows.sort((a, b) => Number(a.lane === "side") - Number(b.lane === "side"));
+    rows.forEach((x, i) => {
+      if (x.lane === "side" && (i === 0 || rows[i - 1].lane !== "side")) {
+        const sh = document.createElement("h4");
+        sh.textContent = tx("queue.sideLanes");
+        card.appendChild(sh);
+      }
       const row = document.createElement("div");
       row.className = "rrow";
+      const kind = x.lane === "side" ? tx(`queue.kind.${x.kind}`) : "";
       const lead =
-        x.status === "running" && x.limitResumesAt
+        x.lane === "side"
+          ? x.status === "running"
+            ? t("queue.sideRunning", { kind, age: age(Date.now() - (x.startedAt || x.createdAt)) })
+            : x.status === "queued"
+              ? t("queue.sideWaiting", { kind })
+              : x.status === "retry"
+                ? t("queue.retryWait", { n: x.attempts, age: age(Math.max(0, (x.retryAt || Date.now()) - Date.now())) })
+                : x.status === "failed"
+                  ? t("queue.failed")
+                  : t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
+          : x.status === "running" && x.limitResumesAt
           ? tx("queue.limitWait", { time: ltr(resumeAt(x.limitResumesAt)) }) // ADR-0047: still running, waiting out a limit
           : x.status === "running"
           ? t("queue.running", { age: age(Date.now() - (x.startedAt || x.createdAt)) })

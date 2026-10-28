@@ -229,3 +229,36 @@ test("boot: recover sweeps the lane worktree root — a clean orphan goes, a dir
   expect(existsSync(dirty.path)).toBe(true);
   expect(listOpen(s.ledger, { now: 2_000 }).some((i) => i.kind === "dirty" && i.folder === dirty.path)).toBe(true);
 });
+
+test("/todo and the todo tool list side lanes in their own group with kind; main positions skip them", async () => {
+  const s = setup();
+  await s.submit("eticket-v3", "build A");
+  await settle();
+  await s.submit("eticket-v3", "check docker", "side", "ops");
+  await s.submit("eticket-v3", "run the API test", "side", "test");
+  await s.submit("eticket-v3", "build B");
+  await settle();
+  const out = s.queue.list("eticket-v3");
+  const [mainPart, sidePart] = out.split("Side lanes");
+  expect(mainPart).toContain("1. #");
+  expect(mainPart).toContain("build B");
+  expect(mainPart).not.toContain("check docker");
+  expect(sidePart).toMatch(/▷ #\d+ side·ops running \d+m — check docker/);
+  expect(sidePart).toMatch(/▷ #\d+ side·test waits for a side slot — run the API test/);
+});
+
+test("the console's todos carry lane and kind; queue positions count the main lane only", async () => {
+  const { activeTodos } = await import("../src/engine/dashboard");
+  const s = setup();
+  await s.submit("eticket-v3", "build A");
+  await settle();
+  await s.submit("eticket-v3", "check docker", "side", "ops");
+  await s.submit("eticket-v3", "run the API test", "side", "test");
+  await s.submit("eticket-v3", "build B");
+  await settle();
+  const rows = activeTodos(s.ledger);
+  const side = rows.filter((r) => r.lane === "side");
+  expect(side.map((r) => [r.kind, r.status, r.position])).toEqual([["ops", "running", 0], ["test", "queued", 0]]);
+  expect(rows.find((r) => r.title.includes("build B"))).toMatchObject({ position: 1 });
+  expect(rows.find((r) => r.title.includes("build A"))!.lane).toBeUndefined();
+});

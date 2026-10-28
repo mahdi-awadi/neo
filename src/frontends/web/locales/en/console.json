@@ -144,7 +144,16 @@
     "retry": "Retry",
     "retryWait": "↻ retry {{n}} · in {{age}}",
     "failed": "✗ failed",
-    "waiting": "⏸ waiting on decision #{{id}}"
+    "waiting": "⏸ waiting on decision #{{id}}",
+    "sideLanes": "Side lanes",
+    "sideRunning": "▷ side · {{kind}} · running {{age}}",
+    "sideWaiting": "▷ side · {{kind}} · waits for a side slot",
+    "kind": {
+      "read-only": "read-only",
+      "ops": "ops",
+      "test": "test",
+      "code": "code"
+    }
   },
   "recent": {
     "title": "Recent orders",

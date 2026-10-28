@@ -182,3 +182,13 @@ test("notes: kind `question` and state `answered` are catalogue keys in EN and A
   // The note id stays an LTR run inside the Arabic row.
   expect(APP).toContain('ltr("#" + it.id)');
 });
+
+// ADR-0057: the Queue tab's side-lane strings exist in both languages, one per kind.
+test("side-lane queue strings are in the AR and EN catalogues, for every kind", async () => {
+  const { LANE_KINDS } = await import("../src/engine/lanes");
+  for (const lang of ["en", "ar"] as const) {
+    const i18n = createConsoleI18n(lang);
+    for (const key of ["queue.sideLanes", "queue.sideRunning", "queue.sideWaiting"]) expect(i18n.exists(key), `${lang}:${key}`).toBe(true);
+    for (const k of LANE_KINDS) expect(i18n.exists(`queue.kind.${k}`), `${lang}:${k}`).toBe(true);
+  }
+});
