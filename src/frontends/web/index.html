@@ -2,6 +2,8 @@
 <html lang="%LANG%" dir="%DIR%" data-feed-window="%FEED_WINDOW%"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <title data-i18n="meta.title"></title>
 <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="%THEME_DARK%">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="%THEME_LIGHT%">
@@ -10,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{color-scheme:dark light;--ink:#080b10;--panel:#0d121a;--panel2:#10171f;--border:#1a2530;--fg:#d7e2ee;--muted:#67788c;--faint:#3a4655;--accent:#3fe0a2;--accent-dim:#1f7a5c;--glow:rgba(63,224,162,.22);--warn:#f5b14c;--danger:#ff6b6b;--info:#6db3ff;--accent-fill:#3fe0a2;--on-accent:#06241a;--topbar:rgba(13,18,26,.55);--scrim:rgba(4,7,11,.6);--glow-a:rgba(63,224,162,.06);--glow-b:rgba(63,150,224,.05);--grid-op:.42;--drawer-x:-100%;--syn-kw:#7fb8ff;--syn-str:#9bdcb9;--syn-com:#8a9aae;--syn-num:#f5b14c;--syn-fn:#e8c97a;--syn-var:#ff9f87;--syn-add:#3fe0a2;--syn-del:#ff7b7b;--out-fg:#aebdcc;--code:'JetBrains Mono',ui-monospace,monospace;--mono:'JetBrains Mono','IBM Plex Sans Arabic',ui-monospace,monospace;--sans:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;--slide:-12px;--compose-h:46px}
+:root{color-scheme:dark light;--ink:#080b10;--logo-accent:#f2552c;--panel:#0d121a;--panel2:#10171f;--border:#1a2530;--fg:#d7e2ee;--muted:#67788c;--faint:#3a4655;--accent:#3fe0a2;--accent-dim:#1f7a5c;--glow:rgba(63,224,162,.22);--warn:#f5b14c;--danger:#ff6b6b;--info:#6db3ff;--accent-fill:#3fe0a2;--on-accent:#06241a;--topbar:rgba(13,18,26,.55);--scrim:rgba(4,7,11,.6);--glow-a:rgba(63,224,162,.06);--glow-b:rgba(63,150,224,.05);--grid-op:.42;--drawer-x:-100%;--syn-kw:#7fb8ff;--syn-str:#9bdcb9;--syn-com:#8a9aae;--syn-num:#f5b14c;--syn-fn:#e8c97a;--syn-var:#ff9f87;--syn-add:#3fe0a2;--syn-del:#ff7b7b;--out-fg:#aebdcc;--code:'JetBrains Mono',ui-monospace,monospace;--mono:'JetBrains Mono','IBM Plex Sans Arabic',ui-monospace,monospace;--sans:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;--slide:-12px;--compose-h:46px}
 :root[dir=rtl]{--slide:12px;--drawer-x:100%;--sans:'IBM Plex Sans Arabic','Manrope',system-ui,sans-serif;--mono:'IBM Plex Sans Arabic','JetBrains Mono',ui-monospace,monospace}
 /* Light theme (AC8): the same look on a light ink; the system setting decides. Ink = BRAND.inkLight. */
 @media (prefers-color-scheme:light){:root{--ink:#f4f7f9;--panel:#fbfcfd;--panel2:#eef2f5;--border:#d5dee6;--fg:#0f1720;--muted:#4f5e72;--faint:#7d8ca0;--accent:#0b7f58;--accent-dim:#7fcfb0;--glow:rgba(11,127,88,.16);--warn:#8a5207;--danger:#c63b3b;--info:#1f6fc5;--syn-kw:#1c5fae;--syn-str:#0a7350;--syn-com:#5a6a7d;--syn-num:#985700;--syn-fn:#7a4a00;--syn-var:#b0391a;--syn-add:#0a7350;--syn-del:#b83232;--out-fg:#3d4b5d;--accent-fill:#1fbf86;--on-accent:#06241a;--topbar:rgba(251,252,253,.8);--scrim:rgba(15,23,32,.35);--glow-a:rgba(31,191,134,.05);--glow-b:rgba(31,111,197,.04);--grid-op:.25}}
@@ -20,7 +22,12 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opa
 .app{display:flex;width:100%;height:var(--app-h,100dvh);position:relative;z-index:1}
 aside{width:300px;min-width:300px;background:linear-gradient(180deg,var(--panel),var(--ink));border-inline-end:1px solid var(--border);display:flex;flex-direction:column;animation:slide .5s cubic-bezier(.2,.8,.2,1) both}
 .brand{padding:18px 18px 14px;border-bottom:1px solid var(--border)}
-.wm{font-family:var(--mono);font-weight:700;font-size:17px;letter-spacing:.32em;display:flex;align-items:center;gap:11px}
+.wm{display:block;margin:0;line-height:0}
+/* The Core logo (ADR-0056): ink follows the theme (currentColor), the engine dot keeps the logo's orange. */
+.logo{display:block;height:24px;width:auto;color:var(--fg);--accent:var(--logo-accent);overflow:visible}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+/* The build label (ADR-0056): the running build, small and muted, always left-to-right. */
+.ver{font-family:var(--code);font-size:10px;line-height:1.3;color:var(--muted);margin-top:6px;unicode-bidi:isolate;width:fit-content;opacity:.85}
 .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--glow);animation:pulse 2.4s infinite}
 .sub{font-family:var(--mono);font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--muted);margin-top:7px}
 .sec{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint);padding:15px 18px 7px;display:flex;justify-content:space-between}
@@ -295,7 +302,12 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 </style></head>
 <body><div class="app">
  <aside id="side">
-  <div class="brand"><div class="wm"><span class="pulse"></span>NEO</div><div class="sub" data-i18n="brand.sub"></div></div>
+  <div class="brand"><div class="wm"><svg class="logo" viewBox="2 8 100 42" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="7">
+        <path d="M10 42V29A11 11 0 0 1 32 29V42"/>
+        <path d="M41 29H63A11 11 0 1 0 59.8 36.8"/>
+        <circle cx="83" cy="29" r="11"/>
+      </g>
+      <circle cx="83" cy="29" r="3.6" style="fill:var(--accent)"/></svg><span class="vh">neo</span></div><div class="ver" id="ver" dir="ltr" hidden></div><div class="sub" data-i18n="brand.sub"></div></div>
   <div class="sec" data-i18n="newProject.section"></div>
   <div class="np">
    <select id="repo"></select>

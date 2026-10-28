@@ -1220,6 +1220,23 @@ Long checks run in the background and never block the worker (2026-10-28, ADR-00
 
 Restart-gated.
 
+Neo's logo is "Core", and the console shows the running build under it (2026-10-28, ADR-0056).
+
+- Operator order: adopt logo concept #3 "Core", and show a small version label under it in the
+  web console.
+- The console header and the login page show the Core wordmark (inline SVG copied from
+  `agent/desks/dev/neo-logos.html`). Its ink follows the theme; the engine dot is orange
+  (`BRAND.logoAccent`). The favicon (`/icons/favicon.svg`) and the PWA PNG icons are the o mark.
+  The shell cache is `neo-shell-v2`, so installed PWAs update by themselves. Assets and how the PNGs
+  were made: `docs/brand/README.md`.
+- The build label under the logo shows `v<package version> · <short boot commit>` (10px, muted, LTR in
+  both languages, AR+EN hover text). It comes from the boot record: `runningBuild()` beside
+  `bootFacts()` in `producers/restart.ts`, with the `package.json` version read at the same boot. It
+  goes to the console in the state snapshot (`build`, beside `deploy`). It names the running build,
+  never `dev`. Tests: `tests/console-build-label.test.ts`, `tests/console-pwa.test.ts`.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

@@ -190,3 +190,19 @@ export function bootFacts(folder: string, run: GitRunner = git): { headSha: stri
   const branch = branchOf(folder, run);
   return headSha && branch ? { headSha, branch } : undefined;
 }
+
+/** The running build as the console's build label shows it (ADR-0056): the boot commit, short, and
+ *  the package version read at the same boot. Never `dev`, never the files on disk later. */
+export interface RunningBuild {
+  version?: string;
+  sha: string;
+  branch: string;
+}
+
+/** A version that is safe to show as-is: semver-shaped, short. Anything else is left out. */
+const VERSION_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,32})?$/;
+
+export function runningBuild(boot: Pick<BootRow, "headSha" | "branch"> | undefined, pkgVersion: string | undefined): RunningBuild | undefined {
+  if (!boot) return undefined;
+  return { ...(pkgVersion && VERSION_RE.test(pkgVersion) ? { version: pkgVersion } : {}), sha: boot.headSha.slice(0, 7), branch: boot.branch };
+}

@@ -9,7 +9,10 @@
   "brand": {
     "sub": "operator deck",
     "langSwitch": "العربية",
-    "langSwitchTitle": "Switch the console to Arabic"
+    "langSwitchTitle": "Switch the console to Arabic",
+    "version": "v{{version}} · {{sha}}",
+    "versionTitle": "Running build: version {{version}}, commit {{sha}} on {{branch}}",
+    "versionTitleNoVersion": "Running build: commit {{sha}} on {{branch}}"
   },
   "newProject": {
     "section": "New project",

@@ -3,6 +3,7 @@
 // worker output + escalations as events an HTTP/SSE layer can fan out, and resolves
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
+import type { RunningBuild } from "./producers/restart";
 import { applyAttentionAction, type AttentionAction, type AttentionActionResult } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
 import { rmSync } from "node:fs";
@@ -164,7 +165,7 @@ export interface WebChannel {
   _testSendFile(path: string, caption?: string): string;
 }
 
-export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; neoFolder?: string }): WebChannel {
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; build?: RunningBuild; neoFolder?: string }): WebChannel {
   // The replay window (ADR-0014): only the newest cfg.webFeedWindow feed events are kept. The
   // feed is a live view — the ledger and Telegram keep the record — so older events just drop out.
   const replay: Array<{ id: number; e: WebEvent }> = [];
@@ -469,6 +470,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const deploy = opts.deployGap?.();
       return dashboardSnapshot({
         ...(deploy ? { deploy } : {}),
+        ...(opts.build ? { build: opts.build } : {}),
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,

@@ -3,13 +3,15 @@
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="%THEME_DARK%">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="%THEME_LIGHT%">
 <style>
- :root{--ink:#080b10;--fg:#d7e2ee;--muted:#67788c;--accent:#3fe0a2;--glow:rgba(63,224,162,.25);--border:#1a2530;--accent-fill:#3fe0a2;--on-accent:#06241a;color-scheme:dark light}
+ :root{--ink:#080b10;--logo-accent:#f2552c;--fg:#d7e2ee;--muted:#67788c;--accent:#3fe0a2;--glow:rgba(63,224,162,.25);--border:#1a2530;--accent-fill:#3fe0a2;--on-accent:#06241a;color-scheme:dark light}
  @media (prefers-color-scheme:light){:root{--ink:#f4f7f9;--fg:#0f1720;--muted:#4f5e72;--accent:#0b7f58;--glow:rgba(11,127,88,.16);--border:#d5dee6;--accent-fill:#1fbf86;--on-accent:#06241a}}
  *{box-sizing:border-box}html,body{height:100%}
  body{margin:0;padding:24px;background:var(--ink);color:var(--fg);font-family:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;display:grid;place-items:center;overflow:hidden;
   background-image:radial-gradient(720px 470px at 50% -12%,rgba(63,224,162,.10),transparent 60%)}
  .card{text-align:center;max-width:420px}
- .wm{font-family:'JetBrains Mono',ui-monospace,monospace;font-weight:700;font-size:34px;letter-spacing:.34em;margin:0 0 18px;display:inline-flex;align-items:center;gap:13px}
+ .wm{margin:0 0 18px;display:inline-block;line-height:0}
+ .logo{display:block;height:42px;width:auto;color:var(--fg);--accent:var(--logo-accent);overflow:visible}
+ .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
  .pulse{width:10px;height:10px;border-radius:50%;background:var(--muted)}
  h2{font-size:17px;font-weight:600;margin:0 0 8px}
  p{color:var(--muted);font-size:14px;line-height:1.6;margin:0 0 22px}
@@ -18,7 +20,12 @@
  :lang(ar) button{letter-spacing:normal;font-family:inherit;font-size:14px}
 </style></head>
 <body><div class="card">
- <h1 class="wm" dir="ltr"><span class="pulse"></span>NEO</h1>
+ <h1 class="wm" dir="ltr"><svg class="logo" viewBox="2 8 100 42" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="7">
+        <path d="M10 42V29A11 11 0 0 1 32 29V42"/>
+        <path d="M41 29H63A11 11 0 1 0 59.8 36.8"/>
+        <circle cx="83" cy="29" r="11"/>
+      </g>
+      <circle cx="83" cy="29" r="3.6" style="fill:var(--accent)"/></svg><span class="vh">neo</span></h1>
  <h2 id="o-title">%TITLE%</h2>
  <p id="o-body">%BODY%</p>
  <button type="button" id="o-retry" onclick="location.reload()">%RETRY%</button>

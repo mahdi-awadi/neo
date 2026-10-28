@@ -79,14 +79,15 @@ test("/sw.js is public JavaScript, no-cache, built by Bun.build into a classic s
   expect(() => new Function(js)).not.toThrow();
 });
 
-test("/icons serves only the allowlisted PNGs (AC13): no traversal, unknown names 404", async () => {
+test("/icons serves only the allowlisted icons (AC13): no traversal, unknown names 404", async () => {
   const a = app();
   for (const i of ICONS) {
     const res = await get(a, `/icons/${i.file}`);
     expect(res.status, i.file).toBe(200);
-    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("content-type")).toBe(i.file.endsWith(".svg") ? "image/svg+xml" : "image/png");
     expect(res.headers.get("cache-control")).toBe("public, max-age=86400");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    if (i.file.endsWith(".svg")) continue; // the SVG favicon is checked in its own test (ADR-0056)
     const bytes = new Uint8Array(await res.arrayBuffer());
     expect([...bytes.slice(1, 4)].map((c) => String.fromCharCode(c)).join("")).toBe("PNG");
     // The PNG header's width/height match the declared size.
@@ -100,7 +101,7 @@ test("/icons serves only the allowlisted PNGs (AC13): no traversal, unknown name
   // `/icons/../web.ts` normalizes to `/web.ts`: behind the session gate, and not a route either.
   const cookie = (await a.fetch(new Request(loginUrl()))).headers.get("set-cookie")!.split(";")[0]!;
   expect((await get(a, "/icons/../web.ts", cookie)).status).toBe(404);
-  expect(ICONS.map((i) => i.file).sort()).toEqual(["apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"]);
+  expect(ICONS.map((i) => i.file).sort()).toEqual(["apple-touch-icon.png", "favicon.svg", "icon-192.png", "icon-512.png", "icon-maskable-512.png"]);
 });
 
 test("/offline.html is public, no-cache, localized; Arabic is rtl", async () => {
@@ -199,4 +200,43 @@ test("the brand colours are the CSS tokens: dark ink is --ink, accent is --accen
     expect(css.match(/--accent:(#[0-9a-f]{6})/)![1], f).toBe(BRAND.accent);
   }
   expect(BRAND.inkLight).toMatch(/^#[0-9a-f]{6}$/);
+});
+
+
+// ADR-0056: the "Core" logo — the favicon is the o mark as SVG, served with its own type; the header
+// carries the wordmark copied from the source file, and the build label under it is LTR.
+test("the favicon is the o mark as SVG, served as image/svg+xml; the PNGs stay image/png", async () => {
+  const a = app();
+  const svg = await get(a, "/icons/favicon.svg");
+  expect(svg.status).toBe(200);
+  expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+  const body = await svg.text();
+  expect(body).toContain('<circle cx="32" cy="32" r="19" fill="none"'); // the o, as in the source
+  expect(body).toContain("prefers-color-scheme"); // its ink follows the system theme
+  expect(body).toContain(BRAND.logoAccent);
+  expect((await get(a, "/icons/icon-192.png")).headers.get("content-type")).toBe("image/png");
+});
+
+test("both pages link the SVG favicon; the console header has the Core wordmark and an LTR build label", () => {
+  for (const f of ["index.html", "login.html"]) {
+    const html = readFileSync(join(import.meta.dir, "../src/frontends/web", f), "utf8");
+    expect(html, f).toContain('<link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">');
+  }
+  const html = readFileSync(join(import.meta.dir, "../src/frontends/web/index.html"), "utf8");
+  // Copied as it is from agent/desks/dev/neo-logos.html (concept 3), not redrawn.
+  expect(html).toContain('<path d="M10 42V29A11 11 0 0 1 32 29V42"/>');
+  expect(html).toContain('<path d="M41 29H63A11 11 0 1 0 59.8 36.8"/>');
+  expect(html).toContain('<circle cx="83" cy="29" r="11"/>');
+  expect(html).toMatch(/<div class="ver" id="ver" dir="ltr"[^>]*hidden><\/div>/);
+  expect(html).not.toContain('<span class="pulse"></span>NEO');
+  // The logo's orange is one brand value: both pages pin --logo-accent to it.
+  for (const f of ["index.html", "login.html", "offline.html"]) {
+    const page = readFileSync(join(import.meta.dir, "../src/frontends/web", f), "utf8");
+    expect(page.match(/--logo-accent:(#[0-9a-f]{6})/)?.[1], f).toBe(BRAND.logoAccent);
+  }
+});
+
+test("the shell cache is past v1, so installed PWAs drop the old icons by themselves", () => {
+  expect(CACHE).not.toBe("neo-shell-v1");
+  expect(SHELL).toContain("/icons/favicon.svg");
 });

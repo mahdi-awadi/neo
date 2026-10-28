@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="2 8 100 42" width="200" height="84">
+<!-- Neo "Core" wordmark, light variant (ink for a light background is set below). Copied as it is from
+     agent/desks/dev/neo-logos.html, symbol m3. ADR-0056. -->
+<style>:root{--accent:#f2552c;color:#18181b}</style>
+<g fill="none" stroke="currentColor" stroke-width="7">
+<path d="M10 42V29A11 11 0 0 1 32 29V42"/>
+<path d="M41 29H63A11 11 0 1 0 59.8 36.8"/>
+<circle cx="83" cy="29" r="11"/>
+</g>
+<circle cx="83" cy="29" r="3.6" style="fill:var(--accent)"/>
+</svg>

@@ -14,6 +14,7 @@ import { linkMdPaths } from "./md-links";
 import { type Attachment, type SendBody, createAttachments, formatSize } from "./attachments";
 import { bindComposeBoxes, clearBox } from "./compose-box";
 import { linesHtml } from "./text-lines";
+import { buildLabel } from "./build-label";
 import { THREAD_ORIGINS } from "../../engine/thread-origins";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
@@ -132,6 +133,7 @@ function renderAll(): void {
   if (changed("sdk", S.sdk)) renderSdk();
   if (changed("projects", S.projects)) renderProjects();
   if (changed("deploy", S.deploy ?? null)) renderDeploy();
+  if (changed("build", S.build ?? null)) renderBuild();
   renderTodos(); // clock-dependent ("running 4m"): always
   if (changed("loops", S.loops)) renderLoops();
   if (changed("usage", S.usage)) renderUsage();
@@ -268,6 +270,16 @@ function renderProjects(): void {
     if (p.active) active = p;
   });
   $("who").textContent = active ? tx("projects.active", { name: active.name }) : tx("projects.openNoneActive", { count: S.projects.length });
+}
+/** The build label under the logo (ADR-0056): the running build from the boot record, LTR in both
+ *  languages (the element carries dir="ltr"). Hidden when the boot recorded no commit. */
+function renderBuild(): void {
+  const el = $("ver");
+  el.hidden = !S.build;
+  if (!S.build) return;
+  const { text, title } = buildLabel(tx, S.build);
+  el.textContent = text;
+  el.title = title;
 }
 /** Finished work that does not run (ADR-0054): a header chip, loud once it is older than the limit. */
 function renderDeploy(): void {

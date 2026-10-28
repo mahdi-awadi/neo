@@ -17,7 +17,7 @@ import { todoTitle } from "./todo-queue";
 import { limitWait } from "./api-retry";
 import { waitingWork, type WaitingItem } from "./waiting-work";
 import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
-import type { IntegrationGap } from "./producers/restart";
+import type { IntegrationGap, RunningBuild } from "./producers/restart";
 
 export interface DashProject {
   id: string;
@@ -74,6 +74,8 @@ export interface DashState {
   waiting: WaitingItem[];
   /** Finished work that does not run (ADR-0054): the console header shows it. */
   deploy?: IntegrationGap;
+  /** The running build (ADR-0056): the build label under the console logo. */
+  build?: RunningBuild;
 }
 
 /** Failed todos the console shows (newest first). All of them stay in the ledger (ADR-0027). */
@@ -171,6 +173,8 @@ export function dashboardSnapshot(opts: {
   keepPatterns?: readonly string[];
   /** The deploy gap, read by the caller (it reads git). */
   deploy?: IntegrationGap;
+  /** The running build, fixed at boot (ADR-0056). */
+  build?: RunningBuild;
 }): DashState {
   const now = opts.now ?? Date.now();
   const activeId = opts.registry.findByChat(opts.chatId)?.id;
@@ -246,6 +250,7 @@ export function dashboardSnapshot(opts: {
     contextEvents,
     waiting,
     ...(opts.deploy ? { deploy: opts.deploy } : {}),
+    ...(opts.build ? { build: opts.build } : {}),
     projects,
     sdk: workerSdkState(opts.sdkProvider ?? "subscription"),
     usage: opts.usage ? opts.usage.snapshot(now) : null,

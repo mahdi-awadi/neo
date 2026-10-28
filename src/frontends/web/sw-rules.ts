@@ -7,7 +7,7 @@ import { ICONS } from "./brand";
 
 export const CACHE_PREFIX = "neo-shell-";
 /** Bump the version when the shell changes: activation then deletes the older `neo-shell-*` caches. */
-export const CACHE = "neo-shell-v1";
+export const CACHE = "neo-shell-v2"; // v2: the Core logo icons (ADR-0056)
 
 export const OFFLINE_URL = "/offline.html";
 /** The app shell: public, static, not personal. */

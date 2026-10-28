@@ -980,6 +980,12 @@ _Avoid_: manual step, blocked step
 The engine code the daemon actually runs — the commit it booted from, recorded at boot.
 _Avoid_: current version, deployed version
 
+**Build label** (ADR-0056):
+The small line under the console logo that names the running build: `v<package version> · <short
+boot commit>`, both read once at boot. It never reads `dev` or the files on disk later, so it cannot
+show a build that is not running.
+_Avoid_: version badge, app version
+
 **Restart-gated change**:
 A change that exists on disk but not in the running build: a commit after the boot commit, a fix
 branch not merged yet, an update that needs a restart. Computed from git and the updater, never

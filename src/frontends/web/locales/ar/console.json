@@ -9,7 +9,10 @@
   "brand": {
     "sub": "لوحة المشغّل",
     "langSwitch": "English",
-    "langSwitchTitle": "تحويل اللوحة إلى الإنجليزية"
+    "langSwitchTitle": "تحويل اللوحة إلى الإنجليزية",
+    "version": "v{{version}} · {{sha}}",
+    "versionTitle": "النسخة العاملة: الإصدار {{version}}، الالتزام {{sha}} على الفرع {{branch}}",
+    "versionTitleNoVersion": "النسخة العاملة: الالتزام {{sha}} على الفرع {{branch}}"
   },
   "newProject": {
     "section": "مشروع جديد",

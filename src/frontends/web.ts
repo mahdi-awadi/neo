@@ -3,6 +3,7 @@
 // cookie; messages drive the same source:"neo" SDK pipeline via the web-channel adapter, and
 // worker output streams back over SSE. createWebApp() is a pure Request->Response handler
 // (unit-tested); startWeb() is the Bun.serve bind (e2e).
+import type { RunningBuild } from "../engine/producers/restart";
 import { isAttentionAction } from "../engine/attention-actions";
 import type { Ledger } from "../engine/ledger";
 import type { AdminStore } from "../engine/admin";
@@ -23,7 +24,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createConsoleI18n, isLang, LANGS, type Lang } from "./web/i18n";
-import { BRAND, ICONS } from "./web/brand";
+import { BRAND, ICONS, iconType } from "./web/brand";
 import type { ThreadFilter, ThreadOrigin, ThreadState } from "../engine/ledger";
 import { THREAD_ORIGINS as ORIGIN_LIST } from "../engine/thread-origins";
 
@@ -53,6 +54,8 @@ export interface WebAppDeps {
   gated?: CommandDeps["gated"];
   /** Finished work that does not run (ADR-0054): /list and the console header. */
   deployGap?: CommandDeps["deployGap"];
+  /** The running build, fixed at boot: the build label under the logo (ADR-0056). */
+  build?: RunningBuild;
   /** Operator-channel broadcast bus — mirror this surface to/from Telegram (see operator-bus.ts). */
   bus?: OperatorBus;
   /** Neo's own repo (the project dashboard's Neo card). Absent → the daemon's working folder. */
@@ -65,7 +68,7 @@ export interface WebApp {
 
 export function createWebApp(deps: WebAppDeps): WebApp {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated, deployGap: deps.deployGap, neoFolder: deps.neoFolder });
+  const channel: WebChannel = createWebChannel({ engine: deps.engine, chatId: WEB_CHAT_ID, usage: deps.usage, requestReload: deps.requestReload, bus: deps.bus, updates: deps.updates, gated: deps.gated, deployGap: deps.deployGap, ...(deps.build ? { build: deps.build } : {}), neoFolder: deps.neoFolder });
 
   function sessionToken(req: Request): string | undefined {
     const m = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
@@ -141,7 +144,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const icon = ICONS.find((i) => i.file === path.slice("/icons/".length));
       if (!icon) return new Response("not found", { status: 404 });
       return new Response(Bun.file(join(WEB_DIR, "icons", icon.file)), {
-        headers: { "content-type": "image/png", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" },
+        headers: { "content-type": iconType(icon.file), "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" },
       });
     }
 

@@ -105,7 +105,7 @@ test("no literal user-facing text in the page shells, apart from the brand", () 
   for (const html of [SHELL, LOGIN, OFFLINE]) {
     const body = html.replace(/<style>[\s\S]*?<\/style>/g, "").replace(/<script[\s\S]*?<\/script>/g, "");
     const text = [...body.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((s) => LETTER.test(s) && !/^%[A-Z_]+%$/.test(s));
-    expect(text).toEqual(["NEO"]);
+    expect(text).toEqual(["neo"]); // the Core wordmark's accessible name (ADR-0056)
     expect(/\splaceholder="[^"%]/.test(body)).toBe(false);
   }
 });

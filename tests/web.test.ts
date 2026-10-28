@@ -233,7 +233,7 @@ test("GET / serves the login page when unauthenticated and the console when auth
   const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
   const authed = await a.instance.fetch(new Request("http://neo.test/", { headers: { cookie } }));
   const page = await authed.text();
-  expect(page).toContain("NEO");
+  expect(page).toContain('<svg class="logo"'); // the Core logo (ADR-0056)
   expect(page).toContain(`<script type="module" src="/app.js?v=${await consoleAppJsVersion()}"></script>`);
 });
 

@@ -12,7 +12,7 @@ import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env"
 import { runOrder, setDefaultEnvScrub } from "./engine/session-runner";
 import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
-import { bootFacts, DEFAULT_RESTART_CFG, gatedText, integrationGap, restartDrafts, type IntegrationGap, type RestartDeps } from "./engine/producers/restart";
+import { bootFacts, DEFAULT_RESTART_CFG, gatedText, integrationGap, restartDrafts, runningBuild, type IntegrationGap, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
 import { runScan } from "./engine/producers/scan";
 import { attentionActions, runDigest, type AttentionAction } from "./engine/attention-actions";
@@ -179,6 +179,17 @@ async function main(): Promise<void> {
     }
     return gapMemo.gap;
   };
+  // The build label under the console logo (ADR-0056): this boot's commit and the package version read
+  // now, at the same moment, so it names what runs even after a later checkout or pull.
+  const build = faults.guard("boot.build", () => {
+    let pkgVersion: string | undefined;
+    try {
+      pkgVersion = (JSON.parse(readFileSync(join(neoFolder, "package.json"), "utf8")) as { version?: string }).version;
+    } catch {
+      // no readable package.json: the label shows the commit only
+    }
+    return runningBuild(thisBoot, pkgVersion);
+  });
   // A handoff of the Neo repo says which finished work does not run (ADR-0054).
   setDeployFacts({ neoFolder, gap: deployGap });
   // The daily attention digest (AC5.5): a high item → the Decisions group, else the operator's DM.
@@ -556,7 +567,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon
