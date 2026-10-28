@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{color-scheme:dark light;--ink:#080b10;--logo-accent:#f2552c;--panel:#0d121a;--panel2:#10171f;--border:#1a2530;--fg:#d7e2ee;--muted:#67788c;--faint:#3a4655;--accent:#3fe0a2;--accent-dim:#1f7a5c;--glow:rgba(63,224,162,.22);--warn:#f5b14c;--danger:#ff6b6b;--info:#6db3ff;--accent-fill:#3fe0a2;--on-accent:#06241a;--topbar:rgba(13,18,26,.55);--scrim:rgba(4,7,11,.6);--glow-a:rgba(63,224,162,.06);--glow-b:rgba(63,150,224,.05);--grid-op:.42;--drawer-x:-100%;--syn-kw:#7fb8ff;--syn-str:#9bdcb9;--syn-com:#8a9aae;--syn-num:#f5b14c;--syn-fn:#e8c97a;--syn-var:#ff9f87;--syn-add:#3fe0a2;--syn-del:#ff7b7b;--out-fg:#aebdcc;--code:'JetBrains Mono',ui-monospace,monospace;--mono:'JetBrains Mono','IBM Plex Sans Arabic',ui-monospace,monospace;--sans:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;--slide:-12px;--compose-h:46px}
+:root{color-scheme:dark light;--ink:#080b10;--logo-accent:#f2552c;--splash-ms:1200ms;--panel:#0d121a;--panel2:#10171f;--border:#1a2530;--fg:#d7e2ee;--muted:#67788c;--faint:#3a4655;--accent:#3fe0a2;--accent-dim:#1f7a5c;--glow:rgba(63,224,162,.22);--warn:#f5b14c;--danger:#ff6b6b;--info:#6db3ff;--accent-fill:#3fe0a2;--on-accent:#06241a;--topbar:rgba(13,18,26,.55);--scrim:rgba(4,7,11,.6);--glow-a:rgba(63,224,162,.06);--glow-b:rgba(63,150,224,.05);--grid-op:.42;--drawer-x:-100%;--syn-kw:#7fb8ff;--syn-str:#9bdcb9;--syn-com:#8a9aae;--syn-num:#f5b14c;--syn-fn:#e8c97a;--syn-var:#ff9f87;--syn-add:#3fe0a2;--syn-del:#ff7b7b;--out-fg:#aebdcc;--code:'JetBrains Mono',ui-monospace,monospace;--mono:'JetBrains Mono','IBM Plex Sans Arabic',ui-monospace,monospace;--sans:'Manrope','IBM Plex Sans Arabic',system-ui,sans-serif;--slide:-12px;--compose-h:46px}
 :root[dir=rtl]{--slide:12px;--drawer-x:100%;--sans:'IBM Plex Sans Arabic','Manrope',system-ui,sans-serif;--mono:'IBM Plex Sans Arabic','JetBrains Mono',ui-monospace,monospace}
 /* Light theme (AC8): the same look on a light ink; the system setting decides. Ink = BRAND.inkLight. */
 @media (prefers-color-scheme:light){:root{--ink:#f4f7f9;--panel:#fbfcfd;--panel2:#eef2f5;--border:#d5dee6;--fg:#0f1720;--muted:#4f5e72;--faint:#7d8ca0;--accent:#0b7f58;--accent-dim:#7fcfb0;--glow:rgba(11,127,88,.16);--warn:#8a5207;--danger:#c63b3b;--info:#1f6fc5;--syn-kw:#1c5fae;--syn-str:#0a7350;--syn-com:#5a6a7d;--syn-num:#985700;--syn-fn:#7a4a00;--syn-var:#b0391a;--syn-add:#0a7350;--syn-del:#b83232;--out-fg:#3d4b5d;--accent-fill:#1fbf86;--on-accent:#06241a;--topbar:rgba(251,252,253,.8);--scrim:rgba(15,23,32,.35);--glow-a:rgba(31,191,134,.05);--glow-b:rgba(31,111,197,.04);--grid-op:.25}}
@@ -294,13 +294,31 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 .tart,.iact,.acts{gap:8px}
 }
 /* Reduced motion (AC9): no entry slide/fade, no pulse, no drawer slide, instant scrolling. */
+/* The Core splash (ADR-0056 amendment): the wordmark draws in, the engine core pops, then it fades once
+   the app is ready. One timing token, --splash-ms, read by splash.ts too. */
+.splash{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;background:var(--ink);transition:opacity .3s ease}
+.splash.out{opacity:0;pointer-events:none}
+.splash .logo{height:56px;width:auto;color:var(--fg);--accent:var(--logo-accent);overflow:visible}
+.splash .draw{stroke-dasharray:1;stroke-dashoffset:1;animation:splash-draw calc(var(--splash-ms)*.5) cubic-bezier(.4,0,.2,1) forwards}
+.splash .d2{animation-delay:calc(var(--splash-ms)*.12)}.splash .d3{animation-delay:calc(var(--splash-ms)*.24)}
+.splash .core{transform-box:fill-box;transform-origin:center;transform:scale(0);animation:splash-core calc(var(--splash-ms)*.36) calc(var(--splash-ms)*.64) cubic-bezier(.2,.8,.3,1.4) forwards}
+@keyframes splash-draw{to{stroke-dashoffset:0}}
+@keyframes splash-core{0%{transform:scale(0)}70%{transform:scale(1.3)}100%{transform:scale(1)}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+@media (prefers-reduced-motion:reduce){.splash .draw{stroke-dashoffset:0}.splash .core{transform:none}}
 @keyframes pulse{0%{box-shadow:0 0 0 0 var(--glow)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
 @keyframes slide{from{opacity:0;transform:translateX(var(--slide))}to{opacity:1;transform:none}}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;border:3px solid var(--ink)}
 </style></head>
-<body><div class="app">
+<body><div class="splash" id="splash" aria-hidden="true"><svg class="logo" viewBox="2 8 100 42" focusable="false"><g fill="none" stroke="currentColor" stroke-width="7">
+        <path class="draw" pathLength="1" d="M10 42V29A11 11 0 0 1 32 29V42"/>
+        <path class="draw d2" pathLength="1" d="M41 29H63A11 11 0 1 0 59.8 36.8"/>
+        <circle class="draw d3" pathLength="1" cx="83" cy="29" r="11"/>
+      </g>
+      <circle class="core" cx="83" cy="29" r="3.6" style="fill:var(--accent)"/></svg></div>
+<script>var neoSplash=document.getElementById("splash");setTimeout(function(){if(neoSplash)neoSplash.remove()},(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--splash-ms"))||1200)*6)</script>
+<div class="app">
  <aside id="side">
   <div class="brand"><div class="wm"><svg class="logo" viewBox="2 8 100 42" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="7">
         <path d="M10 42V29A11 11 0 0 1 32 29V42"/>

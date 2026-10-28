@@ -16,7 +16,8 @@ In the console (`src/frontends/web/`):
 - The header and login logo is inline SVG with `currentColor` ink, so it follows the theme.
 - `icons/favicon.svg` switches its ink with `prefers-color-scheme`.
 - The PNG app icons (`icon-192`, `icon-512`, `icon-maskable-512`, `apple-touch-icon`) are the o mark
-  on the dark tile `#121214` (`BRAND.logoTile`). They were rendered with headless Chrome from an HTML
-  page that holds the mark at 62% of the tile (46% for the maskable icon, inside the safe zone):
-  `chrome --headless=new --no-sandbox --hide-scrollbars --window-size=N,N --screenshot=out.png page.html`.
+  on the console's dark ink `#080b10` (`BRAND.logoTile`, the manifest background too). Render them with
+  `bun tools/brand/render-icons.ts`: headless Chrome, the mark at 62% of the tile (46% for the maskable
+  icon, inside the safe zone).
+- The console's splash (`index.html` `#splash`, `splash.ts`) animates the wordmark (ADR-0056 amendment).
 - After an icon changes, bump `CACHE` in `sw-rules.ts`, so installed PWAs drop the old shell.

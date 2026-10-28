@@ -1259,6 +1259,18 @@ Side lanes: small, independent todos run beside a project's main task (2026-10-2
 
 Restart-gated.
 
+The Core logo animates as the console's splash, and the PWA icons sit on the console ink (2026-10-28,
+ADR-0056 amendment).
+
+- The splash draws the wordmark in and pops the core (~1.2 s, CSS/SVG, `--splash-ms`). It fades once
+  the first state load settles and the intro has played. It is static under reduced motion, and an inline
+  fallback removes it if the app never starts. It works the same in a browser tab and as an installed
+  PWA.
+- The icon tile is `#080b10` = the manifest background, so the native launch screen has no seam.
+  `tools/brand/render-icons.ts` re-renders the PNGs from the SVG. Shell cache `neo-shell-v3`.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

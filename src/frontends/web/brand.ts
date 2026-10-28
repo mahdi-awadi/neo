@@ -10,8 +10,9 @@ export const BRAND = {
   accent: "#3fe0a2",
   /** The logo's own accent (ADR-0056): the engine dot in the o of "Core". Not a UI colour. */
   logoAccent: "#f2552c",
-  /** The logo tile behind the app icons: the dark panel of the logo source. */
-  logoTile: "#121214",
+  /** The tile behind the PWA icons: the console's dark ink, which is also the manifest background, so the
+   *  native launch splash, the icon and the console are one colour (ADR-0056 amendment). */
+  logoTile: "#080b10",
 } as const;
 
 /** The app icons in ./icons — the only files `/icons/<name>` serves. `purpose` absent = not in the manifest.

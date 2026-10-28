@@ -26,3 +26,23 @@ ADR-0054 (the running build and the deploy gap).
 - **A second version source (a build-time constant or an env var).** The boot record already exists
   and is what `/list` and the deploy chip use.
 - **Recolouring the logo to the console's green accent.** The operator chose the orange.
+
+## Amendment (2026-10-28): the animated splash and seamless PWA icons
+
+- **Splash.** On load, the console shows the Core wordmark drawing in (`n`, `e`, the ring), then the
+  orange engine core pops in. It takes about 1.2 s (`--splash-ms`) and uses CSS/SVG only. The overlay is
+  in the HTML itself, so there is no flash of the bare page, in a browser tab or as an installed PWA.
+  `splash.ts` fades it out at whichever comes later: the first state load settling, or the end of the
+  intro. An inline script removes it after 6 × `--splash-ms` if the app never starts.
+  `prefers-reduced-motion` shows the logo fully drawn, with no motion. The overlay is decorative
+  (`aria-hidden`), with no text.
+- **Seamless launch.** The PNG icons' tile is now the console's dark ink `#080b10` (`BRAND.logoTile` =
+  `BRAND.inkDark`), which is also the manifest's `background_color` and `theme_color`. The native PWA
+  launch screen, the icon and the console are one colour.
+- **Reproducible icons.** `bun tools/brand/render-icons.ts` renders the four PNGs from `icons/favicon.svg`
+  with headless Chrome (`CHROME_BIN` overrides the browser). The shell cache is `neo-shell-v3`, so
+  installed PWAs pick up the new icons by themselves.
+
+Rejected: a JavaScript animation library (the CSS is enough, and the splash must paint before any
+script); keeping the splash until a fixed time (it would block a fast load); a separate splash page (it
+would cost a navigation and flash).

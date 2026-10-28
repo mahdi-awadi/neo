@@ -15,6 +15,7 @@ import { type Attachment, type SendBody, createAttachments, formatSize } from ".
 import { bindComposeBoxes, clearBox } from "./compose-box";
 import { linesHtml } from "./text-lines";
 import { buildLabel } from "./build-label";
+import { dismissSplash } from "./splash";
 import { THREAD_ORIGINS } from "../../engine/thread-origins";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
@@ -1667,7 +1668,8 @@ es.onmessage = (ev) => {
 applyStatic();
 renderSdk();
 $("who").textContent = tx("projects.noneActive");
-void loadState();
+// The first state load is "ready": the Core splash fades once it settles and its intro has played.
+dismissSplash(loadState());
 void loadInbox();
 openFromHash();
 window.addEventListener("hashchange", openFromHash);
