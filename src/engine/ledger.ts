@@ -1,5 +1,6 @@
 // Durable record of orders and their outcomes. The deterministic bookkeeping layer —
 // the part of operant that already was an "engine" (ported to bun:sqlite, trimmed).
+import { isLaneKind, type LaneKind } from "./lanes";
 import { Database } from "bun:sqlite";
 import { openSqlite } from "./sqlite";
 import { migrate } from "./ledger-migrations";
@@ -570,7 +571,7 @@ export interface Ledger {
   todoByOrder(orderId: string): TodoRow | undefined;
   /** Todos filtered by folder and/or status. Queued ones come in queue order; others newest first.
    *  `limit` caps the result. */
-  listTodos(opts: { folder?: string; statuses?: TodoStatus[]; limit?: number }): TodoRow[];
+  listTodos(opts: { folder?: string; statuses?: TodoStatus[]; limit?: number; lane?: "main" | "side" }): TodoRow[];
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
@@ -618,10 +619,15 @@ export interface NewTodo {
   cause?: Cause;
   /** The plan an Execute tap made this todo for (ADR-0019). */
   planId?: number;
+  /** Where it runs (ADR-0057): the project's main lane (default) or a side lane beside it. */
+  lane?: "main" | "side";
+  /** A side lane's declared kind. */
+  laneKind?: LaneKind;
 }
 
 export interface TodoRow extends NewTodo {
   id: number;
+  lane: "main" | "side";
   status: TodoStatus;
   position: number;
   createdAt: number;
@@ -1868,12 +1874,13 @@ export function openLedger(
         .get(rec.folder) as { next: number };
       const r = db
         .query(
-          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id, lane, lane_kind)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?) RETURNING id`,
         )
         .get(
           rec.project, rec.folder, rec.brief, rec.team ?? null, rec.workClass, rec.createdBy, at, next,
           rec.cause?.msgId ?? null, rec.cause?.threadId ?? null, rec.planId ?? null,
+          rec.lane === "side" && rec.laneKind ? "side" : "main", rec.lane === "side" && rec.laneKind ? rec.laneKind : null,
         ) as { id: number };
       return todoById(r.id)!;
     },
@@ -1892,6 +1899,10 @@ export function openLedger(
       if (opts.statuses?.length) {
         where.push(`status IN (${opts.statuses.map(() => "?").join(", ")})`);
         params.push(...opts.statuses);
+      }
+      if (opts.lane) {
+        where.push("lane = ?");
+        params.push(opts.lane);
       }
       params.push(opts.limit ?? -1);
       const rows = db
@@ -2217,6 +2228,8 @@ interface TodoDbRow {
   retry_at: number | null;
   failure: string | null;
   waiting_on: string | null;
+  lane: string;
+  lane_kind: string | null;
 }
 
 function mapTodoRow(r: TodoDbRow): TodoRow {
@@ -2241,6 +2254,8 @@ function mapTodoRow(r: TodoDbRow): TodoRow {
     ...(r.retry_at !== null && r.retry_at !== undefined ? { retryAt: r.retry_at } : {}),
     ...(r.failure ? { failure: r.failure } : {}),
     ...(r.waiting_on ? { waitingOn: r.waiting_on } : {}),
+    lane: r.lane === "side" && isLaneKind(r.lane_kind) ? "side" : "main",
+    ...(r.lane === "side" && isLaneKind(r.lane_kind) ? { laneKind: r.lane_kind } : {}),
   };
 }
 

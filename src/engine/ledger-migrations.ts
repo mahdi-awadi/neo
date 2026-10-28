@@ -423,6 +423,12 @@ function noteQuestions(db: Database): void {
   db.run(`CREATE INDEX idx_attention_delivery ON attention_items (source, delivered_at)`);
 }
 
+/** v14 (ADR-0057): a todo's lane and, for a side lane, its kind. Old rows are the main lane. */
+function todoLanes(db: Database): void {
+  db.run(`ALTER TABLE project_todos ADD COLUMN lane TEXT NOT NULL DEFAULT 'main'`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN lane_kind TEXT`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -437,6 +443,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 11, name: "plan approval gate", up: planGate },
   { version: 12, name: "project notes", up: projectNotes },
   { version: 13, name: "note questions and live delivery", up: noteQuestions },
+  { version: 14, name: "todo lanes", up: todoLanes },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

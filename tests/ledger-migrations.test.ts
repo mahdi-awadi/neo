@@ -133,3 +133,22 @@ test("migration 13 adds answer, delivered_at and from_session, and the (source, 
   expect(row!.deliveredAt).toBeUndefined();
   expect(row!.fromSession).toBeUndefined();
 });
+
+// ADR-0057: side lanes — a todo's lane and kind; an old row reads as the main lane.
+test("migration 14 adds lane and lane_kind to project_todos; old rows read as the main lane", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-mig-"));
+  const path = join(dir, "ledger.db");
+  const v13 = new Database(path);
+  migrate(v13, { path, migrations: MIGRATIONS.filter((x) => x.version <= 13) });
+  v13.run(`INSERT INTO project_todos (project, folder, brief, work_class, created_by, created_at, status, position) VALUES ('p', '/f', 'b', 'interactive', 'operator', 1, 'queued', 1)`);
+  const before = (v13.query(`SELECT count(*) AS n FROM project_todos`).get() as { n: number }).n;
+  v13.close();
+  const db = new Database(path);
+  expect(migrate(db, { path }).from).toBe(13);
+  expect((db.query(`SELECT count(*) AS n FROM project_todos`).get() as { n: number }).n).toBe(before);
+  expect(db.query(`SELECT lane, lane_kind FROM project_todos`).get()).toEqual({ lane: "main", lane_kind: null });
+  db.close();
+  const [t] = openLedger(path).listTodos({});
+  expect(t!.lane).toBe("main");
+  expect(t!.laneKind).toBeUndefined();
+});

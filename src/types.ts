@@ -1,4 +1,5 @@
 // Shared types for the Neo engine.
+import type { SessionLane } from "./engine/lanes";
 import type { BlockedOn } from "./engine/liveness";
 import type { Cause } from "./engine/ledger";
 
@@ -89,6 +90,8 @@ export interface SessionControl {
 
 /** A live worker session the engine is driving (an in-process SDK handle). */
 export interface SessionInfo {
+  /** A side-lane session (ADR-0057): never the folder's main session. Absent = the main lane. */
+  lane?: SessionLane;
   /** Stable engine key — the order id, known from registration (before the SDK id exists). */
   id: string;
   /** Short, unique, human-facing name (folder basename) for `/status` and `/kill`. */
