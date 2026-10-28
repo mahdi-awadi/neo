@@ -262,3 +262,64 @@ test("the console's todos carry lane and kind; queue positions count the main la
   expect(rows.find((r) => r.title.includes("build B"))).toMatchObject({ position: 1 });
   expect(rows.find((r) => r.title.includes("build A"))!.lane).toBeUndefined();
 });
+
+test("a side lane that asked the operator parks a SIDE continuation; the answer resumes that lane", async () => {
+  const s = setup();
+  await s.submit("eticket-v3", "build");
+  await settle();
+  await s.submit("eticket-v3", "create a dev user", "side", "ops");
+  await settle();
+  const side = s.ledger.listTodos({ lane: "side" })[0]!;
+  const dec = s.ledger.openDecision({ kind: "decision", question: "Which email?", folder: side.folder, orderId: side.orderId! }, 1);
+  s.runs[1]!.finish(ok("asked the operator"));
+  await settle(60);
+  const parked = s.ledger.listTodos({ lane: "side", statuses: ["waiting"] })[0]!;
+  expect(parked).toMatchObject({ waitingOn: dec, laneKind: "ops" });
+  expect(s.queue.decisionAnswered(dec, "Which email?", "dev@x.test")?.id).toBe(parked.id);
+  await s.queue.pump();
+  await settle(60);
+  expect(s.ledger.todoById(parked.id)).toMatchObject({ status: "running", lane: "side" });
+  expect(s.runs.at(-1)!.task).toContain("dev@x.test");
+  expect(s.runs.at(-1)!.deps.lane).toMatchObject({ kind: "ops" });
+});
+
+test("an answer that comes while the side lane still runs is held for its continuation", async () => {
+  const s = setup();
+  await s.submit("eticket-v3", "build");
+  await settle();
+  await s.submit("eticket-v3", "create a dev user", "side", "ops");
+  await settle();
+  const side = s.ledger.listTodos({ lane: "side" })[0]!;
+  const dec = s.ledger.openDecision({ kind: "decision", question: "Which email?", folder: side.folder, orderId: side.orderId! }, 1);
+  expect(s.queue.decisionAnswered(dec, "Which email?", "dev@x.test")?.id).toBe(side.id); // held, not sent to the main session
+  s.runs[1]!.finish(ok());
+  await settle(80);
+  expect(s.runs.at(-1)!.task).toContain("dev@x.test");
+  expect(s.runs.at(-1)!.deps.lane).toMatchObject({ kind: "ops" });
+});
+
+test("a failed code lane keeps its branch and queues no merge", async () => {
+  const s = setup({ git: true });
+  await s.submit("eticket-v3", "build");
+  await settle();
+  await s.submit("eticket-v3", "fix the typo", "side", "code");
+  await settle(60);
+  const wt = s.runs[1]!.folder;
+  writeFileSync(join(wt, "a.txt"), "b\n");
+  spawnSync("git", ["-C", wt, "commit", "-qam", "half"]);
+  s.runs[1]!.finish({ ok: false, sessionId: "", summary: "tests fail", costUsd: 0 });
+  await settle(150);
+  expect(s.ledger.listTodos({ lane: "main", statuses: ["queued"] })).toHaveLength(0);
+  expect(s.replies.some((r) => r.includes("kept (1 commit, not merged)"))).toBe(true);
+});
+
+test("cancel on a running side todo names the side session to /kill, never the project's main one", async () => {
+  const s = setup();
+  await s.submit("eticket-v3", "build");
+  await settle();
+  await s.submit("eticket-v3", "check docker", "side", "ops");
+  await settle();
+  const side = s.ledger.listTodos({ lane: "side" })[0]!;
+  expect(s.queue.cancel(side.id)).toContain("/kill eticket-v3-side-ops");
+  expect(s.queue.up(side.id)).toContain("not queued");
+});

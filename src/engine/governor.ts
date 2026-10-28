@@ -4,10 +4,10 @@
 // firewall). Wired into the SDK twice, through this ONE function: a PreToolUse hook (runs before a
 // project's settings allow rules; ADR-0006) and the `canUseTool` callback. Autonomous paths (loops,
 // customer-driven briefs) auto-deny escalations, so for them default-escalate = default-deny.
-import { readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import type { Verdict } from "../types";
-import { GIT_WRITE, gitCall, walkBash, writeTargets } from "./bash-walk";
+import { GIT_WRITE, gitCall, realish, walkBash, writeTargets } from "./bash-walk";
 import { laneVerdict, type SessionLane } from "./lanes";
 
 /** `governor.outOfFolderWrites`: the operator's standing answer to an out-of-folder file write
@@ -70,22 +70,6 @@ export function foreignProject(target: string, folder: string, fence: ProjectFen
   } catch {
     return undefined;
   }
-}
-
-/** `p` with symlinks resolved on its longest existing prefix (the rest may not exist yet), so a link
- *  inside the project that points at another project is judged where it really leads. */
-function realish(p: string): string {
-  let head = p;
-  const tail: string[] = [];
-  while (head !== dirname(head)) {
-    try {
-      return join(realpathSync(head), ...tail.reverse());
-    } catch {
-      tail.push(basename(head));
-      head = dirname(head);
-    }
-  }
-  return p;
 }
 
 /** True when `dir` is a git worktree of the repository at `repo`: its `.git` FILE points into

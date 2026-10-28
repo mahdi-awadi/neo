@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { dispatchToProject, SUB_CHAT, type DispatchDeps, type TodoEnd } from "../src/engine/dispatch";
+import { dispatchToProject, SIDE_CHAT, SUB_CHAT, type DispatchDeps, type TodoEnd } from "../src/engine/dispatch";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
@@ -65,6 +65,7 @@ test("a side dispatch to a busy folder starts its own session; the main run gets
   expect(runs[0]!.deps.lane).toEqual({ kind: "ops", projectFolder: folder, todoId: 41 });
   expect(runs[0]!.deps.resume).toBeUndefined(); // always fresh, never the main session
   expect(runs[0]!.order.task).toContain("SIDE LANE (ops)");
+  expect(runs[0]!.order.chatId).toBe(SIDE_CHAT); // never the folder's resume point (SUB_CHAT)
   expect(d.registry.findByFolder(folder)?.id).toBe(main.s.id);
   expect(d.registry.sideLanes(folder).map((s) => s.name)).toEqual(["eticket-v3-side-ops"]);
   runs[0]!.finish();

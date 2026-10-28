@@ -336,3 +336,17 @@ test("config exposes drainWindowMs with a 90s default", () => {
   const dir = mkdtempSync(join(tmpdir(), "neo-cfg-"));
   expect(loadConfig(dir).drainWindowMs).toBe(90_000);
 });
+
+// ADR-0057: a side lane is single-brief; it is never restored as a session (its todo re-runs from the queue).
+test("drainAndPersist never snapshots a side-lane session", async () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const main = registry.add(order("/home/gold"));
+  registry.setSdkSessionId(main.id, "sdk-gold");
+  registry.setStatus(main.id, "idle");
+  const side = registry.add({ ...order("/home/gold"), id: "side-1" }, Date.now(), { lane: { kind: "ops", projectFolder: "/home/gold", todoId: 3 } });
+  registry.setSdkSessionId(side.id, "sdk-side");
+  registry.setStatus(side.id, "idle");
+  await drainAndPersist({ registry, ledger, lifecycle: createLifecycle(), drainMs: 10, pollMs: 1, sleep: async () => {} });
+  expect(ledger.takeOpenSessions().map((r) => r.sdkSessionId)).toEqual(["sdk-gold"]);
+});

@@ -444,12 +444,31 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         }, now());
       }, { todo: t.id });
     }
-    if (w && w.commits > 0) {
+    // Only a finished lane's branch is merged; a failed or retried one keeps its branch (the retry
+    // continues on it), so a half-done change is never queued for merging, nor merged twice.
+    if (w && w.commits > 0 && end.ok) {
       merge = ledger.addTodo(
         { project: t.project, folder: t.folder, brief: mergeBrief(w.branch, w.base, t.id, todoTitle(t.brief)), workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
         now(),
       );
       ledger.recordEvent("todo_lane_merge", { folder: t.folder, data: { project: t.project, id: t.id, merge: merge.id, branch: w.branch, base: w.base, commits: w.commits }, cause: t.cause });
+    }
+    // A side lane that asked the operator (ADR-0057) STOPPED for the answer: its continuation is a side
+    // todo of the same kind — queued now with the answer when it already came, else parked on the
+    // question — so the answer resumes THIS lane, never the folder's main session.
+    let cont: TodoRow | undefined;
+    if (end.ok) {
+      const answers = takeAnswers(end.orderId);
+      const open = ledger.openDecisionsForOrder(end.orderId).filter((d) => !d.plan);
+      if (answers || open.length) {
+        cont = ledger.addTodo(
+          { project: t.project, folder: t.folder, brief: `${t.brief}${answers}`, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: "side", laneKind: t.laneKind },
+          now(),
+        );
+        if (!answers) ledger.updateTodo(cont.id, { status: "waiting", waitingOn: open[0]!.id });
+        carryLinks(t.id, cont.id);
+        ledger.updateTodo(t.id, { result: `${end.summary} → ${answers ? "continuing" : "waiting on the operator"} as side #${cont.id}` });
+      }
     }
     refresh(launcher()?.deps ?? l.deps, t.cause);
     const kind = t.laneKind ?? "side";
@@ -458,7 +477,12 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       : again
         ? `${t.project}: side #${t.id} (${kind}) stopped (${end.failure}) — retry ${t.attempts + 1}/${ladder().length} ${dueIn(again.retryAt - now())}`
         : `${t.project}: side #${t.id} (${kind}) failed`;
-    const tail = [merge ? `queued #${merge.id} to merge ${w!.branch} into ${w!.base}` : "", w?.dirty?.length ? `its worktree kept with ${w.dirty.length} uncommitted file${w.dirty.length === 1 ? "" : "s"}` : ""].filter(Boolean).join("; ");
+    const tail = [
+      merge ? `queued #${merge.id} to merge ${w!.branch} into ${w!.base}` : "",
+      w && w.commits > 0 && !end.ok ? `branch ${w.branch} kept (${w.commits} commit${w.commits === 1 ? "" : "s"}, not merged)` : "",
+      w?.dirty?.length ? `its worktree kept with ${w.dirty.length} uncommitted file${w.dirty.length === 1 ? "" : "s"}` : "",
+      cont ? (cont.status === "waiting" ? `side #${cont.id} waits for your answer` : `continuing as side #${cont.id} with your answer`) : "",
+    ].filter(Boolean).join("; ");
     // A plain good end says nothing more: its result already went to the operator and the dispatcher.
     if (!end.ok || tail) await (launcher() ?? l).deps.reply((launcher() ?? l).replyChat, tail ? `${head} — ${tail}` : head, t.project, undefined, todoLine(t));
     await pumpSides(launcher() ?? l);
@@ -743,6 +767,12 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         // answer for that order's continuation instead of letting the caller open a second session.
         const dec = ledger.decisionById(decisionId);
         const t = dec?.orderId ? ledger.todoByOrder(dec.orderId) : undefined;
+        // A side lane still running when its question is answered (ADR-0057): hold the answer for its
+        // continuation (finishSide), so it never goes into the folder's main session.
+        if (t && t.lane === "side" && t.status === "running" && t.orderId) {
+          earlyAnswers.set(t.orderId, [...(earlyAnswers.get(t.orderId) ?? []), answerLine(decisionId, question, answer)]);
+          return t;
+        }
         if (!t || !handoffInFlight(t.folder)) return undefined;
         const orderId = t.orderId!;
         earlyAnswers.set(orderId, [...(earlyAnswers.get(orderId) ?? []), answerLine(decisionId, question, answer)]);
@@ -818,7 +848,13 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (t.status === "running") {
         // A running todo is stopped with /kill. Only a stale one (no live run, project not busy) is
         // cleared here — and clearing it frees the project, so release the next todo now.
-        if ((t.orderId && live.has(t.orderId)) || projectBusy(registry, t.folder)) {
+        if (t.lane === "side") {
+          // A side lane has its own session: name it, so /kill never stops the project's main task.
+          const s = registry.sideLanes(t.folder).find((x) => x.lane?.todoId === t.id);
+          if ((t.orderId && live.has(t.orderId)) || s) {
+            return `side #${id} is running — stop it with /kill ${s?.name ?? `${t.project}-side-${t.laneKind}`}; cancel only removes queued todos.`;
+          }
+        } else if ((t.orderId && live.has(t.orderId)) || projectBusy(registry, t.folder)) {
           return `#${id} is running — stop it with /kill ${t.project}; cancel only removes queued todos.`;
         }
         ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cleared: no live run" });
@@ -857,12 +893,14 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     up(id) {
       const t = ledger.todoById(id);
       if (!t || t.status !== "queued") return t ? `#${id} is ${t.status}, not queued.` : `No todo #${id}.`;
+      if (t.lane === "side") return `side #${id} has no queue position — it starts as soon as a side slot is free.`;
       return this.move(id, Math.max(1, describePosition(t) - 1));
     },
 
     move(id, position) {
       const t = ledger.todoById(id);
       if (!t || t.status !== "queued") return t ? `#${id} is ${t.status}, not queued.` : `No todo #${id}.`;
+      if (t.lane === "side") return `side #${id} has no queue position — it starts as soon as a side slot is free.`;
       ledger.moveTodo(id, position);
       return `#${id} is now position ${describePosition(t)} for ${t.project}.`;
     },

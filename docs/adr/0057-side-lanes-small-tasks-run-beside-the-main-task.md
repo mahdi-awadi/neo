@@ -79,10 +79,30 @@ to run at the same time.
 - A retried `code` lane whose `side/<id>` branch survived a restart continues on that branch.
 - Writes to `/dev/null`, `/dev/stdout` and `/dev/stderr` are never refused.
 
+Fixed after the independent reviews (2026-10-28):
+
+- The shell reader now sees **quoted** redirect targets (`> "/path"`). This also closes a gap the
+  project fence had before. It looks through wrapper commands (`sudo -E`, `timeout 30`, `nohup`,
+  `command`, `exec`, `time`, `nice`, `stdbuf`, `xargs`).
+- Container lifecycle also covers `--project-directory`, `compose run`, `system`/`volume`/`container`
+  `prune`/`rm` and `service X restart`. A plain `docker run` (a separate one-off container) stays allowed.
+- Lane path checks resolve symlinks. `update-ref`/`symbolic-ref` are git writes. A `code` lane may not
+  delete, rename or force a branch.
+- Side-lane orders are recorded under their own pseudo-chat (`SIDE_CHAT`), so `lastSessionFor`, the
+  reload snapshot and consult forks never pick up a side conversation for the main lane. Side sessions
+  are never snapshotted on reload. A finished side session is removed, which frees its name.
+- A side lane's `ask_operator` marks its own session blocked. Its open question parks a **side**
+  continuation (or holds an early answer for it), so the answer resumes that lane, not the main session.
+- Done-closing (`closeSupersededTodos`) and queue positions stay within one lane. A `code` lane's
+  merge todo is queued only when it ends well (never for a failed or retried run, never twice). A kept
+  dirty worktree is reused by the retry.
+- `cancel` on a running side todo names the side session for `/kill`.
+
 ## Known limits
 
 - The governor reads Bash text. An interpreter that writes files itself (`python -c`, `node -e`) is not
-  parsed. This is the same limit as the project fence (ADR-0031). The kinds are small, declared tasks,
+  parsed, nor is a path in a shell variable (`D=/home/p; cd $D`), nor `make <target>`, `npm install`
+  or `curl -o`. This is the same limit as the project fence (ADR-0031). The kinds are small, declared tasks,
   and `code` work is isolated physically in a worktree.
 - A `code` side lane cannot run a dockerized test stack bound to the main folder. It suits small code
   changes checked by unit tests.

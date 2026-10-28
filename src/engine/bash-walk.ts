@@ -2,11 +2,12 @@
 // (ADR-0057). It splits a command into statements and pipeline parts, follows `cd`/`pushd`/`env -C`,
 // strips leading `VAR=value` words, and checks nested `sh -c '…'` / `eval '…'` code first. Defense in
 // depth only: an interpreter that writes files itself (`python -c`) is not read.
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 /** Git subcommands that change a repository (a branch, a commit, a worktree, the index or the tree). */
-export const GIT_WRITE = /^(commit|checkout|switch|branch|merge|rebase|reset|tag|stash|worktree|cherry-pick|revert|am|apply|add|rm|mv|restore|push|pull|init)$/;
+export const GIT_WRITE = /^(commit|checkout|switch|branch|merge|rebase|reset|tag|stash|worktree|cherry-pick|revert|am|apply|add|rm|mv|restore|push|pull|init|update-ref|symbolic-ref)$/;
 /** Shell commands that write the file paths they are given. */
 export const WRITE_CMD = /^(cp|mv|tee|mkdir|touch|rm|rmdir|rsync|install|ln|truncate)$/;
 
@@ -23,6 +24,91 @@ export interface BashSegment {
 }
 
 const NESTED = /\b(?:(?:ba|z|da)?sh\s+(?:-\w+\s+)*-c|eval)\s+("(?:[^"\\]|\\.)*"|'[^']*')/g;
+
+/** `p` with symlinks resolved on its longest existing prefix (the rest may not exist yet), so a link
+ *  that points elsewhere is judged where it really leads. */
+export function realish(p: string): string {
+  let head = p;
+  const tail: string[] = [];
+  while (head !== dirname(head)) {
+    try {
+      return join(realpathSync(head), ...tail.reverse());
+    } catch {
+      tail.push(basename(head));
+      head = dirname(head);
+    }
+  }
+  return p;
+}
+
+/** Where a command redirects its output: each unquoted `>`/`>>` (with an optional fd) and its target,
+ *  quoted or not. A `>` inside quotes is text; `>&2` duplicates a descriptor and writes no file. */
+function redirectTargets(seg: string): string[] {
+  const out: string[] = [];
+  let q: string | undefined;
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i]!;
+    if (q) {
+      if (c === "\\" && q === '"') i++;
+      else if (c === q) q = undefined;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      q = c;
+      continue;
+    }
+    if (c !== ">") continue;
+    let j = i + 1;
+    if (seg[j] === ">") j++;
+    if (seg[j] === "&") {
+      i = j;
+      continue;
+    }
+    while (seg[j] === " " || seg[j] === "\t") j++;
+    let target = "";
+    if (seg[j] === '"' || seg[j] === "'") {
+      const close = seg.indexOf(seg[j]!, j + 1);
+      target = seg.slice(j + 1, close < 0 ? undefined : close);
+      j = close < 0 ? seg.length : close + 1;
+    } else {
+      while (j < seg.length && !/[\s;&|<>]/.test(seg[j]!)) target += seg[j++];
+    }
+    if (target) out.push(target);
+    i = j - 1;
+  }
+  return out;
+}
+
+/** Commands that run another command: the words after them are the real command. Each entry lists the
+ *  wrapper's flags that take a value; `timeout` also takes its duration. */
+const WRAPPERS: Record<string, Set<string>> = {
+  sudo: new Set(["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "-R"]),
+  timeout: new Set(["-s", "-k", "--signal", "--kill-after"]),
+  nohup: new Set(),
+  command: new Set(),
+  builtin: new Set(),
+  exec: new Set(["-a"]),
+  time: new Set(["-f", "-o"]),
+  nice: new Set(["-n", "--adjustment"]),
+  ionice: new Set(["-c", "-n", "-p"]),
+  stdbuf: new Set(["-i", "-o", "-e"]),
+  xargs: new Set(["-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter", "--arg-file"]),
+};
+
+/** The words with leading wrapper commands (`sudo -E`, `timeout 30`, `nohup`, `xargs -n1`, …) removed. */
+function unwrap(words: string[]): string[] {
+  let w = words;
+  for (let guard = 0; guard < 8 && w.length; guard++) {
+    const flags = WRAPPERS[w[0]!];
+    if (!flags) return w;
+    const wrapper = w[0]!;
+    let i = 1;
+    while (i < w.length && w[i]!.startsWith("-")) i += flags.has(w[i]!) ? 2 : 1;
+    if (wrapper === "timeout" && i < w.length) i++; // the duration
+    w = w.slice(i);
+  }
+  return w;
+}
 
 /** Visit each simple command of `command`, run from `folder`; nested shell code first. The first value
  *  `visit` returns stops the walk and is returned. `cd`/`pushd` are followed, not visited. */
@@ -48,21 +134,27 @@ export function walkBash<T>(command: string, folder: string, visit: (seg: BashSe
         if (k === "GIT_DIR" || k === "GIT_WORK_TREE") gitRepoVar = v.join("=").replace(/\/\.git$/, "");
         words = words.slice(1);
       }
-      if (words[0] === "env") {
-        words = words.slice(1);
-        if (words[0] === "-C" && words[1]) {
-          cwd = resolve(resolve(cwd), words[1]);
-          words = words.slice(2);
+      // Wrappers and `env` may come in any order (`sudo env -C dir git …`, `env FOO=1 timeout 5 git …`).
+      for (let guard = 0; guard < 4; guard++) {
+        const before = words.length;
+        words = unwrap(words);
+        if (words[0] === "env") {
+          words = words.slice(1);
+          if (words[0] === "-C" && words[1]) {
+            cwd = resolve(resolve(cwd), words[1]);
+            words = words.slice(2);
+          }
+          while (words.length && /^\w+=/.test(words[0]!)) words = words.slice(1);
         }
+        if (words.length === before) break;
       }
       if (words.length === 0) continue;
       if ((words[0] === "cd" || words[0] === "pushd") && words[1]) {
         cwd = resolve(resolve(cwd), words[1]);
         continue;
       }
-      // A redirection writes its target; a `>` inside quotes is text.
-      const unquoted = seg.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, " ");
-      const redirects = [...unquoted.matchAll(/\d?>>?\s*(?!&)([^\s;&|]+)/g)].map((m) => expand(m[1]!));
+      // A redirection writes its target, quoted or not; a `>` inside quotes is text.
+      const redirects = redirectTargets(seg).map(expand);
       const hit = visit({ cwd, words, redirects, ...(gitRepoVar ? { gitRepoVar } : {}) });
       if (hit !== undefined) return hit;
     }

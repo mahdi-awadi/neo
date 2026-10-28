@@ -99,6 +99,9 @@ const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
 export const SUB_CHAT = -2;
+/** The pseudo-chat side-lane orders are recorded under (ADR-0057): never the folder's resume point,
+ *  reload snapshot or consult fork, which all read SUB_CHAT. */
+export const SIDE_CHAT = -5;
 
 /** Function-scoped scratch workspaces (research, dev, marketing, …) for work with no project home. */
 export const DESKS_DIR = join(DEFAULT_PROJECT.folder, "desks");
@@ -598,7 +601,7 @@ export async function dispatchToProject(
     source: "neo",
     folder: laneWt?.path ?? folder,
     task: briefWithProjectDocs(teamAgents ? teamLeadPreamble(laneTask) : laneTask),
-    chatId: SUB_CHAT,
+    chatId: sideKind ? SIDE_CHAT : SUB_CHAT,
     createdAt: now(),
   };
   deps.ledger.recordOrder(order, { cause, parentOrderId: opts.parentOrderId });
@@ -1334,8 +1337,9 @@ export async function dispatchToProject(
         // and any sdkSessionId was persisted above for resume.
         deps.registry.remove(session.id);
       } else {
-        // A side lane is single-brief: it closes with its run, never idles for reuse (ADR-0057).
-        deps.registry.setStatus(session.id, sideKind ? "done" : "idle");
+        // A side lane is single-brief: it closes with its run and frees its name (ADR-0057).
+        if (sideKind) deps.registry.remove(session.id);
+        else deps.registry.setStatus(session.id, "idle");
         deps.registry.touch(session.id, now());
         deps.registry.noteBlocked(session.id, undefined); // the run is over — nothing is blocked
         deps.registry.detachControl(session.id);
@@ -1546,6 +1550,9 @@ export async function raiseOperatorDecision(
     /** The operator message (and thread) the raising work answers: the decision lands in that
      *  thread, which then reads "waiting" (spec §5). */
     cause?: Cause;
+    /** The raising session, when known: it is the one marked blocked (a side lane is never the folder's
+     *  main session, ADR-0057). Absent → the folder's main session. */
+    sessionId?: string;
   },
 ): Promise<string> {
   const id = deps.ledger.openDecision({
@@ -1585,7 +1592,7 @@ export async function raiseOperatorDecision(
   // reporting it. Cleared when a brief/answer is delivered back, or when the run ends.
   if (deps.registry && params.folder) {
     try {
-      const session = deps.registry.findByFolder(params.folder);
+      const session = (params.sessionId ? deps.registry.get(params.sessionId) : undefined) ?? deps.registry.findByFolder(params.folder);
       if (session) {
         deps.registry.noteBlocked(session.id, { kind: "decision", label: params.question, since: (params.now ?? Date.now)() });
       }
@@ -1782,6 +1789,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           const id = await raiseOperatorDecision(deps, {
             project: opts.projectName,
             folder: opts.folder,
+            ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
             orderId: opts.orderId,
             chatId: replyChat,
             question: spec.title ?? args.title,

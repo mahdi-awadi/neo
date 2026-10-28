@@ -2,7 +2,7 @@
 // staff picks the lane and kind when it writes the brief; this module holds the rules the engine
 // enforces with them — the kinds, the config, the start check and the governor's lane verdict.
 import { isAbsolute, join, resolve, sep } from "node:path";
-import { GIT_WRITE, gitCall, walkBash, writeTargets } from "./bash-walk";
+import { GIT_WRITE, gitCall, realish, walkBash, writeTargets } from "./bash-walk";
 import { tmpdir } from "node:os";
 
 /** What a side-lane todo declares it does (CONTEXT.md "Lane kind"). */
@@ -63,16 +63,26 @@ export function readLanesCfg(raw: unknown): LanesCfg {
 
 /** `docker …`/`docker compose …`/`docker-compose …` and `systemctl` subcommands that start, stop,
  *  rebuild or remove what a project runs on. A side lane never does these: the main task uses them. */
-const CONTAINER_LIFECYCLE = /^(restart|stop|start|up|down|kill|rm|build|create|pause|unpause|reload)$/;
+const CONTAINER_LIFECYCLE = /^(restart|stop|start|up|down|kill|rm|build|create|pause|unpause|reload|prune|run|remove|scale|update)$/;
 /** Flags of `docker`/`docker compose` that take a value (so the value is not the subcommand). */
-const DOCKER_VALUE_FLAGS = new Set(["-f", "--file", "-p", "--project-name", "--env-file", "--profile", "-H", "--host", "--context", "-c", "--config"]);
+const DOCKER_VALUE_FLAGS = new Set([
+  "-f", "--file", "-p", "--project-name", "--project-directory", "--env-file", "--profile", "--ansi", "--progress", "--parallel",
+  "-H", "--host", "--context", "-c", "--config", "-l", "--log-level",
+]);
+/** `docker <object> <sub>` groups whose lifecycle subcommands a side lane may not run. */
+const DOCKER_OBJECTS = new Set(["compose", "container", "service", "system", "volume", "network", "image", "builder", "stack"]);
 
 /** The container/service lifecycle action a command takes, e.g. "docker compose restart". */
 function lifecycleAction(words: string[]): string | undefined {
-  let w = words[0] === "sudo" ? words.slice(1) : words;
+  // Wrappers (`sudo`, `timeout`, `nohup`, …) are already removed by the shell reader.
+  let w = words;
   if (w[0] === "systemctl") {
     const sub = w.slice(1).find((x) => !x.startsWith("-"));
     return sub && CONTAINER_LIFECYCLE.test(sub) ? `systemctl ${sub}` : undefined;
+  }
+  if (w[0] === "service") {
+    const sub = w.slice(1).filter((x) => !x.startsWith("-"))[1];
+    return sub && CONTAINER_LIFECYCLE.test(sub) ? `service ${sub}` : undefined;
   }
   let head: string;
   if (w[0] === "docker-compose") {
@@ -89,19 +99,22 @@ function lifecycleAction(words: string[]): string | undefined {
       continue;
     }
     if (x.startsWith("-")) continue;
-    if (x === "compose" || x === "container" || x === "service") {
+    if (DOCKER_OBJECTS.has(x)) {
       head += ` ${x}`;
       continue;
     }
+    // A plain `docker run` starts a new, separate container (a one-off tool): it is not the main task's.
+    if (head === "docker" && x === "run") return undefined;
     return CONTAINER_LIFECYCLE.test(x) ? `${head} ${x}` : undefined;
   }
   return undefined;
 }
 
-/** True when `p` (absolute) is `dir` or inside it. */
+/** True when `p` (absolute) is `dir` or inside it — judged where symlinks really lead. */
 function within(p: string, dir: string): boolean {
-  const d = resolve(dir);
-  return p === d || p.startsWith(d + sep);
+  const d = realish(resolve(dir));
+  const t = realish(p);
+  return t === d || t.startsWith(d + sep);
 }
 
 /** Why a side lane may not do this — the deny text — or undefined when the lane rules allow it (the
@@ -119,9 +132,9 @@ export function laneVerdict(tool: string, input: Record<string, unknown>, ctx: {
   // May this lane write the file at absolute path `p`?
   const writable = (p: string): boolean => {
     if (p === "/dev/null" || p === "/dev/stdout" || p === "/dev/stderr") return true; // discarding output
-    if (kind === "code") return !within(p, lane.projectFolder);
-    if (kind === "read-only") return within(p, temp);
-    return !within(p, lane.projectFolder);
+    if (within(p, lane.projectFolder)) return false;
+    // read-only: only under the temp dir — and not through a link there that leads elsewhere.
+    return kind === "read-only" ? within(p, temp) : true;
   };
 
   if (tool === "Write" || tool === "Edit" || tool === "NotebookEdit") {
@@ -141,6 +154,11 @@ export function laneVerdict(tool: string, input: Record<string, unknown>, ctx: {
       if (kind !== "code") return GIT_WRITE.test(git.sub) ? no(`\`git ${git.sub}\` (git writes belong to the main lane)`) : undefined;
       if (within(git.repo, lane.projectFolder) && GIT_WRITE.test(git.sub)) return no(`\`git ${git.sub}\` in the main project folder`);
       if (git.sub === "push") return no("`git push`");
+      // Refs are shared with the main checkout: a code lane never moves, deletes or renames them.
+      if (git.sub === "update-ref" || git.sub === "symbolic-ref") return no(`\`git ${git.sub}\` (refs are shared with the main checkout)`);
+      if (git.sub === "branch" && git.args.some((a) => /^(-[dDmMfcC]+|--delete|--move|--force|--copy)$/.test(a))) {
+        return no("`git branch` delete, rename or force (refs are shared with the main checkout)");
+      }
       if (git.sub === "switch") return no("`git switch` (stay on your side branch)");
       if (git.sub === "checkout" && !git.args.includes("--")) return no("`git checkout` of another branch (stay on your side branch; `git checkout -- <file>` is fine)");
       return undefined;

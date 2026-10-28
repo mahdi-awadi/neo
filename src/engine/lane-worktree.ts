@@ -2,7 +2,7 @@
 // the main checkout's current branch HEAD, under `lanes.worktreeRoot` (outside the work root, so no file
 // watcher in the project sees it), and removed when the lane ends. Removal is never forced: uncommitted
 // work keeps its worktree, and the caller raises it. A branch with commits stays for the merge todo.
-import { mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { branchOf, branchTip, headOf, uncommittedFrom, type GitRunner } from "./git-read";
@@ -49,6 +49,8 @@ export function createLaneWorktree(projectFolder: string, key: string, root: str
   if (branchTip(projectFolder, branch, run)) {
     const forkSha = run(projectFolder, ["merge-base", "--", baseSha, `refs/heads/${branch}`])?.trim();
     if (!forkSha) return { error: `cannot find where ${branch} left ${base}` };
+    // Its worktree may still be there, kept because it was dirty: the retry continues in it.
+    if (existsSync(path) && branchOf(path, run) === branch) return { path, branch, base, baseSha: forkSha };
     if (run(projectFolder, ["worktree", "add", "--", path, branch]) === undefined) return { error: `git worktree add failed for the existing ${branch}` };
     return { path, branch, base, baseSha: forkSha };
   }

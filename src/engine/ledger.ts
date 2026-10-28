@@ -1872,8 +1872,8 @@ export function openLedger(
     },
     addTodo(rec, at = Date.now()) {
       const { next } = db
-        .query(`SELECT COALESCE(MAX(position), 0) + 1 AS next FROM project_todos WHERE folder = ? AND status = 'queued'`)
-        .get(rec.folder) as { next: number };
+        .query(`SELECT COALESCE(MAX(position), 0) + 1 AS next FROM project_todos WHERE folder = ? AND status = 'queued' AND lane = ?`)
+        .get(rec.folder, rec.lane === "side" && rec.laneKind ? "side" : "main") as { next: number };
       const r = db
         .query(
           `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id, lane, lane_kind)
@@ -1957,6 +1957,7 @@ export function openLedger(
              SET status = 'done', ended_at = ?1, retry_at = NULL,
                  result = 'finished by #' || ?2 || ' later in this thread' || CASE WHEN result IS NULL OR result = '' THEN '' ELSE ' — earlier: ' || result END
            WHERE thread_id = ?3 AND folder = ?4 AND id < ?2
+             AND lane = (SELECT lane FROM project_todos WHERE id = ?2)
              AND (status IN ('failed', 'retry') OR (status = 'queued' AND attempts > 0))
              AND ended_at IS NOT NULL AND ended_at < (SELECT created_at FROM project_todos WHERE id = ?2)
            RETURNING id`,
@@ -1969,7 +1970,8 @@ export function openLedger(
       const t = todoById(id);
       if (!t || t.status !== "queued") return;
       const ids = (
-        db.query(`SELECT id FROM project_todos WHERE folder = ? AND status = 'queued' ORDER BY position, id`).all(t.folder) as Array<{ id: number }>
+        // Positions are per lane (ADR-0057): a side todo never shifts the main queue's numbers.
+        db.query(`SELECT id FROM project_todos WHERE folder = ? AND status = 'queued' AND lane = ? ORDER BY position, id`).all(t.folder, t.lane) as Array<{ id: number }>
       )
         .map((r) => r.id)
         .filter((x) => x !== id);
