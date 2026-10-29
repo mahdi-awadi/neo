@@ -4,6 +4,7 @@
 // caller falls through to the order pipeline. `select` is the set of tappable projects for
 // /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
+import { callLine, controlByProject, DEFAULT_TOOL_CONTROL_CFG, type ToolAction, type ToolControlCfg } from "./tool-control";
 import { gapLine, type IntegrationGap } from "./producers/restart";
 import { attentionActions, renderAttention, type AttentionAction } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
@@ -34,6 +35,8 @@ import { projectDeps, projectSummary, projectSummaries, projectUrl, projectView,
 export interface CommandDeps {
   registry: Registry;
   ledger: Ledger;
+  /** Stop/background one running tool call (ADR-0058). Absent = DEFAULT_TOOL_CONTROL_CFG. */
+  toolControl?: ToolControlCfg;
   /** Measured subscription usage (for /usage). Optional so tests/glue can omit it. */
   usage?: UsageMeter;
   /** Injectable clock (session ages). Defaults to Date.now. */
@@ -155,6 +158,18 @@ const COMMANDS: Command[] = [
       deps.registry.clearFocus(chatId);
       return { text: "↩︎ back to the company — your messages go to the main agent." };
     },
+  },
+  {
+    name: "stop",
+    usage: "/stop <project> [n]",
+    summary: "stop the project's running command (only that command; the session goes on)",
+    run: ({ deps, args, now }) => toolCommand("stop", args, deps, now),
+  },
+  {
+    name: "bg",
+    usage: "/bg <project> [n]",
+    summary: "move the project's running command to the background (it keeps running; the worker goes on)",
+    run: ({ deps, args, now }) => toolCommand("background", args, deps, now),
   },
   {
     name: "kill",
@@ -604,7 +619,10 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
         // skip on error
       }
       const lane = s.lane ? `▷ side·${s.lane.kind}${s.lane.todoId !== undefined ? ` #${s.lane.todoId}` : ""} · ` : "";
-      return `${star}${stateIcon(state)} ${lock}${lane}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"`;
+      // The newest running tool call (ADR-0058): what /stop and /bg would act on.
+      const call = [...(registry.getControl(s.id)?.tools?.running() ?? [])].sort((a, b) => b.since - a.since)[0];
+      const running = call ? `\n    ⏵ ${callLine(call, now)}` : "";
+      return `${star}${stateIcon(state)} ${lock}${lane}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"${running}`;
   };
   const main = sessions.filter((s) => !s.lane).map(line);
   const side = sessions.filter((s) => s.lane).map(line);
@@ -731,4 +749,19 @@ function renderHelp(): string {
     "/loop [<project> <goal>] — run a verifiable loop (e.g. /loop green)",
   ];
   return lines.join("\n");
+}
+
+/** `/stop <project> [n]` and `/bg <project> [n]` (ADR-0058): the answer comes `later` (the SDK call). */
+function toolCommand(action: ToolAction, args: string, deps: CommandDeps, now: number): CommandResult {
+  const [project, n] = args.trim().split(/\s+/);
+  const verb = action === "stop" ? "stop" : "bg";
+  if (!project) return { text: `Usage: /${verb} <project> [n] — ${action === "stop" ? "stops" : "backgrounds"} that project's running command, not the session.` };
+  const pick = n && /^\d+$/.test(n) ? Number(n) : undefined;
+  return {
+    text: "",
+    later: controlByProject(
+      { registry: deps.registry, ledger: deps.ledger, cfg: deps.toolControl ?? DEFAULT_TOOL_CONTROL_CFG, now: () => now },
+      { project, ...(pick !== undefined ? { pick } : {}), action, by: { kind: "operator", surface: "command" } },
+    ).then((r) => ({ text: r.text }), (e) => ({ text: `Could not ${verb}: ${e instanceof Error ? e.message : String(e)}` })),
+  };
 }

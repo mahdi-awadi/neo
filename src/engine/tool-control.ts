@@ -143,3 +143,39 @@ export async function controlTool(deps: ToolControlDeps, req: { sessionId: strin
   ].filter(Boolean);
   return { ok: true, outcome: "stopped", toolUseId: call.toolUseId, command: call.summary, text: `Stopped \`${call.summary}\` in ${name}; the session goes on.${tail.length ? ` (${tail.join("; ")})` : ""}` };
 }
+
+/** "14m" / "2h" — how long a call has run. */
+function ageOf(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000));
+  return m >= 120 ? `${Math.floor(m / 60)}h` : `${m}m`;
+}
+
+/** One running call as a list line: `Bash 14m: git push origin dev`. */
+export function callLine(c: { tool: string; summary: string; since: number }, now: number): string {
+  return `${c.tool} ${ageOf(now - c.since)}: ${c.summary}`;
+}
+
+/** Act on a project's MAIN session's running call, by project (session) name. With several running
+ *  calls and no pick, it lists them numbered instead (the commands and the company's tool). */
+export async function controlByProject(
+  deps: ToolControlDeps & { registry: Pick<Registry, "get" | "getControl" | "findByName" | "list">; now?: () => number },
+  req: { project: string; pick?: number; toolUseId?: string; action: ToolAction; by: Actor },
+): Promise<ToolControlResult> {
+  const now = (deps.now ?? Date.now)();
+  const s =
+    deps.registry.findByName(req.project) ??
+    deps.registry.list().find((x) => !x.lane && (x.status === "running" || x.status === "idle") && basename(x.order.folder) === req.project);
+  if (!s) return { ok: false, outcome: "not_running", text: `No open session named ${req.project}.` };
+  const calls = [...(deps.registry.getControl(s.id)?.tools?.running() ?? [])].sort((a, b) => a.since - b.since);
+  let toolUseId = req.toolUseId;
+  if (!toolUseId && req.pick !== undefined) toolUseId = calls[req.pick - 1]?.toolUseId;
+  if (!toolUseId && calls.length > 1) {
+    const verb = req.action === "stop" ? "stop" : "bg";
+    return {
+      ok: false,
+      outcome: "not_running",
+      text: `${s.name} runs ${calls.length} tool calls — say which:\n${calls.map((c, i) => `${i + 1}. ${callLine(c, now)}`).join("\n")}\n(/${verb} ${req.project} 2 acts on the second.)`,
+    };
+  }
+  return controlTool(deps, { sessionId: s.id, ...(toolUseId ? { toolUseId } : {}), action: req.action, by: req.by });
+}

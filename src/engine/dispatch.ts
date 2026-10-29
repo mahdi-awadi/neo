@@ -3,6 +3,7 @@
 // tracked, governed Neo sub-project (registry → dashboard, escalations → operator, metered),
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
+import { controlByProject, DEFAULT_TOOL_CONTROL_CFG, type ToolControlCfg } from "./tool-control";
 import { DEFAULT_LANES_CFG, LANE_GUIDE, LANE_KINDS, laneArgError, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
 import { createLaneWorktree, endLaneWorktree, type LaneWorktree, type LaneWorktreeEnd } from "./lane-worktree";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -220,6 +221,8 @@ export interface DispatchDeps {
   governor?: NeoConfig["governor"];
   /** Side lanes (ADR-0057): where a `code` lane's worktree goes. Absent = DEFAULT_LANES_CFG. */
   lanes?: LanesCfg;
+  /** Stop/background one running tool call (ADR-0058). Absent = DEFAULT_TOOL_CONTROL_CFG. */
+  toolControl?: ToolControlCfg;
   /** Extra env vars merged into every spawned worker (see NeoConfig.workerEnv). */
   workerEnv?: Record<string, string>;
   /** Graceful-reload gate: while draining, dispatch refuses new sub-runs (see engine/reload.ts). */
@@ -1928,6 +1931,26 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId, ...laneArgs(args) }, deps, replyChat)
             : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass, cause, parentOrderId: opts.orderId });
           return { content: [{ type: "text" as const, text: out }] };
+        },
+      ),
+      // ADR-0058: the chief of staff stops or backgrounds ONE command of a project's worker when the
+      // operator asks — through the engine (SDK stop + that call's process tree), never ps/kill.
+      tool(
+        "tool_control",
+        "Stop, or move to the background, the command a project's worker is running right now — only that command; the worker's session goes on. Use this instead of ps/kill when the operator asks to stop or background something a project is running (for example a long `git push` scan or a test loop). " +
+          "`stop`: the command and its child processes end, including what it started inside containers; the worker is told not to run it again. `background`: it keeps running with its output in a log file, and the worker goes on at once. " +
+          "With several running commands the reply lists them numbered; call again with `pick`. Codex workers: stop ends the whole turn, background is not possible.",
+        {
+          action: z.enum(["stop", "background"]),
+          project: z.string().describe('the project (session) name, e.g. "eticket-v3"'),
+          pick: z.number().int().min(1).optional().describe("which running command, from the numbered list"),
+        },
+        async (args: { action: "stop" | "background"; project: string; pick?: number }) => {
+          const r = await controlByProject(
+            { registry: deps.registry, ledger: deps.ledger, cfg: deps.toolControl ?? DEFAULT_TOOL_CONTROL_CFG, reply: (text, project) => void deps.reply(replyChat, text, project) },
+            { project: args.project, ...(args.pick !== undefined ? { pick: args.pick } : {}), action: args.action, by: { kind: "company" } },
+          );
+          return { content: [{ type: "text" as const, text: r.text }] };
         },
       ),
     );

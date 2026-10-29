@@ -121,3 +121,22 @@ test("config: defaults, and a bad value keeps its default", () => {
   expect(DEFAULT_TOOL_CONTROL_CFG).toEqual({ killGraceMs: 5000, noticeAfterMs: 120000, dockerSocket: "/var/run/docker.sock" });
   expect(readToolControlCfg({ killGraceMs: -1, noticeAfterMs: 60000, dockerSocket: "relative" })).toEqual({ ...DEFAULT_TOOL_CONTROL_CFG, noticeAfterMs: 60000 });
 });
+
+test("controlByProject: the project's main session; several running calls → a numbered list, then pick one", async () => {
+  const { controlByProject } = await import("../src/engine/tool-control");
+  const r = rig(claudeTools({
+    running: () => [
+      { toolUseId: "toolu_A", tool: "Bash", summary: "git push origin dev", since: 5 },
+      { toolUseId: "toolu_B", tool: "Task", summary: "review the diff", since: 9 },
+    ],
+  }));
+  const deps = { registry: r.registry, ledger: r.ledger, cfg: DEFAULT_TOOL_CONTROL_CFG, proc: fakeProc({}), sleep: async () => {}, now: () => 65_000 };
+  const list = await controlByProject(deps, { project: "eticket-v3", action: "stop", by: { kind: "operator", surface: "command" } });
+  expect(list.ok).toBe(false);
+  expect(list.text).toContain("1. Bash 1m: git push origin dev");
+  expect(list.text).toContain("2. Task 1m: review the diff");
+  expect(list.text).toContain("/stop eticket-v3 2");
+  const picked = await controlByProject(deps, { project: "eticket-v3", pick: 2, action: "background", by: { kind: "operator", surface: "command" } });
+  expect(picked).toMatchObject({ ok: true, toolUseId: "toolu_B" });
+  expect((await controlByProject(deps, { project: "nope", action: "stop", by: { kind: "company" } })).text).toContain("No open session");
+});

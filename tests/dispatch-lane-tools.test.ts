@@ -60,3 +60,28 @@ test("lane and kind reach the todo queue from both tools", async () => {
   await dispatch.handler({ project: "p", task: "build" }, {});
   expect(submitted.map((s) => [s.lane, s.kind])).toEqual([["side", "ops"], ["side", "test"], [undefined, undefined]]);
 });
+
+// ADR-0058: the chief of staff stops or backgrounds a worker's command with a tool, never ps/kill.
+test("tool_control exists only on the dispatcher's server and acts through the seam", async () => {
+  const d: DispatchDeps = {
+    ledger: openLedger(":memory:"),
+    registry: createRegistry(),
+    meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }),
+    trust: openTrustStore(":memory:"),
+    reply: () => {},
+    askApproval: async () => "deny",
+  };
+  const s = d.registry.add({ id: "w", source: "neo", folder: "/home/eticket-v3", task: "t", chatId: 1, createdAt: 0 }, 0);
+  const calls: string[] = [];
+  d.registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, tools: { provider: "claude", running: () => [{ toolUseId: "toolu_X", tool: "Bash", summary: "semgrep .", since: 0 }], background: async (id: string) => (calls.push(id), { ok: true }), stop: async () => ({ ok: true }) } } as never);
+  const company = neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent" });
+  const worker = neoMcpServers(d, 1, { dispatch: false, folder: "/home/eticket-v3" });
+  const reg = (x: Record<string, unknown>) => (x.neo as { instance: { _registeredTools: Record<string, Tool> } }).instance._registeredTools;
+  expect(reg(worker)["tool_control"]).toBeUndefined();
+  const tc = reg(company)["tool_control"]!;
+  expect(tc.description).toContain("instead of ps/kill");
+  const out = text(await tc.handler({ action: "background", project: "eticket-v3" }, {}));
+  expect(out).toContain("Moved `semgrep .` in eticket-v3 to the background");
+  expect(calls).toEqual(["toolu_X"]);
+  expect(d.ledger.listEvents({ kind: "tool_control" })[0]!.data).toMatchObject({ by: "company", action: "background" });
+});

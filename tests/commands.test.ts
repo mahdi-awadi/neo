@@ -588,3 +588,28 @@ test("/list groups side-lane sessions under 'Side lanes', with their kind", () =
   expect(sidePart).toContain("app-side-ops");
   expect(sidePart).toContain("#9");
 });
+
+// ADR-0058: /stop and /bg act on a project's running tool call; /list shows it.
+test("/stop and /bg answer later with the tool-control result; /list shows the running call", async () => {
+  const registry = createRegistry();
+  const s = registry.add(order({ id: "m", folder: "/proj/app", task: "build" }));
+  const calls: string[] = [];
+  registry.attachControl(s.id, {
+    followUp: () => {},
+    interrupt: async () => {},
+    tools: {
+      provider: "claude",
+      running: () => [{ toolUseId: "toolu_A", tool: "Bash", summary: "git push origin dev", since: 40_000 }],
+      background: async (id: string) => (calls.push(`bg ${id}`), { ok: true }),
+      stop: async (id: string) => (calls.push(`stop ${id}`), { ok: true, taskId: "bx" }),
+    },
+  } as never);
+  const d = { ...deps({ registry }), toolControl: { killGraceMs: 1, noticeAfterMs: 1, dockerSocket: "/nonexistent.sock" } };
+  const bg = handleCommand("/bg app", 1, d)!;
+  expect((await bg.later!).text).toContain("Moved `git push origin dev` in app to the background");
+  const stop = handleCommand("/stop app", 1, d)!;
+  expect((await stop.later!).text).toContain("Stopped `git push origin dev` in app");
+  expect(calls).toEqual(["bg toolu_A", "stop toolu_A"]);
+  expect(handleCommand("/stop", 1, d)!.text).toContain("Usage: /stop <project>");
+  expect(handleCommand("/list", 1, d)!.text).toContain("⏵ Bash 1m: git push origin dev");
+});

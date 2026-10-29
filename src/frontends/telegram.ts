@@ -622,6 +622,7 @@ export function createTelegramBot(
   const commandDeps = (replyTo?: { chatId: number; channelMsgId: number }): CommandDeps => ({
     registry,
     ledger,
+    ...(cfg.toolControl ? { toolControl: cfg.toolControl } : {}),
     usage,
     trust,
     inbox,

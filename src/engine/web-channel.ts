@@ -314,6 +314,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const command = !commandable ? null : handleCommand(text, opts.chatId, {
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
+        ...(opts.engine.cfg.toolControl ? { toolControl: opts.engine.cfg.toolControl } : {}),
         usage: opts.usage,
         trust: opts.engine.trust,
         requestReload: opts.requestReload,
