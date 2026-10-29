@@ -41,8 +41,11 @@ interface HistoryHit {
 ```
 
 Parts behind it: `chunker.ts` (pure), `sources.ts` (ledger row → entries, with the firewall filter),
-`store.ts` (history.db: chunks, FTS5, vec0, watermarks, remembered), `embedder.ts` (HTTP client to the
-local embedder, config-driven, timeout, API key from env), `fuse.ts` (pure RRF + exact-id boost).
+`store.ts` (history.db: chunks, FTS5, vec0 behind a `VectorIndex` interface, watermarks, remembered),
+`embedder.ts` (a health-checked adapter over the local embedder: used while it answers, dropped silently
+when it does not, re-sync of waiting chunks on recovery; config-driven, timeout, API key from env),
+`fuse.ts` (pure RRF + exact-id boost). Other projects' containers (adminli's Qdrant, eticket's
+Meilisearch, ClickHouse, Temporal, project Postgres) are not used — ADR-0066 records why (note #498).
 
 ## Config (`history` in config.json; secrets in `.env`)
 

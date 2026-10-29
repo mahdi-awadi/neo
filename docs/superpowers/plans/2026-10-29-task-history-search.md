@@ -19,8 +19,9 @@ data file with its own backup, a native SQLite extension, and new worker tools.
 - [ ] 3. **Sources + firewall** — orders, todos, results/digests (messages kinds), plans (row + file),
    attention items/notes, operator messages, remembered; watermark per source; skip customer/tainted/
    unknown source; secret scan per chunk. Tests per source and per firewall rule.
-- [ ] 4. **Embedder client** — HTTP (TEI `/embed`), API key from env, timeout, batch, dims check; a fake for
-   tests. Tests: success, timeout, wrong dims, 401, down.
+- [ ] 4. **Embedder adapter** — HTTP (TEI `/embed`), API key from env, timeout, batch, dims check, a health
+   probe per tick ("use it when ready", note #498): down → keyword-only and chunks wait; back → re-sync.
+   A fake for tests. Tests: success, timeout, wrong dims, 401, down then up (waiting chunks embedded).
 - [ ] 5. **Indexer** — `indexTick`: single-flight, keyword first then bounded embed batch; backfill = the
    same path from 0; `history_embed_error` events. Tests: freshness, no double index, embedder down then up.
 - [ ] 6. **Hybrid search** — `fuse.ts` (RRF k=60, exact-id boost), three lists, filters, hits with sources.

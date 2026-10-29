@@ -52,6 +52,36 @@ Measured on this host (2026-10-29, read-only):
    indexed (fail closed: a row with an unknown source is skipped). A secret-shaped string is never stored
    (the existing secret scan runs on every chunk).
 
+7. **"Use it when it is ready" (operator, note #498).** SQLite is always on and always answers:
+   `history.db` (FTS5 + sqlite-vec) is the search, built from the ledger. Everything outside it is behind
+   a health-checked adapter that is used only while it answers and is dropped silently when it does not:
+   the embedder is probed each tick; while it is down, new chunks wait without vectors and search is
+   keyword-only; when it is back, the waiting chunks are embedded (re-sync). The vector part sits behind a
+   small `VectorIndex` interface, so a richer backend could later be added as a derived, rebuildable copy
+   synced from `history.db` — not built now, because nothing on this host is a fit (below).
+
+## Using what already runs on this host (note #498, checked with `docker ps` 2026-10-29)
+
+- **adminli's Qdrant (`adminli-ai-qdrant`, 127.0.0.1:6333).** Rejected. Lifecycle: it belongs to adminli and
+  was recreated today, which drops any collection Neo kept there; it runs `qdrant/qdrant:latest` (not
+  pinned). Credentials: Neo would hold adminli's API key, a secret another project owns and rotates.
+  Isolation: Neo's history holds every project's briefs and results; stored in adminli's database it is
+  readable by adminli's app and workers, and it was reachable from the internet today. Speed: at about
+  30,000 chunks sqlite-vec already answers in 47 ms.
+- **eticket's Meilisearch (`eticket-meilisearch` v1.33).** Rejected for the same lifecycle, credential and
+  isolation reasons (eticket's master key, eticket's workers). Its native hybrid search is real (keyword
+  with typo tolerance + vectors from a REST embedder), but it would still call the same local embedder and
+  adds nothing FTS5 + sqlite-vec + RRF does not give at this size. A Neo-owned Meilisearch is the same ops
+  weight as a Neo-owned Qdrant (below) — rejected for now; the `VectorIndex` seam leaves the door open.
+- **eticket's ClickHouse, Temporal (+ its Postgres).** Add nothing to search: ClickHouse is an analytics
+  store (its vector functions need a full copy of the data in another project's database); Temporal is a
+  workflow engine. Not used.
+- **Project Postgres instances (eticket, contantme, wasilni; prod-postgres is off limits).** pgvector there
+  would put Neo's cross-project history inside one project's database — rejected (isolation).
+- **An embedder already on the host.** None runs (no TEI, Ollama or Infinity container); `adminli-ai`
+  exposes no embedding port. So Neo runs its own small loopback embedder; if one appears later, it is a
+  config URL change behind the same health-checked adapter.
+
 ## Alternatives rejected
 
 - **Qdrant in Docker.** A second always-on service (about 0.5–1 GB RAM with this data), its own
