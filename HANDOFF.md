@@ -1,3 +1,15 @@
+# HANDOFF — gateway Traefik host (2026-10-29, note #455)
+
+`neo-gateway` was recreated from the `dev` compose file with `NEO_API_HOST=neo-api.tech-gate.online`
+(set in `gateway/.env`). **Until `dev` is merged to master, do not recreate the gateway from
+`/home/neo/gateway`:** master's compose file still has the `neo-api.example.com` placeholder and would
+bring back the 400 ACME loop. Use
+`docker compose -p gateway -f <dev checkout>/gateway/docker-compose.yml --project-directory /home/neo/gateway up -d neo-gateway`.
+`gateway/worker/wrangler.toml` still has the public placeholder `GATEWAY_URL`; the deployed Worker's
+own value was not changed (it needs Cloudflare access).
+
+---
+
 # HANDOFF — 2026-10-29: open engine work finished on dev (restart-gated)
 
 Built on `dev` (not live; needs merge to master + restart):

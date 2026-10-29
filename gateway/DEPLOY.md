@@ -36,10 +36,16 @@ npx wrangler deploy
   ```
 
 ## 5. Build + run the gateway container
+Set the public hostname first: `NEO_API_HOST=<your host>` in `gateway/.env` (see `.env.example`).
+Traefik routes that host to the gateway with a Let's Encrypt certificate. Left empty, the gateway runs
+with no public route and requests no certificate: `traefik.enable` stays empty (fail closed). A
+placeholder such as `example.com` must never be used here: Let's Encrypt refuses it with 400 on every
+retry.
 ```sh
 cd /home/neo/gateway
 ./build.sh                       # static binary, uses local gopkg workspace
-docker compose up -d --build     # joins the `proxy` network; Traefik serves neo-api.example.com
+docker compose up -d --build     # joins the `proxy` network; Traefik serves ${NEO_API_HOST}
+docker compose config | grep -E "traefik.enable|rule"   # check: "true" + your host, or empty when unset
 ```
 
 ## 6. Verify

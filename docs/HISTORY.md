@@ -1288,6 +1288,18 @@ Stop, or send to the background, ONE running tool call (2026-10-29, ADR-0058).
 
 Restart-gated.
 
+The gateway's Traefik host comes from `NEO_API_HOST` (2026-10-29, traefik note #455).
+
+- The public-release scrub (5ee1f22) left `neo-api.example.com` in the gateway's Traefik labels. Let's
+  Encrypt refused it (400) on every retry: 266 errors in a day. The real route,
+  `neo-api.tech-gate.online`, no longer matched.
+- The labels now take the host from `NEO_API_HOST` (gateway `.env`, documented in `.env.example`).
+  Unset means `traefik.enable` is empty: no router and no certificate request (Traefik runs with
+  `exposedbydefault=false`; verified with a throwaway container).
+- Live: only `neo-gateway` was recreated (from the `dev` compose file). It serves the existing
+  `*.tech-gate.online` certificate, `/healthz` returns 200 through Traefik, and there were 0
+  example.com errors after the recreate.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

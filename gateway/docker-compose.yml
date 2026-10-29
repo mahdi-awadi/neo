@@ -1,7 +1,9 @@
-# Neo customer email gateway. Joins the `proxy` network so (a) Traefik routes
-# neo-api.example.com to it via these labels, and (b) it can reach the Neo daemon on the
-# host at 172.20.0.1:3003 (the proxy network's gateway). Holds NO Cloudflare/Claude creds.
+# Neo customer email gateway. Joins the `proxy` network so (a) Traefik routes ${NEO_API_HOST} to it
+# via these labels, and (b) it can reach the Neo daemon on the host at 172.20.0.1:3003 (the proxy
+# network's gateway). Holds NO Cloudflare/Claude creds.
 #   ./build.sh && docker compose up -d --build
+# NEO_API_HOST (in .env) is the public hostname. Unset = fail closed: `traefik.enable` is empty, so
+# Traefik (exposedbydefault=false) creates no router and requests no certificate.
 services:
   neo-gateway:
     build: .
@@ -11,13 +13,13 @@ services:
     env_file: .env
     networks: [proxy]
     labels:
-      - "traefik.enable=true"
+      - "traefik.enable=${NEO_API_HOST:+true}"
       - "traefik.docker.network=proxy"
-      - "traefik.http.routers.neoapi.rule=Host(`neo-api.example.com`)"
+      - "traefik.http.routers.neoapi.rule=Host(`${NEO_API_HOST:-unset.invalid}`)"
       - "traefik.http.routers.neoapi.entrypoints=https"
       - "traefik.http.routers.neoapi.tls.certresolver=cloudflare"
       - "traefik.http.services.neoapi.loadbalancer.server.port=8080"
-      - "traefik.http.routers.neoapi-http.rule=Host(`neo-api.example.com`)"
+      - "traefik.http.routers.neoapi-http.rule=Host(`${NEO_API_HOST:-unset.invalid}`)"
       - "traefik.http.routers.neoapi-http.entrypoints=http"
       - "traefik.http.routers.neoapi-http.middlewares=neoapi-redirect"
       - "traefik.http.middlewares.neoapi-redirect.redirectscheme.scheme=https"
