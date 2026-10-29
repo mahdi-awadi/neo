@@ -468,8 +468,14 @@ export function checkpointSteer(occupancy: number, folder: string): string {
   );
 }
 
+/** The first sentence every continuation brief has started with, in this and earlier wordings. */
+const CONTINUATION_MARK = "Continue this task in a fresh session.";
+
+/** True for a continuation brief: the same task carried on in a fresh session, not new work. */
+export const isContinuationBrief = (brief: string): boolean => brief.startsWith(CONTINUATION_MARK);
+
 const CONTINUATION_HEAD =
-  "Continue this task in a fresh session. Neo handed the previous session off; its handoff note (above) " +
+  CONTINUATION_MARK + " Neo handed the previous session off; its handoff note (above) " +
   "says what is done and what is next. Do not redo work it lists as done. Continue only with next steps " +
   "inside the original brief or an approved plan; before starting anything else, ask with ask_operator and stop.";
 

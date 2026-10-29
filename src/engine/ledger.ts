@@ -129,7 +129,7 @@ export interface BootRow {
 
 /** Where an attention item comes from (spec §7): one producer per source. */
 /** `note`: a project note (ADR-0043) — raised by a worker tool, never by a scan. */
-export type AttentionSource = "github" | "git" | "engine" | "plan" | "restart" | "note";
+export type AttentionSource = "github" | "git" | "engine" | "plan" | "restart" | "note" | "skillify";
 export type AttentionSeverity = "high" | "normal" | "low";
 
 /** What a producer reports: one finding, identified by (project, kind, key). */
@@ -578,6 +578,9 @@ export interface Ledger {
   /** Todos filtered by folder and/or status. Queued ones come in queue order; others newest first.
    *  `limit` caps the result. */
   listTodos(opts: { folder?: string; statuses?: TodoStatus[]; limit?: number; lane?: "main" | "side" }): TodoRow[];
+  /** The start (≤ `maxChars`) of every todo brief created at or after `since` that the operator gave, not the
+   *  engine: no plan step (`plan_id`) and no todo opened from an attention item (ADR-0044 skillify). */
+  operatorTodoBriefs(opts: { since: number; maxChars: number }): Array<{ project: string; folder: string; brief: string }>;
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
@@ -1915,6 +1918,16 @@ export function openLedger(
     todoByOrder(orderId) {
       const r = db.query(`SELECT * FROM project_todos WHERE order_id = ? ORDER BY id DESC LIMIT 1`).get(orderId) as TodoDbRow | null;
       return r ? mapTodoRow(r) : undefined;
+    },
+    operatorTodoBriefs({ since, maxChars }) {
+      return db
+        .query(
+          `SELECT t.project AS project, t.folder AS folder, substr(t.brief, 1, ?) AS brief FROM project_todos t
+            WHERE t.created_at >= ? AND t.plan_id IS NULL
+              AND NOT EXISTS (SELECT 1 FROM attention_items a WHERE a.todo_id = t.id)
+            ORDER BY t.id`,
+        )
+        .all(maxChars, since) as Array<{ project: string; folder: string; brief: string }>;
     },
     listTodos(opts) {
       const where: string[] = [];

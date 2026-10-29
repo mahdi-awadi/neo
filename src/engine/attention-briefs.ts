@@ -57,6 +57,11 @@ export const ATTENTION_BRIEFS: Record<string, BriefTemplate> = {
     task: "Project {from} sent this project information (note #{id}): {title}. Update what it affects here (code, docs, notes).",
     doneWhen: "what the note affects is updated and committed, then `project_notes resolve id={id} how=fixed commit=<sha>` — or `how=not_needed` with the reason",
   },
+  // Skillify (ADR-0044): the same task given to this project again and again, with no tool that fits.
+  skillify_repeat: {
+    task: "The operator gave this project the same kind of task again and again: {title}. Read those past todos and how they were done. Write the steps down once: as a skill in this project's `.claude/skills/`, or, when other projects would use it too, send Neo a `project_notes` request for a shared recipe card.",
+    doneWhen: "the skill is committed in this project, or the recipe request is sent to Neo, and the item names which",
+  },
   restart_gated: {
     task: "Neo has changes that are built but not running: {title}. Check the change is ready (tests and types green on the branch), then list what a restart activates. Do NOT restart or reload Neo.",
     doneWhen: "the list of what a restart activates is ready for the operator",

@@ -9,6 +9,7 @@ import { applyAttentionAction, renderAttention } from "../src/engine/attention-a
 import { ATTENTION_BRIEFS, attentionBrief } from "../src/engine/attention-briefs";
 import { ENGINE_KINDS } from "../src/engine/producers/engine";
 import { RESTART_KINDS } from "../src/engine/producers/restart";
+import { SKILLIFY_KINDS } from "../src/engine/producers/skillify";
 import { DIRTY_KINDS } from "../src/engine/todo-queue";
 import type { TodoQueue } from "../src/engine/todo-queue";
 import { handleCommand } from "../src/engine/commands";
@@ -45,7 +46,7 @@ function rig(refuse = false) {
 }
 
 test("every kind a producer raises has a brief template (facts, link, done-when)", () => {
-  for (const kind of [...ENGINE_KINDS, ...RESTART_KINDS, ...DIRTY_KINDS]) expect(ATTENTION_BRIEFS[kind]).toBeDefined();
+  for (const kind of [...ENGINE_KINDS, ...RESTART_KINDS, ...DIRTY_KINDS, ...SKILLIFY_KINDS]) expect(ATTENTION_BRIEFS[kind]).toBeDefined();
   const b = attentionBrief({ kind: "dirty", title: "3 uncommitted files after todo #4", detail: "files: a.ts", url: "https://x", project: "gold" })!;
   expect(b).toContain("3 uncommitted files after todo #4");
   expect(b).toContain("Facts: files: a.ts");

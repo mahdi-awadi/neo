@@ -562,7 +562,8 @@ export interface Catalogue {
   cards: readonly ToolCard[];
   errors: readonly string[];
   cfg: ToolsCfg;
-  find(text: string, ctx: { project: string; folder: string; limit?: number }): ToolMatch[];
+  /** `quiet`: a miss is not recorded (an engine check, not a worker's search). */
+  find(text: string, ctx: { project: string; folder: string; limit?: number; quiet?: boolean }): ToolMatch[];
   /** Relay one call for the calling project. The key is read inside, from the engine's env. */
   relay(cardId: string, op: string, body: unknown, caller: { project: string; folder: string }): Promise<string>;
   /** The dispatch tools hint for a brief (spec A4): at most `hintMaxCards` lines `- <id> (<kind>): <when>` that the
@@ -664,7 +665,7 @@ export function openCatalogue(o: {
     try { o.ledger.recordEvent("tools_miss", { folder, data: { project, terms } }); } catch { /* never breaks a search */ }
   };
 
-  function find(text: string, ctx: { project: string; folder: string; limit?: number }): ToolMatch[] {
+  function find(text: string, ctx: { project: string; folder: string; limit?: number; quiet?: boolean }): ToolMatch[] {
     // Query words: lowercase, stop words dropped, no secret-shaped or very long token, no repeats.
     const seen = new Set<string>();
     const terms: string[] = [];
@@ -680,7 +681,7 @@ export function openCatalogue(o: {
       const keep = new Set(terms.map((t, i) => ({ t, i })).sort((a, b) => b.t.length - a.t.length || a.i - b.i).slice(0, cap).map((x) => x.i));
       return terms.filter((_, i) => keep.has(i));
     };
-    const miss = (): ToolMatch[] => { recordMiss(ctx.project, ctx.folder, missTerms()); return []; };
+    const miss = (): ToolMatch[] => { if (!ctx.quiet) recordMiss(ctx.project, ctx.folder, missTerms()); return []; };
     if (terms.length === 0) return miss();
 
     // The calling project's own skills go into the index for this call only: the transaction is rolled back.

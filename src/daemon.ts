@@ -17,6 +17,7 @@ import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
 import { bootFacts, DEFAULT_RESTART_CFG, gatedText, integrationGap, restartDrafts, runningBuild, type IntegrationGap, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
+import { skillifyTick } from "./engine/producers/skillify";
 import { runScan } from "./engine/producers/scan";
 import { attentionActions, runDigest, type AttentionAction } from "./engine/attention-actions";
 import { createProjectNotes, DEFAULT_NOTES_CFG, noteNowText, notesWiring } from "./engine/project-notes";
@@ -228,6 +229,11 @@ async function main(): Promise<void> {
     }
     return catalogue;
   }, {});
+  // A task the operator keeps giving a project, with no tool that fits, becomes one attention item, once a
+  // day (ADR-0044 skillify). No catalogue (a card error): no suggestions.
+  const skillify = tools
+    ? skillifyTick({ ledger, catalogue: tools, cfg: toolsCfg, keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })
+    : undefined;
   // Scrub the worker env (ADR-0050 §7): relay keys never reach a worker; the engine's own file keys
   // are listed by name in `report` mode (the default) and removed only in `strip` mode.
   {
@@ -553,6 +559,7 @@ async function main(): Promise<void> {
           ["notes.prune", () => notes.prune(Date.now())],
           ["notes.sweepQuestions", () => notes.sweepQuestions(Date.now())],
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
+          ["attention.skillify", () => skillify?.(Date.now())],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed
