@@ -465,3 +465,15 @@ test("project notes limits default, config.json overrides them, a bad value keep
   writeFileSync(join(d, "config.json"), JSON.stringify({ notes: { maxBodyChars: 2000, blockMax: -1, listMax: "x" } }));
   expect(loadConfig(d).notes).toMatchObject({ maxBodyChars: 2000, blockMax: 8, listMax: 30 });
 });
+
+test("ADR-0060: early limit wake defaults on with a 30 s jitter; config sets both; bad values keep the defaults", () => {
+  const c = loadConfig(dir());
+  expect(c.apiLimitWakeEarly).toBe(true);
+  expect(c.apiLimitWakeJitterMs).toBe(30_000);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ apiLimitWakeEarly: false, apiLimitWakeJitterMs: 0 }));
+  expect(loadConfig(d)).toMatchObject({ apiLimitWakeEarly: false, apiLimitWakeJitterMs: 0 });
+  const e = dir();
+  writeFileSync(join(e, "config.json"), JSON.stringify({ apiLimitWakeEarly: "no", apiLimitWakeJitterMs: -5 }));
+  expect(loadConfig(e)).toMatchObject({ apiLimitWakeEarly: true, apiLimitWakeJitterMs: 30_000 });
+});

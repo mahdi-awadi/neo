@@ -82,9 +82,16 @@ _Avoid_: throttle, 429, quota error
 **Limit wait**:
 A running todo whose dispatch is waiting out a rate limit before it re-sends the brief into the same
 session. Derived from the order's newest `api_retry` event (`kind: rate_limit`, still before
-`at + delayMs`); never a todo status. The queue shows it as "waiting for limit reset · resumes HH:MM"
-(ADR-0047).
+`at + delayMs`, and not ended early by an `api_wait_ended`); never a todo status. The queue and
+`sessions` show it as "held: limit wait · resumes HH:MM" (ADR-0047, ADR-0060). `todo retry` ends it now.
 _Avoid_: stuck, paused, limit_wait status
+
+**Held run**:
+A running todo's dispatch that waits on an API error before it re-sends its brief: a limit wait, or a
+shorter error backoff ("held: API retry"). It has a handle (ADR-0060): `todo retry` wakes it, a turn that
+goes through on it (the operator's own message) sends its re-send at once instead of days later, and a turn
+that goes through on the same provider wakes the other limit holds early. Its brief is re-sent at most once.
+_Avoid_: stuck, blocked, needs /kill
 
 **Cooldown**:
 A short engine-wide hold on starting new background work after a worker reports a rate limit, so

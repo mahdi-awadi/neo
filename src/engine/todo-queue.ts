@@ -21,7 +21,8 @@ import { msgRef } from "./trace";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { classifyEnd, nextRetry, retryBrief } from "./todo-retry";
-import { limitWait } from "./api-retry";
+import { apiWait } from "./api-retry";
+import { heldText, resumeClock, type ApiWaits } from "./api-wait";
 import { awaitHandoff, continuationBrief, handoffInFlight, type HandoffNext } from "./context-policy";
 import { awaitCommitFinish, commitFinishInFlight } from "./commit-finish";
 
@@ -39,12 +40,6 @@ const FAILED_SHOWN = 10;
 function dueIn(ms: number): string {
   const m = Math.max(0, Math.round(ms / 60_000));
   return m >= 120 ? `in ${Math.round(m / 60)}h` : `in ${m}m`;
-}
-
-/** "14:30" (UTC) — or "2026-10-25 14:30" when the resume is not today: a weekly limit can be days off. */
-function resumeClock(at: number, now: number): string {
-  const iso = new Date(at).toISOString();
-  return iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? iso.slice(11, 16) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
 }
 
 /** The deps + chat a release starts a todo with (the operator channel's own dispatch deps). */
@@ -71,6 +66,8 @@ export interface TodoQueueDeps {
   onDone?: (todo: TodoRow) => void;
   /** Side lanes (ADR-0057), read live so a config reload applies. Absent = DEFAULT_LANES_CFG. */
   lanes?: () => LanesCfg;
+  /** Held API waits (ADR-0060): `retry` on a running todo held in one ends the wait now. */
+  apiWaits?: ApiWaits;
 }
 
 export interface TodoQueue {
@@ -599,11 +596,12 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     const t0 = now();
     for (const t of all) {
       if (t.status !== "running" || t.lane === "side") continue;
-      // Waiting out a rate limit (ADR-0047): still running, but say why it is quiet and when it goes on.
-      const wait = limitWait(ledger, t.orderId, t0);
+      // Held in an API wait (ADR-0047, ADR-0060): still running, but say why it is quiet, when it goes on,
+      // and that `retry` ends the wait now.
+      const wait = apiWait(ledger, t.orderId, t0);
       lines.push(
         wait
-          ? `  ⏳ #${t.id} waiting for limit reset · resumes ${resumeClock(wait.resumesAt, t0)} UTC — ${todoTitle(t.brief)}`
+          ? `  ⏳ #${t.id} ${heldText(wait.limit)} · resumes ${resumeClock(wait.resumesAt, t0)} UTC · /todo retry ${t.id} resumes now — ${todoTitle(t.brief)}`
           : `  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`,
       );
     }
@@ -846,6 +844,9 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const t = ledger.todoById(id);
       if (!t) return `No todo #${id}.`;
       if (t.status === "running") {
+        // Held in an API wait (ADR-0060): live, never stale — `retry` resumes it now.
+        const held = t.orderId ? q.apiWaits?.held(t.orderId) : undefined;
+        if (held) return `#${id} is held in a ${held.kind === "rate_limit" ? "limit wait" : "API retry wait"} — \`todo retry ${id}\` resumes it now; cancel only removes queued todos.`;
         // A running todo is stopped with /kill. Only a stale one (no live run, project not busy) is
         // cleared here — and clearing it frees the project, so release the next todo now.
         if (t.lane === "side") {
@@ -874,7 +875,18 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     retry(id) {
       const t = ledger.todoById(id);
       if (!t) return `No todo #${id}.`;
-      if (t.status !== "failed" && t.status !== "retry") return `#${id} is ${t.status} — only a failed or waiting retry todo can be retried.`;
+      if (t.status === "running") {
+        // Held in an API wait (a usage limit or an error backoff, ADR-0060): end the wait now. The brief is
+        // re-sent once into the same still-open run, exactly as the timer would — never a second run.
+        const held = t.orderId ? q.apiWaits?.held(t.orderId) : undefined;
+        if (held && q.apiWaits!.wake(t.orderId!, "retry")) {
+          ledger.recordEvent("todo_retried", { folder: t.folder, orderId: t.orderId, data: { project: t.project, id, from: "held", kind: held.kind }, cause: t.cause });
+          refresh(launcher()?.deps, t.cause);
+          return `▶ #${id} resumed now for ${t.project}: its ${held.kind === "rate_limit" ? "limit wait" : "API retry wait"} is over and the brief went back into the same session — ${todoTitle(t.brief)}`;
+        }
+        return `#${id} is running and working (not held in a limit wait) — nothing to retry; it reports when it ends.`;
+      }
+      if (t.status !== "failed" && t.status !== "retry") return `#${id} is ${t.status} — only a failed, waiting-retry or limit-held todo can be retried.`;
       if (t.status === "failed") {
         // The operator's (or the company's) call: a fresh retry budget, at the end of the queue.
         ledger.updateTodo(id, { status: "queued", attempts: 0, retryAt: null });

@@ -208,6 +208,12 @@ export interface NeoConfig {
   /** Jitter magnitude (0-1) applied to every retry wait so co-throttled workers don't sync up:
    *  ladder waits get ±frac, reset-based waits get +frac (upward only). Default 0.2 (±20%). */
   apiRetryJitterFrac: number;
+  /** ADR-0060: when a turn goes through, the same provider's other limit-held runs wake early instead
+   *  of waiting for their reset (the limit is gone). Default true. */
+  apiLimitWakeEarly?: boolean;
+  /** ADR-0060: each early-woken run waits a random 0..this ms first, so they do not re-send at once.
+   *  Default 30 s. */
+  apiLimitWakeJitterMs?: number;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
    *  scheduler can't amplify a rate-limit storm. Default 60 s. */
   apiCooldownMs: number;
@@ -407,6 +413,8 @@ const DEFAULTS = {
   // exactly, so behavior is byte-identical until an operator overrides them.
   apiRetryLadderMs: [30_000, 120_000, 480_000],
   apiRetryJitterFrac: 0.2,
+  apiLimitWakeEarly: true,
+  apiLimitWakeJitterMs: 30_000,
   apiCooldownMs: 60_000,
   // Ledger retention caps (see ledger.ts) — operator policy, not a fact; defaults preserve today's.
   routeKeep: 20_000,
@@ -592,6 +600,8 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
         : DEFAULTS.todoRetryBackoffMs,
     apiRetryLadderMs: fileCfg.apiRetryLadderMs ?? DEFAULTS.apiRetryLadderMs,
     apiRetryJitterFrac: fileCfg.apiRetryJitterFrac ?? DEFAULTS.apiRetryJitterFrac,
+    apiLimitWakeEarly: typeof fileCfg.apiLimitWakeEarly === "boolean" ? fileCfg.apiLimitWakeEarly : DEFAULTS.apiLimitWakeEarly,
+    apiLimitWakeJitterMs: typeof fileCfg.apiLimitWakeJitterMs === "number" && Number.isFinite(fileCfg.apiLimitWakeJitterMs) && fileCfg.apiLimitWakeJitterMs >= 0 ? fileCfg.apiLimitWakeJitterMs : DEFAULTS.apiLimitWakeJitterMs,
     apiCooldownMs: fileCfg.apiCooldownMs ?? DEFAULTS.apiCooldownMs,
     routeKeep: fileCfg.routeKeep ?? DEFAULTS.routeKeep,
     eventsKeep: fileCfg.eventsKeep ?? DEFAULTS.eventsKeep,

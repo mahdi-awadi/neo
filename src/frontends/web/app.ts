@@ -546,6 +546,8 @@ function renderTodos(): void {
                   : t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
           : x.status === "running" && x.limitResumesAt
           ? tx("queue.limitWait", { time: ltr(resumeAt(x.limitResumesAt)) }) // ADR-0047: still running, waiting out a limit
+          : x.status === "running" && x.apiResumesAt
+          ? tx("queue.apiWait", { time: ltr(resumeAt(x.apiResumesAt)) }) // ADR-0060: an API error backoff
           : x.status === "running"
           ? t("queue.running", { age: age(Date.now() - (x.startedAt || x.createdAt)) })
           : x.status === "retry"
@@ -556,11 +558,13 @@ function renderTodos(): void {
                 ? t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
                 : ltr(x.position + ".");
       row.innerHTML = `<span>${lead}</span><div style="flex:1;min-width:0"><div>${ltr("#" + x.id)} ${esc(x.title)}</div></div>`;
-      // ADR-0027: kept work — a failed todo or a waiting retry can be re-run (the same todo).
-      if (x.status === "failed" || x.status === "retry") {
+      // ADR-0027: kept work — a failed todo or a waiting retry can be re-run (the same todo). ADR-0060: a run
+      // held in an API wait resumes now (the same run, the brief re-sent once).
+      const held = x.status === "running" && (x.limitResumesAt || x.apiResumesAt);
+      if (x.status === "failed" || x.status === "retry" || held) {
         const r = document.createElement("button");
         r.className = "chip";
-        r.textContent = tx("queue.retry");
+        r.textContent = tx(held ? "queue.resumeNow" : "queue.retry");
         r.onclick = () => todoAct("retry", x.id);
         row.appendChild(r);
       }

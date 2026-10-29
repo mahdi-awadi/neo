@@ -93,9 +93,12 @@ import {
   API_RETRY_DELAYS_MS,
   type ApiCooldown,
 } from "./api-retry";
+import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
 
 /** Real backoff wait (tests inject opts.sleep instead). */
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** ADR-0060: the most a woken limit hold waits, so several held runs do not all re-send at once. */
+export const API_LIMIT_WAKE_JITTER_MS_DEFAULT = 30_000;
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
@@ -230,6 +233,13 @@ export interface DispatchDeps {
   /** Shared API-throttle gate (engine/api-retry.ts): while a throttle is fresh, a NEW sub-run is
    *  held rather than started, so retries + the loop scheduler can't amplify the storm. */
   cooldown?: ApiCooldown;
+  /** Held API waits (ADR-0060): `todo retry` ends one now, a run that goes on by itself drops its own,
+   *  and a successful turn wakes the account's other limit holds. Absent → a plain timer (tests). */
+  apiWaits?: ApiWaits;
+  /** ADR-0060: a successful turn wakes the same provider's other limit holds early (config
+   *  `apiLimitWakeEarly`, default true), each after a random wait up to `apiLimitWakeJitterMs`. */
+  apiLimitWakeEarly?: boolean;
+  apiLimitWakeJitterMs?: number;
   /** Root under which the company `dispatch` tool resolves project names (config workRoot). Default "/home". */
   workRoot?: string;
   /** Config `projects` (healthUrl etc.) — the `sessions` tool's project summaries read it (P6). */
@@ -536,6 +546,8 @@ export async function dispatchToProject(
     models: deps.models,
     governor: deps.governor,
   };
+  /** Whose account this run spends: a usage limit is one provider's (ADR-0060). */
+  const runProvider: string = providerCfg.providers?.ownWork ?? "claude";
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.
   const teamAgents =
@@ -1097,16 +1109,38 @@ export async function dispatchToProject(
               pausedMs += delayMs;
               retryPending = true;
               void say(apiRetryNotice(name, attempt, delayMs, resetsAt, maxRetries), undefined, { cause: liveCause() });
-              void (opts.sleep ?? realSleep)(delayMs).then(() => {
+              const resend = (reason: WaitEndReason = "timer"): void => {
+                // An early end (ADR-0060) gives back the rest of the wait: the stall clock and the spin
+                // count work again at once, and the wait is not counted as paused time it never was.
+                pausedMs -= Math.max(0, retryingUntil - now());
+                retryingUntil = now();
+                // A wake that came early (todo retry, the limit cleared, the run went on) is not a fresh
+                // try at the API: it does not use up one of the run's API retries.
+                if (reason !== "timer") apiRetries = Math.max(0, apiRetries - 1);
                 lastActivityAt = now();
                 retryPending = false;
                 // Inside the commit finish, the retry re-sends the commit request — never the whole task.
                 runRef?.followUp(commitBrief ?? apiRetryFollowUp(task), "after-turn");
-              });
+              };
+              const delay = (opts.sleep ?? realSleep)(delayMs);
+              // ADR-0060: the wait has a handle — `todo retry` ends it now; the re-send happens once.
+              if (deps.apiWaits) deps.apiWaits.hold({ orderId: order.id, kind, provider: runProvider, until: now() + delayMs }, delay, resend);
+              else void delay.then(() => resend());
               return; // keep the sub-run open — it hasn't done the work yet
             }
             event("api_giveup", { orderId: order.id, folder, data: { scope: "dispatch", project: name, kind, attempts: apiRetries } });
             void say(apiFailureNotice(name, kind, apiRetries), "alert", { cause: liveCause() });
+          } else if (result.ok && deps.apiWaits) {
+            // A turn went through (ADR-0060). If this run was held, something else moved it on (the
+            // operator's own message, or another brief delivered into it): its re-send goes now, right
+            // after this turn — the retry follow-up asks the worker to check what is already done — and
+            // never days later. And the account is not limited any more: its other limit holds wake
+            // early, each after its own jitter.
+            deps.apiWaits.wake(order.id, "went_on");
+            if (deps.apiLimitWakeEarly ?? true) {
+              const jitterMs = deps.apiLimitWakeJitterMs ?? API_LIMIT_WAKE_JITTER_MS_DEFAULT;
+              deps.apiWaits.limitCleared(runProvider, order.id, () => Math.floor((opts.rand ?? Math.random)() * jitterMs));
+            }
           }
         },
         // The brief is done only when the session is settled (no background work left) and nothing
@@ -1258,6 +1292,8 @@ export async function dispatchToProject(
     } catch (e) {
       result = { ok: false, sessionId: "", summary: e instanceof Error ? e.message : String(e), costUsd: 0 };
     }
+    // The run is over: a hold it still has can never re-send into it (ADR-0060).
+    deps.apiWaits?.drop(order.id);
     // The commit finish's outcome (ADR-0037 §5): the run's end is its FIRST end — the follow-up only
     // adds one line, and a stall or failure inside the follow-up never turns the finished task bad.
     const finished = commitFinish ? faults.guard("dispatch.commitFinish", () => commitFinish.end(), { folder }) : undefined;
@@ -1895,7 +1931,12 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
         "sessions",
         "List the operator's live project sessions and what each is doing RIGHT NOW. Each line gives a STATE plus two ages — `last activity` (any sign of life) and `last output` (what the operator can read). Read the state, not the ages: `idle` means healthy and free NO MATTER how old its ages are (a project can sit idle for days and still answer instantly), `working`/`quiet` mean it is busy, `starting` means the engine is still preparing it, `awaiting-operator` means it needs the OPERATOR's answer, and ONLY `wedged` means genuinely stuck. Never tell the operator a project is stuck, hung or in need of a restart unless its state is `wedged`. Use this to answer the operator about a project's status, or — when a dispatch reports a project busy — to decide whether to wait for it or report back. Returns text.",
         {},
-        async () => ({ content: [{ type: "text" as const, text: sessionsReport(deps.registry, Date.now(), deps.liveness, companyProjectLines(deps, Date.now())) }] }),
+        async () => {
+          const at = Date.now();
+          // Only a run the registry still holds: a killed or ended session shows no stale hold.
+          const held = (orderId: string) => (deps.apiWaits?.held(orderId) ? heldLine(deps.ledger, orderId, at) : undefined);
+          return { content: [{ type: "text" as const, text: sessionsReport(deps.registry, at, deps.liveness, companyProjectLines(deps, at), held) }] };
+        },
       ),
       tool(
         "dispatch",
@@ -1960,7 +2001,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
         tool(
           "todo",
           "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
-            "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued or retry todos only — a running one is stopped by the operator with /kill), `retry` (`id`: re-run a failed todo, or a waiting retry now — the SAME todo; never dispatch a new brief to redo a failed one), `pause` / `resume` (`project`). " +
+            "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued or retry todos only), `retry` (`id`: re-run a failed todo, or a waiting retry now — the SAME todo; never dispatch a new brief to redo a failed one; on a RUNNING todo held in a usage-limit wait or an API retry wait — `list` and `sessions` show \"held: limit wait\" or \"held: API retry\" — it resumes that run NOW: the brief goes back into the same session, no second run. Never tell the operator to /kill a held todo: `retry` it), `pause` / `resume` (`project`). " +
             "A todo that stopped for a passing reason (stall, restart, API or account error) is kept as `retry` and re-runs by itself. " +
             "For `add`, " + LANE_GUIDE + " Returns text.",
           {

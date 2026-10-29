@@ -15,7 +15,7 @@ import { workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
 import { todoTitle } from "./todo-queue";
-import { limitWait } from "./api-retry";
+import { apiWait } from "./api-retry";
 import { waitingWork, type WaitingItem } from "./waiting-work";
 import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
 import type { IntegrationGap, RunningBuild } from "./producers/restart";
@@ -114,8 +114,11 @@ export interface DashTodo {
   startedAt?: number;
   /** Why the project's queue is paused, when it is. */
   paused?: string;
-  /** A running todo waiting out a rate limit: when its brief is re-sent (ADR-0047). */
+  /** A running todo waiting out a rate limit: when its brief is re-sent (ADR-0047). `todo retry` ends the
+   *  wait now (ADR-0060). */
   limitResumesAt?: number;
+  /** The same for a shorter API error backoff (overloaded, server error) (ADR-0060). */
+  apiResumesAt?: number;
   /** A side-lane todo (ADR-0057) and its kind. Absent = the main lane. */
   lane?: "side";
   kind?: LaneKind;
@@ -138,7 +141,7 @@ export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.
     const queuedMain = t.status === "queued" && t.lane === "main";
     const position = queuedMain ? (nextPos.get(t.folder) ?? 0) + 1 : 0;
     if (queuedMain) nextPos.set(t.folder, position);
-    const wait = t.status === "running" ? limitWait(ledger, t.orderId, now) : undefined;
+    const wait = t.status === "running" ? apiWait(ledger, t.orderId, now) : undefined;
     return {
       id: t.id,
       project: t.project,
@@ -150,7 +153,7 @@ export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.
       paused: ledger.todoPaused(t.folder)?.reason,
       ...(t.status === "retry" || t.status === "failed" ? { attempts: t.attempts, ...(t.retryAt !== undefined ? { retryAt: t.retryAt } : {}) } : {}),
       ...(t.waitingOn ? { waitingOn: t.waitingOn } : {}),
-      ...(wait ? { limitResumesAt: wait.resumesAt } : {}),
+      ...(wait ? (wait.limit ? { limitResumesAt: wait.resumesAt } : { apiResumesAt: wait.resumesAt }) : {}),
       ...(t.lane === "side" && t.laneKind ? { lane: "side" as const, kind: t.laneKind } : {}),
     };
   });

@@ -13,6 +13,7 @@ import type { StructuredAsk } from "../src/engine/structured-question";
 import { startOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
 import { trackHandoff, continuationBrief, type ContextPolicyCfg, type ContextSignals } from "../src/engine/context-policy";
 import { DEFAULT_MODELS } from "../src/config";
+import { createApiWaits } from "../src/engine/api-wait";
 
 const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
   sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
@@ -1629,6 +1630,87 @@ test("a pending API retry keeps the channel open across a settle", async () => {
   ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
   ctl.h!.onSettled!();
   expect(ctl.closes).toBe(1);
+});
+
+// ADR-0060: a held API wait has a handle. The re-send happens once — on the timer, on a wake
+// (`todo retry`), or never when the run went on by itself (the operator's own "Resume").
+async function heldRun() {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const apiWaits = createApiWaits({ ledger: d.ledger });
+  d.apiWaits = apiWaits;
+  d.apiLimitWakeEarly = false;
+  const { ctl, start } = drivenStart();
+  let wake!: () => void;
+  const sleep = () => new Promise<void>((r) => (wake = r));
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root, sleep, rand: () => 0.5 });
+  await settle();
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+  const orderId = d.ledger.listEvents({ kind: "api_retry" })[0]!.orderId!;
+  return { d, ctl, apiWaits, orderId, timer: () => wake() };
+}
+
+test("ADR-0060: waking a held run re-sends the brief at once, and the timer later sends nothing", async () => {
+  const { ctl, apiWaits, orderId, timer } = await heldRun();
+  expect(apiWaits.held(orderId)).toMatchObject({ kind: "rate_limit", provider: "claude" });
+  expect(apiWaits.wake(orderId, "retry")).toBe(true);
+  expect(ctl.followUps.length).toBe(1);
+  timer();
+  await settle();
+  expect(ctl.followUps.length).toBe(1); // no second re-send
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+  ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(1);
+});
+
+test("ADR-0060: a turn that goes through on a held run (the operator's Resume) re-sends once at once, never days later", async () => {
+  const { ctl, apiWaits, orderId, timer } = await heldRun();
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "went on", costUsd: 0 });
+  expect(apiWaits.held(orderId)).toBeUndefined();
+  expect(ctl.followUps.length).toBe(1); // the retry follow-up, after this turn — the brief is never lost
+  timer();
+  await settle();
+  expect(ctl.followUps.length).toBe(1); // the old timer sends nothing
+});
+
+test("ADR-0060: an early wake that hits the limit again does not use up one of the run's API retries", async () => {
+  const { d, ctl, apiWaits, orderId } = await heldRun();
+  apiWaits.wake(orderId, "retry");
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+  const attempts = d.ledger.listEvents({ kind: "api_retry", orderId }).map((e) => e.data?.attempt);
+  expect(attempts).toEqual([1, 1]); // newest first: the second wait is attempt 1 again
+});
+
+test("ADR-0060: an interrupted or capped turn (ok:false, no API error) is not proof — the hold stays", async () => {
+  const { ctl, apiWaits, orderId } = await heldRun();
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: "s", summary: "interrupted", costUsd: 0 });
+  expect(apiWaits.held(orderId)).toBeDefined();
+  expect(ctl.followUps.length).toBe(0);
+});
+
+test("ADR-0060: the run ends → its hold is dropped, nothing re-sends into it later", async () => {
+  const { ctl, apiWaits, orderId, timer } = await heldRun();
+  ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(0); // still waiting to re-send
+  ctl.resolve!({ ok: false, sessionId: "s", summary: "killed", costUsd: 0 });
+  await settle(30);
+  expect(apiWaits.held(orderId)).toBeUndefined();
+  timer();
+  await settle();
+  expect(ctl.followUps.length).toBe(0);
+});
+
+test("ADR-0060: a turn that goes through wakes the other limit holds of the same provider", async () => {
+  const a = await heldRun();
+  const waits = a.apiWaits;
+  const sent: string[] = [];
+  waits.hold({ orderId: "other", kind: "rate_limit", provider: "claude", until: Date.now() + 3_600_000 }, new Promise(() => {}), () => sent.push("other"));
+  a.d.apiLimitWakeEarly = true;
+  a.d.apiLimitWakeJitterMs = 1;
+  a.ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "ok", costUsd: 0 });
+  await settle(20);
+  expect(sent).toEqual(["other"]);
 });
 
 test("a brief for a session that is closing is refused out loud, never pushed into the dead channel", async () => {

@@ -1,3 +1,14 @@
+# HANDOFF — 2026-10-29: limit-held todos resume with `todo retry` (ADR-0060, on dev, restart-gated)
+
+Built on `dev`: `todo retry` on a running todo held in a limit or API retry wait re-sends its brief into the
+same session now (no second run); a turn that goes through sends a pending re-send at once and wakes the
+account's other limit holds; `/todo`, the Queue tab and `sessions` show the hold. `agent/CLAUDE.md` (local, untracked)
+tells the chief of staff to use `todo retry`, never `/kill`. Held today: eticket-v3 #811, adminli #829,
+waselni #833, cpahost #831 — the running build cannot wake them; after the restart, a held run starts fresh
+anyway (interrupted orders, ADR-0054).
+
+---
+
 # HANDOFF — 2026-10-29: tools catalogue learns from use (ADR-0044 P3–P5, on dev, restart-gated)
 
 Built on `dev` (operator picked it on decision #4a2a44ca): usage ranking from done orders (ledger

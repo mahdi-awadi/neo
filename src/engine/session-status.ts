@@ -143,9 +143,17 @@ export function sessionsReport(
   /** The project dashboard's one-line summaries (P6, spec §9) — open or not — appended as one block;
    *  `total` counts every project, so a cut list says how many it left out. */
   projects?: { lines: string[]; total: number },
+  /** ADR-0060: what a session's run is held in (an API wait), by its order id — appended to its line. */
+  held?: (orderId: string) => string | undefined,
 ): string {
   const views = sessionStatuses(registry, now, th);
-  const sessions = views.length === 0 ? ["No projects are open right now — nothing running or idle."] : [...views.map((v) => `${v.name} · ${v.folder} — ${v.line}`), LEGEND];
+  const orderOf = new Map(registry.list().map((s) => [`${s.name}\0${s.order.folder}`, s.order.id]));
+  const heldOf = (v: SessionStatusView): string => {
+    const id = orderOf.get(`${v.name}\0${v.folder}`);
+    const h = id && held ? held(id) : undefined;
+    return h ? ` · ${h}` : "";
+  };
+  const sessions = views.length === 0 ? ["No projects are open right now — nothing running or idle."] : [...views.map((v) => `${v.name} · ${v.folder} — ${v.line}${heldOf(v)}`), LEGEND];
   if (!projects?.lines.length) return sessions.join("\n");
   const more = projects.total - projects.lines.length;
   return [...sessions, "", "Projects (health · session · queue · open attention):", ...projects.lines, ...(more > 0 ? [`… +${more} more`] : [])].join("\n");

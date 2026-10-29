@@ -8,6 +8,7 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import { createApiCooldown } from "../src/engine/api-retry";
+import { createApiWaits } from "../src/engine/api-wait";
 import type { DispatchDeps } from "../src/engine/dispatch";
 import type { RunHandlers, RunResult } from "../src/engine/session-runner";
 import { continuationBrief } from "../src/engine/context-policy";
@@ -633,7 +634,7 @@ test("list: a running todo waiting for a limit reset says so, with its resume ti
   // clock is 1_000; the re-send is due at 500 + 10m = 600_500 → 00:10 UTC.
   ledger.recordEvent("api_retry", { orderId: "o-wait", at: 500, data: { kind: "rate_limit", delayMs: 600_000 } });
   const text = queue.list();
-  expect(text).toContain(`⏳ #${a.id} waiting for limit reset · resumes 00:10 UTC — fix the fare cache`);
+  expect(text).toContain(`⏳ #${a.id} held: limit wait · resumes 00:10 UTC · /todo retry ${a.id} resumes now — fix the fare cache`);
   expect(text).toContain(`▶ #${b.id} running 0m — ship the build`);
   expect(ledger.todoById(a.id)?.status).toBe("running");
 });
@@ -643,5 +644,38 @@ test("list: a limit wait that resumes on another day names the date too (a weekl
   const a = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "weekly wait", workClass: "interactive", createdBy: "operator" }, 0);
   ledger.updateTodo(a.id, { status: "running", orderId: "o-week", startedAt: 0 });
   ledger.recordEvent("api_retry", { orderId: "o-week", at: 0, data: { kind: "rate_limit", delayMs: 2 * 86_400_000 + 3_600_000 } });
-  expect(queue.list()).toContain(`⏳ #${a.id} waiting for limit reset · resumes 1970-01-03 01:00 UTC — weekly wait`);
+  expect(queue.list()).toContain(`⏳ #${a.id} held: limit wait · resumes 1970-01-03 01:00 UTC · /todo retry ${a.id} resumes now — weekly wait`);
+});
+
+// ADR-0060: `todo retry` on a running todo that is held in an API wait ends the wait now — the brief is
+// re-sent once into the same run, never a second run. A running todo that is really working is refused.
+test("retry on a running todo in a limit wait resumes it now, once; on a working todo it is refused", () => {
+  const ledger = openLedger(":memory:");
+  const registry = createRegistry();
+  const apiWaits = createApiWaits({ ledger });
+  const queue = createTodoQueue({ ledger, registry, onFailure: () => "continue", apiWaits });
+  const held = ledger.addTodo({ project: "waselni", folder: "/w", brief: "finish the trips screen", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(held.id, { status: "running", orderId: "o-held", startedAt: 1 });
+  const working = ledger.addTodo({ project: "gold", folder: "/g", brief: "build the cart", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(working.id, { status: "running", orderId: "o-work", startedAt: 1 });
+  const sent: string[] = [];
+  apiWaits.hold({ orderId: "o-held", kind: "rate_limit", provider: "claude", until: Date.now() + 3_600_000 }, new Promise(() => {}), () => sent.push("o-held"));
+
+  // cancel on a held todo points at retry (the run is live: it is never cleared as stale)
+  const c = queue.cancel(held.id);
+  expect(c).toContain(`todo retry ${held.id}`);
+  expect(ledger.todoById(held.id)!.status).toBe("running");
+
+  const out = queue.retry(held.id);
+  expect(out).toContain(`#${held.id}`);
+  expect(out.toLowerCase()).toContain("resumed");
+  expect(sent).toEqual(["o-held"]);
+  expect(ledger.todoById(held.id)!.status).toBe("running"); // the same run goes on — no new run
+  expect(queue.retry(held.id).toLowerCase()).toContain("working"); // the wait is gone: a second retry is refused
+  expect(sent).toEqual(["o-held"]);
+
+  const refused = queue.retry(working.id);
+  expect(refused.toLowerCase()).toContain("working");
+  expect(refused).not.toContain("/kill");
+  expect(ledger.listEvents({ kind: "todo_retried" }).map((e) => e.data?.from)).toEqual(["held"]);
 });

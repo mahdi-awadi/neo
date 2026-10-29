@@ -178,16 +178,26 @@ export function apiExhaustionWarning(rateLimits: RateLimitInfo[] | undefined, no
   );
 }
 
-/** A run's limit wait (ADR-0047): its order's newest `api_retry` is a rate limit whose re-send is
- *  still ahead. `resumesAt` is that re-send (`at + delayMs`: the reset plus its jitter). Derived from
- *  the ledger, so every queue view reads the same fact and no status ever changes for it. */
-export function limitWait(ledger: Pick<Ledger, "listEvents">, orderId: string | undefined, now: number): { resumesAt: number } | undefined {
+/** A run's API wait (ADR-0047, ADR-0060): its order's newest `api_retry` whose re-send is still ahead and
+ *  that was not ended early (`api_wait_ended` after it: `todo retry`, the run going on by itself, or the
+ *  limit clearing). `resumesAt` is that re-send (`at + delayMs`); `limit` marks a usage limit
+ *  (`rate_limit`) against a shorter error backoff. Derived from the ledger, so every view reads one fact. */
+export function apiWait(ledger: Pick<Ledger, "listEvents">, orderId: string | undefined, now: number): { resumesAt: number; limit: boolean } | undefined {
   if (!orderId) return undefined;
   const last = ledger.listEvents({ kind: "api_retry", orderId, limit: 1 })[0];
   const delayMs = last?.data?.delayMs;
-  if (!last || last.data?.kind !== "rate_limit" || typeof delayMs !== "number") return undefined;
+  if (!last || typeof delayMs !== "number") return undefined;
   const resumesAt = last.at + delayMs;
-  return resumesAt > now ? { resumesAt } : undefined;
+  if (resumesAt <= now) return undefined;
+  const ended = ledger.listEvents({ kind: "api_wait_ended", orderId, limit: 1 })[0];
+  if (ended && ended.at >= last.at) return undefined;
+  return { resumesAt, limit: last.data?.kind === "rate_limit" };
+}
+
+/** A run's limit wait (ADR-0047): its API wait, when it is a usage limit. */
+export function limitWait(ledger: Pick<Ledger, "listEvents">, orderId: string | undefined, now: number): { resumesAt: number } | undefined {
+  const w = apiWait(ledger, orderId, now);
+  return w?.limit ? { resumesAt: w.resumesAt } : undefined;
 }
 
 /** What a held dispatch/loop fire reports back. */

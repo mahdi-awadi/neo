@@ -53,6 +53,7 @@ import { refSuffix, type Trace } from "./trace";
 import { faults } from "./fault";
 import { createPlanWatch } from "./plan-watch";
 import { DEFAULT_PLANS_CFG, headSha, onRunEndPlans, planDepsFrom, type EditPlanCard, type PostPlan } from "./plans";
+import type { ApiWaits } from "./api-wait";
 import {
   apiExhaustionWarning,
   apiFailureNotice,
@@ -145,6 +146,8 @@ export interface PipelineDeps {
   /** Shared API-throttle gate: a session throttled here arms it, and background work reads it
    *  (see engine/api-retry.ts). Absent → retries still happen, they just don't hold sibling work. */
   cooldown?: ApiCooldown;
+  /** Held API waits (ADR-0060), shared with the todo queue: `todo retry` ends one now. */
+  apiWaits?: ApiWaits;
   /** Injectable wait for the retry backoff (tests pass a no-op). Defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>;
   /** Injectable jitter source for the retry backoff. Defaults to Math.random. */
@@ -598,6 +601,8 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     toolLoopExempt: deps.cfg.toolLoopExempt,
     apiRetryLadderMs: deps.cfg.apiRetryLadderMs,
     apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac,
+    apiLimitWakeEarly: deps.cfg.apiLimitWakeEarly,
+    apiLimitWakeJitterMs: deps.cfg.apiLimitWakeJitterMs,
     contextPolicy: deps.cfg.contextPolicy,
     workers: deps.cfg.workers,
     models: deps.cfg.models,

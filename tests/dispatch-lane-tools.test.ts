@@ -85,3 +85,11 @@ test("tool_control exists only on the dispatcher's server and acts through the s
   expect(calls).toEqual(["toolu_X"]);
   expect(d.ledger.listEvents({ kind: "tool_control" })[0]!.data).toMatchObject({ by: "company", action: "background" });
 });
+
+test("ADR-0060: the todo tool says retry resumes a limit-held running todo now, and never to /kill it", () => {
+  const { todo } = tools();
+  expect(todo.description).toContain("held: limit wait");
+  expect(todo.description).toContain("resumes that run NOW");
+  expect(todo.description).toContain("Never tell the operator to /kill a held todo");
+  expect(todo.description).not.toContain("stopped by the operator with /kill");
+});

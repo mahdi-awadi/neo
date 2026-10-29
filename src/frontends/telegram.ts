@@ -45,6 +45,7 @@ import { faults } from "../engine/fault";
 import { applyPlanAction, isPlanAction, planDepsFrom, PLAN_LABELS, type EditPlanCard, type PlanAction, type PostPlan } from "../engine/plans";
 import type { PlanStatus } from "../engine/ledger";
 import { answerable } from "../engine/decision-settle";
+import type { ApiWaits } from "../engine/api-wait";
 import {
   keyboardRows,
   parseDecisionCallback,
@@ -250,7 +251,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"]; notes?: ProjectNotes; tools?: Catalogue; toolNotices?: ToolNotices },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; apiWaits?: ApiWaits; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"]; notes?: ProjectNotes; tools?: Catalogue; toolNotices?: ToolNotices },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -514,6 +515,7 @@ export function createTelegramBot(
     trust,
     lifecycle: reload?.lifecycle,
     cooldown: reload?.cooldown,
+    apiWaits: reload?.apiWaits,
     codebaseMemory: sharedCodebaseMemoryIndexer(cfg, ledgerIndexStore(ledger)),
     todo: reload?.todo,
     trace,

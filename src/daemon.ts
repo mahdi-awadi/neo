@@ -42,6 +42,7 @@ import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } f
 import { nextRetry } from "./engine/todo-retry";
 import { setDeployFacts, setNeoNotesDir } from "./engine/context-policy";
 import { createApiCooldown } from "./engine/api-retry";
+import { createApiWaits } from "./engine/api-wait";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
@@ -110,8 +111,10 @@ async function main(): Promise<void> {
   setNeoNotesDir(cfg.handoffNotesDir);
   // A done todo made from a project note resolves the note (ADR-0043); `notes` is built below and only
   // read when a todo ends.
+  // Held API waits (ADR-0060): one registry for dispatch and the queue, so `todo retry` ends a limit wait now.
+  const apiWaits = createApiWaits({ ledger });
   const todo = createTodoQueue({
-    ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs,
+    ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs, apiWaits,
     lanes: () => cfg.lanes ?? DEFAULT_LANES_CFG,
     onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
   });
@@ -584,7 +587,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools, toolNotices }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, apiWaits, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools, toolNotices }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -595,7 +598,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inboxSecret: inboxSecretOf(cfg), inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, apiWaits, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inboxSecret: inboxSecretOf(cfg), inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon

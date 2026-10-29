@@ -1321,6 +1321,19 @@ The tools catalogue learns from use (2026-10-29, ADR-0044 Phase 3–5, Amendment
 
 Restart-gated. `bun tools/catalogue/install.ts` (skills) and loading the loop are operator steps.
 
+A limit-held todo resumes with `todo retry` (2026-10-29, ADR-0060).
+
+- Bug: the main agent told the operator four held projects could only be resumed with `/kill`. The wait
+  was a bare sleep, `todo retry` refused a running todo, and the `todo` tool said to `/kill` it. The
+  operator's own "Resume" message went on at once, and the old timer would then have re-sent the brief again.
+- `api-wait.ts` gives every held API wait a handle: `todo retry` wakes it (the same run, brief re-sent once),
+  a turn that goes through on it sends its re-send at once (not days later), and one on the same provider
+  wakes the other limit holds early (`apiLimitWakeEarly`, jitter `apiLimitWakeJitterMs`).
+- `/todo`, the Queue tab (a "resume now" button, AR + EN) and `sessions` show "held: limit wait · resumes
+  HH:MM · retry resumes now". `cancel` on a held todo points at `retry`.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
