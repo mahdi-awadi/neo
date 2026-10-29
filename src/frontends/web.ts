@@ -285,6 +285,25 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return view ? Response.json(view, NO_STORE) : Response.json({ ok: false, error: "no such project" }, { status: 404, ...NO_STORE });
     }
 
+    // ADR-0065: the "Pinned — needs you" strip, a pin, and a todo's detail.
+    if (req.method === "GET" && path === "/api/needs-you") {
+      return Response.json({ items: channel.needsYou() }, NO_STORE);
+    }
+    if (req.method === "POST" && path === "/api/pin") {
+      const body = (await req.json().catch(() => ({}))) as { ref?: unknown; state?: unknown };
+      const state = body.state === "pinned" || body.state === "unpinned" || body.state === null ? body.state : undefined;
+      if (typeof body.ref !== "string" || state === undefined) {
+        return Response.json({ ok: false, error: "ref + state (pinned|unpinned|null) required" }, { status: 400, ...NO_STORE });
+      }
+      return Response.json(channel.pin(body.ref, state), NO_STORE);
+    }
+    if (req.method === "GET" && path.startsWith("/api/todo/")) {
+      const raw = path.slice("/api/todo/".length);
+      const id = /^\d{1,9}$/.test(raw) ? Number(raw) : undefined;
+      const d = id !== undefined ? channel.todoDetail(id) : undefined;
+      return d ? Response.json(d, NO_STORE) : Response.json({ ok: false, error: "no such todo" }, { status: 404, ...NO_STORE });
+    }
+
     // The thread tree behind a message ref (spec §4.4) — the same tree /trace renders, as JSON.
     if (req.method === "GET" && path.startsWith("/api/trace/")) {
       const trace = deps.engine.trace;

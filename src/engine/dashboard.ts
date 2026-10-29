@@ -5,7 +5,7 @@ import type { LaneKind } from "./lanes";
 import { readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Registry } from "./registry";
-import type { Ledger } from "./ledger";
+import type { Ledger, TodoRow } from "./ledger";
 import type { UsageMeter, UsageSnapshot } from "./usage";
 import type { Provider } from "../types";
 import { listLoops, type LoopInfo } from "./loops";
@@ -163,6 +163,83 @@ export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.
       ...(t.lane === "side" && t.laneKind ? { lane: "side" as const, kind: t.laneKind } : {}),
     };
   });
+}
+
+/** What the operator can do to a todo from its detail (ADR-0065), by its state — the same rules the
+ *  `/todo` command applies (it refuses anything else anyway). */
+export type TodoDetailAction = "retry" | "up" | "cancel";
+
+/** One todo, everything the detail view shows (ADR-0065). */
+export interface TodoDetail {
+  id: number;
+  project: string;
+  folder: string;
+  /** The plain summary (ADR-0059). */
+  title: string;
+  /** The full brief, capped. */
+  brief: string;
+  lane: "main" | "side";
+  kind?: LaneKind;
+  status: TodoRow["status"];
+  /** The 1-based place in the main queue; 0 when not queued there. */
+  position: number;
+  createdAt: number;
+  startedAt?: number;
+  endedAt?: number;
+  attempts: number;
+  retryAt?: number;
+  /** The last bad end's reason (`stall`, `restart`, …). */
+  failure?: string;
+  /** The final result or last note, capped. */
+  result?: string;
+  waitingOn?: string;
+  limitResumesAt?: number;
+  apiResumesAt?: number;
+  threadId?: number;
+  /** The attention items this todo was made from. */
+  attention: Array<{ id: number; title: string }>;
+  actions: TodoDetailAction[];
+  pinned: boolean;
+}
+
+const cap = (s: string): string => (s.length > BRIEF_MAX ? `${s.slice(0, BRIEF_MAX - 1)}…` : s);
+
+/** A todo's detail (ADR-0065), or undefined for an unknown id. Plain reads. */
+export function todoDetail(ledger: Ledger, id: number, now: number = Date.now()): TodoDetail | undefined {
+  const t = ledger.todoById(id);
+  if (!t) return undefined;
+  const active = t.status === "queued" || t.status === "running" ? activeTodos(ledger, t.folder, now).find((x) => x.id === t.id) : undefined;
+  const position = active?.position ?? 0;
+  const held = t.status === "running" && (active?.limitResumesAt !== undefined || active?.apiResumesAt !== undefined);
+  const actions: TodoDetailAction[] = [];
+  if (t.status === "failed" || t.status === "retry" || held) actions.push("retry");
+  if (t.status === "queued" && position > 1) actions.push("up");
+  if (t.status === "queued" || t.status === "retry" || t.status === "waiting") actions.push("cancel");
+  return {
+    id: t.id,
+    project: t.project,
+    folder: t.folder,
+    title: todoLabel(t),
+    brief: cap(t.brief),
+    lane: t.lane,
+    ...(t.lane === "side" && t.laneKind ? { kind: t.laneKind } : {}),
+    status: t.status,
+    position,
+    createdAt: t.createdAt,
+    ...(t.startedAt !== undefined ? { startedAt: t.startedAt } : {}),
+    ...(t.endedAt !== undefined ? { endedAt: t.endedAt } : {}),
+    attempts: t.attempts,
+    ...(t.retryAt !== undefined ? { retryAt: t.retryAt } : {}),
+    ...(t.failure ? { failure: t.failure } : {}),
+    ...(t.result ? { result: cap(t.result) } : {}),
+    ...(t.waitingOn ? { waitingOn: t.waitingOn } : {}),
+    ...(active?.limitResumesAt !== undefined ? { limitResumesAt: active.limitResumesAt } : {}),
+    ...(active?.apiResumesAt !== undefined ? { apiResumesAt: active.apiResumesAt } : {}),
+    ...(t.cause ? { threadId: t.cause.threadId } : {}),
+    attention: ledger.attentionByTodo(t.id).map((r) => ({ id: r.id, title: r.title })),
+    actions,
+    pinned: ledger.listPins().some((p) => p.ref === `todo:${t.id}` && p.state === "pinned"),
+  };
 }
 
 /** Folders directly under `root` that are git repos — the New-project picker's options. */

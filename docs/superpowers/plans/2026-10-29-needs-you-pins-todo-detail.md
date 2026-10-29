@@ -25,7 +25,7 @@ engine auto-resolving items, and the badge rule changes on every project.
    resolve as dismissed with the reason in `resolution` (as built: inside `reconcile`, so every producer
    path runs it; the row is the record, no separate event). Tests: the agent-sdk series, `0.3.10` > `0.3.9`,
    a single item, a non-versioned branch, a dependency PR series.
-- [ ] 6. **API** — `GET /api/needs-you`, `POST /api/pin`, `GET /api/todo/:id` (summary, brief capped, project,
+- [x] 6. **API** — `GET /api/needs-you`, `POST /api/pin`, `GET /api/todo/:id` (summary, brief capped, project,
    lane, status, times, result or last note, links, allowed actions). Tests: shapes, unknown id 404, bad
    body 400, pin of a resolved item refused.
 - [ ] 7. **Console: `act()` + toasts** — one helper for every button (pressed, busy, disabled, toast with the

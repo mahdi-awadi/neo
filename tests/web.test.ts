@@ -560,3 +560,42 @@ test("the state carries running tool calls; POST /api/tool/stop|background acts 
   expect(calls).toEqual(["bg toolu_A"]);
   expect(a.ledger.listEvents({ kind: "tool_control" })[0]!.data).toMatchObject({ by: "operator:web" });
 });
+
+// ADR-0065: the "Pinned — needs you" strip, pins and the todo detail on the web console.
+test("GET /api/needs-you lists what needs the operator; POST /api/pin pins and refuses a closed item; bad bodies are 400", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const get = (path: string) => a.instance.fetch(new Request(`http://neo.test${path}`, { headers: { cookie } }));
+  const pin = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/pin", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  expect((await a.instance.fetch(new Request("http://neo.test/api/needs-you"))).status).toBe(401);
+  const [failed] = reconcile(a.ledger, "engine", "gold", [{ project: "gold", folder: "/home/gold", source: "engine", kind: "thread_failed", key: "t1", title: "run failed", severity: "normal" }], 100).opened;
+  const [pr] = reconcile(a.ledger, "github", "gold", [{ project: "gold", folder: "/home/gold", source: "github", kind: "pr_open", key: "31", title: "PR #31: refunds", severity: "normal" }], 100).opened;
+  const list = await get("/api/needs-you");
+  expect(list.headers.get("cache-control")).toContain("no-store");
+  expect(((await list.json()) as { items: Array<{ ref: string }> }).items.map((i) => i.ref)).toEqual([`att:${failed}`]);
+  expect(await (await pin({ ref: `att:${pr}`, state: "pinned" })).json()).toMatchObject({ ok: true });
+  expect(((await (await get("/api/needs-you")).json()) as { items: Array<{ ref: string; pinned: boolean }> }).items.map((i) => [i.ref, i.pinned])).toEqual([
+    [`att:${failed}`, false],
+    [`att:${pr}`, true],
+  ]);
+  a.ledger.updateAttention(failed!, { resolvedAt: 200 });
+  expect(await (await pin({ ref: `att:${failed}`, state: "pinned" })).json()).toMatchObject({ ok: false });
+  expect(await (await pin({ ref: `att:${pr}`, state: null })).json()).toMatchObject({ ok: true });
+  expect((await pin({ ref: `att:${pr}`, state: "maybe" })).status).toBe(400);
+  expect((await pin({ state: "pinned" })).status).toBe(400);
+});
+
+test("GET /api/todo/:id is the todo's detail; an unknown or malformed id is a 404", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const get = (path: string) => a.instance.fetch(new Request(`http://neo.test${path}`, { headers: { cookie } }));
+  const t = a.ledger.addTodo({ project: "gold", folder: "/home/gold", brief: "Fix the wallet refund", workClass: "interactive", createdBy: "operator" }, 100);
+  const r = await get(`/api/todo/${t.id}`);
+  expect(r.status).toBe(200);
+  expect(r.headers.get("cache-control")).toContain("no-store");
+  expect(await r.json()).toMatchObject({ id: t.id, project: "gold", brief: "Fix the wallet refund", status: "queued", actions: ["cancel"] });
+  expect((await get("/api/todo/99999")).status).toBe(404);
+  expect((await get("/api/todo/abc")).status).toBe(404);
+  expect((await a.instance.fetch(new Request(`http://neo.test/api/todo/${t.id}`))).status).toBe(401);
+});

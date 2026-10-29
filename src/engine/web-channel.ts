@@ -32,7 +32,7 @@ import {
   type LoopInfo,
 } from "./loops";
 import type { LoopInput } from "./loop-validate";
-import { dashboardSnapshot, type DashState } from "./dashboard";
+import { dashboardSnapshot, todoDetail, type DashState, type TodoDetail } from "./dashboard";
 import { snippetHtml } from "./format";
 import { feedLine, reasonHtml, type LineTone } from "./feed-line";
 import { styleLine } from "./priority";
@@ -47,6 +47,8 @@ import { projectDeps, projectSummaries, projectView, type ProjectSummary, type P
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
 import { waitingWork, type WaitingItem } from "./waiting-work";
 import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
+import { needsYou, pin, type NeedsYouItem } from "./needs-you";
+import type { PinState } from "./ledger";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -158,6 +160,12 @@ export interface WebChannel {
   attentionAction(id: number, action: AttentionAction): Promise<AttentionActionResult>;
   /** The project list (P6, spec §9): one summary per known project, health first, at most PAGE_MAX. */
   projects(): { rows: ProjectSummary[]; total: number };
+  /** ADR-0065: everything that needs the operator (the pinned strip). */
+  needsYou(): NeedsYouItem[];
+  /** ADR-0065: pin, unpin or clear one item; refused for a closed or unknown one. */
+  pin(ref: string, state: PinState | null): { ok: true; text: string } | { ok: false; error: string };
+  /** ADR-0065: one todo's detail, or undefined. */
+  todoDetail(id: number): TodoDetail | undefined;
   /** One project's dashboard, with the snooze hours its attention buttons name. Undefined: no such project. */
   project(name: string): Promise<(ProjectView & { snoozeHours: number }) | undefined>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
@@ -565,6 +573,16 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const r = await applyAttentionAction({ ledger, registry, todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 }, id, action, Date.now());
       opts.bus?.mirror("web", { kind: "notice", text: `attention #${id}: ${r.text} (web console)` });
       return r;
+    },
+    needsYou() {
+      const { ledger, cfg } = opts.engine;
+      return needsYou({ ledger, keepPatterns: cfg.decisionSettle?.keepPatterns ?? DEFAULT_KEEP_PATTERNS }, Date.now());
+    },
+    pin(ref, state) {
+      return pin(opts.engine.ledger, ref, state, Date.now());
+    },
+    todoDetail(id) {
+      return todoDetail(opts.engine.ledger, id);
     },
     projects() {
       const { ledger, registry, cfg } = opts.engine;
