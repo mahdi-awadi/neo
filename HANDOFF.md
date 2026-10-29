@@ -1,3 +1,12 @@
+# HANDOFF — 2026-10-29: self-explaining attention items and todos (ADR-0059, ledger v15, on dev, restart-gated)
+
+Attention items carry facts (producers write them; old rows derive them) and render as badge + project + plain
+title + reason + links + next step + brief, EN/AR. → todo works for every GitHub/git kind. Todos have a summary
+(deterministic, then an accepted haiku line; config `todoSummary`). The restart runs migration v15.
+Screenshots: /home/neo/agent/attention-*-2026-10-29.png.
+
+---
+
 # HANDOFF — 2026-10-29: standing rules + planner subagent (ADR-0063, on dev, restart-gated)
 
 Every dispatch/todo/plan-execution brief, loop iteration and consult run now carries the five standing

@@ -14,7 +14,7 @@ import { sessionContext, contextWindows, contextBand, lastContextReset, type Ban
 import { workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
-import { todoTitle } from "./todo-queue";
+import { todoLabel } from "./todo-queue";
 import { apiWait } from "./api-retry";
 import { waitingWork, type WaitingItem } from "./waiting-work";
 import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
@@ -99,6 +99,9 @@ const FAILED_SHOWN = 20;
 /** Context events shown in the console's timeline. */
 const CONTEXT_EVENTS_SHOWN = 20;
 
+/** Max chars of a todo's brief in the dashboard snapshot (the console shows it on tap). */
+const BRIEF_MAX = 4000;
+
 export interface DashTodo {
   id: number;
   project: string;
@@ -110,6 +113,8 @@ export interface DashTodo {
   attempts?: number;
   retryAt?: number;
   title: string;
+  /** The full brief (bounded), shown when the operator taps the todo (ADR-0059). */
+  brief: string;
   createdAt: number;
   startedAt?: number;
   /** Why the project's queue is paused, when it is. */
@@ -147,7 +152,8 @@ export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.
       project: t.project,
       status: t.status as DashTodo["status"],
       position,
-      title: todoTitle(t.brief),
+      title: todoLabel(t),
+      brief: t.brief.length > BRIEF_MAX ? `${t.brief.slice(0, BRIEF_MAX - 1)}…` : t.brief,
       createdAt: t.createdAt,
       startedAt: t.startedAt,
       paused: ledger.todoPaused(t.folder)?.reason,

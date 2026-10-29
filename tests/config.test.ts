@@ -487,3 +487,10 @@ test("ADR-0063: planner defaults to opus at max effort; config sets it; a bad va
   writeFileSync(join(e, "config.json"), JSON.stringify({ planner: { model: " ", effort: "ultra" } }));
   expect(loadConfig(e).planner).toEqual({ model: "opus", effort: "max" });
 });
+
+test("ADR-0059: todoSummary defaults on, haiku at low effort, 30 s; bad values keep the defaults", () => {
+  expect(loadConfig(dir()).todoSummary).toEqual({ ai: true, model: "haiku", effort: "low", timeoutMs: 30_000 });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ todoSummary: { ai: false, model: "sonnet", effort: "nope", timeoutMs: -1 } }));
+  expect(loadConfig(d).todoSummary).toEqual({ ai: false, model: "sonnet", effort: "low", timeoutMs: 30_000 });
+});

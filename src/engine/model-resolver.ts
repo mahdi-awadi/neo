@@ -13,7 +13,8 @@ export type RunConfigField =
   | "maxTurns"
   | "agents"
   | "env"
-  | "forkSession";
+  | "forkSession"
+  | "settingSources";
 
 export interface ModelSelection {
   model?: string;
@@ -151,6 +152,7 @@ export const SDK_COMPATIBILITY = {
       "agents",
       "env",
       "forkSession",
+      "settingSources",
     ],
     unsupportedFields: [],
     env: { denyKeys: [], denyPrefixes: [] },

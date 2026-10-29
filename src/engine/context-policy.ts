@@ -12,6 +12,8 @@ import type { Ledger, ContextEventRow } from "./ledger";
 import { runOrder, startOrder, type RunResult, type RunDeps } from "./session-runner";
 import { gitFacts, uncommittedIn } from "./dispatch-report";
 import { humanAge } from "./liveness";
+// The first sentence every continuation brief starts with (the leaf todo-title.ts defines it, ADR-0059).
+import { CONTINUATION_MARK } from "./todo-title";
 
 /** Context-window size is a FACT about the model, not a tuning knob. The SDK reports it on every
  *  result and the ledger keeps it per model (ADR-0013) — see contextWindows. This table holds only
@@ -468,8 +470,6 @@ export function checkpointSteer(occupancy: number, folder: string): string {
   );
 }
 
-/** The first sentence every continuation brief has started with, in this and earlier wordings. */
-const CONTINUATION_MARK = "Continue this task in a fresh session.";
 
 /** True for a continuation brief: the same task carried on in a fresh session, not new work. */
 export const isContinuationBrief = (brief: string): boolean => brief.startsWith(CONTINUATION_MARK);

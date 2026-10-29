@@ -20,6 +20,7 @@ import { readLanesCfg, type LanesCfg } from "./engine/lanes";
 import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
 import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
+import { readTodoSummaryCfg, type TodoSummaryCfg } from "./engine/todo-summary-cfg";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
@@ -223,6 +224,8 @@ export interface NeoConfig {
    *  review — the strongest model at the highest effort. `model` is a tier alias or an id; the engine pins
    *  an alias to its id through `models.aliases` (ADR-0005). Read by readPlannerCfg. */
   planner?: PlannerCfg;
+  /** ADR-0059: the AI summary of each new todo (`ai`, `model`, `effort`, `timeoutMs`). Read by readTodoSummaryCfg. */
+  todoSummary?: TodoSummaryCfg;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
    *  scheduler can't amplify a rate-limit storm. Default 60 s. */
   apiCooldownMs: number;
@@ -658,6 +661,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     tools: readToolsCfg(fileCfg.tools),
     projectMessage: readProjectMessageCfg(fileCfg.projectMessage),
     planner: readPlannerCfg(fileCfg.planner),
+    todoSummary: readTodoSummaryCfg(fileCfg.todoSummary),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),

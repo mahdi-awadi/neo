@@ -49,6 +49,12 @@ test("each gh read becomes its drafts with the right severities", async () => {
   ]);
   expect(r.drafts.find((d) => d.kind === "ci_failed")).toMatchObject({ title: "CI failed on dev", url: "https://github.com/acme/gold/actions/runs/3" });
   expect(r.drafts.every((d) => d.source === "github" && d.project === "gold")).toBe(true);
+  // ADR-0059: every draft carries structured facts the console turns into a description.
+  expect(r.drafts.find((d) => d.kind === "ci_failed")!.facts).toEqual({ workflow: "CI", branch: "dev" });
+  expect(r.drafts.find((d) => d.kind === "pr_open")!.facts).toMatchObject({ pr: 12, draft: 0 });
+  expect(typeof r.drafts.find((d) => d.kind === "pr_open")!.facts!.prTitle).toBe("string");
+  expect(r.drafts.find((d) => d.kind === "dependabot")!.facts).toMatchObject({ alert: 5 });
+  expect(r.drafts.every((d) => d.facts && Object.keys(d.facts).length > 0)).toBe(true);
 });
 
 test("gh failing for the repo marks every kind failed (nothing resolves); a rate limit says so once", async () => {

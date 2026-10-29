@@ -100,6 +100,22 @@ work (that is a dispatch) and is not a project note (information read later). It
 <project>" wherever the operator reads it.
 _Avoid_: dispatch, note, nudge (as a separate mechanism), injecting
 
+**Item facts**:
+The structured facts of an attention item (ADR-0059): the branch, the PR number, how many days. The producer
+writes them; an older row derives them from its kind, key and title. The console builds the item's reason from
+them with catalogue templates.
+_Avoid_: metadata, detail (the free-text detail is separate)
+
+**Plain title**:
+An attention item's one-line title without engine prefixes ("PR #31:", "thread waiting 2d:") and with a
+Dependabot bump read as "name from → to". Shown with the kind badge and the project.
+_Avoid_: clean title, display name
+
+**Todo summary**:
+One short human line that names a todo on every surface (ADR-0059): the stored one (an accepted AI line or the
+deterministic one), else the one its brief gives. A continuation keeps its task's summary.
+_Avoid_: todo title (the first-60-characters rule it replaces), label
+
 **Standing rules**:
 The rules every worker gets in every project, from one text (`standing-rules.ts`, ADR-0063): plan fully,
 then finish non-stop; rich, complete plans; production-grade code; the best technology, recorded in an ADR.

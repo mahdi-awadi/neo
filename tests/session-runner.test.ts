@@ -1346,3 +1346,16 @@ test("final review (T8): runOrder hands deps.abortController's signal to a Codex
   await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { provider: "codex", codexFactory: async () => client as never, abortController: ac });
   expect(signals[0]).toBe(ac.signal);
 });
+
+test("ADR-0059: a run's own settingSources and skills override the defaults (the inert summary run)", async () => {
+  let seen: { skills?: unknown; settingSources?: unknown } = {};
+  const q = (args: { prompt: unknown; options: { skills?: unknown; settingSources?: unknown } }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never, settingSources: [], skills: [] });
+  expect(seen.settingSources).toEqual([]);
+  expect(seen.skills).toEqual([]);
+});

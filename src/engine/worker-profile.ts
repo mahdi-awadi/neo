@@ -30,7 +30,7 @@ const PLANNER_PATHS: ReadonlySet<WorkerPathName> = new Set(["dispatch", "project
  *  `models.default`. Anything the alias map does not recognise is forwarded as written: the SDK is
  *  the authority on whether an id is real and reports an unknown one precisely, whereas
  *  substituting the default would mask a typo as a working config. */
-function pinnedModel(models: ModelsCfg | undefined, chosen: string | undefined): string | undefined {
+export function pinnedModel(models: ModelsCfg | undefined, chosen: string | undefined): string | undefined {
   const named = chosen?.trim() || models?.default?.trim();
   if (!named) return chosen;              // no pin configured at all → leave the launch as it was
   const key = named.toLowerCase();

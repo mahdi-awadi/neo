@@ -1363,6 +1363,17 @@ Every worker plans fully, finishes non-stop, designs on the planner model (2026-
 
 Restart-gated.
 
+Attention items and todos explain themselves (2026-10-29, ADR-0059, ledger v15).
+
+- Each item shows a kind badge, its project, a plain title ("expo-localization 57.0.1 → 58.0.5", not
+  "PR #31: chore(deps)(deps): bump …"), why it is there, its links, what → todo will do and the exact brief —
+  in EN and AR from `att.*` keys, values isolated LTR. Telegram shows `[badge] plain title`.
+- → todo now works for every GitHub and git kind (it answered "no brief template" before).
+- Todos are named by a summary: deterministic at once (a continuation shows its task), an accepted haiku line
+  after (`todoSummary`). The Queue tab opens the brief on tap.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

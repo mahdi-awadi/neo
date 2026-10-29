@@ -9,7 +9,7 @@
 import { canStartSide, DEFAULT_LANES_CFG, mergeBrief, type LaneKind, type LanesCfg } from "./lanes";
 import { sweepLaneWorktrees } from "./lane-worktree";
 import { basename } from "node:path";
-import { PAGE_MAX, type Cause, type Ledger, type TodoRow } from "./ledger";
+import { PAGE_MAX, type Cause, type Ledger, type NewTodo, type TodoRow } from "./ledger";
 import { answerable } from "./decision-settle";
 import { reviewedPath } from "./plan-review";
 import type { Registry } from "./registry";
@@ -18,7 +18,7 @@ import { dispatchToProject, resolveProject, DESKS_DIR, planWaitTail, type Dispat
 import { lastCommitIn, uncommittedIn } from "./dispatch-report";
 import { raise } from "./attention";
 import { msgRef } from "./trace";
-import { todoTitle } from "./todo-title";
+import { summarizeBrief, todoLabel, todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { classifyEnd, nextRetry, retryBrief } from "./todo-retry";
 import { apiWait } from "./api-retry";
@@ -68,6 +68,9 @@ export interface TodoQueueDeps {
   lanes?: () => LanesCfg;
   /** Held API waits (ADR-0060): `retry` on a running todo held in one ends the wait now. */
   apiWaits?: ApiWaits;
+  /** A better summary line for a new todo (ADR-0059): an accepted line, or undefined to keep the
+   *  deterministic one. Absent = no AI summary. */
+  summarize?: (t: TodoRow) => Promise<string | undefined>;
 }
 
 export interface TodoQueue {
@@ -120,7 +123,7 @@ export interface TodoQueue {
 }
 
 /** The title rule lives in todo-title.ts (the ledger migrations use it too); re-exported for callers. */
-export { todoTitle };
+export { todoLabel, todoTitle };
 
 /** True when the project's session cannot take a brief now: preparing (running, no live handle yet),
  *  closing, in a turn, holding a follow-up, or held at a big plan (ADR-0052). Mirrors dispatch's
@@ -150,6 +153,19 @@ function holdReason(deps: DispatchDeps, workClass: WorkClass, now: number): stri
 
 export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   const { ledger, registry } = q;
+  /** Every todo the queue makes (ADR-0059): with its summary — the one it carries (a continuation keeps its
+   *  task's), else the brief's own at once. A new brief also asks the summarizer for a better line, which
+   *  replaces it only if the code accepts it (todo-summary.ts). */
+  const addTodo = (rec: NewTodo, at: number): TodoRow => {
+    const t = ledger.addTodo({ ...rec, summary: rec.summary ?? summarizeBrief(rec.brief) }, at);
+    if (rec.summary === undefined && q.summarize) {
+      const id = t.id;
+      void q.summarize(t)
+        .then((line) => { if (line && line !== t.summary) ledger.updateTodo(id, { summary: line }); })
+        .catch((e) => faults.report("todo.summarize", e, { todo: id }));
+    }
+    return t;
+  };
   const now = q.now ?? q.dispatchOpts?.now ?? (() => Date.now()); // one clock with dispatch
   const ladder = (): readonly number[] => q.retryBackoffMs?.() ?? TODO_RETRY_BACKOFF_MS_DEFAULT;
   let launcherFn: () => TodoLauncher | undefined = () => undefined;
@@ -222,7 +238,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     ledger.recordEvent("todo_lane_moved", { folder: t.folder, data: { project: t.project, id: t.id, kind: t.laneKind, reason: why }, cause: t.cause });
   };
   const busy = (folder: string) => !!runningTodo(folder) || projectBusy(registry, folder);
-  const tag = (t: TodoRow) => `#${t.id} '${todoTitle(t.brief)}'`;
+  const tag = (t: TodoRow) => `#${t.id} '${todoLabel(t)}'`;
   /** A line about a todo's run: a result-like line under the todo's own cause (its thread's ref). */
   const todoLine = (t: TodoRow): ReplyMeta => ({ kind: "result", folder: t.folder, ...(t.cause ? { cause: t.cause } : {}) });
 
@@ -353,6 +369,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         project: basename(t.folder), folder: t.folder, source: "git", kind: DIRTY_KINDS[0], key: t.folder, severity: "high",
         title: `${files.length} uncommitted file${files.length === 1 ? "" : "s"} after todo #${t.id}`,
         detail: `${t.cause ? `thread ${msgRef(t.cause.threadId)} · ` : ""}files: ${shown}`,
+        facts: { files: files.length, todo: t.id },
       }, now());
       return files.length;
     }, { folder: t.folder, todo: t.id });
@@ -367,7 +384,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     // the HEAD of the project's queue, so the release below starts it before anything else.
     const cont =
       end.ok && end.continuation
-        ? ledger.addTodo({ project: t.project, folder: t.folder, brief: end.continuation + takeAnswers(end.orderId), team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind }, now())
+        ? addTodo({ project: t.project, folder: t.folder, brief: end.continuation + takeAnswers(end.orderId), team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind, summary: todoLabel(t) }, now())
         : undefined;
     if (cont) {
       ledger.moveTodo(cont.id, 1);
@@ -438,14 +455,15 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           project: t.project, folder: w.path, source: "git", kind: DIRTY_KINDS[0], key: w.path, severity: "high",
           title: `${w.dirty!.length} uncommitted file${w.dirty!.length === 1 ? "" : "s"} in side lane #${t.id}'s worktree (kept)`,
           detail: `${t.cause ? `thread ${msgRef(t.cause.threadId)} · ` : ""}branch ${w.branch} · ${w.path} · files: ${shown}`,
+          facts: { files: w.dirty!.length, todo: t.id, branch: w.branch, path: w.path },
         }, now());
       }, { todo: t.id });
     }
     // Only a finished lane's branch is merged; a failed or retried one keeps its branch (the retry
     // continues on it), so a half-done change is never queued for merging, nor merged twice.
     if (w && w.commits > 0 && end.ok) {
-      merge = ledger.addTodo(
-        { project: t.project, folder: t.folder, brief: mergeBrief(w.branch, w.base, t.id, todoTitle(t.brief)), workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
+      merge = addTodo(
+        { project: t.project, folder: t.folder, brief: mergeBrief(w.branch, w.base, t.id, todoLabel(t)), workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
         now(),
       );
       ledger.recordEvent("todo_lane_merge", { folder: t.folder, data: { project: t.project, id: t.id, merge: merge.id, branch: w.branch, base: w.base, commits: w.commits }, cause: t.cause });
@@ -458,8 +476,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const answers = takeAnswers(end.orderId);
       const open = ledger.openDecisionsForOrder(end.orderId).filter((d) => !d.plan);
       if (answers || open.length) {
-        cont = ledger.addTodo(
-          { project: t.project, folder: t.folder, brief: `${t.brief}${answers}`, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: "side", laneKind: t.laneKind },
+        cont = addTodo(
+          { project: t.project, folder: t.folder, brief: `${t.brief}${answers}`, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: "side", laneKind: t.laneKind, summary: todoLabel(t) },
           now(),
         );
         if (!answers) ledger.updateTodo(cont.id, { status: "waiting", waitingOn: open[0]!.id });
@@ -519,7 +537,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     for (const folder of ledger.queuedTodoFolders()) {
       try {
         for (const t of await releaseSide(folder, l)) {
-          await l.deps.reply(l.replyChat, `${t.project}: starting side #${t.id} (${t.laneKind}) — ${todoTitle(t.brief)}`, t.project, undefined, todoLine(t));
+          await l.deps.reply(l.replyChat, `${t.project}: starting side #${t.id} (${t.laneKind}) — ${todoLabel(t)}`, t.project, undefined, todoLine(t));
         }
       } catch {
         // one project's side release must never stop the others
@@ -549,8 +567,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     // A parked continuation may run hours later, after other todos: it carries the note itself, and
     // the pending handoff is claimed so an unrelated todo is not told it "continues earlier work".
     const carried = parking && note.trim() ? `\n\nNeo's handoff note from the finished run:\n--- note ---\n${note.trim()}\n--- end of note ---` : "";
-    const cont = ledger.addTodo(
-      { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + carried + answers, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind },
+    const cont = addTodo(
+      { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + carried + answers, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind, summary: todoLabel(t) },
       now(),
     );
     carryLinks(t.id, cont.id);
@@ -601,21 +619,21 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const wait = apiWait(ledger, t.orderId, t0);
       lines.push(
         wait
-          ? `  ⏳ #${t.id} ${heldText(wait.limit)} · resumes ${resumeClock(wait.resumesAt, t0)} UTC · /todo retry ${t.id} resumes now — ${todoTitle(t.brief)}`
-          : `  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`,
+          ? `  ⏳ #${t.id} ${heldText(wait.limit)} · resumes ${resumeClock(wait.resumesAt, t0)} UTC · /todo retry ${t.id} resumes now — ${todoLabel(t)}`
+          : `  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoLabel(t)}`,
       );
     }
-    all.filter((t) => t.status === "queued" && t.lane === "main").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoTitle(t.brief)}`));
+    all.filter((t) => t.status === "queued" && t.lane === "main").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoLabel(t)}`));
     // Parked continuations (ADR-0029): each waits on one decision.
     for (const t of ledger.listTodos({ folder, statuses: ["waiting"] })) {
-      lines.push(`  ⏸ #${t.id} waiting on decision #${(t.waitingOn ?? "?").slice(0, 8)} — ${todoTitle(t.brief)}`);
+      lines.push(`  ⏸ #${t.id} waiting on decision #${(t.waitingOn ?? "?").slice(0, 8)} — ${todoLabel(t)}`);
     }
     // Kept work (ADR-0027): waiting retries, then failed todos with how to re-run them.
     for (const t of ledger.listTodos({ folder, statuses: ["retry"] })) {
-      lines.push(`  ↻ #${t.id} retry ${t.attempts}/${ladder().length} ${dueIn((t.retryAt ?? t0) - t0)} (${t.failure ?? "stopped"}) — ${todoTitle(t.brief)}`);
+      lines.push(`  ↻ #${t.id} retry ${t.attempts}/${ladder().length} ${dueIn((t.retryAt ?? t0) - t0)} (${t.failure ?? "stopped"}) — ${todoLabel(t)}`);
     }
     for (const t of ledger.listTodos({ folder, statuses: ["failed"], limit: FAILED_SHOWN })) {
-      lines.push(`  ✗ #${t.id} failed — ${todoTitle(t.brief)} (/todo retry ${t.id})`);
+      lines.push(`  ✗ #${t.id} failed — ${todoLabel(t)} (/todo retry ${t.id})`);
     }
     // Side lanes (ADR-0057): their own group, with the kind — running ones, then those waiting for a slot.
     const side = all.filter((t) => t.lane === "side");
@@ -624,14 +642,14 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       for (const t of side) {
         lines.push(
           t.status === "running"
-            ? `  ▷ #${t.id} side·${t.laneKind} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoTitle(t.brief)}`
-            : `  ▷ #${t.id} side·${t.laneKind} waits for a side slot — ${todoTitle(t.brief)}`,
+            ? `  ▷ #${t.id} side·${t.laneKind} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoLabel(t)}`
+            : `  ▷ #${t.id} side·${t.laneKind} waits for a side slot — ${todoLabel(t)}`,
         );
       }
     }
     if (history) {
       for (const t of ledger.listTodos({ folder, statuses: ["done", "cancelled"], limit: HISTORY_SHOWN })) {
-        lines.push(`  ${t.status === "done" ? "✓" : "–"} #${t.id} ${t.status} — ${todoTitle(t.brief)}`);
+        lines.push(`  ${t.status === "done" ? "✓" : "–"} #${t.id} ${t.status} — ${todoLabel(t)}`);
       }
     }
     return lines.join("\n");
@@ -656,7 +674,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         if ("queue" in can) {
           sideNote = ` (not as a side lane: ${can.queue})`;
         } else {
-          const t = ledger.addTodo(
+          const t = addTodo(
             { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause, planId: p.planId, lane: "side", laneKind: p.kind },
             now(),
           );
@@ -689,7 +707,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       if (!mustWait && holdReason(deps, p.workClass, now())) {
         return dispatchToProject(folder, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass, ...traced });
       }
-      const t = ledger.addTodo(
+      const t = addTodo(
         { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause, planId: p.planId },
         now(),
       );
@@ -699,7 +717,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         const position = describePosition(t);
         const heldAt = heldPlanOf(registry, folder);
         ledger.recordEvent("todo_queued", { folder, data: { project, id: t.id, position, paused: !!paused }, cause: p.cause });
-        await deps.reply(replyChat, `→ queued #${t.id} for ${project} (position ${position}): ${todoTitle(p.brief)}`, project, undefined, {
+        await deps.reply(replyChat, `→ queued #${t.id} for ${project} (position ${position}): ${todoLabel(t)}`, project, undefined, {
           kind: "ack",
           folder,
           ...(p.cause ? { cause: p.cause } : {}),
@@ -779,8 +797,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         void awaitHandoff(t.folder).then(() => {
           const left = takeAnswers(orderId);
           if (!left) return;
-          const cont = ledger.addTodo(
-            { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + left, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind },
+          const cont = addTodo(
+            { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + left, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind, summary: todoLabel(t) },
             now(),
           );
           carryLinks(t.id, cont.id);
@@ -821,6 +839,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
             project: basename(d.path), folder: d.path, source: "git", kind: DIRTY_KINDS[0], key: d.path, severity: "high",
             title: `${d.paths.length} uncommitted file${d.paths.length === 1 ? "" : "s"} in a side-lane worktree left by a restart (kept)`,
             detail: `${d.path} · files: ${shown}`,
+            facts: { files: d.paths.length, path: d.path },
           }, opts.now);
         }
         if (swept.removed.length || swept.dirty.length) ledger.recordEvent("lane_worktrees_swept", { data: { removed: swept.removed, dirty: swept.dirty.map((d) => d.path) } });
@@ -869,7 +888,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       parents.delete(id);
       ledger.recordEvent("todo_cancelled", { folder: t.folder, data: { project: t.project, id }, cause: t.cause });
       refresh(launcher()?.deps, t.cause);
-      return `cancelled #${id} for ${t.project}: ${todoTitle(t.brief)}`;
+      return `cancelled #${id} for ${t.project}: ${todoLabel(t)}`;
     },
 
     retry(id) {
@@ -882,7 +901,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         if (held && q.apiWaits!.wake(t.orderId!, "retry")) {
           ledger.recordEvent("todo_retried", { folder: t.folder, orderId: t.orderId, data: { project: t.project, id, from: "held", kind: held.kind }, cause: t.cause });
           refresh(launcher()?.deps, t.cause);
-          return `▶ #${id} resumed now for ${t.project}: its ${held.kind === "rate_limit" ? "limit wait" : "API retry wait"} is over and the brief went back into the same session — ${todoTitle(t.brief)}`;
+          return `▶ #${id} resumed now for ${t.project}: its ${held.kind === "rate_limit" ? "limit wait" : "API retry wait"} is over and the brief went back into the same session — ${todoLabel(t)}`;
         }
         return `#${id} is running and working (not held in a limit wait) — nothing to retry; it reports when it ends.`;
       }
@@ -899,7 +918,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       refresh(launcher()?.deps, t.cause);
       const position = describePosition(t); // before the pump: it may start the todo at once
       void this.pump();
-      return `↻ #${id} re-queued for ${t.project} at position ${position}${t.status === "retry" ? " (now, not after its backoff)" : ""}: ${todoTitle(t.brief)}`;
+      return `↻ #${id} re-queued for ${t.project} at position ${position}${t.status === "retry" ? " (now, not after its backoff)" : ""}: ${todoLabel(t)}`;
     },
 
     up(id) {

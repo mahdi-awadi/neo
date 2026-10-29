@@ -429,6 +429,14 @@ function todoLanes(db: Database): void {
   db.run(`ALTER TABLE project_todos ADD COLUMN lane_kind TEXT`);
 }
 
+/** Version 15 — self-explaining attention items and todos (ADR-0059): an item's structured facts (JSON,
+ *  written by its producer, refreshed on every scan) and a todo's short human summary. Both nullable: an
+ *  older row derives them when it is read. Frozen once shipped. */
+function explainColumns(db: Database): void {
+  db.run(`ALTER TABLE attention_items ADD COLUMN facts TEXT`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN summary TEXT`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -444,6 +452,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 12, name: "project notes", up: projectNotes },
   { version: 13, name: "note questions and live delivery", up: noteQuestions },
   { version: 14, name: "todo lanes", up: todoLanes },
+  { version: 15, name: "attention facts and todo summaries", up: explainColumns },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

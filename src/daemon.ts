@@ -43,6 +43,9 @@ import { nextRetry } from "./engine/todo-retry";
 import { setDeployFacts, setNeoNotesDir } from "./engine/context-policy";
 import { createApiCooldown } from "./engine/api-retry";
 import { createApiWaits } from "./engine/api-wait";
+import { createTodoSummarizer } from "./engine/todo-summary";
+import { DEFAULT_TODO_SUMMARY_CFG } from "./engine/todo-summary-cfg";
+import { pinnedModel } from "./engine/worker-profile";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
@@ -111,10 +114,13 @@ async function main(): Promise<void> {
   setNeoNotesDir(cfg.handoffNotesDir);
   // A done todo made from a project note resolves the note (ADR-0043); `notes` is built below and only
   // read when a todo ends.
+  const todoSummaryCfg = cfg.todoSummary ?? DEFAULT_TODO_SUMMARY_CFG;
   // Held API waits (ADR-0060): one registry for dispatch and the queue, so `todo retry` ends a limit wait now.
   const apiWaits = createApiWaits({ ledger });
   const todo = createTodoQueue({
     ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs, apiWaits,
+    // A short human summary for each new todo (ADR-0059): AI proposes, the engine accepts or keeps its own.
+    summarize: createTodoSummarizer({ cfg: todoSummaryCfg, model: pinnedModel(cfg.models, todoSummaryCfg.model) ?? todoSummaryCfg.model }),
     lanes: () => cfg.lanes ?? DEFAULT_LANES_CFG,
     onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
   });

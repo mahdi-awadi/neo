@@ -46,7 +46,8 @@ export function reconcile(
  *  dismissed by the operator → stays closed while it is still there. */
 function upsert(ledger: Ledger, row: AttentionRow | undefined, d: AttentionDraft, now: number): { id: number; opened: boolean } {
   if (!row) return { id: ledger.insertAttention(d, now), opened: true };
-  const fields = { folder: d.folder, title: d.title, detail: d.detail ?? null, url: d.url ?? null, severity: d.severity, lastSeen: now };
+  // Facts (ADR-0059) refresh with the rest: a scan-driven item gets them back within one scan of a migration.
+  const fields = { folder: d.folder, title: d.title, detail: d.detail ?? null, url: d.url ?? null, severity: d.severity, lastSeen: now, facts: d.facts ? JSON.stringify(d.facts) : null };
   if (row.resolvedAt === undefined) ledger.updateAttention(row.id, fields);
   else if (row.dismissed) ledger.updateAttention(row.id, { lastSeen: now });
   else {

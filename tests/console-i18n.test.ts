@@ -208,3 +208,13 @@ test("ADR-0061: a chief-of-staff message in a thread is labelled from the catalo
     expect(cat.threads.agentTo).toContain("{{project}}");
   }
 });
+
+test("ADR-0059: an attention item renders from att.* keys, every badge named in EN and AR", () => {
+  for (const k of ['tx(`att.kind.${badge}`)', 'tx(`att.why.${badge}`, vars)', 'tx(`att.next.${badge}`)', 'tx("att.showBrief")', "iso(facts[k]"]) expect(APP).toContain(k);
+  const cat = (l: string) => JSON.parse(readFileSync(join(WEB, "locales", l, "console.json"), "utf8")) as { att: { kind: Record<string, string>; why: Record<string, string>; next: Record<string, string> } };
+  const [en, ar] = [cat("en"), cat("ar")];
+  for (const part of ["kind", "why", "next"] as const) {
+    expect(Object.keys(ar.att[part]).sort()).toEqual(Object.keys(en.att[part]).sort());
+    expect(Object.keys(en.att[part]).sort()).toEqual(Object.keys(en.att.kind).sort()); // a name, a reason and a next step per badge
+  }
+});

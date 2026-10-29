@@ -87,6 +87,10 @@ test("thread_waiting: a thread waiting longer than waitingHours; a recent one is
   thread(ledger, { project: "gold", folder: "/home/gold", state: "waiting", at: T0 });
   expect(kinds(deps, T0 + 11 * H)).toEqual([]);
   expect(kinds(deps, T0 + 13 * H)).toEqual(["thread_waiting"]);
+  // ADR-0059: the thread, its title and since when — the console says "waiting 13h for an answer".
+  const d = engineDrafts(deps, T0 + 13 * H).find((x) => x.kind === "thread_waiting")!;
+  expect(d.facts).toMatchObject({ since: T0 });
+  expect(typeof d.facts!.threadTitle).toBe("string");
 });
 
 test("decision_stale: an open decision older than decisionStaleHours; no project → the company", () => {

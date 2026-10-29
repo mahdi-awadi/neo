@@ -557,7 +557,8 @@ function renderTodos(): void {
               : x.status === "waiting"
                 ? t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
                 : ltr(x.position + ".");
-      row.innerHTML = `<span>${lead}</span><div style="flex:1;min-width:0"><div>${ltr("#" + x.id)} ${esc(x.title)}</div></div>`;
+      // ADR-0059: the todo's summary; a tap opens the brief the worker gets.
+      row.innerHTML = `<span>${lead}</span><div style="flex:1;min-width:0"><details><summary>${ltr("#" + x.id)} <span dir="auto">${esc(x.title)}</span></summary><div class="rfo" dir="auto" style="white-space:pre-wrap">${esc(x.brief ?? "")}</div></details></div>`;
       // ADR-0027: kept work — a failed todo or a waiting retry can be re-run (the same todo). ADR-0060: a run
       // held in an API wait resumes now (the same run, the brief re-sent once).
       const held = x.status === "running" && (x.limitResumesAt || x.apiResumesAt);
@@ -1453,13 +1454,40 @@ function renderProjectPane(v: Any): void {
     const from = it.fromProject ? `<span class="rfo" dir="auto">${tx("pj.noteFrom", { project: esc(it.fromProject) })}</span>` : "";
     // A note's kind (`question` too) and, once it moved on, its state (`acknowledged`, `answered`) — ADR-0050.
     const chip = it.noteKind ? `<span class="rfo">${tx(`notes.kind.${it.noteKind}`)}${it.noteState && it.noteState !== "open" ? " · " + tx(`notes.state.${it.noteState}`) : ""}</span>` : "";
-    row.innerHTML = `<span>${SEV_ICON[it.severity] ?? ""}</span>${ltr("#" + it.id)}${chip}<span dir="auto">${esc(it.title)}</span>${from}<span class="rfo">${esc(age(it.ageMs))}</span>`;
+    row.innerHTML = attentionItemHtml(it, chip, from);
     attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), () => {
       $("pjatth").textContent = tx("pj.sect.attention", { n: box.querySelectorAll(".tart[data-att]").length });
       loadProjects();
     });
     box.appendChild(row);
   });
+}
+/** The facts a description template may name (ADR-0059). A fact an item lacks reads `att.unknown`. */
+const ATT_FACTS = ["age", "label", "reason", "decision", "pct", "model", "files", "days", "pr", "dep", "from", "to", "workflow", "branch", "issue", "severity", "alert", "secretType", "ahead", "upstream", "base", "hours"];
+/** One attention item, self-explaining (ADR-0059): severity, #id, its kind badge and project, a plain title,
+ *  why it is there (`att.why.<badge>` from its facts), its links, what → todo will do (`att.next.<badge>`)
+ *  and the exact brief on tap. Every value is escaped and isolated (`iso`), so ids and branch names stay
+ *  left-to-right in Arabic. */
+function attentionItemHtml(it: Any, noteChip: string, from: string): string {
+  const facts = (it.facts ?? {}) as Record<string, string | number>;
+  const vars: Record<string, string> = {};
+  for (const k of ATT_FACTS) vars[k] = iso(facts[k] ?? tx("att.unknown"));
+  if (typeof facts.since === "number") vars.age = iso(age(Date.now() - facts.since));
+  const badge = esc(it.badge ?? "other");
+  const links = ((it.links ?? []) as Any[])
+    .map((l) => (typeof l.href === "string" && /^https?:\/\//.test(l.href) ? `<a href="${esc(l.href)}" target="_blank" rel="noopener noreferrer">${l.kind === "url" ? esc(tx("att.openLink")) : ltr(l.label)}</a>` : ltr(l.label)))
+    .join(" · ");
+  const next = it.brief
+    ? `<div class="rfo">${esc(tx("att.nextLabel"))} ${esc(tx(`att.next.${badge}`))}</div><details class="rfo"><summary>${esc(tx("att.showBrief"))}</summary><div dir="auto" style="white-space:pre-wrap">${esc(it.brief)}</div></details>`
+    : `<div class="rfo">${esc(tx("att.noBrief"))}</div>`;
+  return (
+    `<div style="flex:1 1 100%;min-width:0"><div><span>${SEV_ICON[it.severity] ?? ""}</span> ${ltr("#" + it.id)} <span class="tchip">${esc(tx(`att.kind.${badge}`))}</span> ${iso(it.project ?? "")}${noteChip}${from} <span class="rfo">${esc(age(it.ageMs))}</span></div>` +
+    `<div dir="auto"><b>${esc(it.plain ?? it.title)}</b></div>` +
+    `<div class="rfo" dir="auto">${tx(`att.why.${badge}`, vars)}</div>` +
+    (links ? `<div class="rfo">${links}</div>` : "") +
+    next +
+    `</div>`
+  );
 }
 /** A console link `#project=<name>` (the Telegram dashboard's "open console") opens that project. */
 function openFromHash(): void {

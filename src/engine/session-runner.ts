@@ -217,6 +217,9 @@ export interface RunDeps {
   skills?: "all" | string[];
   /** Claude SDK cap on agentic turns for one run. Unset = uncapped. */
   maxTurns?: number;
+  /** Which settings the run loads (default `["user", "project"]`). `[]` for an inert one-shot (ADR-0059: the
+   *  todo summary) — no user-scope MCP servers, plugins or project config are started for it. */
+  settingSources?: Array<"user" | "project" | "local">;
   /** Named Claude subagents for an opt-in, lead-orchestrated team run (SDK `agents`). Each is a
    *  governed subagent whose tool calls re-enter this session's `canUseTool`, so the path-fence
    *  still holds for their writes (verified — spike/agent-team-spike-findings.md). Unset = a normal
@@ -965,6 +968,7 @@ export function runConfig(deps: RunDeps, provider: Provider = deps.provider ?? "
     env: deps.env ? mergedSdkEnv(provider, deps.env, deps.envScrub, mcpEnvRefs(deps.mcpServers)) : undefined,
     // A fork needs a session to fork from: never sent without `resume`.
     forkSession: deps.forkSession && deps.resume ? true : undefined,
+    settingSources: deps.settingSources,
   };
   for (const field of supportedRunConfigFields(provider)) {
     const value = values[field];

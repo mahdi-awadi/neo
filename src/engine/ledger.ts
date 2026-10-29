@@ -150,7 +150,13 @@ export interface AttentionDraft {
   causeMsgId?: number;
   /** A question (ADR-0050): the asking worker's session — the one that takes a late answer while it lives. */
   fromSession?: string;
+  /** What the item is about, as data (ADR-0059): branch, days, PR number, … — the console builds its
+   *  description from these with catalogue templates. Written by the producer, refreshed on every scan. */
+  facts?: AttentionFacts;
 }
+
+/** An attention item's structured facts (ADR-0059). Values are short strings or numbers. */
+export type AttentionFacts = Record<string, string | number>;
 
 export interface AttentionRow extends AttentionDraft {
   id: number;
@@ -172,6 +178,8 @@ export interface AttentionRow extends AttentionDraft {
 /** The fields reconcile, snooze, dismiss and toTodo change. `null` clears a field. */
 export interface AttentionPatch {
   folder?: string;
+  /** JSON text of the facts; `null` clears them. */
+  facts?: string | null;
   title?: string;
   detail?: string | null;
   url?: string | null;
@@ -588,7 +596,7 @@ export interface Ledger {
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
-    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief" | "lane">> & {
+    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief" | "lane" | "summary">> & {
       retryAt?: number | null;
       waitingOn?: string | null;
       /** `null` clears it (a side todo moved to the main lane, ADR-0057). */
@@ -638,6 +646,9 @@ export interface NewTodo {
   lane?: "main" | "side";
   /** A side lane's declared kind. */
   laneKind?: LaneKind;
+  /** A short human line saying what the todo does (ADR-0059): written when it is created, shown on every
+   *  surface instead of the brief's first characters. Absent on older rows: derived when read. */
+  summary?: string;
 }
 
 export interface TodoRow extends NewTodo {
@@ -1293,15 +1304,15 @@ export function openLedger(
     insertAttention(d, at) {
       const r = db
         .query(
-          `INSERT INTO attention_items (project, folder, source, kind, key, title, detail, url, severity, first_seen, last_seen, from_project, cause_msg_id, from_session)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO attention_items (project, folder, source, kind, key, title, detail, url, severity, first_seen, last_seen, from_project, cause_msg_id, from_session, facts)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         )
-        .get(d.project, d.folder, d.source, d.kind, d.key, d.title, d.detail ?? null, d.url ?? null, d.severity, at, at, d.fromProject ?? null, d.causeMsgId ?? null, d.fromSession ?? null) as { id: number };
+        .get(d.project, d.folder, d.source, d.kind, d.key, d.title, d.detail ?? null, d.url ?? null, d.severity, at, at, d.fromProject ?? null, d.causeMsgId ?? null, d.fromSession ?? null, d.facts ? JSON.stringify(d.facts) : null) as { id: number };
       return r.id;
     },
     updateAttention(id, patch) {
       const cols: Record<keyof AttentionPatch, string> = {
-        folder: "folder", title: "title", detail: "detail", url: "url", severity: "severity", lastSeen: "last_seen",
+        folder: "folder", title: "title", detail: "detail", url: "url", severity: "severity", lastSeen: "last_seen", facts: "facts",
         resolvedAt: "resolved_at", snoozedUntil: "snoozed_until", todoId: "todo_id", dismissed: "dismissed",
         resolution: "resolution", ackedAt: "acked_at", kind: "kind", answer: "answer", deliveredAt: "delivered_at",
       };
@@ -1911,13 +1922,14 @@ export function openLedger(
         .get(rec.folder, rec.lane === "side" && rec.laneKind ? "side" : "main") as { next: number };
       const r = db
         .query(
-          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id, lane, lane_kind)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id, lane, lane_kind, summary)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         )
         .get(
           rec.project, rec.folder, rec.brief, rec.team ?? null, rec.workClass, rec.createdBy, at, next,
           rec.cause?.msgId ?? null, rec.cause?.threadId ?? null, rec.planId ?? null,
           rec.lane === "side" && rec.laneKind ? "side" : "main", rec.lane === "side" && rec.laneKind ? rec.laneKind : null,
+          rec.summary ?? null,
         ) as { id: number };
       return todoById(r.id)!;
     },
@@ -1967,7 +1979,7 @@ export function openLedger(
       const cols: Record<string, string> = {
         status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at",
         attempts: "attempts", retryAt: "retry_at", failure: "failure", brief: "brief", waitingOn: "waiting_on",
-        lane: "lane", laneKind: "lane_kind",
+        lane: "lane", laneKind: "lane_kind", summary: "summary",
       };
       const sets = Object.entries(patch).filter(([k, v]) => k in cols && v !== undefined);
       if (sets.length === 0) return;
@@ -2217,7 +2229,21 @@ interface AttentionDbRow {
   first_seen: number; last_seen: number; resolved_at: number | null; snoozed_until: number | null;
   todo_id: number | null; dismissed: number;
   from_project: string | null; cause_msg_id: number | null; resolution: string | null; acked_at: number | null;
-  answer?: string | null; delivered_at?: number | null; from_session?: string | null;
+  answer?: string | null; delivered_at?: number | null; from_session?: string | null; facts?: string | null;
+}
+
+/** Stored facts, or undefined when absent or not a flat object of strings and numbers (never a throw). */
+function parseFacts(raw: string | null | undefined): AttentionFacts | undefined {
+  if (!raw) return undefined;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+    const out: AttentionFacts = {};
+    for (const [k, x] of Object.entries(v)) if (typeof x === "string" || typeof x === "number") out[k] = x;
+    return out;
+  } catch {
+    return undefined;
+  }
 }
 
 function mapAttentionRow(r: AttentionDbRow): AttentionRow {
@@ -2227,6 +2253,7 @@ function mapAttentionRow(r: AttentionDbRow): AttentionRow {
     dismissed: r.dismissed === 1,
     ...(r.detail !== null ? { detail: r.detail } : {}),
     ...(r.url !== null ? { url: r.url } : {}),
+    ...(parseFacts(r.facts) ? { facts: parseFacts(r.facts)! } : {}),
     ...(r.resolved_at !== null ? { resolvedAt: r.resolved_at } : {}),
     ...(r.snoozed_until !== null ? { snoozedUntil: r.snoozed_until } : {}),
     ...(r.todo_id !== null ? { todoId: r.todo_id } : {}),
@@ -2280,6 +2307,7 @@ interface TodoDbRow {
   waiting_on: string | null;
   lane: string;
   lane_kind: string | null;
+  summary?: string | null;
 }
 
 function mapTodoRow(r: TodoDbRow): TodoRow {
@@ -2306,6 +2334,7 @@ function mapTodoRow(r: TodoDbRow): TodoRow {
     ...(r.waiting_on ? { waitingOn: r.waiting_on } : {}),
     lane: r.lane === "side" && isLaneKind(r.lane_kind) ? "side" : "main",
     ...(r.lane === "side" && isLaneKind(r.lane_kind) ? { laneKind: r.lane_kind } : {}),
+    ...(r.summary ? { summary: r.summary } : {}),
   };
 }
 

@@ -107,21 +107,21 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
     for (const s of sessions) {
       const b = s.blockedOn;
       if (b?.kind !== "approval" || now - b.since <= cfg.approvalRemindMs) continue;
-      draft({ ...at(s.order.folder), kind: "approval_stuck", key: s.id, severity: "high", title: `approval pending ${age(now - b.since)}: ${b.label}` });
+      draft({ ...at(s.order.folder), kind: "approval_stuck", key: s.id, severity: "high", title: `approval pending ${age(now - b.since)}: ${b.label}`, facts: { since: b.since, label: b.label } });
     }
   });
 
   kind("dispatch_spinning", () => {
     for (const s of sessions) {
       if (!s.spinning || s.status !== "running") continue;
-      draft({ ...at(s.order.folder), kind: "dispatch_spinning", key: s.id, severity: "high", title: `repeating itself for ${age(now - s.spinning.since)}: ${s.spinning.label}` });
+      draft({ ...at(s.order.folder), kind: "dispatch_spinning", key: s.id, severity: "high", title: `repeating itself for ${age(now - s.spinning.since)}: ${s.spinning.label}`, facts: { since: s.spinning.since, label: s.spinning.label } });
     }
   });
 
   kind("queue_paused", () => {
     for (const p of ledger.listTodoPaused()) {
       if (now - p.at <= cfg.queuePausedHours * HOUR) continue;
-      draft({ ...at(p.folder), kind: "queue_paused", key: p.folder, title: `todo queue paused ${age(now - p.at)}: ${p.reason}` });
+      draft({ ...at(p.folder), kind: "queue_paused", key: p.folder, title: `todo queue paused ${age(now - p.at)}: ${p.reason}`, facts: { since: p.at, reason: p.reason } });
     }
   });
 
@@ -135,21 +135,21 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
 
   kind("thread_failed", () => {
     for (const t of page("thread_failed", ledger.threadsByState("failed", { since: now - cfg.failedLookbackHours * HOUR, limit: PAGE_MAX + 1 }))) {
-      draft({ ...at(t.folder), kind: "thread_failed", key: String(t.id), title: `thread failed: ${t.title}` });
+      draft({ ...at(t.folder), kind: "thread_failed", key: String(t.id), title: `thread failed: ${t.title}`, facts: { thread: t.id, threadTitle: t.title } });
     }
   });
 
   // Waiting with no new line for waitingHours (the thread's clock is its last update).
   kind("thread_waiting", () => {
     for (const t of page("thread_waiting", ledger.threadsByState("waiting", { until: now - cfg.waitingHours * HOUR, limit: PAGE_MAX + 1 }))) {
-      draft({ ...at(t.folder), kind: "thread_waiting", key: String(t.id), title: `thread waiting ${age(now - t.updatedAt)}: ${t.title}` });
+      draft({ ...at(t.folder), kind: "thread_waiting", key: String(t.id), title: `thread waiting ${age(now - t.updatedAt)}: ${t.title}`, facts: { thread: t.id, threadTitle: t.title, since: t.updatedAt } });
     }
   });
 
   kind("decision_stale", () => {
     for (const d of ledger.listOpenDecisions()) {
       if (d.kind !== "decision" || now - d.createdAt <= cfg.decisionStaleHours * HOUR) continue;
-      draft({ ...at(d.folder), kind: "decision_stale", key: d.id, title: `decision open ${age(now - d.createdAt)}: ${d.question}` });
+      draft({ ...at(d.folder), kind: "decision_stale", key: d.id, title: `decision open ${age(now - d.createdAt)}: ${d.question}`, facts: { decision: d.id.slice(0, 8), question: d.question, since: d.createdAt } });
     }
   });
 
@@ -163,6 +163,7 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
         ...at(s.order.folder), kind: "ctx_window_suspect", key: s.order.folder,
         title: `ctx ${Math.round(m.occupancy * 100)}% is impossible: model ${m.model ?? "unknown"}, window ${m.windowTokens ?? "unknown"} tokens`,
         detail: JSON.stringify({ occupancy: m.occupancy, model: m.model ?? null, windowTokens: m.windowTokens ?? null }),
+        facts: { pct: Math.round(m.occupancy * 100), model: m.model ?? "unknown", window: m.windowTokens ?? 0 },
       });
     }
   });

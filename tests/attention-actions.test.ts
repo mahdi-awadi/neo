@@ -10,6 +10,8 @@ import { ATTENTION_BRIEFS, attentionBrief } from "../src/engine/attention-briefs
 import { ENGINE_KINDS } from "../src/engine/producers/engine";
 import { RESTART_KINDS } from "../src/engine/producers/restart";
 import { SKILLIFY_KINDS } from "../src/engine/producers/skillify";
+import { GITHUB_KINDS } from "../src/engine/producers/github";
+import { GIT_KINDS } from "../src/engine/producers/git";
 import { DIRTY_KINDS } from "../src/engine/todo-queue";
 import type { TodoQueue } from "../src/engine/todo-queue";
 import { handleCommand } from "../src/engine/commands";
@@ -46,7 +48,9 @@ function rig(refuse = false) {
 }
 
 test("every kind a producer raises has a brief template (facts, link, done-when)", () => {
-  for (const kind of [...ENGINE_KINDS, ...RESTART_KINDS, ...DIRTY_KINDS, ...SKILLIFY_KINDS]) expect(ATTENTION_BRIEFS[kind]).toBeDefined();
+  // ADR-0059: every kind a producer raises has a brief — GitHub and git too, so → todo never answers
+  // "no brief template".
+  for (const kind of [...ENGINE_KINDS, ...RESTART_KINDS, ...DIRTY_KINDS, ...SKILLIFY_KINDS, ...GITHUB_KINDS, ...GIT_KINDS]) expect(ATTENTION_BRIEFS[kind]).toBeDefined();
   const b = attentionBrief({ kind: "dirty", title: "3 uncommitted files after todo #4", detail: "files: a.ts", url: "https://x", project: "gold" })!;
   expect(b).toContain("3 uncommitted files after todo #4");
   expect(b).toContain("Facts: files: a.ts");
@@ -87,10 +91,11 @@ test("renderAttention: grouped by project, severity first, bounded lines, button
   reconcile(l, "engine", "gold", [draft({ key: "a", title: "gold normal" }), draft({ key: "b", kind: "approval_stuck", title: "gold high", severity: "high" })], 100);
   reconcile(l, "engine", "acme", [draft({ project: "acme", folder: "/home/acme", key: "c", title: "acme normal" })], 100);
   const r = renderAttention(l, { now: 200, maxLines: 30, maxButtons: 2, consoleUrl: "https://neo.example/" });
-  expect(r.text.split("\n")).toEqual(["⚠ attention: 3 open", "gold:", "  🔴 #2 gold high", "  🟡 #1 gold normal", "acme:", "  🟡 #3 acme normal", "https://neo.example/"]);
+  // ADR-0059: each line is [badge] plain title.
+  expect(r.text.split("\n")).toEqual(["⚠ attention: 3 open", "gold:", "  🔴 #2 [Stuck approval] gold high", "  🟡 #1 [Paused queue] gold normal", "acme:", "  🟡 #3 [Paused queue] acme normal", "https://neo.example/"]);
   expect(r.buttons.map((b) => b.id)).toEqual([2, 1]);
   const short = renderAttention(l, { now: 200, maxLines: 3, maxButtons: 10 });
-  expect(short.text.split("\n")).toEqual(["⚠ attention: 3 open", "gold:", "  🔴 #2 gold high", "… +2 more"]);
+  expect(short.text.split("\n")).toEqual(["⚠ attention: 3 open", "gold:", "  🔴 #2 [Stuck approval] gold high", "… +2 more"]);
   expect(renderAttention(l, { project: "zzz", now: 200, maxLines: 30, maxButtons: 10 }).text).toBe("✓ nothing needs attention in zzz");
 });
 
@@ -99,7 +104,7 @@ test("/attention [project] answers with the list and its one-tap items", () => {
   reconcile(ledger, "engine", "gold", [draft()], 100);
   const deps = { registry: createRegistry(), ledger, trust: openTrustStore(":memory:"), now: () => 200 };
   const r = handleCommand("/attention gold", 1, deps)!;
-  expect(r.text).toContain("#1 todo queue paused 7h");
+  expect(r.text).toContain("#1 [Paused queue] #3 failed"); // ADR-0059: badge + plain title (the pause reason)
   expect(r.attention?.map((a) => [a.id, a.actions])).toEqual([[1, ["todo", "snooze", "dismiss"]]]);
   expect(handleCommand("/attention", 1, deps)!.text).toContain("gold:");
 });
@@ -148,4 +153,40 @@ test("a double tap where the todo is done at once (delivered into an open sessio
   r.ledger.updateTodo(r.ledger.attentionById(id!)!.todoId!, { status: "done", endedAt: 201 });
   expect((await applyAttentionAction(r.deps, id!, "todo", 202)).text).toContain("(done)");
   expect(r.submitted).toHaveLength(1);
+});
+
+
+test("ADR-0059: a brief is filled from the item's facts; an old row's facts come from its key and title", () => {
+  const stored = attentionBrief({ kind: "stale_branch", key: "feat/x", title: "t", project: "adminli", facts: { branch: "feat/x", days: 26, base: "main" } })!;
+  expect(stored).toContain("Branch feat/x has had no commit for 26 days and is not merged into main.");
+  expect(stored).not.toContain("?");
+  // The live row #321 had no facts: they come from its title.
+  const old = attentionBrief({ kind: "stale_branch", key: "feat/multi-project-ui", title: "feat/multi-project-ui: no commit for 26 days, not merged into main", project: "adminli" })!;
+  expect(old).toContain("Branch feat/multi-project-ui has had no commit for 26 days and is not merged into main.");
+  const pr = attentionBrief({ kind: "pr_open", key: "31", title: "PR #31: chore(deps)(deps): bump expo-localization from 57.0.1 to 58.0.5", project: "adminli", url: "https://github.com/x/y/pull/31" })!;
+  expect(pr).toContain("Review PR #31");
+  expect(pr).toContain("merge it when CI is green");
+  expect(pr).toContain("Link: https://github.com/x/y/pull/31");
+  // A fact the item lacks reads "?" rather than a raw placeholder.
+  expect(attentionBrief({ kind: "unpushed", key: "b", title: "weird", project: "p" })!).not.toContain("{");
+});
+test("ADR-0059: → todo on a PR or a stale branch queues its brief (before: \"no brief template\")", async () => {
+  const r = rig();
+  const [pr, branch] = reconcile(r.ledger, "github", "adminli", [
+    draft({ project: "adminli", folder: "/home/adminli", source: "github", kind: "pr_open", key: "31", title: "PR #31: chore(deps)(deps): bump expo-localization from 57.0.1 to 58.0.5", url: "https://github.com/x/adminli/pull/31", facts: { pr: 31, prTitle: "chore(deps)(deps): bump expo-localization from 57.0.1 to 58.0.5", draft: 0 } }),
+    draft({ project: "adminli", folder: "/home/adminli", source: "github", kind: "stale_branch", key: "feat/multi-project-ui", title: "feat/multi-project-ui: no commit for 26 days, not merged into main" }),
+  ], 100).opened;
+  for (const id of [pr!, branch!]) expect((await applyAttentionAction(r.deps, id, "todo", 200)).ok).toBe(true);
+  expect(r.submitted[0]).toContain("Review PR #31");
+  expect(r.submitted[1]).toContain("Branch feat/multi-project-ui has had no commit for 26 days");
+});
+
+test("ADR-0059: Telegram's /attention line is [badge] plain title, from the EN catalogue", () => {
+  const r = rig();
+  reconcile(r.ledger, "git", "adminli", [draft({ project: "adminli", folder: "/home/adminli", source: "git", kind: "stale_branch", key: "feat/x", title: "feat/x: no commit for 26 days, not merged into main" })], 100);
+  reconcile(r.ledger, "github", "adminli", [draft({ project: "adminli", folder: "/home/adminli", source: "github", kind: "pr_open", key: "31", title: "PR #31: chore(deps)(deps): bump next from 15.5.15 to 16.4.3" })], 100);
+  const { text } = renderAttention(r.ledger, { now: 200, maxLines: 20, maxButtons: 5 });
+  expect(text).toContain("[Stale branch] feat/x");
+  expect(text).toContain("[Dependency update PR] next 15.5.15 → 16.4.3");
+  expect(text).not.toContain("(deps)(deps)");
 });

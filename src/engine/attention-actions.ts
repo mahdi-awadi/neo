@@ -8,6 +8,7 @@ import { ENGINE_CHAT_ID, type Trace } from "./trace";
 import { isDue } from "./trigger";
 import { dismiss, listOpen, snooze } from "./attention";
 import { attentionBrief } from "./attention-briefs";
+import { badgeLabel, explainAttention } from "./attention-explain";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { exec } from "./update-sys";
@@ -157,7 +158,12 @@ function noteCause(ledger: Ledger, row: AttentionRow): { msgId: number; threadId
 }
 
 /** An item's title as its lines show it: a project note also names its sender (ADR-0043). */
-export const attentionTitle = (r: Pick<AttentionRow, "title" | "fromProject">): string => `${todoTitle(r.title)}${r.fromProject ? ` — from ${r.fromProject}` : ""}`;
+/** One bounded Telegram line for an item (ADR-0059): its kind badge (the console's EN catalogue name) and its
+ *  plain title, then who sent it when it is a project note. */
+export const attentionTitle = (r: AttentionRow): string => {
+  const e = explainAttention(r);
+  return `[${badgeLabel(e.badge)}] ${todoTitle(e.plain)}${r.fromProject ? ` — from ${r.fromProject}` : ""}`;
+};
 
 async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<AttentionActionResult> {
   const { ledger } = deps;

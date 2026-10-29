@@ -18,9 +18,9 @@ test("renderDigest: a high item → result priority, per-project counts, top 3 h
   expect(r.text.split("\n")).toEqual([
     "☀ attention today: 6 open, 4 high, 6 new since the last digest",
     "gold: 4 high · 1 normal",
-    "  🔴 #4 high 4", // listOpen's order (as /attention): severity, then newest
-    "  🔴 #3 high 3",
-    "  🔴 #2 high 2",
+    "  🔴 #4 [Paused queue] high 4", // listOpen's order (as /attention): severity, then newest
+    "  🔴 #3 [Paused queue] high 3",
+    "  🔴 #2 [Paused queue] high 2",
     "acme: 1 normal",
     "https://neo.example/",
   ]);

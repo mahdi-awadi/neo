@@ -59,6 +59,7 @@ export function skillifyDrafts(deps: SkillifyDeps, now: number): AttentionDraft[
       title: `this task came back on ${n} days in 30: make it a recipe or a skill?${quote ? ` "${quote}"` : ""}`,
       detail: `the same words in todo briefs on ${n} different days since ${new Date(now - WINDOW_MS).toISOString().slice(0, 10)}: ${g.words.join(" ")}`,
       severity: "low",
+      facts: { days: n, words: g.words.join(" ") },
     });
   }
   return out;

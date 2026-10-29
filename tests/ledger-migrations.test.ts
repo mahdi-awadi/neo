@@ -152,3 +152,31 @@ test("migration 14 adds lane and lane_kind to project_todos; old rows read as th
   expect(t!.lane).toBe("main");
   expect(t!.laneKind).toBeUndefined();
 });
+
+test("migration 15 adds attention facts and todo summaries; old rows read without them (ADR-0059)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-mig-"));
+  const path = join(dir, "ledger.db");
+  const v14 = new Database(path);
+  migrate(v14, { path, migrations: MIGRATIONS.filter((x) => x.version <= 14) });
+  v14.run(`INSERT INTO project_todos (project, folder, brief, work_class, created_by, created_at, status, position) VALUES ('p', '/f', 'b', 'interactive', 'operator', 1, 'queued', 1)`);
+  v14.run(`INSERT INTO attention_items (project, folder, source, kind, key, title, severity, first_seen, last_seen) VALUES ('p', '/f', 'git', 'stale_branch', 'feat/x', 'feat/x: no commit for 26 days, not merged into main', 'normal', 1, 1)`);
+  v14.close();
+  const db = new Database(path);
+  expect(migrate(db, { path }).from).toBe(14);
+  expect(db.query(`SELECT summary FROM project_todos`).get()).toEqual({ summary: null });
+  expect(db.query(`SELECT facts FROM attention_items`).get()).toEqual({ facts: null });
+  db.close();
+  const led = openLedger(path);
+  expect(led.listTodos({})[0]!.summary).toBeUndefined();
+  const [row] = led.attentionRows("p", "git");
+  expect(row!.facts).toBeUndefined();
+  // New rows carry them; an upsert refreshes the facts; bad JSON reads as none, never a throw.
+  const t = led.addTodo({ project: "p", folder: "/f", brief: "b", workClass: "interactive", createdBy: "operator", summary: "Review PR #31" }, 2);
+  expect(led.todoById(t.id)!.summary).toBe("Review PR #31");
+  led.updateTodo(t.id, { summary: "Merge PR #31" });
+  expect(led.todoById(t.id)!.summary).toBe("Merge PR #31");
+  const id = led.insertAttention({ project: "p", folder: "/f", source: "git", kind: "stale_branch", key: "feat/y", title: "t", severity: "normal", facts: { branch: "feat/y", days: 26, base: "main" } }, 3);
+  expect(led.attentionById(id)!.facts).toEqual({ branch: "feat/y", days: 26, base: "main" });
+  led.updateAttention(id, { facts: "{not json" });
+  expect(led.attentionById(id)!.facts).toBeUndefined();
+});

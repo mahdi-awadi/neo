@@ -9,7 +9,7 @@ import type { Registry } from "./registry";
 import { faults } from "./fault";
 import { deriveThreadState } from "./thread-state";
 import { applyStale, staleDecisions, type DecisionSettleCfg } from "./decision-settle";
-import { todoTitle } from "./todo-title";
+import { todoLabel, todoTitle } from "./todo-title";
 
 export type { Cause };
 
@@ -136,7 +136,7 @@ export function renderTrace(tree: TraceTree, ref: (id: number) => string, opts: 
         return { at: m.at, line: `${ref(m.id)} · ${m.kind} · ${m.role === "user" ? "you: " : ""}${text}` };
       }),
     ...tree.orders.map((o) => ({ at: o.createdAt, line: `${o.id.slice(0, 8)} · order · ${o.status ?? "running"} · ${o.folder}` })),
-    ...tree.todos.map((t) => ({ at: t.createdAt, line: `#${t.id} · todo · ${t.status} · ${todoTitle(t.brief)}` })),
+    ...tree.todos.map((t) => ({ at: t.createdAt, line: `#${t.id} · todo · ${t.status} · ${todoLabel(t)}` })),
     ...tree.decisions.map((d) => ({ at: d.createdAt, line: `${d.id.slice(0, 8)} · ${d.kind} · ${d.status} · ${todoTitle(d.question)}` })),
   ].sort((a, b) => a.at - b.at); // stable: equal times keep their kind order
 

@@ -26,6 +26,8 @@ import { createGitRead } from "./git-read";
 import { DEFAULT_GITHUB_CFG, type GithubCfg } from "./producers/github";
 import { humanAge } from "./liveness";
 import { todoTitle } from "./todo-title";
+import { explainAttention, type AttentionLink } from "./attention-explain";
+import type { AttentionFacts } from "./ledger";
 
 /** Recent threads a project view lists (spec §9). */
 const THREADS_SHOWN = 10;
@@ -67,6 +69,14 @@ export interface AttentionItemView {
   ageMs: number;
   todoId?: number;
   actions: AttentionAction[];
+  /** ADR-0059: what the item is — the kind badge (`att.kind.<badge>`), the project, a plain title, the facts
+   *  the description (`att.why.<badge>`) is built from, its links, and exactly what → todo sends. */
+  badge: string;
+  project: string;
+  plain: string;
+  facts: AttentionFacts;
+  links: AttentionLink[];
+  brief?: string;
 }
 
 export interface RestartGatedItem {
@@ -324,7 +334,9 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     "attentionView",
     name,
     () =>
-      c.open.map((r): AttentionItemView => ({
+      c.open.map((r): AttentionItemView => {
+        const e = explainAttention(r);
+        return {
         id: r.id,
         source: r.source,
         kind: r.kind,
@@ -336,8 +348,16 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
         ...(r.source === "note" ? { noteKind: noteKindOf(r), noteState: noteState(r) } : {}),
         ageMs: now - r.firstSeen,
         ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
-        actions: attentionActions(r),
-      })),
+        // No brief, no → todo: the tap could only be refused (ADR-0059).
+        actions: attentionActions(r).filter((a) => a !== "todo" || e.brief !== undefined),
+        badge: e.badge,
+        project: e.project,
+        plain: e.plain,
+        facts: e.facts,
+        links: e.links,
+        ...(e.brief ? { brief: e.brief } : {}),
+        };
+      }),
     [],
   );
 
