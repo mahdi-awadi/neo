@@ -421,7 +421,7 @@ export function briefWithProjectDocs(task: string): string {
     "payment, upload or input-handling work.\n\n" +
     "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
     "may your helper agents. Work for another project (even one an old note lists): send it there with `project_notes`. " +
-    "Missing a fact, tool or key? `project_notes ask` (main or a project) and `tools_for` — never wait silently, never paste keys.\n\n" +
+    "Missing a fact, tool or key? `project_notes ask` (main or a project) and `tools_for` (`neo-tool-*` skills, `tool_api`) — never wait silently, never paste keys.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
     "Drop options that are only workarounds. Escalate to the operator " +

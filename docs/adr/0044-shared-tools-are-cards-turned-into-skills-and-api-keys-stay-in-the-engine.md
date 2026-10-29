@@ -1,6 +1,6 @@
 # Shared tools are cards that become skills, and API keys stay in the engine
 
-**Status:** accepted (2026-10-25; P1-P2 built, restart-gated; P3 usage metering not built; the skill install, the relay and the ScaleDown card are still operator steps: nothing installed, `tools.relayEnabled` false, ScaleDown a candidate). Related: ADR-0024 (security
+**Status:** accepted (2026-10-25; P1-P2 built, live since the 2026-10-27 boot; P3-P4 built on dev 2026-10-29, restart-gated, see Amendment 2; the skill install, the relay, the `tools-enrich` loop and the ScaleDown card are still operator steps: nothing installed, `tools.relayEnabled` false, the loop not loaded, ScaleDown a candidate). Related: ADR-0024 (security
 kit), ADR-0031 (project fence), ADR-0032 (shared browser), ADR-0043 (`project_notes`, the same tool
 gate), context-efficiency spec §8 (no engine-side AI).
 
@@ -114,3 +114,46 @@ the best few tools by itself. The engine stays free of AI.
 - **A separate manifest file in each project.** Writing into other repos breaks ADR-0031. The
   project's capabilities are *derived* at query time instead: card `scope`, plus the project's own
   `.mcp.json` server names and `.claude/skills` descriptions, read-only.
+
+## Amendment 2 (2026-10-29, as built): usage, recipes, skillify and the enrichment loop (P3-P4)
+
+1. **A use is a done order, not a call.** A card's count is the number of orders in the last 30 days
+   that ended `done` and made at least one call its `usage` globs match (`tools` on an MCP tool name,
+   `commands` on a Bash label). Only calls the governor or the trust allowed (`allow`, `auto`) count; an
+   escalated call may have been denied later, and that answer is not on the row. Counts and the relay p50
+   are read in one cached pass (`usageCacheMs`), from two parameterized ledger reads grouped by
+   (tool, label); no migration. Globs are compiled once, matched without a regex (no backtracking), and
+   bounded in the card (≤ 100 chars, ≤ 3 `*`; `tools` globs start with `mcp__`). Measured on the live
+   ledger (69k calls): one refresh takes about 0.5 s, at most once per `usageCacheMs`. `tool_actions` keeps
+   100k rows, so on a busy host the window can be shorter than 30 days.
+2. **Loading a card's skill is a use of that card.** A Skill call's activity label now names the skill
+   (`Skill: neo-recipe-deploy-check`; the live ledger had 339 Skill calls, all labelled just `Skill`),
+   and every card counts loads of its generated skill. `skillName()` is the one naming rule, shared with
+   `install.ts`. So a recipe needs no globs of its own.
+3. **Recipe ids carry no `recipe-` prefix** (`deploy-check`, not `recipe-deploy-check`): the skill is
+   already named `neo-recipe-<id>`.
+4. **Skillify groups operator todo briefs only, and counts days.** Dispatch order tasks start with the
+   engine's own preamble, so their first lines are all the same. Plan steps (`plan_id`), todos opened from
+   an attention item, continuation briefs and cancelled todos are not repeats. A group counts the distinct
+   days its todos were given, so a re-queue or a side-lane re-add on the same day counts once (on the live
+   ledger the only 3-member group was one order re-queued twice in 6 minutes). A secret-shaped word never
+   reaches the key, title or detail, and its line is not quoted. The producer runs once a
+   day from the heartbeat; its catalogue check is `find(…, { quiet: true })`, so it records no miss.
+5. **The enrichment loop's goal is "no unhandled miss"**, `misses.ts check`, met after the worker's
+   `misses.ts mark --through <at>` with the value `list` printed (a miss that came later stays unhandled),
+   and either `--branch chore/tools-enrich-<x>` (the engine checks it has commits beyond `dev` that change
+   only `docs/tools/`) or `--none "<why>"`.
+
+### Alternatives rejected (amendment 2)
+
+- **Counting raw calls.** One order with 50 browser clicks would outrank five orders that each used a
+  tool once. The order is the unit of "it worked".
+- **Usage globs on each recipe (`Skill` + a label glob).** A second copy of the skill-name rule in every
+  card; the rule is derived instead.
+- **The catalogue test as the loop's goal (the plan's first design).** `runLoop` checks the goal before
+  each iteration, so a test that is almost always green would never let a worker run.
+- **A "never met" goal with one iteration** (the fire-once pattern of other loops). A worker would run,
+  and cost, every week, even when nothing missed.
+- **Grouping dispatch briefs by their first line, or stripping the preamble by text.** Every brief has
+  the same first line, and a text cut breaks when the preamble changes. Todo briefs are the operator's
+  own words.

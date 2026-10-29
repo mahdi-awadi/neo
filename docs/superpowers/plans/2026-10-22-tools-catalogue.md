@@ -93,7 +93,8 @@ Catalogue { cards, errors, find, hint, relay, render }`. It has two real seams: 
 
 > **Status 2026-10-27:** Phases 1–2 (Tasks 1–7) are built (4aa1b3a…8caa971, merge 4b3019c) and live
 > since the 2026-10-27 boot of d85b638. They were built under the approved ADR-0050 plan, which
-> covered P1–P2 only. Phases 3–5 below are not built and are not approved yet.
+> covered P1–P2 only. Phases 3–5 were approved by the operator on 2026-10-29 (decision #4a2a44ca) and are
+> built on `dev` (ADR-0044 Amendment 2). Task 13 stays operator-gated.
 
 ### Task 8: Ledger usage source + p50
 **Files:** `src/engine/ledger.ts` (`toolUsage({since}): Array<{tool; label; ok: boolean}>`, one parameterized query joining `tool_actions` to each order's last outcome); `src/engine/tools-catalogue.ts` (`ledgerUsageSource(ledger, cards, cfg)`: glob mapping, cache `usageCacheMs`; p50 from `tool_api` events); `tests/tools-usage.test.ts`.
@@ -121,9 +122,9 @@ Catalogue { cards, errors, find, hint, relay, render }`. It has two real seams: 
 
 ### Task 12: Docs + preamble + review
 **Files:** `src/engine/dispatch.ts` (one preamble sentence: "Shared tools: your `neo-tool-*`/`neo-recipe-*` skills; ask `tools_for` which fit; API tools go through `tool_api`."); `docs/CONFIG.md`; `docs/HISTORY.md`; `CLAUDE.md` (status + map); ADR-0044 → accepted; `HANDOFF.md`.
-- [ ] Step 1: failing test: the preamble contains `tools_for`, and the preamble + codebase-memory line < 5000 chars. Steps 2–4: implement → PASS.
-- [ ] Step 5: `/security-review` (the relay handles input and keys). Then superpowers:requesting-code-review. Fix the findings. Run the full `bun test` + `bunx tsc --noEmit` green.
-- [ ] Step 6: commit `docs(tools): catalogue docs, preamble line, ADR-0044 accepted (P5.1)`. Merge → dev. Remove the worktree (the branch stays).
+- [x] Step 1: failing test: the preamble contains `tools_for`, and the preamble + codebase-memory line < 5000 chars. Steps 2–4: implement → PASS.
+- [x] Step 5: `/security-review` (the relay handles input and keys). Then superpowers:requesting-code-review. Fix the findings. Run the full `bun test` + `bunx tsc --noEmit` green.
+- [x] Step 6: commit `docs(tools): catalogue docs, preamble line, ADR-0044 accepted (P5.1)`. Merge → dev. Remove the worktree (the branch stays).
 
 ### Task 13 (operator-gated, not part of approval): ScaleDown pilot
 Only after (a) a signed or published DPA, and (b) a known quota: flip `scaledown.md` to `active`, set `tools.relayEnabled: true`, and measure for 2 weeks with `tool_api` events.

@@ -917,6 +917,26 @@ A tool search whose best score is below the threshold. It is recorded so that th
 catalogue can be seen and filled, by a worker that improves the cards.
 _Avoid_: failed search, no result
 
+**Usage count**:
+How many orders in the last 30 days ended `done` after they used a card: a call its `usage` globs
+match, or a load of its generated skill (only calls allowed without asking). It raises the card in tool
+search. It counts orders, not calls.
+_Avoid_: popularity, hits, calls (one order may make many calls)
+
+**Skillify item**:
+An attention item (source `skillify`) the engine raises when the operator gave one project the same
+kind of task on at least `tools.skillifyMin` different days in 30 days and no card or skill fits it. It asks for a
+recipe or a skill; a worker writes it. Engine-made todos (plan steps, continuations, todos from an
+attention item) and cancelled todos never count.
+_Avoid_: automation suggestion, AI suggestion (the engine only counts words)
+
+**Miss mark**:
+The point up to which the tool misses are handled, set by the `tools-enrich` worker with
+`misses.ts mark`, through the misses it listed, only on a card branch the engine checked or a stated
+reason. The loop's goal is met when
+no miss is newer than the mark.
+_Avoid_: ack, checkpoint (a checkpoint is a context handoff)
+
 **Project capabilities**:
 What one project can use: the active cards whose scope includes it, plus its own MCP servers and
 skills. They are worked out read-only when they are asked for, and never stored in the project.

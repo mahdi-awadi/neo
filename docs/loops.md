@@ -179,8 +179,8 @@ live, then enable it when you want it.
   before each iteration, and a test that is almost always green would never let a worker run.)
 - **Worker:** reads `misses.ts list` (search terms only, never a brief), adds tags and examples to cards on
   a `chore/tools-enrich-<date>` branch in a `/tmp` worktree, may add `candidate` cards, runs the catalogue
-  test, commits, then `misses.ts mark --branch <b>` (the engine checks the branch exists) or
-  `mark --none "<why>"`. It never makes a card `active`: that stays the operator's decision.
+  test, commits, then `misses.ts mark --through <at> --branch <b>` (the engine checks the branch has
+  commits beyond `dev` that change only `docs/tools/`) or `mark --through <at> --none "<why>"`. It never makes a card `active`: that stays the operator's decision.
 
 A loop with `report: "goal"` sends the goal command's whole output once, when the goal is met, and
 never the worker's text. Without it, a scheduled loop sends the worker's text, as before.

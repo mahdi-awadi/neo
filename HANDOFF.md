@@ -1,3 +1,16 @@
+# HANDOFF — 2026-10-29: tools catalogue learns from use (ADR-0044 P3–P5, on dev, restart-gated)
+
+Built on `dev` (operator picked it on decision #4a2a44ca): usage ranking from done orders (ledger
+adapter), Skill calls labelled with the skill name, four recipes, the daily skillify producer, the
+`tools-enrich` loop definition with `tools/catalogue/misses.ts`, the preamble pointer. ADR-0044
+Amendment 2 records the as-built decisions (the loop goal is `misses.ts check`, not the catalogue
+test). Operator steps after the merge + restart: `bun tools/catalogue/install.ts` (writes the
+`neo-tool-*`/`neo-recipe-*` skills into `~/.claude/skills`), and, when wanted,
+`bun tools/create-loop.ts docs/loops/tools-enrich.json` then enable it. Task 13 (ScaleDown pilot) stays
+operator-gated.
+
+---
+
 # HANDOFF — gateway Traefik host (2026-10-29, note #455)
 
 `neo-gateway` was recreated from the `dev` compose file with `NEO_API_HOST=neo-api.tech-gate.online`
@@ -26,8 +39,7 @@ Built on `dev` (not live; needs merge to master + restart):
 Not built (why):
 - Reach plan P0.1/P0.2 spikes, P1–P5, P0.6 host hygiene: production access, deploys and 11 operator
   decisions (§12); outside "dev work".
-- ADR-0044 tools catalogue P3–P5 (usage ranking, recipes, skillify, enrichment loop): not started in
-  this run; next in line.
+- ADR-0044 tools catalogue P3–P5: now built on `dev` (see the section at the top).
 - Plan-watch misses plans written in a worktree: the plan lives on another branch until merged, so the
   fix needs a design choice (which folder and branch own the card); not a two-line fix.
 - Claude-app parity and research P0–P8 plans: product plans awaiting scope approval.

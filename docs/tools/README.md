@@ -14,8 +14,10 @@ One file per shared tool: `docs/tools/<id>.md`. A card is YAML front matter plus
    - `env`: key NAMES only (`[A-Z][A-Z0-9_]*`). Never a value: a value-looking entry is an error.
    - `tags` (at most 12, lowercase words) and `examples` (at most 6, one line each) are required on
      an active card. Search matches them best.
-   - `usage`: optional globs that map recorded tool calls to the card: `tools` (tool names) and
-     `commands` (Bash text).
+   - `usage`: optional globs that map recorded tool calls to the card: `tools` (MCP tool names, so
+     they start with `mcp__`) and `commands` (Bash text). `*` is any run of characters; a glob is at
+     most 100 chars with at most 3 `*`. A load of the card's own `neo-tool-*`/`neo-recipe-*` skill
+     always counts, so a recipe needs no globs.
    - `relay`: only on `api` cards, and required on an active one. `baseUrl` is `https:`, `envKey` is
      also in `env`, each operation is `GET` or `POST` with a path that starts with `/`.
    - `recipe` cards have `steps` (2 to 10 of `{ card, do }`) and no `relay`. Each step names an

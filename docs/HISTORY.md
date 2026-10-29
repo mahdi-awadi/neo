@@ -1300,6 +1300,27 @@ The gateway's Traefik host comes from `NEO_API_HOST` (2026-10-29, traefik note #
   `*.tech-gate.online` certificate, `/healthz` returns 200 through Traefik, and there were 0
   example.com errors after the recreate.
 
+The tools catalogue learns from use (2026-10-29, ADR-0044 Phase 3–5, Amendment 2).
+
+- Ranking: a card's usage count is the `done` orders of the last 30 days that used it (its `usage` globs,
+  or a load of its generated skill). Denied calls, failed and unfinished orders do not count. The relay
+  p50 comes from completed `tool_api` events. The daemon wires `ledgerUsageSource`, not `nullUsage`.
+- A Skill call's activity label names the skill (`Skill: neo-recipe-x`); before, all 339 recorded Skill
+  calls read just `Skill`.
+- Four recipes: `deploy-check`, `e2e-test`, `prod-readonly-query` (eticket-v3), `store-build` (waselni).
+- Skillify: once a day, a task the operator gave one project on 3 different days in 30, with no tool that
+  fits, becomes one low attention item (source `skillify`). Plan steps, continuations, cancelled todos and
+  todos from an attention item never count; a same-day re-queue counts once. On the live ledger it raises
+  nothing today.
+- `tools-enrich` loop (checked in, off): weekly, `misses.ts check` is the goal, so a quiet week runs no
+  worker; the worker improves tags and examples on a branch, then `misses.ts mark --through <at>`.
+- An independent review found, and this fixed: a regex glob match that backtracked (10 stars hung),
+  a 1.3 s usage refresh (now about 0.5 s, every 10 minutes at most), skillify noise from re-queues, a
+  `mark` that any branch passed, and a mark that could swallow a miss that came after `list`.
+- The preamble names `neo-tool-*` skills and `tool_api` next to `tools_for`.
+
+Restart-gated. `bun tools/catalogue/install.ts` (skills) and loading the loop are operator steps.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
