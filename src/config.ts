@@ -17,6 +17,7 @@ import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
 import { readLanesCfg, type LanesCfg } from "./engine/lanes";
+import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
 import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
@@ -278,6 +279,9 @@ export interface NeoConfig {
   /** Side lanes (ADR-0057): the switch, caps and the `code` worktree root. Optional like `plans`;
    *  `loadConfig` always fills it. */
   lanes?: LanesCfg;
+  /** Stop or background one running tool call (ADR-0058): kill grace, Telegram notice, Docker socket.
+   *  Optional like `plans`; `loadConfig` always fills it. */
+  toolControl?: ToolControlCfg;
   /** The shared tools catalogue (ADR-0044): relay switch and caps, card limits, search knobs. Optional like
    *  `plans`; `loadConfig` always fills it. */
   tools?: ToolsCfg;
@@ -607,6 +611,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     attention: readAttentionCfg(fileCfg.attention),
     notes: readNotesCfg(fileCfg.notes),
     lanes: readLanesCfg(fileCfg.lanes),
+    toolControl: readToolControlCfg(fileCfg.toolControl),
     tools: readToolsCfg(fileCfg.tools),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
