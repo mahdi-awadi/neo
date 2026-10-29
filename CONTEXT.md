@@ -345,14 +345,16 @@ The engine's searchable archive of past work across every project: each order's 
 summary, its final result and progress digests, plans, project notes, operator messages and remembered
 entries, with the commit shas they name. It answers "what did we do about X, and where is it" by meaning
 and by exact id, in Arabic and English, and every hit cites its source (order/todo #, date, project,
-commit, plan path). Kept in its own database (`data/history.db`), so it outlives the ledger's retention
-(ADR-0066). Customer-sourced text is never in it.
+commit, plan path). Its text and keyword index live in `data/history.db` (the source of truth; it outlives
+the ledger's retention); its vectors live in Neo's own collection on the host's shared Qdrant, a
+rebuildable copy (ADR-0066). Customer-sourced text is never in it.
 _Avoid_: memory (bare), recall, knowledge base
 
 **History entry**:
 One searchable unit of the task history: a source row (an order, a result, a plan, a note, a message, a
 remembered entry) cut into chunks, each with its text, its source ref and its date. A chunk has a
-keyword index row always and a vector once the embedder has read it.
+keyword index row always, a vector once the embedder has read it, and a copy of that vector in the shared
+Qdrant once it is uploaded.
 _Avoid_: document (bare), record
 
 **Remembered entry**:
@@ -364,6 +366,13 @@ _Avoid_: note (that is a project note), pin
 One query run two ways — by meaning (vector nearest neighbours) and by exact words and ids (full-text) —
 with the two ranked lists fused by reciprocal rank fusion, then filtered by project, date and kind.
 _Avoid_: semantic search (that is only half of it), AI search
+
+**Shared service**:
+A database container that ops runs once for every project on the host (the shared Qdrant and Meilisearch,
+ops todo #914): an ops-owned compose file, a pinned image, loopback ports, one scoped key per project,
+daily backups. A project uses it as a consumer, only through its own key and its own prefixed collections,
+and keeps its own source of truth (operator ruling, 2026-10-29).
+_Avoid_: borrowed container, another project's database
 
 **Project docs**:
 A repo's tracked instructions and status files: CLAUDE.md/AGENTS.md (rules), HANDOFF.md/WIP.md (where
