@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { DEFAULT_TOOLS_CFG, nullUsage, openCatalogue, relayKeyNames } from "./engine/tools-catalogue";
+import { DEFAULT_TOOLS_CFG, ledgerUsageSource, openCatalogue, relayKeyNames } from "./engine/tools-catalogue";
 import { fsSkillSource } from "./engine/tool-skills";
 import { loadConfig, loadedDotEnvKeys } from "./config";
 import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env";
@@ -215,7 +215,9 @@ async function main(): Promise<void> {
   const tools = faults.guard("tools.catalogue", () => {
     const catalogue = openCatalogue({
       dir: toolsDir,
-      cfg: toolsCfg, skills: fsSkillSource(), usage: nullUsage, ledger, // the ledger-backed usage counts are ADR-0044 Phase 3
+      cfg: toolsCfg, skills: fsSkillSource(), ledger,
+      // Ranking learns from what worked (ADR-0044 Phase 3): done orders that used a card, last 30 days.
+      usage: (cards) => ledgerUsageSource({ ledger, cards, cfg: toolsCfg }),
     });
     const { cards, errors } = catalogue;
     for (const c of cards) if (c.relay?.envKey) relayKeys.add(c.relay.envKey);

@@ -448,14 +448,86 @@ export interface SkillSource {
   project(folder: string): SkillRow[];
 }
 
-/** Per-card success counts and relay latency. The ledger adapter is ADR-0044 Phase 3; until then the
- *  daemon wires `nullUsage` (no counts, no p50, so no boost). */
+/** Per-card success counts and relay latency: the ledger in the daemon (`ledgerUsageSource`), a fake in
+ *  tests, `nullUsage` for no boost. */
 export interface UsageSource {
   okUses(cardIds: string[]): Map<string, number>;
   p50(cardId: string): number | undefined;
 }
 
 export const nullUsage: UsageSource = { okUses: () => new Map(), p50: () => undefined };
+
+/** How far back the usage counts and the relay p50 look (spec A5). */
+const USAGE_WINDOW_MS = 30 * DAY_MS;
+
+/** A card `usage` glob: `*` is any run of characters (a Bash label holds slashes and spaces, so path-glob
+ *  rules do not fit), `?` is one character, everything else is literal. The whole string must match. */
+export function matchesGlob(glob: string, text: string): boolean {
+  const re = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[\\s\\S]*").replace(/\?/g, "[\\s\\S]");
+  return new RegExp(`^${re}$`).test(text);
+}
+
+/** The ledger adapter (spec A5). A card's count is the number of `done` orders in the last 30 days with a
+ *  call its `usage` globs match: `tools` against the tool name, `commands` against a Bash call's label.
+ *  Counts and p50 are read together and cached for `usageCacheMs`. A ledger error gives no counts. */
+export function ledgerUsageSource(o: {
+  ledger: Pick<import("./ledger").Ledger, "toolUsage" | "relayLatencies">;
+  cards: readonly ToolCard[];
+  cfg: ToolsCfg;
+  now?: () => number;
+}): UsageSource {
+  const now = o.now ?? Date.now;
+  const matchers = o.cards
+    .filter((c) => c.usage)
+    .map((c) => ({ id: c.id, tools: c.usage!.tools ?? [], commands: c.usage!.commands ?? [] }));
+  let snap: { at: number; ok: Map<string, number>; p50: Map<string, number> } | undefined;
+
+  function read(): NonNullable<typeof snap> {
+    const t = now();
+    if (snap && t - snap.at < o.cfg.usageCacheMs) return snap;
+    const since = t - USAGE_WINDOW_MS;
+    const ok = new Map<string, number>();
+    try {
+      const perOrder = new Map<string, Set<string>>();
+      for (const r of o.ledger.toolUsage({ since })) {
+        for (const m of matchers) {
+          const hit = m.tools.some((g) => matchesGlob(g, r.tool)) || (r.tool === "Bash" && m.commands.some((g) => matchesGlob(g, r.label)));
+          if (!hit) continue;
+          let s = perOrder.get(m.id);
+          if (!s) perOrder.set(m.id, (s = new Set()));
+          s.add(r.orderId);
+        }
+      }
+      for (const [id, s] of perOrder) ok.set(id, s.size);
+    } catch { /* no counts, no boost */ }
+    const p50 = new Map<string, number>();
+    try {
+      const byCard = new Map<string, number[]>();
+      for (const r of o.ledger.relayLatencies({ since })) {
+        let l = byCard.get(r.card);
+        if (!l) byCard.set(r.card, (l = []));
+        l.push(r.ms);
+      }
+      for (const [id, l] of byCard) p50.set(id, median(l));
+    } catch { /* no p50 */ }
+    snap = { at: t, ok, p50 };
+    return snap;
+  }
+
+  return {
+    okUses: (ids) => {
+      const s = read();
+      return new Map(ids.filter((id) => s.ok.has(id)).map((id) => [id, s.ok.get(id)!]));
+    },
+    p50: (id) => read().p50.get(id),
+  };
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return Math.round(s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2);
+}
 const noSkills: SkillSource = { global: () => [], project: () => [] };
 
 export interface ToolMatch {
@@ -544,7 +616,8 @@ export function openCatalogue(o: {
   cards?: readonly ToolCard[];
   cfg: ToolsCfg;
   skills?: SkillSource;
-  usage?: UsageSource;
+  /** A source, or a factory given the loaded cards (the ledger adapter needs their `usage` globs). */
+  usage?: UsageSource | ((cards: readonly ToolCard[]) => UsageSource);
   ledger: RelayCtx["ledger"];
   env?: RelayCtx["env"];
   fetch?: RelayCtx["fetch"];
@@ -554,7 +627,7 @@ export function openCatalogue(o: {
   const loaded = o.cards ? { cards: [...o.cards], errors: [] as string[] } : loadCards(o.dir ?? cfg.catalogueDir, cfg);
   const cards = loaded.cards;
   const skills = o.skills ?? noSkills;
-  const usage = o.usage ?? nullUsage;
+  const usage = typeof o.usage === "function" ? (safe(() => (o.usage as (c: readonly ToolCard[]) => UsageSource)(cards)) ?? nullUsage) : (o.usage ?? nullUsage);
   const stop = new Set(cfg.stopWords.map((w) => w.toLowerCase()));
 
   // Index once. Rows keep the catalogue order (cards by file name, then global skills), which is the tie order.

@@ -97,8 +97,8 @@ Catalogue { cards, errors, find, hint, relay, render }`. It has two real seams: 
 
 ### Task 8: Ledger usage source + p50
 **Files:** `src/engine/ledger.ts` (`toolUsage({since}): Array<{tool; label; ok: boolean}>`, one parameterized query joining `tool_actions` to each order's last outcome); `src/engine/tools-catalogue.ts` (`ledgerUsageSource(ledger, cards, cfg)`: glob mapping, cache `usageCacheMs`; p50 from `tool_api` events); `tests/tools-usage.test.ts`.
-- [ ] Step 1: failing tests: the A9 #8 cases (5 `done` beats 0; `failed` does not count; > 30 days does not count). A `commands` glob matches a Bash label. The cache: a second call within `usageCacheMs` does not query again. p50 is computed from 3 events.
-- [ ] Steps 2–5: FAIL → implement → PASS → commit `feat(tools): ranking learns from what worked (ADR-0044, P3.1)`.
+- [x] Step 1: failing tests: the A9 #8 cases (5 `done` beats 0; `failed` does not count; > 30 days does not count). A `commands` glob matches a Bash label. The cache: a second call within `usageCacheMs` does not query again. p50 is computed from 3 events.
+- [x] Steps 2–5: FAIL → implement → PASS → commit `feat(tools): ranking learns from what worked (ADR-0044, P3.1)`.
 
 ### Task 9: The first recipes
 **Files:** `docs/tools/recipe-deploy-check.md`, `recipe-prod-readonly-query.md`, `recipe-e2e-test.md`, `recipe-store-build.md` (scoped to the projects that have those tools); the test.

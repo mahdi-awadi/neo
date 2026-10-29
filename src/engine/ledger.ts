@@ -379,6 +379,12 @@ export interface Ledger {
   newestTodoInThread(threadId: number, folder: string): TodoRow | undefined;
   /** Append one governed tool call (single INSERT; retention amortised — see TOOL_ACTIONS_KEEP). */
   recordToolAction(a: NewToolAction): void;
+  /** The distinct (order, tool, label) of tool calls at or after `since` whose order ended `done` and that
+   *  were not denied (ADR-0044 Phase 3: the tools catalogue's usage counts). One parameterized query. */
+  toolUsage(opts: { since: number }): Array<{ orderId: string; tool: string; label: string }>;
+  /** The duration of every completed `tool_api` relay call at or after `since` (not refused, not a
+   *  network error or timeout), for the catalogue's p50. One parameterized query. */
+  relayLatencies(opts: { since: number }): Array<{ card: string; ms: number }>;
   planByPath(folder: string, path: string): PlanRow | undefined;
   planById(id: number): PlanRow | undefined;
   /** Insert, or update the row for (folder, path); returns the stored row. An omitted `version` keeps the
@@ -1148,6 +1154,25 @@ export function openLedger(
           toolActionsKeep,
         );
       }
+    },
+    toolUsage({ since }) {
+      return db
+        .query(
+          `SELECT DISTINCT ta.order_id AS orderId, ta.tool AS tool, ta.label AS label
+             FROM tool_actions ta JOIN outcomes o ON o.order_id = ta.order_id
+            WHERE ta.at >= ? AND o.status = 'done' AND ta.verdict != 'deny'`,
+        )
+        .all(since) as Array<{ orderId: string; tool: string; label: string }>;
+    },
+    relayLatencies({ since }) {
+      return db
+        .query(
+          `SELECT json_extract(data, '$.card') AS card, json_extract(data, '$.ms') AS ms FROM events
+            WHERE kind = 'tool_api' AND at >= ? AND json_extract(data, '$.refused') IS NULL
+              AND json_extract(data, '$.error') IS NULL AND json_extract(data, '$.status') > 0
+              AND typeof(json_extract(data, '$.ms')) IN ('integer', 'real') AND typeof(json_extract(data, '$.card')) = 'text'`,
+        )
+        .all(since) as Array<{ card: string; ms: number }>;
     },
     planByPath(folder, path) {
       const r = db.query(`SELECT * FROM plans WHERE folder = ? AND path = ?`).get(folder, path) as PlanDbRow | null;
