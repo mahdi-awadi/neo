@@ -100,6 +100,17 @@ work (that is a dispatch) and is not a project note (information read later). It
 <project>" wherever the operator reads it.
 _Avoid_: dispatch, note, nudge (as a separate mechanism), injecting
 
+**Standing rules**:
+The rules every worker gets in every project, from one text (`standing-rules.ts`, ADR-0063): plan fully,
+then finish non-stop; rich, complete plans; production-grade code; the best technology, recorded in an ADR.
+The dispatch preamble, loop briefs and consult runs carry them.
+_Avoid_: preamble rules (the preamble is one carrier), guidelines
+
+**Planner**:
+The SDK subagent every dispatch, project and loop run gets for its DESIGN phase and final review, on the
+planning model at the planning effort (config `planner`, default Opus at `max`). The main run builds.
+_Avoid_: plan run, planning session (it runs inside the worker's task)
+
 **Cooldown**:
 A short engine-wide hold on starting new background work after a worker reports a rate limit, so
 retries and the scheduler do not amplify the storm. Never holds an interactive turn.

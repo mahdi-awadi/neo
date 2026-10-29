@@ -16,6 +16,7 @@ import type { Meter } from "./budget";
 import { neoMcpServers } from "./dispatch";
 import type { Catalogue, ToolMatch } from "./tools-catalogue";
 import { DEFAULT_NOTES_CFG, type ConsultRunner, type Need } from "./project-notes";
+import { QUALITY_RULE, TECH_RULE } from "./standing-rules";
 
 export { CONSULT_DISALLOWED_TOOLS } from "./worker-profile";
 
@@ -40,6 +41,7 @@ export function consultPrompt(job: { asker: string; need: Need; question: string
     "- Answer only, with facts from this project. You are read-only: never edit files, run commands or start work.",
     "- Secrets: never a secret value — point to tools_for / tool_api, or name where the value lives.",
     "- Work: if work is needed, say so: the asker sends a request note. Then stop.",
+    `- Advice: ${QUALITY_RULE} ${TECH_RULE}`,
     `- At most ${job.answerMaxChars} characters.`,
   ].join("\n");
 }

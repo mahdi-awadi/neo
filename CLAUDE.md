@@ -54,10 +54,9 @@ Phases 1-3 are done and many engine features are live or restart-gated (project 
 questions and live notes, the tools catalogue, loops, plans, context policy, memory Phase 2). The
 feature-by-feature list is in `docs/HISTORY.md` ("Status list moved from CLAUDE.md").
 
-Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
-not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,
-then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board). Keep building
-**phase by phase, TDD**, per `MVP-PLAN.md`.
+Next: harden the Codex SDK adapter (Codex uses sandbox/approval policy, not `canUseTool`), later
+context-efficiency phases (2026-07-23 spec), then **Phase 3b** (deferred Gemini customer path), then
+Phase 4 (finance/board). Keep building **phase by phase, TDD**, per `MVP-PLAN.md`.
 
 ## How to work here
 
@@ -94,6 +93,8 @@ Code that is not industry-standard is a **failure / no-go**, even when it works:
 3. **Everything runs in Docker.**
 4. **No hardcoding** — values live in env/DB/config.
 5. **Read the existing code first and REUSE it** — extend what exists; never a second implementation.
+6. **Production-grade, tested code; the best technology** (not the quickest hack), the choice in an ADR. Plus:
+   plan fully (rich plans, `planner` subagent) and finish non-stop — ADR-0063, `src/engine/standing-rules.ts`.
 
 Every dispatched worker gets this automatically: the dispatch preamble (`briefWithProjectDocs` in
 `src/engine/dispatch.ts`) carries it, because a worker sent into another folder loads *that*
@@ -149,8 +150,7 @@ Greptile) are noted but not adopted; these principles are:
 - **Quality flywheel: tests + docs + logs, always green.** TDD covers tests. Also keep docs synced to
   the code (don't let them drift) and log enough that an agent can diagnose any failure from logs
   alone. Cheap, compounding.
-- **Be concise.** Short, plain-English summaries of what changed — never essays. Applies to how Neo
-  reports progress, too.
+- **Be concise.** Short, plain-English summaries of what changed — never essays (Neo's progress too).
 - **Parallelism needs isolation.** Many agents on one repo conflict → git worktrees per agent (Neo's
   concurrent sessions already isolate by folder). Agent-scale merge/deploy is genuinely unsolved —
   batch and be patient. **Worktree folders are temporary** (operator, 2026-10-05): make one only when

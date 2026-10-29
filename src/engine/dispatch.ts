@@ -94,6 +94,7 @@ import {
   type ApiCooldown,
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
+import { FINISH_RULE, PLAN_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
 
 /** Real backoff wait (tests inject opts.sleep instead). */
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -404,56 +405,52 @@ export function planWaitTail(d: { id: string; question: string }): string {
   return `paused: waiting on plan approval #${d.id.slice(0, 8)} — ${d.question} (its Execute tap queues the work)`;
 }
 
+/** The dispatch preamble: the standing rules every dispatched worker gets (operator rules 2026-09-18 and
+ *  2026-10-29, ADR-0063). Concise — every brief pays for it; the rule sentences live in standing-rules.ts. */
 export function briefWithProjectDocs(task: string): string {
   return (
-    "Before starting, read this project's rule and doc .md files so you work by its rules: " +
-    "AGENTS.md, DESIGN.md, and any other root-level .md files (besides CLAUDE.md, already loaded), " +
-    "plus the docs relevant to this task (e.g. under docs/). Follow them with CLAUDE.md.\n\n" +
+    "First read this project's rule and doc .md files (AGENTS.md, DESIGN.md, other root .md files besides " +
+    "CLAUDE.md, the docs this task touches); follow them with CLAUDE.md.\n\n" +
     "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
-    "  DESIGN — before writing code for any feature or non-trivial change, sharpen the domain model " +
-    "with the `domain-modeling` and `codebase-design` skills: define the real terms precisely and " +
-    "write/update this project's `CONTEXT.md` glossary, and record each genuine design decision as a " +
-    "short ADR (rejected alternatives included). Then synthesize a concise spec for the change — its " +
-    "acceptance criteria and edge cases — and design it as one clean seam (a lot of behavior behind a " +
-    "small, testable interface). Use `superpowers:brainstorming` → `writing-plans` for the plan itself. " +
-    "For a bug, `superpowers:systematic-debugging` to root-cause first. (Skip CONTEXT.md/ADR " +
-    "only for a trivial edit, and say so.)\n" +
-    "  BUILD — implement against that spec with `superpowers:test-driven-development` (write the failing " +
-    "test first, per acceptance criterion), then `superpowers:verification-before-completion` and " +
-    "`requesting-code-review` before claiming done.\n\n" +
+    "  DESIGN — think deeply; hand it to the `planner` subagent (strongest model, highest effort). With the " +
+    "`domain-modeling` and `codebase-design` skills: the real terms in `CONTEXT.md`, a short ADR per genuine " +
+    "decision (with rejected alternatives); a spec (acceptance criteria, edge cases) as one clean seam " +
+    "behind a small, testable interface; a plan via `superpowers:brainstorming` → `writing-plans`. " +
+    `${PLAN_RULE} For a bug, \`superpowers:systematic-debugging\` to root-cause first. (Skip CONTEXT.md/ADR ` +
+    "only for a trivial edit; say so.)\n" +
+    "  BUILD — implement against that spec with `superpowers:test-driven-development` (failing test first, " +
+    "per acceptance criterion), then `superpowers:verification-before-completion`, a final `planner` " +
+    `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE}\n\n` +
     "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
-    "failure, even when it works. (1) i18n through standard per-locale catalogues (react-i18next or " +
-    "the stack's equivalent), namespaced keys, AR+EN complete — never literal user-facing strings in " +
-    "components or a bespoke mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, dev by default, " +
-    "failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
-    "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it: extend " +
-    "what is there, never a second implementation. A change that misses " +
-    "one is not done.\n\n" +
-    "REQUIRED — security: a NEW high or critical finding from the edit/commit/push scans blocks; fix " +
+    `failure, even when it works. ${QUALITY_RULE} (1) i18n through standard per-locale catalogues (react-i18next or ` +
+    "equivalent), namespaced keys, AR+EN complete — never literal UI strings or a bespoke " +
+    "mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, " +
+    "dev by default, failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
+    "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it, never " +
+    `a second implementation. (6) ${TECH_RULE} A change that misses one is not done.\n\n` +
+    "REQUIRED — security: a NEW high or critical scan finding (edit/commit/push) blocks; fix " +
     "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
-    "positive instead. Never read or print secret files; on a dev host you may write an " +
-    "operator-supplied dev secret into `.env` (chmod 600, gitignored). Run `/security-review` before finishing auth, " +
+    "positive instead. Never read or print secret files; you may write an operator-supplied dev secret into " +
+    "`.env` (chmod 600). `/security-review` before finishing auth, " +
     "payment, upload or input-handling work.\n\n" +
     "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
-    "may your helper agents. Work for another project (even one an old note lists): send it there with `project_notes`. " +
-    "Missing a fact, tool or key? `project_notes ask` (main or a project) and `tools_for` (`neo-tool-*` skills, `tool_api`) — never wait silently, never paste keys.\n\n" +
+    "may your helper agents. Work for another project: send it there with `project_notes`. " +
+    "Missing a fact, tool or key? `project_notes ask` and `tools_for` (`neo-tool-*` skills, `tool_api`) — never wait silently, never paste keys.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
-    "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch. " +
-    "Drop options that are only workarounds. Escalate to the operator " +
-    "ONLY a decision that is genuinely theirs: product/UX policy, cost, an irreversible or external " +
-    "action, or a real trade-off between two sound options. If there is one correct standard fix, " +
-    "do it and report it — do not ask. When you must ask (ask_operator), write for a non-technical " +
-    "reader in the operator's language: the situation, each option and what it does, your pick and " +
-    "why. One decision per card; no jargon, no patch-level options.\n\n" +
+    "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch " +
+    "or a workaround. Escalate ONLY what is genuinely the operator's: " +
+    "product/UX policy, cost, an irreversible, prod or external action, or a real trade-off between two sound " +
+    `options. If there is one correct standard fix, do it and report it — do not ask. ${STOP_RULE} ` +
+    "When you must ask (ask_operator): for a non-technical reader, in the operator's language — the situation, " +
+    "each option and its effect, your pick and why. One decision per card; no jargon.\n\n" +
     "REQUIRED — stay alive, never blocked. Neo ABORTS a run after ~5 min with no streamed step. Start " +
-    "long checks (vet/test/lint loops across modules, builds, image pulls, CI waits) in the background " +
-    "(background Bash or a subagent), each module its own log; never wrap a real test in `timeout`. " +
-    "Keep working on other steps and read each result when ready; with nothing left, POLL in FOREGROUND " +
-    "steps under 90 s. No Monitor, no long silent wait. You are single-shot: never end your turn while a " +
+    "long checks (vet/test/lint loops, builds, image pulls, CI waits) in the background (background Bash " +
+    "or a subagent), each module its own log; never wrap a real test in `timeout`. Keep working and read each " +
+    "result when ready; with nothing left, POLL in FOREGROUND steps under 90 s. No Monitor. Single-shot: never end your turn while a " +
     "check runs or its result is unread.\n\n" +
     "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; the engine " +
-    "sends it to the operator. A small plan: build on. A BIG plan (many tasks or steps; migrations, auth, " +
-    "money, deploy, deletes; or front matter `approval: required`) waits: when a call is denied with " +
+    "sends it to the operator. A small plan: build on. A BIG plan (many tasks; migrations, auth, " +
+    "money, deploy, deletes; or `approval: required`) waits: when a call is denied with " +
     "STOP, end your turn — Approve & build resumes you.\n\n" +
     task
   );

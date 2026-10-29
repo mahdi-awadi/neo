@@ -8,6 +8,7 @@ import { runLoop, type LoopOutcome } from "./loop-runner";
 import { makeGoalCheck, type Goal, type GoalCheck } from "./goal";
 import { runOrder, type RunDeps } from "./session-runner";
 import type { Order } from "../types";
+import { loopBrief } from "./standing-rules";
 
 const LOOP_CHAT_ID = -1; // loops aren't bound to a chat
 
@@ -57,7 +58,8 @@ export async function runProjectLoop(
         id: crypto.randomUUID(),
         source: "neo",
         folder: opts.folder,
-        task: opts.prompt,
+        // The standing rules first (ADR-0063), then the loop's own standing prompt, unchanged.
+        task: loopBrief(opts.prompt),
         chatId: LOOP_CHAT_ID,
         createdAt: Date.now(),
       };

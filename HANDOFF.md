@@ -1,3 +1,11 @@
+# HANDOFF — 2026-10-29: standing rules + planner subagent (ADR-0063, on dev, restart-gated)
+
+Every dispatch/todo/plan-execution brief, loop iteration and consult run now carries the five standing
+rules (one text, `src/engine/standing-rules.ts`). Dispatch, project and loop runs get a `planner` subagent
+(config `planner`, default the pinned Opus id at effort `max`) for the DESIGN phase and the final review.
+
+---
+
 # HANDOFF — 2026-10-29: `project_message` tool (ADR-0061, on dev, restart-gated)
 
 The chief of staff can speak to a project's open session like the operator ("resume", "status?") through the

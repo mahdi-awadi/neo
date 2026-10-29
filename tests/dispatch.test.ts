@@ -1438,7 +1438,7 @@ test("dispatch with team:'frontend-backend' attaches the agents map to the run A
   // agents attached to the run
   const agents = seenDeps?.agents as Record<string, unknown> | undefined;
   expect(agents).toBeDefined();
-  expect(Object.keys(agents!).sort()).toEqual(["backend", "frontend"]);
+  expect(Object.keys(agents!).sort()).toEqual(["backend", "frontend", "planner"]); // + the planner subagent (ADR-0063)
   // brief wrapped with the team-lead preamble (names both agents), original task still present
   expect(seenTask).toContain("backend");
   expect(seenTask).toContain("frontend");
@@ -1460,7 +1460,7 @@ test("dispatch WITHOUT team attaches no agents and leaves the brief byte-for-byt
   await dispatchToProject("eticket-v3", "build a dashboard", d, 1, { start: fakeStart as never, now: () => 0, root });
   await new Promise((r) => setTimeout(r, 0));
   expect(seenDeps).toBeDefined();
-  expect(seenDeps!).not.toHaveProperty("agents"); // no team → no agents key at all
+  expect(Object.keys((seenDeps as { agents?: Record<string, unknown> }).agents ?? {})).toEqual(["planner"]); // no team → only the planner (ADR-0063)
   expect(seenTask).toBe(briefWithProjectDocs("build a dashboard")); // identical to today
 });
 

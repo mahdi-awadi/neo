@@ -477,3 +477,13 @@ test("ADR-0060: early limit wake defaults on with a 30 s jitter; config sets bot
   writeFileSync(join(e, "config.json"), JSON.stringify({ apiLimitWakeEarly: "no", apiLimitWakeJitterMs: -5 }));
   expect(loadConfig(e)).toMatchObject({ apiLimitWakeEarly: true, apiLimitWakeJitterMs: 30_000 });
 });
+
+test("ADR-0063: planner defaults to opus at max effort; config sets it; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).planner).toEqual({ model: "opus", effort: "max" });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ planner: { model: "fable", effort: "xhigh" } }));
+  expect(loadConfig(d).planner).toEqual({ model: "fable", effort: "xhigh" });
+  const e = dir();
+  writeFileSync(join(e, "config.json"), JSON.stringify({ planner: { model: " ", effort: "ultra" } }));
+  expect(loadConfig(e).planner).toEqual({ model: "opus", effort: "max" });
+});

@@ -1352,6 +1352,17 @@ MCP secrets reach workers through the env, never argv (2026-10-29, ADR-0062, ops
 
 Restart-gated.
 
+Every worker plans fully, finishes non-stop, designs on the planner model (2026-10-29, ADR-0063).
+
+- Operator order (very important): five standing rules in every brief — plan fully then finish non-stop,
+  rich plans, the strongest model at the highest effort for planning and review, production-grade code,
+  the best technology with an ADR. One text (`standing-rules.ts`) in the dispatch preamble (merged into its
+  sections, under the 5000-char ceiling), loop briefs and consult runs.
+- A `planner` SDK subagent on every dispatch, project and loop run: config `planner`, default the pinned
+  Opus id at effort `max`.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

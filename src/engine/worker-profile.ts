@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import type { NeoConfig, ModelsCfg, WorkerPathName } from "../config";
 import type { RunDeps } from "./session-runner";
 import { filterSdkEnv, sdkProvider, supportsRunConfigField, withLongContext } from "./model-resolver";
+import { readPlannerCfg } from "../config";
+import { plannerPrompt } from "./standing-rules";
 
 /** What a consult run may never use (ADR-0050 §6): it answers a question and never acts — no writes,
  *  no shell, no helper agents, no slash commands. The read tools and the consult `neo` server stay.
@@ -15,7 +17,10 @@ export const CONSULT_DISALLOWED_TOOLS: readonly string[] = [
 ];
 
 type WorkerProfileConfig = Pick<NeoConfig, "workers" | "workerEnv"> &
-  Partial<Pick<NeoConfig, "providers" | "models" | "governor" | "workRoot" | "handoffNotesDir">>;
+  Partial<Pick<NeoConfig, "providers" | "models" | "governor" | "workRoot" | "handoffNotesDir" | "planner">>;
+
+/** The launch paths whose workers design and build, so they get the `planner` subagent (ADR-0063). */
+const PLANNER_PATHS: ReadonlySet<WorkerPathName> = new Set(["dispatch", "project", "loop"]);
 
 /** Which model this launch gets, in precedence order: the call site, then the path's profile, then
  *  the pinned default — and whichever wins, a tier alias is expanded to its real id so no
@@ -71,7 +76,18 @@ export function profileDeps(
   if ((path === "dispatch" || path === "loop" || path === "consult") && cfg.workRoot && d.projectFence === undefined) {
     d.projectFence = { root: cfg.workRoot, allow: cfg.handoffNotesDir ? [resolve(cfg.handoffNotesDir)] : [] };
   }
+  // The planner subagent (ADR-0063): the DESIGN phase and the final review run on the planning model at the
+  // planning effort, from config; the main run keeps its own model. A caller's own agent of the same name wins.
+  if (PLANNER_PATHS.has(path) && supportsRunConfigField(d.provider, "agents")) {
+    const planner = readPlannerCfg(cfg.planner);
+    const model = pinnedModel(cfg.models, planner.model) ?? planner.model;
+    d.agents = { planner: { description: PLANNER_DESCRIPTION, prompt: plannerPrompt(), model, effort: planner.effort }, ...(d.agents ?? {}) };
+  }
   const env = filterSdkEnv(d.provider, { ...cfg.workerEnv, ...(base.env ?? {}) });
   if (Object.keys(env).length) d.env = env;
   return d;
 }
+
+/** What the main worker reads to decide when to hand off to the planner. */
+const PLANNER_DESCRIPTION =
+  "Design, spec, plan and review on the strongest model at the highest effort. Use it for the DESIGN phase (spec and plan) and for the final review of the change.";

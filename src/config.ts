@@ -27,6 +27,7 @@ import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
 import { readProjectsCfg, type ProjectCfg } from "./engine/producers/git";
 import { DISPATCH_SPIN_DIGESTS_DEFAULT, TOOL_LOOP_EXEMPT_DEFAULT, TOOL_LOOP_LIMIT_DEFAULT } from "./engine/dispatch-report";
 import { isLang, type Lang } from "./frontends/web/langs";
+import type { EffortLevel } from "./engine/session-runner";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
@@ -218,6 +219,10 @@ export interface NeoConfig {
   /** ADR-0061: the chief of staff's `project_message` — at most `maxChars` per message (longer is new
    *  work: dispatch) and `perProjectPerHour` delivered per project. Read by readProjectMessageCfg. */
   projectMessage?: ProjectMessageCfg;
+  /** ADR-0063: the `planner` subagent every dispatch, project and loop run gets for its DESIGN phase and final
+   *  review — the strongest model at the highest effort. `model` is a tier alias or an id; the engine pins
+   *  an alias to its id through `models.aliases` (ADR-0005). Read by readPlannerCfg. */
+  planner?: PlannerCfg;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
    *  scheduler can't amplify a rate-limit storm. Default 60 s. */
   apiCooldownMs: number;
@@ -384,6 +389,27 @@ export const DEFAULT_UPDATES: UpdatesCfg = {
 
 /** The shipped model pin (ADR-0005). Exported so anything building a `NeoConfig` — `DEFAULTS`
  *  below, and test fixtures — states the pin once instead of copying the ids around. */
+/** The planner subagent's model and effort (ADR-0063). */
+export interface PlannerCfg {
+  model: string;
+  effort: EffortLevel;
+}
+
+/** The strongest model the subscription runs without extra usage credits (Opus; Fable is budgeted like
+ *  Sonnet and needs credits, docs/sdk-notes.md), at the SDK's deepest effort. */
+export const DEFAULT_PLANNER: PlannerCfg = { model: "opus", effort: "max" };
+
+const EFFORTS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** Config `planner`: a non-blank model and a known effort are kept; anything else is the default. */
+export function readPlannerCfg(raw: unknown): PlannerCfg {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    model: typeof r.model === "string" && r.model.trim() ? r.model.trim() : DEFAULT_PLANNER.model,
+    effort: EFFORTS.includes(r.effort as EffortLevel) ? (r.effort as EffortLevel) : DEFAULT_PLANNER.effort,
+  };
+}
+
 export const DEFAULT_MODELS: ModelsCfg = {
   default: CLAUDE_TIER_MODELS.opus,
   aliases: { ...CLAUDE_TIER_MODELS },
@@ -631,6 +657,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     toolControl: readToolControlCfg(fileCfg.toolControl),
     tools: readToolsCfg(fileCfg.tools),
     projectMessage: readProjectMessageCfg(fileCfg.projectMessage),
+    planner: readPlannerCfg(fileCfg.planner),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),
