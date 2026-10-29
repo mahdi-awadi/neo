@@ -1,3 +1,11 @@
+# HANDOFF — 2026-10-29: workers never run the Telegram channel plugin (ADR-0064, on dev, restart-gated)
+
+The daemon poller's 409 Conflict came from workers loading the user Telegram channel plugin, which polled the
+same bot. `sdkOptions` turns that one plugin off (`settings.enabledPlugins`, flag layer) on every run path (7905f66).
+After the restart, new workers start no poller. The Stitch key in worker argv is already fixed on dev (ADR-0062).
+
+---
+
 # HANDOFF — 2026-10-29: self-explaining attention items and todos (ADR-0059, ledger v15, on dev, restart-gated)
 
 Attention items carry facts (producers write them; old rows derive them) and render as badge + project + plain
