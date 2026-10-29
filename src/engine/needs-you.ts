@@ -112,11 +112,14 @@ function todoItem(t: TodoRow, pinned: boolean): NeedsYouItem {
 /** Everything that needs the operator now, in a stable order: decisions (oldest first), failed todos,
  *  needs-you attention items, then manual pins. Snoozed items are out until their snooze ends. */
 export function needsYou(d: NeedsYouDeps, now: number): NeedsYouItem[] {
-  const pins = new Map(d.ledger.listPins().map((p) => [p.ref, p.state]));
+  const pinRows = new Map(d.ledger.listPins().map((p) => [p.ref, p]));
+  const pins = new Map([...pinRows].map(([ref, p]) => [ref, p.state]));
   const out: NeedsYouItem[] = [];
   const seen = new Set<string>();
   const add = (i: NeedsYouItem): void => {
-    if (seen.has(i.ref) || pins.get(i.ref) === "unpinned") return;
+    // A hide covers the occurrence it was made on: a todo that failed again since is back.
+    const p = pinRows.get(i.ref);
+    if (seen.has(i.ref) || (p?.state === "unpinned" && p.at >= i.since)) return;
     seen.add(i.ref);
     out.push(i);
   };

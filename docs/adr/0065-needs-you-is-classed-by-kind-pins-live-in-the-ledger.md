@@ -48,6 +48,12 @@ the high items are 11 notes between projects (`note_fyi` 9, `note_finding` 1, `n
 - Every console POST button goes through `act()` (`web/act.ts`); the toast region is a manual popover so
   a toast shows above the open todo sheet (a modal dialog lives in the top layer). Exempt: the composer's
   own send and attachment discard, and a project row's select (a navigation tap).
+- Independent review fixes: a hide (×) covers only the occurrence it was made on — a todo that fails again,
+  or an item that resolves and comes back (its pin is cleared on reopen), is back on the list; a version
+  must be dotted (`0.3.312`), so `fix/issue-12` and `feature/123` are never superseded; a dependency PR's
+  folder (`… in /app`) is part of its identity; a failed todo can be cancelled (giving up on it); the
+  project page groups by the needs-you list itself, and the strip never re-renders under a busy or focused
+  control.
 - Pin toasts use the console's own words (`pins.pinned` …); other toasts carry the engine's reply, which
   stays English like every engine reply.
 

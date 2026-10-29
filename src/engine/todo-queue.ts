@@ -883,7 +883,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         void this.pump();
         return `cancelled #${id} (it was marked running but ${t.project} has no live run).`;
       }
-      if (t.status !== "queued" && t.status !== "retry" && t.status !== "waiting") return `#${id} is already ${t.status}.`;
+      // A failed todo waits for the operator (ADR-0027); cancel is giving up on it (ADR-0065).
+      if (t.status !== "queued" && t.status !== "retry" && t.status !== "waiting" && t.status !== "failed") return `#${id} is already ${t.status}.`;
       ledger.updateTodo(id, { status: "cancelled", endedAt: now(), result: "cancelled", retryAt: null, waitingOn: null });
       parents.delete(id);
       ledger.recordEvent("todo_cancelled", { folder: t.folder, data: { project: t.project, id }, cause: t.cause });

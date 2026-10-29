@@ -10,8 +10,9 @@ import { explainAttention } from "./attention-explain";
 /** A name split into its stem and trailing version: `chore/agent-sdk-0.3.312` → `chore/agent-sdk`,
  *  [0, 3, 312]. Undefined when the name has no trailing version. */
 export function stemOf(name: string): { stem: string; version: number[] } | undefined {
-  // The version follows a separator (`-`, `_`, `@`, `/`), with an optional `v`.
-  const m = /^(.+?)[-_@/]v?(\d+(?:\.\d+)*)$/.exec(name);
+  // The version follows a separator (`-`, `_`, `@`, `/`), with an optional `v`, and has a dot: a plain
+  // number (`fix/issue-12`, `feature/123`) is an id of separate work, never a version.
+  const m = /^(.+?)[-_@/]v?(\d+(?:\.\d+)+)$/.exec(name);
   return m ? { stem: m[1]!, version: m[2]!.split(".").map(Number) } : undefined;
 }
 
@@ -36,7 +37,9 @@ function identity(r: AttentionRow): { stem: string; version: number[] } | undefi
     const f = explainAttention(r).facts;
     if (typeof f.dep === "string" && f.to !== undefined) {
       const v = /^v?(\d+(?:\.\d+)*)/.exec(String(f.to));
-      return v ? { stem: `dep:${f.dep}`, version: v[1]!.split(".").map(Number) } : undefined;
+      // A monorepo bumps one package per folder ("… in /app"): the folder is part of what it is.
+      const dir = /\sin\s(\/\S*)\s*$/.exec(String(f.prTitle ?? ""))?.[1] ?? "";
+      return v ? { stem: `dep:${f.dep}@${dir}`, version: v[1]!.split(".").map(Number) } : undefined;
     }
   }
   return r.kind === "pr_open" ? undefined : stemOf(r.key);

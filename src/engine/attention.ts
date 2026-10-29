@@ -56,6 +56,7 @@ function upsert(ledger: Ledger, row: AttentionRow | undefined, d: AttentionDraft
   else {
     // Back after it resolved: a new occurrence — its old snooze and old todo are not this one's.
     ledger.updateAttention(row.id, { ...fields, resolvedAt: null, snoozedUntil: null, todoId: null, resolution: null, ackedAt: null, answer: null, deliveredAt: null });
+    ledger.setPin(`att:${row.id}`, null, now); // nor its old pin or hide (ADR-0065)
     return { id: row.id, opened: true };
   }
   return { id: row.id, opened: false };

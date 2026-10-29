@@ -72,7 +72,10 @@ screenshots show the old build, so todo rows there still read "Execute the plan 
 
 - A decision with no project: shown under "Neo". A failed todo later retried: leaves the strip.
 - Pinning a resolved item: refused with a reason. A pin whose target is gone: dropped from the strip.
-- Version compare: `0.3.10` > `0.3.9`; a stem with only one item is untouched.
+- Version compare: `0.3.10` > `0.3.9`; a stem with only one item is untouched. Only a dotted version counts:
+  `fix/issue-12` is an id, never superseded. A dependency PR's folder (`in /app`) is part of its stem.
+- A hide covers one occurrence: a todo that fails again, or an item that resolves and comes back, returns.
+- A failed todo can be cancelled (giving up), not only retried.
 - The strip with 0 items is hidden; with many, it shows 5 and "show all (N)".
 - The detail of a todo that is gone or not found: a toast, no blank view.
 

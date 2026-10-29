@@ -10,6 +10,7 @@ import { ENGINE_KINDS } from "../src/engine/producers/engine";
 import { RESTART_KINDS } from "../src/engine/producers/restart";
 import { SKILLIFY_KINDS } from "../src/engine/producers/skillify";
 import { attentionClass, CLASSED_KINDS, needsYou, pin } from "../src/engine/needs-you";
+import { reconcile } from "../src/engine/attention";
 
 const KEEP = DEFAULT_KEEP_PATTERNS;
 const NOTE_KINDS = ["note_fyi", "note_finding", "note_request", "note_question"];
@@ -114,4 +115,27 @@ test("a snoozed needs-you item is off the list until its snooze ends", () => {
   led.updateAttention(a, { snoozedUntil: 100 });
   expect(needsYou({ ledger: led, keepPatterns: KEEP }, 50)).toEqual([]);
   expect(needsYou({ ledger: led, keepPatterns: KEEP }, 150)).toHaveLength(1);
+});
+
+// Review finding 1: a hide applies to the occurrence it was made on — a todo that fails again, or an item
+// that resolves and comes back, returns to the list.
+test("a hidden failed todo comes back when it fails again", () => {
+  const led = openLedger(":memory:");
+  const t = led.addTodo({ project: "p", folder: "/home/p", brief: "x", workClass: "interactive", createdBy: "operator" }, 1);
+  led.updateTodo(t.id, { status: "failed", endedAt: 5 });
+  pin(led, `todo:${t.id}`, "unpinned", 10);
+  expect(needsYou({ ledger: led, keepPatterns: KEEP }, 11)).toEqual([]);
+  led.updateTodo(t.id, { status: "failed", endedAt: 20 }); // retried, failed again
+  expect(needsYou({ ledger: led, keepPatterns: KEEP }, 21).map((i) => i.ref)).toEqual([`todo:${t.id}`]);
+});
+
+test("a hidden needs-you item that resolves and comes back is on the list again", () => {
+  const led = openLedger(":memory:");
+  const draft = item({ source: "engine", kind: "thread_failed", key: "t1" });
+  const [id] = reconcile(led, "engine", "p", [draft], 1).opened;
+  pin(led, `att:${id}`, "unpinned", 2);
+  expect(needsYou({ ledger: led, keepPatterns: KEEP }, 3)).toEqual([]);
+  reconcile(led, "engine", "p", [], 4); // gone
+  reconcile(led, "engine", "p", [draft], 5); // back: a new occurrence
+  expect(needsYou({ ledger: led, keepPatterns: KEEP }, 6).map((i) => i.ref)).toEqual([`att:${id}`]);
 });

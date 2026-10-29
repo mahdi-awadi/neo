@@ -38,7 +38,7 @@ test("a failed todo: its reason and result, retry allowed, and the attention ite
   led.updateAttention(att, { todoId: t.id });
   led.setPin(`todo:${t.id}`, "pinned", 5);
   const d = todoDetail(led, t.id, 400)!;
-  expect(d).toMatchObject({ status: "failed", startedAt: 150, endedAt: 300, result: "tests failed: 3", failure: "stall", actions: ["retry"], pinned: true });
+  expect(d).toMatchObject({ status: "failed", startedAt: 150, endedAt: 300, result: "tests failed: 3", failure: "stall", actions: ["retry", "cancel"], pinned: true });
   expect(d.attention).toEqual([{ id: att, title: "dev: 3 unpushed" }]);
   expect(d.position).toBe(0);
 });

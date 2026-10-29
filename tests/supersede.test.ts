@@ -21,7 +21,12 @@ test("stem and version: a trailing version is split off; a name without one has 
   expect(stemOf("merge:chore/agent-sdk-0.3.312")).toEqual({ stem: "merge:chore/agent-sdk", version: [0, 3, 312] });
   expect(stemOf("dependabot/npm/expo-v58.0.5")).toEqual({ stem: "dependabot/npm/expo", version: [58, 0, 5] });
   expect(stemOf("feat/multi-project-ui")).toBeUndefined();
-  expect(stemOf("release-2")).toEqual({ stem: "release", version: [2] });
+  // Review finding 2: a plain number is an id, not a version — only a dotted version counts.
+  expect(stemOf("release-2")).toBeUndefined();
+  expect(stemOf("fix/issue-12")).toBeUndefined();
+  expect(stemOf("feature/123")).toBeUndefined();
+  expect(stemOf("release/2026-10-27")).toBeUndefined();
+  expect(stemOf("chore/node-v20.11")).toEqual({ stem: "chore/node", version: [20, 11] });
   expect(compareVersions([0, 3, 10], [0, 3, 9])).toBeGreaterThan(0);
   expect(compareVersions([1, 0], [1, 0, 0])).toBe(0);
 });
@@ -59,6 +64,19 @@ test("supersededBy is pure: only open rows of the same project and kind count; a
   expect(supersededBy([row(1, "chore/expo-57.0.1"), row(2, "chore/expo-58.0.5", { kind: "unpushed" })])).toEqual([]);
   // An id-keyed kind is never superseded, whatever its key looks like.
   expect(supersededBy([row(1, "todo:901", { kind: "dirty" }), row(2, "todo:903", { kind: "dirty" })])).toEqual([]);
+});
+
+test("issue branches that end in a number are never superseded (they are different work)", () => {
+  const row = (id: number, key: string) =>
+    ({ id, project: "p", folder: "/p", source: "git", kind: "unpushed", key, title: key, severity: "normal", firstSeen: 1, lastSeen: 1, dismissed: false }) as never;
+  expect(supersededBy([row(1, "fix/issue-12"), row(2, "fix/issue-34")])).toEqual([]);
+});
+
+test("dependency PRs for one package in different folders are different items", () => {
+  const pr = (id: number, n: number, title: string) =>
+    ({ id, project: "p", folder: "/p", source: "github", kind: "pr_open", key: String(n), title: `PR #${n}: ${title}`, severity: "normal", firstSeen: 1, lastSeen: 1, dismissed: false, facts: { pr: n, prTitle: title } }) as never;
+  expect(supersededBy([pr(1, 30, "chore(deps): bump qs from 6.1.0 to 6.2.0 in /app"), pr(2, 31, "chore(deps): bump qs from 6.1.0 to 6.3.0 in /api")])).toEqual([]);
+  expect(supersededBy([pr(1, 30, "chore(deps): bump qs from 6.1.0 to 6.2.0 in /app"), pr(2, 31, "chore(deps): bump qs from 6.1.0 to 6.3.0 in /app")])).toEqual([{ id: 1, by: 2 }]);
 });
 
 test("a series of dependency PRs for one package: the older target version is superseded", () => {

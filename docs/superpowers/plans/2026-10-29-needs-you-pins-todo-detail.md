@@ -38,5 +38,5 @@ engine auto-resolving items, and the badge rule changes on every project.
 - [x] 10. **i18n** — `needs.*`, `pin.*`, `todo.detail.*`, `toast.*` in EN + AR; key-parity test; numbers and
    ids LTR.
 - [x] 11. **Docs** — ADR-0065 accepted (as built), CONTEXT.md (done in design), HISTORY.md, HANDOFF.md.
-- [ ] 12. **Verify** — full suite; Playwright at 390 px in EN and AR: Projects list, project page split, the
+- [x] 12. **Verify** — full suite; Playwright at 390 px in EN and AR: Projects list, project page split, the
    strip, todo detail, a toast; the screenshots go to the operator; independent code review; fix findings.

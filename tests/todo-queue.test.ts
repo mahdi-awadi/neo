@@ -679,3 +679,15 @@ test("retry on a running todo in a limit wait resumes it now, once; on a working
   expect(refused).not.toContain("/kill");
   expect(ledger.listEvents({ kind: "todo_retried" }).map((e) => e.data?.from)).toEqual(["held"]);
 });
+
+// ADR-0065 review: a failed todo is a "needs you" item; the operator may give up on it (cancel), not only retry.
+test("cancel gives up on a failed todo; a done one stays done", () => {
+  const { ledger, queue, root } = setup();
+  const t = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "b", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(t.id, { status: "failed", endedAt: 2 });
+  expect(queue.cancel(t.id)).toContain(`cancelled #${t.id}`);
+  expect(ledger.todoById(t.id)?.status).toBe("cancelled");
+  const d = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "b", workClass: "interactive", createdBy: "operator" }, 3);
+  ledger.updateTodo(d.id, { status: "done", endedAt: 4 });
+  expect(queue.cancel(d.id)).toContain("already done");
+});

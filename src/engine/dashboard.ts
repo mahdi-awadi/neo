@@ -214,7 +214,7 @@ export function todoDetail(ledger: Ledger, id: number, now: number = Date.now())
   const actions: TodoDetailAction[] = [];
   if (t.status === "failed" || t.status === "retry" || held) actions.push("retry");
   if (t.status === "queued" && position > 1) actions.push("up");
-  if (t.status === "queued" || t.status === "retry" || t.status === "waiting") actions.push("cancel");
+  if (t.status === "queued" || t.status === "retry" || t.status === "waiting" || t.status === "failed") actions.push("cancel");
   return {
     id: t.id,
     project: t.project,

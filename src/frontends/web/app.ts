@@ -164,7 +164,6 @@ function renderAll(): void {
   if (changed("build", S.build ?? null)) renderBuild();
   renderRunning(); // clock-dependent ages: always
   renderTodos(); // clock-dependent ("running 4m"): always
-  renderPins(); // the strip's ages too (ADR-0065)
   if (changed("loops", S.loops)) renderLoops();
   if (changed("usage", S.usage)) renderUsage();
   if (changed("recent", [S.recent, S.contextEvents])) renderRecent();
@@ -588,12 +587,13 @@ function renderTodos(): void {
         r.onclick = () => void todoAct("retry", x.id, r);
         row.appendChild(r);
       }
-      if (x.status === "queued" || x.status === "retry" || x.status === "waiting") {
+      if (x.status === "queued" || x.status === "retry" || x.status === "waiting" || x.status === "failed") {
         if (x.status === "queued" && x.position > 1) {
           const up = document.createElement("button");
           up.className = "chip";
           up.textContent = "↑";
           up.title = tx("queue.moveUp");
+          up.setAttribute("aria-label", tx("queue.moveUp"));
           up.onclick = () => void todoAct("up", x.id, up);
           row.appendChild(up);
         }
@@ -1444,8 +1444,11 @@ function renderProjectPane(v: Any): void {
   );
   // ATTENTION — each item with the shared one-tap buttons (filled in below).
   // ADR-0065: what needs the operator first; housekeeping collapsed under its count.
-  const needs = (v.attention as Any[]).filter((it) => it.cls !== "housekeeping");
-  const house = (v.attention as Any[]).filter((it) => it.cls === "housekeeping");
+  // Grouped by the needs-you list itself, so the section always matches the badge: a hidden needs-you
+  // item moves to housekeeping (where Pin brings it back), a pinned housekeeping item moves up.
+  const needRefs = new Set(((v.needsYou ?? []) as Any[]).map((it) => it.ref));
+  const needs = (v.attention as Any[]).filter((it) => needRefs.has(`att:${it.id}`));
+  const house = (v.attention as Any[]).filter((it) => !needRefs.has(`att:${it.id}`));
   // The section is the project's share of the needs-you list (the badge's count): plans, decisions and
   // failed todos as strip rows, then the needs-you attention items with their own buttons.
   const others = ((v.needsYou ?? []) as Any[]).filter((it) => it.kind !== "attention");
@@ -1485,8 +1488,8 @@ function renderProjectPane(v: Any): void {
       recount();
       loadProjects();
     });
-    // A pin keeps any item on the strip; a needs-you item is already there (its × takes it off).
-    if (it.pinned || it.cls === "housekeeping") {
+    // Pin puts any item on the strip (and brings back a hidden one); a needs-you item is already there.
+    if (it.pinned || !needRefs.has(`att:${it.id}`)) {
       const b = document.createElement("button");
       b.className = "chip";
       b.type = "button";
@@ -1494,7 +1497,7 @@ function renderProjectPane(v: Any): void {
       b.onclick = () => void act(b, "/api/pin", { ref: `att:${it.id}`, state: it.pinned ? null : "pinned" }, tx(it.pinned ? "pins.unpinned" : "pins.pinned")).then(() => (loadPins(), showProject(v.name)));
       row.appendChild(b);
     }
-    (it.cls === "housekeeping" ? $("pjhk") : box).appendChild(row);
+    (needRefs.has(`att:${it.id}`) ? box : $("pjhk")).appendChild(row);
   });
 }
 /** The facts a description template may name (ADR-0059). A fact an item lacks reads `att.unknown`. */
@@ -1576,14 +1579,24 @@ function planAction(id: number, action: string, version: number, btn: Element | 
 // ── Pinned — needs you (ADR-0065): on every tab, what only the operator can move ─────────────────
 /** Rows the strip shows before "show all". */
 const PIN_SHOWN = 5;
-const PIN = { items: [] as Any[], all: false, shut: localStorage.getItem("neo.pins.shut") === "1", seq: 0 };
+/** Unchanged items still re-render this often, so their ages stay true. */
+const PIN_AGE_MS = 60_000;
+const PIN = { items: [] as Any[], json: "", at: 0, all: false, shut: localStorage.getItem("neo.pins.shut") === "1", seq: 0 };
+/** Read the strip. It re-renders only when its items changed (or their ages are a minute old), and never
+ *  under a busy or focused control — a rebuild would drop the busy state and let a second tap through. */
 function loadPins(): void {
   const seq = ++PIN.seq;
   void fetch("/api/needs-you?_=" + Date.now(), { cache: "no-store" })
     .then((r) => (r.ok ? r.json() : null))
     .then((d) => {
       if (seq !== PIN.seq || !d || !Array.isArray(d.items)) return;
+      const box = $("pins");
+      if (box.querySelector(".busy")) return; // its action reloads the strip when it ends
+      const json = JSON.stringify(d.items);
+      const same = json === PIN.json;
+      if (same && (box.contains(document.activeElement) || Date.now() - PIN.at < PIN_AGE_MS)) return;
       PIN.items = d.items;
+      PIN.json = json;
       renderPins();
     })
     .catch(() => {});
@@ -1591,6 +1604,7 @@ function loadPins(): void {
 function renderPins(): void {
   const box = $("pins");
   const items = PIN.items;
+  PIN.at = Date.now();
   box.hidden = !items.length;
   if (!items.length) return void (box.innerHTML = "");
   box.classList.toggle("shut", PIN.shut);

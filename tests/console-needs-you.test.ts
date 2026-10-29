@@ -26,7 +26,10 @@ test("the strip sits under the tab bar, outside every view, so it shows on every
   expect(strip).toBeGreaterThan(SHELL.indexOf('id="tabs"'));
   expect(strip).toBeLessThan(SHELL.indexOf('id="vactivity"'));
   expect(SHELL).toMatch(/<dialog class="sheet" id="tdsheet" aria-labelledby="tdtitle">/);
-  expect(fn("renderAll")).toContain("renderPins()");
+  // One render path: loadPins (each poll), never also renderAll — a double rebuild dropped busy state.
+  expect(fn("renderAll")).not.toContain("renderPins()");
+  expect(fn("loadPins")).toContain('box.querySelector(".busy")');
+  expect(fn("loadPins")).toContain("box.contains(document.activeElement)");
   expect(fn("loadState")).toContain("loadPins()");
   expect(fn("loadPins")).toContain("/api/needs-you");
 });
@@ -64,7 +67,7 @@ test("todo rows in the Queue tab and on the project page are one button each tha
 
 test("the project page: needs you first, housekeeping collapsed under its count; housekeeping items can be pinned", () => {
   const p = fn("renderProjectPane");
-  expect(p).toContain('it.cls !== "housekeeping"');
+  expect(p).toContain("needRefs.has(`att:${it.id}`)");
   expect(p).toContain('<details class="hk">');
   expect(p).toContain("pj.sect.housekeeping");
   expect(p).toContain('ref: `att:${it.id}`');
