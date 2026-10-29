@@ -105,6 +105,9 @@ export interface ToolCalls {
 export interface SessionInfo {
   /** A side-lane session (ADR-0057): never the folder's main session. Absent = the main lane. */
   lane?: SessionLane;
+  /** A customer-driven run (an ingress brief's dispatch) used this session (ADR-0061): it stays fenced,
+   *  and the chief of staff's `project_message` never speaks into it. */
+  customerDriven?: true;
   /** Stable engine key — the order id, known from registration (before the SDK id exists). */
   id: string;
   /** Short, unique, human-facing name (folder basename) for `/status` and `/kill`. */

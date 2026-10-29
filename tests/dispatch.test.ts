@@ -3,7 +3,7 @@ import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveProject, dispatchToProject, briefWithProjectDocs, codebaseMemoryLine, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, type DispatchDeps } from "../src/engine/dispatch";
+import { resolveProject, dispatchToProject, briefWithProjectDocs, codebaseMemoryLine, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, CUSTOMER_CHAT, type DispatchDeps } from "../src/engine/dispatch";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -1711,6 +1711,19 @@ test("ADR-0060: a turn that goes through wakes the other limit holds of the same
   a.ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "ok", costUsd: 0 });
   await settle(20);
   expect(sent).toEqual(["other"]);
+});
+
+test("ADR-0061: a dispatch made for a customer-driven run marks its session; an operator dispatch does not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  mkdirSync(join(root, "gold"));
+  const { d } = makeDeps();
+  const { start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", d, CUSTOMER_CHAT, { start: start as never, root });
+  await dispatchToProject("gold", "t", d, 1, { start: start as never, root });
+  await settle();
+  expect(d.registry.findByFolder(join(root, "eticket-v3"))?.customerDriven).toBe(true);
+  expect(d.registry.findByFolder(join(root, "gold"))?.customerDriven).toBeUndefined();
 });
 
 test("a brief for a session that is closing is refused out loud, never pushed into the dead channel", async () => {

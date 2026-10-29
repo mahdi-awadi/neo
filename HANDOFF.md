@@ -1,3 +1,11 @@
+# HANDOFF — 2026-10-29: `project_message` tool (ADR-0061, on dev, restart-gated)
+
+The chief of staff can speak to a project's open session like the operator ("resume", "status?") through the
+same delivery path. Tool card `docs/tools/project-message.md` (scope: agent; picked up by
+`bun tools/catalogue/install.ts`). `agent/CLAUDE.md` (local) says when to use it vs dispatch vs notes.
+
+---
+
 # HANDOFF — 2026-10-29: limit-held todos resume with `todo retry` (ADR-0060, on dev, restart-gated)
 
 Built on `dev`: `todo retry` on a running todo held in a limit or API retry wait re-sends its brief into the

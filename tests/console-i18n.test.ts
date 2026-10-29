@@ -200,3 +200,11 @@ test("tool-control strip strings are in the AR and EN catalogues", () => {
     for (const k of ["tools.running", "tools.stop", "tools.background", "tools.confirmStop", "tools.stopTitle", "tools.backgroundTitle"]) expect(i18n.exists(k), `${lang}:${k}`).toBe(true);
   }
 });
+
+test("ADR-0061: a chief-of-staff message in a thread is labelled from the catalogues, EN and AR", () => {
+  expect(APP).toContain('m.kind === "agent_message" ? tx("threads.agentTo", { project: iso(');
+  for (const lang of ["en", "ar"]) {
+    const cat = JSON.parse(readFileSync(join(WEB, "locales", lang, "console.json"), "utf8")) as { threads: Record<string, string> };
+    expect(cat.threads.agentTo).toContain("{{project}}");
+  }
+});

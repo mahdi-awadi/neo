@@ -1170,7 +1170,9 @@ function openThread(id: number): void {
     .catch(() => ($("tbody").innerHTML = `<div class="empty">${t("threads.loadFailed")}</div>`));
 }
 function messageHtml(m: Any, html?: string): string {
-  const who = m.role === "user" ? t("threads.you") : m.project ? iso(m.project) : t("threads.neo");
+  // ADR-0061: the chief of staff spoke to a project's session — labelled so, never as the project or "neo".
+  const who =
+    m.kind === "agent_message" ? tx("threads.agentTo", { project: iso(m.project ?? "") }) : m.role === "user" ? t("threads.you") : m.project ? iso(m.project) : t("threads.neo");
   // Message text has no fixed direction (an English line in the Arabic console, or the reverse).
   // An assistant row arrives rendered by the server (m.html, ADR-0025); the operator's own text is escaped.
   const tone = m.tone ? ` tone-${esc(m.tone)}` : "";

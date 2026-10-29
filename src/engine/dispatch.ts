@@ -103,6 +103,8 @@ export const API_LIMIT_WAKE_JITTER_MS_DEFAULT = 30_000;
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
  *  routing (which always falls back to the default project). */
 export const SUB_CHAT = -2;
+/** Reserved chat id for company runs driven by a customer brief (never a real operator chat). */
+export const CUSTOMER_CHAT = -3;
 /** The pseudo-chat side-lane orders are recorded under (ADR-0057): never the folder's resume point,
  *  reload snapshot or consult fork, which all read SUB_CHAT. */
 export const SIDE_CHAT = -5;
@@ -240,6 +242,9 @@ export interface DispatchDeps {
    *  `apiLimitWakeEarly`, default true), each after a random wait up to `apiLimitWakeJitterMs`. */
   apiLimitWakeEarly?: boolean;
   apiLimitWakeJitterMs?: number;
+  /** ADR-0061: deliver the chief of staff's message into a project's open session, like the operator's own.
+   *  Its PRESENCE gates the `project_message` tool; operator-only — the ingress strips it. */
+  projectMessage?: (a: { project: string; text: string; replyChat: number; cause?: Cause }) => Promise<{ ok: boolean; outcome?: string; text: string }>;
   /** Root under which the company `dispatch` tool resolves project names (config workRoot). Default "/home". */
   workRoot?: string;
   /** Config `projects` (healthUrl etc.) — the `sessions` tool's project summaries read it (P6). */
@@ -629,6 +634,9 @@ export async function dispatchToProject(
   const existing = sideKind ? undefined : deps.registry.findByFolder(folder);
   const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now(), sessionLane ? { lane: sessionLane } : undefined);
+  // A dispatch a customer-driven company run made (ingress) marks its session for good: it runs fenced,
+  // and the operator's own tools (project_message, ADR-0061) never speak into it.
+  if (replyChat === CUSTOMER_CHAT) deps.registry.markCustomerDriven(session.id);
   const name = session.name;
   // The cause a line of this run is filed under: the newest brief delivered into the session (a
   // later brief pushed into it brings its own), else this dispatch's own.
@@ -1938,6 +1946,22 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           return { content: [{ type: "text" as const, text: sessionsReport(deps.registry, at, deps.liveness, companyProjectLines(deps, at), held) }] };
         },
       ),
+      ...(deps.projectMessage
+        ? [
+            tool(
+              "project_message",
+              "Speak to a project's OPEN session the way the operator does when they switch to it and type: the text goes into that session — a working one sees it at its next step, an idle one wakes with it, one held in a limit wait (`sessions`/`todo list` show \"held: limit wait\") starts a turn now. Use it for short words to a session that is already there: \"resume\", \"status?\", \"continue\". NOT for an answer to a decision the project raised with ask_operator — that is the operator's. NOT for new work — that is `dispatch` (it queues behind the running task); NOT for information to another project — that is `project_notes`. It never replaces the running task. Refused in code: an empty or long text, a project with no open session (use dispatch), a customer-driven session, one still starting or closing, one held at a big plan or waiting for the operator's decision, too many messages to one project in an hour. The operator sees every message in that project's stream, marked as from you; the session's replies go there too, not back to you. Never tell the operator to /kill a session for something this tool can do. Returns what happened: delivered (and how) or refused (and why).",
+              {
+                project: z.string().describe('project folder name, e.g. "waselni"'),
+                text: z.string().describe("the short message, as the operator would type it"),
+              },
+              async (args: { project: string; text: string }) => {
+                const r = await deps.projectMessage!({ project: args.project, text: args.text, replyChat, cause: opts.cause?.() });
+                return { content: [{ type: "text" as const, text: r.text }] };
+              },
+            ),
+          ]
+        : []),
       tool(
         "dispatch",
         "Open one of the operator's projects and run a self-contained task in it. Use this for any order that belongs to a specific project (e.g. api-server, web-app). The target project does NOT see the operator's original message — only your `task` brief — so write `task` as a clear, complete prompt. " +

@@ -3,7 +3,7 @@
 import type { NeoConfig } from "../config";
 import type { Order } from "../types";
 import { runOrder, type RunResult } from "./session-runner";
-import { neoMcpServers, type DispatchDeps } from "./dispatch";
+import { CUSTOMER_CHAT, neoMcpServers, type DispatchDeps } from "./dispatch";
 import type { TrustStore } from "./trust";
 import { profileDeps } from "./worker-profile";
 import { canResumeWith } from "./sdk-choice";
@@ -13,8 +13,8 @@ import type { Cause } from "./ledger";
 /** The title of an ingress brief's thread — fixed, so no customer text reaches the operator's thread list. */
 export const INGRESS_TITLE = "ingress brief";
 
-/** Reserved chat id for company runs driven by a customer brief (never a real operator chat). */
-export const CUSTOMER_CHAT = -3;
+/** Reserved chat id for company runs driven by a customer brief (defined beside SUB_CHAT in dispatch.ts). */
+export { CUSTOMER_CHAT } from "./dispatch";
 
 /** Customer-path trust: a dispatch triggered by a customer brief must NEVER auto-approve risky
  *  tools (firewall: "customer work never auto-approves"), regardless of operator trust. This
@@ -99,7 +99,9 @@ export async function runCompanyBrief(
                 // the operator's, spread, so notes is stripped here — for this run and its dispatches.
                 notes: undefined,
                 // Nor does it reach the API relay (ADR-0044): keys stay behind operator surfaces.
-                tools: undefined },
+                tools: undefined,
+                // Nor does it speak into a project's session (ADR-0061): that is the operator's own voice.
+                projectMessage: undefined },
               CUSTOMER_CHAT,
               // BACKGROUND: a customer brief is not the operator's turn — nobody is waiting at the
               // keyboard — so dispatches this run makes stay under the interactive reserve.

@@ -54,6 +54,8 @@ export interface Registry {
   /** Record (or clear, with `undefined`) what the operator owes this session. While set, the
    *  session is awaiting-operator: never wedged, never stall-aborted. */
   noteBlocked(id: string, blocked: BlockedOn | undefined): void;
+  /** Mark a session a customer-driven run used (ADR-0061); never cleared. */
+  markCustomerDriven(id: string): void;
   /** Mark (or clear) a session that repeats itself with nothing changing (spec §8.1). */
   noteSpinning(id: string, mark: { label: string; since: number } | undefined): void;
   /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
@@ -230,6 +232,10 @@ export function createRegistry(): Registry {
       if (!s) return;
       s.lastOutputAt = now;
       s.lastActivityAt = now;
+    },
+    markCustomerDriven(id) {
+      const s = sessions.get(id);
+      if (s) s.customerDriven = true;
     },
     noteBlocked(id, blockedOn) {
       const s = sessions.get(id);

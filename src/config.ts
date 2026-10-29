@@ -19,6 +19,7 @@ import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
 import { readLanesCfg, type LanesCfg } from "./engine/lanes";
 import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
 import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
+import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
@@ -214,6 +215,9 @@ export interface NeoConfig {
   /** ADR-0060: each early-woken run waits a random 0..this ms first, so they do not re-send at once.
    *  Default 30 s. */
   apiLimitWakeJitterMs?: number;
+  /** ADR-0061: the chief of staff's `project_message` — at most `maxChars` per message (longer is new
+   *  work: dispatch) and `perProjectPerHour` delivered per project. Read by readProjectMessageCfg. */
+  projectMessage?: ProjectMessageCfg;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
    *  scheduler can't amplify a rate-limit storm. Default 60 s. */
   apiCooldownMs: number;
@@ -626,6 +630,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     lanes: readLanesCfg(fileCfg.lanes),
     toolControl: readToolControlCfg(fileCfg.toolControl),
     tools: readToolsCfg(fileCfg.tools),
+    projectMessage: readProjectMessageCfg(fileCfg.projectMessage),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),

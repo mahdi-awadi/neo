@@ -41,7 +41,9 @@ export interface Cause {
 }
 
 export type MessageKind =
-  | "text" | "ack" | "progress" | "digest" | "result" | "decision" | "alert" | "approval" | "file" | "plan" | "notice";
+  | "text" | "ack" | "progress" | "digest" | "result" | "decision" | "alert" | "approval" | "file" | "plan" | "notice"
+  /** The chief of staff spoke to a project's session (ADR-0061). */
+  | "agent_message";
 export type MessageSurface = "telegram" | "web" | "engine";
 
 /** One transcript line to write. `threadId`/`causeId` link it (spec §3.2); a root has no cause. */

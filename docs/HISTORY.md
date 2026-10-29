@@ -1334,6 +1334,17 @@ A limit-held todo resumes with `todo retry` (2026-10-29, ADR-0060).
 
 Restart-gated.
 
+The chief of staff speaks to a project's session (2026-10-29, ADR-0061).
+
+- `project_message(project, text)` delivers a short message into a project's open session through the
+  operator's own path (`deliverToSession`, extracted from `handleMessage`): a working session sees it at its
+  next step, an idle one wakes, one held in a limit wait starts a turn now.
+- Refused in code: a customer session, empty or long text, no open session, the company, more than 6 an hour
+  per project. The ingress never has the tool. Each message is a `project_message` event (no text) and a
+  "chief of staff → <project>" line in Telegram and the console thread (AR + EN label).
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

@@ -93,6 +93,13 @@ goes through on it (the operator's own message) sends its re-send at once instea
 that goes through on the same provider wakes the other limit holds early. Its brief is re-sent at most once.
 _Avoid_: stuck, blocked, needs /kill
 
+**Project message**:
+A few words the chief of staff speaks into a project's open session with `project_message` ("resume",
+"status?", "continue"), delivered exactly like the operator's own message (ADR-0061). It never starts new
+work (that is a dispatch) and is not a project note (information read later). It is marked "chief of staff →
+<project>" wherever the operator reads it.
+_Avoid_: dispatch, note, nudge (as a separate mechanism), injecting
+
 **Cooldown**:
 A short engine-wide hold on starting new background work after a worker reports a rate limit, so
 retries and the scheduler do not amplify the storm. Never holds an interactive turn.

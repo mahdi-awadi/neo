@@ -54,6 +54,7 @@ import { faults } from "./fault";
 import { createPlanWatch } from "./plan-watch";
 import { DEFAULT_PLANS_CFG, headSha, onRunEndPlans, planDepsFrom, type EditPlanCard, type PostPlan } from "./plans";
 import type { ApiWaits } from "./api-wait";
+import { sendProjectMessage } from "./project-message";
 import {
   apiExhaustionWarning,
   apiFailureNotice,
@@ -373,51 +374,40 @@ export async function handleMessage(
   const addressed = focus?.session ?? registry.getDefault();
   if (addressed && !text.trim().startsWith("/")) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
-    if (registry.getControl(addressed.id)?.closed?.() === true) {
-      const why = handoffInFlight(addressed.order.folder) ? "is handing off its context" : "is closing";
-      await deps.reply(chatId, `⏳ ${addressed.name} ${why} — your message will follow`);
-    }
-    const live = await pastClose(registry, addressed, handoffHoldMs(deps.cfg.contextPolicy));
-    if (!live) {
+    const out = await deliverToSession(addressed, text, chatId, deps, cause, {
+      now,
+      start,
+      deliver,
+      // A message to the company carries any dispatch results still waiting in the dispatcher inbox
+      // (e.g. runs cut short by a reload), so the dispatcher sees them before it acts (ADR-0007).
+      // Taken only on the two delivering paths, never when the message is turned away.
+      body: (live, control) => {
+        if (live.id !== registry.getDefault()?.id || control?.closed?.() === true) return text.trim();
+        const pending = takeDispatcherInbox(ledger, now());
+        return pending ? `${pending}\n\n${text.trim()}` : text.trim();
+      },
+      closingNotice: (name, why) => deps.reply(chatId, `⏳ ${name} ${why} — your message will follow`),
+      onResume: async (live) => {
+        if (oneShot) registry.clearFocus(chatId);
+        await deps.reply(chatId, `↩︎ resuming ${live.name}…`, undefined, undefined, { kind: "ack" });
+      },
+    });
+    if (out.kind === "closing") {
       await deps.reply(chatId, `⏳ ${addressed.name} is still closing — send that again in a moment`);
       return null;
     }
-    const control = registry.getControl(live.id);
-    // A message to the company carries any dispatch results still waiting in the dispatcher inbox
-    // (e.g. runs cut short by a reload), so the dispatcher sees them before it acts (ADR-0007).
-    // Taken only on the two delivering paths below, never when the message is turned away.
-    const body = (): string => {
-      if (live.id !== registry.getDefault()?.id || control?.closed?.() === true) return text.trim();
-      const pending = takeDispatcherInbox(ledger, now());
-      return pending ? `${pending}\n\n${text.trim()}` : text.trim();
-    };
-    if (control && live.status === "running") {
-      // Live worker. The operator's own words steer: a Claude worker sees them at its next step
-      // mid-turn; one that can't steer (Codex) runs them after the in-flight turn, and the reply
-      // says which. Report the REAL status, not a bare "busy": what it's doing, for how long, and
-      // how deep the queue is.
-      control.followUp(withLiveNotes(deps, live.id, live.order.folder, body(), now()), "steer", cause);
-      deliver(live.id);
-      registry.touch(live.id, now());
-      // The operator's message answers (or replaces) a raised DECISION. A pending approval is
-      // left alone — it is still suspending the worker mid-tool and clears on their verdict.
-      clearDecisionBlock(registry, live.id);
-      if (oneShot) registry.clearFocus(chatId);
-      const when = control.steersMidTurn ? "it'll see this at its next step" : "runs after its current turn";
-      await deps.reply(chatId, `↩︎ queued for ${live.name} (${when}) — ${describeSession(registry, live, now(), deps.cfg.liveness)}`, undefined, undefined, { kind: "ack" });
+    // Focus intentionally NOT consumed here — the re-send should still reach this project.
+    if (out.kind === "reopening") {
+      await deps.reply(chatId, `⏳ ${out.live.name} is reopening — send that again in a moment`);
       return null;
     }
-    // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
-    if (resuming.has(live.id)) {
-      // Focus intentionally NOT consumed here — the re-send should still reach this project.
-      await deps.reply(chatId, `⏳ ${live.name} is reopening — send that again in a moment`);
+    if (out.kind === "steered") {
+      if (oneShot) registry.clearFocus(chatId);
+      const when = out.midTurn ? "it'll see this at its next step" : "runs after its current turn";
+      await deps.reply(chatId, `↩︎ queued for ${out.live.name} (${when}) — ${describeSession(registry, out.live, now(), deps.cfg.liveness)}`, undefined, undefined, { kind: "ack" });
       return null;
     }
-    deliver(live.id);
-    return resumeSession(live, body(), chatId, deps, now, start, async () => {
-      if (oneShot) registry.clearFocus(chatId);
-      await deps.reply(chatId, `↩︎ resuming ${live.name}…`, undefined, undefined, { kind: "ack" });
-    }, cause);
+    return out.run;
   }
 
   // 2. Parse a new order.
@@ -474,6 +464,66 @@ export async function handleMessage(
     gate.preLines,
     cause,
   );
+}
+
+/** What delivering a message into an open session did (ADR-0061): steered into a live run (`midTurn`: seen at
+ *  its next step; else after its in-flight turn), resumed an idle one, or turned away (still closing, or
+ *  already reopening). */
+export type DeliverOutcome =
+  | { kind: "steered"; live: SessionInfo; midTurn: boolean }
+  | { kind: "resumed"; live: SessionInfo; run: Promise<SessionRun> }
+  | { kind: "closing" }
+  | { kind: "reopening"; live: SessionInfo };
+
+/** Deliver one message into an open session exactly as the operator's own message is (ADR-0061): the one
+ *  path for `handleMessage` and the chief of staff's `project_message`. A live worker gets it as a steer
+ *  follow-up (with any live notes, ADR-0050) and any raised decision block is cleared; an idle one is
+ *  resumed with its SDK session; a closing one is waited for briefly, then turned away. */
+export async function deliverToSession(
+  addressed: SessionInfo,
+  text: string,
+  chatId: number,
+  deps: PipelineDeps,
+  cause: Cause | undefined,
+  hooks: {
+    now: () => number;
+    start: StartFn;
+    /** The session the message went to, once known (its lines are filed under the turn's cause). */
+    deliver?: (id: string) => void;
+    /** The text to deliver (default: the trimmed message). */
+    body?: (live: SessionInfo, control: ReturnType<Registry["getControl"]>) => string;
+    /** Said while waiting for a closing session. */
+    closingNotice?: (name: string, why: string) => unknown;
+    /** Runs once a resume is under way (e.g. the operator's "resuming…" line). */
+    onResume?: (live: SessionInfo) => Promise<void>;
+  },
+): Promise<DeliverOutcome> {
+  const { registry } = deps;
+  const now = hooks.now;
+  if (registry.getControl(addressed.id)?.closed?.() === true) {
+    const why = handoffInFlight(addressed.order.folder) ? "is handing off its context" : "is closing";
+    await hooks.closingNotice?.(addressed.name, why);
+  }
+  const live = await pastClose(registry, addressed, handoffHoldMs(deps.cfg.contextPolicy));
+  if (!live) return { kind: "closing" };
+  const control = registry.getControl(live.id);
+  const body = (): string => hooks.body?.(live, control) ?? text.trim();
+  if (control && live.status === "running") {
+    // Live worker. The words steer: a Claude worker sees them at its next step mid-turn; one that can't
+    // steer (Codex) runs them after the in-flight turn.
+    control.followUp(withLiveNotes(deps, live.id, live.order.folder, body(), now()), "steer", cause);
+    hooks.deliver?.(live.id);
+    registry.touch(live.id, now());
+    // The message answers (or replaces) a raised DECISION. A pending approval is left alone — it is still
+    // suspending the worker mid-tool and clears on its verdict.
+    clearDecisionBlock(registry, live.id);
+    return { kind: "steered", live, midTurn: control.steersMidTurn === true };
+  }
+  // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
+  if (resuming.has(live.id)) return { kind: "reopening", live };
+  hooks.deliver?.(live.id);
+  const run = resumeSession(live, body(), chatId, deps, now, hooks.start, () => hooks.onResume?.(live) ?? Promise.resolve(), cause);
+  return { kind: "resumed", live, run };
 }
 
 /** The entry as it is once any CLOSE in progress is over. A run whose channel is already closed (a
@@ -587,8 +637,11 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
   // With a trace, dispatch lines (digests, results, a released todo's whole run) are filed in their
   // thread through the one recording wrapper — added here when the caller passed raw frontend deps.
   if (deps.trace && !deps.recordsLines) deps = recorded(deps, undefined, () => undefined);
+  const pipeline = deps;
   return {
     ...deps,
+    // ADR-0061: the company's `project_message` — the operator's own delivery path, with these deps.
+    projectMessage: (a) => sendProjectMessage(pipeline, a),
     workRoot: deps.cfg.workRoot,
     projects: deps.cfg.projects,
     github: deps.cfg.github,
