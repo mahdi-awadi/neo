@@ -1,3 +1,31 @@
+# HANDOFF — 2026-10-29: open engine work finished on dev (restart-gated)
+
+Built on `dev` (not live; needs merge to master + restart):
+- **ADR-0058 Stop/Background one tool call** — plan `2026-10-28-tool-call-control.md` fully built:
+  SDK spike (sdk-notes), tracker + marker (`tool-calls.ts`, governor hook), `proc-tree.ts`,
+  `docker-exec.ts`, `tool-control.ts`, `/stop` `/bg` `/list`, company `tool_control`, console strip,
+  Telegram notices, plus the security-review fixes. Config `toolControl.*`.
+- **Reach plan P0.3–P0.5** — guard SSH keys (re-install the kit: `bun tools/security/install.ts`, an
+  operator step), `mcp__neo__` trusted by `mcpServer.source`, constant-time bearers +
+  `INBOX_INGEST_SECRET`. The rest of the reach plan waits on its 11 operator decisions.
+- Earlier on dev: side lanes (ADR-0057, ledger v14), long checks in the background (ADR-0055), logo +
+  splash (ADR-0056). Master is still `b3295df`.
+
+Not built (why):
+- Reach plan P0.1/P0.2 spikes, P1–P5, P0.6 host hygiene: production access, deploys and 11 operator
+  decisions (§12); outside "dev work".
+- ADR-0044 tools catalogue P3–P5 (usage ranking, recipes, skillify, enrichment loop): not started in
+  this run; next in line.
+- Plan-watch misses plans written in a worktree: the plan lives on another branch until merged, so the
+  fix needs a design choice (which folder and branch own the card); not a two-line fix.
+- Claude-app parity and research P0–P8 plans: product plans awaiting scope approval.
+
+Security triage: the "new" medium findings on `app.ts` (`neo-js-raw-html`) are false positives. Every
+dynamic value goes through `esc`/`ltr`/`iso`/`t`; the lines moved, so their fingerprints changed.
+The baseline is untouched.
+
+---
+
 # HANDOFF — side lanes (ADR-0057): built on dev, restart-gated
 
 The operator approved the plan `docs/superpowers/plans/2026-10-28-side-lanes.md` (2026-10-28) and it is
