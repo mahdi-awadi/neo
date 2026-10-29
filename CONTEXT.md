@@ -341,37 +341,80 @@ recall and the dream loop. Off by default (`memory.scopes: []`). It overlaps aut
 _Avoid_: curated memory (as a synonym), memory (bare)
 
 **Task history**:
-The engine's searchable archive of past work across every project: each order's brief, its todo
-summary, its final result and progress digests, plans, project notes, operator messages and remembered
-entries, with the commit shas they name. It answers "what did we do about X, and where is it" by meaning
-and by exact id, in Arabic and English, and every hit cites its source (order/todo #, date, project,
-commit, plan path). Its text and keyword index live in `data/history.db` (the source of truth; it outlives
-the ledger's retention); its vectors live in Neo's own collection on the host's shared Qdrant, a
-rebuildable copy (ADR-0066). Customer-sourced text is never in it.
-_Avoid_: memory (bare), recall, knowledge base
+The engine's searchable archive of past work in every project: todo briefs, dispatched orders, results,
+progress digests, operator messages, plans, project notes, GitHub and git items, decisions and remembered
+entries, with the commit shas that they name. It answers "what did we do about X, and where is it" by
+meaning, by words and by exact id, in Arabic and English. Each hit cites its source (ref, kind, project,
+date, todo, order, thread, commits, plan path). The text and the word index live in `data/history.db`,
+the source of truth, which keeps entries after the ledger prunes them. The vectors live in Neo's own
+collection on the shared Qdrant, a copy that Neo can rebuild (ADR-0066). Customer text is never in it.
+_Avoid_: memory (bare), recall, knowledge base, `/history` (that is the Telegram alias of `/recent`)
 
 **History entry**:
-One searchable unit of the task history: a source row (an order, a result, a plan, a note, a message, a
-remembered entry) cut into chunks, each with its text, its source ref and its date. A chunk has a
-keyword index row always, a vector once the embedder has read it, and a copy of that vector in the shared
-Qdrant once it is uploaded.
+One searchable unit of the task history: one source row (with its ref, for example `todo:884`) cut into
+chunks. Each chunk always has a word-index row. It gets a vector when the embedder has read it, and a
+point in the shared Qdrant when the vector is uploaded.
 _Avoid_: document (bare), record
 
+**Archived entry**:
+A history entry whose ledger row was deleted by the ledger's retention (old todos, resolved attention
+items, closed decisions). It stays searchable, and its hit says that the ledger no longer has the row.
+Only `forget` removes it.
+_Avoid_: deleted entry, stale entry
+
 **Remembered entry**:
-An explicit "remember this" the operator or a worker saves into the task history: a short text, its
-project and who saved it. It is searchable like any other entry and never expires.
+An explicit "remember this" that the operator or a worker saves into the task history: a short text, its
+project and who saved it. It exists only in `history.db`, is searchable like any other entry, and never
+expires.
 _Avoid_: note (that is a project note), pin
 
+**Forget**:
+The operator's removal of one history entry everywhere (chunks, word index, vectors, Qdrant points). A
+tombstone keeps the ref, so a later sync never adds it again. The ledger row itself does not change.
+_Avoid_: delete (bare), purge
+
+**Change feed**:
+The ledger table `history_feed` (migration v17). Triggers on the source tables write one row for each
+insert, update and delete. The history indexer reads it in order from its own cursor and never writes to
+the ledger.
+_Avoid_: outbox (a general pattern name), event log (that is the `events` table)
+
 **Hybrid search**:
-One query run two ways — by meaning (vector nearest neighbours) and by exact words and ids (full-text) —
-with the two ranked lists fused by reciprocal rank fusion, then filtered by project, date and kind.
-_Avoid_: semantic search (that is only half of it), AI search
+One query run on up to four ranked lists: exact ids, meaning (vector nearest neighbours), words (full
+text in `history.db`) and lines (the ledger's streamed worker lines). Reciprocal rank fusion joins them.
+Exact hits rank first. The filters (project, date, kind) apply in each list.
+_Avoid_: semantic search (that is only one list), AI search
+
+**Keyword-only mode**:
+The state of a history search when meaning search is off (the embedder or the shared Qdrant does not
+answer, or a key is refused). Search then answers from the word lists, and each reply says why meaning
+search is off. Nothing is lost: the waiting chunks are embedded and uploaded when the service answers.
+_Avoid_: fallback mode, degraded search
+
+**Embedder**:
+The local service that turns text into vectors: text-embeddings-inference with `BAAI/bge-m3` in a pinned,
+loopback-only, memory-capped Docker container (`neo-embedder`). It is Neo's own container, not a shared
+service.
+_Avoid_: model (bare), AI
+
+**Model tag**:
+The name of the vector space of a vector: model id, dimensions and revision, derived by code. Each local
+vector, each Qdrant point id and each point payload carries it, and a query reads only the active tag, so
+search never mixes two models.
+_Avoid_: model version, embedding version
+
+**Snapshot backup**:
+Neo's backup of one of its SQLite files: `VACUUM INTO` from a read-only connection in a child process, an
+integrity check, compression, a manifest, a rotation and a weekly restore drill, in `/var/backups/neo`.
+`history.db` has one from the start. The ledger joins it only by an operator decision (ADR-0066).
+_Avoid_: dump, `.bak` copy (that is the one-off copy that a migration makes)
 
 **Shared service**:
-A database container that ops runs once for every project on the host (the shared Qdrant and Meilisearch,
-ops todo #914): an ops-owned compose file, a pinned image, loopback ports, one scoped key per project,
-daily backups. A project uses it as a consumer, only through its own key and its own prefixed collections,
-and keeps its own source of truth (operator ruling, 2026-10-29).
+A database container that ops runs once for every project on the host (the shared Qdrant, Meilisearch and
+Postgres): an ops-owned compose file, a pinned image, loopback ports, one scoped credential for each
+project, daily backups (`agent/desks/ops/shared-infra/CONSUMERS.md`). A project is a consumer: it uses
+only its own credential and its own collections, and keeps its own source of truth (operator ruling,
+2026-10-29). Neo uses only the shared Qdrant.
 _Avoid_: borrowed container, another project's database
 
 **Project docs**:
