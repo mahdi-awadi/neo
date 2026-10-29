@@ -86,6 +86,19 @@ export interface SessionControl {
    *  every tool but reads, so a brief delivered now could only be answered with STOP: a caller must
    *  not deliver one (ADR-0052). Optional for old fakes (absent → not held). */
   held?(): string | undefined;
+  /** The running tool calls and their controls (ADR-0058). Absent on fakes and old handles. */
+  tools?: ToolCalls;
+}
+
+/** One session's running tool calls and the SDK controls over them (ADR-0058). Claude: the SDK's
+ *  backgroundTasks/stopTask. Codex: no per-call control — `stop` ends the current turn. */
+export interface ToolCalls {
+  provider: "claude" | "codex";
+  running(): Array<{ toolUseId: string; tool: string; summary: string; since: number; taskId?: string }>;
+  background(toolUseId: string): Promise<{ ok: boolean; taskId?: string; reason?: string }>;
+  stop(toolUseId: string): Promise<{ ok: boolean; taskId?: string; reason?: string }>;
+  /** The log file of a backgrounded call, once the SDK named it. */
+  logOf?(toolUseId: string): string | undefined;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */

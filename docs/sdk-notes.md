@@ -245,3 +245,23 @@ Probe: `spike/notes-live-probe.ts` (ADR-0050 P0), run in an empty temp folder.
 - Not probed: forking while the parent is mid-tool-call. Neo forks only idle targets (ADR-0050).
 - As root, `bypassPermissions` is refused ("cannot be used with root"). Probes use `allowedTools`
   with an allow-all `canUseTool`.
+
+## Background and stop of one tool call (ADR-0058 Task 0 spike, SDK 0.3.310, 2026-10-29)
+
+Run with a real streaming-input `query()` (haiku), a foreground Bash `bash -c 'sleep 300; …'`:
+
+- **`task_started` arrives for a FOREGROUND Bash call too** (`is_backgrounded: false`,
+  `task_type: "local_bash"`), with `tool_use_id` and `task_id`, right as the command starts. So the
+  engine knows every running call's task id before anyone presses a button.
+- **`query.backgroundTasks(toolUseId)` → `true`.** It emits `task_updated {is_backgrounded: true}`, and the
+  worker's tool result is: "Command was manually backgrounded by user with ID: <task_id>. Output is
+  being written to: <path>/tasks/<task_id>.output. If it is still running after 30m in the background,
+  it will be stopped and you will be notified." The turn goes on.
+- **`query.stopTask(taskId)`** → `task_updated {status: "killed"}` and `task_notification
+  {status: "stopped", tool_use_id, output_file}`.
+- **`stopTask` kills the task's outer shell but NOT its grandchildren:** the inner `bash -c 'sleep 300'`
+  survived. Stopping a call therefore needs the engine's own sweep of that call's process tree
+  (ADR-0058's per-call `NEO_TOOL_USE_ID` marker), not only `stopTask`.
+- **A PreToolUse hook's `updatedInput` applies with NO permission decision,** even when a settings allow
+  rule (`allowedTools: ["Bash"]`) skips `canUseTool`: `echo MARK=$NEO_TOOL_USE_ID` printed the
+  hook-injected id. The governor hook is therefore the one place that adds the per-call marker.

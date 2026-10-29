@@ -19,6 +19,7 @@
 //
 // Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
+import { createToolCalls, markCommand } from "./tool-calls";
 import type { SessionLane } from "./lanes";
 import { basename } from "node:path";
 import { query as realQuery, type AgentDefinition, type HookInput } from "@anthropic-ai/claude-agent-sdk";
@@ -169,7 +170,9 @@ export interface RunHandlers {
    *  usage, each tool call, and each tool result. Observers only — never change the run. */
   onUsage?: (model: string | undefined, usage: Record<string, number>) => void;
   onToolUse?: (id: string | undefined, name: string, input: unknown) => void;
-  onToolResult?: (id: string | undefined, isError: boolean) => void;
+  onToolResult?: (id: string | undefined, isError: boolean, text?: string) => void;
+  /** An SDK `task_*` system message (ADR-0058): the task the CLI runs a tool call as. */
+  onTask?: (m: Record<string, unknown>) => void;
   /** Consulted by the governor hook BEFORE the governor: a returned reason DENIES the tool call with
    *  that reason (an armed context checkpoint, ADR-0021); undefined = no opinion. Claude only. */
   contextSteer?: (toolName: string, input: unknown) => string | undefined;
@@ -342,7 +345,12 @@ type SdkUserMessage = {
    *  (steer mid-turn); "later" = wait for the turn to end (docs/sdk-notes.md, mid-turn priority). */
   priority?: "next" | "later";
 };
-type QueryObject = AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void> };
+type QueryObject = AsyncIterable<SdkMessage> & {
+  interrupt?: () => Promise<void>;
+  /** ADR-0058: the SDK's Ctrl+B for one call, and stop of a background task (docs/sdk-notes.md). */
+  backgroundTasks?: (toolUseId?: string) => Promise<boolean>;
+  stopTask?: (taskId: string) => Promise<void>;
+};
 type QueryFn = (args: {
   prompt: string | AsyncIterable<SdkUserMessage>;
   options: Record<string, unknown>;
@@ -446,8 +454,16 @@ export function buildCanUseTool(
 /** The SDK hook result: no opinion, force the call into the permission flow (= canUseTool), or deny
  *  it outright (an armed context checkpoint only). */
 type GovernorHookOutput = Record<string, never> | {
-  hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision: "ask" | "deny"; permissionDecisionReason: string };
+  hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision?: "ask" | "deny"; permissionDecisionReason?: string; updatedInput?: Record<string, unknown> };
 };
+
+/** The hook output that marks a Bash call with its tool-use id (ADR-0058), else undefined. */
+function markedBash(tool: string, input: unknown, toolUseId: string | undefined): { hookSpecificOutput: { hookEventName: "PreToolUse"; updatedInput: Record<string, unknown> } } | undefined {
+  const i = input as Record<string, unknown> | undefined;
+  if (tool !== "Bash" || !toolUseId || typeof i?.command !== "string") return undefined;
+  const command = markCommand(toolUseId, i.command);
+  return command === i.command ? undefined : { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...i, command } } };
+}
 
 // The governor as an SDK PreToolUse hook. A settings allow rule (e.g. `Bash(git:*)` in a trusted
 // project's .claude/settings.json) approves a tool BEFORE canUseTool runs, so canUseTool alone let
@@ -462,7 +478,7 @@ type GovernorHookOutput = Record<string, never> | {
 // An armed context checkpoint (ADR-0021) speaks first, through `steer`: its reason DENIES the call,
 // telling the worker to write its handoff note and end the turn. A throwing steer has no opinion.
 export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolderWrites = "ask", steer?: RunHandlers["contextSteer"], projectFence?: ProjectFence, lane?: SessionLane) {
-  return async (input: HookInput, _toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
+  return async (input: HookInput, toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
     let steered: string | undefined;
     try {
@@ -474,12 +490,15 @@ export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolder
     let reason: string;
     try {
       const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}) });
-      if ("allow" in verdict) return {};
+      // ADR-0058: every host process of a Bash call carries its tool-use id, so /stop can find exactly that
+      // call's processes. The hook's updatedInput applies even when a settings rule skips canUseTool.
+      if ("allow" in verdict) return markedBash(input.tool_name, input.tool_input, toolUseId) ?? {};
       reason = "deny" in verdict ? verdict.deny : verdict.escalate;
     } catch (err) {
       reason = `governor error: ${err instanceof Error ? err.message : String(err)}`;
     }
-    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: reason } };
+    const marked = markedBash(input.tool_name, input.tool_input, toolUseId)?.hookSpecificOutput.updatedInput;
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: reason, ...(marked ? { updatedInput: marked } : {}) } };
   };
 }
 
@@ -576,13 +595,15 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         if (Array.isArray(content)) {
           for (const b of content as Array<{ type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
             if (b?.type !== "tool_result") continue;
-            observe(() => handlers.onToolResult?.(b.tool_use_id, b.is_error === true));
+            observe(() => handlers.onToolResult?.(b.tool_use_id, b.is_error === true, typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "")));
             const short = b.tool_use_id ? toolShortById.get(b.tool_use_id) : undefined;
             if (!short || RESULT_SILENT_TOOLS.has(short)) continue; // unknown or low-signal → stay quiet
             const preview = toolResultPreview(b.content);
             if (preview) handlers.onMessage(`${b.is_error ? "⚠️ ↳" : "↳"} ${preview}`, "tool");
           }
         }
+      } else if (msg.type === "system" && (msg.subtype === "task_started" || msg.subtype === "task_notification")) {
+        observe(() => handlers.onTask?.(msg));
       } else if (msg.type === "system" && msg.subtype === "api_retry") {
         // The SDK is retrying a retryable API failure itself (its own backoff). Not a failure yet —
         // surface it as activity so the watchdog counts it as liveness and /status shows the wait.
@@ -1031,8 +1052,22 @@ function startClaudeOrder(
   let stateEvents = false;
   const onDeliver = () => void (inTurn = true);
   // Wraps (never replaces) the caller's own handlers.
+  // The running tool calls and their SDK tasks (ADR-0058): /stop, /bg and the console strip act on them.
+  const toolCalls = createToolCalls();
   const tracked: RunHandlers = {
     ...handlers,
+    onToolUse: (id, name, input) => {
+      toolCalls.onToolUse(id, name, input);
+      handlers.onToolUse?.(id, name, input);
+    },
+    onToolResult: (id, isError, text) => {
+      toolCalls.onToolResult(id, text);
+      handlers.onToolResult?.(id, isError, text);
+    },
+    onTask: (m) => {
+      toolCalls.onTask(m);
+      handlers.onTask?.(m);
+    },
     onTurnComplete: (result) => {
       if (!stateEvents) inTurn = false;
       handlers.onTurnComplete?.(result);
@@ -1111,6 +1146,38 @@ function startClaudeOrder(
       channel.close();
     },
     closed: () => closeRequested,
+    tools: {
+      provider: "claude",
+      running: () => toolCalls.running(),
+      background: async (toolUseId) => {
+        if (!toolCalls.running().some((c) => c.toolUseId === toolUseId)) return { ok: false, reason: "not_running" };
+        try {
+          const ok = (await queryObj?.backgroundTasks?.(toolUseId)) === true;
+          return ok ? { ok, taskId: toolCalls.taskOf(toolUseId) } : { ok, reason: "not_running" };
+        } catch (e) {
+          return { ok: false, reason: `background tasks are off for this session: ${e instanceof Error ? e.message : String(e)}` };
+        }
+      },
+      // Stop = background the call, then stop its task (the tested SDK path). The task's grandchildren
+      // survive stopTask; tool-control.ts sweeps them by the call's marker.
+      stop: async (toolUseId) => {
+        const wasRunning = toolCalls.running().some((c) => c.toolUseId === toolUseId);
+        if (wasRunning) await queryObj?.backgroundTasks?.(toolUseId).catch(() => false);
+        let taskId = toolCalls.taskOf(toolUseId);
+        for (let i = 0; i < 20 && !taskId; i++) {
+          await new Promise((r) => setTimeout(r, 100)); // task_started trails the tool_use briefly
+          taskId = toolCalls.taskOf(toolUseId);
+        }
+        if (!taskId) return { ok: false, reason: wasRunning ? "no SDK task for this call" : "not_running" };
+        try {
+          await queryObj?.stopTask?.(taskId);
+          return { ok: true, taskId };
+        } catch (e) {
+          return { ok: false, taskId, reason: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      logOf: (toolUseId) => toolCalls.logOf(toolUseId),
+    },
     done,
   };
 }
@@ -1123,6 +1190,7 @@ function startCodexOrder(
   deps = resolvedRunDeps(deps, "codex", handlers);
   const queue = createTextTurnQueue(order.task);
   let currentAbort: AbortController | undefined;
+  let turnSince = 0;
   let interruptRequested = false;
   let closeRequested = false;
   // A turn is in flight only while consumeCodexTurn runs (Codex processes one turn at a time); idle
@@ -1143,6 +1211,7 @@ function startCodexOrder(
         const next = await queue.next();
         if (next === undefined) break;
         currentAbort = new AbortController();
+        turnSince = Date.now();
         turnActive = true;
         observe(() => handlers.onTurnStart?.(1));
         final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
@@ -1179,6 +1248,21 @@ function startCodexOrder(
       queue.close();
     },
     closed: () => closeRequested,
+    // ADR-0058: Codex has no per-command control. Its one "running call" is the current turn; stop ends
+    // that turn (the session stays and takes the next input); background is refused.
+    tools: {
+      provider: "codex",
+      running: () => (turnActive ? [{ toolUseId: CODEX_TURN, tool: "turn", summary: "the current Codex turn", since: turnSince }] : []),
+      background: async () => ({ ok: false, reason: "Codex workers cannot move a command to the background" }),
+      stop: async (toolUseId) => {
+        if (toolUseId !== CODEX_TURN || !turnActive || !currentAbort) return { ok: false, reason: "not_running" };
+        currentAbort.abort();
+        return { ok: true };
+      },
+    },
     done,
   };
 }
+
+/** The pseudo tool-use id of a Codex session's current turn (ADR-0058). */
+export const CODEX_TURN = "codex-turn";
