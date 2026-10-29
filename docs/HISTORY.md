@@ -1398,3 +1398,18 @@ Workers never run the Telegram channel plugin (2026-10-29, ADR-0064).
   run path; all other user plugins and skills stay on. Checked on the real CLI.
 
 Restart-gated.
+
+Needs you vs housekeeping, pins, superseded items, tappable todos (2026-10-29, ADR-0065, ledger v16).
+
+- Root cause of "every project reads ATTENTION": the badge counted any open item a producer marked high
+  (notes between projects, files left uncommitted after a todo, CI failures), while plans and decision cards
+  never counted. Now one table classes each kind as needs-you or housekeeping (an unknown kind: needs-you),
+  and `needsYou()` joins open decisions, failed todos, needs-you items and pins. The badge, the project list,
+  `/attention` and the digest (Decisions group only when something needs you) read it.
+- A "Pinned — needs you" strip on every tab with one-tap Approve / Answer / Retry / Open; pins live in the
+  ledger (`pins`, v16). Older versions of a branch-named item or a dependency PR close, dismissed, with the
+  reason in `resolution` (the agent-sdk bump series keeps only the newest).
+- Todo rows open a detail sheet (`GET /api/todo/:id`); every console button is busy while it runs and shows a
+  toast with the reply. AR + EN keys; screenshots `agent/needs-you-*-2026-10-29.png`.
+
+Restart-gated.

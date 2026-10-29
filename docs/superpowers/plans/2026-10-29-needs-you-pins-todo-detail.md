@@ -28,15 +28,15 @@ engine auto-resolving items, and the badge rule changes on every project.
 - [x] 6. **API** — `GET /api/needs-you`, `POST /api/pin`, `GET /api/todo/:id` (summary, brief capped, project,
    lane, status, times, result or last note, links, allowed actions). Tests: shapes, unknown id 404, bad
    body 400, pin of a resolved item refused.
-- [ ] 7. **Console: `act()` + toasts** — one helper for every button (pressed, busy, disabled, toast with the
+- [x] 7. **Console: `act()` + toasts** — one helper for every button (pressed, busy, disabled, toast with the
    reply); migrate every existing button (todo, attention, plan, loop, thread close, sdk, tool control).
-- [ ] 8. **Console: pinned strip** — under the tab bar on every tab; count chip; collapsible; 5 + "show all";
+- [x] 8. **Console: pinned strip** — under the tab bar on every tab; count chip; collapsible; 5 + "show all";
    action buttons; pin/unpin controls on attention items and todos.
-- [ ] 9. **Console: project page split + todo detail** — Needs you first, Housekeeping (N) collapsed; todo
+- [x] 9. **Console: project page split + todo detail** — Needs you first, Housekeeping (N) collapsed; todo
    rows in the Queue tab and project QUEUE are buttons opening the detail view (pressed + loading state;
    cancel/retry/up via `act()`).
-- [ ] 10. **i18n** — `needs.*`, `pin.*`, `todo.detail.*`, `toast.*` in EN + AR; key-parity test; numbers and
+- [x] 10. **i18n** — `needs.*`, `pin.*`, `todo.detail.*`, `toast.*` in EN + AR; key-parity test; numbers and
    ids LTR.
-- [ ] 11. **Docs** — ADR-0065 accepted (as built), CONTEXT.md (done in design), HISTORY.md, HANDOFF.md.
+- [x] 11. **Docs** — ADR-0065 accepted (as built), CONTEXT.md (done in design), HISTORY.md, HANDOFF.md.
 - [ ] 12. **Verify** — full suite; Playwright at 390 px in EN and AR: Projects list, project page split, the
    strip, todo detail, a toast; the screenshots go to the operator; independent code review; fix findings.

@@ -16,6 +16,7 @@ import { bindComposeBoxes, clearBox } from "./compose-box";
 import { linesHtml } from "./text-lines";
 import { buildLabel } from "./build-label";
 import { dismissSplash } from "./splash";
+import { runAct, type ActResult } from "./act";
 import { THREAD_ORIGINS } from "../../engine/thread-origins";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
@@ -39,6 +40,8 @@ const enhanceCode = (root: HTMLElement): void => {
 
 const FEED_WINDOW = Number(root.dataset.feedWindow) || 500;
 const POLL_MS = 15000;
+/** How long a toast stays (ADR-0065). */
+const TOAST_MS = 4000;
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 const val = (id: string): string => ($(id) as HTMLInputElement).value;
 
@@ -60,6 +63,29 @@ function iso(s: unknown): string {
 }
 function post(p: string, b: unknown): Promise<Response> {
   return fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
+}
+/** A toast (ADR-0065): one short line in the polite live region, gone after a few seconds. The text is
+ *  set as text, never HTML; `dir="auto"` keeps ids and numbers in their own direction. */
+function toast(text: string, ok: boolean): void {
+  const box = $("toasts");
+  const el = document.createElement("div");
+  el.className = "toast" + (ok ? "" : " bad");
+  el.setAttribute("dir", "auto");
+  el.textContent = text;
+  box.appendChild(el);
+  while (box.children.length > 3) box.firstElementChild?.remove();
+  // Re-shown each time, so it is the newest top-layer element — above an open sheet.
+  if (box.matches(":popover-open")) box.hidePopover();
+  box.showPopover();
+  setTimeout(() => {
+    el.remove();
+    if (!box.children.length && box.matches(":popover-open")) box.hidePopover();
+  }, TOAST_MS);
+}
+/** Every console button's action (ADR-0065): busy while it runs, then a toast with the engine's reply.
+ *  `okText`: the console's own words for a success (a pin), instead of the engine's English reply. */
+function act(btn: Element | null, path: string, body: unknown, okText?: string): Promise<ActResult> {
+  return runAct(btn as HTMLButtonElement | null, () => post(path, body), { toast: (text, ok) => toast(ok && okText ? okText : text, ok), fallback: (ok) => tx(ok ? "toast.done" : "toast.failed") });
 }
 function fmt(n: number): string {
   n = n || 0;
@@ -113,6 +139,7 @@ function loadState(): Promise<void> {
     })
     .catch(() => {})
     .then(() => {
+      loadPins();
       stateLoad = null;
       if (stateAgain) {
         stateAgain = false;
@@ -137,6 +164,7 @@ function renderAll(): void {
   if (changed("build", S.build ?? null)) renderBuild();
   renderRunning(); // clock-dependent ages: always
   renderTodos(); // clock-dependent ("running 4m"): always
+  renderPins(); // the strip's ages too (ADR-0065)
   if (changed("loops", S.loops)) renderLoops();
   if (changed("usage", S.usage)) renderUsage();
   if (changed("recent", [S.recent, S.contextEvents])) renderRecent();
@@ -184,22 +212,18 @@ function renderSdk(): void {
     b.textContent = tx(c.provider === "codex" ? "sdk.codex" : "sdk.claude");
     b.title = c.label;
     b.className = c.active ? "on" : "";
-    b.onclick = () => setSdk(c.provider);
+    b.onclick = () => setSdk(c.provider, b);
     seg.appendChild(b);
   });
   box.appendChild(seg);
 }
-function setSdk(provider: string): void {
-  void post("/api/sdk", { provider })
-    .then((r) => r.json())
-    .then((d) => {
-      if (!d.ok) {
-        alert(d.error || tx("sdk.switchFailed"));
-        return;
-      }
-      S.sdk = d.sdk;
-      renderSdk();
-    });
+function setSdk(provider: string, btn: Element): void {
+  void act(btn, "/api/sdk", { provider }).then((r) => {
+    const d = r.data as Any;
+    if (!r.ok || !d?.sdk) return;
+    S.sdk = d.sdk;
+    renderSdk();
+  });
 }
 
 // ctx% against the sweet spot (ADR-0021): the band colours the chip; the last reset rides along.
@@ -265,7 +289,7 @@ function renderProjects(): void {
         return;
       }
       killArms.delete(p.id);
-      void post("/kill", { id: p.id }).then(loadState);
+      void act(k, "/kill", { id: p.id }).then(loadState);
     };
     d.appendChild(k);
     box.appendChild(d);
@@ -286,20 +310,18 @@ function renderRunning(): void {
     const row = document.createElement("div");
     row.className = "runrow";
     row.innerHTML = `<span class="rp">${iso(c.name)} · ${esc(c.tool)} · ${ltr(age(now - c.since))}</span><span class="rc" title="${esc(c.summary)}">${esc(c.summary)}</span>`;
-    const act = (action: "stop" | "background") => {
-      void post(`/api/tool/${action}`, { session: c.session, toolUseId: c.toolUseId })
-        .then((r) => r.json())
-        .then((d) => {
-          if (d && d.text) feedMsg("⋯ " + esc(d.text), "me", null);
-          void loadState();
-        });
+    const control = (action: "stop" | "background", btn: Element) => {
+      void act(btn, `/api/tool/${action}`, { session: c.session, toolUseId: c.toolUseId }).then((r) => {
+        if (r.text) feedMsg("⋯ " + esc(r.text), "me", null);
+        void loadState();
+      });
     };
     if (c.provider === "claude") {
       const bg = document.createElement("button");
       bg.className = "chip";
       bg.textContent = tx("tools.background");
       bg.title = tx("tools.backgroundTitle");
-      bg.onclick = () => act("background");
+      bg.onclick = () => control("background", bg);
       row.appendChild(bg);
     }
     const stop = document.createElement("button");
@@ -307,7 +329,7 @@ function renderRunning(): void {
     stop.textContent = tx("tools.stop");
     stop.title = tx("tools.stopTitle");
     stop.onclick = () => {
-      if (confirm(tx("tools.confirmStop", { cmd: c.summary, project: c.project }))) act("stop");
+      if (confirm(tx("tools.confirmStop", { cmd: c.summary, project: c.project }))) control("stop", stop);
     };
     row.appendChild(stop);
     el.appendChild(row);
@@ -342,8 +364,9 @@ function openProject(): void {
     alert(tx("newProject.missing"));
     return;
   }
-  closeDrawer(false);
-  void post("/api/open", { folder, task }).then(() => {
+  void act($("open-project"), "/api/open", { folder, task }).then((r) => {
+    if (!r.ok) return;
+    closeDrawer(false);
     clearBox($("task") as HTMLTextAreaElement);
     tab("activity");
     setTimeout(loadState, 500);
@@ -388,13 +411,13 @@ function renderLoops(): void {
     const run = document.createElement("button");
     run.className = "run";
     run.textContent = tx("loops.run");
-    run.onclick = () => void post("/api/loop", { name: l.name }).then(() => tab("activity"));
+    run.onclick = () => void act(run, "/api/loop", { name: l.name }).then((r) => r.ok && tab("activity"));
     row.appendChild(run);
     if (l.scheduled) {
       const tg = document.createElement("button");
       tg.className = "chip" + (l.enabled ? " ok" : "");
       tg.textContent = tx(l.enabled ? "loops.on" : "loops.off");
-      tg.onclick = () => void post("/api/loop/enable", { name: l.name, on: !l.enabled }).then(loadState);
+      tg.onclick = () => void act(tg, "/api/loop/enable", { name: l.name, on: !l.enabled }).then(loadState);
       row.appendChild(tg);
     }
     if (l.custom) {
@@ -402,7 +425,7 @@ function renderLoops(): void {
       del.className = "chip no";
       del.textContent = tx("loops.delete");
       del.onclick = () => {
-        if (confirm(tx("loops.confirmDelete", { name: l.name }))) void post("/api/loop/delete", { name: l.name }).then(loadState);
+        if (confirm(tx("loops.confirmDelete", { name: l.name }))) void act(del, "/api/loop/delete", { name: l.name }).then(loadState);
       };
       row.appendChild(del);
     }
@@ -410,7 +433,7 @@ function renderLoops(): void {
   });
   v.appendChild(card);
 }
-function submitLoop(): void {
+function submitLoop(btn: Element | null): void {
   const body: Any = {
     name: val("lc-name"),
     summary: val("lc-sum"),
@@ -426,12 +449,10 @@ function submitLoop(): void {
   if (body.triggerKind === "cron") body.cronExpr = val("lc-tv");
   const bud = val("lc-bud");
   if (bud) body.budgetUsd = Number(bud);
-  void post("/api/loop/create", body)
-    .then((r) => r.json())
-    .then((d) => {
-      if (d.ok) void loadState();
-      else $("lc-err").textContent = d.error || tx("loops.invalid");
-    });
+  void act(btn, "/api/loop/create", body).then((r) => {
+    if (r.ok) void loadState();
+    else $("lc-err").textContent = r.text || tx("loops.invalid");
+  });
 }
 
 function renderUsage(): void {
@@ -466,16 +487,14 @@ function renderUsage(): void {
 }
 
 // Queue — per-project todo queues (ADR-0008): running first, then each queue in order.
-function todoAct(action: string, arg: number | string): void {
+function todoAct(action: string, arg: number | string, btn: Element | null): Promise<ActResult> {
   const b: Any = { action };
   if (typeof arg === "number") b.id = arg;
   else b.project = arg;
-  void post("/api/todo", b)
-    .then((r) => r.json())
-    .then((d) => {
-      if (d && d.text) feedMsg("⋯ " + esc(d.text), "me", null);
-      void loadState();
-    });
+  return act(btn, "/api/todo", b).then((r) => {
+    void loadState();
+    return r;
+  });
 }
 function renderTodos(): void {
   const v = $("vtodos");
@@ -519,7 +538,7 @@ function renderTodos(): void {
     const pr = document.createElement("button");
     pr.className = "chip";
     pr.textContent = tx(paused ? "queue.resume" : "queue.pause");
-    pr.onclick = () => todoAct(paused ? "resume" : "pause", p);
+    pr.onclick = () => void todoAct(paused ? "resume" : "pause", p, pr);
     card.appendChild(pr);
     // Main-lane rows first, then the project's side lanes (ADR-0057) under their own heading.
     const rows: Any[] = by[p]!;
@@ -557,8 +576,8 @@ function renderTodos(): void {
               : x.status === "waiting"
                 ? t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
                 : ltr(x.position + ".");
-      // ADR-0059: the todo's summary; a tap opens the brief the worker gets.
-      row.innerHTML = `<span>${lead}</span><div style="flex:1;min-width:0"><details><summary>${ltr("#" + x.id)} <span dir="auto">${esc(x.title)}</span></summary><div class="rfo" dir="auto" style="white-space:pre-wrap">${esc(x.brief ?? "")}</div></details></div>`;
+      // ADR-0059: the todo's summary. ADR-0065: the row is one tap target that opens the todo's detail.
+      row.innerHTML = todoRowHtml(x, `<span>${lead}</span>`);
       // ADR-0027: kept work — a failed todo or a waiting retry can be re-run (the same todo). ADR-0060: a run
       // held in an API wait resumes now (the same run, the brief re-sent once).
       const held = x.status === "running" && (x.limitResumesAt || x.apiResumesAt);
@@ -566,7 +585,7 @@ function renderTodos(): void {
         const r = document.createElement("button");
         r.className = "chip";
         r.textContent = tx(held ? "queue.resumeNow" : "queue.retry");
-        r.onclick = () => todoAct("retry", x.id);
+        r.onclick = () => void todoAct("retry", x.id, r);
         row.appendChild(r);
       }
       if (x.status === "queued" || x.status === "retry" || x.status === "waiting") {
@@ -575,14 +594,14 @@ function renderTodos(): void {
           up.className = "chip";
           up.textContent = "↑";
           up.title = tx("queue.moveUp");
-          up.onclick = () => todoAct("up", x.id);
+          up.onclick = () => void todoAct("up", x.id, up);
           row.appendChild(up);
         }
         const c = document.createElement("button");
         c.className = "chip no";
         c.textContent = tx("queue.cancel");
         c.onclick = () => {
-          if (confirm(tx("queue.confirmCancel", { id: x.id }))) todoAct("cancel", x.id);
+          if (confirm(tx("queue.confirmCancel", { id: x.id }))) void todoAct("cancel", x.id, c);
         };
         row.appendChild(c);
       }
@@ -672,23 +691,17 @@ function dim(id: string, o: string): void {
   const row = document.getElementById("ir-" + id);
   if (row) row.style.opacity = o;
 }
-function inboxDraft(id: string, field: "instr" | "notes"): void {
+function inboxDraft(id: string, field: "instr" | "notes", btn: Element | null): void {
   const el = document.getElementById(`${field}-${id}`) as HTMLTextAreaElement | null;
   dim(id, "0.55");
-  void post("/api/inbox/draft", { id, instructions: el ? el.value : "" }).then(loadInbox).catch(loadInbox);
+  void act(btn, "/api/inbox/draft", { id, instructions: el ? el.value : "" }).then(loadInbox);
   setTimeout(loadInbox, 800);
 }
-function sendReply(id: string): void {
+function sendReply(id: string, btn: Element | null): void {
   const el = document.getElementById("draft-" + id) as HTMLTextAreaElement | null;
   const reply = el ? el.value : "";
   if (!reply.trim() || !confirm(tx("inbox.confirmSend"))) return;
-  void post("/api/inbox/send", { id, reply })
-    .then((r) => r.json())
-    .then((d) => {
-      if (!d.ok) alert(tx("inbox.sendFailed"));
-      void loadInbox();
-    })
-    .catch(() => alert(tx("inbox.sendFailed")));
+  void act(btn, "/api/inbox/send", { id, reply }).then(() => void loadInbox());
 }
 function deleteInbox(id: string): void {
   if (!confirm(tx("inbox.confirmDelete"))) return;
@@ -1296,16 +1309,14 @@ function attentionButtons(it: Any, snoozeHours: number, box: HTMLElement, row: H
     b.className = "chip";
     b.textContent = tx(`attention.${action}`, { id: it.id, hours: snoozeHours });
     b.onclick = () => {
-      void post("/api/attention", { id: it.id, action })
-        .then((r) => r.json())
-        .then((x) => {
-          answer(x.text || x.error || "");
-          if (x.drop) {
-            row.remove();
-            dropped?.();
-          }
-        })
-        .catch(() => answer(tx("attention.failed")));
+      // The toast carries the reply ("→ todo #912", or why it was refused); the row keeps it too.
+      void act(b, "/api/attention", { id: it.id, action }).then((r) => {
+        answer(r.text);
+        if ((r.data as Any)?.drop) {
+          row.remove();
+          dropped?.();
+        }
+      });
     };
     box.appendChild(b);
   });
@@ -1330,8 +1341,9 @@ const SEV_ICON: Record<string, string> = { high: "🔴", normal: "🟡", low: "�
 function healthChip(h: string): string {
   return `<span class="tchip ${HEALTH_CLASS[h] ?? ""}">${t(`pj.health.${h}`)}</span>`;
 }
-function attentionCounts(a: Any): string {
-  const parts = ["high", "normal", "low"].filter((k) => a && a[k]).map((k) => t(`pj.sev.${k}`, { n: a[k] }));
+/** ADR-0065: what needs the operator, then housekeeping — never the producers' severities. */
+function attentionCounts(s: Any): string {
+  const parts = [...(s.needs ? [tx("pj.needs", { n: ltr(s.needs) })] : []), ...(s.housekeeping ? [tx("pj.housekeeping", { n: ltr(s.housekeeping) })] : [])];
   return parts.length ? parts.join(" · ") : t("pj.noAttention");
 }
 function projectCard(s: Any): string {
@@ -1339,7 +1351,7 @@ function projectCard(s: Any): string {
   return (
     `<div class="trow${PJ.open === s.name ? " on" : ""}" data-act="project-open" data-project="${esc(s.name)}">` +
     `<div class="tt">${healthChip(s.health)}<span class="ttl">${iso(s.name)}</span></div>` +
-    `<div class="tm">${state} · ${t("pj.queueCount", { n: s.queue })} · ${attentionCounts(s.attention)}</div></div>`
+    `<div class="tm">${state} · ${t("pj.queueCount", { n: s.queue })} · ${attentionCounts(s)}</div></div>`
   );
 }
 function loadProjects(): void {
@@ -1388,9 +1400,7 @@ function renderProjectPane(v: Any): void {
   // QUEUE — running first, then the queue in order.
   h += pjSect(
     "pj.sect.queue",
-    (v.queue as Any[]).map(
-      (x) => `<div class="tart">${ltr("#" + x.id)}<span class="tchip">${x.status === "running" ? t("pj.running") : t("pj.queued", { pos: x.position })}</span><span dir="auto">${esc(x.title)}</span></div>`,
-    ),
+    (v.queue as Any[]).map((x) => todoRowHtml(x, `<span class="tchip">${x.status === "running" ? t("pj.running") : t("pj.queued", { pos: x.position })}</span>`)),
   );
   // GIT — read live; a failed read is named, never hidden.
   const g = v.git || {};
@@ -1433,7 +1443,16 @@ function renderProjectPane(v: Any): void {
     ),
   );
   // ATTENTION — each item with the shared one-tap buttons (filled in below).
-  h += `<div class="tsect"><h4 id="pjatth">${t("pj.sect.attention", { n: v.attention.length })}</h4><div class="rfo pjnote" id="pjnote"></div><div id="pjatt"></div></div>`;
+  // ADR-0065: what needs the operator first; housekeeping collapsed under its count.
+  const needs = (v.attention as Any[]).filter((it) => it.cls !== "housekeeping");
+  const house = (v.attention as Any[]).filter((it) => it.cls === "housekeeping");
+  // The section is the project's share of the needs-you list (the badge's count): plans, decisions and
+  // failed todos as strip rows, then the needs-you attention items with their own buttons.
+  const others = ((v.needsYou ?? []) as Any[]).filter((it) => it.kind !== "attention");
+  h +=
+    `<div class="tsect"><h4 id="pjatth">${tx("pj.sect.needsYou", { n: ltr(others.length + needs.length) })}</h4><div class="rfo pjnote" id="pjnote"></div><div id="pjneeds" class="pinl"></div><div id="pjatt"></div>` +
+    (house.length ? `<details class="hk"><summary id="pjhkh">${tx("pj.sect.housekeeping", { n: ltr(house.length) })}</summary><div id="pjhk"></div></details>` : "") +
+    `</div>`;
   // THREADS — each opens in the Threads tab.
   h += pjSect(
     "pj.sect.threads",
@@ -1445,8 +1464,15 @@ function renderProjectPane(v: Any): void {
   if (v.restartGated) h += pjSect("pj.sect.restart", (v.restartGated as Any[]).map((r) => `<div class="tart"><span dir="auto">${esc(r.title)}</span></div>`));
   $("pjbody").innerHTML = h;
   const box = $("pjatt");
-  if (!v.attention.length) box.innerHTML = `<div class="tart rfo">${t("pj.none")}</div>`;
-  (v.attention as Any[]).forEach((it) => {
+  const reload = (): void => (loadPins(), showProject(v.name));
+  for (const it of others) $("pjneeds").appendChild(pinRow(it, reload));
+  if (!needs.length && !others.length) box.innerHTML = `<div class="tart rfo">${t("pj.none")}</div>`;
+  const recount = (): void => {
+    $("pjatth").innerHTML = tx("pj.sect.needsYou", { n: ltr(others.length + box.querySelectorAll(".tart[data-att]").length) });
+    const hk = document.getElementById("pjhk");
+    if (hk) $("pjhkh").innerHTML = tx("pj.sect.housekeeping", { n: ltr(hk.querySelectorAll(".tart[data-att]").length) });
+  };
+  [...needs, ...house].forEach((it) => {
     const row = document.createElement("div");
     row.className = "tart";
     row.dataset.att = String(it.id);
@@ -1456,10 +1482,19 @@ function renderProjectPane(v: Any): void {
     const chip = it.noteKind ? `<span class="rfo">${tx(`notes.kind.${it.noteKind}`)}${it.noteState && it.noteState !== "open" ? " · " + tx(`notes.state.${it.noteState}`) : ""}</span>` : "";
     row.innerHTML = attentionItemHtml(it, chip, from);
     attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), () => {
-      $("pjatth").textContent = tx("pj.sect.attention", { n: box.querySelectorAll(".tart[data-att]").length });
+      recount();
       loadProjects();
     });
-    box.appendChild(row);
+    // A pin keeps any item on the strip; a needs-you item is already there (its × takes it off).
+    if (it.pinned || it.cls === "housekeeping") {
+      const b = document.createElement("button");
+      b.className = "chip";
+      b.type = "button";
+      b.textContent = tx(it.pinned ? "pins.unpin" : "pins.pin");
+      b.onclick = () => void act(b, "/api/pin", { ref: `att:${it.id}`, state: it.pinned ? null : "pinned" }, tx(it.pinned ? "pins.unpinned" : "pins.pinned")).then(() => (loadPins(), showProject(v.name)));
+      row.appendChild(b);
+    }
+    (it.cls === "housekeeping" ? $("pjhk") : box).appendChild(row);
   });
 }
 /** The facts a description template may name (ADR-0059). A fact an item lacks reads `att.unknown`. */
@@ -1511,36 +1546,192 @@ function openFromHash(): void {
   showProject(name);
 }
 /** Close a thread (ADR-0038): confirm, then the engine's one close action, then redraw the thread. */
-function closeThread(id: number): void {
+function closeThread(id: number, btn: Element | null): void {
   if (!confirm(tx("threads.confirmClose"))) return;
-  void post("/api/thread/close", { id })
-    .then((r) => r.json())
-    .then((d) => {
+  void act(btn, "/api/thread/close", { id }).then((r) => {
+      const d = (r.data ?? {}) as Any;
       // linesHtml: dir="auto" and the count stays an LTR run inside Arabic (the numbers rule).
       if (d.ok) feedMsg("⋯ " + linesHtml(tx("threads.closedNote", { decisions: d.decisions })), "me", null);
       openThread(id);
       loadThreads(true);
-    });
+  });
 }
-function planAction(id: number, action: string, version: number): void {
-  void post("/api/plan", { id, action, version })
-    .then((r) => r.json())
-    .then((d) => {
-      const row = feedMsg("⋯ " + linesHtml(d.text || ""), "me", null);
+function planAction(id: number, action: string, version: number, btn: Element | null): void {
+  void act(btn, "/api/plan", { id, action, version }).then((r) => {
+      const d = (r.data ?? {}) as Any;
+      const row = feedMsg("⋯ " + linesHtml(r.text), "me", null);
       // A done plan (ADR-0034): the reply says why nothing started and offers Run anyway.
       if (d.offer === "anyway") {
         const b = document.createElement("button");
         b.className = "chip";
         b.textContent = tx("threads.planAction.anyway");
-        b.onclick = () => {
-          b.remove();
-          planAction(id, "anyway", version);
-        };
+        b.onclick = () => planAction(id, "anyway", version, b);
         row.appendChild(b);
       }
       if (TH.open !== undefined) openThread(TH.open);
+      loadPins();
+  });
+}
+
+// ── Pinned — needs you (ADR-0065): on every tab, what only the operator can move ─────────────────
+/** Rows the strip shows before "show all". */
+const PIN_SHOWN = 5;
+const PIN = { items: [] as Any[], all: false, shut: localStorage.getItem("neo.pins.shut") === "1", seq: 0 };
+function loadPins(): void {
+  const seq = ++PIN.seq;
+  void fetch("/api/needs-you?_=" + Date.now(), { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (seq !== PIN.seq || !d || !Array.isArray(d.items)) return;
+      PIN.items = d.items;
+      renderPins();
+    })
+    .catch(() => {});
+}
+function renderPins(): void {
+  const box = $("pins");
+  const items = PIN.items;
+  box.hidden = !items.length;
+  if (!items.length) return void (box.innerHTML = "");
+  box.classList.toggle("shut", PIN.shut);
+  box.innerHTML =
+    `<button class="pinh" type="button" id="pinh" aria-expanded="${PIN.shut ? "false" : "true"}" aria-controls="pinl" title="${esc(tx("pins.toggle"))}">` +
+    `<span>${esc(tx("pins.title"))}</span><span class="n">${ltr(items.length)}</span><span class="car" aria-hidden="true">▾</span></button><div class="pinl" id="pinl"></div>`;
+  $("pinh").onclick = () => {
+    PIN.shut = !PIN.shut;
+    localStorage.setItem("neo.pins.shut", PIN.shut ? "1" : "0");
+    renderPins();
+  };
+  const list = $("pinl");
+  for (const it of PIN.all ? items : items.slice(0, PIN_SHOWN)) list.appendChild(pinRow(it, loadPins));
+  if (items.length > PIN_SHOWN) {
+    const m = document.createElement("button");
+    m.type = "button";
+    m.className = "chip pinmore";
+    m.innerHTML = PIN.all ? esc(tx("pins.less")) : tx("pins.more", { n: ltr(items.length) });
+    m.onclick = () => ((PIN.all = !PIN.all), renderPins());
+    list.appendChild(m);
+  }
+}
+/** One needs-you row (the strip and a project's "Needs you" section): kind, project, age, the one-line why,
+ *  its action, and × to take it off the list. `after` runs once a hide is answered. */
+function pinRow(it: Any, after: () => void): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "pinr";
+  row.innerHTML =
+    `<div class="pw"><div class="pt"><span class="tchip">${esc(tx(`pins.kind.${it.kind}`))}</span>${iso(it.project ?? tx("pins.noProject"))}<span>${iso(age(Date.now() - it.since))}</span></div>` +
+    `<div class="py" dir="auto" title="${esc(it.why)}">${esc(it.why)}</div></div>`;
+  const a = document.createElement("button");
+  a.type = "button";
+  a.className = "pinact";
+  a.textContent = it.action === "approve" ? tx("threads.planAction.approve") : tx(`pins.action.${it.action}`);
+  a.onclick = () => pinAction(it, a);
+  row.appendChild(a);
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "pinx";
+  x.innerHTML = KILL_ICON;
+  x.title = tx("pins.hide");
+  x.setAttribute("aria-label", tx("pins.hide"));
+  x.onclick = () => void act(x, "/api/pin", { ref: it.ref, state: "unpinned" }, tx("pins.hidden")).then(after);
+  row.appendChild(x);
+  return row;
+}
+/** A strip row's button: approve a plan, retry a todo, open a todo, or open where the item's own buttons are. */
+function pinAction(it: Any, btn: HTMLElement): void {
+  if (it.action === "approve" && it.plan) return planAction(it.plan.id, "approve", it.plan.version, btn);
+  if (it.action === "retry" && it.todoId !== undefined) return void todoAct("retry", it.todoId, btn).then(loadPins);
+  if (it.kind === "todo" && it.todoId !== undefined) return openTodo(it.todoId, btn);
+  if (it.threadId !== undefined) {
+    tab("threads");
+    enterDetail("vthreads");
+    return openThread(it.threadId);
+  }
+  tab("projects");
+  if (it.project) {
+    enterDetail("vprojects");
+    showProject(it.project);
+  }
+}
+
+// ── Todo detail (ADR-0065): a tap on any todo row opens it ───────────────────────────────────────
+/** One todo row: a button (one tap target) with its lead, #id and summary. */
+function todoRowHtml(x: Any, lead: string): string {
+  return (
+    `<button class="qrow" type="button" data-act="todo-open" data-id="${esc(x.id)}" aria-label="${esc(tx("todoDetail.open", { id: x.id }))}: ${esc(x.title)}">` +
+    `${lead}${ltr("#" + x.id)}<span class="qt" dir="auto">${esc(x.title)}</span><span class="car" aria-hidden="true">›</span></button>`
+  );
+}
+function sheet(): HTMLDialogElement {
+  return $("tdsheet") as HTMLDialogElement;
+}
+function openTodo(id: number, btn: Element | null): void {
+  if (btn?.classList.contains("busy")) return;
+  btn?.classList.add("busy");
+  btn?.setAttribute("aria-busy", "true");
+  void fetch(`/api/todo/${encodeURIComponent(String(id))}`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (!d) return toast(tx("todoDetail.notFound"), false);
+      renderTodoSheet(d);
+      if (!sheet().open) sheet().showModal();
+    })
+    .catch(() => toast(tx("toast.failed"), false))
+    .finally(() => {
+      btn?.classList.remove("busy");
+      btn?.removeAttribute("aria-busy");
     });
 }
+function renderTodoSheet(d: Any): void {
+  const now = Date.now();
+  const when = (at?: number): string => (at ? `${ltr(clock(at))} · ${tx("todoDetail.ago", { age: iso(age(now - at)) })}` : "");
+  $("tdhead").innerHTML = `${ltr("#" + d.id)} <span class="tchip">${esc(tx(`todoDetail.status.${d.status}`))}</span>`;
+  const rows: Array<[string, string]> = [
+    ["todoDetail.project", iso(d.project)],
+    ["todoDetail.lane", d.lane === "side" ? tx("todoDetail.laneSide", { kind: iso(tx(`queue.kind.${d.kind}`)) }) : esc(tx("todoDetail.laneMain"))],
+    ["todoDetail.state", esc(tx(`todoDetail.status.${d.status}`)) + (d.position ? " · " + tx("todoDetail.position", { pos: ltr(d.position) }) : "")],
+    ["todoDetail.created", when(d.createdAt)],
+  ];
+  if (d.startedAt) rows.push(["todoDetail.started", when(d.startedAt)]);
+  if (d.endedAt) rows.push(["todoDetail.ended", when(d.endedAt)]);
+  if (d.attempts) rows.push(["todoDetail.attempts", ltr(d.attempts)]);
+  if (d.failure) rows.push(["todoDetail.failure", ltr(d.failure)]);
+  let h = `<h2 id="tdtitle" dir="auto">${esc(d.title)}</h2><dl>${rows.map(([k, v]) => `<dt>${esc(tx(k))}</dt><dd>${v}</dd>`).join("")}</dl>`;
+  if (d.result) h += `<h4>${esc(tx("todoDetail.result"))}</h4><pre dir="auto">${esc(d.result)}</pre>`;
+  if ((d.attention ?? []).length) h += `<h4>${esc(tx("todoDetail.items"))}</h4>` + (d.attention as Any[]).map((a) => `<div class="rfo" dir="auto">${ltr("#" + a.id)} ${esc(a.title)}</div>`).join("");
+  h += `<details><summary>${esc(tx("todoDetail.brief"))}</summary><pre dir="auto">${esc(d.brief)}</pre></details><div class="acts" id="tdacts"></div>`;
+  $("tdbody").innerHTML = h;
+  const acts = $("tdacts");
+  const button = (label: string, cls: string, onclick: (b: HTMLButtonElement) => void): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip" + cls;
+    b.textContent = label;
+    b.onclick = () => onclick(b);
+    acts.appendChild(b);
+  };
+  for (const a of d.actions as string[]) {
+    const label = a === "retry" ? tx(d.status === "running" ? "queue.resumeNow" : "queue.retry") : a === "up" ? tx("queue.moveUp") : tx("queue.cancel");
+    button(label, a === "cancel" ? " no" : "", (b) => {
+      if (a === "cancel" && !confirm(tx("queue.confirmCancel", { id: d.id }))) return;
+      void todoAct(a, d.id, b).then((r) => r.ok && (loadPins(), openTodo(d.id, null)));
+    });
+  }
+  if (d.threadId !== undefined) {
+    button(tx("todoDetail.openThread"), "", () => {
+      sheet().close();
+      tab("threads");
+      enterDetail("vthreads");
+      openThread(d.threadId);
+    });
+  }
+  button(tx(d.pinned ? "pins.unpin" : "pins.pin"), "", (b) => void act(b, "/api/pin", { ref: `todo:${d.id}`, state: d.pinned ? null : "pinned" }, tx(d.pinned ? "pins.unpinned" : "pins.pinned")).then(() => (loadPins(), openTodo(d.id, null))));
+}
+$("tdclose").onclick = () => sheet().close();
+// A tap on the backdrop (outside the sheet's box) closes it.
+sheet().addEventListener("click", (ev) => {
+  if (ev.target === sheet()) sheet().close();
+});
 
 // ── Wiring ──────────────────────────────────────────────────────────────────────────────────
 document.addEventListener("click", (ev) => {
@@ -1556,13 +1747,13 @@ document.addEventListener("click", (ev) => {
     case "clear-filter":
       return clearFilter();
     case "create-loop":
-      return submitLoop();
+      return submitLoop(el);
     case "inbox-agent":
-      return inboxDraft(id, "instr");
+      return inboxDraft(id, "instr", el);
     case "inbox-redraft":
-      return inboxDraft(id, "notes");
+      return inboxDraft(id, "notes", el);
     case "inbox-send":
-      return sendReply(id);
+      return sendReply(id, el);
     case "inbox-delete":
       return deleteInbox(id);
     case "thread-project":
@@ -1577,9 +1768,11 @@ document.addEventListener("click", (ev) => {
     case "thread-older":
       return olderMessages();
     case "plan":
-      return planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version));
+      return planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version), el);
     case "thread-close":
-      return closeThread(Number(id));
+      return closeThread(Number(id), el);
+    case "todo-open":
+      return openTodo(Number(id), el);
     case "project-open":
       enterDetail("vprojects");
       return showProject(el.dataset.project ?? "");
@@ -1727,13 +1920,15 @@ es.onmessage = (ev) => {
       const b = document.createElement("button");
       b.className = "chip " + (dec === "allow" ? "ok" : "no");
       b.textContent = tx(`feed.${dec}`);
-      b.onclick = () => {
-        void post("/approve", { id: e.id, decision: dec });
-        c.remove();
-        const ix = feedNodes.indexOf(c);
-        if (ix >= 0) feedNodes.splice(ix, 1);
-        refreshFeed();
-      };
+      b.onclick = () =>
+        void act(b, "/approve", { id: e.id, decision: dec }).then((r) => {
+          // No reply (offline): the card stays for another tap. A reply — decided, or already gone — removes it.
+          if (r.data === undefined) return;
+          c.remove();
+          const ix = feedNodes.indexOf(c);
+          if (ix >= 0) feedNodes.splice(ix, 1);
+          refreshFeed();
+        });
       a.appendChild(b);
     });
     c.appendChild(a);

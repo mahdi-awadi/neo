@@ -1,3 +1,12 @@
+# HANDOFF — 2026-10-29: needs you vs housekeeping, pins, tappable todos (ADR-0065, ledger v16, on dev, restart-gated)
+
+ATTENTION now means "something only you can move" (plan cards, decisions, alerts, failed todos, needs-you kinds);
+housekeeping is collapsed. A pinned strip sits on every tab; pins are in the ledger (migration v16 at the restart).
+Older agent-sdk/dependency items close as superseded. Todo rows open a detail sheet; every button shows busy + a
+toast. Screenshots: /home/neo/agent/needs-you-*-2026-10-29.png (EN + AR, 390 px).
+
+---
+
 # HANDOFF — 2026-10-29: workers never run the Telegram channel plugin (ADR-0064, on dev, restart-gated)
 
 The daemon poller's 409 Conflict came from workers loading the user Telegram channel plugin, which polled the

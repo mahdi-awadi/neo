@@ -1,6 +1,6 @@
 # "Needs you" is classed by kind in code; pins live in the ledger
 
-**Status:** proposed (2026-10-29; plan awaiting approval). Builds on ADR-0059 (self-explaining items),
+**Status:** accepted (2026-10-29, as built on dev; restart-gated). Builds on ADR-0059 (self-explaining items),
 ADR-0054 (waiting work, owners), ADR-0018 (attention actions).
 
 ## Context
@@ -39,6 +39,17 @@ the high items are 11 notes between projects (`note_fyi` 9, `note_finding` 1, `n
 - **Pins in localStorage.** Per device; the operator uses a phone and a desktop.
 - **Delete superseded branches.** Irreversible; deleting needs the operator. Resolving the item is enough.
 - **A second "needs you" list beside waiting work.** ADR-0054 already owns "who moves it next"; reuse it.
+
+## As built (2026-10-29)
+
+- A project's "Needs you" section counts and lists the project's whole share of the needs-you list (plans,
+  decisions and failed todos as strip rows, then the needs-you attention items), so it always matches the
+  badge. A plan card alone makes a project ATTENTION.
+- Every console POST button goes through `act()` (`web/act.ts`); the toast region is a manual popover so
+  a toast shows above the open todo sheet (a modal dialog lives in the top layer). Exempt: the composer's
+  own send and attachment discard, and a project row's select (a navigation tap).
+- Pin toasts use the console's own words (`pins.pinned` …); other toasts carry the engine's reply, which
+  stays English like every engine reply.
 
 ## Consequences
 

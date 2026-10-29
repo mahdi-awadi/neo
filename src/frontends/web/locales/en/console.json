@@ -349,7 +349,9 @@
       "plans": "Plans",
       "attention": "Attention ({{n}})",
       "threads": "Threads",
-      "restart": "Restart-gated"
+      "restart": "Restart-gated",
+      "needsYou": "Needs you ({{n}})",
+      "housekeeping": "Housekeeping ({{n}})"
     },
     "git": {
       "unpushed": "{{n}} unpushed",
@@ -366,7 +368,9 @@
       "scanned": "last good scan {{age}} ago",
       "never": "not scanned yet",
       "error": "the last scan failed:"
-    }
+    },
+    "needs": "{{n}} need you",
+    "housekeeping": "{{n}} housekeeping"
   },
   "pwa": {
     "name": "Neo — operator console",
@@ -539,5 +543,68 @@
     "nextLabel": "→ todo:",
     "unknown": "?",
     "openLink": "open link"
+  },
+  "toast": {
+    "done": "Done",
+    "failed": "That did not work. Try again."
+  },
+  "pins": {
+    "title": "Pinned — needs you",
+    "toggle": "Show or hide the pinned list",
+    "more": "Show all ({{n}})",
+    "less": "Show fewer",
+    "hide": "Take it off this list",
+    "unpin": "Unpin",
+    "pin": "Pin",
+    "noProject": "Neo",
+    "kind": {
+      "plan": "Plan",
+      "decision": "Decision",
+      "alert": "Alert",
+      "todo": "Todo",
+      "attention": "Item"
+    },
+    "action": {
+      "answer": "Answer",
+      "acknowledge": "Acknowledge",
+      "retry": "Retry",
+      "open": "Open"
+    },
+    "pinned": "Pinned to the top",
+    "unpinned": "Unpinned",
+    "hidden": "Taken off the list"
+  },
+  "todoDetail": {
+    "close": "Close",
+    "open": "Open todo #{{id}}",
+    "loading": "Opening…",
+    "notFound": "That todo is gone.",
+    "title": "Todo",
+    "project": "Project",
+    "lane": "Lane",
+    "laneMain": "main queue",
+    "laneSide": "side lane · {{kind}}",
+    "state": "State",
+    "position": "place {{pos}} in the queue",
+    "created": "Created",
+    "started": "Started",
+    "ended": "Ended",
+    "attempts": "Attempts",
+    "failure": "Why it stopped",
+    "result": "Result",
+    "brief": "Full brief",
+    "thread": "Thread",
+    "openThread": "Open the thread",
+    "items": "Made from",
+    "ago": "{{age}} ago",
+    "status": {
+      "queued": "queued",
+      "running": "running",
+      "retry": "waiting to retry",
+      "waiting": "waiting on a decision",
+      "failed": "failed",
+      "done": "done",
+      "cancelled": "cancelled"
+    }
   }
 }

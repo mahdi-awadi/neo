@@ -225,7 +225,7 @@ test("the thread view has a Close thread action wired to POST /api/thread/close,
   const ar = JSON.parse(readFileSync(join(import.meta.dir, "../src/frontends/web/locales/ar/console.json"), "utf8"));
   expect(app).toContain('data-act="thread-close"');
   expect(app).toContain('case "thread-close":');
-  expect(app).toContain('post("/api/thread/close"');
+  expect(app).toContain('act(btn, "/api/thread/close"');
   expect(app).toContain('confirm(tx("threads.confirmClose"');
   expect(app).toContain("!th.closedByOperator");
   for (const cat of [en, ar]) {
