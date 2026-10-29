@@ -36,7 +36,7 @@ import {
 import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
 import { decide, type OutOfFolderWrites, ProjectFence } from "./governor";
-import { scrubWorkerEnv, type EnvScrubOptions } from "./worker-env";
+import { mcpEnvRefs, scrubWorkerEnv, type EnvScrubOptions } from "./worker-env";
 import {
   filterSdkEnv,
   readOnlySandboxRequested,
@@ -769,13 +769,20 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
 let defaultEnvScrub: EnvScrubOptions | undefined;
 export function setDefaultEnvScrub(o: EnvScrubOptions | undefined): void { defaultEnvScrub = o; }
 
-export function mergedSdkEnv(provider: Provider, env: Record<string, string>, scrub: EnvScrubOptions | undefined = defaultEnvScrub): Record<string, string> {
+export function mergedSdkEnv(
+  provider: Provider,
+  env: Record<string, string>,
+  scrub: EnvScrubOptions | undefined = defaultEnvScrub,
+  /** Names the run's MCP server configs reference (ADR-0062): kept through the scrub, never relay keys. */
+  keep: readonly string[] = [],
+): Record<string, string> {
   const merged: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) merged[key] = value;
   }
   const filtered = filterSdkEnv(provider, { ...merged, ...env });
-  return scrub ? scrubWorkerEnv(filtered, scrub).env : filtered;
+  if (!scrub) return filtered;
+  return scrubWorkerEnv(filtered, keep.length ? { ...scrub, inherit: new Set([...scrub.inherit, ...keep]) } : scrub).env;
 }
 
 function codexClientOptions(deps: RunDeps): CodexOptions {
@@ -954,7 +961,8 @@ export function runConfig(deps: RunDeps, provider: Provider = deps.provider ?? "
     skills: deps.skills,
     maxTurns: deps.maxTurns || undefined,
     agents: deps.agents,
-    env: deps.env ? mergedSdkEnv(provider, deps.env, deps.envScrub) : undefined,
+    // The keys this run's MCP server configs reference by `${NAME}` stay in the env (ADR-0062).
+    env: deps.env ? mergedSdkEnv(provider, deps.env, deps.envScrub, mcpEnvRefs(deps.mcpServers)) : undefined,
     // A fork needs a session to fork from: never sent without `resume`.
     forkSession: deps.forkSession && deps.resume ? true : undefined,
   };

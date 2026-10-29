@@ -1342,6 +1342,13 @@ The chief of staff speaks to a project's session (2026-10-29, ADR-0061).
 - Refused in code: a customer session, empty or long text, no open session, the company, more than 6 an hour
   per project. The ingress never has the tool. Each message is a `project_message` event (no text) and a
   "chief of staff → <project>" line in Telegram and the console thread (AR + EN label).
+MCP secrets reach workers through the env, never argv (2026-10-29, ADR-0062, ops note #478).
+
+- The SDK writes external MCP configs into the worker's `--mcp-config` argv; the Stitch header held the
+  Google key there, readable by any process on the host. Now the header is `${STITCH_API_KEY}` (the CLI
+  expands it from the worker env, checked on the real binary) and the scrub keeps the names a run's MCP
+  configs reference. A test spawns the SDK against a fake executable and reads the real argv.
+- Operator step: rotate that Google API key.
 
 Restart-gated.
 

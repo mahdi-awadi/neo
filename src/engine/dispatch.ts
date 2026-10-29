@@ -1662,6 +1662,9 @@ export function withLiveNotes(deps: Pick<DispatchDeps, "notes">, sessionId: stri
 
 /** Google Stitch MCP server (HTTP transport) — design generation for operator workers. */
 export const STITCH_MCP_URL = "https://stitch.googleapis.com/mcp";
+/** The env var that holds the Stitch key (config.ts reads the same name). A worker's MCP config names it as
+ *  `${STITCH_API_KEY}` and the Claude CLI expands it from the worker env: the key never sits in argv (ADR-0062). */
+export const STITCH_KEY_ENV = "STITCH_API_KEY";
 
 /** The Playwright MCP launch every operator worker gets — one definition, also read by the toolchain
  *  updater (ADR-0009) so the server it verifies after an update is the one workers start. */
@@ -2180,7 +2183,9 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   // Operator-only: attach the Google Stitch HTTP MCP server when enabled and a key is configured.
   // (SDK McpHttpServerConfig shape: { type: "http", url, headers? }.) Never on the customer path.
   if (!consult && opts.stitch && opts.stitchKey) {
-    servers.stitch = { type: "http", url: STITCH_MCP_URL, headers: { "X-Goog-Api-Key": opts.stitchKey } };
+    // The SDK writes this config into the worker's `--mcp-config` argv, which any process on the host can read:
+    // a reference, never the key (ADR-0062). `runConfig` keeps the named var in the worker env.
+    servers.stitch = { type: "http", url: STITCH_MCP_URL, headers: { "X-Goog-Api-Key": `\${${STITCH_KEY_ENV}}` } };
   }
   // Operator-only local stdio MCP server: codebase-memory (the ONE code-intel MCP — see the
   // 2026-07-23 context-efficiency design's measured verdict). Attached only when a bin path is

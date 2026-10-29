@@ -37,6 +37,18 @@ export function scrubWorkerEnv(env: Record<string, string>, o: EnvScrubOptions):
   return { env: out, stripped, reported };
 }
 
+/** The env names the run's external MCP server configs reference as `${NAME}` (or `${NAME:-default}`)
+ *  (ADR-0062). The Claude CLI expands them from the worker env, so the scrub must keep them; the in-process
+ *  `sdk` servers are skipped. */
+export function mcpEnvRefs(servers: Record<string, unknown> | undefined): string[] {
+  const names = new Set<string>();
+  for (const cfg of Object.values(servers ?? {})) {
+    if (!cfg || typeof cfg !== "object" || (cfg as { type?: unknown }).type === "sdk") continue;
+    for (const m of JSON.stringify(cfg).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g)) names.add(m[1]!);
+  }
+  return [...names];
+}
+
 /** The names `report` mode lists for a start: the engine keys a worker can still see. */
 export function reportableEngineKeys(o: EnvScrubOptions): string[] {
   return [...o.engineKeys].filter((k) => !o.relayKeys.has(k) && !o.inherit.has(k)).sort();

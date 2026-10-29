@@ -655,7 +655,7 @@ test("neoMcpServers attaches the Stitch HTTP server only when enabled AND a key 
   expect(stitch.type).toBe("http"); // SDK McpHttpServerConfig shape
   expect(stitch.url).toBe(STITCH_MCP_URL);
   expect(stitch.url).toBe("https://stitch.googleapis.com/mcp");
-  expect(stitch.headers["X-Goog-Api-Key"]).toBe("k-123");
+  expect(stitch.headers["X-Goog-Api-Key"]).toBe("${STITCH_API_KEY}"); // a reference, never the key (ADR-0062)
 });
 
 test("neoMcpServers OMITS Stitch on the customer path (stitch:false) and when no key is configured", () => {
