@@ -792,6 +792,31 @@ leftover worktree, an approval waiting for hours, a plan nobody executed. It is 
 and resolved by code, never by AI. It can become one todo.
 _Avoid_: alert, issue, warning, notification
 
+**Needs you**:
+Something only the operator can move: a plan awaiting approval, an open decision card or alert they
+own, a failed todo, or an attention item whose kind is classed needs-you (a failed run, a secret leak,
+a site down; an unknown kind counts as needs-you). Only needs-you items drive a project's ATTENTION
+badge and its count. Classed by kind in code, never by the producer's severity (ADR-0065).
+_Avoid_: urgent, high, important, action required
+
+**Housekeeping**:
+An attention item an agent or the engine can handle without the operator: stale or unpushed branches,
+dependency PRs, work waiting to merge, notes between projects, drift. Shown collapsed under
+"housekeeping (N)"; it never raises the ATTENTION badge.
+_Avoid_: noise, FYI, low priority
+
+**Pin**:
+The operator's server-side mark that keeps one item (an attention item, a decision, a plan or a todo)
+in the "Pinned — needs you" strip at the top of every console tab, or keeps a needs-you item out of
+it (unpinned). Stored in the ledger, so every device shows the same strip.
+_Avoid_: favourite, star, bookmark
+
+**Superseded item**:
+An open attention item made pointless by a newer one of the same kind and the same stem in the same
+project — an older `chore/agent-sdk-0.3.303` bump branch when `chore/agent-sdk-0.3.312` waits too. The
+engine resolves it with a recorded reason naming the newer item; it deletes no branch.
+_Avoid_: duplicate, obsolete
+
 **Producer**:
 The code that reads one source (git, GitHub, the engine, plans, the running build) and returns the
 attention items it sees now. A producer that cannot read its source changes nothing.
