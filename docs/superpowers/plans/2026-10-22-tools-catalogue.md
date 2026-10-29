@@ -109,13 +109,13 @@ Catalogue { cards, errors, find, hint, relay, render }`. It has two real seams: 
 
 ### Task 10: `skillify` attention producer
 **Files:** `src/engine/producers/skillify.ts` (`skillifyDrafts(deps: { ledger; catalogue; projects; cfg }, now): AttentionDraft[]`); wire it into the scan next to `engineDrafts`; `tests/producer-skillify.test.ts`.
-- [ ] Step 1: failing tests: the A9 #12 cases (3 reordered titles → 1 item; a 4th → still 1 via the upsert ref `skillify:<sorted words>`; a matching recipe → none; another project's todos do not count).
-- [ ] Steps 2–5: FAIL → implement → PASS → commit `feat(tools): suggest a recipe or skill when a task repeats (ADR-0044, P4.1)`.
+- [x] Step 1: failing tests: the A9 #12 cases (3 reordered titles → 1 item; a 4th → still 1 via the upsert ref `skillify:<sorted words>`; a matching recipe → none; another project's todos do not count).
+- [x] Steps 2–5: FAIL → implement → PASS → commit `feat(tools): suggest a recipe or skill when a task repeats (ADR-0044, P4.1)`.
 
 ### Task 11: `tools-enrich` loop definition
 **Files:** `docs/loops/tools-enrich.json` + `docs/loops/tools-enrich.prompt.md` (the checked-in `LoopInput`, the same shape as `security-sweep.json`); `docs/loops.md`. Loading it into the live ledger with `bun tools/create-loop.ts docs/loops/tools-enrich.json` is an operator step after the restart. This plan never writes `loop_defs`.
-- [ ] Step 1: failing test (in `tests/loop-validate.test.ts`): `tools-enrich.json` passes `loop-validate` with a weekly cron and the goal command `bun test tests/tools-catalogue.test.ts`. Its prompt names the `tools_miss` terms source and forbids promoting a card to `active`.
-- [ ] Steps 2–5: FAIL → create → PASS → commit `feat(tools): weekly worker-run catalogue enrichment, off by default (ADR-0044, P4.2)`. **Merge P4 → dev.**
+- [x] Step 1: failing test (in `tests/loop-validate.test.ts`): `tools-enrich.json` passes `loop-validate` with a weekly cron and the goal command `bun tools/catalogue/misses.ts check` (as built: `runLoop` checks the goal before each iteration, so the catalogue test as goal would never let a worker run; ADR-0044 Amendment 2). Its prompt names the `tools_miss` terms source and forbids promoting a card to `active`.
+- [x] Steps 2–5: FAIL → create → PASS → commit `feat(tools): weekly worker-run catalogue enrichment, off by default (ADR-0044, P4.2)`. **Merge P4 → dev.**
 
 ## Phase 5 — docs, review, (gated) ScaleDown pilot
 
