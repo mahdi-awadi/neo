@@ -431,5 +431,13 @@
   "deploy": {
     "gap": "{{integration}} {{n}} not running · {{days}}d",
     "title": "running {{running}} on {{branch}} — {{n}} commits on {{integration}} are not live (oldest {{days}} days)"
+  },
+  "tools": {
+    "running": "Running now",
+    "stop": "Stop",
+    "background": "Background",
+    "confirmStop": "Stop “{{cmd}}” in {{project}}? Only this command stops; the session goes on.",
+    "stopTitle": "Stop only this command (its processes, inside containers too)",
+    "backgroundTitle": "Keep it running in the background, with its output in a log; the worker goes on"
   }
 }

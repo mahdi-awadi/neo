@@ -294,6 +294,12 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 .tart,.iact,.acts{gap:8px}
 }
 /* Reduced motion (AC9): no entry slide/fade, no pulse, no drawer slide, instant scrolling. */
+/* "Running now" (ADR-0058): each running tool call with Stop / Background — only that command. */
+.runstrip{display:flex;flex-direction:column;gap:6px;padding:8px 14px;border-block-end:1px solid var(--border);background:var(--panel)}
+.runstrip h4{margin:0;font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint)}
+.runrow{display:flex;align-items:center;gap:8px;min-width:0}
+.runrow .rc{flex:1;min-width:0;font-family:var(--code);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;unicode-bidi:isolate;text-align:start}
+.runrow .rp{font-size:11px;color:var(--muted);white-space:nowrap}
 /* The Core splash (ADR-0056 amendment): the wordmark draws in, the engine core pops, then it fades once
    the app is ready. One timing token, --splash-ms, read by splash.ts too. */
 .splash{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;background:var(--ink);transition:opacity .3s ease}
@@ -358,6 +364,7 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
   </div>
   <div class="hint" id="ioshint" hidden role="status"><span data-i18n="pwa.iosHint"></span><button class="chip" type="button" id="ioshint-x" data-i18n="pwa.dismiss"></button></div>
   <div class="view on" id="vactivity">
+   <div id="runstrip" class="runstrip" hidden></div>
    <div id="fbar"></div>
    <div id="feed"><div class="fe" id="ph" data-i18n="feed.placeholder"></div></div>
    <form class="compose" id="ff"><p class="anote" id="ffnote" role="alert" hidden></p><div class="atts" id="ffatts" data-i18n-aria="feed.attList" role="list" hidden></div><textarea id="msg" rows="1" dir="auto" data-compose="send" autocomplete="off" data-i18n-placeholder="feed.compose" data-i18n-title="feed.composeHint"></textarea><input type="file" id="file" hidden multiple><button class="chip" type="button" id="attach" data-i18n-title="feed.attach">📎</button><button type="submit" data-i18n="feed.send"></button></form>

@@ -3,6 +3,7 @@
 // worker output + escalations as events an HTTP/SSE layer can fan out, and resolves
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
+import { controlTool, DEFAULT_TOOL_CONTROL_CFG, type ToolAction, type ToolControlResult } from "./tool-control";
 import type { RunningBuild } from "./producers/restart";
 import { applyAttentionAction, type AttentionAction, type AttentionActionResult } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
@@ -138,6 +139,8 @@ export interface WebChannel {
   /** A Queue-tab action (`cancel 12`, `up 12`, `pause eticket-v3`, `resume eticket-v3`, or "" to
    *  list) — runs the shared /todo command, so the console and Telegram share one set of rules. */
   todo(args: string): { ok: boolean; text: string };
+  /** Stop or background one running tool call (ADR-0058), as the operator in the console. */
+  toolControl(sessionId: string, toolUseId: string, action: ToolAction): Promise<ToolControlResult>;
   /** The thread list (ADR-0017): newest-updated first, filtered, keyset-paged; each row has its ref. */
   threads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: Array<ThreadListRow & { ref?: string; waiting?: WaitingItem[] }>; next?: string };
   /** One thread: a page of its messages (newest first) and what it produced. Undefined: no such thread. */
@@ -571,6 +574,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const { ledger, registry, cfg } = opts.engine;
       const v = await projectView(projectDeps({ ledger, registry, cfg, neoFolder: opts.neoFolder }), name, Date.now());
       return v ? { ...v, snoozeHours: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours } : undefined;
+    },
+    toolControl(sessionId, toolUseId, action) {
+      return controlTool(
+        { registry: opts.engine.registry, ledger: opts.engine.ledger, cfg: opts.engine.cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG },
+        { sessionId, toolUseId, action, by: { kind: "operator", surface: "web" } },
+      );
     },
     todo(args) {
       const r = handleCommand(`/todo ${args}`.trim(), opts.chatId, {

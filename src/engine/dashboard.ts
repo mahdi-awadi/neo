@@ -77,6 +77,20 @@ export interface DashState {
   deploy?: IntegrationGap;
   /** The running build (ADR-0056): the build label under the console logo. */
   build?: RunningBuild;
+  /** Every session's running tool calls (ADR-0058): the console's "Running now" strip. */
+  running: DashRunningCall[];
+}
+
+/** One running tool call in the console (ADR-0058). */
+export interface DashRunningCall {
+  session: string;
+  name: string;
+  project: string;
+  toolUseId: string;
+  tool: string;
+  summary: string;
+  since: number;
+  provider: "claude" | "codex";
 }
 
 /** Failed todos the console shows (newest first). All of them stay in the ledger (ADR-0027). */
@@ -258,6 +272,7 @@ export function dashboardSnapshot(opts: {
     waiting,
     ...(opts.deploy ? { deploy: opts.deploy } : {}),
     ...(opts.build ? { build: opts.build } : {}),
+    running: runningCalls(opts.registry),
     projects,
     sdk: workerSdkState(opts.sdkProvider ?? "subscription"),
     usage: opts.usage ? opts.usage.snapshot(now) : null,
@@ -265,4 +280,20 @@ export function dashboardSnapshot(opts: {
     recent,
     repos: listRepos(opts.reposRoot),
   };
+}
+
+/** Every open session's running tool calls, newest first (ADR-0058). A broken handle hides only itself. */
+function runningCalls(registry: Registry): DashRunningCall[] {
+  const out: DashRunningCall[] = [];
+  for (const s of registry.list()) {
+    try {
+      const tools = registry.getControl(s.id)?.tools;
+      for (const c of tools?.running() ?? []) {
+        out.push({ session: s.id, name: s.name, project: basename(s.lane?.projectFolder ?? s.order.folder), toolUseId: c.toolUseId, tool: c.tool, summary: c.summary, since: c.since, provider: tools!.provider });
+      }
+    } catch {
+      // skip on error
+    }
+  }
+  return out.sort((a, b) => b.since - a.since);
 }

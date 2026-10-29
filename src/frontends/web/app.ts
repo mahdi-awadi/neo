@@ -135,6 +135,7 @@ function renderAll(): void {
   if (changed("projects", S.projects)) renderProjects();
   if (changed("deploy", S.deploy ?? null)) renderDeploy();
   if (changed("build", S.build ?? null)) renderBuild();
+  renderRunning(); // clock-dependent ages: always
   renderTodos(); // clock-dependent ("running 4m"): always
   if (changed("loops", S.loops)) renderLoops();
   if (changed("usage", S.usage)) renderUsage();
@@ -271,6 +272,46 @@ function renderProjects(): void {
     if (p.active) active = p;
   });
   $("who").textContent = active ? tx("projects.active", { name: active.name }) : tx("projects.openNoneActive", { count: S.projects.length });
+}
+/** "Running now" (ADR-0058): every running tool call, newest first, with Stop (confirmed) and
+ *  Background. The command stays LTR in both languages. */
+function renderRunning(): void {
+  const el = $("runstrip");
+  const R: Any[] = S.running || [];
+  el.hidden = !R.length;
+  if (!R.length) return void (el.innerHTML = "");
+  const now = Date.now();
+  el.innerHTML = `<h4>${t("tools.running")}</h4>`;
+  for (const c of R) {
+    const row = document.createElement("div");
+    row.className = "runrow";
+    row.innerHTML = `<span class="rp">${iso(c.name)} · ${esc(c.tool)} · ${ltr(age(now - c.since))}</span><span class="rc" title="${esc(c.summary)}">${esc(c.summary)}</span>`;
+    const act = (action: "stop" | "background") => {
+      void post(`/api/tool/${action}`, { session: c.session, toolUseId: c.toolUseId })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d && d.text) feedMsg("⋯ " + esc(d.text), "me", null);
+          void loadState();
+        });
+    };
+    if (c.provider === "claude") {
+      const bg = document.createElement("button");
+      bg.className = "chip";
+      bg.textContent = tx("tools.background");
+      bg.title = tx("tools.backgroundTitle");
+      bg.onclick = () => act("background");
+      row.appendChild(bg);
+    }
+    const stop = document.createElement("button");
+    stop.className = "chip no";
+    stop.textContent = tx("tools.stop");
+    stop.title = tx("tools.stopTitle");
+    stop.onclick = () => {
+      if (confirm(tx("tools.confirmStop", { cmd: c.summary, project: c.project }))) act("stop");
+    };
+    row.appendChild(stop);
+    el.appendChild(row);
+  }
 }
 /** The build label under the logo (ADR-0056): the running build from the boot record, LTR in both
  *  languages (the element carries dir="ltr"). Hidden when the boot recorded no commit. */

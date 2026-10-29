@@ -423,6 +423,18 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return Response.json(channel.deleteLoop(body.name));
     }
 
+    // ADR-0058: stop or background ONE running tool call — { session, toolUseId } → the shared seam.
+    const toolAct = /^\/api\/tool\/(stop|background)$/.exec(path);
+    if (req.method === "POST" && path.startsWith("/api/tool/")) {
+      if (!toolAct) return Response.json({ ok: false, error: "unknown action" }, { status: 404 });
+      const body = (await req.json().catch(() => ({}))) as { session?: unknown; toolUseId?: unknown };
+      if (typeof body.session !== "string" || typeof body.toolUseId !== "string" || !body.session || !body.toolUseId) {
+        return Response.json({ ok: false, error: "session + toolUseId required" }, { status: 400 });
+      }
+      const r = await channel.toolControl(body.session, body.toolUseId, toolAct[1] as "stop" | "background");
+      return Response.json(r, { headers: { "cache-control": "no-store" } });
+    }
+
     if (req.method === "POST" && path === "/api/todo") {
       // Queue-tab actions: { action: "cancel"|"up"|"retry"|"pause"|"resume", id?, project? } → the shared /todo command.
       const body = (await req.json().catch(() => ({}))) as { action?: unknown; id?: unknown; project?: unknown };

@@ -192,3 +192,11 @@ test("side-lane queue strings are in the AR and EN catalogues, for every kind", 
     for (const k of LANE_KINDS) expect(i18n.exists(`queue.kind.${k}`), `${lang}:${k}`).toBe(true);
   }
 });
+
+// ADR-0058: the "Running now" strip's strings in both languages.
+test("tool-control strip strings are in the AR and EN catalogues", () => {
+  for (const lang of ["en", "ar"] as const) {
+    const i18n = createConsoleI18n(lang);
+    for (const k of ["tools.running", "tools.stop", "tools.background", "tools.confirmStop", "tools.stopTitle", "tools.backgroundTitle"]) expect(i18n.exists(k), `${lang}:${k}`).toBe(true);
+  }
+});

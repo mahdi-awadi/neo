@@ -535,3 +535,28 @@ test("a non-ASCII .md name gets an ASCII filename and an RFC 5987 filename*", as
   expect(cd.split(";")[1]).not.toMatch(/[^\x20-\x7e]/);
   expect(cd.split(";")[1]).toBe(` filename="${"_".repeat(9)}x_.md"`);
 });
+
+// ADR-0058: the console's "Running now" strip — the state carries the running calls, and the admin
+// session can stop or background one.
+test("the state carries running tool calls; POST /api/tool/stop|background acts through the seam (admin only)", async () => {
+  const a = app();
+  const s = a.registry.add({ id: "w", source: "neo", folder: "/home/eticket-v3", task: "t", chatId: 1, createdAt: 0 }, 0);
+  const calls: string[] = [];
+  a.registry.attachControl(s.id, {
+    followUp: () => {},
+    interrupt: async () => {},
+    tools: { provider: "claude", running: () => [{ toolUseId: "toolu_A", tool: "Bash", summary: "git push origin dev", since: 500 }], background: async (id: string) => (calls.push(`bg ${id}`), { ok: true }), stop: async () => ({ ok: true }) },
+  } as never);
+  const post = (path: string, body: unknown, cookie?: string) =>
+    a.instance.fetch(new Request(`http://neo.test${path}`, { method: "POST", headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) }));
+  expect((await post("/api/tool/background", { session: s.id, toolUseId: "toolu_A" })).status).not.toBe(200); // no session
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const state = await (await a.instance.fetch(new Request("http://neo.test/api/state", { headers: { cookie } }))).json();
+  expect(state.running).toEqual([{ session: s.id, name: "eticket-v3", project: "eticket-v3", toolUseId: "toolu_A", tool: "Bash", summary: "git push origin dev", since: 500, provider: "claude" }]);
+  expect((await post("/api/tool/background", { session: s.id }, cookie)).status).toBe(400); // toolUseId required
+  expect((await post("/api/tool/explode", { session: s.id, toolUseId: "toolu_A" }, cookie)).status).toBe(404);
+  const r = await (await post("/api/tool/background", { session: s.id, toolUseId: "toolu_A" }, cookie)).json();
+  expect(r).toMatchObject({ ok: true, outcome: "backgrounded" });
+  expect(calls).toEqual(["bg toolu_A"]);
+  expect(a.ledger.listEvents({ kind: "tool_control" })[0]!.data).toMatchObject({ by: "operator:web" });
+});
