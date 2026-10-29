@@ -1,7 +1,7 @@
 # ADR-0058: the operator can stop, or send to the background, one running tool call
 
-**Status:** proposed (2026-10-28). It waits for the operator's approval of the plan
-`docs/superpowers/plans/2026-10-28-tool-call-control.md`. Spec:
+**Status:** accepted (2026-10-29; the operator approved all dev work, and the plan
+`docs/superpowers/plans/2026-10-28-tool-call-control.md` is built on `dev`, restart-gated). Spec:
 `docs/superpowers/specs/2026-10-28-tool-call-control-design.md`. Related: ADR-0007 (no wall-clock
 limit), ADR-0050 §5 (steer follow-ups), ADR-0055 (long checks run in the background), ADR-0057 (side
 lanes).
@@ -70,6 +70,21 @@ ways out were `/kill` (which loses the session) or the chief of staff killing PI
   operator decides.
 - **Killing a container's processes by name (`docker exec … pkill -f`).** It would hit the main task's
   or another worker's identical command.
+
+## As built (2026-10-29)
+
+- **Spike** (`docs/sdk-notes.md`): `task_started` names even a FOREGROUND Bash call's task.
+  `backgroundTasks(id)` works, and the worker's result names the log. `stopTask` kills the task's shell
+  but **not its grandchildren**, so the marker sweep is required, not a backstop. A PreToolUse hook's
+  `updatedInput` applies with no decision, even when a settings rule skips `canUseTool`, so the
+  **governor hook** adds the marker (not `canUseTool`).
+- Codex: its one running "call" is the current turn (`codex-turn`). Stop aborts that turn and the
+  session takes the next input. Background is refused.
+- Telegram: the daemon's heartbeat posts ONE notice per call past `noticeAfterMs` to the operator's
+  DM. Its buttons carry short keys (`tc:s|S|b:<n>`, ≤ 64 bytes). A second tap confirms Stop.
+- Code: `tool-calls.ts` (tracker, marker), `proc-tree.ts` (`/proc` marker scan, trees, kill with grace,
+  never pid 1), `docker-exec.ts` (exec instance by command, via the Docker API), `tool-control.ts`
+  (the seam, notices), `/stop`, `/bg`, `/list`, `tool_control`, the console strip.
 
 ## Known limits
 

@@ -14,7 +14,8 @@ ones in `.env` (`chmod 600`).
 | --- | --- | --- | --- |
 | `TELEGRAM_TOKEN` | yes | — | BotFather token. Required for the Telegram bot + web console. |
 | `GEMINI_API_KEY` | yes | *(empty)* | Gemini key for the customer-facing path. Never touches the Claude subscription. |
-| `AGENT_INGRESS_SECRET` | yes | *(empty)* | Bearer secret for `POST /agent/ingress` + `/inbox`. Empty → those endpoints refuse all requests. |
+| `AGENT_INGRESS_SECRET` | yes | *(empty)* | Bearer secret for `POST /agent/ingress` (and `/inbox` unless `INBOX_INGEST_SECRET` is set). Compared in constant time. Empty → those endpoints refuse all requests. |
+| `INBOX_INGEST_SECRET` | no | *(empty)* | Its own bearer secret for `POST /inbox` (the gateway's customer-message ingest), so one leaked secret does not open both endpoints. Empty → `/inbox` uses `AGENT_INGRESS_SECRET`, as before. |
 | `STITCH_API_KEY` | yes | *(empty)* | Google Stitch MCP (design generation) for operator workers. Off when empty. |
 | `BOT_USERNAME` | env or `config.json` | *(auto via getMe)* | Bot `@username` (no `@`) for the web Telegram Login Widget. |
 | `WEB_HOST` | env or `config.json` | `127.0.0.1` | Interface the web console binds. Set to a bridge IP to let a proxy reach it. |

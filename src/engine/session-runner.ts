@@ -389,7 +389,7 @@ export function buildCanUseTool(
 ) {
   // Customer work never gets the operator's standing write approval (ADR-0012).
   const writes: OutOfFolderWrites = source === "customer" ? "ask" : outOfFolderWrites;
-  return async (tool: string, input: Record<string, unknown>, sdk?: { signal?: AbortSignal }) => {
+  return async (tool: string, input: Record<string, unknown>, sdk?: { signal?: AbortSignal; mcpServer?: { name?: string; source?: string } }) => {
     // An observer: a throwing handler must never change the decision.
     const report = (verdict: "allow" | "auto" | "escalate" | "deny"): void => {
       try {
@@ -415,7 +415,8 @@ export function buildCanUseTool(
         report("deny");
         return { behavior: "deny", message: NATIVE_ASK_STEER };
       }
-      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}) });
+      const mcpSource = sdk?.mcpServer?.source;
+      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}), ...(mcpSource ? { mcpSource } : {}) });
       if ("allow" in verdict) {
         report("allow");
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
@@ -489,7 +490,8 @@ export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolder
     if (steered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: steered } };
     let reason: string;
     try {
-      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}) });
+      const mcpSource = (input as { mcp_server?: { source?: string } }).mcp_server?.source;
+      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}), ...(mcpSource ? { mcpSource } : {}) });
       // ADR-0058: every host process of a Bash call carries its tool-use id, so /stop can find exactly that
       // call's processes. The hook's updatedInput applies even when a settings rule skips canUseTool.
       if ("allow" in verdict) return markedBash(input.tool_name, input.tool_input, toolUseId) ?? {};

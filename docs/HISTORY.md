@@ -1271,6 +1271,23 @@ ADR-0056 amendment).
 
 Restart-gated.
 
+Stop, or send to the background, ONE running tool call (2026-10-29, ADR-0058).
+
+- Operator order: a worker's `git push` pre-push scan and foreground poll loops held eticket-v3. The
+  only ways out were `/kill` (losing the session) or killing PIDs by hand.
+- Native SDK controls (spiked on 0.3.310): Background = `backgroundTasks(toolUseId)`; Stop = background
+  + `stopTask`, then the engine kills that call's leftover host processes by the per-call
+  `NEO_TOOL_USE_ID` marker (the governor hook adds it), and its `docker exec` children inside
+  containers (Docker API, exact command match; ambiguous → none). The worker is steered not to retry.
+- Surfaces: the console "Running now" strip (AR+EN), a Telegram notice with buttons for calls past
+  `toolControl.noticeAfterMs`, `/stop` and `/bg <project> [n]`, `/list`, and the company's
+  `tool_control` tool (instead of ps/kill). Codex: stop ends the turn; no background.
+- Also: reach-plan hardening P0.3–P0.5. SSH private keys are secrets to the guard (re-install the kit
+  to make it live). `mcp__neo__*` is trusted by `mcpServer.source`. Machine bearers are compared in
+  constant time, and `INBOX_INGEST_SECRET` can be set.
+
+Restart-gated.
+
 ## Status list moved from CLAUDE.md (2026-10-25)
 
 Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,

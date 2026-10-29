@@ -11,6 +11,8 @@ export interface ProcFs {
   cmdline(pid: number): string[] | undefined;
   ppid(pid: number): number | undefined;
   cwd(pid: number): string | undefined;
+  /** When the process started (clock ticks since boot, /proc/<pid>/stat field 22). Optional. */
+  start?(pid: number): number | undefined;
 }
 
 const read = (path: string): string | undefined => {
@@ -45,12 +47,19 @@ export const realProcFs: ProcFs = {
       return undefined;
     }
   },
+  start: (pid) => {
+    const s = read(`/proc/${pid}/stat`);
+    const rest = s ? s.slice(s.lastIndexOf(")") + 2).split(" ") : undefined;
+    return rest ? Number(rest[19]) : undefined; // field 22 overall = index 19 after "pid (comm)"
+  },
 };
 
-/** The processes whose environment carries exactly this call's marker. */
+/** The processes of this call: its marker in their environment, or — for the call's own shell, whose
+ *  environment predates the `export` — the exact `export <marker>;` in their command line. */
 export function markedPids(fs: ProcFs, toolUseId: string): number[] {
   const want = `${MARKER_ENV}=${toolUseId}`;
-  return fs.list().filter((pid) => (fs.environ(pid) ?? "").split("\0").includes(want));
+  const exported = `export ${want};`;
+  return fs.list().filter((pid) => (fs.environ(pid) ?? "").split("\0").includes(want) || (fs.cmdline(pid) ?? []).some((a) => a.includes(exported)));
 }
 
 /** `root` and every descendant of it. */
@@ -72,6 +81,8 @@ export function treeOf(fs: ProcFs, root: number): number[] {
 }
 
 export interface KillOps {
+  /** Re-checked right before each signal: a pid that is no longer ours (reused) is left alone. */
+  stillOurs?(pid: number): boolean;
   signal(pid: number, sig: "SIGTERM" | "SIGKILL"): boolean;
   alive(pid: number): boolean;
   graceMs: number;
@@ -101,11 +112,12 @@ export const realKill: Pick<KillOps, "signal" | "alive"> = {
 /** SIGTERM every pid; after the grace, SIGKILL the ones still alive. */
 export async function killPids(pids: number[], o: KillOps): Promise<{ killed: number[]; survived: number[] }> {
   const uniq = [...new Set(pids)].filter((p) => p > 1 && p !== process.pid);
-  for (const p of uniq) o.signal(p, "SIGTERM");
+  const ours = (p: number) => o.stillOurs?.(p) ?? true;
+  for (const p of uniq) if (ours(p)) o.signal(p, "SIGTERM");
   const left = uniq.filter((p) => o.alive(p));
   if (left.length) {
     await o.sleep(o.graceMs);
-    for (const p of left.filter((x) => o.alive(x))) o.signal(p, "SIGKILL");
+    for (const p of left.filter((x) => o.alive(x) && ours(x))) o.signal(p, "SIGKILL");
   }
   return { killed: uniq.filter((p) => !o.alive(p)), survived: uniq.filter((p) => o.alive(p)) };
 }

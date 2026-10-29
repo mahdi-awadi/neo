@@ -58,7 +58,11 @@ export function execTarget(argv: string[]): ExecTarget | undefined {
 type ExecJson = { Running?: boolean; Pid?: number; ProcessConfig?: { entrypoint?: string; arguments?: string[] } };
 
 /** The host pids of the in-container processes one client started. `note` says why none were found. */
-export async function execPidsFor(client: { argv: string[]; cwd?: string }, api: DockerApi): Promise<{ pids: number[]; note?: string }> {
+export async function execPidsFor(
+  client: { argv: string[]; cwd?: string; startedAt?: number },
+  api: DockerApi,
+  startOf?: (pid: number) => number | undefined,
+): Promise<{ pids: number[]; note?: string }> {
   const t = execTarget(client.argv);
   if (!t) return { pids: [] };
   let containerId: string | undefined;
@@ -68,8 +72,10 @@ export async function execPidsFor(client: { argv: string[]; cwd?: string }, api:
     // A compose service: the container of that service in the client's project (its folder, or -p).
     const filter = encodeURIComponent(JSON.stringify({ label: [`com.docker.compose.service=${t.name}`] }));
     const list = ((await api.get(`/containers/json?filters=${filter}`)) as Array<{ Id: string; Labels?: Record<string, string> }> | undefined) ?? [];
+    // Never guess the project: without -p and without the client's folder, nothing matches.
+    if (!t.project && !client.cwd) return { pids: [], note: `compose service ${t.name}: its project is unknown` };
     const mine = list.filter((c) =>
-      t.project ? c.Labels?.["com.docker.compose.project"] === t.project : !client.cwd || c.Labels?.["com.docker.compose.project.working_dir"] === client.cwd,
+      t.project ? c.Labels?.["com.docker.compose.project"] === t.project : c.Labels?.["com.docker.compose.project.working_dir"] === client.cwd,
     );
     if (mine.length !== 1) return { pids: [], note: `compose service ${t.name}: ${mine.length} matching containers` };
     containerId = mine[0]!.Id;
@@ -81,7 +87,11 @@ export async function execPidsFor(client: { argv: string[]; cwd?: string }, api:
   for (const id of c.ExecIDs ?? []) {
     const e = (await api.get(`/exec/${encodeURIComponent(id)}/json`)) as ExecJson | undefined;
     if (!e?.Running || !e.Pid || !e.ProcessConfig?.entrypoint) continue;
-    if (JSON.stringify([e.ProcessConfig.entrypoint, ...(e.ProcessConfig.arguments ?? [])]) === want) matches.push(e.Pid);
+    if (JSON.stringify([e.ProcessConfig.entrypoint, ...(e.ProcessConfig.arguments ?? [])]) !== want) continue;
+    // Our client started this exec, so the exec is never older than the client: an older one is another's.
+    const execStart = startOf?.(e.Pid);
+    if (client.startedAt !== undefined && execStart !== undefined && execStart < client.startedAt) continue;
+    matches.push(e.Pid);
   }
   if (matches.length > 1) return { pids: [], note: `${t.name}: ${matches.length} identical running execs of \`${t.cmd.join(" ")}\` — none stopped (ambiguous)` };
   return matches.length ? { pids: matches } : { pids: [], note: `${t.name}: no running exec of \`${t.cmd.join(" ")}\`` };

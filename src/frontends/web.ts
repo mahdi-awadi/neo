@@ -3,6 +3,7 @@
 // cookie; messages drive the same source:"neo" SDK pipeline via the web-channel adapter, and
 // worker output streams back over SSE. createWebApp() is a pure Request->Response handler
 // (unit-tested); startWeb() is the Bun.serve bind (e2e).
+import { bearerOk } from "../engine/bearer";
 import type { RunningBuild } from "../engine/producers/restart";
 import { isAttentionAction } from "../engine/attention-actions";
 import type { Ledger } from "../engine/ledger";
@@ -42,6 +43,8 @@ export interface WebAppDeps {
   now?: () => number;
   /** Shared secret for machine-to-machine POST /agent/ingress + /inbox. Required to enable them. */
   ingressSecret?: string;
+  /** The secret for POST /inbox (`inboxSecretOf`): its own when set, else `ingressSecret`. */
+  inboxSecret?: string;
   /** Customer message inbox (plain data — no AI). The gateway POSTs inbound mail here. */
   inbox?: Inbox;
   /** Gateway /send URL — Neo calls it to email an approved reply (Neo holds no Cloudflare creds). */
@@ -151,7 +154,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     // --- machine-to-machine: POST /agent/ingress (bearer auth, no session cookie) ---
     if (req.method === "POST" && path === "/agent/ingress") {
       const auth = req.headers.get("authorization") ?? "";
-      if (!deps.ingressSecret || auth !== `Bearer ${deps.ingressSecret}`) {
+      if (!bearerOk(auth, deps.ingressSecret)) {
         return new Response("unauthorized", { status: 401 });
       }
       const body = (await req.json().catch(() => ({}))) as { brief?: unknown };
@@ -171,7 +174,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     //     no AI: it is just stored and shown in the dashboard for the operator to review. ---
     if (req.method === "POST" && path === "/inbox") {
       const auth = req.headers.get("authorization") ?? "";
-      if (!deps.ingressSecret || auth !== `Bearer ${deps.ingressSecret}`) {
+      if (!bearerOk(auth, deps.inboxSecret ?? deps.ingressSecret)) {
         return new Response("unauthorized", { status: 401 });
       }
       const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;

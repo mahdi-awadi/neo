@@ -2,6 +2,7 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
+import { controlTool, DEFAULT_TOOL_CONTROL_CFG, parseToolCallback, type ToolNotices } from "../engine/tool-control";
 import type { ProjectNotes } from "../engine/project-notes";
 import type { Catalogue } from "../engine/tools-catalogue";
 import { applyAttentionAction, isAttentionAction, attentionLabel, type AttentionAction } from "../engine/attention-actions";
@@ -249,7 +250,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"]; notes?: ProjectNotes; tools?: Catalogue },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"]; notes?: ProjectNotes; tools?: Catalogue; toolNotices?: ToolNotices },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -782,8 +783,37 @@ export function createTelegramBot(
       return;
     }
 
-    // Tap a project to make it active (use:) or kill it (kill:) — shared engine functions.
     const cb = ctx.callbackQuery.data;
+    // ADR-0058: Stop (a second tap confirms) or Background ONE long-running tool call from its notice.
+    const tcb = parseToolCallback(cb);
+    if (tcb) {
+      const target = reload?.toolNotices?.resolve(tcb.key);
+      if (!target) {
+        await ackCallback(ctx, "that command has already ended");
+        return;
+      }
+      if (tcb.step === "stop") {
+        await ackCallback(ctx, "tap Confirm stop to stop only this command");
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [[{ text: "⏹ Confirm stop", callback_data: `tc:S:${tcb.key}` }, { text: "⏩ Background", callback_data: `tc:b:${tcb.key}` }]] } });
+        } catch {
+          // the notice was already edited
+        }
+        return;
+      }
+      const r = await controlTool(
+        { registry, ledger, cfg: cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG },
+        { sessionId: target.sessionId, toolUseId: target.toolUseId, action: tcb.step === "background" ? "background" : "stop", by: { kind: "operator", surface: "telegram" } },
+      );
+      await ackCallback(ctx, r.ok ? (r.outcome === "stopped" ? "stopped" : "moved to the background") : "not done");
+      try {
+        await ctx.editMessageText(r.text);
+      } catch {
+        // "message is not modified" — ignore
+      }
+      return;
+    }
+    // Tap a project to make it active (use:) or kill it (kill:) — shared engine functions.
     if (cb.startsWith("use:") || cb.startsWith("kill:")) {
       const id = cb.slice(cb.indexOf(":") + 1);
       const chatId = ctx.chat?.id ?? 0;

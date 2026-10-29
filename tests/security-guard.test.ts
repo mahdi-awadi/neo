@@ -194,3 +194,15 @@ describe("security guard: host environment", () => {
     expect(at(JSON.stringify({}))).toBe("prod");
   });
 });
+
+// Reach plan P0.3 (G3): every private key in a `.ssh` folder is a secret, whatever its name; the public
+// files there are not.
+test("a private key in a .ssh folder is a secret whatever its name; its public files are not", async () => {
+  const { isSecretName } = await import("../tools/security/guard");
+  for (const p of ["/root/.ssh/prod_server_key", "/root/.ssh/backup_server_key", "/root/.ssh/migrate_key", "/root/.ssh/contantme_deploy_ed25519", "~/.ssh/id_ed25519", ".ssh/anything"]) {
+    expect(isSecretName(p), p).toBe(true);
+  }
+  for (const p of ["/root/.ssh/prod_server_key.pub", "/root/.ssh/known_hosts", "/root/.ssh/known_hosts.old", "/root/.ssh/config", "/root/.ssh/authorized_keys", "/root/.ssh/known_hosts2", "/root/.ssh/allowed_signers", "/root/.ssh/authorized_principals", "/home/p/docs/ssh-notes.md"]) {
+    expect(isSecretName(p), p).toBe(false);
+  }
+});

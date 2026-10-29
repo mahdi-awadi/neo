@@ -1,6 +1,8 @@
 // Neo engine — entry point. Loads config, opens the ledger, owns the shared live-session
 // registry + budget meter + idle watchdog + admin store, and starts the operator frontends:
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
+import { inboxSecretOf } from "./engine/bearer";
+import { createToolNotices, DEFAULT_TOOL_CONTROL_CFG } from "./engine/tool-control";
 import { DEFAULT_LANES_CFG } from "./engine/lanes";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -345,6 +347,18 @@ async function main(): Promise<void> {
   // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
   // Every engine-side Bot API call goes through the same flood gate as the bot (installFloodGate).
   const operatorApi = cfg.telegramToken ? createOperatorApi(cfg.telegramToken) : undefined;
+  const toolNotices = createToolNotices();
+  const postToolNotices = async (): Promise<void> => {
+    const target = admin.adminId();
+    if (!operatorApi || target === undefined) return;
+    for (const n of toolNotices.due(registry, Date.now(), (cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG).noticeAfterMs)) {
+      const mins = Math.round((Date.now() - n.call.since) / 60_000);
+      const buttons = [{ text: "⏹ Stop", callback_data: `tc:s:${n.key}` }, ...(n.provider === "claude" ? [{ text: "⏩ Background", callback_data: `tc:b:${n.key}` }] : [])];
+      await operatorApi
+        .sendMessage(target, `⏵ ${n.name} has run ${n.call.tool} for ${mins}m: ${n.call.summary}\nStop ends only this command (the session goes on); Background keeps it running with a log.`, { reply_markup: { inline_keyboard: [buttons] } })
+        .catch((e: unknown) => faults.report("toolNotices.send", e, { session: n.sessionId }));
+    }
+  };
   const alertOperator = (text: string): void => {
     const target = cfg.decisionsChatId ?? admin.adminId();
     if (!operatorApi || target === undefined) return;
@@ -503,6 +517,9 @@ async function main(): Promise<void> {
           // Release todo queues a hold, a resume or the restart left waiting (ADR-0008). Completions
           // release their own project at once; this tick is the backstop.
           ["todo", () => todo.pump()],
+          // A tool call running past toolControl.noticeAfterMs gets ONE Telegram notice with Stop /
+          // Background buttons (ADR-0058) — the operator never has to /kill a session for one command.
+          ["toolNotices", postToolNotices],
           // The daily toolchain check (and the retry of items a busy session deferred).
           ["updates", runScheduledUpdate],
           [
@@ -558,7 +575,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools, toolNotices }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -569,7 +586,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inboxSecret: inboxSecretOf(cfg), inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon

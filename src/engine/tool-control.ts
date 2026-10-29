@@ -7,6 +7,7 @@ import type { Ledger } from "./ledger";
 import type { Registry } from "./registry";
 import { killPids, markedPids, realKill, realProcFs, treeOf, type KillOps, type ProcFs } from "./proc-tree";
 import { dockerApiOverSocket, execPidsFor, execTarget, type DockerApi } from "./docker-exec";
+import { randomInt } from "node:crypto";
 
 /** The `toolControl` config block (docs/CONFIG.md). */
 export interface ToolControlCfg {
@@ -110,34 +111,43 @@ export async function controlTool(deps: ToolControlDeps, req: { sessionId: strin
 
   const proc = deps.proc ?? realProcFs;
   const kill: KillOps = { signal: deps.signal ?? realKill.signal, alive: deps.alive ?? realKill.alive, graceMs: deps.cfg.killGraceMs, sleep };
-  // The call's host processes and its docker exec clients, read BEFORE the SDK stop reparents them.
-  const before = markedPids(proc, call.toolUseId);
-  const clients = before.flatMap((pid) => {
-    const argv = proc.cmdline(pid);
-    return argv && execTarget(argv) ? [{ argv, cwd: proc.cwd(pid) }] : [];
-  });
-  const sdk = await tools.stop(call.toolUseId);
-  // stopTask kills the task's shell, not its grandchildren (docs/sdk-notes.md): sweep by the marker.
-  const host = await killPids([...before, ...markedPids(proc, call.toolUseId)], kill);
+  // Read everything BEFORE the SDK stop reparents the call's processes. Targets are the marked processes
+  // still attached to the call's tree; a marked process already detached (ppid 1: a tmux server, a build
+  // daemon it started) may serve others and is only reported.
+  const marked = markedPids(proc, call.toolUseId);
+  const targets = marked.filter((p) => proc.ppid(p) !== 1);
+  const detached = marked.length - targets.length;
+  kill.stillOurs = (p) => markedPids({ ...proc, list: () => [p] }, call.toolUseId).length > 0 || dockerTargets.has(p);
+  // The in-container processes of the call's docker exec clients, looked up while the clients live.
   const docker = deps.docker ?? dockerApiOverSocket(deps.cfg.dockerSocket);
-  const dockerKilled: number[] = [];
+  const dockerTargets = new Set<number>();
   const notes: string[] = [];
-  for (const c of clients) {
-    const r = await execPidsFor(c, docker);
+  for (const pid of targets) {
+    const argv = proc.cmdline(pid);
+    if (!argv || !execTarget(argv)) continue;
+    const r = await execPidsFor({ argv, cwd: proc.cwd(pid), startedAt: proc.start?.(pid) }, docker, proc.start);
     if (r.note) notes.push(r.note);
-    const tree = r.pids.flatMap((p) => treeOf(proc, p));
-    if (tree.length) dockerKilled.push(...(await killPids(tree, kill)).killed);
+    for (const p of r.pids) for (const q of treeOf(proc, p)) dockerTargets.add(q);
   }
+  const sdk = await tools.stop(call.toolUseId);
+  // stopTask kills the task's shell, not its grandchildren (docs/sdk-notes.md): sweep the call's own.
+  const host = await killPids(targets, kill);
+  const dockerKilled = dockerTargets.size ? (await killPids([...dockerTargets], kill)).killed : [];
   const stopped = sdk.ok || host.killed.length > 0;
   if (!stopped) {
-    record("not_running", { reason: sdk.reason });
-    return { ok: false, outcome: "not_running", toolUseId: call.toolUseId, command: call.summary, text: `\`${call.summary}\` had already ended in ${name}.` };
+    if (sdk.reason === "not_running") {
+      record("not_running", { reason: sdk.reason });
+      return { ok: false, outcome: "not_running", toolUseId: call.toolUseId, command: call.summary, text: `\`${call.summary}\` had already ended in ${name}.` };
+    }
+    record("refused", { reason: sdk.reason });
+    return { ok: false, outcome: "refused", toolUseId: call.toolUseId, command: call.summary, text: `Could not confirm the stop of \`${call.summary}\` in ${name} (${sdk.reason ?? "unknown"}); it may still be running in the background — check /list.` };
   }
   control!.followUp(stoppedSteer(call.summary), "steer");
   record("stopped", { taskId: sdk.taskId, hostKilled: host.killed, survived: host.survived, dockerKilled, dockerNotes: notes });
   deps.reply?.(`⏹ stopped by ${actorText(req.by)}: ${call.summary}`, project, folder);
   const tail = [
     dockerKilled.length ? `${dockerKilled.length} process${dockerKilled.length === 1 ? "" : "es"} inside containers stopped too` : "",
+    detached ? `${detached} detached process${detached === 1 ? "" : "es"} it started left running (it may serve others)` : "",
     host.survived.length ? `${host.survived.length} process${host.survived.length === 1 ? "" : "es"} would not stop` : "",
     ...notes,
   ].filter(Boolean);
@@ -168,7 +178,10 @@ export async function controlByProject(
   if (!s) return { ok: false, outcome: "not_running", text: `No open session named ${req.project}.` };
   const calls = [...(deps.registry.getControl(s.id)?.tools?.running() ?? [])].sort((a, b) => a.since - b.since);
   let toolUseId = req.toolUseId;
-  if (!toolUseId && req.pick !== undefined) toolUseId = calls[req.pick - 1]?.toolUseId;
+  if (!toolUseId && req.pick !== undefined) {
+    toolUseId = calls[req.pick - 1]?.toolUseId;
+    if (!toolUseId) return { ok: false, outcome: "not_running", text: `${s.name} has no running command ${req.pick}.` };
+  }
   if (!toolUseId && calls.length > 1) {
     const verb = req.action === "stop" ? "stop" : "bg";
     return {
@@ -178,4 +191,53 @@ export async function controlByProject(
     };
   }
   return controlTool(deps, { sessionId: s.id, ...(toolUseId ? { toolUseId } : {}), action: req.action, by: req.by });
+}
+
+/** A call that has run long enough for a Telegram notice (ADR-0058). `key` is short: button data is ≤ 64 bytes. */
+export interface ToolNotice {
+  key: number;
+  sessionId: string;
+  name: string;
+  project: string;
+  provider: "claude" | "codex";
+  call: { toolUseId: string; tool: string; summary: string; since: number };
+}
+
+/** The notice store: which calls were announced (once each), and the short keys their buttons carry. */
+export function createToolNotices() {
+  // A random start each boot: a stale notice's button from before a restart never names a new call.
+  let next = 1 + randomInt(1_000_000_000);
+  const byKey = new Map<number, { sessionId: string; toolUseId: string }>();
+  const announced = new Set<string>(); // `${sessionId} ${toolUseId}`
+  return {
+    /** Calls past `afterMs` not announced yet (each gets a key). Ended calls lose their keys. */
+    due(registry: Pick<Registry, "list" | "getControl">, now: number, afterMs: number): ToolNotice[] {
+      const live = new Set<string>();
+      const out: ToolNotice[] = [];
+      for (const s of registry.list()) {
+        const tools = registry.getControl(s.id)?.tools;
+        for (const c of tools?.running() ?? []) {
+          const id = `${s.id} ${c.toolUseId}`;
+          live.add(id);
+          if (announced.has(id) || now - c.since < afterMs) continue;
+          announced.add(id);
+          const key = next++;
+          byKey.set(key, { sessionId: s.id, toolUseId: c.toolUseId });
+          out.push({ key, sessionId: s.id, name: s.name, project: basename(s.lane?.projectFolder ?? s.order.folder), provider: tools!.provider, call: c });
+        }
+      }
+      for (const [k, v] of byKey) if (!live.has(`${v.sessionId} ${v.toolUseId}`)) byKey.delete(k);
+      for (const id of announced) if (!live.has(id)) announced.delete(id);
+      return out;
+    },
+    resolve: (key: number) => byKey.get(key),
+  };
+}
+export type ToolNotices = ReturnType<typeof createToolNotices>;
+
+/** `tc:s:<key>` (Stop, asks to confirm) · `tc:S:<key>` (confirmed Stop) · `tc:b:<key>` (Background). */
+export function parseToolCallback(data: string): { step: "stop" | "confirmStop" | "background"; key: number } | undefined {
+  const m = /^tc:([sSb]):(\d{1,9})$/.exec(data);
+  if (!m) return undefined;
+  return { step: m[1] === "s" ? "stop" : m[1] === "S" ? "confirmStop" : "background", key: Number(m[2]) };
 }

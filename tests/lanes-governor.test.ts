@@ -99,3 +99,18 @@ test("the lane reaches both governor entry points: canUseTool denies, and the Pr
   expect(JSON.stringify(out)).toContain('"permissionDecision":"ask"');
   expect(JSON.stringify(out)).toContain("side lane (ops)");
 });
+
+// Reach plan P0.4 (G5): Neo's own tools are trusted by where they come from, not by their name.
+test("mcp__neo__* is allowed only from Neo's own in-process server (source sdk); a configured server named neo escalates", async () => {
+  const ctx: GovernorCtx = { folder: P, outOfFolderWrites: "allow", projectFence: FENCE };
+  expect(decide("mcp__neo__send_file", {}, { ...ctx, mcpSource: "sdk" })).toEqual({ allow: true });
+  const spoof = decide("mcp__neo__send_file", {}, { ...ctx, mcpSource: "project" });
+  expect("escalate" in spoof && spoof.escalate).toContain("project");
+  expect(decide("mcp__neo__send_file", {}, ctx)).toEqual({ allow: true }); // an older CLI sends no source: as before
+  const { buildCanUseTool, buildGovernorHook } = await import("../src/engine/session-runner");
+  const canUse = buildCanUseTool({ onMessage: () => {}, onEscalation: async () => "deny" }, P, "neo", "allow", FENCE);
+  expect(await canUse("mcp__neo__send_file", {}, { signal: new AbortController().signal, mcpServer: { name: "neo", source: "project" } } as never)).toMatchObject({ behavior: "deny" });
+  const hook = buildGovernorHook(P, "allow");
+  const out = await hook({ hook_event_name: "PreToolUse", tool_name: "mcp__neo__send_file", tool_input: {}, mcp_server: { name: "neo", source: "project" } } as never, "t1", { signal: new AbortController().signal });
+  expect(JSON.stringify(out)).toContain('"permissionDecision":"ask"');
+});

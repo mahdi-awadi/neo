@@ -50,6 +50,9 @@ export interface GovernorCtx {
   projectFence?: ProjectFence;
   /** A side-lane session (ADR-0057): its kind's rules are checked first and a breach is DENIED. */
   lane?: SessionLane;
+  /** Where an `mcp__*` tool's server came from (the SDK's `mcpServer.source`): `sdk` = an in-process
+   *  server Neo registered. Absent on non-MCP tools and on CLIs that predate the field. */
+  mcpSource?: string;
 }
 
 /** The OTHER project root `target` lies in (e.g. "/home/eticket-v3"), or undefined when it is in the
@@ -162,8 +165,13 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
 
   if (SAFE_TOOLS.has(tool)) return { allow: true };
 
-  // Neo's own in-process MCP tools (dispatch, ...). Foreign mcp__* falls to default-escalate.
-  if (tool.startsWith("mcp__neo__")) return { allow: true };
+  // Neo's own in-process MCP tools (dispatch, ...), trusted by PROVENANCE, not by name (reach plan P0.4):
+  // a project's configured server named "neo" is foreign. No source (an older CLI) keeps the old rule.
+  // Foreign mcp__* falls to default-escalate.
+  if (tool.startsWith("mcp__neo__")) {
+    if (ctx.mcpSource === undefined || ctx.mcpSource === "sdk") return { allow: true };
+    return { escalate: `a tool named like Neo's own (${tool}) served by a ${ctx.mcpSource} MCP server, not by Neo` };
+  }
 
   if (FENCED_TOOLS.has(tool)) {
     const raw = tool === "NotebookEdit" ? input.notebook_path : input.file_path;

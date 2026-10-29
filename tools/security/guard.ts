@@ -31,6 +31,10 @@ export function hostEnvAt(file: string): HostEnv {
 const TEMPLATE = /\.(example|sample|template|dist|defaults)$/i;
 const KEY_EXT = /\.(pem|key|p12|pfx|jks|keystore|ppk)$/i;
 const SSH_KEY = /^id_(rsa|ed25519|ecdsa|dsa)$/;
+/** The files in a `.ssh` folder that are NOT private keys (reach plan P0.3: every other file there is). */
+const SSH_PUBLIC = /^(known_hosts2?(\.old)?|config|authorized_keys2?|authorized_principals|allowed_signers|.*\.pub|environment|rc)$/;
+/** A file directly inside a `.ssh` folder that is not one of its public files: a private key, whatever its name. */
+const inSshFolder = (token: string) => /(^|\/)\.ssh\/[^/]+$/.test(token) && !SSH_PUBLIC.test(basename(token));
 const CRED_FILE = /^(\.netrc|\.pgpass|\.npmrc|\.pypirc|credentials|credentials\.json|\.git-credentials|service-account[^/]*\.json)$/;
 
 const bareName = (token: string) => basename(token).replace(/^\*+/, "").replace(/\*+$/, ""); // `.env*`, `*.pem`
@@ -38,6 +42,7 @@ const bareName = (token: string) => basename(token).replace(/^\*+/, "").replace(
 /** A name that is a secret on its own, wherever it appears: .env*, an SSH key, a credential store. */
 function isStrongSecret(token: string): boolean {
   if (/(^|\/)\.docker\/config\.json$/.test(token)) return true;
+  if (inSshFolder(token)) return true;
   const name = basename(token);
   if (!name || TEMPLATE.test(name)) return false;
   const bare = bareName(token);

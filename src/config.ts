@@ -138,6 +138,8 @@ export interface NeoConfig {
   budgetWindowMs: number;
   /** Shared secret for machine-to-machine POST /agent/ingress (from AGENT_INGRESS_SECRET env). */
   agentIngressSecret: string;
+  /** Its own secret for POST /inbox (from INBOX_INGEST_SECRET env); empty = use agentIngressSecret. */
+  inboxIngestSecret?: string;
   /** Customer-reply gateway /send endpoint — Neo POSTs an approved inbox reply here to email it
    *  (Neo itself holds no email/Cloudflare creds). From GATEWAY_SEND_URL env; empty → sending off. */
   gatewaySendUrl: string;
@@ -562,6 +564,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
+    inboxIngestSecret: process.env.INBOX_INGEST_SECRET ?? "",
     gatewaySendUrl: process.env.GATEWAY_SEND_URL ?? fileCfg.gatewaySendUrl ?? "",
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
