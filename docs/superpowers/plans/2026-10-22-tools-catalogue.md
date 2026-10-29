@@ -101,9 +101,9 @@ Catalogue { cards, errors, find, hint, relay, render }`. It has two real seams: 
 - [x] Steps 2–5: FAIL → implement → PASS → commit `feat(tools): ranking learns from what worked (ADR-0044, P3.1)`.
 
 ### Task 9: The first recipes
-**Files:** `docs/tools/recipe-deploy-check.md`, `recipe-prod-readonly-query.md`, `recipe-e2e-test.md`, `recipe-store-build.md` (scoped to the projects that have those tools); the test.
-- [ ] Step 1: failing test: the real catalogue loads with 0 errors, has 4 recipes, and `find("check the deploy is healthy")` returns `recipe-deploy-check` in the top 3.
-- [ ] Steps 2–5: FAIL → write the recipes from the existing project skills and memory notes (read-only; no writes outside Neo) → PASS → commit `docs(tools): first recipes (ADR-0044, P3.2)`. **Merge P3 → dev.**
+**Files:** `docs/tools/deploy-check.md`, `prod-readonly-query.md`, `e2e-test.md`, `store-build.md` (as built: no `recipe-` prefix, because install.ts already names the skill `neo-recipe-<id>`) (scoped to the projects that have those tools); the test.
+- [x] Step 1: failing test: the real catalogue loads with 0 errors, has 4 recipes, and `find("check the deploy is healthy")` returns `recipe-deploy-check` in the top 3.
+- [x] Steps 2–5: FAIL → write the recipes from the existing project skills and memory notes (read-only; no writes outside Neo) → PASS → commit `docs(tools): first recipes (ADR-0044, P3.2)`. **Merge P3 → dev.**
 
 ## Phase 4 — enrichment loop, skillify
 

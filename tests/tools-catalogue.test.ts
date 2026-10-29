@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findSecret } from "../src/engine/secret-patterns";
-import { DEFAULT_TOOLS_CFG, loadCards, parseCard, readToolsCfg, relayKeyNames } from "../src/engine/tools-catalogue";
+import { DEFAULT_TOOLS_CFG, loadCards, openCatalogue, parseCard, readToolsCfg, relayKeyNames } from "../src/engine/tools-catalogue";
+import { openLedger } from "../src/engine/ledger";
 
 const cfg = DEFAULT_TOOLS_CFG;
 const BODY = "## How to call\nrun it\n\n## When NOT to use\nnever\n";
@@ -152,11 +153,24 @@ const REAL = join(import.meta.dir, "..", "docs", "tools");
 test("the real docs/tools loads with zero errors", () => {
   const { cards, errors } = loadCards(REAL, DEFAULT_TOOLS_CFG);
   expect(errors).toEqual([]);
-  const active = cards.filter((c) => c.status === "active").map((c) => c.id).sort();
+  const active = cards.filter((c) => c.status === "active" && c.kind !== "recipe").map((c) => c.id).sort();
   expect(active).toEqual([
     "chrome-devtools", "codebase-memory", "create-loop", "disk-kit", "eticket-data-mcp", "playwright",
     "project-notes", "security-kit", "shared-browser", "stitch",
   ]);
+  const recipes = cards.filter((c) => c.kind === "recipe" && c.status === "active").map((c) => c.id).sort();
+  expect(recipes).toEqual(["deploy-check", "e2e-test", "prod-readonly-query", "store-build"]);
+});
+
+test("the real recipes are found by search: a deploy check ranks deploy-check in the top 3", () => {
+  const cat = openCatalogue({ dir: REAL, cfg: DEFAULT_TOOLS_CFG, ledger: openLedger(":memory:") });
+  const ctx = { project: "waselni", folder: "/home/waselni" };
+  expect(cat.find("check the deploy is healthy", ctx).slice(0, 3).map((m) => m.id)).toContain("deploy-check");
+  expect(cat.find("run the end to end tests in a real browser", ctx).slice(0, 3).map((m) => m.id)).toContain("e2e-test");
+  expect(cat.find("build the app for the store", ctx).slice(0, 3).map((m) => m.id)).toContain("store-build");
+  const et = { project: "eticket-v3", folder: "/home/eticket-v3" };
+  expect(cat.find("query production data read-only", et).slice(0, 3).map((m) => m.id)).toContain("prod-readonly-query");
+  expect(cat.find("query production data read-only", ctx).map((m) => m.id)).not.toContain("prod-readonly-query");
 });
 
 test("scaledown is a candidate api card that sends data off the host; no card holds a key value", () => {
@@ -175,7 +189,8 @@ test("scaledown is a candidate api card that sends data off the host; no card ho
 test("eticket-data-mcp is scoped to eticket-v3; active cards carry usage globs", () => {
   const { cards } = loadCards(REAL, DEFAULT_TOOLS_CFG);
   expect(cards.find((c) => c.id === "eticket-data-mcp")!.scope).toEqual(["eticket-v3"]);
-  for (const c of cards.filter((x) => x.status === "active")) expect(c.usage?.tools?.length || c.usage?.commands?.length).toBeTruthy();
+  // A recipe's use is its generated skill being loaded (derived from its id), so it needs no globs.
+  for (const c of cards.filter((x) => x.status === "active" && x.kind !== "recipe")) expect(c.usage?.tools?.length || c.usage?.commands?.length).toBeTruthy();
 });
 
 // Final review, Important #3 (T5): every card file that names a relay key keeps it in the engine — a

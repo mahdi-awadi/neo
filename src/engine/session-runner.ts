@@ -91,6 +91,7 @@ function toolDetail(input: unknown): string {
   if (str(i.pattern)) return trunc(str(i.pattern));
   if (str(i.url)) return trunc(str(i.url));
   if (str(i.project)) return str(i.project);
+  if (str(i.skill)) return trunc(str(i.skill)); // the Skill tool: which skill (the tools catalogue counts it, ADR-0044)
   if (str(i.description)) return trunc(str(i.description));
   return "";
 }

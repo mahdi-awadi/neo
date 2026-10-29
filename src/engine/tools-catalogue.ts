@@ -457,6 +457,9 @@ export interface UsageSource {
 
 export const nullUsage: UsageSource = { okUses: () => new Map(), p50: () => undefined };
 
+/** The skill `tools/catalogue/install.ts` generates for a card: `neo-recipe-<id>` or `neo-tool-<id>`. */
+export const skillName = (c: Pick<ToolCard, "id" | "kind">): string => `${c.kind === "recipe" ? "neo-recipe" : "neo-tool"}-${c.id}`;
+
 /** How far back the usage counts and the relay p50 look (spec A5). */
 const USAGE_WINDOW_MS = 30 * DAY_MS;
 
@@ -477,9 +480,11 @@ export function ledgerUsageSource(o: {
   now?: () => number;
 }): UsageSource {
   const now = o.now ?? Date.now;
-  const matchers = o.cards
-    .filter((c) => c.usage)
-    .map((c) => ({ id: c.id, tools: c.usage!.tools ?? [], commands: c.usage!.commands ?? [] }));
+  // Every card also counts a load of its generated skill (the Skill call's label), so a recipe needs no
+  // globs of its own.
+  const matchers = o.cards.map((c) => ({
+    id: c.id, tools: c.usage?.tools ?? [], commands: c.usage?.commands ?? [], skill: `Skill: ${skillName(c)}`,
+  }));
   let snap: { at: number; ok: Map<string, number>; p50: Map<string, number> } | undefined;
 
   function read(): NonNullable<typeof snap> {
@@ -491,7 +496,9 @@ export function ledgerUsageSource(o: {
       const perOrder = new Map<string, Set<string>>();
       for (const r of o.ledger.toolUsage({ since })) {
         for (const m of matchers) {
-          const hit = m.tools.some((g) => matchesGlob(g, r.tool)) || (r.tool === "Bash" && m.commands.some((g) => matchesGlob(g, r.label)));
+          const hit = m.tools.some((g) => matchesGlob(g, r.tool))
+            || (r.tool === "Bash" && m.commands.some((g) => matchesGlob(g, r.label)))
+            || (r.tool === "Skill" && r.label === m.skill);
           if (!hit) continue;
           let s = perOrder.get(m.id);
           if (!s) perOrder.set(m.id, (s = new Set()));

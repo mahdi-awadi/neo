@@ -3,6 +3,7 @@
 // `tool_api` events. Plain counts, no AI.
 import { expect, test } from "bun:test";
 import { openLedger, type Ledger } from "../src/engine/ledger";
+import { activityLabel } from "../src/engine/session-runner";
 import { DEFAULT_TOOLS_CFG, ledgerUsageSource, matchesGlob, openCatalogue, type ToolCard } from "../src/engine/tools-catalogue";
 
 const NOW = 1_800_000_000_000;
@@ -109,4 +110,18 @@ test("openCatalogue takes a usage factory: the ledger adapter gets the loaded ca
   order(led, "failed", [["mcp__twin-a__go", "go"]]);
   const cat = openCatalogue({ cards: twins, cfg: { ...DEFAULT_TOOLS_CFG, minScore: 0 }, ledger: led, usage: (cs) => ledgerUsageSource({ ledger: led, cards: cs, cfg: DEFAULT_TOOLS_CFG, now: () => NOW }) });
   expect(cat.find("frobnicate widgets", { project: "p", folder: "/p" }).map((m) => m.id)).toEqual(["twin-b", "twin-a"]);
+});
+
+test("a Skill call's label names the skill, so loading a generated skill counts for its card", () => {
+  expect(activityLabel("Skill", { skill: "neo-recipe-deploy-check" })).toBe("Skill: neo-recipe-deploy-check");
+  const led = openLedger(":memory:");
+  const recipe = card("deploy-check", undefined, { kind: "recipe" });
+  const tool = card("shared-browser", undefined, { kind: "cli" });
+  order(led, "done", [["Skill", "Skill: neo-recipe-deploy-check"]]);
+  order(led, "done", [["Skill", "Skill: neo-tool-shared-browser"], ["Skill", "Skill: neo-recipe-deploy-check"]]);
+  order(led, "done", [["Bash", "Bash: echo Skill: neo-tool-shared-browser"]]); // not a Skill call
+  const u = ledgerUsageSource({ ledger: led, cards: [recipe, tool], cfg: DEFAULT_TOOLS_CFG, now: () => NOW });
+  const m = u.okUses(["deploy-check", "shared-browser"]);
+  expect(m.get("deploy-check")).toBe(2);
+  expect(m.get("shared-browser")).toBe(1);
 });

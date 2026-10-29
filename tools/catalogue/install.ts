@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_TOOLS_CFG, loadCards, type ToolCard, type ToolsCfg } from "../../src/engine/tools-catalogue";
+import { DEFAULT_TOOLS_CFG, loadCards, skillName, type ToolCard, type ToolsCfg } from "../../src/engine/tools-catalogue";
 
 export const MARKER = ".neo-tool";
 const MARKER_TEXT = "Generated from the Neo tools catalogue (ADR-0044). Do not edit; run tools/catalogue/install.ts.\n";
@@ -24,7 +24,7 @@ const scopeText = (c: ToolCard) => (c.scope === "all" ? "all" : c.scope.join(", 
 /** One skill per active card. The description is JSON-quoted (valid YAML) so `: " #` in `when` is safe. */
 export function renderSkills(cards: ToolCard[]): RenderedSkill[] {
   return cards.filter((c) => c.status === "active").map((c) => {
-    const name = `${c.kind === "recipe" ? "neo-recipe" : "neo-tool"}-${c.id}`;
+    const name = skillName(c);
     const steps = c.steps?.length ? `## Steps\n${c.steps.map((s, i) => `${i + 1}. ${s.card}: ${s.do}`).join("\n")}\n\n` : "";
     const md = `---\nname: ${name}\ndescription: ${JSON.stringify(`${c.when} (scope: ${scopeText(c)})`)}\n---\n` +
       `<!-- Generated from docs/tools/${c.file} by tools/catalogue/install.ts. Do not edit. -->\n` +
