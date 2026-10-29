@@ -4,6 +4,7 @@
  *  the same row reopens. Plain code over the ledger — no AI. */
 import type { AttentionDraft, AttentionRow, AttentionSource, Ledger } from "./ledger";
 import { faults } from "./fault";
+import { resolveSuperseded } from "./supersede";
 
 export type { AttentionDraft, AttentionRow, AttentionSeverity, AttentionSource } from "./ledger";
 
@@ -38,6 +39,8 @@ export function reconcile(
         resolved.push(row.id);
       } else if (row.dismissed) ledger.updateAttention(row.id, { dismissed: false }); // gone: its next return reopens it
     }
+    // ADR-0065: an older version of an item that is open in a newer one closes, with the reason.
+    resolved.push(...resolveSuperseded(ledger, project, source, now));
   });
   return { opened, resolved };
 }

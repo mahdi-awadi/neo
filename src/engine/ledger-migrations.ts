@@ -437,6 +437,13 @@ function explainColumns(db: Database): void {
   db.run(`ALTER TABLE project_todos ADD COLUMN summary TEXT`);
 }
 
+/** Version 16 — pins (ADR-0065): the operator's server-side marks on the "Pinned — needs you" strip. `ref` is
+ *  `att:<id>`, `dec:<id>` or `todo:<id>`; `state` is `pinned` (keep it on the strip) or `unpinned` (keep a
+ *  needs-you item off it). Frozen once shipped. */
+function pins(db: Database): void {
+  db.run(`CREATE TABLE pins (ref TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('pinned', 'unpinned')), at INTEGER NOT NULL)`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -453,6 +460,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 13, name: "note questions and live delivery", up: noteQuestions },
   { version: 14, name: "todo lanes", up: todoLanes },
   { version: 15, name: "attention facts and todo summaries", up: explainColumns },
+  { version: 16, name: "pins", up: pins },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

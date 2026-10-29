@@ -155,6 +155,15 @@ export interface AttentionDraft {
   facts?: AttentionFacts;
 }
 
+/** A pin (ADR-0065): `pinned` keeps an item on the "Pinned — needs you" strip, `unpinned` keeps a
+ *  needs-you item off it. `ref`: `att:<id>`, `dec:<id>` or `todo:<id>`. */
+export type PinState = "pinned" | "unpinned";
+export interface PinRow {
+  ref: string;
+  state: PinState;
+  at: number;
+}
+
 /** An attention item's structured facts (ADR-0059). Values are short strings or numbers. */
 export type AttentionFacts = Record<string, string | number>;
 
@@ -405,6 +414,8 @@ export interface Ledger {
    *  `done` because other work built it (ADR-0054); `evidence` goes in the event. Returns its id, or
    *  undefined when no awaiting plan has that card. */
   markPlanDoneByCard(decisionId: string, evidence: string, at?: number): number | undefined;
+  /** The plan whose current card is `decisionId` (ADR-0065: the strip's Approve button). */
+  planByCard(decisionId: string): PlanRow | undefined;
   /** Which of `ids` are a plan's current card (one indexed read; the console polls it, ADR-0054). */
   planCardIds(ids: string[]): Set<string>;
   /** The newest todo an Execute made for this plan. */
@@ -441,6 +452,9 @@ export interface Ledger {
   getMeta(key: string): { value: unknown; updatedAt: number } | undefined;
   setMeta(key: string, value: unknown, at: number): void;
   deleteMeta(key: string): void;
+  /** The operator's pins (ADR-0065), newest first. `state` null removes the pin. */
+  setPin(ref: string, state: PinState | null, at: number): void;
+  listPins(): PinRow[];
   /** Record this daemon's start; only the newest 100 boots are kept. */
   recordBoot(b: BootRow): void;
   /** The newest boot record (the running build). */
@@ -1203,6 +1217,10 @@ export function openLedger(
       const r = db.query(`SELECT * FROM plans WHERE id = ?`).get(id) as PlanDbRow | null;
       return r ? mapPlanRow(r) : undefined;
     },
+    planByCard(decisionId) {
+      const r = db.query(`SELECT * FROM plans WHERE decision_id = ? ORDER BY id DESC LIMIT 1`).get(decisionId) as PlanDbRow | null;
+      return r ? mapPlanRow(r) : undefined;
+    },
     planCardIds(ids) {
       const out = new Set<string>();
       for (let i = 0; i < ids.length; i += 500) {
@@ -1354,6 +1372,13 @@ export function openLedger(
     },
     deleteMeta(key) {
       db.query(`DELETE FROM meta WHERE key = ?`).run(key);
+    },
+    setPin(ref, state, at) {
+      if (state === null) db.query(`DELETE FROM pins WHERE ref = ?`).run(ref);
+      else db.query(`INSERT INTO pins (ref, state, at) VALUES (?, ?, ?) ON CONFLICT(ref) DO UPDATE SET state = excluded.state, at = excluded.at`).run(ref, state, at);
+    },
+    listPins() {
+      return db.query(`SELECT ref, state, at FROM pins ORDER BY at DESC, ref`).all() as PinRow[];
     },
     recordBoot(b) {
       db.transaction(() => {

@@ -335,7 +335,7 @@ test("GET /api/projects lists the known projects (bounded); GET /api/projects/:n
     mkdirSync(f);
     a.ledger.recordOrder({ id: crypto.randomUUID(), source: "neo", folder: f, task: "t", chatId: 0, createdAt: 1 });
   }
-  reconcile(a.ledger, "git", "p050", [{ project: "p050", folder: join(root, "p050"), source: "git", kind: "dirty", key: "k", title: "dirty", severity: "high" }], Date.now());
+  reconcile(a.ledger, "engine", "p050", [{ project: "p050", folder: join(root, "p050"), source: "engine", kind: "thread_failed", key: "k", title: "run failed", severity: "high" }], Date.now());
   const get = (path: string, cookie?: string) => a.instance.fetch(new Request(`http://neo.test${path}`, cookie ? { headers: { cookie } } : {}));
   expect((await get("/api/projects")).status).toBe(401);
   const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));

@@ -14,6 +14,7 @@ import { faults } from "./fault";
 import { exec } from "./update-sys";
 import type { ExecResult } from "./updater";
 import type { Registry } from "./registry";
+import { attentionClass } from "./needs-you";
 
 /** Bound on the worktree status read and remove. */
 const REMOVE_TIMEOUT_MS = 30_000;
@@ -213,7 +214,9 @@ export function renderAttention(
   const rows = listOpen(ledger, { project: o.project, now: o.now });
   if (!rows.length) return { text: o.project ? `✓ nothing needs attention in ${o.project}` : "✓ nothing needs attention", buttons: [] };
   const byProject = new Map<string, AttentionRow[]>();
-  for (const r of rows) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]); // rows come severity first
+  // Needs-you items first (ADR-0065), each class in listOpen's order (severity, then newest).
+  const ranked = [...rows].sort((a, b) => Number(attentionClass(a.kind) !== "needs_you") - Number(attentionClass(b.kind) !== "needs_you"));
+  for (const r of ranked) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]);
   const lines = [`⚠ attention: ${rows.length} open${o.project ? ` in ${o.project}` : ""}`];
   const buttons: AttentionRow[] = [];
   let shown = 0;
@@ -245,19 +248,22 @@ export function renderDigest(
   const ids = rows.map((r) => r.id);
   const prev = new Set(o.prevIds);
   const fresh = rows.filter((r) => !prev.has(r.id)).length;
-  const high = rows.filter((r) => r.severity === "high").length;
+  // ADR-0065: what needs the operator is classed by kind, never by the producer's severity.
+  const needs = (r: AttentionRow): boolean => attentionClass(r.kind) === "needs_you";
+  const high = rows.filter(needs).length;
   const priority = high > 0 ? "result" : "progress";
-  if (!fresh && !high) return { text: `☀ attention today: ${rows.length} open, nothing new, nothing high — /attention`, priority, buttons: [], ids };
-  const lines = [`☀ attention today: ${rows.length} open, ${high} high, ${fresh} new since the last digest`];
+  if (!fresh && !high) return { text: `☀ attention today: ${rows.length} open, nothing new, nothing needs you — /attention`, priority, buttons: [], ids };
+  const lines = [`☀ attention today: ${rows.length} open, ${high} need you, ${fresh} new since the last digest`];
   const buttons: Array<AttentionRow & { actions: AttentionAction[] }> = [];
   const byProject = new Map<string, AttentionRow[]>();
   for (const r of rows) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]); // severity first
   let shownProjects = 0;
   for (const [project, items] of byProject) {
-    const top = items.filter((x) => x.severity === "high").slice(0, TOP_HIGH);
+    const top = items.filter(needs).slice(0, TOP_HIGH);
     if (lines.length + 1 + top.length > o.maxLines) break; // one bounded message (Telegram: 4096)
-    const count = (sev: AttentionRow["severity"]) => items.filter((r) => r.severity === sev).length;
-    lines.push(`${project}: ${(["high", "normal", "low"] as const).filter((s) => count(s)).map((s) => `${count(s)} ${s}`).join(" · ")}`);
+    const n = top.length ? items.filter(needs).length : 0;
+    const house = items.length - items.filter(needs).length;
+    lines.push(`${project}: ${[...(n ? [`${n} need you`] : []), ...(house ? [`${house} housekeeping`] : [])].join(" · ")}`);
     for (const r of top) {
       lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${attentionTitle(r)}`);
       buttons.push({ ...r, actions: attentionActions(r).filter((a) => a === "todo") });
@@ -269,7 +275,7 @@ export function renderDigest(
   return { text: lines.join("\n"), priority, buttons, ids };
 }
 
-/** High items shown per project in the digest. */
+/** Needs-you items shown per project in the digest. */
 const TOP_HIGH = 3;
 
 export interface DigestDeps {

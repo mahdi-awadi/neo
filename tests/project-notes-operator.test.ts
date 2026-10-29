@@ -100,7 +100,8 @@ test("attention lines name the sender of a note", () => {
   const r = rig();
   const id = send(r);
   expect(renderAttention(r.ledger, { now: 2_000, maxLines: 30, maxButtons: 5 }).text).toContain(`#${id} [Finding] stale pnr — from prod-ops`);
-  expect(renderDigest(r.ledger, { now: 2_000, prevIds: [], maxLines: 30 }).text).toContain(`#${id} [Finding] stale pnr — from prod-ops`);
+  // A finding is housekeeping (ADR-0065): the digest counts it and lists only what needs the operator.
+  expect(renderDigest(r.ledger, { now: 2_000, prevIds: [], maxLines: 30 }).text).toContain("1 housekeeping");
 });
 
 export type { Ledger };

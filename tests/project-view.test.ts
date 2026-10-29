@@ -222,11 +222,11 @@ test("an unknown project → undefined; a known folder with no data → health u
 });
 
 test("health table (pure)", () => {
-  const base = { healthUrl: undefined, probe: undefined, high: 0, hasData: true };
+  const base = { healthUrl: undefined, probe: undefined, needs: 0, hasData: true };
   expect(projectHealth(base)).toBe("ok");
   expect(projectHealth({ ...base, hasData: false })).toBe("unknown");
-  expect(projectHealth({ ...base, high: 1 })).toBe("attention");
-  expect(projectHealth({ ...base, healthUrl: "https://x", probe: { at: 1, ok: false }, high: 1 })).toBe("down");
+  expect(projectHealth({ ...base, needs: 1 })).toBe("attention");
+  expect(projectHealth({ ...base, healthUrl: "https://x", probe: { at: 1, ok: false }, needs: 1 })).toBe("down");
   expect(projectHealth({ ...base, healthUrl: "https://x", probe: { at: 1, ok: true } })).toBe("ok");
   // A failed probe without a configured healthUrl is not "down" (the URL was removed since).
   expect(projectHealth({ ...base, probe: { at: 1, ok: false } })).toBe("ok");
@@ -234,11 +234,17 @@ test("health table (pure)", () => {
   expect(projectHealth({ ...base, healthUrl: "https://x" })).toBe("ok");
 });
 
-test("health in the view: down from the probe meta when healthUrl is configured; attention on a high item", async () => {
+test("health in the view: down from the probe meta when healthUrl is configured; attention only on a needs-you item (ADR-0065)", async () => {
   const s = setup({ projects: { gold: { healthUrl: "https://gold.example/health" } } });
   s.ledger.recordOrder(order(s.dir));
+  // A high housekeeping item (files left uncommitted) does not raise the badge.
   reconcile(s.ledger, "git", "gold", [{ project: "gold", folder: s.dir, source: "git", kind: "dirty", key: s.dir, title: "u", severity: "high" }], NOW);
-  expect((await projectView(s.deps, "gold", NOW))!.health).toBe("attention");
+  expect((await projectView(s.deps, "gold", NOW))!.health).toBe("ok");
+  reconcile(s.ledger, "engine", "gold", [{ project: "gold", folder: s.dir, source: "engine", kind: "thread_failed", key: "t1", title: "run failed", severity: "normal" }], NOW);
+  const v = (await projectView(s.deps, "gold", NOW))!;
+  expect(v.health).toBe("attention");
+  expect(v.needsYou.map((i) => i.kind)).toEqual(["attention"]);
+  expect(v.attention.map((a) => [a.kind, a.cls])).toEqual([["dirty", "housekeeping"], ["thread_failed", "needs_you"]]);
   s.ledger.setMeta("probe:gold", { at: NOW, ok: false, error: "503" }, NOW);
   expect((await projectView(s.deps, "gold", NOW))!.health).toBe("down");
 });
@@ -254,7 +260,7 @@ test("projectSummary: name, folder, state/line, queue count, open attention by s
     { ...d, kind: "unpushed", key: "c", severity: "normal" },
   ], NOW);
   const sum = projectSummary(s.deps, "gold", NOW)!;
-  expect(sum).toMatchObject({ name: "gold", folder: s.dir, queue: 1, attention: { high: 1, normal: 2, low: 0 }, health: "attention" });
+  expect(sum).toMatchObject({ name: "gold", folder: s.dir, queue: 1, attention: { high: 1, normal: 2, low: 0 }, needs: 0, housekeeping: 3, health: "ok" });
   expect(sum.state).toBe("starting");
   expect(sum.line).toStartWith("starting");
   expect("git" in sum).toBe(false);

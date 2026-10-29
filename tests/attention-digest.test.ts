@@ -1,5 +1,5 @@
-// P5 Task 5.4 (spec §7, AC5.5): one daily digest — counts per project, the top high items with
-// → todo, to the Decisions group only when something is high.
+// P5 Task 5.4 (spec §7, AC5.5) + ADR-0065: one daily digest — counts per project, the top items that
+// need the operator with → todo, to the Decisions group only when something needs them.
 import { test, expect } from "bun:test";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
@@ -9,31 +9,32 @@ import { renderDigest, runDigest } from "../src/engine/attention-actions";
 
 const d = (over: Partial<AttentionDraft>): AttentionDraft => ({ project: "gold", folder: "/home/gold", source: "engine", kind: "queue_paused", key: "k", title: "t", severity: "normal", ...over });
 
-test("renderDigest: a high item → result priority, per-project counts, top 3 high with → todo; empty projects omitted", () => {
+test("renderDigest: a needs-you item → result priority, per-project counts, top 3 needs-you with → todo (ADR-0065)", () => {
   const l = openLedger(":memory:");
-  reconcile(l, "engine", "gold", [1, 2, 3, 4].map((n) => d({ key: `h${n}`, title: `high ${n}`, severity: "high" })).concat([d({ key: "n1", title: "normal 1" })]), 100);
-  reconcile(l, "engine", "acme", [d({ project: "acme", folder: "/home/acme", key: "a", title: "acme normal" })], 100);
+  // A high housekeeping item never makes the top or the priority; a needs-you kind does, whatever its severity.
+  reconcile(l, "engine", "gold", [1, 2, 3, 4].map((n) => d({ key: `h${n}`, title: `high ${n}`, severity: "high" })).concat([d({ key: "n1", kind: "dispatch_spinning", title: "spinning", severity: "high" })]), 100);
+  reconcile(l, "engine", "acme", [d({ project: "acme", folder: "/home/acme", key: "a", kind: "dispatch_spinning", title: "acme spinning" })], 100);
   const r = renderDigest(l, { now: 200, prevIds: [], consoleUrl: "https://neo.example/", maxLines: 30 });
   expect(r.priority).toBe("result");
   expect(r.text.split("\n")).toEqual([
-    "☀ attention today: 6 open, 4 high, 6 new since the last digest",
-    "gold: 4 high · 1 normal",
+    "☀ attention today: 6 open, 4 need you, 6 new since the last digest",
+    "gold: 4 need you · 1 housekeeping",
     "  🔴 #4 [Paused queue] high 4", // listOpen's order (as /attention): severity, then newest
     "  🔴 #3 [Paused queue] high 3",
     "  🔴 #2 [Paused queue] high 2",
-    "acme: 1 normal",
+    "acme: 1 housekeeping",
     "https://neo.example/",
   ]);
   expect(r.buttons.map((b) => [b.id, b.actions])).toEqual([[4, ["todo"]], [3, ["todo"]], [2, ["todo"]]]);
 });
 
-test("renderDigest: nothing high → progress; nothing new and nothing high → one line", () => {
+test("renderDigest: nothing needs you → progress; nothing new and nothing needs you → one line", () => {
   const l = openLedger(":memory:");
-  reconcile(l, "engine", "gold", [d({ key: "n1" })], 100);
+  reconcile(l, "engine", "gold", [d({ key: "n1", kind: "dispatch_spinning", severity: "high" })], 100);
   const rows = listOpen(l, { now: 200 });
   expect(renderDigest(l, { now: 200, prevIds: [], maxLines: 30 }).priority).toBe("progress");
   const quiet = renderDigest(l, { now: 200, prevIds: rows.map((r) => r.id), maxLines: 30 });
-  expect(quiet).toMatchObject({ text: "☀ attention today: 1 open, nothing new, nothing high — /attention", priority: "progress", buttons: [] });
+  expect(quiet).toMatchObject({ text: "☀ attention today: 1 open, nothing new, nothing needs you — /attention", priority: "progress", buttons: [] });
 });
 
 test("runDigest: due once at digestAt (survives a restart via meta), roots its own attention thread, sends with its priority", async () => {
@@ -58,7 +59,7 @@ test("the digest counts every open item (past one page) and stays one bounded me
   const l = openLedger(":memory:");
   for (let p = 0; p < 40; p++) reconcile(l, "engine", `p${p}`, [1, 2, 3].map((n) => d({ project: `p${p}`, folder: `/home/p${p}`, key: `k${n}`, title: `high ${n}`, severity: "high" })), 100);
   const r = renderDigest(l, { now: 200, prevIds: [], maxLines: 30 });
-  expect(r.text.split("\n")[0]).toBe("☀ attention today: 120 open, 120 high, 120 new since the last digest");
+  expect(r.text.split("\n")[0]).toBe("☀ attention today: 120 open, 120 need you, 120 new since the last digest");
   expect(r.text.split("\n").length).toBeLessThanOrEqual(31);
   expect(r.text.length).toBeLessThan(4096);
   expect(r.text).toContain("more projects");

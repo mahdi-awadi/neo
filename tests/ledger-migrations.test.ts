@@ -180,3 +180,26 @@ test("migration 15 adds attention facts and todo summaries; old rows read withou
   led.updateAttention(id, { facts: "{not json" });
   expect(led.attentionById(id)!.facts).toBeUndefined();
 });
+
+test("migration 16 adds the pins table; pins round-trip, unpin is kept, clear removes (ADR-0065)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-mig-"));
+  const path = join(dir, "ledger.db");
+  const v15 = new Database(path);
+  migrate(v15, { path, migrations: MIGRATIONS.filter((x) => x.version <= 15) });
+  v15.close();
+  const db = new Database(path);
+  expect(migrate(db, { path }).from).toBe(15);
+  expect(version(db)).toBe(16);
+  db.close();
+  const led = openLedger(path);
+  expect(led.listPins()).toEqual([]);
+  led.setPin("att:7", "pinned", 10);
+  led.setPin("dec:abc", "unpinned", 11);
+  led.setPin("att:7", "pinned", 12); // re-pin: one row, newest time
+  expect(led.listPins()).toEqual([
+    { ref: "att:7", state: "pinned", at: 12 },
+    { ref: "dec:abc", state: "unpinned", at: 11 },
+  ]);
+  led.setPin("att:7", null, 13);
+  expect(led.listPins()).toEqual([{ ref: "dec:abc", state: "unpinned", at: 11 }]);
+});

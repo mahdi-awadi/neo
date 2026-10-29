@@ -30,12 +30,14 @@ screenshots show the old build, so todo rows there still read "Execute the plan 
      kind must be classed.
    - `needsYou(deps, now): NeedsYouItem[]` — `{ ref, project, kind: "plan"|"decision"|"alert"|"todo"|
      "attention", why, action: "approve"|"answer"|"acknowledge"|"retry"|"open", since, pinned }`, from
-     `waitingWork` (owner operator), failed todos, needs-you attention items, manual pins; minus unpinned.
-2. Ledger v16: `pins (ref TEXT PRIMARY KEY, state TEXT NOT NULL, at INTEGER NOT NULL)`;
-   `attention_items.resolved_reason TEXT`. `setPin(ref, state|null)`, `listPins()`.
+     `waitingWork` (every open decision — one the sweep has not judged yet too, fail closed), failed todos, needs-you attention items, manual pins; minus unpinned.
+2. Ledger v16: `pins (ref TEXT PRIMARY KEY, state TEXT NOT NULL, at INTEGER NOT NULL)`.
+   `setPin(ref, state|null)`, `listPins()`, `planByCard(decisionId)`.
 3. `src/engine/supersede.ts`: `supersededBy(rows)` → `[{ id, by }]`: same project + kind, stem = branch
    (or `facts.dep`) minus a trailing `-?v?\d+(\.\d+)*`, lower version (numeric compare) than an open
-   sibling. Run after each scan; resolves with reason `superseded by #<id> (<branch>)`.
+   sibling. Run inside `reconcile` (every producer path); resolves as dismissed (stays closed while the
+   scan still sees it) with `resolution` `{how:"superseded", by, key, reason:"superseded by #<id> (<branch>)"}`.
+   Only branch-named kinds and dependency PRs; an id-keyed kind (`todo:903`) never.
 4. Views: `projectHealth` reads the needs-you count (`attention` when > 0); the project card shows
    "N need you" and the project page splits **Needs you** and a collapsed **Housekeeping (N)**.
    `GET /api/needs-you` → the strip; `POST /api/pin { ref, state }`. `GET /api/todo/:id` → the detail.

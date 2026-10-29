@@ -16,14 +16,16 @@ the high items are 11 notes between projects (`note_fyi` 9, `note_finding` 1, `n
 
 1. **One classifier, `attentionClass(kind) → "needs_you" | "housekeeping"`**, a fixed table in code. An
    unknown kind is `needs_you` (fail closed). The producer's severity only orders items inside a class.
-2. **One read model, `needsYou(ledger, now)`** joins: waiting work with `owner: "operator"` (ADR-0054:
-   plans, decisions, alerts), failed todos, open attention items classed `needs_you`, and manual pins;
+2. **One read model, `needsYou(ledger, now)`** joins: every open decision from waiting work (ADR-0054:
+   plans, decisions, alerts — one the sweep may still close counts too, fail closed), failed todos, open attention items classed `needs_you`, and manual pins;
    minus items the operator unpinned. The badge, its count, the pinned strip and `/attention` read it.
 3. **Pins are a ledger table** (`pins`, migration v16): `(ref, state pinned|unpinned, at)`, ref =
    `att:<id>` | `dec:<id>` | `todo:<id>`. Server-side, so every device agrees.
-4. **Superseded items are resolved by the engine** with `resolved_reason`: same project, same kind, same
-   stem (a branch or dependency name with its trailing version removed), a lower version than an open
-   sibling. No branch or PR is deleted or closed.
+4. **Superseded items are resolved by the engine** inside `reconcile`, as dismissed (the next scan that
+   still sees one keeps it closed), with the reason in the existing `resolution` JSON: same project, same
+   kind, same stem (a branch or dependency name with its trailing version removed), a lower version than
+   an open sibling. Only branch-named kinds and dependency PRs; an id-keyed kind never. No branch or PR
+   is deleted or closed.
 5. **Todo detail is one endpoint** (`GET /api/todo/:id`) on the existing todo read; actions reuse
    `POST /api/todo`. Every console button goes through one `act()` helper: pressed + busy state, then a
    toast with the engine's reply text.
@@ -41,4 +43,4 @@ the high items are 11 notes between projects (`note_fyi` 9, `note_finding` 1, `n
 ## Consequences
 
 - Projects with only housekeeping read OK; their items sit under "housekeeping (N)".
-- Restart-gated: migration v16 runs at the restart (additive: a table and one nullable column).
+- Restart-gated: migration v16 runs at the restart (additive: one table).
