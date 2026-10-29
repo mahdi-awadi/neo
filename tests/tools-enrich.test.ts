@@ -36,25 +36,46 @@ test("list: the terms of the last N days, most frequent first, with their projec
   expect(r.stdout).not.toContain("noise");
 });
 
-test("check is the goal: unmet while misses are unhandled, met after a mark on a real branch", () => {
+test("check is the goal: unmet while misses are unhandled, met after a mark through what list printed", () => {
   const now = Date.now();
   const path = ledgerWith([{ terms: ["lottie"], at: now - DAY }]);
-  const branches = new Set(["chore/tools-enrich-x"]);
-  const git = (_: string, a: string[]) => (branches.has(a.at(-1)!.replace("refs/heads/", "")) ? "sha\n" : undefined);
-  expect(runMisses(["check", "--ledger", path], { now: () => now }).code).toBe(1);
-  expect(runMisses(["mark", "--branch", "nope", "--ledger", path], { git, now: () => now }).code).toBe(2);
-  expect(runMisses(["mark", "--branch", "-x", "--ledger", path], { git, now: () => now }).code).toBe(2);
-  expect(runMisses(["mark", "--ledger", path], { git, now: () => now }).code).toBe(2);
-  expect(runMisses(["check", "--ledger", path], { now: () => now }).code).toBe(1); // a refused mark changes nothing
-  expect(runMisses(["mark", "--branch", "chore/tools-enrich-x", "--ledger", path], { git, now: () => now })).toEqual({ code: 0, stdout: "marked 1 searches as handled (branch chore/tools-enrich-x)\n" });
-  expect(runMisses(["check", "--ledger", path], { now: () => now })).toEqual({ code: 0, stdout: "" });
-  // A new miss after the mark → unmet again; `--none` with a reason handles it.
-  openLedger(path).recordEvent("tools_miss", { at: now + 1000, data: { project: "gold", terms: ["qr"] } });
-  expect(runMisses(["check", "--ledger", path], { now: () => now + 2000 }).code).toBe(1);
-  expect(runMisses(["list", "--ledger", path], { now: () => now + 2000 }).stdout).toContain("qr · 1 · gold");
-  expect(runMisses(["mark", "--none", "  ", "--ledger", path], { git, now: () => now + 2000 }).code).toBe(2);
-  expect(runMisses(["mark", "--none", "qr is a one-off name", "--ledger", path], { git, now: () => now + 2000 }).code).toBe(0);
-  expect(runMisses(["check", "--ledger", path], { now: () => now + 3000 }).code).toBe(0);
+  // A fake git: one card branch that changes docs/tools only, one that also changes code.
+  const changed: Record<string, string> = { "chore/tools-enrich-x": "docs/tools/playwright.md\n", "chore/tools-enrich-bad": "docs/tools/a.md\nsrc/daemon.ts\n", "chore/tools-enrich-empty": "" };
+  const git = (_: string, a: string[]) => {
+    const b = Object.keys(changed).find((k) => a.some((x) => x.endsWith(`refs/heads/${k}`)));
+    if (!b) return undefined;
+    return a[0] === "diff" ? changed[b] : "sha\n";
+  };
+  const run = (args: string[], at = now) => runMisses([...args, "--ledger", path], { git, now: () => at });
+  expect(run(["check"]).code).toBe(1);
+  const through = /--through (\d+)/.exec(run(["list"]).stdout)![1]!;
+  expect(Number(through)).toBe(now - DAY);
+  for (const bad of [
+    ["mark", "--through", through, "--branch", "master"], // not a card branch
+    ["mark", "--through", through, "--branch", "chore/tools-enrich-nope"], // does not exist
+    ["mark", "--through", through, "--branch", "chore/tools-enrich-bad"], // changes code
+    ["mark", "--through", through, "--branch", "chore/tools-enrich-empty"], // changes nothing
+    ["mark", "--branch", "chore/tools-enrich-x"], // no --through
+    ["mark", "--through", through], // neither --branch nor --none
+    ["mark", "--through", through, "--none", "--branch", "chore/tools-enrich-x"], // a flag is not a value
+    ["mark", "--through", through, "--none", "  "], // no reason
+  ]) expect(run(bad).code).toBe(2);
+  expect(run(["check"]).code).toBe(1); // a refused mark changes nothing
+  expect(run(["mark", "--through", through, "--branch", "chore/tools-enrich-x"])).toEqual({ code: 0, stdout: "marked 1 searches as handled (branch chore/tools-enrich-x)\n" });
+  expect(run(["check"])).toEqual({ code: 0, stdout: "" });
+});
+
+test("a miss that arrives after list stays unhandled after the mark; --none with a reason handles it", () => {
+  const now = Date.now();
+  const path = ledgerWith([{ terms: ["lottie"], at: now - DAY }]);
+  const run = (args: string[], at: number) => runMisses([...args, "--ledger", path], { now: () => at });
+  const through = /--through (\d+)/.exec(run(["list"], now).stdout)![1]!;
+  openLedger(path).recordEvent("tools_miss", { at: now + 1000, data: { project: "gold", terms: ["qr"] } }); // while the worker works
+  expect(run(["mark", "--through", through, "--none", "lottie is a one-off name"], now + 2000).code).toBe(0);
+  expect(run(["check"], now + 3000).code).toBe(1);
+  const list = run(["list"], now + 3000).stdout;
+  expect(list).toContain("qr · 1 · gold");
+  expect(list).not.toContain("lottie");
 });
 
 test("no misses → check met, list says so; a bad command or --days → exit 2", () => {

@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { openLedger, type Ledger } from "../src/engine/ledger";
 import { activityLabel } from "../src/engine/session-runner";
-import { DEFAULT_TOOLS_CFG, ledgerUsageSource, matchesGlob, openCatalogue, type ToolCard } from "../src/engine/tools-catalogue";
+import { DEFAULT_TOOLS_CFG, ledgerUsageSource, matchesGlob, openCatalogue, parseCard, type ToolCard } from "../src/engine/tools-catalogue";
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -16,7 +16,7 @@ const card = (id: string, usage: ToolCard["usage"], over: Partial<ToolCard> = {}
 
 let seq = 0;
 /** One order with its tool calls and (optionally) its outcome. */
-function order(led: Ledger, status: string | undefined, calls: Array<[tool: string, label: string]>, at = NOW - DAY, verdict: "allow" | "deny" = "allow"): string {
+function order(led: Ledger, status: string | undefined, calls: Array<[tool: string, label: string]>, at = NOW - DAY, verdict: "allow" | "auto" | "escalate" | "deny" = "allow"): string {
   const id = `o${++seq}`;
   led.recordOrder({ id, source: "neo", folder: "/p", task: "t", chatId: 1, createdAt: at });
   for (const [tool, label] of calls) led.recordToolAction({ orderId: id, folder: "/p", tool, label, verdict, at });
@@ -124,4 +124,28 @@ test("a Skill call's label names the skill, so loading a generated skill counts 
   const m = u.okUses(["deploy-check", "shared-browser"]);
   expect(m.get("deploy-check")).toBe(2);
   expect(m.get("shared-browser")).toBe(1);
+});
+
+test("review fix: matchesGlob has no catastrophic backtracking (10 stars on a 60-char label)", () => {
+  const t0 = Date.now();
+  expect(matchesGlob("*a*a*a*a*a*a*a*a*a*b", "a".repeat(60))).toBe(false);
+  expect(matchesGlob("*a*b*c", "xxaxxbxxc")).toBe(true);
+  expect(matchesGlob("**", "")).toBe(true);
+  expect(Date.now() - t0).toBeLessThan(200);
+});
+
+test("review fix: a call the operator was asked about (escalate) does not count; only allow and auto do", () => {
+  const led = openLedger(":memory:");
+  order(led, "done", [["mcp__playwright__browser_click", "browser_click"]], NOW - DAY, "escalate");
+  order(led, "done", [["mcp__playwright__browser_click", "browser_click"]], NOW - DAY, "auto");
+  const u = ledgerUsageSource({ ledger: led, cards, cfg: DEFAULT_TOOLS_CFG, now: () => NOW });
+  expect(u.okUses(["playwright"]).get("playwright")).toBe(1);
+});
+
+test("review fix: card usage globs are bounded and tools globs name MCP tools", () => {
+  const card = (usage: string) => `---\nid: gl\nkind: cli\nstatus: candidate\nowner: neo\nwhen: w\nscope: all\nenv: []\ncost: c\nlimits: l\ndataLeavesHost: false\nusage:\n  ${usage}\n---\n## How to call\nx\n## When NOT to use\ny\n`;
+  expect(parseCard("gl.md", card('commands: ["*a*b*c*d*"]'), DEFAULT_TOOLS_CFG).errors.join()).toContain("at most 3 *");
+  expect(parseCard("gl.md", card(`commands: ["${"x".repeat(101)}"]`), DEFAULT_TOOLS_CFG).errors.join()).toContain("at most 100 chars");
+  expect(parseCard("gl.md", card('tools: ["Read"]'), DEFAULT_TOOLS_CFG).errors.join()).toContain("start with mcp__");
+  expect(parseCard("gl.md", card('tools: ["mcp__x__*"]'), DEFAULT_TOOLS_CFG).errors).toEqual([]);
 });

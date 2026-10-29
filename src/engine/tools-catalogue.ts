@@ -139,6 +139,8 @@ const MAX_TAGS = 12;
 const MAX_EXAMPLES = 6;
 const MIN_STEPS = 2;
 const MAX_STEPS = 10;
+const MAX_GLOB_CHARS = 100;
+const MAX_GLOB_STARS = 3;
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const isStr = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
 const strList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
@@ -217,6 +219,10 @@ export function parseCard(file: string, text: string, cfg: ToolsCfg): ParseResul
   if (fm.usage !== undefined) {
     if (!isObj(fm.usage) || (fm.usage.tools !== undefined && !strList(fm.usage.tools)) || (fm.usage.commands !== undefined && !strList(fm.usage.commands))) {
       err("usage must hold tools and/or commands as lists of globs");
+    } else if ([...((fm.usage.tools as string[] | undefined) ?? []), ...((fm.usage.commands as string[] | undefined) ?? [])].some((g) => g.length > MAX_GLOB_CHARS || g.split("*").length - 1 > MAX_GLOB_STARS)) {
+      err(`usage globs are at most ${MAX_GLOB_CHARS} chars with at most ${MAX_GLOB_STARS} *`);
+    } else if (((fm.usage.tools as string[] | undefined) ?? []).some((g) => !g.startsWith("mcp__"))) {
+      err("usage.tools globs name MCP tools: they start with mcp__");
     } else usage = { ...(fm.usage.tools ? { tools: fm.usage.tools as string[] } : {}), ...(fm.usage.commands ? { commands: fm.usage.commands as string[] } : {}) };
   }
 
@@ -464,10 +470,30 @@ export const skillName = (c: Pick<ToolCard, "id" | "kind">): string => `${c.kind
 const USAGE_WINDOW_MS = 30 * DAY_MS;
 
 /** A card `usage` glob: `*` is any run of characters (a Bash label holds slashes and spaces, so path-glob
- *  rules do not fit), `?` is one character, everything else is literal. The whole string must match. */
+ *  rules do not fit), `?` is one character, everything else is literal. The whole string must match.
+ *  A two-pointer match with one backtrack point, no regex: its cost is at most glob × text, whatever
+ *  the number of stars (a regex of `[\s\S]*` runs backtracks exponentially). */
 export function matchesGlob(glob: string, text: string): boolean {
-  const re = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[\\s\\S]*").replace(/\?/g, "[\\s\\S]");
-  return new RegExp(`^${re}$`).test(text);
+  return compileGlob(glob)(text);
+}
+
+/** `matchesGlob` for one glob, built once: the glob's longest literal piece must occur in the text
+ *  (a cheap `includes` that rules out almost every label) before the full match runs. */
+export function compileGlob(glob: string): (text: string) => boolean {
+  const piece = glob.split(/[*?]/).reduce((a, b) => (b.length > a.length ? b : a), "");
+  return (text) => text.includes(piece) && wildcardMatch(glob, text);
+}
+
+function wildcardMatch(glob: string, text: string): boolean {
+  let g = 0, t = 0, star = -1, mark = 0;
+  while (t < text.length) {
+    if (g < glob.length && (glob[g] === "?" || (glob[g] !== "*" && glob[g] === text[t]))) { g++; t++; }
+    else if (g < glob.length && glob[g] === "*") { star = g++; mark = t; }
+    else if (star >= 0) { g = star + 1; t = ++mark; }
+    else return false;
+  }
+  while (g < glob.length && glob[g] === "*") g++;
+  return g === glob.length;
 }
 
 /** The ledger adapter (spec A5). A card's count is the number of `done` orders in the last 30 days with a
@@ -483,7 +509,7 @@ export function ledgerUsageSource(o: {
   // Every card also counts a load of its generated skill (the Skill call's label), so a recipe needs no
   // globs of its own.
   const matchers = o.cards.map((c) => ({
-    id: c.id, tools: c.usage?.tools ?? [], commands: c.usage?.commands ?? [], skill: `Skill: ${skillName(c)}`,
+    id: c.id, tools: (c.usage?.tools ?? []).map(compileGlob), commands: (c.usage?.commands ?? []).map(compileGlob), skill: `Skill: ${skillName(c)}`,
   }));
   let snap: { at: number; ok: Map<string, number>; p50: Map<string, number> } | undefined;
 
@@ -494,15 +520,16 @@ export function ledgerUsageSource(o: {
     const ok = new Map<string, number>();
     try {
       const perOrder = new Map<string, Set<string>>();
+      // One row per distinct (tool, label): each label is matched once, however many orders made it.
       for (const r of o.ledger.toolUsage({ since })) {
         for (const m of matchers) {
-          const hit = m.tools.some((g) => matchesGlob(g, r.tool))
-            || (r.tool === "Bash" && m.commands.some((g) => matchesGlob(g, r.label)))
+          const hit = m.tools.some((match) => match(r.tool))
+            || (r.tool === "Bash" && m.commands.some((match) => match(r.label)))
             || (r.tool === "Skill" && r.label === m.skill);
           if (!hit) continue;
           let s = perOrder.get(m.id);
           if (!s) perOrder.set(m.id, (s = new Set()));
-          s.add(r.orderId);
+          for (const id of r.orderIds) s.add(id);
         }
       }
       for (const [id, s] of perOrder) ok.set(id, s.size);

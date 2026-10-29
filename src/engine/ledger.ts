@@ -379,9 +379,10 @@ export interface Ledger {
   newestTodoInThread(threadId: number, folder: string): TodoRow | undefined;
   /** Append one governed tool call (single INSERT; retention amortised — see TOOL_ACTIONS_KEEP). */
   recordToolAction(a: NewToolAction): void;
-  /** The distinct (order, tool, label) of tool calls at or after `since` whose order ended `done` and that
-   *  were not denied (ADR-0044 Phase 3: the tools catalogue's usage counts). One parameterized query. */
-  toolUsage(opts: { since: number }): Array<{ orderId: string; tool: string; label: string }>;
+  /** Each distinct (tool, label) of the calls at or after `since` that the governor or the trust allowed
+   *  (`allow`/`auto`), in orders that ended `done`, with those orders' ids (ADR-0044: the tools catalogue's
+   *  usage counts). Only the tools a card can name: Bash, Skill and MCP tools. One parameterized query. */
+  toolUsage(opts: { since: number }): Array<{ tool: string; label: string; orderIds: string[] }>;
   /** The duration of every completed `tool_api` relay call at or after `since` (not refused, not a
    *  network error or timeout), for the catalogue's p50. One parameterized query. */
   relayLatencies(opts: { since: number }): Array<{ card: string; ms: number }>;
@@ -578,9 +579,10 @@ export interface Ledger {
   /** Todos filtered by folder and/or status. Queued ones come in queue order; others newest first.
    *  `limit` caps the result. */
   listTodos(opts: { folder?: string; statuses?: TodoStatus[]; limit?: number; lane?: "main" | "side" }): TodoRow[];
-  /** The start (≤ `maxChars`) of every todo brief created at or after `since` that the operator gave, not the
-   *  engine: no plan step (`plan_id`) and no todo opened from an attention item (ADR-0044 skillify). */
-  operatorTodoBriefs(opts: { since: number; maxChars: number }): Array<{ project: string; folder: string; brief: string }>;
+  /** The start (≤ `maxChars`) and creation time of every todo brief created at or after `since` that the
+   *  operator gave, not the engine: no plan step (`plan_id`), no todo opened from an attention item, none
+   *  cancelled (ADR-0044 skillify). */
+  operatorTodoBriefs(opts: { since: number; maxChars: number }): Array<{ project: string; folder: string; brief: string; at: number }>;
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
@@ -1159,13 +1161,16 @@ export function openLedger(
       }
     },
     toolUsage({ since }) {
-      return db
+      const rows = db
         .query(
-          `SELECT DISTINCT ta.order_id AS orderId, ta.tool AS tool, ta.label AS label
+          `SELECT ta.tool AS tool, ta.label AS label, json_group_array(DISTINCT ta.order_id) AS ids
              FROM tool_actions ta JOIN outcomes o ON o.order_id = ta.order_id
-            WHERE ta.at >= ? AND o.status = 'done' AND ta.verdict != 'deny'`,
+            WHERE ta.at >= ? AND o.status = 'done' AND ta.verdict IN ('allow', 'auto')
+              AND (ta.tool IN ('Bash', 'Skill') OR ta.tool LIKE 'mcp\\_\\_%' ESCAPE '\\')
+            GROUP BY ta.tool, ta.label`,
         )
-        .all(since) as Array<{ orderId: string; tool: string; label: string }>;
+        .all(since) as Array<{ tool: string; label: string; ids: string }>;
+      return rows.map((r) => ({ tool: r.tool, label: r.label, orderIds: JSON.parse(r.ids) as string[] }));
     },
     relayLatencies({ since }) {
       return db
@@ -1922,12 +1927,12 @@ export function openLedger(
     operatorTodoBriefs({ since, maxChars }) {
       return db
         .query(
-          `SELECT t.project AS project, t.folder AS folder, substr(t.brief, 1, ?) AS brief FROM project_todos t
-            WHERE t.created_at >= ? AND t.plan_id IS NULL
+          `SELECT t.project AS project, t.folder AS folder, substr(t.brief, 1, ?) AS brief, t.created_at AS at FROM project_todos t
+            WHERE t.created_at >= ? AND t.plan_id IS NULL AND t.status != 'cancelled'
               AND NOT EXISTS (SELECT 1 FROM attention_items a WHERE a.todo_id = t.id)
             ORDER BY t.id`,
         )
-        .all(maxChars, since) as Array<{ project: string; folder: string; brief: string }>;
+        .all(maxChars, since) as Array<{ project: string; folder: string; brief: string; at: number }>;
     },
     listTodos(opts) {
       const where: string[] = [];

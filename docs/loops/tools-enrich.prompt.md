@@ -10,6 +10,8 @@ is `docs/tools/*.md` in /home/neo (ADR-0044); its rules are in `docs/tools/READM
 2. Make a worktree for your change, outside /home/neo, from `dev`:
    `git -C /home/neo worktree add /tmp/neo-tools-enrich-<date> -b chore/tools-enrich-<date> dev`, then
    `ln -s /home/neo/node_modules /tmp/neo-tools-enrich-<date>/node_modules`. Work only in that worktree.
+   If the branch already exists (a second run today), add the worktree on it instead:
+   `git -C /home/neo worktree add /tmp/neo-tools-enrich-<date> chore/tools-enrich-<date>`.
 3. For each term that names a real need an existing card meets, add the term to that card's `tags`
    (lowercase words, at most 12) or a one-line task to its `examples` (at most 6). Arabic terms are
    welcome as tags. Ignore terms that are noise (ids, numbers, one-off names).
@@ -19,10 +21,11 @@ is `docs/tools/*.md` in /home/neo (ADR-0044); its rules are in `docs/tools/READM
 5. Run `bun test tests/tools-catalogue.test.ts` in the worktree. Fix your card until it is green.
 6. Commit on the branch with a message that lists the terms you used. Then remove the worktree
    (`git -C /home/neo worktree remove /tmp/neo-tools-enrich-<date>`); the branch stays.
-7. Mark the misses handled: `bun tools/catalogue/misses.ts mark --branch chore/tools-enrich-<date>`
-   (the engine checks the branch exists). When every term was noise and you changed no card, run
-   `bun tools/catalogue/misses.ts mark --none "<one line: why>"` instead, and make no branch. The
-   loop's goal (`misses.ts check`) is met only after a mark.
+7. Mark the misses handled with the `--through` value step 1 printed:
+   `bun tools/catalogue/misses.ts mark --through <at> --branch chore/tools-enrich-<date>`. The engine
+   checks the branch has commits beyond `dev` that change only `docs/tools/`. When every term was noise
+   and you changed no card, run `bun tools/catalogue/misses.ts mark --through <at> --none "<one line: why>"`
+   instead, and make no branch. The loop's goal (`misses.ts check`) is met only after a mark.
 
 ## Rules
 
