@@ -31,7 +31,7 @@ import { openLedger, LEDGER_PATH } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
 import { DEFAULT_GOVERNOR_CFG } from "./engine/governor";
-import { createMeter } from "./engine/budget";
+import { createMeter, type Meter } from "./engine/budget";
 import { createUsageMeter } from "./engine/usage";
 import { openTrustStore } from "./engine/trust";
 import { openInbox } from "./engine/inbox";
@@ -41,7 +41,7 @@ import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, 
 import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } from "./engine/dispatch-report";
 import { nextRetry } from "./engine/todo-retry";
 import { setDeployFacts, setNeoNotesDir } from "./engine/context-policy";
-import { createApiCooldown } from "./engine/api-retry";
+import { createApiCooldown, type ApiCooldown } from "./engine/api-retry";
 import { createApiWaits } from "./engine/api-wait";
 import { createTodoSummarizer } from "./engine/todo-summary";
 import { DEFAULT_TODO_SUMMARY_CFG } from "./engine/todo-summary-cfg";
@@ -115,12 +115,22 @@ async function main(): Promise<void> {
   // A done todo made from a project note resolves the note (ADR-0043); `notes` is built below and only
   // read when a todo ends.
   const todoSummaryCfg = cfg.todoSummary ?? DEFAULT_TODO_SUMMARY_CFG;
+  /** The meter and the API cooldown, set once they exist (they are built after the queue). */
+  const summaryGate: { meter?: Meter; cooldown?: ApiCooldown } = {};
   // Held API waits (ADR-0060): one registry for dispatch and the queue, so `todo retry` ends a limit wait now.
   const apiWaits = createApiWaits({ ledger });
   const todo = createTodoQueue({
     ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs, apiWaits,
     // A short human summary for each new todo (ADR-0059): AI proposes, the engine accepts or keeps its own.
-    summarize: createTodoSummarizer({ cfg: todoSummaryCfg, model: pinnedModel(cfg.models, todoSummaryCfg.model) ?? todoSummaryCfg.model }),
+    // Claude only (a Codex own-work setup has no Claude model to ask); it waits while the reserve is held or the
+    // API is throttled, and its cost goes on the meter (both built below, read when a todo is made).
+    ...(cfg.providers?.ownWork === "codex"
+      ? {}
+      : { summarize: createTodoSummarizer({
+          cfg: todoSummaryCfg, model: pinnedModel(cfg.models, todoSummaryCfg.model) ?? todoSummaryCfg.model,
+          mayRun: () => !summaryGate.meter?.shouldThrottleBackground() && !summaryGate.cooldown?.activeAt(Date.now()),
+          noteCost: (costUsd) => summaryGate.meter?.note({ costUsd }),
+        }) }),
     lanes: () => cfg.lanes ?? DEFAULT_LANES_CFG,
     onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
   });
@@ -287,6 +297,7 @@ async function main(): Promise<void> {
     reservePct: cfg.subscriptionInteractiveReservePct,
     windowMs: cfg.budgetWindowMs,
   });
+  summaryGate.meter = meter;
   // Project notes (ADR-0043): one project tells another. A request or a high finding is told to the
   // operator at once (through the flood gate, like the digest); the rest wait for the digest.
   // Questions (ADR-0050): a read-only consult run answers them; notes from main and late answers reach
@@ -332,6 +343,7 @@ async function main(): Promise<void> {
   // arms it, and NEW background work (dispatches, loop fires) waits it out instead of earning
   // another 429. The operator's own interactive messages are never held — that's the headroom.
   const cooldown = createApiCooldown({ cooldownMs: cfg.apiCooldownMs });
+  summaryGate.cooldown = cooldown;
   // Frontend stop hooks, run FIRST on shutdown. Telegram long polling only confirms an update on
   // the *next* getUpdates (grammy does it in bot.stop()), so exiting straight after the /reload
   // handler left that update unconfirmed — Telegram redelivered it on boot and the daemon reloaded

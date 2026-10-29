@@ -67,6 +67,11 @@ const DERIVE: Record<string, Derive> = {
   approval_stuck: (_key, t) => clean({ label: /^approval pending \S+: (.*)$/.exec(t)?.[1] }),
   dispatch_spinning: (_key, t) => clean({ label: /^repeating itself for \S+: (.*)$/.exec(t)?.[1] }),
   queue_paused: (_key, t) => clean({ reason: /^todo queue paused \S+: (.*)$/.exec(t)?.[1] }),
+  ctx_window_suspect: (_key, t) => {
+    const m = /^ctx (\d+)% is impossible: model (\S+), window/.exec(t);
+    return clean({ pct: num(m?.[1]), model: m?.[2] });
+  },
+  skillify_repeat: (_key, t) => clean({ days: num(/came back on (\d+) days/.exec(t)?.[1]) }),
 };
 
 /** The item's facts: the stored ones over the ones its key and title carry. Never throws. */

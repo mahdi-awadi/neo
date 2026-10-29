@@ -4,7 +4,7 @@
 // of its own: the console renders the badge, the description and the next step from its locale catalogues
 // (`att.*`), filled with these facts, so the same item reads right in English and Arabic.
 import type { AttentionFacts, AttentionRow } from "./ledger";
-import { attentionBrief, ATTENTION_BRIEFS } from "./attention-briefs";
+import { attentionBrief } from "./attention-briefs";
 import { factsOf } from "./attention-facts";
 // The console's EN catalogue is the one source of badge names; Telegram (English) reads the same text.
 import EN from "../frontends/web/locales/en/console.json";
@@ -26,6 +26,8 @@ export interface AttentionExplain {
   links: AttentionLink[];
   /** Exactly what → todo sends; undefined when the kind has no brief (→ todo is refused). */
   brief?: string;
+  /** Every fact the reason template names is there; false → the item's own title is the reason. */
+  reasonOk: boolean;
 }
 
 /** A PR title, plain: a repeated scope `(x)(x)` collapsed, a conventional prefix (`chore(deps):`) dropped,
@@ -49,7 +51,8 @@ const SUBJECT: Record<string, string[]> = {
 
 export function explainAttention(row: AttentionRow): AttentionExplain {
   const facts: AttentionFacts = factsOf(row);
-  let badge = ATTENTION_BRIEFS[row.kind] || SUBJECT[row.kind] || row.kind === "pr_open" ? row.kind : "other";
+  // A badge is a kind the EN catalogue names (`att.kind.*`); any other kind reads as "other".
+  let badge = enKinds()[row.kind] !== undefined ? row.kind : "other";
   let plain = row.title;
   if (row.kind === "pr_open" && typeof facts.prTitle === "string") {
     const p = plainPrTitle(facts.prTitle);
@@ -76,11 +79,44 @@ export function explainAttention(row: AttentionRow): AttentionExplain {
   } catch {
     brief = undefined;
   }
-  return { badge, project: row.project, plain: plain.trim() || row.title, facts, links, ...(brief ? { brief } : {}) };
+  const out = { badge, project: row.project, plain: plain.trim() || row.title, facts, links, ...(brief ? { brief } : {}) };
+  return { ...out, reasonOk: reasonComplete(out) };
 }
+
+type AttCatalogue = { att?: { kind?: Record<string, string>; why?: Record<string, string> } };
+const enKinds = (): Record<string, string> => (EN as AttCatalogue).att?.kind ?? {};
 
 /** A badge's English name, from the console's EN catalogue (`att.kind.*`); the badge key when absent. */
 export function badgeLabel(badge: string): string {
-  const kinds = (EN as { att?: { kind?: Record<string, string> } }).att?.kind ?? {};
+  const kinds = enKinds();
   return kinds[badge] ?? kinds.other ?? badge;
+}
+
+/** Facts that are references, shown as "#N". */
+const REFS = new Set(["pr", "issue", "alert", "decision"]);
+
+/** True when the item has every fact its reason template names (the EN and AR templates name the same ones):
+ *  a reason with a gap is not shown — the item's own title stands in (an older row, before its next scan). */
+export function reasonComplete(e: Pick<AttentionExplain, "badge" | "facts">): boolean {
+  const tpl = (EN as AttCatalogue).att?.why?.[e.badge] ?? "";
+  return [...tpl.matchAll(/\{\{(\w+)\}\}/g)].every(([, k]) => (k === "age" ? typeof e.facts.since === "number" : e.facts[k!] !== undefined && e.facts[k!] !== ""));
+}
+
+/** The item's reason in English (the EN catalogue's `att.why.<badge>`, filled from its facts), for Telegram:
+ *  the same template the console renders; "" when a fact it names is missing. */
+export function whyEn(e: Pick<AttentionExplain, "badge" | "facts">, now: number): string {
+  if (!reasonComplete(e)) return "";
+  const tpl = (EN as AttCatalogue).att?.why?.[e.badge] ?? "";
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k: string) => {
+    if (k === "age") return typeof e.facts.since === "number" ? shortAge(now - e.facts.since) : "?";
+    const v = e.facts[k];
+    if (v === undefined || v === "") return "?";
+    return REFS.has(k) ? `#${v}` : k === "pct" ? `${v}%` : String(v);
+  });
+}
+
+/** "45m", "7h", "3d". */
+function shortAge(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000));
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
 }

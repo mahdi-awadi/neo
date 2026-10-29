@@ -77,6 +77,8 @@ export interface AttentionItemView {
   facts: AttentionFacts;
   links: AttentionLink[];
   brief?: string;
+  /** False: a fact the reason names is missing (an older row) — the console shows the item's title instead. */
+  reasonOk: boolean;
 }
 
 export interface RestartGatedItem {
@@ -348,13 +350,13 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
         ...(r.source === "note" ? { noteKind: noteKindOf(r), noteState: noteState(r) } : {}),
         ageMs: now - r.firstSeen,
         ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
-        // No brief, no → todo: the tap could only be refused (ADR-0059).
-        actions: attentionActions(r).filter((a) => a !== "todo" || e.brief !== undefined),
+        actions: attentionActions(r),
         badge: e.badge,
         project: e.project,
         plain: e.plain,
         facts: e.facts,
         links: e.links,
+        reasonOk: e.reasonOk,
         ...(e.brief ? { brief: e.brief } : {}),
         };
       }),

@@ -37,10 +37,23 @@ export function summaryPrompt(brief: string): string {
 }
 
 /** The summarizer the todo queue calls for a new todo. `model` is already pinned to an id. */
-export function createTodoSummarizer(deps: { cfg: TodoSummaryCfg; model: string; run?: typeof runOrder; now?: () => number }): (t: TodoRow) => Promise<string | undefined> {
+export function createTodoSummarizer(deps: {
+  cfg: TodoSummaryCfg;
+  model: string;
+  run?: typeof runOrder;
+  now?: () => number;
+  /** False skips the run (the deterministic summary stays): the reserve is held or the API is throttled. */
+  mayRun?: () => boolean;
+  /** Every run's cost goes on the budget meter, like any other background run. */
+  noteCost?: (costUsd: number) => void;
+}): (t: TodoRow) => Promise<string | undefined> {
   const run = deps.run ?? runOrder;
+  // One run at a time: a burst of new todos never starts a burst of runs; a todo that finds one busy keeps
+  // its deterministic summary.
+  let busy = false;
   return async (t) => {
-    if (!deps.cfg.ai) return undefined;
+    if (!deps.cfg.ai || busy || deps.mayRun?.() === false) return undefined;
+    busy = true;
     const order: Order = { id: crypto.randomUUID(), source: "neo", folder: t.folder, task: summaryPrompt(t.brief), chatId: SUMMARY_CHAT, createdAt: (deps.now ?? Date.now)() };
     let text = "";
     const abort = new AbortController();
@@ -54,11 +67,15 @@ export function createTodoSummarizer(deps: { cfg: TodoSummaryCfg; model: string;
           disallowedTools: [...TAINTED_DISALLOWED_TOOLS], abortController: abort,
         },
       );
+      if (r.costUsd) deps.noteCost?.(r.costUsd);
+      // Only a run that went through: an API error's text ("You've hit your limit…") is never a summary.
+      if (!r.ok || r.apiError) return undefined;
       return acceptSummary(text.trim() || r.summary);
     } catch {
       return undefined;
     } finally {
       clearTimeout(timer);
+      busy = false;
     }
   };
 }

@@ -7,8 +7,8 @@ import type { TodoQueue } from "./todo-queue";
 import { ENGINE_CHAT_ID, type Trace } from "./trace";
 import { isDue } from "./trigger";
 import { dismiss, listOpen, snooze } from "./attention";
-import { attentionBrief } from "./attention-briefs";
-import { badgeLabel, explainAttention } from "./attention-explain";
+import { attentionBrief, ATTENTION_BRIEFS } from "./attention-briefs";
+import { badgeLabel, explainAttention, whyEn } from "./attention-explain";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { exec } from "./update-sys";
@@ -53,7 +53,9 @@ const worktreeFacts = (row: Pick<AttentionRow, "kind" | "detail">): WorktreeFact
 export function attentionActions(row: Pick<AttentionRow, "kind" | "detail">): AttentionAction[] {
   const f = worktreeFacts(row);
   const removable = !!f && f.dirty === false && (f.merged === true || f.pushed === true);
-  return removable ? ["remove", "todo", "snooze", "dismiss"] : ["todo", "snooze", "dismiss"];
+  // No brief template, no → todo (ADR-0059): the tap could only be refused, on every surface.
+  const todo: AttentionAction[] = ATTENTION_BRIEFS[row.kind] ? ["todo"] : [];
+  return [...(removable ? (["remove"] as AttentionAction[]) : []), ...todo, "snooze", "dismiss"];
 }
 
 export interface AttentionActionDeps {
@@ -160,9 +162,11 @@ function noteCause(ledger: Ledger, row: AttentionRow): { msgId: number; threadId
 /** An item's title as its lines show it: a project note also names its sender (ADR-0043). */
 /** One bounded Telegram line for an item (ADR-0059): its kind badge (the console's EN catalogue name) and its
  *  plain title, then who sent it when it is a project note. */
-export const attentionTitle = (r: AttentionRow): string => {
+export const attentionTitle = (r: AttentionRow, now: number = Date.now()): string => {
   const e = explainAttention(r);
-  return `[${badgeLabel(e.badge)}] ${todoTitle(e.plain)}${r.fromProject ? ` — from ${r.fromProject}` : ""}`;
+  // A note's sender says why it is there; for the rest, the English reason carries its facts (ages, PR numbers).
+  const why = r.fromProject ? "" : whyEn(e, now);
+  return `[${badgeLabel(e.badge)}] ${todoTitle(e.plain)}${why ? ` — ${why}` : ""}${r.fromProject ? ` — from ${r.fromProject}` : ""}`;
 };
 
 async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<AttentionActionResult> {
@@ -256,7 +260,7 @@ export function renderDigest(
     lines.push(`${project}: ${(["high", "normal", "low"] as const).filter((s) => count(s)).map((s) => `${count(s)} ${s}`).join(" · ")}`);
     for (const r of top) {
       lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${attentionTitle(r)}`);
-      buttons.push({ ...r, actions: ["todo"] });
+      buttons.push({ ...r, actions: attentionActions(r).filter((a) => a === "todo") });
     }
     shownProjects++;
   }

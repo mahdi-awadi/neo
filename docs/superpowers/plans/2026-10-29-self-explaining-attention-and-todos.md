@@ -27,6 +27,6 @@ Why approval: a ledger migration (v14 → v15, two additive nullable columns) an
    config); written on add; carried on continuation/retry/side re-add; `todoTitle(t)` reads it. Queue tab +
    dashboard show it, tap opens the brief. Tests for each acceptance criterion.
 - [x] 7. **Docs** — ADR-0059, CONTEXT.md (plain title, badge, todo summary), CONFIG.md, HISTORY.md, HANDOFF.md.
-- [ ] 8. **Verify** — full suite; console screenshots EN + AR of the Projects attention list and the Queue tab
+- [x] 8. **Verify** — full suite; console screenshots EN + AR of the Projects attention list and the Queue tab
    (before/after) against a dev copy of the ledger, copied to `/home/neo/agent`; `/security-review`;
    independent code review; fix findings; commit on dev.

@@ -1463,6 +1463,8 @@ function renderProjectPane(v: Any): void {
   });
 }
 /** The facts a description template may name (ADR-0059). A fact an item lacks reads `att.unknown`. */
+/** Facts that are references: shown as "#N". */
+const ATT_REFS = new Set(["pr", "issue", "alert", "decision"]);
 const ATT_FACTS = ["age", "label", "reason", "decision", "pct", "model", "files", "days", "pr", "dep", "from", "to", "workflow", "branch", "issue", "severity", "alert", "secretType", "ahead", "upstream", "base", "hours"];
 /** One attention item, self-explaining (ADR-0059): severity, #id, its kind badge and project, a plain title,
  *  why it is there (`att.why.<badge>` from its facts), its links, what → todo will do (`att.next.<badge>`)
@@ -1471,7 +1473,11 @@ const ATT_FACTS = ["age", "label", "reason", "decision", "pct", "model", "files"
 function attentionItemHtml(it: Any, noteChip: string, from: string): string {
   const facts = (it.facts ?? {}) as Record<string, string | number>;
   const vars: Record<string, string> = {};
-  for (const k of ATT_FACTS) vars[k] = iso(facts[k] ?? tx("att.unknown"));
+  // A ref keeps its "#", a percentage its "%", and both stay one left-to-right unit in Arabic (#31, not 31#).
+  for (const k of ATT_FACTS) {
+    const v = facts[k];
+    vars[k] = v === undefined || v === "" ? iso(tx("att.unknown")) : ATT_REFS.has(k) ? ltr(`#${v}`) : k === "pct" ? ltr(`${v}%`) : typeof v === "number" ? ltr(v) : iso(v);
+  }
   if (typeof facts.since === "number") vars.age = iso(age(Date.now() - facts.since));
   const badge = esc(it.badge ?? "other");
   const links = ((it.links ?? []) as Any[])
@@ -1483,7 +1489,8 @@ function attentionItemHtml(it: Any, noteChip: string, from: string): string {
   return (
     `<div style="flex:1 1 100%;min-width:0"><div><span>${SEV_ICON[it.severity] ?? ""}</span> ${ltr("#" + it.id)} <span class="tchip">${esc(tx(`att.kind.${badge}`))}</span> ${iso(it.project ?? "")}${noteChip}${from} <span class="rfo">${esc(age(it.ageMs))}</span></div>` +
     `<div dir="auto"><b>${esc(it.plain ?? it.title)}</b></div>` +
-    `<div class="rfo" dir="auto">${tx(`att.why.${badge}`, vars)}</div>` +
+    // A reason with a gap (an older row, until its next scan) is not shown: the item's own title stands in.
+    `<div class="rfo" dir="auto">${it.reasonOk === false ? esc(it.title) : tx(`att.why.${badge}`, vars)}</div>` +
     (links ? `<div class="rfo">${links}</div>` : "") +
     next +
     `</div>`

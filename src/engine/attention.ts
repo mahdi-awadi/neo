@@ -108,7 +108,7 @@ export function liveDrafts(ledger: Ledger, source: AttentionSource, kinds: Reado
   for (const p of project !== undefined ? [project] : ledger.attentionProjects(source)) {
     for (const r of ledger.attentionRows(p, source)) {
       if (!kinds.has(r.kind) || (r.resolvedAt !== undefined && !r.dismissed)) continue;
-      out.push({ project: r.project, folder: r.folder, source, kind: r.kind, key: r.key, title: r.title, detail: r.detail, url: r.url, severity: r.severity });
+      out.push({ project: r.project, folder: r.folder, source, kind: r.kind, key: r.key, title: r.title, detail: r.detail, url: r.url, severity: r.severity, ...(r.facts ? { facts: r.facts } : {}) });
     }
   }
   return out;

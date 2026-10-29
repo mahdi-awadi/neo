@@ -128,12 +128,9 @@ export function attentionBrief(
   if (!t) return undefined;
   // `{title}`, `{from}`, `{id}`, then the item's facts by name (ADR-0059); a fact the item does not have reads "?".
   const facts = factsOf({ kind: row.kind, key: row.key ?? "", title: row.title, facts: row.facts });
-  const fill = (s: string) =>
-    s
-      .replaceAll("{title}", row.title)
-      .replaceAll("{from}", row.fromProject ?? "?")
-      .replaceAll("{id}", String(row.id ?? "?"))
-      .replace(/\{([A-Za-z]+)\}/g, (_, k: string) => (facts[k] !== undefined && facts[k] !== "" ? String(facts[k]) : "?"));
+  // One pass, so a filled value (a title holding "{lang}") is never scanned again.
+  const values: Record<string, string | number | undefined> = { ...facts, title: row.title, from: row.fromProject ?? "?", id: row.id ?? "?" };
+  const fill = (s: string) => s.replace(/\{([A-Za-z]+)\}/g, (_, k: string) => (values[k] !== undefined && values[k] !== "" ? String(values[k]) : "?"));
   const lines = [fill(t.task)];
   if (row.source === "note") {
     // A note keeps its body and refs as JSON: the brief gets them as plain facts.

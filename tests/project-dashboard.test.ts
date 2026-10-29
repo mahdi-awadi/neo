@@ -83,7 +83,7 @@ function view(over: Partial<ProjectView> = {}): ProjectView {
     github: { prs: 2, ciFailed: 1, issues: 4, alerts: 1, scannedAt: NOW - 60_000 },
     decisions: [{ id: "d1", question: "ship fee change to prod?", ageMs: 3 * 3_600_000, ref: "m4g7" }],
     plans: [{ id: 1, title: "Fare list port", status: "executing", steps: "7/12", ref: "m4g2", line: "Fare list port — executing 7/12" }],
-    attention: [{ id: 5, source: "git", kind: "dirty", severity: "high", title: "CI failed on dev", ageMs: 1000, actions: ["todo", "snooze", "dismiss"], badge: "dirty", project: "gold", plain: "CI failed on dev", facts: {}, links: [] }],
+    attention: [{ id: 5, source: "git", kind: "dirty", severity: "high", title: "CI failed on dev", ageMs: 1000, actions: ["todo", "snooze", "dismiss"], badge: "dirty", project: "gold", plain: "CI failed on dev", facts: {}, links: [], reasonOk: false }],
     threads: [{ id: 9, ref: "m4g2", title: "fix the fare list", state: "waiting", updatedAt: NOW }],
     health: "attention",
     ...over,

@@ -93,3 +93,18 @@ test("the queue writes the deterministic summary at once, the accepted AI line a
   await new Promise((r) => setTimeout(r, 10));
   expect(ledger.todoById(t!.id)!.summary).toBe("Make attention items explain themselves");
 });
+
+test("review: an API error is never a summary; a held reserve skips the run; one run at a time; cost is noted", async () => {
+  const errRun = (async (_o: unknown, h: { onMessage: (t: string) => void }) => (h.onMessage("You've hit your limit · resets 5pm"), { ok: false, apiError: "rate_limit", sessionId: "", summary: "", costUsd: 0.01 })) as never;
+  const costs: number[] = [];
+  expect(await createTodoSummarizer({ cfg: DEFAULT_TODO_SUMMARY_CFG, model: "m", run: errRun, noteCost: (c) => costs.push(c) })(todo)).toBeUndefined();
+  expect(costs).toEqual([0.01]);
+  let runs = 0;
+  const slow = (async (_o: unknown, h: { onMessage: (t: string) => void }) => { runs++; await new Promise((r) => setTimeout(r, 20)); h.onMessage("Make attention items explain themselves"); return { ok: true, sessionId: "", summary: "", costUsd: 0 }; }) as never;
+  expect(await createTodoSummarizer({ cfg: DEFAULT_TODO_SUMMARY_CFG, model: "m", run: slow, mayRun: () => false })(todo)).toBeUndefined();
+  expect(runs).toBe(0);
+  const s = createTodoSummarizer({ cfg: DEFAULT_TODO_SUMMARY_CFG, model: "m", run: slow });
+  const [a, b] = await Promise.all([s(todo), s(todo)]);
+  expect([a, b]).toEqual(["Make attention items explain themselves", undefined]); // the second found it busy
+  expect(runs).toBe(1);
+});
