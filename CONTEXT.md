@@ -340,6 +340,31 @@ The engine's Phase 2 memory: capped `§`-entry files in `<folder>/memory/`, a fr
 recall and the dream loop. Off by default (`memory.scopes: []`). It overlaps auto-memory (ADR-0020).
 _Avoid_: curated memory (as a synonym), memory (bare)
 
+**Task history**:
+The engine's searchable archive of past work across every project: each order's brief, its todo
+summary, its final result and progress digests, plans, project notes, operator messages and remembered
+entries, with the commit shas they name. It answers "what did we do about X, and where is it" by meaning
+and by exact id, in Arabic and English, and every hit cites its source (order/todo #, date, project,
+commit, plan path). Kept in its own database (`data/history.db`), so it outlives the ledger's retention
+(ADR-0066). Customer-sourced text is never in it.
+_Avoid_: memory (bare), recall, knowledge base
+
+**History entry**:
+One searchable unit of the task history: a source row (an order, a result, a plan, a note, a message, a
+remembered entry) cut into chunks, each with its text, its source ref and its date. A chunk has a
+keyword index row always and a vector once the embedder has read it.
+_Avoid_: document (bare), record
+
+**Remembered entry**:
+An explicit "remember this" the operator or a worker saves into the task history: a short text, its
+project and who saved it. It is searchable like any other entry and never expires.
+_Avoid_: note (that is a project note), pin
+
+**Hybrid search**:
+One query run two ways — by meaning (vector nearest neighbours) and by exact words and ids (full-text) —
+with the two ranked lists fused by reciprocal rank fusion, then filtered by project, date and kind.
+_Avoid_: semantic search (that is only half of it), AI search
+
 **Project docs**:
 A repo's tracked instructions and status files: CLAUDE.md/AGENTS.md (rules), HANDOFF.md/WIP.md (where
 the work stands for the next session). Shared through git, so they hold no machine-local facts.
