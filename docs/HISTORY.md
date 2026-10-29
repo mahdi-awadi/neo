@@ -1389,3 +1389,12 @@ memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall +
 default off — `memory.scopes`), and project notes (one project tells another through the
 `project_notes` tool; only → todo starts work; ADR-0043), with questions answered by read-only consult
 runs, live notes from main and the tools catalogue (ADR-0050, ADR-0044; restart-gated). Full phase-by-phase narrative: `docs/HISTORY.md`.
+
+Workers never run the Telegram channel plugin (2026-10-29, ADR-0064).
+
+- The daemon's Telegram poller kept failing with 409 Conflict: each worker loaded the operator's user
+  plugins, including the Telegram channel plugin, which long-polled the same bot. `sdkOptions` now sends
+  `settings.enabledPlugins` with that plugin set to false (flag layer, outranks user settings), for every
+  run path; all other user plugins and skills stay on. Checked on the real CLI.
+
+Restart-gated.

@@ -1359,3 +1359,31 @@ test("ADR-0059: a run's own settingSources and skills override the defaults (the
   expect(seen.settingSources).toEqual([]);
   expect(seen.skills).toEqual([]);
 });
+
+// A worker loads the operator's user plugins, which include the Telegram channel plugin. That plugin
+// long-polls the same bot as the daemon, and the bot answers both with 409 Conflict. Workers keep every
+// other user plugin and skill; only the channel plugin is switched off, at the flag-settings layer.
+test("a single-shot worker runs with the Telegram channel plugin off and its user plugins on", async () => {
+  let seen: { settings?: unknown; settingSources?: unknown; skills?: unknown } = {};
+  const q = (args: { prompt: unknown; options: typeof seen }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(seen.settings).toEqual({ enabledPlugins: { "telegram@claude-plugins-official": false } });
+  expect(seen.settingSources).toEqual(["user", "project"]);
+  expect(seen.skills).toBe("all");
+});
+
+test("a long-running worker session runs with the Telegram channel plugin off and its user plugins on", async () => {
+  const { q, seenOptions } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  while (seenOptions.length === 0) await new Promise((r) => setTimeout(r, 1));
+  const opts = seenOptions[0] as { settings?: unknown; settingSources?: unknown };
+  expect(opts.settings).toEqual({ enabledPlugins: { "telegram@claude-plugins-official": false } });
+  expect(opts.settingSources).toEqual(["user", "project"]);
+  run.close();
+  await run.done;
+});

@@ -51,6 +51,9 @@ terminal, no TTY, no tmux**. Confirmed headless.
   defaults (fragile across hosts); `"all"` enables every discovered skill, so superpowers + workflow skills
   are always ready for the worker in any folder. Discovery still comes from `settingSources: ["user"]` →
   `~/.claude` `enabledPlugins`, so the superpowers plugin must stay enabled there.
+- `settings: { enabledPlugins: { "<id>": false } }` — the flag layer outranks user/project settings, so it
+  turns ONE user plugin off for a run and leaves the rest on. Verified 2026-10-29 (SDK 0.3.310): workers
+  use it to drop the Telegram channel plugin, whose poller fought the daemon's (409; ADR-0064).
 - `systemPrompt: { type: "preset", preset: "claude_code" }` — full Claude Code behavior.
 - `permissionMode: "default"` — sends non-pre-approved tools through `canUseTool`. `AskUserQuestion` is
   **denied** here (the governor) with guidance to ask in plain text — its structured options can't reach the

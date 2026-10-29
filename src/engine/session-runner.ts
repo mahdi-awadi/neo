@@ -337,6 +337,11 @@ export interface SessionRun extends SessionControl {
 export const SESSION_STATE_EVENTS_ENV = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS";
 /** Set in every worker's environment (resolvedRunDeps). */
 export const WORKER_ENV = { NEO_WORKER: "1" } as const;
+/** Settings every worker runs with, at the SDK's flag layer (it outranks user and project settings).
+ *  The operator's user plugins include the Telegram channel plugin, which long-polls the same bot as
+ *  the daemon: two pollers make the bot answer 409 Conflict. Only that plugin goes off; every other
+ *  user plugin and skill stays on (ADR-0064). */
+export const WORKER_SETTINGS = { enabledPlugins: { "telegram@claude-plugins-official": false } } as const;
 
 // Loosely-typed view of the SDK so the runner is testable with an injected fake.
 type SdkMessage = { type: string; [k: string]: unknown };
@@ -535,6 +540,8 @@ function sdkOptions(
     // Governance goes LAST so no per-run field can replace it. permissionMode is explicit: from SDK
     // 0.3.286 an unset mode can start the session in auto mode, which skips canUseTool.
     permissionMode: "default",
+    // A worker never starts a second Telegram poller on the daemon's bot (ADR-0064).
+    settings: WORKER_SETTINGS,
     canUseTool: buildCanUseTool(handlers, order.folder, order.source, writes, projectFence, lane),
     // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls — so the
     // project fence (ADR-0031) holds for a worker's helper agents too.
