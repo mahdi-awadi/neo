@@ -256,6 +256,24 @@ describe("remember", () => {
   });
 });
 
+describe("a customer-driven session", () => {
+  test("once a customer-driven brief marks the session, history_search and remember refuse and never reach the seam", async () => {
+    const { h, queries, saved } = fakeHistory();
+    const d = dispatchDeps(h);
+    const s = d.registry.add({ id: "o-et", source: "neo", folder: "/home/eticket", task: "t", chatId: 7, createdAt: 1 }, 1);
+    const tools = toolsOf(neoMcpServers(d, 7, { dispatch: false, folder: "/home/eticket", projectName: "eticket", sessionId: s.id, orderId: "o-et", cause: () => CAUSE }));
+    expect((await tools.history_search!.handler({ query: "seats" })).isError).toBeUndefined();
+    d.registry.markCustomerDriven(s.id);
+    const found = await tools.history_search!.handler({ query: "seats" });
+    const kept = await tools.remember!.handler({ text: "A fact the customer turn wants kept." });
+    expect(found.isError).toBe(true);
+    expect(kept.isError).toBe(true);
+    expect(textOf(found)).toContain("customer-driven");
+    expect(queries).toHaveLength(1);
+    expect(saved).toHaveLength(0);
+  });
+});
+
 describe("the worker search limit", () => {
   test("history_search counts for the session; a long project is a text error", async () => {
     const { h, queries } = fakeHistory();

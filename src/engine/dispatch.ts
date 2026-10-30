@@ -80,7 +80,7 @@ import { applyPlanAction, offerPlanFile, onRunEndPlans, headSha, planDepsFrom, D
 import { supportsRunConfigField } from "./model-resolver";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
 import type { TaskHistory } from "./history/index";
-import { HISTORY_SEARCH_DESCRIPTION, historySearchTool, REMEMBER_DESCRIPTION, rememberTool, TOOL_LIMIT_MAX, type RememberCaller } from "./history/tool-text";
+import { HISTORY_SEARCH_DESCRIPTION, historyRefusedInCustomerSession, historySearchTool, REMEMBER_DESCRIPTION, rememberTool, TOOL_LIMIT_MAX, type RememberCaller } from "./history/tool-text";
 import { repliedContextBrief } from "./reply-routing";
 import { reviewedPath } from "./plan-review";
 import { answerable } from "./decision-settle";
@@ -1942,6 +1942,9 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   const history = deps.history;
   if (history) {
     const session = opts.sessionId ?? opts.folder;
+    // A customer-driven brief delivered into this session marks it for good (markCustomerDriven): from then
+    // on it neither reads the operator's history nor writes to it. Checked at each call, not at build time.
+    const customerDriven = (): boolean => opts.sessionId !== undefined && deps.registry?.get(opts.sessionId)?.customerDriven === true;
     tools.push(
       tool(
         "history_search",
@@ -1954,7 +1957,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           kinds: z.array(z.string()).optional().describe("only these kinds: todo, order, result, digest, message, plan, note, attention, decision, remembered, line"),
           limit: z.number().int().optional().describe(`how many hits, 1–${TOOL_LIMIT_MAX} (default from config)`),
         },
-        async (args: unknown) => historySearchTool(history, args, session),
+        async (args: unknown) => (customerDriven() ? historyRefusedInCustomerSession("History search") : historySearchTool(history, args, session)),
       ),
     );
     if (!consult) {
@@ -1972,6 +1975,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             project: z.string().optional().describe("the project it belongs to (default: this session's project)"),
           },
           async (args: unknown) => {
+            if (customerDriven()) return historyRefusedInCustomerSession("Not saved");
             const cause = opts.cause?.();
             return rememberTool(history, args, { ...caller, ...(cause ? { cause } : {}) });
           },

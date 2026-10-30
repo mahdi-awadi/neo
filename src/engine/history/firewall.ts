@@ -11,7 +11,9 @@ import type { LineageNode, OrderLineage, ThreadOrigin } from "../ledger";
 /** Why a row is not indexed. Counted per rule in the `history_firewall_skip` event. */
 export type FirewallRule =
   | "customer_chat" | "not_neo_source" | "ingress_thread" | "missing_thread" | "ancestor_excluded"
-  | "missing_order" | "missing_parent" | "too_deep" | "unclassified" | "unknown_table";
+  | "missing_order" | "missing_parent" | "too_deep" | "unclassified" | "unknown_table"
+  /** A customer-driven brief was delivered into the live run (or session) that wrote the row. */
+  | "customer_delivery";
 
 /** `wait`: the row cannot be placed yet (a todo with no order and no thread) — not indexed, not counted. */
 export type Verdict = { verdict: "ok" } | { verdict: "wait" } | { verdict: "excluded"; rule: FirewallRule };

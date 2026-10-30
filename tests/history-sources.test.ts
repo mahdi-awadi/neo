@@ -274,6 +274,35 @@ describe("the firewall on each kind", () => {
     expect(extract(led, "project_todos", td.id)).toMatchObject({ status: "excluded", rule: "ancestor_excluded" });
   });
 
+  test("a customer-driven brief delivered into a live run: that run's result and plans are excluded; earlier ones are kept", () => {
+    const root = mkdtempSync(join(tmpdir(), "neo-hist-deliver-"));
+    const folder = join(root, "eticket");
+    const other = join(root, "waselni");
+    for (const f of [folder, other]) mkdirSync(f, { recursive: true });
+    const led = openLedger(":memory:");
+    const t = operatorThread(led);
+    const T = Date.now() - 60_000; // plans take the clock's time; the orders are just before it
+    // An operator run that ended before any customer brief, and one that was live when one was delivered.
+    led.recordOrder(order({ id: "before", folder, task: "Operator work that ended first.", createdAt: T }), { cause: { msgId: t, threadId: t } });
+    led.recordOutcome("before", "done", "Operator result before the delivery.", T + 500);
+    led.recordOrder(order({ id: "host", folder, task: "Operator work whose session took the brief.", createdAt: T + 1_000 }), { cause: { msgId: t, threadId: t } });
+    led.recordOrder(order({ id: "ingress", chatId: CUSTOMER_CHAT, folder: join(root, "agent"), task: "customer email run", createdAt: T + 1_500 }));
+    led.recordOrder(order({ id: "delivered", folder, task: "Customer-driven brief into the live session.", createdAt: T + 1_600 }), { parentOrderId: "ingress" });
+    led.recordOutcome("host", "done", "Operator result after the customer turn ran in it.", T + 2_000);
+    led.recordOrder(order({ id: "elsewhere", folder: other, task: "Operator work in another folder.", createdAt: T + 1_000 }), { cause: { msgId: t, threadId: t } });
+    const plan = (dir: string, orderId: string, path: string) => {
+      writeFileSync(join(dir, path), "# Plan\n\nSteps.");
+      return led.upsertPlan({ project: "eticket", folder: dir, path, title: "A plan", sha256: "s", status: "draft", stepsTotal: 1, stepsDone: 0, threadId: t, orderId, updatedAt: 0 });
+    };
+    const hostPlan = plan(folder, "host", "host.md");
+    const otherPlan = plan(other, "elsewhere", "other.md");
+    const ctx = ctxFor(led, { workRoot: root });
+    expect(extract(led, "outcomes", "before", ctx)).toMatchObject({ status: "source" });
+    expect(extract(led, "outcomes", "host", ctx)).toEqual({ status: "excluded", ref: "result:host", rule: "customer_delivery" });
+    expect(extract(led, "plans", hostPlan.id, ctx)).toEqual({ status: "excluded", ref: `plan:${hostPlan.id}`, rule: "customer_delivery" });
+    expect(extract(led, "plans", otherPlan.id, ctx)).toMatchObject({ status: "source" });
+  });
+
   test("a row on an ingress thread, and a message on CUSTOMER_CHAT, are excluded", () => {
     const led = openLedger(":memory:");
     const ti = operatorThread(led, "ingress");

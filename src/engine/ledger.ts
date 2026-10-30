@@ -591,6 +591,9 @@ export interface Ledger {
   /** Each order's chain of ancestors by `parent_order_id`, at most `maxDepth` levels up (one recursive
    *  query). Every requested id has an entry. */
   historyLineage(orderIds: string[], opts: { maxDepth: number }): Map<string, OrderLineage>;
+  /** The ids of the orders for `folder` created from `from` to `to` (ms, inclusive), oldest first, at most
+   *  `limit` (the history firewall looks for a customer-driven brief delivered into a live session). */
+  historyFolderOrders(folder: string, from: number, to: number, limit: number): string[];
   /** FTS5 search over workers' streamed lines (`text` and `progress`), newest first: never a
    *  `CUSTOMER_CHAT` line or a line on an `ingress` thread. A query FTS5 cannot read gives none. */
   searchWorkerLines(q: string, f: WorkerLineFilter): SearchHit[];
@@ -1684,6 +1687,12 @@ export function openLedger(
         .query(`${spec.select} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${spec.key} LIMIT ?`)
         .all(...params) as unknown[];
       return rows.map((r) => spec.map(r)) as Array<{ key: string; row: HistoryRowMap[typeof table] }>;
+    },
+    historyFolderOrders(folder, from, to, limit) {
+      return (
+        db.query(`SELECT id FROM orders WHERE folder = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at, id LIMIT ?`)
+          .all(folder, from, to, limit) as Array<{ id: string }>
+      ).map((r) => r.id);
     },
     historyLineage(orderIds, opts) {
       const out = new Map<string, OrderLineage>();

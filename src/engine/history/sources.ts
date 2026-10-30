@@ -26,6 +26,9 @@ type DecisionSourceRow = DecisionRow & { threadId?: number };
 /** What sources read besides the row: the firewall facts, and the order, todo and thread a row points at. */
 export interface SourceLookups extends FirewallLookups {
   order(id: string): HistoryOrderRow | undefined;
+  /** Whether an order the firewall excludes (a customer-driven brief) was made for `folder` from `from` to
+   *  `to`, other than `self`: such a brief is delivered into the live session of that folder. */
+  customerDelivery(folder: string, from: number, to: number, self?: string): boolean;
   todo(id: number): TodoSourceRow | undefined;
   thread(id: number): { origin: ThreadOrigin; project?: string } | undefined;
 }
@@ -56,7 +59,7 @@ export type Extracted =
 
 /** Lookups over the ledger's history reads, cached for one batch. `prime` reads many lineages in one query. */
 export function ledgerLookups(
-  ledger: Pick<Ledger, "historyLineage" | "historyRows" | "threadById">,
+  ledger: Pick<Ledger, "historyLineage" | "historyRows" | "threadById" | "historyFolderOrders">,
   cfg: Pick<SourcesCfg, "lineageDepth">,
 ): SourceLookups & { prime(orderIds: string[]): void } {
   const lineages = new Map<string, OrderLineage>();
@@ -86,12 +89,22 @@ export function ledgerLookups(
       if (!orders.has(id)) orders.set(id, ledger.historyRows("orders", [id])[0]?.row);
       return orders.get(id);
     },
+    customerDelivery(folder, from, to, self) {
+      if (!(to >= from)) return false;
+      const ids = ledger.historyFolderOrders(folder, from, to, DELIVERY_SCAN).filter((id) => id !== self);
+      prime(ids);
+      // More orders than one read holds: fail closed.
+      return ids.length >= DELIVERY_SCAN || ids.some((id) => orderVerdict(lineages.get(id)).verdict !== "ok");
+    },
     todo(id) {
       if (!todos.has(id)) todos.set(id, ledger.historyRows("project_todos", [String(id)])[0]?.row);
       return todos.get(id);
     },
   };
 }
+
+/** Orders one delivery check reads; a folder with more in the window is treated as tainted (fail closed). */
+const DELIVERY_SCAN = 500;
 
 // ── Extraction ──────────────────────────────────────────────────────────────────────────────────────────
 
@@ -146,6 +159,8 @@ const EXTRACT: { [T in HistoryTable]: (row: HistoryRowMap[T], ctx: SourceCtx) =>
     if (!RESULT_STATUSES.has(r.status)) return { status: "none", ref };
     const o = ctx.look.order(r.orderId);
     if (!o) return { status: "excluded", ref, rule: "missing_order" };
+    // The run took a customer-driven brief before it ended: its result may carry that turn.
+    if (ctx.look.customerDelivery(o.folder, o.createdAt, r.at, o.id)) return { status: "excluded", ref, rule: "customer_delivery" };
     const t = o.todoId !== undefined ? ctx.look.todo(o.todoId) : undefined;
     const title = `Result: ${t ? todoLabel(t) : summarizeBrief(briefText(o.task, ctx))}`;
     return made(ref, "result", r.orderId, {
@@ -175,6 +190,9 @@ const EXTRACT: { [T in HistoryTable]: (row: HistoryRowMap[T], ctx: SourceCtx) =>
     }
     const v = anchoredVerdict(anchors, ctx.look, "unclassified");
     if (v.verdict !== "ok") return gate(ref, v);
+    // A plan of a run that took a customer-driven brief before this version was written.
+    const host = anchors.orderId !== undefined ? ctx.look.order(anchors.orderId) : undefined;
+    if (host && ctx.look.customerDelivery(host.folder, host.createdAt, p.updatedAt, host.id)) return { status: "excluded", ref, rule: "customer_delivery" };
     const path = resolve(p.folder, p.path);
     const file = readPlanFile(p.folder, p.path, ctx.workRoot, ctx.cfg.planMaxBytes);
     const meta: SourceMeta = {

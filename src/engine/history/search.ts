@@ -76,7 +76,7 @@ export interface HistoryResult {
 
 export interface SearchDeps {
   store: HistoryStore;
-  ledger: Pick<Ledger, "searchWorkerLines" | "historyLineage" | "historyRows" | "threadById">;
+  ledger: Pick<Ledger, "searchWorkerLines" | "historyLineage" | "historyFolderOrders" | "historyRows" | "threadById">;
   embedder: Embedder;
   vectors: VectorIndex;
   cfg: Pick<HistoryCfg, "search" | "vectors" | "sources">;

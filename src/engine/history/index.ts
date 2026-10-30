@@ -72,7 +72,7 @@ export interface TaskHistory {
 
 export interface TaskHistoryDeps {
   cfg: HistoryCfg;
-  ledger: Pick<Ledger, "historyFeed" | "historyFeedBounds" | "historyRows" | "historyScan" | "historyLineage" | "threadById" | "searchWorkerLines">;
+  ledger: Pick<Ledger, "historyFeed" | "historyFeedBounds" | "historyRows" | "historyScan" | "historyLineage" | "historyFolderOrders" | "threadById" | "searchWorkerLines">;
   workRoot: string;
   /** process.env after loadConfig; read once. */
   env: Record<string, string | undefined>;

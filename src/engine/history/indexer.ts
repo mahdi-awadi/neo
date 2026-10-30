@@ -45,7 +45,7 @@ export type ReconcileReason = "first" | "gap" | "weekly";
 
 export interface IndexerDeps {
   store: HistoryStore;
-  ledger: Pick<Ledger, "historyFeed" | "historyFeedBounds" | "historyRows" | "historyScan" | "historyLineage" | "threadById">;
+  ledger: Pick<Ledger, "historyFeed" | "historyFeedBounds" | "historyRows" | "historyScan" | "historyLineage" | "historyFolderOrders" | "threadById">;
   cfg: HistoryCfg;
   workRoot: string;
   embedder: Embedder;

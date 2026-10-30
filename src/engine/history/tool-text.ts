@@ -131,6 +131,11 @@ export async function historySearchTool(history: TaskHistory, raw: unknown, sess
   }
 }
 
+/** The answer of both tools in a customer-driven session (a customer-driven brief was delivered into it). */
+export function historyRefusedInCustomerSession(what: "History search" | "Not saved"): ToolReply {
+  return reply(`${what}: refused — this session took a customer-driven brief, so it cannot read or write the operator's task history.`, true);
+}
+
 /** Who saves: the session, never the arguments. */
 export interface RememberCaller {
   by: RememberInput["by"];
