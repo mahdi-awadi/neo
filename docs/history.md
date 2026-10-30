@@ -181,7 +181,9 @@ bun tools/history/install.ts --down  # stop and remove it; the model volume stay
   in the child's environment, never as an argument. It never prints the key.
 - The daemon reads the key at its next restart. A restart is your decision.
 - Limits: memory `NEO_EMBEDDER_MEM` (no swap on top), `NEO_EMBEDDER_CPUS` CPUs, the same number of
-  threads, `cpu_shares` 256, a pids limit. All capabilities are dropped and `no-new-privileges` is on.
+  threads, `cpu_shares` 256, a pids limit, and `NEO_EMBEDDER_MAX_BATCH_TOKENS` (2,048) tokens in one
+  batch. TEI's default batch (16,384 tokens) makes the warm-up go past the memory cap, so the container is
+  killed at each start. All capabilities are dropped and `no-new-privileges` is on.
 - Machine-local changes (for example, the memory cap) go in `tools/history/embedder.local.env`
   (untracked). Then run `install.ts` again.
 

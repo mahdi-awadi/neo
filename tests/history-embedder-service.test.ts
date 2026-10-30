@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMBEDDER_DEFAULTS } from "../src/engine/history/defaults";
+import { CHUNK_DEFAULTS, EMBEDDER_DEFAULTS, SEARCH_DEFAULTS } from "../src/engine/history/defaults";
 import { parseEnvFile, ensureEnvKey } from "../tools/lib/env-file";
 import { adapterCfg, composeArgs, composeEnv, embedderSettings, KEY_ENV, smokeTest, waitHealthy } from "../tools/history/install";
 import { startFakeTei, type FakeTei } from "./fixtures/fake-tei";
@@ -14,7 +14,7 @@ import { startFakeTei, type FakeTei } from "./fixtures/fake-tei";
 const KIT = join(import.meta.dir, "..", "tools", "history");
 const DIGEST = "img@sha256:" + "a".repeat(64);
 const REV = "b".repeat(40);
-const GOOD = { NEO_EMBEDDER_IMAGE: DIGEST, NEO_EMBEDDER_MODEL: "BAAI/bge-m3", NEO_EMBEDDER_REVISION: REV, NEO_EMBEDDER_PORT: "8088", NEO_EMBEDDER_MEM: "4g", NEO_EMBEDDER_CPUS: "3", NEO_EMBEDDER_THREADS: "3", NEO_EMBEDDER_PIDS: "256", NEO_EMBEDDER_DIMS: "1024", NEO_EMBEDDER_START_WAIT_S: "1200" };
+const GOOD = { NEO_EMBEDDER_IMAGE: DIGEST, NEO_EMBEDDER_MODEL: "BAAI/bge-m3", NEO_EMBEDDER_REVISION: REV, NEO_EMBEDDER_PORT: "8088", NEO_EMBEDDER_MEM: "4g", NEO_EMBEDDER_CPUS: "3", NEO_EMBEDDER_THREADS: "3", NEO_EMBEDDER_PIDS: "256", NEO_EMBEDDER_MAX_BATCH_TOKENS: "2048", NEO_EMBEDDER_DIMS: "1024", NEO_EMBEDDER_START_WAIT_S: "1200" };
 const tracked = () => parseEnvFile(readFileSync(join(KIT, "embedder.env"), "utf8"));
 const compose = () => Bun.YAML.parse(readFileSync(join(KIT, "compose.yml"), "utf8")) as { services: Record<string, Record<string, unknown>>; volumes: Record<string, { name?: string }> };
 
@@ -29,6 +29,17 @@ describe("settings", () => {
     expect(s.dims).toBe(EMBEDDER_DEFAULTS.dims);
     expect(s.mem).toBe("4g");
     expect(s.cpus).toBe("3");
+  });
+
+  test("the batch-token cap keeps the warm-up under the memory cap and never cuts a chunk or a query", () => {
+    // TEI's default (16,384 tokens) warmed bge-m3 up past the 4g cap: a cgroup OOM kill on every start
+    // (verify step, 2026-10-30). The cap also bounds the input length (auto-truncate), so it must hold a
+    // whole chunk or query even at one token per character.
+    const s = embedderSettings([tracked()]);
+    expect(s.maxBatchTokens).toBeLessThanOrEqual(4096);
+    expect(s.maxBatchTokens).toBeGreaterThanOrEqual(CHUNK_DEFAULTS.chars);
+    expect(s.maxBatchTokens).toBeGreaterThanOrEqual(SEARCH_DEFAULTS.maxQueryChars);
+    expect(() => embedderSettings([{ ...GOOD, NEO_EMBEDDER_MAX_BATCH_TOKENS: "many" }])).toThrow(/MAX_BATCH_TOKENS/);
   });
 
   test("a later layer wins; a bad value keeps the earlier one (fails closed)", () => {
@@ -83,6 +94,7 @@ describe("the compose file", () => {
     expect(env.MODEL_ID).toBe("${NEO_EMBEDDER_MODEL}");
     expect(env.REVISION).toBe("${NEO_EMBEDDER_REVISION}");
     expect(env.PORT).toBe("80");
+    expect(env.MAX_BATCH_TOKENS).toBe("${NEO_EMBEDDER_MAX_BATCH_TOKENS}");
   });
 
   test("the key comes only from the compose process environment, never argv, never a value in the kit", () => {

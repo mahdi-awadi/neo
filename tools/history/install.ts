@@ -29,6 +29,8 @@ export interface EmbedderSettings {
   cpus: string;
   threads: number;
   pids: number;
+  /** TEI's MAX_BATCH_TOKENS: bounds the warm-up memory and (auto-truncate) the input length. */
+  maxBatchTokens: number;
   startWaitS: number;
 }
 
@@ -59,6 +61,7 @@ export function embedderSettings(layers: Array<Record<string, string>>): Embedde
     cpus: need("NEO_EMBEDDER_CPUS", cpuCount, "a CPU count above 0"),
     threads: need("NEO_EMBEDDER_THREADS", posInt, "a positive whole number"),
     pids: need("NEO_EMBEDDER_PIDS", posInt, "a positive whole number"),
+    maxBatchTokens: need("NEO_EMBEDDER_MAX_BATCH_TOKENS", posInt, "a positive whole number of tokens"),
     startWaitS: need("NEO_EMBEDDER_START_WAIT_S", posInt, "a positive whole number of seconds"),
   };
 }
@@ -138,6 +141,6 @@ if (import.meta.main) {
     process.exit(1);
   }
   console.log(`neo-embedder up: http://127.0.0.1:${s.port} · ${s.model} @ ${s.revision.slice(0, 12)} · ${check.dims} dims`);
-  console.log(`  caps: memory ${s.mem} (no extra swap) · ${s.cpus} CPUs · ${s.threads} threads · ${s.pids} pids · cpu_shares 256`);
+  console.log(`  caps: memory ${s.mem} (no extra swap) · ${s.cpus} CPUs · ${s.threads} threads · ${s.pids} pids · ${s.maxBatchTokens} batch tokens · cpu_shares 256`);
   console.log("  The daemon reads the key at its next restart (the restart is the operator's).");
 }

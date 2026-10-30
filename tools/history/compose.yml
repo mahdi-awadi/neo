@@ -18,6 +18,8 @@ services:
       PORT: "80"
       HUGGINGFACE_HUB_CACHE: /data
       RAYON_NUM_THREADS: ${NEO_EMBEDDER_THREADS}
+      # TEI's default (16,384) warms bge-m3 up past the memory cap (a cgroup OOM kill on every start).
+      MAX_BATCH_TOKENS: ${NEO_EMBEDDER_MAX_BATCH_TOKENS}
       # The bearer key: from the compose process environment only (never argv, never a tracked file).
       API_KEY: ${HISTORY_EMBEDDER_KEY:?run bun tools/history/install.ts (it writes HISTORY_EMBEDDER_KEY into .env)}
     volumes:
