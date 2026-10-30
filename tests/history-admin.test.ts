@@ -194,6 +194,32 @@ test("rescan-secrets forgets each entry whose stored chunk the secret finder mat
   expect(text).not.toContain(token);
 });
 
+test("rescan-secrets also forgets an entry whose stored title has a secret shape and drops a stored commit its kept text does not hold", async () => {
+  const r = rig();
+  const db = join(r.scratch, "h.db");
+  const store = openHistoryStore(db);
+  const token = `ghp_${"b".repeat(36)}`;
+  const hexKey = ["9f3a", "2b1c", "7d0e"].join("");
+  store.putSource({ ref: "todo:3", kind: "todo", at: 3, title: `push with ${token}`, hash: "h3", meta: { commits: [] } }, [{ text: "Push the release branch after the review." }], 3);
+  store.putSource({ ref: "todo:4", kind: "todo", at: 4, title: "seats", hash: "h4", meta: { commits: ["479236d", hexKey] } }, [{ text: "Seat release landed in 479236d on dev." }], 4);
+  store.close();
+  expect(await r.run("rescan-secrets", "--db", db, "--dry-run")).toBe(0);
+  let s = openHistoryStore(db);
+  expect(s.getSource("todo:3")).toBeDefined();
+  expect(s.getSource("todo:4")?.meta.commits).toEqual(["479236d", hexKey]);
+  s.close();
+  expect(await r.run("rescan-secrets", "--db", db)).toBe(0);
+  s = openHistoryStore(db);
+  expect(s.getSource("todo:3")).toBeUndefined();
+  expect(s.getSource("todo:4")?.meta.commits).toEqual(["479236d"]);
+  s.close();
+  const text = r.out.join("\n");
+  expect(text).toContain("todo:3 github_token");
+  expect(text).toContain("todo:4 commits");
+  expect(text).not.toContain(token);
+  expect(text).not.toContain(hexKey);
+});
+
 test("forget removes one entry with a reason; no reason is refused", async () => {
   const r = rig();
   const db = join(r.scratch, "h.db");

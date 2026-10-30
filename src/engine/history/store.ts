@@ -128,6 +128,10 @@ export interface HistoryStore {
   chunkById(id: number): ChunkRow | undefined;
   /** Every chunk in id order after `afterId`, at most `limit` (the admin's secret rescan walks them all). */
   scanChunks(afterId: number, limit: number): ChunkRow[];
+  /** Every source in ref order after `afterRef`, at most `limit` (the admin's secret rescan checks titles and commits). */
+  scanSources(afterRef: string | undefined, limit: number): SourceRow[];
+  /** Replace the stored commit list of one source (the rescan drops a commit its kept text does not hold). */
+  setCommits(ref: string, commits: string[]): void;
   /** The refs of `kinds` that are not archived, in ref order after `afterRef` (the reconcile's archive walk). */
   listRefs(kinds: string[], afterRef: string | undefined, limit: number): string[];
   /** Refs that start with `prefix` (a decision id prefix), in ref order. */
@@ -281,6 +285,11 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
     id: r.id, ref: r.ref, seq: r.seq, text: r.text, textHash: r.text_hash, flags: r.flags,
   });
 
+  const mapSource = (r: SourceDbRow): SourceRow => ({
+    ref: r.ref, kind: r.kind, ...(r.project !== null ? { project: r.project } : {}), at: r.at, title: r.title, hash: r.hash,
+    meta: JSON.parse(r.meta) as SourceMeta, ...(r.gone_at !== null ? { goneAt: r.gone_at } : {}), indexedAt: r.indexed_at,
+  });
+
   const lockHolder = (): { pid: number; at: number } | undefined => {
     const v = (q.getState.get(LOCK_KEY) as { value: string } | null)?.value;
     if (!v) return undefined;
@@ -298,11 +307,16 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
 
     getSource(ref) {
       const r = q.source.get(ref) as SourceDbRow | null;
-      if (!r) return undefined;
-      return {
-        ref: r.ref, kind: r.kind, ...(r.project !== null ? { project: r.project } : {}), at: r.at, title: r.title, hash: r.hash,
-        meta: JSON.parse(r.meta) as SourceMeta, ...(r.gone_at !== null ? { goneAt: r.gone_at } : {}), indexedAt: r.indexed_at,
-      };
+      return r ? mapSource(r) : undefined;
+    },
+
+    scanSources(afterRef, limit) {
+      const rows = db.query(`SELECT * FROM sources WHERE (? IS NULL OR ref > ?) ORDER BY ref LIMIT ?`).all(afterRef ?? null, afterRef ?? null, limit);
+      return (rows as SourceDbRow[]).map(mapSource);
+    },
+
+    setCommits(ref, commits) {
+      db.query(`UPDATE sources SET meta = json_set(meta, '$.commits', json(?)) WHERE ref = ?`).run(JSON.stringify(commits), ref);
     },
 
     putSource(src, chunks, now) {

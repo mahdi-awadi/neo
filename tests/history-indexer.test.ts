@@ -187,6 +187,26 @@ describe("the archive, the firewall and tombstones", () => {
   });
 });
 
+describe("secrets and commits", () => {
+  test("commits come only from kept chunks and never from a line with a secret shape", async () => {
+    const b = setup({ cfg: (c) => ({ ...c, chunk: { ...c.chunk, chars: 90, overlap: 0 } }) });
+    const ix = indexer(b);
+    await ix.tick(T0);
+    const t = operatorThread(b.led);
+    const hexKey = ["9f3a", "2b1c", "7d0e"].join(""); // sha-shaped, built so the file holds no key-shaped literal
+    const brief = [
+      "Fix the bus seat release; the first part landed in 479236d on dev today.",
+      `Deploy token: ${hexKey} for the staging box until it is rotated.`,
+      `Push with ghp_${"a".repeat(36)} here\nand the hotfix is abc1234f too.`,
+    ].join("\n\n");
+    const row = b.led.addTodo(todo({ brief, cause: { msgId: t, threadId: t } }));
+    await ix.tick(T0 + MIN);
+    const src = b.store.getSource(`todo:${row.id}`)!;
+    expect(src.meta.commits).toEqual(["479236d"]);
+    expect(b.store.chunksOf(`todo:${row.id}`).map((c) => c.text).join(" ")).not.toContain("abc1234f");
+  });
+});
+
 describe("the reconcile", () => {
   test("a feed gap starts a reconcile that indexes what the feed lost", async () => {
     const b = setup();

@@ -274,13 +274,21 @@ function decisionText(d: DecisionSourceRow): string {
   return parts.map((p) => p.trim()).filter(Boolean).join("\n\n");
 }
 
+/** The commit shas of `texts`, never one on a line the secret finder matches (a hex key in a `token: …`
+ *  line is sha-shaped). The indexer calls it again on the chunks it keeps, so a sha only in a dropped
+ *  chunk is never a commit either. */
+export function safeCommits(texts: string[]): string[] {
+  const lines = texts.flatMap((t) => t.split("\n")).filter((l) => !findSecret(l));
+  return findShas(lines.join("\n"));
+}
+
 /** Build the extract: commits from the text, a title that is safe to show, and the hash of every field. */
 function made(
   ref: string, kind: HistoryKind, id: string | number,
   f: { project?: string; at: number; title: string; text: string; meta: SourceMeta; keepText?: boolean },
 ): Extracted {
   const title = safeTitle(f.title, kind, id);
-  const meta: SourceMeta = { ...f.meta, commits: findShas(`${f.text}\n${f.title}`) };
+  const meta: SourceMeta = { ...f.meta, commits: safeCommits([f.text, title]) };
   const project = f.project?.trim() || undefined;
   const hash = hashText(JSON.stringify([kind, project ?? null, f.at, title, meta, f.text, f.keepText ?? false]));
   return {

@@ -119,6 +119,8 @@ export interface SearchHit {
   role: string;
   kind: MessageKind;
   snippet: string;
+  /** The order the line belongs to (worker lines only: the history firewall follows its lineage). */
+  orderId?: string;
 }
 
 /** One daemon start (spec §8.4): what the running build is — the restart producer compares with it. */
@@ -397,6 +399,8 @@ export interface WorkerLineFilter {
   since?: number;
   until?: number;
   limit: number;
+  /** A line whose whole text this refuses is left out (the history drops secret-shaped lines). */
+  keep?: (content: string) => boolean;
 }
 
 export interface Ledger {
@@ -1742,12 +1746,12 @@ export function openLedger(
       try {
         const rows = db
           .query(
-            `SELECT m.id, m.thread_id, m.project, m.at, m.role, m.kind, snippet(messages_fts, 0, ?, ?, '…', 12) AS snippet
+            `SELECT m.id, m.thread_id, m.project, m.at, m.role, m.kind, m.order_id, m.content, snippet(messages_fts, 0, ?, ?, '…', 12) AS snippet
              FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
              WHERE ${where.join(" AND ")} ORDER BY messages_fts.rowid DESC LIMIT ?`,
           )
-          .all(...params) as Array<{ id: number; thread_id: number | null; project: string | null; at: number; role: string; kind: string; snippet: string }>;
-        return rows.map((r) => ({
+          .all(...params) as Array<{ id: number; thread_id: number | null; project: string | null; at: number; role: string; kind: string; order_id: string | null; content: string; snippet: string }>;
+        return rows.filter((r) => !f.keep || f.keep(r.content)).map((r) => ({
           id: r.id,
           ...(r.thread_id !== null ? { threadId: r.thread_id } : {}),
           ...(r.project !== null ? { project: r.project } : {}),
@@ -1755,6 +1759,7 @@ export function openLedger(
           role: r.role,
           kind: r.kind as MessageKind,
           snippet: r.snippet,
+          ...(r.order_id !== null ? { orderId: r.order_id } : {}),
         }));
       } catch {
         return [];

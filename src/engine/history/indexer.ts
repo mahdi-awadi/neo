@@ -13,7 +13,7 @@ import type { Embedder } from "./embedder";
 import { paragraphHashes } from "./extract";
 import { countRule, type FirewallCounts, type FirewallRule } from "./firewall";
 import type { MeaningOffReason, QueryGate } from "./services";
-import { extractSource, ledgerLookups, ownBrief, prepareChunks, type SourceCtx, type SourceExtract } from "./sources";
+import { extractSource, ledgerLookups, ownBrief, prepareChunks, safeCommits, type SourceCtx, type SourceExtract } from "./sources";
 import type { ChunkInput, HistoryKind, HistoryStore } from "./store";
 import type { Point, VectorIndex, VectorProbe } from "./vector-index";
 
@@ -215,6 +215,8 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       if (p.cut) meta = { ...meta, cut: true };
     }
     if (!chunks.length && !existing) return; // too short (or all secret): not indexed
+    // Commits only from the text that is kept: a sha in a chunk dropped for a secret is never shown.
+    meta = { ...meta, commits: safeCommits([...chunks.map((c) => c.text), src.title]) };
     const { text: _text, keepText: _keep, ...input } = src;
     const put = store.putSource({ ...input, meta }, chunks, now);
     if (put.tombstoned) return;

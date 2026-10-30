@@ -10,15 +10,18 @@
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../format";
 import type { Ledger, SearchHit } from "../ledger";
 import { safeFtsQuery } from "../memory-recall";
+import { findSecret } from "../secret-patterns";
 import { todoTitle } from "../todo-title";
 import { arabicStems } from "./arabic-stem";
 import { SOURCE_KINDS, type HistoryCfg } from "./defaults";
 import type { Embedder } from "./embedder";
 import { exactLookup, parseQuery, STOP_WORDS, type ParsedQuery } from "./exact";
+import { anchoredVerdict } from "./firewall";
 import { fuse, type ListName, type Ranked } from "./fuse";
 import { normalize } from "./normalize";
 import type { MeaningOffReason, QueryGate } from "./services";
 import { makeSnippet } from "./snippet";
+import { defang, ledgerLookups } from "./sources";
 import type { HistoryFilter, HistoryKind, HistoryStore, SourceRow } from "./store";
 import type { VectorIndex } from "./vector-index";
 
@@ -73,10 +76,10 @@ export interface HistoryResult {
 
 export interface SearchDeps {
   store: HistoryStore;
-  ledger: Pick<Ledger, "searchWorkerLines">;
+  ledger: Pick<Ledger, "searchWorkerLines" | "historyLineage" | "historyRows" | "threadById">;
   embedder: Embedder;
   vectors: VectorIndex;
-  cfg: Pick<HistoryCfg, "search" | "vectors">;
+  cfg: Pick<HistoryCfg, "search" | "vectors" | "sources">;
   gate: QueryGate;
   events: (kind: string, data: Record<string, unknown>) => void;
 }
@@ -145,10 +148,7 @@ export async function searchHistory(deps: SearchDeps, q: HistoryQuery): Promise<
   const lineHits = new Map<string, SearchHit>();
   const lines = linesOn && !parsed.idOnly
     ? guard("lines", () =>
-      deps.ledger.searchWorkerLines(query, {
-        ...(q.project !== undefined ? { project: q.project } : {}), ...(q.since !== undefined ? { since: q.since } : {}),
-        ...(q.until !== undefined ? { until: q.until } : {}), limit: listLimit,
-      }).map((h) => {
+      workerLines(deps, query, q, listLimit).map((h) => {
         lineHits.set(`${LINE}${h.id}`, h);
         return { ref: `${LINE}${h.id}`, at: h.at };
       }))
@@ -169,8 +169,8 @@ export async function searchHistory(deps: SearchDeps, q: HistoryQuery): Promise<
         if (!h) return [];
         return [{
           ref: f.ref, kind: "line", ...(h.project !== undefined ? { project: h.project } : {}), at: h.at,
-          title: todoTitle(h.snippet.replace(MARKS, "")), snippet: h.snippet, ...(h.threadId !== undefined ? { thread: h.threadId } : {}),
-          commits: [], archived: false, via: f.via,
+          title: defang(todoTitle(h.snippet.replace(MARKS, ""))).text, snippet: h.snippet, ...(h.threadId !== undefined ? { thread: h.threadId } : {}),
+          ...(h.orderId !== undefined ? { order: h.orderId } : {}), commits: [], archived: false, via: f.via,
         }];
       }
       const src = store.getSource(f.ref);
@@ -194,6 +194,25 @@ export async function searchHistory(deps: SearchDeps, q: HistoryQuery): Promise<
     queryChars: query.length, hits: hits.length,
   });
   return { ok: true, hits, mode: m.mode };
+}
+
+/** The ledger's worker lines under the same rules as the stored sources: a line whose text has a secret
+ *  shape is left out, a line the firewall excludes (its thread, its order's lineage through the parent
+ *  orders) is left out, and an injection shape in the snippet is made harmless. */
+function workerLines(deps: SearchDeps, query: string, q: HistoryQuery, limit: number): SearchHit[] {
+  const look = ledgerLookups(deps.ledger, deps.cfg.sources);
+  const hits = deps.ledger.searchWorkerLines(query, {
+    ...(q.project !== undefined ? { project: q.project } : {}), ...(q.since !== undefined ? { since: q.since } : {}),
+    ...(q.until !== undefined ? { until: q.until } : {}), limit, keep: (content) => !findSecret(content),
+  });
+  look.prime(hits.flatMap((h) => (h.orderId !== undefined ? [h.orderId] : [])));
+  return hits.flatMap((h) => {
+    if (findSecret(h.snippet.replace(MARKS, ""))) return [];
+    if (anchoredVerdict({ threadId: h.threadId, orderId: h.orderId }, look, "ok").verdict !== "ok") return [];
+    // A highlight mark inside a phrase would hide it from the check: a flagged snippet loses its marks.
+    const plain = defang(h.snippet.replace(MARKS, ""));
+    return [{ ...h, snippet: plain.flagged ? plain.text : h.snippet }];
+  });
 }
 
 /** The sources the ids name (direct refs, a decision prefix, meta links), then the chunks that hold an id

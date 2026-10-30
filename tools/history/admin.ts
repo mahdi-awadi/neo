@@ -17,8 +17,8 @@
 //       delete the verify tag's points (the filter `m = <verify tag>`), then require a count of 0
 //   bun tools/history/admin.ts forget <ref> --reason <text> [--db <file>]
 //   bun tools/history/admin.ts rescan-secrets [--db <file>] [--dry-run]
-//       forget each entry with a stored chunk that the secret finder matches now (the pattern is named, the
-//       text never)
+//       forget each entry with a stored chunk or title that the secret finder matches now (the pattern is
+//       named, the text never), and drop each stored commit that its kept text and title no longer give
 //
 // `NEO_DIR=<folder>` names the Neo folder whose config, `.env` and `data/` are used (default: this checkout;
 // the verify step in a worktree sets it to the live folder, which is only ever read). The data/ folders of
@@ -38,6 +38,7 @@ import { modelTag, openEmbedder, withTag, type Embedder } from "../../src/engine
 import { openTaskHistory, type IndexReport, type TaskHistory } from "../../src/engine/history/index";
 import { backlogDrains } from "../../src/engine/history/runtime";
 import { operatorStep } from "../../src/engine/history/services";
+import { safeCommits } from "../../src/engine/history/sources";
 import { openHistoryStore, type HistoryStore } from "../../src/engine/history/store";
 import { NoVectorIndex, openVectorIndex, type VectorIndex } from "../../src/engine/history/vector-index";
 
@@ -291,7 +292,33 @@ async function rescanSecrets(ctx: AdminCtx, flags: Flags): Promise<number> {
       scanned += page.length;
       after = page.at(-1)!.id;
     }
-    ctx.out(`scanned ${scanned} chunk(s): ${found.size} entr${found.size === 1 ? "y" : "ies"} with a secret shape`);
+    // A title with a secret shape forgets the entry too; a stored commit the kept text and title no longer
+    // give (it came from a dropped chunk or a secret line) is taken out of the list.
+    const repairs: Array<{ ref: string; commits: string[]; dropped: number }> = [];
+    let sources = 0;
+    for (let after: string | undefined; ; ) {
+      const page = store.scanSources(after, SCAN_PAGE);
+      if (!page.length) break;
+      for (const s of page) {
+        const pattern = found.has(s.ref) ? undefined : findSecret(s.title);
+        if (pattern) {
+          found.set(s.ref, pattern);
+          continue;
+        }
+        const stored = s.meta.commits ?? [];
+        if (!stored.length || found.has(s.ref)) continue;
+        const safe = new Set(safeCommits([...store.chunksOf(s.ref).map((c) => c.text), s.title]));
+        const commits = stored.filter((c) => safe.has(c));
+        if (commits.length < stored.length) repairs.push({ ref: s.ref, commits, dropped: stored.length - commits.length });
+      }
+      sources += page.length;
+      after = page.at(-1)!.ref;
+    }
+    ctx.out(`scanned ${scanned} chunk(s) and ${sources} title(s): ${found.size} entr${found.size === 1 ? "y" : "ies"} with a secret shape, ${repairs.length} with a commit to drop`);
+    for (const p of repairs) {
+      if (!flags["dry-run"]) store.setCommits(p.ref, p.commits);
+      ctx.out(`  ${p.ref} commits: ${p.dropped} dropped${flags["dry-run"] ? " (dry run: kept)" : ""}`);
+    }
     let failed = 0;
     for (const [ref, pattern] of found) {
       if (flags["dry-run"]) {
