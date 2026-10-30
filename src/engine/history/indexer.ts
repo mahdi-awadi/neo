@@ -141,7 +141,8 @@ export function cronDueBetween(expr: string, from: number, to: number): boolean 
   return false;
 }
 
-function emptyReport(): IndexReport {
+/** A report with no work and both services off: the start of each pass, and what a pass that cannot run gives. */
+export function emptyIndexReport(): IndexReport {
   return {
     ms: 0,
     feed: { read: 0, cursor: 0, gap: false },
@@ -607,7 +608,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
 
   async function pass(now: number): Promise<IndexReport> {
     const started = Date.now();
-    const r = emptyReport();
+    const r = emptyIndexReport();
     let lock: ReturnType<HistoryStore["takeLock"]>;
     try {
       lock = store.takeLock(deps.pid, now);
@@ -655,7 +656,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       running = pass(now)
         .catch(() => {
           // pass() catches each step; this is the last net, so tick never rejects.
-          const r = emptyReport();
+          const r = emptyIndexReport();
           events("history_step_error", { step: "pass" });
           return r;
         })

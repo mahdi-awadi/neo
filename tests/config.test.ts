@@ -1,3 +1,4 @@
+import { HISTORY_DEFAULTS } from "../src/engine/history/defaults";
 import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -493,4 +494,11 @@ test("ADR-0059: todoSummary defaults on, haiku at low effort, 30 s; bad values k
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ todoSummary: { ai: false, model: "sonnet", effort: "nope", timeoutMs: -1 } }));
   expect(loadConfig(d).todoSummary).toEqual({ ai: false, model: "sonnet", effort: "low", timeoutMs: 30_000 });
+});
+
+test("ADR-0066: history defaults on; config.json sets it through readHistoryCfg; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).history).toEqual(HISTORY_DEFAULTS);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ history: { enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["shared"] } } }));
+  expect(loadConfig(d).history).toMatchObject({ enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["neo_history"] } });
 });

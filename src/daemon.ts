@@ -61,6 +61,8 @@ import { createTodoQueue } from "./engine/todo-queue";
 import { createTrace } from "./engine/trace";
 import { planDepsFrom } from "./engine/plans";
 import { createEngineUpdater, registryBusy } from "./engine/update-engine";
+import { HISTORY_DEFAULTS } from "./engine/history/defaults";
+import { startTaskHistory, type HistoryRuntime } from "./engine/history/runtime";
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
 // wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
@@ -350,6 +352,8 @@ async function main(): Promise<void> {
   // again, forever. Stopping the poller up front also means the offset is already committed if
   // systemd SIGKILLs us mid-drain, and messages sent during the drain simply wait for the restart.
   const stopHooks: Array<() => Promise<unknown>> = [];
+  /** The task history (ADR-0066), started below once faults can alert; closed after the drain. */
+  let historyRuntime: HistoryRuntime | undefined;
   let drainStarted = false;
   const shutdown = (why: string): void => {
     if (drainStarted) return;
@@ -364,7 +368,10 @@ async function main(): Promise<void> {
       .then(() => drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs, memory: cfg.memory, companyFolder: cfg.companyFolder }))
       .then((r) => console.log(`[reload] drained ${r.drained.length} · interrupted ${r.interrupted.length} · persisted ${r.persisted} — exiting for restart`))
       .catch((e) => console.log(`[reload] drain error: ${e instanceof Error ? e.message : e}`))
-      .finally(() => process.exit(0));
+      .finally(() => {
+        faults.guard("history.close", () => historyRuntime?.close());
+        process.exit(0);
+      });
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
@@ -414,6 +421,22 @@ async function main(): Promise<void> {
       cfg.faults,
     ),
   );
+
+  // The task history (ADR-0066): off → no store and no worker tool; a history.db that cannot be opened is
+  // moved aside (when corrupt) with one alert, and the engine runs on with history "not available". The Qdrant
+  // URL and the keys come from the env the loader filled (`loadConfig`), named in the config, never logged.
+  const historyCfg = cfg.history ?? HISTORY_DEFAULTS;
+  historyRuntime = startTaskHistory({
+    cfg: historyCfg,
+    ledger,
+    workRoot: cfg.workRoot,
+    env: process.env,
+    events: (kind, data) => ledger.recordEvent(kind, { data }),
+    alert: alertOperator,
+    report: (component, err) => faults.report(component, err),
+  });
+  const history = historyRuntime.history;
+  console.log(`  history   -> ${!historyCfg.enabled ? "OFF" : historyRuntime.available ? `${historyCfg.dbPath} (search + worker tools)` : "NOT available (history.db could not be opened; see the alert)"}`);
 
   // The toolchain updater (ADR-0009): a deterministic engine job, not a loop. It never restarts the
   // daemon — an SDK bump lands on master behind green tests and waits for the operator's restart.
@@ -581,6 +604,10 @@ async function main(): Promise<void> {
           ["notes.sweepQuestions", () => notes.sweepQuestions(Date.now())],
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["attention.skillify", () => skillify?.(Date.now())],
+          // The task history (ADR-0066): one indexer pass (it starts its own follow-ups while a backlog
+          // drains), and the change-feed prune, which runs also while history is off.
+          ["history", () => historyRuntime?.tick()],
+          ["history.feedPrune", () => historyRuntime?.feedPrune()],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed
@@ -605,7 +632,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, apiWaits, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools, toolNotices }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, apiWaits, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools, toolNotices, history }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -616,7 +643,7 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, apiWaits, todo, trace, postPlan, editPlan, notes, tools }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inboxSecret: inboxSecretOf(cfg), inbox, gatewaySendUrl, bus, neoFolder };
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, apiWaits, todo, trace, postPlan, editPlan, notes, tools, history }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inboxSecret: inboxSecretOf(cfg), inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
     const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
     // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon

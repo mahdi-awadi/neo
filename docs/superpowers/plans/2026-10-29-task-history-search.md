@@ -231,7 +231,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
       `ok: false`. Both events carry no text.
   - Done when: AC15 and AC16 pass.
 
-- [ ] **11. Factory, config and daemon wiring**
+- [x] **11. Factory, config and daemon wiring**
   - Create: `src/engine/history/cfg.ts`, `tests/history-cfg.test.ts`,
     `tests/history-daemon-wiring.test.ts`.
   - Modify:

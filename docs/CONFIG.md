@@ -30,6 +30,9 @@ ones in `.env` (`chmod 600`).
 | `COMPANY_FOLDER` | env or `config.json` | `<repo>/agent` | The always-on "company" workspace folder. |
 | `NEO_LOOP_SCHEDULER` | env or `config.json` | `1` (on) | Set `0` to disable the loop scheduler. |
 | `DECISIONS_CHAT_ID` | env or `config.json` | *(unset)* | Telegram chat/group id for the high-priority **Decisions** channel — blocking questions, escalations, failures. Keep it unmuted; mute the normal DM (the firehose). Unset → decisions are still tagged, tracked, and reminded, but post to the admin DM. |
+| `HISTORY_EMBEDDER_KEY` | yes | *(empty)* | ADR-0066: the bearer key of the local embedder (TEI). Written by `tools/history/install.ts`. Empty → meaning search is off (`not_configured`); keyword search works. The name is `history.embedder.keyEnv`. |
+| `SHARED_QDRANT_URL` | yes | *(empty)* | ADR-0066: the shared Qdrant (written by ops). Must be loopback. Empty → meaning search is off; keyword search works. The name is `history.vectors.urlEnv`. |
+| `SHARED_QDRANT_API_KEY` | yes | *(empty)* | ADR-0066: Neo's JWT for its `neo_*` collections (written by ops). A plain or global key is refused. A new key needs a reload. The name is `history.vectors.keyEnv`. |
 | `SECRETARY_CRON` | env or `config.json` | `0 8-22/2 * * *` | Cron (server-local) for the secretary digest loop. The loop is still opt-in (`/loop secretary on`). |
 
 ## Structured knobs (`config.json`)
@@ -65,6 +68,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `apiRetryJitterFrac` | `0.2` (±20%) | Jitter magnitude (0–1) on every retry wait so co-throttled workers don't sync up: ladder waits get ±frac, reset-based waits get +frac (upward only). |
 | `apiLimitWakeEarly` | `true` | ADR-0060: when a worker's turn goes through, the same provider's other runs held in a usage-limit wait wake early instead of waiting for their reset. A wrong type keeps the default. |
 | `todoSummary` | `{ ai: true, model: "haiku", effort: "low", timeoutMs: 30000 }` | ADR-0059: a model proposes a one-line summary for each new todo; the engine keeps it only if it is one plain line of 8–90 characters with no secret shape, else the deterministic summary stays. The run has no tools, no settings and no MCP servers. `ai: false` turns it off. |
+| `history` | on, see "Task history" | ADR-0066: the task history — hybrid (meaning + words + exact) search over past work. Its keys are in the section "Task history (`history`)" below. |
 | `planner` | `{ model: "opus", effort: "max" }` | ADR-0063: the `planner` subagent every dispatch, project and loop run gets for its DESIGN phase and final review. `model` is a tier alias (pinned to its id through `models.aliases`, ADR-0005) or an id; `effort` is one of `low`, `medium`, `high`, `xhigh`, `max`. A blank model or unknown effort keeps the default. |
 | `projectMessage` | `{ maxChars: 500, perProjectPerHour: 6 }` | ADR-0061: the chief of staff's `project_message` — a message longer than `maxChars` is refused (new work goes through dispatch), and at most `perProjectPerHour` messages are delivered to one project in an hour. A value that is not a positive whole number keeps its default. |
 | `apiLimitWakeJitterMs` | `30000` | ADR-0060: each early-woken run first waits a random 0..this ms, so they do not all re-send at once. A negative or non-number keeps the default. |
@@ -497,6 +501,31 @@ The first `memory` write to a project folder (`applyMemoryOp` / `appendDailyLog`
 the line isn't already there — **never** the tracked `.gitignore` (machine-local law: memory is
 per-machine/per-checkout state, not something to commit). Fail-open and a no-op outside a git repo;
 runs at most once per process per folder.
+
+## Task history (`history`) — ADR-0066
+
+`readHistoryCfg` (`src/engine/history/cfg.ts`) reads the section. Each key keeps a value of the right type
+and range; any other value keeps its default. One bad key never turns a guard off. The defaults are
+dev-safe: with no key or URL in `.env`, history runs keyword-only.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `enabled` | `true` | `false` → no store opens and no worker gets `history_search` or `remember`. The ledger's change feed is still pruned. |
+| `dbPath` | `data/history.db` | The history store (mode 0600). A corrupt file is moved to `<dbPath>.corrupt-<UTC time>` at start, with one alert; history is then not available until a snapshot is restored and the daemon reloads. |
+| `chunk` | `{ chars: 1200, overlap: 150, minChars: 24, maxPerRef: 300 }` | Chunk size and overlap (the overlap stays below the size), the shortest source indexed, the most chunks for one source. |
+| `sources` | `{ kinds: [all], planMaxBytes: 1048576, boilerplateMinRows: 25, lineageDepth: 8 }` | The source kinds to index (`todo`, `order`, `result`, `digest`, `message`, `plan`, `note`, `attention`, `decision`, `remembered`; an unknown kind keeps all), the plan file read cap, the boilerplate threshold, the firewall's parent-order depth. |
+| `embedder` | `{ url: "http://127.0.0.1:8088", keyEnv: "HISTORY_EMBEDDER_KEY", model: "BAAI/bge-m3", revision: "", dims: 1024, batch: 8, timeoutMs: 60000, queryTimeoutMs: 3000, queryCache: 200, backoffMs: 5000, backoffMaxMs: 300000 }` | The local TEI service. The URL must be loopback. `keyEnv` names the env variable (never the key). An empty `revision` → meaning search is off (`not_configured`); pin it from `tools/history/embedder.env`. |
+| `next` | `null` | A model change: the same shape as `embedder`, plus `collection` when its `dims` differ. Kept only with a `model` and a `revision` that differ from the active model, and, for other dims, an allowed `neo_` collection. Else it is dropped. |
+| `retireAfterDays` | `7` | The old model's points and vectors go this many days after the model tag changed. |
+| `vectors` | `{ urlEnv: "SHARED_QDRANT_URL", keyEnv: "SHARED_QDRANT_API_KEY", collection: "neo_history", allowedCollections: ["neo_history"], uploadBatch: 128, timeoutMs: 10000, queryTimeoutMs: 2000, knn: 50, minScore: 0.35, driftRatio: 0.9 }` | The shared Qdrant. Each `allowedCollections` entry must start with `neo_` (others are dropped); a `collection` outside the list keeps the default. `minScore` and `driftRatio` are in 0–1. |
+| `search` | `{ rrfK: 60, weights: { meaning: 1, words: 1, lines: 0.5 }, exactBoost: 1, defaultLimit: 10, maxLimit: 50, listLimit: 50, snippetChars: 240, maxQueryChars: 500, maxTerms: 12, fullCoverage: 0.99 }` | The fusion and the limits. `defaultLimit` never exceeds `maxLimit`. Coverage below `fullCoverage` reports meaning search as partial. |
+| `indexer` | `{ feedBatch: 500, sliceRows: 200, busyPauseMs: 200, reconcileRows: 500, embedBatchesPerPass: 16, uploadBatchesPerPass: 8 }` | One pass's bounds. While a pass leaves work that can go on (feed rows or a reconcile; embeds with the embedder up; uploads and deletes with Qdrant up), the next pass starts after `busyPauseMs`, not at the next heartbeat. |
+| `reconcileCron` | `17 4 * * 0` | The weekly reconcile (5-field cron, server-local). An invalid cron keeps the default. |
+| `feedKeep` | `200000` | The ledger change-feed rows kept (pruned at most once an hour). A prune past the history cursor starts a reconcile. |
+| `degradedAlertMinutes` | `60` | A service down this long raises `history_degraded`. |
+| `remember` | `{ minChars: 10, maxChars: 4000, perSessionHour: 20 }` | The `remember` limits. |
+| `telegram` | `{ findLimit: 5 }` | Hits in a `/find` reply. |
+| `store` | `{ lockStaleMs: 180000 }` | A writer lock older than this may be taken over. |
 
 ## There is no `idlePollMs` / `loopTickMs`
 

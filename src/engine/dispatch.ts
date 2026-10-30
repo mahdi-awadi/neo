@@ -79,6 +79,7 @@ import { commitFinishLine, createCommitFinish, type CommitFinishCfg } from "./co
 import { applyPlanAction, offerPlanFile, onRunEndPlans, headSha, planDepsFrom, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
+import type { TaskHistory } from "./history/index";
 import { repliedContextBrief } from "./reply-routing";
 import { reviewedPath } from "./plan-review";
 import { answerable } from "./decision-settle";
@@ -159,6 +160,9 @@ export interface DispatchDeps {
   /** The tools catalogue (ADR-0044). Its PRESENCE gates the `tool_api` relay tool: operator surfaces wire
    *  it, the ingress path strips it, like `notes`. */
   tools?: Catalogue;
+  /** The task history (ADR-0066). Its PRESENCE gates the `history_search` and `remember` tools: the daemon
+   *  wires it on the operator surfaces only (absent while history is off), and the ingress path strips it. */
+  history?: TaskHistory;
   postDecision?: (
     /** `ref`: the ref of the decision's thread (trace only) — the card ends with it (spec §4.3). */
     rec: { id: string; project?: string; folder?: string; ref?: string },

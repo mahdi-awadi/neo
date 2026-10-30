@@ -21,6 +21,8 @@ import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
 import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
 import { readTodoSummaryCfg, type TodoSummaryCfg } from "./engine/todo-summary-cfg";
+import { readHistoryCfg } from "./engine/history/cfg";
+import type { HistoryCfg } from "./engine/history/defaults";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
@@ -226,6 +228,9 @@ export interface NeoConfig {
   planner?: PlannerCfg;
   /** ADR-0059: the AI summary of each new todo (`ai`, `model`, `effort`, `timeoutMs`). Read by readTodoSummaryCfg. */
   todoSummary?: TodoSummaryCfg;
+  /** ADR-0066: the task history (hybrid search over past work). Secrets are named by their env variables
+   *  (`embedder.keyEnv`, `vectors.urlEnv`, `vectors.keyEnv`), never written here. Read by readHistoryCfg. */
+  history?: HistoryCfg;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
    *  scheduler can't amplify a rate-limit storm. Default 60 s. */
   apiCooldownMs: number;
@@ -662,6 +667,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     projectMessage: readProjectMessageCfg(fileCfg.projectMessage),
     planner: readPlannerCfg(fileCfg.planner),
     todoSummary: readTodoSummaryCfg(fileCfg.todoSummary),
+    history: readHistoryCfg(fileCfg.history),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),
