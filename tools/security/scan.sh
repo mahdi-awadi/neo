@@ -11,7 +11,8 @@
 # Exit 1 = new high/critical findings (blocks). Exit 0 = clean, only baselined/low findings, or a scan
 # that could not run (it warns). Reports are written only for repos with .security/config.json.
 # Per-project settings live in <repo>/.security/config.json (devUrls, images, testCmd, zapAuth,
-# semgrepChunkFiles, semgrepTimeoutSec). A scan part with no result is recorded as missing (ADR-0051).
+# semgrepChunkFiles, semgrepTimeoutSec, osvMemoryMb). A scan part with no result is recorded as missing
+# (ADR-0051).
 set -uo pipefail
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
@@ -117,8 +118,37 @@ run_hadolint() { # repo-relative dockerfiles...
   done
 }
 
+# osv-scanner runs Go call analysis (govulncheck) only with a Go toolchain on PATH (ADR-0066), so it runs
+# in the pinned Go image. Its binary comes from OSV_BIN_URL into the neo-sec-gocache volume and is checked
+# against OSV_BIN_SHA256 before every run. Go writes go.sum/go.work.sum while it loads packages, so it
+# gets a disposable copy of the checkout (tracked + untracked-not-ignored files, reflinked where the
+# filesystem can) at the repo's own path: same paths, same fingerprints, the repo itself untouched.
+# No result (no download, a checksum mismatch, out of memory): the plain osv image runs, with no
+# analysis, and every Go finding keeps its full severity (findings.ts).
+osv_go_sh='set -e
+bin=/neo/bin/osv-scanner-$OSV_BIN_SHA256
+if ! echo "$OSV_BIN_SHA256  $bin" | sha256sum -c -s 2>/dev/null; then
+  mkdir -p /neo/bin; tmp=$(mktemp /neo/bin/dl.XXXXXX)
+  wget -q -O "$tmp" "$OSV_BIN_URL" || { rm -f "$tmp"; echo "osv-scanner download failed: $OSV_BIN_URL" >&2; exit 97; }
+  echo "$OSV_BIN_SHA256  $tmp" | sha256sum -c -s || { rm -f "$tmp"; echo "osv-scanner download does not match OSV_BIN_SHA256" >&2; exit 97; }
+  chmod 755 "$tmp"; mv -f "$tmp" "$bin"
+fi
+exec "$bin" scan source -r --format json "$1"'
+
 run_osv() {
-  docker run --rm -v "$repo:$repo:ro" "$OSV_IMAGE" scan source -r --format json "$repo" > "$work/osv.json" 2>/dev/null || true
+  local copy="$work/osv-src" mem
+  mem="$(cfg_int osvMemoryMb 6144)"
+  mkdir -p "$copy"
+  git -C "$repo" ls-files -z --cached --others --exclude-standard \
+    | (cd "$repo" && xargs -0r cp -P --parents --reflink=auto -t "$copy" -- 2>/dev/null)
+  docker run --rm --memory "${mem}m" -v "$copy:$repo" -v neo-sec-gocache:/neo -e GOMODCACHE=/neo/mod -e GOCACHE=/neo/build \
+    -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false -e OSV_BIN_URL="$OSV_BIN_URL" -e OSV_BIN_SHA256="$OSV_BIN_SHA256" \
+    --entrypoint sh "$GO_IMAGE" -c "$osv_go_sh" osv "$repo" > "$work/osv.json" 2>"$work/osv-go.err" || true
+  rm -rf "$copy"
+  if [[ ! -s "$work/osv.json" ]]; then
+    sec_warn "osv-scanner with Go call analysis gave no result ($(grep -v '^Scanned' "$work/osv-go.err" | tail -1)) — scanned without it; Go findings keep full severity"
+    docker run --rm -v "$repo:$repo:ro" "$OSV_IMAGE" scan source -r --format json "$repo" > "$work/osv.json" 2>/dev/null || true
+  fi
   specs+=("osv:$work/osv.json")
 }
 

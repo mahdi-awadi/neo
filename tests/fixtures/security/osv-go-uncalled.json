@@ -1,0 +1,48 @@
+{
+  "results": [
+    {
+      "source": { "path": "/repo/services/common/go.mod", "type": "lockfile" },
+      "packages": [
+        {
+          "package": { "name": "golang.org/x/crypto", "version": "0.58.0", "ecosystem": "Go" },
+          "vulnerabilities": [{ "id": "GO-2026-5932", "summary": "golang.org/x/crypto/openpgp is unmaintained" }],
+          "groups": [
+            {
+              "ids": ["GO-2026-5932"],
+              "aliases": ["GO-2026-5932"],
+              "experimentalAnalysis": { "GO-2026-5932": { "called": false, "unimportant": false } },
+              "max_severity": ""
+            }
+          ]
+        },
+        {
+          "package": { "name": "github.com/quic-go/quic-go", "version": "0.59.0", "ecosystem": "Go" },
+          "vulnerabilities": [{ "id": "GO-2026-5676" }, { "id": "GHSA-vvgj-x9jq-8cj9" }],
+          "groups": [
+            {
+              "ids": ["GO-2026-5676", "GHSA-vvgj-x9jq-8cj9"],
+              "aliases": ["GO-2026-5676", "GHSA-vvgj-x9jq-8cj9"],
+              "experimentalAnalysis": {
+                "GO-2026-5676": { "called": false, "unimportant": false },
+                "GHSA-vvgj-x9jq-8cj9": { "called": false, "unimportant": false }
+              },
+              "max_severity": "9.1"
+            }
+          ]
+        },
+        {
+          "package": { "name": "github.com/jackc/pgx/v5", "version": "5.9.0", "ecosystem": "Go" },
+          "vulnerabilities": [{ "id": "GO-2026-5004" }],
+          "groups": [
+            {
+              "ids": ["GO-2026-5004"],
+              "aliases": ["GO-2026-5004", "GHSA-j88v-2chj-qfwx"],
+              "experimentalAnalysis": { "GO-2026-5004": { "called": false, "unimportant": false } },
+              "max_severity": "2.3"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

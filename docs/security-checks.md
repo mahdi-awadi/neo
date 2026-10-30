@@ -44,6 +44,11 @@ reads `host.json` on every call, so a change needs no restart. This host is set 
   What the scan missed is recorded (`incomplete`), never dropped silently (ADR-0051).
 - A fingerprint uses the matched code, read from the scanned file (semgrep without a login reports
   only "requires login" for it).
+- An **unreachable** Go vulnerability does not block (ADR-0066). osv-scanner runs govulncheck in the
+  pinned Go image; a Go finding it marks `called: false` for every id is capped at medium and tagged
+  `unreachable` (the message starts "unreachable (never called)"). It stays in every report. No
+  analysis (no Go, govulncheck failed for that module, the binary could not be fetched or checked,
+  out of memory), a missing verdict, or another ecosystem: full severity, as before.
 - Getting past a check (`--no-verify`, editing the baseline, turning a hook off) is not allowed for
   workers (dispatch preamble). A false positive is reported to the operator.
 
@@ -78,6 +83,7 @@ built-in `/security-review`.
 | `testCmd` | The project's security test command, run at pre-push (for example authz tests). |
 | `semgrepChunkFiles` | Files per semgrep part (default 200). Lower it when a part times out (ADR-0051). |
 | `semgrepTimeoutSec` | Time limit for one semgrep part, in seconds (default 1800; write-time is always 50). |
+| `osvMemoryMb` | Memory limit for osv-scanner with Go call analysis, in MB (default 6144). Over it: no analysis, full severity (ADR-0066). |
 
 Semgrep runs in parts: each part is staged, scanned and removed on its own, under its own time
 limit, so a slow part loses only its own files. A value that is not a positive integer uses the
@@ -98,6 +104,19 @@ the same time in `neo-sec-gitleaks-<kit hash>` (one pair per kit copy). Both con
 mounted; the files to scan are streamed in and removed after. For `src/frontends/web.ts` the semgrep
 CPU time fell from 37.2 s to 5.9 s. A run inside a container stops itself after 50 s (write-time) or 30 min (semgrep: per part, `semgrepTimeoutSec`), so a hook that times out
 leaves nothing running. `docker rm -f` on them is always safe: the next scan starts them again.
+
+## osv-scanner and Go call analysis (ADR-0066)
+
+osv-scanner does Go call analysis only with a Go toolchain on `PATH`, so the push and nightly layers
+run it in the pinned Go image (`GO_IMAGE` in `images.env`). The osv-scanner binary is downloaded
+once from `OSV_BIN_URL` into the `neo-sec-gocache` volume and checked against `OSV_BIN_SHA256` before
+every run; `update-images.sh` takes both from the binary in `OSV_IMAGE` and refuses a release file that
+differs. The volume also holds the Go module and build caches (network is needed for the first
+download). Go writes `go.sum`/`go.work.sum` while it loads packages, so osv scans a disposable copy of
+the checkout (tracked and untracked-not-ignored files, reflinked where the filesystem can) mounted at
+the repo's own path: the project is never written, and paths and fingerprints are the same. When the
+Go run gives no output, the plain `OSV_IMAGE` scans read-only and the layer warns. `docker volume rm
+neo-sec-gocache` is always safe.
 
 ## Rules
 

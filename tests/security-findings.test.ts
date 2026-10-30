@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { filterNew, incompleteWarning, normalize, parseMissing, severityFromCvss, summarize } from "../tools/security/findings";
@@ -40,6 +40,44 @@ describe("security findings", () => {
       results: [{ source: { path: "/src/bun.lock" }, packages: [{ package: { name: "lodash", version: "4.17.0", ecosystem: "npm" }, groups: [{ ids: ["GHSA-1"], max_severity: "7.4" }] }] }],
     });
     expect(f[0]).toMatchObject({ severity: "high", rule: "GHSA-1", file: "/src/bun.lock" });
+  });
+
+  describe("osv Go call analysis (ADR-0066)", () => {
+    const fixture = (name: string) => JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "security", `osv-${name}.json`), "utf8"));
+    const by = (f: ReturnType<typeof normalize>, pkg: string) => f.find((x) => x.message.includes(`${pkg}@`))!;
+
+    test("a Go vulnerability osv found uncalled drops below the blocking level, tagged and still reported", () => {
+      const f = normalize("osv", fixture("go-uncalled"), { root: "/repo" });
+      expect(f).toHaveLength(3);
+      const crypto = by(f, "golang.org/x/crypto");
+      expect(crypto).toMatchObject({ rule: "GO-2026-5932", severity: "medium", tags: ["unreachable"], file: "services/common/go.mod" });
+      expect(crypto.message).toContain("unreachable");
+      expect(by(f, "github.com/quic-go/quic-go")).toMatchObject({ severity: "medium", tags: ["unreachable"] }); // was critical (9.1)
+      expect(by(f, "github.com/jackc/pgx/v5")).toMatchObject({ severity: "low", tags: ["unreachable"] }); // never raised
+      expect(summarize(f).block).toBe(false);
+    });
+
+    test("a called vulnerability keeps its full severity; one called id in a group is enough", () => {
+      const f = normalize("osv", fixture("go-called"), { root: "/repo" });
+      expect(by(f, "golang.org/x/crypto")).toMatchObject({ severity: "high" }); // no score: fails closed to high
+      expect(by(f, "github.com/quic-go/quic-go")).toMatchObject({ severity: "critical" });
+      for (const x of f) expect(x.tags).toBeUndefined();
+      expect(summarize(f).block).toBe(true);
+    });
+
+    test("fails closed: no analysis, an id without a verdict, a non-boolean verdict, or a non-Go ecosystem keep full severity", () => {
+      const f = normalize("osv", fixture("go-no-analysis"), { root: "/repo" });
+      expect(by(f, "golang.org/x/crypto").severity).toBe("high");
+      expect(by(f, "github.com/quic-go/quic-go").severity).toBe("critical");
+      expect(by(f, "golang.org/x/net").severity).toBe("high");
+      expect(by(f, "lodash").severity).toBe("high");
+      for (const x of f) expect(x.tags).toBeUndefined();
+    });
+
+    test("the verdict never changes a fingerprint, so a baseline still matches", () => {
+      const fp = (name: string) => by(normalize("osv", fixture(name), { root: "/repo" }), "golang.org/x/crypto").fingerprint;
+      expect(fp("go-uncalled")).toBe(fp("go-called"));
+    });
   });
 
   test("trivy vulnerabilities, misconfigs and secrets", () => {

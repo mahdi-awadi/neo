@@ -626,6 +626,12 @@ that timed out or failed, or a gitleaks scan with no output. It is recorded, nev
 (ADR-0051).
 _Avoid_: skipped file, partial finding
 
+**Unreachable vulnerability**:
+A Go dependency vulnerability that osv-scanner's call analysis (govulncheck) found the project never
+calls. Its finding is capped at medium and tagged `unreachable`: reported, never blocking. Only a
+`called: false` verdict for every id of the finding counts; no analysis means full severity (ADR-0066).
+_Avoid_: false positive, ignored vuln, suppressed
+
 **Chained hook**:
 The project's own git hook that ran before the kit was turned on. The kit's hook runs it after the
 scan. When it is recorded but missing, the kit's hook fails (exit 1), never skips it (ADR-0051).

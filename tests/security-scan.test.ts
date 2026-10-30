@@ -7,11 +7,16 @@ import { join } from "node:path";
 // finding per file and "times out" (exit 124, no output) on a part holding a file named *slow*.
 const SCAN = join(import.meta.dir, "..", "tools", "security", "scan.sh");
 const FAKE_DOCKER = `#!/usr/bin/env bash
-echo "$*" >> "$FAKE_DOCKER_LOG"
+args="$*"; echo "\${args//$'\\n'/ }" >> "$FAKE_DOCKER_LOG" # one line per call
 case "$1" in
   info|rm) exit 0 ;;
   inspect) exit 1 ;;
-  run) exit 0 ;;
+  run)
+    if [[ " $* " == *" --entrypoint sh "* ]]; then # the osv run with Go call analysis (ADR-0066)
+      for a in "$@"; do [[ "$a" == */osv-src:* ]] && (cd "\${a%%:*}" && find . -type f | sort | sed 's/^/osv-copy /') >> "$FAKE_DOCKER_LOG"; done
+      [[ -n "\${FAKE_OSV_GO_JSON:-}" ]] && cat "$FAKE_OSV_GO_JSON"
+    fi
+    exit 0 ;;
   exec)
     shift
     if [[ "$1" == "-i" ]]; then cat >/dev/null; exit 0; fi
@@ -33,7 +38,7 @@ esac
 exit 0
 `;
 
-function setup(files: string[], config: Record<string, unknown> = {}) {
+function setup(files: string[], config: Record<string, unknown> = {}, extraEnv: Record<string, string> = {}) {
   const repo = mkdtempSync(join(tmpdir(), "neo-sec-scan-"));
   Bun.spawnSync(["git", "init", "-q", repo]);
   mkdirSync(join(repo, "src"));
@@ -49,7 +54,7 @@ function setup(files: string[], config: Record<string, unknown> = {}) {
   const log = join(bin, "log");
   writeFileSync(log, "");
   const run = (...args: string[]) =>
-    Bun.spawnSync(["bash", SCAN, ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_LOG: log } });
+    Bun.spawnSync(["bash", SCAN, ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_LOG: log, ...extraEnv } });
   return { repo, run, log: () => readFileSync(log, "utf8") };
 }
 
@@ -101,5 +106,47 @@ describe("security scan: semgrep in parts (ADR-0051)", () => {
     const name = Bun.spawnSync(["ls", dir]).stdout.toString().trim().split("\n").find((n) => n.startsWith("write-"))!;
     const report = JSON.parse(readFileSync(join(dir, name), "utf8"));
     expect(report.incomplete.map((m: { tool: string }) => m.tool)).toContain("semgrep");
+  });
+});
+
+describe("security scan: osv with Go call analysis (ADR-0066)", () => {
+  const osvRuns = (log: string) => log.split("\n").filter((l) => l.startsWith("run ") && l.includes("scan source"));
+  const goRun = (log: string) => osvRuns(log).find((l) => l.includes("--entrypoint sh"));
+  const plainRun = (log: string) => osvRuns(log).find((l) => !l.includes("--entrypoint sh"));
+
+  test("osv runs in the pinned Go image on a disposable copy at the repo's own path, never the repo", () => {
+    const s = setup(["src/a.ts"], { osvMemoryMb: 2048 });
+    writeFileSync(join(s.repo, ".gitignore"), "ignored.txt\n");
+    writeFileSync(join(s.repo, "ignored.txt"), "x");
+    writeFileSync(join(s.repo, "go.work.sum"), "untracked, not ignored\n");
+    s.run("push", s.repo);
+    const log = s.log();
+    const go = goRun(log)!;
+    const images = readFileSync(join(import.meta.dir, "..", "tools", "security", "images.env"), "utf8");
+    const pin = (k: string) => images.match(new RegExp(`^${k}=(.+)$`, "m"))![1]!;
+    expect(go).toContain(pin("GO_IMAGE"));
+    expect(go).toContain(`OSV_BIN_SHA256=${pin("OSV_BIN_SHA256")}`);
+    expect(go).toContain("--memory 2048m");
+    expect(go).toContain("neo-sec-gocache:/neo");
+    expect(go).toMatch(new RegExp(`/osv-src:${s.repo} `)); // the copy, writable, mounted where the repo is
+    expect(go).not.toContain(`${s.repo}:${s.repo}`);
+    const copied = log.split("\n").filter((l) => l.startsWith("osv-copy ")).map((l) => l.slice("osv-copy ./".length)).sort();
+    expect(copied).toEqual([".gitignore", ".security/config.json", "go.work.sum", "src/a.ts"]); // ignored.txt is not
+  });
+
+  test("no result with Go: the plain osv image scans read-only, so every finding keeps its full severity", () => {
+    const s = setup(["src/a.ts"]);
+    const r = s.run("push", s.repo);
+    expect(plainRun(s.log())).toContain(`${s.repo}:${s.repo}:ro`);
+    expect(r.stderr.toString()).toContain("Go call analysis gave no result");
+  });
+
+  test("a result with Go: no second osv run", () => {
+    const out = join(mkdtempSync(join(tmpdir(), "neo-sec-osv-")), "osv.json");
+    writeFileSync(out, JSON.stringify({ results: [] }));
+    const s = setup(["src/a.ts"], {}, { FAKE_OSV_GO_JSON: out });
+    s.run("push", s.repo);
+    expect(goRun(s.log())).toBeDefined();
+    expect(plainRun(s.log())).toBeUndefined();
   });
 });

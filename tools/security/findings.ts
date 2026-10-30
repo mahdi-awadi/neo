@@ -23,6 +23,8 @@ export interface Finding {
   line: number;
   message: string;
   fingerprint: string;
+  /** `unreachable`: osv's Go call analysis found the vulnerable code never called (ADR-0066). */
+  tags?: string[];
 }
 
 /** A piece of a scan that produced no result (ADR-0051): a semgrep part that timed out, a gitleaks
@@ -94,6 +96,19 @@ function word(s: unknown): Severity {
 // biome-ignore lint: scanner JSON is untyped by nature
 type Any = any;
 
+/** The most an unreachable vulnerability can weigh: below the blocking level, still in every report. */
+const UNREACHABLE_CAP: Severity = "medium";
+
+/** osv's Go call analysis (govulncheck, ADR-0066): true only when osv analysed this group and found
+ *  every one of its vulnerabilities uncalled. Fails closed: another ecosystem, no analysis (no Go
+ *  toolchain, or govulncheck failed), an id without a verdict or a verdict that is not `false`. */
+export function osvUnreachable(ecosystem: unknown, group: Any): boolean {
+  const verdicts = group?.experimentalAnalysis;
+  const ids: unknown[] = Array.isArray(group?.ids) ? group.ids : [];
+  if (ecosystem !== "Go" || !verdicts || typeof verdicts !== "object" || !ids.length) return false;
+  return ids.every((id) => verdicts[String(id)]?.called === false);
+}
+
 /** Semgrep prefixes a rule id with its config file's directory, relative to where it ran
  *  (`tools.security.rules.custom.neo-js-x`). The id without it is the same in every checkout. */
 export function ruleId(id: string): string {
@@ -146,7 +161,12 @@ export function normalize(tool: Tool, raw: Any, ctx: { root?: string; src?: stri
           (p.groups ?? []).map((g: Any) => {
             const id = (g.ids ?? [])[0] ?? "osv";
             const pkg = `${p.package?.name}@${p.package?.version}`;
-            return mk("osv", id, severityFromCvss(g.max_severity), res.source?.path ?? "", 0, `${pkg} (${p.package?.ecosystem}) ${(g.aliases ?? g.ids ?? []).join(" ")}`, pkg);
+            const message = `${pkg} (${p.package?.ecosystem}) ${(g.aliases ?? g.ids ?? []).join(" ")}`;
+            const full = severityFromCvss(g.max_severity);
+            if (!osvUnreachable(p.package?.ecosystem, g)) return mk("osv", id, full, res.source?.path ?? "", 0, message, pkg);
+            const capped = RANK[full] > RANK[UNREACHABLE_CAP] ? UNREACHABLE_CAP : full;
+            const f = mk("osv", id, capped, res.source?.path ?? "", 0, `unreachable (never called): ${message}`, pkg);
+            return { ...f, tags: ["unreachable"] };
           }),
         ),
       );
