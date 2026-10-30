@@ -49,12 +49,13 @@ test("the modes: words is the keyword-only search, meaning the meaning list alon
   expect(keepHit("hybrid", ["lines"])).toBe(true);
 });
 
-test("the shipped eval set has the schema and two sample rows; a bad row is refused with the reason", () => {
+test("the shipped eval set (from the verify step) has the schema and at least 10 queries in each language; a bad row is refused with the reason", () => {
   const shipped = JSON.parse(readFileSync(join(import.meta.dir, "..", "tools/history/eval-set.json"), "utf8"));
   const set = parseEvalSet(shipped);
   expect(set.k).toBe(5);
-  expect(set.queries.length).toBe(2);
-  expect(set.queries.map((q) => q.lang).sort()).toEqual(["ar", "en"]);
+  expect(set.queries.length).toBeGreaterThanOrEqual(20);
+  expect(set.queries.filter((q) => q.lang === "ar").length).toBeGreaterThanOrEqual(10);
+  expect(set.queries.filter((q) => q.lang === "en").length).toBeGreaterThanOrEqual(10);
   expect(() => parseEvalSet({ ...shipped, queries: [{ id: "x", lang: "en", query: "q", expected: [] }] })).toThrow(/expected/);
   expect(() => parseEvalSet({ ...shipped, queries: [{ id: "x", lang: "fr", query: "q", expected: ["todo:1"] }] })).toThrow(/lang/);
   expect(() => parseEvalSet({ ...shipped, queries: [{ id: "x", lang: "en", query: "", expected: ["todo:1"] }] })).toThrow(/query/);

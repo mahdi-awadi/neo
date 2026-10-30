@@ -1,19 +1,199 @@
 {
-  "about": "The task-history eval set (ADR-0066). Each query names the refs a good answer holds. tools/history/eval.ts scores recall@k and MRR for words only, meaning only and hybrid. Schema: version 1; k (the cut-off); queries[] of { id (unique), lang (\"ar\" | \"en\"), query, expected (refs: todo:<n>, order:<uuid>, result:<uuid>, msg:<n>, plan:<n>, note:<n>, att:<n>, dec:<uuid>, mem:<n>, line:<n>), project (optional), kinds (optional) }. These two rows are samples: the verify step (plan task 20) writes the real set from a ledger copy, at least 10 Arabic and 10 English queries.",
+  "about": "The task-history eval set (ADR-0066), written by the verify step (plan task 20, 2026-10-30) from a read-only copy of the live ledger. Each query names the refs a good answer holds (ids only, no stored text). tools/history/eval.ts scores recall@k and MRR for words only, meaning only and hybrid. Schema: version 1; k (the cut-off); queries[] of { id (unique), lang (\"ar\" | \"en\"), query, expected (refs), project (optional), kinds (optional) }. Most Arabic queries ask in Arabic about work written in English (the history holds little Arabic text), so they test cross-language meaning search.",
   "version": 1,
   "k": 5,
   "queries": [
     {
-      "id": "en-seats",
+      "id": "en-bus-seats",
       "lang": "en",
       "query": "the thing about bus seats not freeing up",
-      "expected": ["todo:1"]
+      "expected": [
+        "plan:2240",
+        "result:38a5f2de-0923-4a09-835e-865a510489ee"
+      ]
     },
     {
-      "id": "ar-seats",
+      "id": "en-qi-refund",
+      "lang": "en",
+      "query": "Qi card refund test in the sandbox certification",
+      "expected": [
+        "todo:653",
+        "dec:188faf8c-84cf-447c-8189-651895222981"
+      ]
+    },
+    {
+      "id": "en-airline-logos",
+      "lang": "en",
+      "query": "airline logos served from Asfoor's R2 bucket on production",
+      "expected": [
+        "plan:1904"
+      ]
+    },
+    {
+      "id": "en-low-disk",
+      "lang": "en",
+      "query": "the dev server keeps warning that the disk is almost full",
+      "expected": [
+        "todo:415",
+        "todo:418"
+      ]
+    },
+    {
+      "id": "en-sms-otp",
+      "lang": "en",
+      "query": "send one-time login codes by SMS through the Iraqi OTP provider",
+      "expected": [
+        "order:f220adf2-beac-44ac-85e3-99040cc76e59",
+        "result:f220adf2-beac-44ac-85e3-99040cc76e59"
+      ]
+    },
+    {
+      "id": "en-sentinel-death",
+      "lang": "en",
+      "query": "how do we notice when the uptime monitor itself dies",
+      "expected": [
+        "dec:07a19626-c481-427b-9afd-a0f3b2f7958e",
+        "result:9e2ab539-f915-4a7f-871b-a9dd7bd53471"
+      ]
+    },
+    {
+      "id": "en-deleted-drivers",
+      "lang": "en",
+      "query": "show removed drivers in the admin with a restore button",
+      "expected": [
+        "order:6f27ce54-0283-4031-9968-df0c11c9d233",
+        "result:6f27ce54-0283-4031-9968-df0c11c9d233"
+      ]
+    },
+    {
+      "id": "en-citynet-cities",
+      "lang": "en",
+      "query": "hotel cities from CityNet missing in the destination list",
+      "expected": [
+        "plan:1981"
+      ]
+    },
+    {
+      "id": "en-scale-to-zero",
+      "lang": "en",
+      "query": "scale idle dev containers to zero at the edge",
+      "expected": [
+        "plan:1858",
+        "result:3a658c98-d114-4a93-a77d-392ada8c3c32"
+      ]
+    },
+    {
+      "id": "en-over-capacity",
+      "lang": "en",
+      "query": "a vehicle gets more students assigned than it has seats",
+      "expected": [
+        "order:3be58bff-9511-4857-ac42-1c6a6a0fb464",
+        "result:3be58bff-9511-4857-ac42-1c6a6a0fb464"
+      ]
+    },
+    {
+      "id": "en-exact-todo",
+      "lang": "en",
+      "query": "todo 910",
+      "expected": [
+        "todo:910"
+      ]
+    },
+    {
+      "id": "ar-bus-seats",
       "lang": "ar",
-      "query": "مشكلة مقاعد الحافلة التي لا تتحرر بعد إلغاء الحجز",
-      "expected": ["todo:1"]
+      "query": "مشكلة مقاعد الحافلة التي لا تتحرر بعد الإلغاء",
+      "expected": [
+        "plan:2240",
+        "result:38a5f2de-0923-4a09-835e-865a510489ee"
+      ]
+    },
+    {
+      "id": "ar-qi-refund",
+      "lang": "ar",
+      "query": "اختبار استرداد بطاقة كي في بيئة الاختبار",
+      "expected": [
+        "todo:653",
+        "dec:188faf8c-84cf-447c-8189-651895222981"
+      ]
+    },
+    {
+      "id": "ar-low-disk",
+      "lang": "ar",
+      "query": "الخادم يرسل تحذيرات بأن القرص ممتلئ تقريبا",
+      "expected": [
+        "todo:415",
+        "todo:418"
+      ]
+    },
+    {
+      "id": "ar-sms-otp",
+      "lang": "ar",
+      "query": "إرسال رمز التحقق برسالة نصية عبر مزود عراقي",
+      "expected": [
+        "order:f220adf2-beac-44ac-85e3-99040cc76e59",
+        "result:f220adf2-beac-44ac-85e3-99040cc76e59"
+      ]
+    },
+    {
+      "id": "ar-deleted-drivers",
+      "lang": "ar",
+      "query": "إظهار السائقين المحذوفين في لوحة الإدارة مع زر الاستعادة",
+      "expected": [
+        "order:6f27ce54-0283-4031-9968-df0c11c9d233",
+        "result:6f27ce54-0283-4031-9968-df0c11c9d233"
+      ]
+    },
+    {
+      "id": "ar-qaseh-gateway",
+      "lang": "ar",
+      "query": "بوابة الدفع القاصة لمشروع الذهب",
+      "expected": [
+        "plan:614",
+        "plan:616"
+      ]
+    },
+    {
+      "id": "ar-dollar-wallet",
+      "lang": "ar",
+      "query": "هل ندخل محفظة الدولار",
+      "expected": [
+        "dec:2541a5e3-bcff-4f75-b394-690640d7d576"
+      ]
+    },
+    {
+      "id": "ar-uncovered-offers",
+      "lang": "ar",
+      "query": "العروض غير المغطاة ومخاطرة الائتمان على المنصة",
+      "expected": [
+        "dec:f2e7213e-d776-468a-8e85-ee78e1a28c4e"
+      ]
+    },
+    {
+      "id": "ar-absent-trip",
+      "lang": "ar",
+      "query": "خيار الغياب لرحلة الذهاب فقط أو الذهاب والعودة",
+      "expected": [
+        "msg:151819"
+      ]
+    },
+    {
+      "id": "ar-over-capacity",
+      "lang": "ar",
+      "query": "مركبة يسجل فيها طلاب أكثر من عدد مقاعدها",
+      "expected": [
+        "order:3be58bff-9511-4857-ac42-1c6a6a0fb464",
+        "result:3be58bff-9511-4857-ac42-1c6a6a0fb464"
+      ]
+    },
+    {
+      "id": "ar-sentinel-death",
+      "lang": "ar",
+      "query": "كيف نعرف أن مراقب التشغيل نفسه توقف",
+      "expected": [
+        "dec:07a19626-c481-427b-9afd-a0f3b2f7958e",
+        "result:9e2ab539-f915-4a7f-871b-a9dd7bd53471"
+      ]
     }
   ]
 }
