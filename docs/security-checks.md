@@ -32,6 +32,15 @@ every host (Read, Grep, cat, `sed` without `-i`, `tee`, a `cp` source, input red
 Edit/MultiEdit (they need a Read and echo the file). On a `prod` host nothing changed. The hook
 reads `host.json` on every call, so a change needs no restart. This host is set to `dev`.
 
+**Allowed SSH identities (ADR-0070).** Every private key in a `.ssh` folder is a secret. The installed
+kit's `ssh-identities.json` (host-local, never copied or overwritten by `install.ts`) lets one key be
+the IDENTITY of `ssh`/`scp` (`-i <key>`, `-o IdentityFile=<key>`) when the session runs in the
+entry's folder: `{ "allow": [{ "key": "/root/.ssh/prod_server_key", "cwd": "/home/prod-ops" }] }`.
+Every other use of the key stays blocked (cat, cp, a `scp` source, the Read tool), and an ssh call with
+`-F`, `ProxyCommand`/`LocalCommand`/`KnownHostsCommand`/`Match`, or scp `-S` gets no exception. A
+missing or bad file means no exceptions. This host allows prod-ops to use the prod key (decision
+#74622e42).
+
 ## Policy
 
 - Only **new** high or critical findings block. A project's existing findings are recorded once in

@@ -25,8 +25,9 @@ const POST_EDIT_TIMEOUT_S = 90;
 /** Our entries are recognised by their script, wherever the kit was installed. */
 const OURS = /\/security\/hooks\/(guard|post-edit)\.sh$/;
 /** Files in the source kit that are build notes or host-local state, not part of the installed kit
- *  (a stray host.json in the source must never overwrite the host's own setting). */
-const NOT_INSTALLED = new Set(["WIP.md", "host.json"]);
+ *  (a stray host.json or ssh-identities.json in the source must never overwrite the host's own
+ *  setting; ADR-0039, ADR-0070). */
+const NOT_INSTALLED = new Set(["WIP.md", "host.json", "ssh-identities.json"]);
 
 const isOurs = (e: HookEntry) => e.hooks?.some((h) => OURS.test(h.command ?? "")) ?? false;
 

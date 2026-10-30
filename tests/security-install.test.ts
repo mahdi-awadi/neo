@@ -105,4 +105,17 @@ describe("security kit install", () => {
     expect(JSON.parse(readFileSync(host, "utf8"))).toEqual({ hostEnv: "prod" });
     expect(() => installKit({ src, claudeDir: claude, hostEnv: "staging" as never })).toThrow(/host-env/);
   });
+
+  // ADR-0070: the allowed ssh identities are host-local; a stray copy in the source never replaces them.
+  test("a re-install keeps the host's ssh-identities.json and never copies one from the source", () => {
+    const src = mkdtempSync(join(tmpdir(), "neo-sec-src-"));
+    const claude = mkdtempSync(join(tmpdir(), "neo-sec-claude-"));
+    const ids = join(claude, "security", "ssh-identities.json");
+    writeFileSync(join(src, "ssh-identities.json"), JSON.stringify({ allow: [{ key: "/k", cwd: "/x" }] }));
+    installKit({ src, claudeDir: claude });
+    expect(existsSync(ids)).toBe(false);
+    writeFileSync(ids, "{}\n");
+    installKit({ src, claudeDir: claude });
+    expect(readFileSync(ids, "utf8")).toBe("{}\n");
+  });
 });

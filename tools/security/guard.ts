@@ -12,10 +12,15 @@
 // Write tool, output redirections, `sed -i` and a `cp` destination. Reads stay blocked on every host.
 // A missing or unreadable host.json means `prod`, where nothing changed.
 //
+// An SSH key named in ssh-identities.json next to this file (ADR-0070) may be the IDENTITY of
+// ssh/scp (`-i <key>`, `-o IdentityFile=<key>`) when the session runs in that entry's folder.
+// Every other use of the key (cat, cp, a scp source, the Read tool) is still a read. Missing,
+// unreadable or malformed: no exceptions.
+//
 //   hooks/guard.sh → bun guard.ts  (the hook's JSON on stdin)
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 
 export type HostEnv = "dev" | "prod";
 
@@ -25,6 +30,23 @@ export function hostEnvAt(file: string): HostEnv {
     return (JSON.parse(readFileSync(file, "utf8")) as { hostEnv?: unknown }).hostEnv === "dev" ? "dev" : "prod";
   } catch {
     return "prod"; // missing or unreadable: fail closed
+  }
+}
+
+/** An SSH key that may be used as the identity of ssh/scp in one project folder (ADR-0070). */
+export type SshIdentity = { key: string; cwd: string };
+
+/** The allowed SSH identities in `file` (ADR-0070). Only complete entries with absolute paths count,
+ *  and never `/` as the folder; anything unreadable or malformed is no exception at all. */
+export function sshIdentitiesAt(file: string): SshIdentity[] {
+  try {
+    const allow = (JSON.parse(readFileSync(file, "utf8")) as { allow?: unknown }).allow;
+    if (!Array.isArray(allow)) return [];
+    return allow
+      .filter((e): e is SshIdentity => typeof e?.key === "string" && typeof e?.cwd === "string" && isAbsolute(e.key) && isAbsolute(e.cwd) && resolve(e.cwd) !== "/")
+      .map(({ key, cwd }) => ({ key, cwd }));
+  } catch {
+    return []; // missing or unreadable: fail closed
   }
 }
 
@@ -79,10 +101,37 @@ const VALUE_OPTS = new Set(["-A", "-B", "-C", "-m", "-M", "-t", "-T", "--max-cou
 /** Options whose value is a file glob the tool will READ (checked like a path). */
 const GLOB_OPTS = new Set(["-g", "--glob", "--include"]);
 
+/** SSH clients whose identity file may be an allowed key (ADR-0070). Not sftp: it runs local
+ *  `!commands` from a batch file. */
+const SSH_CLIENT = new Set(["ssh", "scp"]);
+/** Shell code that runs a command inside another (`$(…)`, backticks, `<(…)`): with any, no exception. */
+const SUBSTITUTION = /\$\(|`|[<>]\(/;
+/** ssh -o options that run a local command: with one of them, the exception does not apply. */
+const SSH_LOCAL_COMMAND = /^(ProxyCommand|LocalCommand|PermitLocalCommand|KnownHostsCommand|Match)\b/i;
+const SSH_IDENTITY_OPT = /^IdentityFile(?:\s*=\s*|\s+)(.+)$/i;
+
+/** ssh/scp: every argument except an `-i` / `-o IdentityFile` value that `allowed` accepts. A config
+ *  file (`-F`), a program (scp `-S`) or a local-command option keeps every argument. */
+function sshArgs(cmd: string, args: string[], allowed: (word: string) => boolean): string[] {
+  const opts = args.flatMap((a, i) => (a === "-o" ? [args[i + 1] ?? ""] : a.startsWith("-o") ? [a.slice(2)] : []));
+  if (args.some((a) => a.startsWith("-F") || (cmd !== "ssh" && a.startsWith("-S"))) || opts.some((o) => SSH_LOCAL_COMMAND.test(o))) return args;
+  const identity = (opt: string | undefined) => {
+    const m = SSH_IDENTITY_OPT.exec(opt ?? "");
+    return m !== null && allowed(m[1]!);
+  };
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if ((a === "-i" && allowed(args[i + 1] ?? "")) || (a === "-o" && identity(args[i + 1]))) i++;
+    else if (!((a.startsWith("-i") && a.length > 2 && allowed(a.slice(2))) || (a.startsWith("-o") && identity(a.slice(2))))) out.push(a);
+  }
+  return out;
+}
+
 /** The argument words of one command that can name a file it reads, with patterns, code and
  *  name-only listings removed, and whether the command is a known reader. `feeds`: this stage pipes
  *  names into xargs / while-read, so a listing is a read after all. */
-function readCandidates(seg: string, feeds: boolean, writes: boolean): { args: string[]; reader: boolean } {
+function readCandidates(seg: string, feeds: boolean, writes: boolean, allowedIdentity: (word: string) => boolean): { args: string[]; reader: boolean } {
   let w = words(seg);
   for (;;) {
     if (w.length && (/^\w+=/.test(w[0]!) || ["sudo", "env", "time", "nohup", "command", "exec"].includes(w[0]!))) w = w.slice(1);
@@ -94,6 +143,7 @@ function readCandidates(seg: string, feeds: boolean, writes: boolean): { args: s
   const cmd = basename(w[0] ?? "");
   const reader = READERS.has(cmd);
   if (feeds && (LISTING.has(cmd) || cmd === "find")) return { args: w.slice(1), reader }; // names piped on to a reader
+  if (SSH_CLIENT.has(cmd)) return { args: sshArgs(cmd, w.slice(1), allowedIdentity), reader };
   return { args: candidateArgs(cmd, w.slice(1), writes), reader };
 }
 
@@ -201,8 +251,7 @@ function programArgs(args: string[]): string[] {
 /** A word that is a path to a secret file (as shown in the message), or undefined. Code and regex
  *  words are not paths; a bare key-file name counts only when it exists under `cwd`. */
 function secretPath(word: string, cwd: string, reader = false): string | undefined {
-  const home = homedir();
-  let t = word.replace(/^~(?=\/|$)/, home).replace(/\$\{?HOME\}?/g, home);
+  let t = expandHome(word);
   if (/^--?[\w-]+=/.test(t) || /^[a-z]+=/.test(t)) t = t.slice(t.indexOf("=") + 1); // --file=x, dd if=x
   t = t.replace(/^@/, ""); // curl --data-binary @file
   const probe = t.replace(/\$\{?\w+\}?/g, "V");
@@ -224,9 +273,15 @@ const INPUT_REDIRECT = /(?:^|[^<\d&])\d?<\s*(?![<&(])([^\s<>&|;()]+)/g;
 const OUTPUT_REDIRECT = /"[^"]*"|'[^']*'|(?<![<>&\d])(?:\d|&)?>>?\|?\s*(?![&>(])(?:"[^"]*"|'[^']*'|[^\s<>&|;()"'])+/g;
 const stripOutputRedirects = (stage: string) => stage.replace(OUTPUT_REDIRECT, (m) => (m[0] === '"' || m[0] === "'" ? m : " "));
 
+/** A path word as the shell sees it: `~` and `$HOME` expanded. */
+const expandHome = (word: string) => word.replace(/^~(?=\/|$)/, homedir()).replace(/\$\{?HOME\}?/g, homedir());
+
 /** Bash: the secret files a command reads. Follows `cd`/`pushd` between statements, so a bare
- *  name is looked up where the command really is. */
-function bashTargets(command: string, cwd: string, writes: boolean): string[] {
+ *  name is looked up where the command really is. `identities`: the keys ssh may use when the
+ *  session folder `cwd` is (inside) an entry's folder (ADR-0070). */
+function bashTargets(command: string, cwd: string, writes: boolean, identities: SshIdentity[]): string[] {
+  const session = resolve(cwd);
+  const keys = SUBSTITUTION.test(command) ? [] : identities.filter((e) => session === resolve(e.cwd) || session.startsWith(`${resolve(e.cwd)}/`)).map((e) => resolve(e.key));
   const cleaned = command
     .replace(/--env-file[ =]\S+/g, " ") // the file is used by docker, not read into context
     .replace(/(?:-m|--message)(?:\s+|=)("(?:[^"\\]|\\.)*"|'[^']*')/g, " "); // a commit message is text
@@ -247,7 +302,8 @@ function bashTargets(command: string, cwd: string, writes: boolean): string[] {
         if (hit) hits.push(hit);
       }
       const feeds = stages.slice(i + 1).some((later) => /^(xargs\b|while\s+read\b)/.test(later));
-      const { args, reader } = readCandidates(stage.replace(INPUT_REDIRECT, " "), feeds, writes);
+      const allowedIdentity = (word: string) => keys.includes(resolve(here, expandHome(word)));
+      const { args, reader } = readCandidates(stage.replace(INPUT_REDIRECT, " "), feeds, writes, allowedIdentity);
       for (const w of args) {
         const hit = secretPath(w, here, reader);
         if (hit) hits.push(hit);
@@ -258,10 +314,11 @@ function bashTargets(command: string, cwd: string, writes: boolean): string[] {
 }
 
 /** The secret files a tool call reads, by name, in order. `cwd`: where a bare file name resolves.
- *  `hostEnv` (default `prod`): on `dev`, writes to a secret file are not counted (ADR-0039). */
-export function secretTargets(tool: string, input: Record<string, unknown>, ctx: { cwd?: string; hostEnv?: HostEnv } = {}): string[] {
+ *  `hostEnv` (default `prod`): on `dev`, writes to a secret file are not counted (ADR-0039).
+ *  `sshIdentities` (default none): keys ssh/scp may use as identity in their folder (ADR-0070). */
+export function secretTargets(tool: string, input: Record<string, unknown>, ctx: { cwd?: string; hostEnv?: HostEnv; sshIdentities?: SshIdentity[] } = {}): string[] {
   const writes = ctx.hostEnv === "dev";
-  if (tool === "Bash") return bashTargets(String(input.command ?? ""), ctx.cwd ?? process.cwd(), writes);
+  if (tool === "Bash") return bashTargets(String(input.command ?? ""), ctx.cwd ?? process.cwd(), writes, ctx.sshIdentities ?? []);
   if (tool === "Glob") return []; // it lists names; it never reads a file
   if (tool === "Write" && writes) return []; // it creates or replaces a file and echoes nothing back
   const str = (k: string) => (typeof input[k] === "string" ? [input[k] as string] : []);
@@ -278,7 +335,8 @@ if (import.meta.main) {
     process.exit(0); // not a hook payload: nothing to guard
   }
   const hostEnv = hostEnvAt(join(import.meta.dir, "host.json"));
-  const hits = secretTargets(String(call.tool_name ?? ""), call.tool_input ?? {}, { cwd: typeof call.cwd === "string" ? call.cwd : undefined, hostEnv });
+  const sshIdentities = sshIdentitiesAt(join(import.meta.dir, "ssh-identities.json"));
+  const hits = secretTargets(String(call.tool_name ?? ""), call.tool_input ?? {}, { cwd: typeof call.cwd === "string" ? call.cwd : undefined, hostEnv, sshIdentities });
   if (!hits.length) process.exit(0);
   const worker = Boolean(process.env.NEO_WORKER || process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS);
   if (worker) {
