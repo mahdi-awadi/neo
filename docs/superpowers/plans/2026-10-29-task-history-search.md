@@ -49,7 +49,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     of the Arabic-script tokens, joined by spaces). No I/O.
   - Done when: the unit part of AC14 passes.
 
-- [ ] **2. Chunker and extractors** (pure)
+- [x] **2. Chunker and extractors** (pure)
   - Create: `src/engine/history/chunker.ts`, `src/engine/history/extract.ts`,
     `tests/history-chunker.test.ts`, `tests/history-extract.test.ts`.
   - Tests first:
