@@ -35,3 +35,6 @@ AGENTS.local.md
 tools/browser/browser.local.env
 # Neo embedder: machine-local overrides (ADR-0067)
 tools/history/embedder.local.env
+
+# The disk kit writes its run state next to itself when run from the repo copy (ADR-0040): machine-local.
+/tools/disk/state/
