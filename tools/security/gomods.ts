@@ -8,7 +8,7 @@
 // the repo is never written.
 //
 //   bun tools/security/gomods.ts prepare --repo <repo> --upper <overlay upper> --list <modules.txt>
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 export interface Replace {
@@ -79,38 +79,91 @@ const inside = (root: string, p: string) => {
   return rel !== "" && !rel.startsWith("..") && !rel.startsWith(sep);
 };
 
-/** The placeholder links: a local replace target inside the repo with no go.mod, for a module path the
- *  repo has → that module's folder. A real target, a target outside the repo, or a module path the repo
- *  does not have stays as it is (its module then fails to load: no verdict, full severity). */
+/** A mount placeholder: nothing there, a broken link, or a folder with no Go code in it — no `.go` file
+ *  or go.mod (searched without following links), and no link but one that is broken or loops back to the
+ *  folder (such as `common -> ../common`). Real code is never hidden by a link. */
+function isPlaceholder(at: string): boolean {
+  let st;
+  try {
+    st = lstatSync(at);
+  } catch {
+    return true;
+  }
+  if (st.isSymbolicLink()) return !existsSync(at);
+  if (!st.isDirectory()) return false;
+  const self = realpathSync(at);
+  const clean = (dir: string): boolean =>
+    readdirSync(dir, { withFileTypes: true }).every((e) => {
+      const p = join(dir, e.name);
+      if (e.isSymbolicLink()) {
+        if (!existsSync(p)) return true;
+        const target = realpathSync(p);
+        return target === self || inside(target, self);
+      }
+      if (e.isDirectory()) return clean(p);
+      return !e.name.endsWith(".go") && e.name !== "go.mod";
+    });
+  return clean(at);
+}
+
+/** True when every folder from the repo root down to `at` (not `at` itself) is a real folder or does not
+ *  exist yet: a path through a symlink could lead out of the repo. */
+function realPathTo(root: string, at: string): boolean {
+  let dir = root;
+  for (const part of relative(root, dirname(at)).split(sep).filter(Boolean)) {
+    dir = join(dir, part);
+    try {
+      if (!lstatSync(dir).isDirectory()) return false;
+    } catch {
+      return true; // the rest does not exist
+    }
+  }
+  return true;
+}
+
+/** The placeholder links: a local replace target inside the repo that is only a mount placeholder, for a
+ *  module path exactly one repo folder declares → that folder. Anything else stays as it is (its module
+ *  then fails to load: no verdict, full severity). A target under another target, or reached through a
+ *  symlink, is refused. */
 export function placeholderLinks(repo: string, modules: string[]): Array<{ at: string; to: string }> {
   const root = resolve(repo);
   const mods = modules.map((dir) => ({ dir, ...parseGoMod(readFileSync(join(dir, "go.mod"), "utf8")) }));
-  const byPath = new Map(mods.filter((m) => m.module).map((m) => [m.module!, m.dir]));
+  const dirsByPath = new Map<string, string[]>();
+  for (const m of mods) if (m.module) dirsByPath.set(m.module, [...(dirsByPath.get(m.module) ?? []), m.dir]);
   const links = new Map<string, string>();
   for (const m of mods) {
     for (const r of m.replaces) {
       if (!r.to.startsWith("./") && !r.to.startsWith("../")) continue;
       const at = resolve(m.dir, r.to);
-      const to = byPath.get(r.path);
-      if (!to || to === at || !inside(root, at) || existsSync(join(at, "go.mod"))) continue;
-      links.set(at, to);
+      const dirs = dirsByPath.get(r.path) ?? [];
+      if (dirs.length !== 1 || dirs[0] === at || links.has(at)) continue;
+      if (!inside(root, at) || !realPathTo(root, at) || !isPlaceholder(at)) continue;
+      links.set(at, dirs[0]!);
     }
   }
-  return [...links].map(([at, to]) => ({ at, to }));
+  const all = [...links.keys()];
+  return [...links]
+    .filter(([at]) => !all.some((other) => other !== at && inside(other, at)))
+    .map(([at, to]) => ({ at, to }));
 }
 
-/** Writes the links into the overlay's upper folder and the module list (one folder a line; a name
- *  with a control character is left out, so the list cannot be forged). */
+/** Writes the links into the overlay's upper folder and the module list (one folder a line; a name with
+ *  whitespace or a control character is left out, so the list cannot be forged). Never writes through a
+ *  symlink, so nothing lands outside the upper folder. */
 export function prepare(repo: string, upper: string, list: string): void {
   const root = resolve(repo);
-  const modules = findGoModules(root).filter((d) => !/[\u0000-\u001f\u007f]/.test(d));
+  const top = realpathSync(upper);
+  const modules = findGoModules(root).filter((d) => !/[\s\u0000-\u001f\u007f]/.test(d));
   for (const { at, to } of placeholderLinks(root, modules)) {
-    const dst = join(upper, relative(root, at));
+    const rel = relative(root, at);
+    if (!realPathTo(top, join(top, rel))) continue;
+    const dst = join(top, rel);
     try {
       lstatSync(dst);
       continue; // already in the upper folder
     } catch {}
     mkdirSync(dirname(dst), { recursive: true });
+    if (!inside(top, realpathSync(dirname(dst))) && realpathSync(dirname(dst)) !== top) continue;
     symlinkSync(to, dst);
   }
   writeFileSync(list, modules.map((d) => `${d}\n`).join(""));

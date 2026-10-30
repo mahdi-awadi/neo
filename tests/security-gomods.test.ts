@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findGoModules, parseGoMod, placeholderLinks, prepare } from "../tools/security/gomods";
@@ -95,4 +95,63 @@ describe("Go modules in a repo", () => {
       "services/seo",
     ]);
   });
+
+  test("only a placeholder is linked: a folder with real files, or one module path in two folders, never", () => {
+    const root = repo({
+      "x/go.mod": "module example.com/x\n",
+      "x/internal/code.go": "package internal\n",
+      "y/go.mod": "module example.com/y\nreplace example.com/common => ../x/internal\nreplace example.com/dup => ./dup\n",
+      "common/go.mod": "module example.com/common\n",
+      "d1/go.mod": "module example.com/dup\n",
+      "d2/go.mod": "module example.com/dup\n",
+    });
+    expect(placeholderLinks(root, findGoModules(root))).toEqual([]);
+  });
+
+  test("a placeholder may hold dotfiles, non-Go files and links that loop back to itself, never Go code or a link to it", () => {
+    const root = repo({
+      "common/go.mod": "module example.com/common\n",
+      "gw/go.mod": "module example.com/gw\nreplace example.com/common => ./common\n",
+      "gw/common/.dockermount": "x\n",
+      "gw/common/README.txt": "mounted at build time\n",
+      "api/go.mod": "module example.com/api\nreplace example.com/common => ./common\n",
+      "api/common/.dockermount": "x\n",
+    });
+    symlinkSync("../common", join(root, "gw", "common", "common")); // loops to gw/common itself (eticket's connect-gateway)
+    symlinkSync(join(root, "common"), join(root, "api", "common", "real")); // a link to real Go code
+    expect(placeholderLinks(root, findGoModules(root)).map((l) => l.at)).toEqual([join(root, "gw/common")]);
+  });
+
+  test("no link through a symlink or under another link: nested targets and committed symlinks are refused", () => {
+    const outside = mkdtempSync(join(tmpdir(), "neo-sec-outside-"));
+    const root = repo({
+      "a/go.mod": "module example.com/a\n",
+      "b/go.mod": "module example.com/b\n",
+      "svc/go.mod": "module example.com/svc\nreplace example.com/a => ./p\nreplace example.com/b => ./p/q\nreplace example.com/a => ./esc/z\n",
+    });
+    symlinkSync(outside, join(root, "svc", "esc"));
+    const links = placeholderLinks(root, findGoModules(root));
+    expect(links).toEqual([{ at: join(root, "svc/p"), to: join(root, "a") }]); // ./p/q is under ./p; ./esc goes through a symlink
+    const upper = mkdtempSync(join(tmpdir(), "neo-sec-upper-"));
+    prepare(root, upper, join(upper, "..", `list-${Date.now()}`));
+    expect(readdirSync(outside)).toEqual([]);
+    expect(existsSync(join(root, "svc", "p"))).toBe(false);
+  });
+
+  test("prepare never writes through a symlink that is already in the upper folder", () => {
+    const root = repo(ETICKET_LIKE);
+    const upper = mkdtempSync(join(tmpdir(), "neo-sec-upper-"));
+    const elsewhere = mkdtempSync(join(tmpdir(), "neo-sec-else-"));
+    symlinkSync(elsewhere, join(upper, "services"));
+    prepare(root, upper, join(mkdtempSync(join(tmpdir(), "neo-sec-meta-")), "m.txt"));
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  test("the module list leaves out a folder whose name has whitespace", () => {
+    const root = repo({ ...ETICKET_LIKE, "has space/go.mod": "module example.com/s\n" });
+    const list = join(mkdtempSync(join(tmpdir(), "neo-sec-meta-")), "m.txt");
+    prepare(root, mkdtempSync(join(tmpdir(), "neo-sec-upper-")), list);
+    expect(readFileSync(list, "utf8")).not.toContain("has space");
+  });
 });
+

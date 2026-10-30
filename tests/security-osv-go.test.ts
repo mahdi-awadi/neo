@@ -24,7 +24,7 @@ function setup(osvBody = '#!/bin/sh\necho "{\\"args\\":\\"$*\\"}"\n') {
   const sha = createHash("sha256").update(osvBody).digest("hex");
   const run = (shaPin = sha) =>
     Bun.spawnSync(["sh", SCRIPT, repo, join(dir, "modules.txt"), join(dir, "versions.txt"), join(dir, "cache")], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, OSV_BIN_URL: "https://example.invalid/osv", OSV_BIN_SHA256: shaPin, OSV_TIMEOUT: "30" },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, OSV_BIN_URL: "https://example.invalid/osv", OSV_BIN_SHA256: shaPin },
     });
   const calls = () => (existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "");
   return { dir, repo, mods, sha, run, calls, served };

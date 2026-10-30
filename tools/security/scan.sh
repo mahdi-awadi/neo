@@ -11,7 +11,7 @@
 # Exit 1 = new high/critical findings (blocks). Exit 0 = clean, only baselined/low findings, or a scan
 # that could not run (it warns). Reports are written only for repos with .security/config.json.
 # Per-project settings live in <repo>/.security/config.json (devUrls, images, testCmd, zapAuth,
-# semgrepChunkFiles, semgrepTimeoutSec, osvMemoryMb, osvTimeoutSec, osvGoTags). A scan part with no result is recorded as missing
+# semgrepChunkFiles, semgrepTimeoutSec, osvMemoryMb, osvTimeoutSec, osvLockWaitSec, osvGoTags). A scan part with no result is recorded as missing
 # (ADR-0051).
 set -uo pipefail
 # shellcheck disable=SC1091
@@ -129,8 +129,9 @@ run_hadolint() { # repo-relative dockerfiles...
 osv_go_lock="${NEO_SEC_OSV_LOCK:-/tmp/neo-sec-osv-go.lock}" # one Go analysis at a time on this host
 
 run_osv() {
-  local mem limit tags fd line failed=()
-  mem="$(cfg_int osvMemoryMb 8192)"; limit="$(cfg_int osvTimeoutSec 2400)"; tags="$(cfg_get osvGoTags)"
+  local mem limit wait tags fd line failed=()
+  mem="$(cfg_int osvMemoryMb 8192)"; limit="$(cfg_int osvTimeoutSec 2400)"; wait="$(cfg_int osvLockWaitSec 600)"
+  tags="$(cfg_get osvGoTags)"
   [[ "$tags" =~ ^[A-Za-z0-9_.,]*$ ]] || { sec_warn "osvGoTags ignored: only letters, digits, _ . and , are allowed"; tags=""; }
   mkdir -p "$work/osv-up" "$work/osv-wk" "$work/osv-meta"
   : > "$work/osv-go.err"
@@ -140,19 +141,19 @@ run_osv() {
     echo "could not list the Go modules" >> "$work/osv-go.err"
   else
     exec {fd}>"$osv_go_lock"
-    if flock -w "$limit" "$fd"; then
+    if flock -w "$wait" "$fd"; then
       # No swap: an analysis too big for the limit fails fast (full severity) instead of thrashing the host.
       # GOMEMLIMIT makes osv's in-process govulncheck collect harder before it reaches the limit.
       docker run --rm --memory "${mem}m" --memory-swap "${mem}m" -e GOMEMLIMIT="$((mem * 85 / 100))MiB" \
         --mount "type=volume,dst=$repo,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$repo,upperdir=$work/osv-up,workdir=$work/osv-wk\"" \
         -v neo-sec-gocache:/neo -v "$work/osv-meta:/meta" -v "$SEC_KIT/osv-go.sh:/kit/osv-go.sh:ro" \
         -e GOMODCACHE=/neo/mod -e GOCACHE=/neo/build -e CGO_ENABLED=0 -e GOWORK=off \
-        -e GOFLAGS="-buildvcs=false -mod=readonly${tags:+ -tags=$tags}" -e OSV_TIMEOUT="$limit" \
+        -e GOFLAGS="-buildvcs=false -mod=readonly${tags:+ -tags=$tags}" \
         -e OSV_BIN_URL="$OSV_BIN_URL" -e OSV_BIN_SHA256="$OSV_BIN_SHA256" \
-        --entrypoint sh "$GO_IMAGE" /kit/osv-go.sh "$repo" /meta/modules.txt /meta/go-versions.txt /neo \
+        --entrypoint timeout "$GO_IMAGE" "$limit" sh /kit/osv-go.sh "$repo" /meta/modules.txt /meta/go-versions.txt /neo \
         > "$work/osv.json" 2>>"$work/osv-go.err" || true
     else
-      echo "another Go analysis held the host lock for ${limit}s" >> "$work/osv-go.err"
+      echo "another Go analysis held the host lock for ${wait}s" >> "$work/osv-go.err"
     fi
     exec {fd}>&-
   fi
@@ -160,6 +161,8 @@ run_osv() {
     rm -f "$work/osv-meta/go-versions.txt"
     sec_warn "osv-scanner with Go call analysis gave no result ($(grep -v '^Scanned' "$work/osv-go.err" | tail -1)) — scanned without it; Go findings keep full severity"
     docker run --rm -v "$repo:$repo:ro" "$OSV_IMAGE" scan source -r --format json "$repo" > "$work/osv.json" 2>/dev/null || true
+    # No output is a complete result (no lockfiles, ADR-0051); output that is not JSON is a scan that failed.
+    [[ ! -s "$work/osv.json" ]] || bun "$SEC_KIT/findings.ts" json-ok "$work/osv.json" || missing_part osv "dependency scan: its output is not valid JSON"
   else
     while IFS= read -r line; do
       [[ "$line" =~ ^Failed\ to\ run\ code\ analysis\ \(govulncheck\)\ on\ \'(.*)\'\ because ]] && failed+=("${BASH_REMATCH[1]#"$repo"/}")

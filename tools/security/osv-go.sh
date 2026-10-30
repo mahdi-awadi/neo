@@ -2,7 +2,8 @@
 # osv-scanner with Go call analysis, run by scan.sh inside the pinned Go image (ADR-0066).
 #
 #   osv-go.sh <repo> <modules list> <versions out> <cache dir>
-#   env: OSV_BIN_URL, OSV_BIN_SHA256, OSV_TIMEOUT (seconds); GOWORK=off and GOFLAGS come from scan.sh
+#   env: OSV_BIN_URL, OSV_BIN_SHA256; GOWORK=off and GOFLAGS come from scan.sh, which also runs the whole
+#   script under `timeout` (osvTimeoutSec)
 #
 # The osv-scanner binary is the release file of OSV_IMAGE's version, kept in the cache folder and checked
 # against OSV_BIN_SHA256 before every run. Exit 97: no binary that matches (scan.sh then scans without
@@ -30,4 +31,4 @@ while IFS= read -r dir; do
     while IFS= read -r line; do printf '%s/go.mod %s\n' "$dir" "$line"; done >> "$versions" || true
 done < "$modules"
 
-exec timeout "$OSV_TIMEOUT" "$bin" scan source -r --format json "$repo"
+exec "$bin" scan source -r --format json "$repo"

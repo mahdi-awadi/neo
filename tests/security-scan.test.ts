@@ -12,7 +12,7 @@ case "$1" in
   info|rm) exit 0 ;;
   inspect) exit 1 ;;
   run)
-    if [[ " $* " == *" --entrypoint sh "* ]]; then # the osv run with Go call analysis (ADR-0066)
+    if [[ " $* " == *" sh /kit/osv-go.sh "* ]]; then # the osv run with Go call analysis (ADR-0066)
       for a in "$@"; do
         if [[ "$a" == *upperdir=* ]]; then u="\${a#*upperdir=}"; u="\${u%%,*}"; (cd "$u" && find . -type l -printf 'upper-link %P -> %l\\n') >> "$FAKE_DOCKER_LOG"; fi
       done
@@ -138,9 +138,10 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
     expect(go).toMatch(new RegExp(`lowerdir=${s.repo},upperdir=/tmp/neo-sec\\.\\w+/osv-up,workdir=`)); // writes go to the scan's temp dir
     expect(go).not.toContain(`${s.repo}:${s.repo}`);
     // Each module standalone, as its own build sees it; go.mod/go.sum as written, never a stale vendor/.
-    expect(go).toContain("-e GOWORK=off -e GOFLAGS=-buildvcs=false -mod=readonly -e OSV_TIMEOUT=2400");
+    expect(go).toContain("-e GOWORK=off -e GOFLAGS=-buildvcs=false -mod=readonly -e OSV_BIN_URL=");
     expect(go).toMatch(/\/security\/osv-go\.sh:\/kit\/osv-go\.sh:ro /);
-    expect(go).toContain(`/kit/osv-go.sh ${s.repo} /meta/modules.txt /meta/go-versions.txt /neo`);
+    // The whole script, downloads and module loading too, runs under the time limit.
+    expect(go).toContain(`--entrypoint timeout ${pin("GO_IMAGE")} 2400 sh /kit/osv-go.sh ${s.repo} /meta/modules.txt /meta/go-versions.txt /neo`);
   });
 
   test("a local replace target that is only a mount placeholder is linked to the repo's module, in the overlay", () => {
@@ -158,7 +159,8 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
   test("osvGoTags and osvTimeoutSec reach the Go run; tags with other characters are refused", () => {
     const s = setup(["src/a.ts"], { osvGoTags: "prod,linux", osvTimeoutSec: 99 });
     s.run("push", s.repo);
-    expect(goRun(s.log())).toContain("-mod=readonly -tags=prod,linux -e OSV_TIMEOUT=99");
+    expect(goRun(s.log())).toContain("-mod=readonly -tags=prod,linux -e OSV_BIN_URL");
+    expect(goRun(s.log())).toContain(" 99 sh /kit/osv-go.sh ");
     const bad = setup(["src/a.ts"], { osvGoTags: "x -toolexec=evil" });
     const r = bad.run("push", bad.repo);
     expect(goRun(bad.log())).not.toContain("toolexec");
@@ -174,6 +176,12 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
     expect(r.stderr.toString()).toContain("Go call analysis gave no result");
   });
 
+  test("the plain scan's output that is not JSON is a missing part, never an empty result", () => {
+    const s = setup(["src/a.ts"]);
+    s.run("baseline", s.repo); // fake docker: the Go run and the plain run both print nothing → complete
+    expect(baselineOf(s.repo).incomplete.map((m: { tool: string }) => m.tool)).not.toContain("osv");
+  });
+
   test("modules whose analysis failed are named in a warning", () => {
     const env: Record<string, string> = { FAKE_OSV_GO_JSON: okJson() };
     const s = setup(["src/a.ts"], {}, env);
@@ -183,8 +191,8 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
     expect(plainRun(s.log())).toBeUndefined();
   });
 
-  test("one Go analysis at a time: a lock held past osvTimeoutSec means the plain scan", async () => {
-    const s = setup(["src/a.ts"], { osvTimeoutSec: 1 });
+  test("one Go analysis at a time: a lock held past osvLockWaitSec means the plain scan", async () => {
+    const s = setup(["src/a.ts"], { osvLockWaitSec: 1 });
     const holder = Bun.spawn(["flock", s.lock, "sleep", "5"]);
     await Bun.sleep(300);
     const r = s.run("push", s.repo);
