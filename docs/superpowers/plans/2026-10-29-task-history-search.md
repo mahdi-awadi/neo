@@ -31,7 +31,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
 
 ---
 
-- [ ] **1. Arabic normalizer and light stemmer** (pure)
+- [x] **1. Arabic normalizer and light stemmer** (pure)
   - Create: `src/engine/history/normalize.ts`, `src/engine/history/arabic-stem.ts`,
     `tests/history-normalize.test.ts`.
   - Tests first:
