@@ -29,6 +29,12 @@ export function manifestName(name: string, at: number): string {
 const SNAPSHOT = /^([a-z0-9][a-z0-9_]*)-(\d{8}T\d{6}Z)\.db(\.gz)?$/;
 const MANIFEST = /^([a-z0-9][a-z0-9_]*)-(\d{8}T\d{6}Z)\.manifest\.json$/;
 
+/** A file the backup itself writes in its folder: a snapshot, a manifest, or a temp file of the child or the
+ *  drill (a dot name ending in `.tmp`, a SQLite journal of one, or a manifest's `.tmp`). */
+export function isBackupFile(file: string): boolean {
+  return SNAPSHOT.test(file) || MANIFEST.test(file) || /^\..+\.tmp(?:-journal)?$/.test(file) || MANIFEST.test(file.replace(/\.tmp$/, ""));
+}
+
 export function parseSnapshotName(file: string): { name: string; at: number; compressed: boolean } | undefined {
   const m = SNAPSHOT.exec(file);
   const at = m ? parseStamp(m[2]!) : undefined;

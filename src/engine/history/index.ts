@@ -10,10 +10,11 @@ import type { Ledger } from "../ledger";
 import { scanMemoryText } from "../memory";
 import { findSecret } from "../secret-patterns";
 import { todoTitle } from "../todo-title";
-import type { HistoryCfg } from "./defaults";
+import { isProjectName, type HistoryCfg } from "./defaults";
 import { openEmbedder, type Embedder } from "./embedder";
 import { findShas, hashText } from "./extract";
 import { createIndexer, type IndexReport, type ServiceReport } from "./indexer";
+import { createSessionLimiter } from "./limiter";
 import { searchHistory, type HistoryQuery, type HistoryRef, type HistoryResult } from "./search";
 import { createQueryGate } from "./services";
 import { prepareChunks, sameWorkRefs } from "./sources";
@@ -55,9 +56,9 @@ export interface HistoryStatus {
 }
 
 export interface TaskHistory {
-  /** Hybrid search over every list that answers now. Never throws. `ok: false` for a refused query or a
-   *  `history.db` that cannot be read. */
-  search(q: HistoryQuery): Promise<HistoryResult>;
+  /** Hybrid search over every list that answers now. Never throws. `ok: false` for a refused query, a
+   *  `history.db` that cannot be read, or a worker `session` over `search.perSessionMinute` (`rate_limited`). */
+  search(q: HistoryQuery, opts?: { session?: string }): Promise<HistoryResult>;
   /** Save an explicit entry. Keyword-searchable at once, meaning-searchable after its vector is made. */
   remember(e: RememberInput): RememberResult;
   /** One indexer pass, single-flight. Never throws. */
@@ -86,7 +87,8 @@ export interface TaskHistoryDeps {
   pid?: number;
 }
 
-const HOUR = 3_600_000;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 /** A ref that names an entry of `history.db` (a `line:` ref names a ledger line: nothing to forget). */
 export const FORGETTABLE = /^(?:todo|order|result|msg|plan|note|att|dec|mem):[0-9a-z-]+$/i;
 const MEM = "mem:";
@@ -113,8 +115,8 @@ export function openTaskHistory(deps: TaskHistoryDeps): TaskHistory {
   const next = deps.next ?? openNext(cfg, deps.env, vectors);
   const gate = createQueryGate();
   const indexer = createIndexer({ store, ledger: deps.ledger, cfg, workRoot: deps.workRoot, embedder, vectors, ...(next ? { next } : {}), events, gate, pid });
-  /** Save times per session, for the hourly limit. */
-  const saves = new Map<string, number[]>();
+  const saves = createSessionLimiter(cfg.remember.perSessionHour, HOUR);
+  const searches = createSessionLimiter(cfg.search.perSessionMinute, MINUTE);
 
   function remember(e: RememberInput): RememberResult {
     const text = typeof e.text === "string" ? e.text.trim() : "";
@@ -125,11 +127,11 @@ export function openTaskHistory(deps: TaskHistoryDeps): TaskHistory {
     if (secret) return { ok: false, error: `secret: ${secret}` };
     const scan = scanMemoryText(text);
     if (scan) return { ok: false, error: scan };
+    const project = e.project?.trim() || undefined;
+    if (project !== undefined && !isProjectName(project)) return { ok: false, error: "bad_project" };
     const at = now();
     const session = e.session ?? e.by;
-    const recent = (saves.get(session) ?? []).filter((t) => at - t < HOUR);
-    if (recent.length >= cfg.remember.perSessionHour) return { ok: false, error: "rate_limited" };
-    const project = e.project?.trim() || undefined;
+    if (!saves.allow(session, at)) return { ok: false, error: "rate_limited" };
     try {
       const out = store.transaction(() => {
         const { id, duplicate } = store.addRemembered({ text, ...(project ? { project } : {}), by: e.by, ...(e.cause ? { cause: e.cause } : {}), at });
@@ -144,7 +146,7 @@ export function openTaskHistory(deps: TaskHistoryDeps): TaskHistory {
         }, chunks, at);
         return { ref, duplicate };
       });
-      if (!out.duplicate) saves.set(session, [...recent, at]);
+      if (!out.duplicate) saves.record(session, at);
       events("history_remember", { ref: out.ref, duplicate: out.duplicate, by: e.by, chars: text.length });
       return { ok: true, ...out };
     } catch {
@@ -219,7 +221,12 @@ export function openTaskHistory(deps: TaskHistoryDeps): TaskHistory {
   }
 
   return {
-    async search(q) {
+    async search(q, opts = {}) {
+      if (opts.session !== undefined) {
+        const at = now();
+        if (!searches.allow(opts.session, at)) return { ok: false, error: "rate_limited", hits: [], mode: { meaning: "skipped" } };
+        searches.record(opts.session, at);
+      }
       try {
         return await searchHistory({ store, ledger: deps.ledger, embedder, vectors, cfg, gate, events }, q);
       } catch {

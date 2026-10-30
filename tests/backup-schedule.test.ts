@@ -4,7 +4,7 @@
 // streak and keeps the state the attention producer reads; a success clears it. Temp folders only.
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKUP_DEFAULTS, type BackupCfg } from "../src/engine/backup/cfg";
@@ -165,6 +165,31 @@ describe("the schedule", () => {
     await s.tick();
     expect(s.state().failing[0]).toMatchObject({ code: "spawn_failed" });
     expect(alerts.length).toBe(1);
+  });
+});
+
+describe("leftovers of a killed child", () => {
+  test("before each child, its own stale temp files go; snapshots, manifests and other names stay", async () => {
+    root = mkdtempSync(join(tmpdir(), "neo-backup-sched-"));
+    const dir = join(root, "backups");
+    mkdirSync(dir);
+    const keep = ["history-20261029T034100Z.db.gz", "history-20261029T034100Z.manifest.json", "ledger-20261029T034100Z.db.gz", ".ledger-77.db.tmp"];
+    const stale = [".history-123.db.tmp", ".history-123.db.tmp-journal", ".history-20261030T034100Z.db.gz.tmp", "history-20261030T034100Z.manifest.json.tmp"];
+    for (const f of [...keep, ...stale]) writeFileSync(join(dir, f), "x");
+    const seen: string[][] = [];
+    const schedule = (over: Partial<BackupCfg>) => {
+      let n = T - MIN; // created at T, the first tick is the 03:41 slot
+      return createBackupSchedule({
+        cfg: cfg({ dir, databases: [{ path: "data/history.db", cron: "41 3 * * *" }], ...over }), baseDir: "/home/neo", bun: "/usr/local/bin/bun",
+        now: () => (n += MIN), events: () => {}, alert: () => {},
+        spawn: async () => (seen.push(readdirSync(dir).sort()), ok()),
+      });
+    };
+    await schedule({}).tick();
+    expect(seen[0]).toEqual([...keep].sort());
+    writeFileSync(join(dir, ".drill-history-9.db.tmp"), "x");
+    await schedule({ drillCron: "* * * * *" }).tick();
+    expect(seen.at(-1)).not.toContain(".drill-history-9.db.tmp");
   });
 });
 

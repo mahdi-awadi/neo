@@ -16,7 +16,7 @@ import { chmodSync, closeSync, createReadStream, createWriteStream, existsSync, 
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
-import { manifestName, rotationDeletes, snapshotName, type Keep } from "./rotate";
+import { isBackupFile, manifestName, rotationDeletes, snapshotName, type Keep } from "./rotate";
 
 export interface SnapshotOpts {
   source: string;
@@ -149,9 +149,17 @@ function writeDurable(path: string, text: string): void {
   renameSync(tmp, path);
 }
 
-/** Make the backup folder with mode 0700 (also when it already exists). */
+/** Make the backup folder with mode 0700. A folder that exists is used only when it is dedicated (it holds
+ *  nothing but backup files); then it is set to 0700 too. Another folder (`/tmp`, a home folder) is refused
+ *  and never changed: its mode belongs to someone else. */
 export function ensureBackupDir(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700); // the umask may have taken bits off the mkdir mode
+    return;
+  }
+  const other = readdirSync(dir).filter((f) => !isBackupFile(f));
+  if (other.length) throw new BackupError("dir_not_dedicated", `${dir} holds ${other.length} file(s) that are not backups; set backup.dir to a folder of its own`);
   chmodSync(dir, 0o700);
 }
 

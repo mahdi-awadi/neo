@@ -121,6 +121,24 @@ describe("takeSnapshot", () => {
     db.close();
   });
 
+  test("the folder: a new one is made 0700; a dedicated one is set to 0700; one that holds other files is refused and left as it is", async () => {
+    const { path, dir, db } = makeDb(5);
+    expect((await takeSnapshot(opts(path, dir))).ok).toBe(true);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    chmodSync(dir, 0o755);
+    expect((await takeSnapshot(opts(path, dir), { now: () => T0 + 60_000 })).ok).toBe(true);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    const shared = join(root, "shared");
+    Bun.spawnSync(["mkdir", "-p", shared]);
+    chmodSync(shared, 0o755);
+    writeFileSync(join(shared, "notes.txt"), "someone else's file");
+    const r = await takeSnapshot(opts(path, shared));
+    expect(r).toMatchObject({ ok: false, code: "dir_not_dedicated" });
+    expect(statSync(shared).mode & 0o777).toBe(0o755);
+    expect(readdirSync(shared)).toEqual(["notes.txt"]);
+    db.close();
+  });
+
   test("an uncompressed snapshot when compress is off", async () => {
     const { path, dir, db } = makeDb(5);
     const r = await takeSnapshot(opts(path, dir, { compress: false }), { now: () => T0 });
@@ -138,12 +156,12 @@ describe("takeSnapshot", () => {
       writeFileSync(join(dir, snapshotName("t", at, true)), "old");
       writeFileSync(join(dir, manifestName("t", at)), "{}");
     }
-    writeFileSync(join(dir, "notes.txt"), "keep");
+    writeFileSync(join(dir, ".other-1.db.tmp"), "another database's child");
     writeFileSync(join(dir, snapshotName("other", T0 - 9 * 86_400_000, true)), "other db");
     const r = await takeSnapshot(opts(path, dir, { keep: { keepRecent: 2, keepDaily: 0, keepWeekly: 0 } }), { now: () => T0 });
     expect(r.ok).toBe(true);
     expect(r.ok && r.deleted.sort()).toEqual([snapshotName("t", old[0]!, true), manifestName("t", old[0]!)].sort());
-    expect(existsSync(join(dir, "notes.txt"))).toBe(true);
+    expect(existsSync(join(dir, ".other-1.db.tmp"))).toBe(true);
     expect(existsSync(join(dir, snapshotName("other", T0 - 9 * 86_400_000, true)))).toBe(true);
     expect(existsSync(join(dir, snapshotName("t", old[1]!, true)))).toBe(true);
     db.close();

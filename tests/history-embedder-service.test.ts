@@ -121,17 +121,22 @@ describe("the compose file", () => {
 });
 
 describe("compose arguments and environment", () => {
-  test("project neo-embedder, the tracked settings, then the machine-local overrides when present", () => {
-    expect(composeArgs(KIT, false, ["up", "-d"])).toEqual(["compose", "-p", "neo-embedder", "-f", join(KIT, "compose.yml"), "--env-file", join(KIT, "embedder.env"), "up", "-d"]);
-    const withLocal = composeArgs(KIT, true, ["down"]);
-    expect(withLocal.indexOf(join(KIT, "embedder.local.env"))).toBeGreaterThan(withLocal.indexOf(join(KIT, "embedder.env")));
-    expect(withLocal.at(-1)).toBe("down");
+  test("project neo-embedder and the compose file; no env file reaches compose (the settings come validated)", () => {
+    expect(composeArgs(KIT, ["up", "-d"])).toEqual(["compose", "-p", "neo-embedder", "-f", join(KIT, "compose.yml"), "up", "-d"]);
+    expect(composeArgs(KIT, ["down"]).join(" ")).not.toContain("--env-file");
   });
 
-  test("the key reaches only the child's environment", () => {
-    const env = composeEnv({ PATH: "/usr/bin" }, "marker-key-123");
-    expect(env).toEqual({ PATH: "/usr/bin", [KEY_ENV]: "marker-key-123" });
-    expect(composeArgs(KIT, true, ["up", "-d"]).join(" ")).not.toContain("marker-key-123");
+  test("compose gets the validated settings, never a raw override; the key reaches only the child's environment", () => {
+    const tracked = parseEnvFile(readFileSync(join(KIT, "embedder.env"), "utf8"));
+    // A machine-local override with a bad image: the validated (tracked) one is what compose gets.
+    const s = embedderSettings([tracked, { NEO_EMBEDDER_IMAGE: "ghcr.io/x/tei:latest", NEO_EMBEDDER_MEM: "6g" }]);
+    const env = composeEnv({ PATH: "/usr/bin", NEO_EMBEDDER_IMAGE: "evil:latest" }, "marker-key-123", s);
+    expect(env).toMatchObject({
+      PATH: "/usr/bin", [KEY_ENV]: "marker-key-123", NEO_EMBEDDER_IMAGE: tracked.NEO_EMBEDDER_IMAGE, NEO_EMBEDDER_MEM: "6g",
+      NEO_EMBEDDER_MODEL: s.model, NEO_EMBEDDER_REVISION: s.revision, NEO_EMBEDDER_PORT: String(s.port), NEO_EMBEDDER_CPUS: s.cpus,
+      NEO_EMBEDDER_THREADS: String(s.threads), NEO_EMBEDDER_PIDS: String(s.pids), NEO_EMBEDDER_MAX_BATCH_TOKENS: String(s.maxBatchTokens),
+    });
+    expect(composeArgs(KIT, ["up", "-d"]).join(" ")).not.toContain("marker-key-123");
   });
 });
 

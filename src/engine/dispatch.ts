@@ -1941,6 +1941,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   // cause and the rate limit's session are this session's, from the closure: never a tool argument.
   const history = deps.history;
   if (history) {
+    const session = opts.sessionId ?? opts.folder;
     tools.push(
       tool(
         "history_search",
@@ -1953,13 +1954,13 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           kinds: z.array(z.string()).optional().describe("only these kinds: todo, order, result, digest, message, plan, note, attention, decision, remembered, line"),
           limit: z.number().int().optional().describe(`how many hits, 1–${TOOL_LIMIT_MAX} (default from config)`),
         },
-        async (args: unknown) => historySearchTool(history, args),
+        async (args: unknown) => historySearchTool(history, args, session),
       ),
     );
     if (!consult) {
       const caller: RememberCaller = {
         by: opts.dispatch ? "company" : "worker",
-        session: opts.sessionId ?? opts.folder,
+        session,
         ...(opts.projectName ? { project: opts.projectName } : {}),
       };
       tools.push(

@@ -66,19 +66,22 @@ export function embedderSettings(layers: Array<Record<string, string>>): Embedde
   };
 }
 
-/** `docker compose …` arguments: the tracked settings, then the machine-local overrides if present. */
-export function composeArgs(kit: string, hasLocal: boolean, cmd: string[]): string[] {
-  return [
-    "compose", "-p", "neo-embedder", "-f", join(kit, "compose.yml"),
-    "--env-file", join(kit, "embedder.env"),
-    ...(hasLocal ? ["--env-file", join(kit, "embedder.local.env")] : []),
-    ...cmd,
-  ];
+/** `docker compose …` arguments. No env file: compose reads the settings from its environment
+ *  (`composeEnv`), where only the validated values are, so a raw override can never reach it. */
+export function composeArgs(kit: string, cmd: string[]): string[] {
+  return ["compose", "-p", "neo-embedder", "-f", join(kit, "compose.yml"), ...cmd];
 }
 
-/** The environment of the `docker compose` child: the caller's, plus the key. */
-export function composeEnv(base: Record<string, string | undefined>, key: string): Record<string, string | undefined> {
-  return { ...base, [KEY_ENV]: key };
+/** The environment of the `docker compose` child: the caller's, the validated settings (they win over a
+ *  value of the same name the caller has), and the key. */
+export function composeEnv(base: Record<string, string | undefined>, key: string, s: EmbedderSettings): Record<string, string | undefined> {
+  return {
+    ...base,
+    NEO_EMBEDDER_IMAGE: s.image, NEO_EMBEDDER_MODEL: s.model, NEO_EMBEDDER_REVISION: s.revision, NEO_EMBEDDER_DIMS: String(s.dims),
+    NEO_EMBEDDER_PORT: String(s.port), NEO_EMBEDDER_MEM: s.mem, NEO_EMBEDDER_CPUS: s.cpus, NEO_EMBEDDER_THREADS: String(s.threads),
+    NEO_EMBEDDER_PIDS: String(s.pids), NEO_EMBEDDER_MAX_BATCH_TOKENS: String(s.maxBatchTokens), NEO_EMBEDDER_START_WAIT_S: String(s.startWaitS),
+    [KEY_ENV]: key,
+  };
 }
 
 /** The engine adapter's config for this service: the engine defaults with the service's URL, model,
@@ -121,7 +124,7 @@ if (import.meta.main) {
   const s = embedderSettings([parseEnvFile(readFileSync(join(kit, "embedder.env"), "utf8")), ...(hasLocal ? [parseEnvFile(readFileSync(local, "utf8"))] : [])]);
   const keyIn = (): string => (existsSync(envFile) ? parseEnvFile(readFileSync(envFile, "utf8"))[KEY_ENV] ?? "" : "");
   const docker = (cmd: string[], key: string) =>
-    Bun.spawnSync(["docker", ...composeArgs(kit, hasLocal, cmd)], { env: composeEnv(process.env, key), stdout: "inherit", stderr: "inherit" }).exitCode;
+    Bun.spawnSync(["docker", ...composeArgs(kit, cmd)], { env: composeEnv(process.env, key, s), stdout: "inherit", stderr: "inherit" }).exitCode;
 
   if (process.argv.includes("--down")) {
     // Compose checks `${HISTORY_EMBEDDER_KEY:?}` for every command; a stop needs no real key.

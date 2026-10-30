@@ -6,6 +6,7 @@
 // never from the arguments. Pure apart from the seam calls.
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../format";
 import { msgRef } from "../trace";
+import { isProjectName, PROJECT_MAX } from "./defaults";
 import type { HistoryHit, HistoryQuery, HistoryResult, MeaningMode, RememberInput, TaskHistory } from "./index";
 
 /** A worker asks for at most this many hits (spec "Surfaces": `limit` 1–20). */
@@ -50,7 +51,10 @@ export function parseSearchArgs(raw: unknown): { ok: true; q: HistoryQuery } | {
   const q: HistoryQuery = { query: a.query };
   if (a.project !== undefined) {
     if (typeof a.project !== "string") return { ok: false, error: "project must be a string" };
-    if (a.project.trim()) q.project = a.project.trim();
+    if (a.project.trim()) {
+      if (!isProjectName(a.project.trim())) return { ok: false, error: `project must be a project name of at most ${PROJECT_MAX} characters` };
+      q.project = a.project.trim();
+    }
   }
   for (const key of ["since", "until"] as const) {
     if (a[key] === undefined) continue;
@@ -116,12 +120,12 @@ export function formatSearchReply(r: HistoryResult): ToolReply {
   return reply([modeLine(r.mode), body, DATA_LINE].join("\n"));
 }
 
-/** `history_search`: check the arguments, search, format. Never throws. */
-export async function historySearchTool(history: TaskHistory, raw: unknown): Promise<ToolReply> {
+/** `history_search`: check the arguments, search (counted for the caller's `session`), format. Never throws. */
+export async function historySearchTool(history: TaskHistory, raw: unknown, session?: string): Promise<ToolReply> {
   const parsed = parseSearchArgs(raw);
   if (!parsed.ok) return refused(parsed.error);
   try {
-    return formatSearchReply(await history.search(parsed.q));
+    return formatSearchReply(await history.search(parsed.q, session !== undefined ? { session } : {}));
   } catch {
     return reply("History search failed: history_unreadable.", true);
   }

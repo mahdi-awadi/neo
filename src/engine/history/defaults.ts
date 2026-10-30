@@ -125,12 +125,20 @@ export interface SearchCfg {
   maxTerms: number;
   /** Coverage below this share gives the mode `partial`. */
   fullCoverage: number;
+  /** Searches one worker session may make in a minute (`history_search`; the operator surfaces are not limited). */
+  perSessionMinute: number;
 }
 
 export const SEARCH_DEFAULTS: Readonly<SearchCfg> = {
   rrfK: 60, weights: { meaning: 1, words: 1, lines: 0.5 }, exactBoost: 1, defaultLimit: 10, maxLimit: 50, listLimit: 50,
-  snippetChars: 240, maxQueryChars: 500, maxTerms: 12, fullCoverage: 0.99,
+  snippetChars: 240, maxQueryChars: 500, maxTerms: 12, fullCoverage: 0.99, perSessionMinute: 30,
 };
+
+/** A project name is a folder name: longer input is not one (every surface and the seam check it). */
+export const PROJECT_MAX = 128;
+
+/** A project name the history keeps: 1–PROJECT_MAX characters, no slash, backslash or control character. */
+export const isProjectName = (p: string): boolean => p.length > 0 && p.length <= PROJECT_MAX && !/[\u0000-\u001f/\\]/.test(p);
 
 export interface RememberCfg {
   minChars: number;

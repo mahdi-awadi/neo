@@ -17,6 +17,8 @@ import { briefWithProjectDocs, neoMcpServers, type DispatchDeps } from "../src/e
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../src/engine/format";
 import { openTaskHistory, type HistoryQuery, type HistoryResult, type RememberInput, type TaskHistory } from "../src/engine/history/index";
 import { emptyIndexReport } from "../src/engine/history/indexer";
+import { PROJECT_MAX } from "../src/engine/history/defaults";
+import { rememberTool } from "../src/engine/history/tool-text";
 import { ingressToolDeps, runCompanyBrief } from "../src/engine/ingress";
 import { openLedger } from "../src/engine/ledger";
 import { createRegistry } from "../src/engine/registry";
@@ -242,6 +244,29 @@ describe("remember", () => {
     expect(textOf(await worker(d).remember!.handler({ text: "First fact the worker keeps." }))).toMatch(/^Saved as mem:\d+\.$/);
     expect(textOf(await worker(d).remember!.handler({ text: "Second fact the worker keeps." }))).toBe("Not saved: rate_limited.");
     expect(textOf(await company(d).remember!.handler({ text: "Second fact the worker keeps." }))).toMatch(/^Saved as mem:\d+\.$/);
+  });
+
+  test("the real seam refuses a project name that is too long; the worker and Telegram paths say so", async () => {
+    const b = bench();
+    benches.push(b);
+    const h = openTaskHistory({ cfg: b.cfg, ledger: b.led, workRoot: b.workRoot, env: b.env, events: b.record, store: b.store, embedder: b.embedder, vectors: b.vectors });
+    const long = "p".repeat(PROJECT_MAX + 1);
+    expect(textOf(await worker(dispatchDeps(h)).remember!.handler({ text: "A fact for a project.", project: long }))).toBe("Not saved: bad_project.");
+    expect(rememberTool(h, { text: "A fact for a project.", project: long }, { by: "operator", session: "telegram" }).content[0]!.text).toBe("Not saved: bad_project.");
+  });
+});
+
+describe("the worker search limit", () => {
+  test("history_search counts for the session; a long project is a text error", async () => {
+    const { h, queries } = fakeHistory();
+    const sessions: Array<string | undefined> = [];
+    h.search = async (q, o) => (queries.push(q), sessions.push(o?.session), RESULT);
+    await worker(dispatchDeps(h)).history_search!.handler({ query: "seats" });
+    await company(dispatchDeps(h)).history_search!.handler({ query: "seats" });
+    expect(sessions).toEqual(["s-et", "s-co"]);
+    const bad = await worker(dispatchDeps(h)).history_search!.handler({ query: "seats", project: "p".repeat(PROJECT_MAX + 1) });
+    expect(bad.isError).toBe(true);
+    expect(sessions).toHaveLength(2);
   });
 });
 

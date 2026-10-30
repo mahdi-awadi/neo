@@ -9,6 +9,7 @@
 // Results: `backup_done` / `backup_drill` events on success (counts only), `backup_failed` on a failure
 // (the code, never the detail text), one operator alert for each failure streak of a job, and `state()`,
 // which the attention producer reads for the `backup_failed` item until the job succeeds again.
+import { readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { cronDueBetween } from "../trigger";
 import { backupName, type BackupCfg } from "./cfg";
@@ -120,6 +121,16 @@ export const spawnChild: Spawner = async (argv, timeoutMs) => {
   }
 };
 
+/** The temp files a killed child of `job` may have left in `files` (one child runs at a time, so none is in
+ *  use): a snapshot's `.<name>-….tmp` (and its journal) and `<name>-<stamp>.manifest.json.tmp`, or the
+ *  drill's `.drill-…`. Snapshots, manifests and other jobs' files never match. */
+export function staleTemps(files: string[], job: Pick<BackupJob, "kind" | "name">): string[] {
+  if (job.kind === "drill") return files.filter((f) => f.startsWith(".drill-") && /\.tmp(?:-journal)?$/.test(f));
+  const name = job.name ?? "";
+  return files.filter((f) =>
+    (f.startsWith(`.${name}-`) && /\.tmp(?:-journal)?$/.test(f)) || (f.startsWith(`${name}-`) && f.endsWith(".manifest.json.tmp")));
+}
+
 /** `backup_failed <code> <detail>` → code and detail; anything else is `child_failed`. */
 function failureOf(run: ChildRun, timeoutMs: number): { code: string; reason: string } {
   if (run.timedOut) return { code: "timeout", reason: `ended after ${timeoutMs} ms` };
@@ -177,7 +188,18 @@ export function createBackupSchedule(deps: BackupScheduleDeps): BackupSchedule {
     }
   };
 
+  const clearStale = (job: BackupJob): void => {
+    let files: string[];
+    try {
+      files = readdirSync(cfg.dir);
+    } catch {
+      return; // no folder yet: the child makes it
+    }
+    for (const f of staleTemps(files, job)) rmSync(join(cfg.dir, f), { force: true });
+  };
+
   const runOne = async (job: BackupJob): Promise<void> => {
+    clearStale(job);
     let run: ChildRun;
     try {
       run = await spawn(job.argv, cfg.timeoutMs);

@@ -112,6 +112,7 @@ function readSearch(raw: unknown, d: SearchCfg): SearchCfg {
     maxQueryChars: int(r.maxQueryChars, d.maxQueryChars),
     maxTerms: int(r.maxTerms, d.maxTerms),
     fullCoverage: num(r.fullCoverage, d.fullCoverage, Number.MIN_VALUE, 1),
+    perSessionMinute: int(r.perSessionMinute, d.perSessionMinute),
   };
 }
 

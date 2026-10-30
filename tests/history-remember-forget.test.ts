@@ -9,6 +9,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { hashText } from "../src/engine/history/extract";
 import { todoTitle } from "../src/engine/todo-title";
 import { openTaskHistory, type HistoryCfg, type TaskHistory } from "../src/engine/history/index";
+import { PROJECT_MAX } from "../src/engine/history/defaults";
 import { TODOS_KEEP } from "../src/engine/ledger";
 import { bench, operatorThread, order, remotePoints, todo, type Bench } from "./fixtures/history-harness";
 
@@ -80,6 +81,31 @@ describe("remember", () => {
     now += 61 * MIN;
     expect(save(5, "s1").ok).toBe(true);
     expect(b.events.filter((e) => e.kind === "history_remember")).toHaveLength(4);
+  });
+
+  test("a project name longer than a folder name, or with a slash or a control character, is refused", () => {
+    const { b, h } = setup();
+    const save = (project: string) => h.remember({ text: "A fact that belongs to one project only.", project, by: "worker" });
+    expect(save("p".repeat(PROJECT_MAX + 1))).toEqual({ ok: false, error: "bad_project" });
+    expect(save("../eticket")).toEqual({ ok: false, error: "bad_project" });
+    expect(save("eti\u0007cket")).toEqual({ ok: false, error: "bad_project" });
+    expect(save("p".repeat(PROJECT_MAX)).ok).toBe(true);
+    expect(b.store.listRefs(["remembered"], undefined, 10)).toHaveLength(1);
+  });
+});
+
+describe("the worker search limit", () => {
+  test("a session gets search.perSessionMinute searches a minute; a search with no session is not counted", async () => {
+    let now = T0;
+    const { h } = setup({ now: () => now, cfg: (c) => ({ ...c, search: { ...c.search, perSessionMinute: 2 } }) });
+    const find = (session?: string) => h.search({ query: "seats" }, session ? { session } : {});
+    expect((await find("w1")).ok).toBe(true);
+    expect((await find("w1")).ok).toBe(true);
+    expect(await find("w1")).toMatchObject({ ok: false, error: "rate_limited" });
+    expect((await find("w2")).ok).toBe(true);
+    expect((await find()).ok).toBe(true);
+    now += MIN;
+    expect((await find("w1")).ok).toBe(true);
   });
 });
 

@@ -4,13 +4,12 @@
 // before the seam is asked. The Telegram replies are built here too: at most 4,096 characters, numbers
 // left-to-right in Arabic lines. Pure.
 import { RTL_SCRIPT, numbersLtrText } from "../bidi";
-import { QUERY_KINDS, type SearchCfg } from "./defaults";
+import { isProjectName, PROJECT_MAX, QUERY_KINDS, type SearchCfg } from "./defaults";
 import type { ForgetResult, HistoryKind, HistoryQuery, HistoryResult } from "./index";
 import { dateMs, hitText, modeLine } from "./tool-text";
 
 const KNOWN = new Set<string>(QUERY_KINDS);
-/** A project name is a folder name: longer input is not one. */
-export const PROJECT_MAX = 128;
+export { PROJECT_MAX };
 
 /** The query fields as a surface read them (strings, not yet checked). */
 export interface RawQuery {
@@ -35,7 +34,7 @@ export function checkQuery(raw: RawQuery, cfg: Pick<SearchCfg, "maxQueryChars" |
   const q: HistoryQuery = { query };
   const project = raw.project?.trim();
   if (project) {
-    if (project.length > PROJECT_MAX || /[\u0000-\u001f/\\]/.test(project)) return { ok: false, error: "bad_project" };
+    if (!isProjectName(project)) return { ok: false, error: "bad_project" };
     q.project = project;
   }
   const kinds = [...new Set((raw.kinds ?? []).map((k) => k.trim().toLowerCase()).filter(Boolean))];
