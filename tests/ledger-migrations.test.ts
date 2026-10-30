@@ -189,7 +189,7 @@ test("migration 16 adds the pins table; pins round-trip, unpin is kept, clear re
   v15.close();
   const db = new Database(path);
   expect(migrate(db, { path }).from).toBe(15);
-  expect(version(db)).toBe(16);
+  expect(version(db)).toBeGreaterThanOrEqual(16);
   db.close();
   const led = openLedger(path);
   expect(led.listPins()).toEqual([]);
@@ -202,4 +202,45 @@ test("migration 16 adds the pins table; pins round-trip, unpin is kept, clear re
   ]);
   led.setPin("att:7", null, 13);
   expect(led.listPins()).toEqual([{ ref: "dec:abc", state: "unpinned", at: 11 }]);
+});
+
+// ADR-0066 Decision 4: the task history's change feed — a table and AFTER triggers on the source tables.
+test("migration 17 adds the history feed and its triggers to a v16 ledger with rows; backup and reopen", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-mig-"));
+  const path = join(dir, "ledger.db");
+  const v16 = new Database(path);
+  migrate(v16, { path, migrations: MIGRATIONS.filter((x) => x.version <= 16) });
+  v16.run(`INSERT INTO orders (id, source, folder, task, chat_id, created_at) VALUES ('o1', 'neo', '/f', 'build it', -2, 1)`);
+  v16.run(`INSERT INTO outcomes (order_id, status, summary, at) VALUES ('o1', 'done', 'built', 2)`);
+  v16.run(`INSERT INTO messages (chat_id, role, content, at, kind) VALUES (1, 'user', 'please build', 1, 'text'), (-2, 'assistant', 'working', 2, 'text')`);
+  v16.run(`INSERT INTO project_todos (project, folder, brief, work_class, created_by, created_at, status, position) VALUES ('p', '/f', 'b', 'interactive', 'operator', 1, 'queued', 1)`);
+  v16.run(`INSERT INTO decisions (id, kind, question, status, created_at) VALUES ('d1', 'decision', 'q', 'open', 1)`);
+  const before = (db: Database) =>
+    ["orders", "outcomes", "messages", "project_todos", "decisions"].map((t) => (db.query(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n);
+  const rowsBefore = before(v16);
+  v16.close();
+
+  const db = new Database(path);
+  const r = migrate(db, { path });
+  expect(r.from).toBe(16);
+  expect(r.to).toBe(17);
+  expect(r.backup).toBe(`${path}.bak-v16`);
+  expect(existsSync(`${path}.bak-v16`)).toBe(true);
+  expect(before(db)).toEqual(rowsBefore);
+  // The feed starts empty: the history backfill reads the existing rows, the migration copies none.
+  expect(db.query(`SELECT count(*) AS n FROM history_feed`).get()).toEqual({ n: 0 });
+  const cols = (db.query(`PRAGMA table_info(history_feed)`).all() as Array<{ name: string; notnull: number; pk: number }>).map((c) => [c.name, c.notnull, c.pk]);
+  expect(cols).toEqual([["id", 0, 1], ["tbl", 1, 0], ["key", 1, 0], ["op", 1, 0], ["at", 1, 0]]);
+  const triggers = (db.query(`SELECT tbl_name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'history_feed_%'`).all() as Array<{ tbl_name: string }>).map((t) => t.tbl_name);
+  expect(new Set(triggers)).toEqual(new Set(["orders", "outcomes", "project_todos", "plans", "attention_items", "decisions", "messages"]));
+  expect(triggers.length).toBe(17);
+  db.close();
+
+  // Reopening runs nothing again; the backup is not rewritten; writes now feed.
+  const again = new Database(path);
+  expect(migrate(again, { path })).toEqual({ from: 17, to: 17, backup: undefined });
+  again.close();
+  const led = openLedger(path);
+  led.recordOrder({ id: "o2", source: "neo", folder: "/f", task: "t", chatId: -2, createdAt: 3 });
+  expect(led.historyFeed(0, 10).map((f) => [f.tbl, f.key, f.op])).toEqual([["orders", "o2", "u"]]);
 });

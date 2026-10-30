@@ -13,7 +13,7 @@ import type { Cause } from "./ledger";
 /** The title of an ingress brief's thread — fixed, so no customer text reaches the operator's thread list. */
 export const INGRESS_TITLE = "ingress brief";
 
-/** Reserved chat id for company runs driven by a customer brief (defined beside SUB_CHAT in dispatch.ts). */
+/** Reserved chat id for company runs driven by a customer brief (defined in chats.ts, re-exported by dispatch.ts). */
 export { CUSTOMER_CHAT } from "./dispatch";
 
 /** Customer-path trust: a dispatch triggered by a customer brief must NEVER auto-approve risky

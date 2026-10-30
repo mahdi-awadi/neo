@@ -13,6 +13,7 @@ import type { Priority } from "./priority";
 import { decisionText, type SettleFacts } from "./decision-settle";
 import { faults } from "./fault";
 import { reviewedPath } from "./plan-review";
+import { CUSTOMER_CHAT } from "./chats";
 
 /** Generous cap on persisted reply-routes — the ledger is the source of truth, so this only bounds
  *  ancient rows the operator will never reply to. One tiny row per sent worker message. */
@@ -320,6 +321,84 @@ export type PlanGate = "approval" | "info";
 /** What `upsertPlan` takes: a row without its id (a new row gets one) and timestamps default to now. */
 export type PlanDraft = Omit<PlanRow, "id" | "createdAt" | "updatedAt" | "version"> & { id?: number; createdAt?: number; updatedAt?: number; version?: number };
 
+/** The most rows one history read returns (ADR-0066): the indexer's batches stay under it. */
+export const HISTORY_PAGE_MAX = 1000;
+
+/** An order as the task history reads it (ADR-0066): what its source and its firewall verdict need. */
+export interface HistoryOrderRow {
+  id: string;
+  source: string;
+  folder: string;
+  task: string;
+  chatId: number;
+  createdAt: number;
+  threadId?: number;
+  causeMsgId?: number;
+  parentOrderId?: string;
+  /** The newest todo that ran this order: an order with a todo is indexed as that todo. */
+  todoId?: number;
+}
+
+export interface HistoryOutcomeRow {
+  orderId: string;
+  status: string;
+  summary: string;
+  at: number;
+}
+
+/** The ledger tables the task history reads, and the row each gives. `threadId` is the raw column (a
+ *  `cause` needs both of its parts). Attention items are only the `note`, `github` and `git` ones;
+ *  messages are only operator lines and digests — the rows the change feed watches. */
+export interface HistoryRowMap {
+  orders: HistoryOrderRow;
+  outcomes: HistoryOutcomeRow;
+  project_todos: TodoRow & { threadId?: number };
+  plans: PlanRow;
+  attention_items: AttentionRow;
+  decisions: DecisionRow & { threadId?: number };
+  messages: MessageRow;
+}
+export type HistoryTable = keyof HistoryRowMap;
+
+/** One change-feed row (ledger v17): `u` = inserted or updated, `d` = deleted. `key` is the row's
+ *  primary key as text. */
+export interface HistoryFeedRow {
+  id: number;
+  tbl: HistoryTable;
+  key: string;
+  op: "u" | "d";
+  at: number;
+}
+
+/** One order on a lineage chain, with the origin of its thread (when it has one that exists). */
+export interface LineageNode {
+  id: string;
+  chatId: number;
+  source: string;
+  threadId?: number;
+  threadOrigin?: ThreadOrigin;
+  parentOrderId?: string;
+}
+
+/** An order and its ancestors, itself first. `missing`: the first id on the chain with no order row.
+ *  `tooDeep`: the chain goes on past `maxDepth` ancestors (or loops). `complete` = neither. The firewall
+ *  decides on these facts; the ledger only reads them. */
+export interface OrderLineage {
+  orderId: string;
+  chain: LineageNode[];
+  complete: boolean;
+  missing?: string;
+  tooDeep: boolean;
+}
+
+/** The filters of a worker-line search; `since`/`until` bound the line's time (ms, inclusive). */
+export interface WorkerLineFilter {
+  project?: string;
+  since?: number;
+  until?: number;
+  limit: number;
+}
+
 export interface Ledger {
   /** `cause` links the order to the message that started it; `parentOrderId` is the company order
    *  that dispatched it (spec §3.3). Both optional: an order without them stores NULL. */
@@ -489,7 +568,28 @@ export interface Ledger {
    *  are quoted (never a syntax error); any failure is an empty list. */
   searchMessages(q: string, f: { project?: string; before?: number; limit: number }): SearchHit[];
   /** TEST-ONLY seam: the EXPLAIN QUERY PLAN text of a named hot query (spec §11.11). */
-  _explain(query: "messagesInThread" | "threadsByProject" | "threadsByState" | "threadsRecent"): string;
+  _explain(query: "messagesInThread" | "threadsByProject" | "threadsByState" | "threadsRecent" | "historyFeed"): string;
+  /** Task history (ADR-0066): the change-feed rows after `afterId`, in id order, at most `limit`
+   *  (clamped to 1..HISTORY_PAGE_MAX). */
+  historyFeed(afterId: number, limit: number): HistoryFeedRow[];
+  /** The oldest feed id still kept (none when the feed is empty) and the newest id ever written (0 when
+   *  none), so a reader whose cursor is behind `oldest - 1` knows rows were pruned before it read them. */
+  historyFeedBounds(): { oldest?: number; newest: number };
+  /** Keep the newest `keep` feed rows; returns how many were deleted. A `keep` that is not a
+   *  non-negative integer deletes nothing. */
+  pruneHistoryFeed(keep: number): number;
+  /** The source rows of `table` with these keys, in key order; a key with no row (or a row that is not a
+   *  history source) is absent. */
+  historyRows<T extends HistoryTable>(table: T, keys: string[]): Array<{ key: string; row: HistoryRowMap[T] }>;
+  /** The source rows of `table` after `afterKey` (none: from the start), in key order, at most `limit`
+   *  (clamped to 1..HISTORY_PAGE_MAX). An integer table with a non-integer `afterKey` gives none. */
+  historyScan<T extends HistoryTable>(table: T, afterKey: string | undefined, limit: number): Array<{ key: string; row: HistoryRowMap[T] }>;
+  /** Each order's chain of ancestors by `parent_order_id`, at most `maxDepth` levels up (one recursive
+   *  query). Every requested id has an entry. */
+  historyLineage(orderIds: string[], opts: { maxDepth: number }): Map<string, OrderLineage>;
+  /** FTS5 search over workers' streamed lines (`text` and `progress`), newest first: never a
+   *  `CUSTOMER_CHAT` line or a line on an `ingress` thread. A query FTS5 cannot read gives none. */
+  searchWorkerLines(q: string, f: WorkerLineFilter): SearchHit[];
   /** The full transcript for a chat, oldest-first; `limit` keeps only the most recent N. */
   conversation(chatId: number, limit?: number): ConversationMessage[];
   /** Loop scheduler state — last fire time + explicit enable override (implements LoopStateStore). */
@@ -923,6 +1023,8 @@ export function openLedger(
       ).run(orderId, status, summary, at);
     },
     endInterruptedOrders(prevBootAt) {
+      // Count the RETURNING rows, not `.changes`: bun:sqlite's count includes the rows triggers write
+      // (the history feed, ADR-0066), so it would no longer be the number of outcomes.
       return db
         .query(
           `INSERT INTO outcomes (order_id, status, summary, at)
@@ -931,9 +1033,10 @@ export function openLedger(
            FROM orders o
            WHERE o.created_at < ?1
              AND NOT EXISTS (SELECT 1 FROM outcomes x WHERE x.order_id = o.id)
-             AND NOT EXISTS (SELECT 1 FROM events e WHERE e.order_id = o.id AND e.at >= ?1)`,
+             AND NOT EXISTS (SELECT 1 FROM events e WHERE e.order_id = o.id AND e.at >= ?1)
+           RETURNING order_id`,
         )
-        .run(prevBootAt).changes;
+        .all(prevBootAt).length;
     },
     getOutcome(orderId) {
       const row = db
@@ -1528,6 +1631,9 @@ export function openLedger(
       }
     },
     _explain(query) {
+      if (query === "historyFeed") {
+        return (db.query(`EXPLAIN QUERY PLAN ${SQL_HISTORY_FEED}`).all(0, 1) as Array<{ detail: string }>).map((r) => r.detail).join("\n");
+      }
       if (query !== "messagesInThread") {
         const f: ThreadFilter = query === "threadsByProject" ? { project: "p" } : query === "threadsByState" ? { state: "open" } : {};
         const q = threadListQuery(f, undefined, 10);
@@ -1536,6 +1642,123 @@ export function openLedger(
       const sql = { messagesInThread: SQL_THREAD_PAGE_BEFORE }[query];
       const rows = db.query(`EXPLAIN QUERY PLAN ${sql}`).all(0, 0, 1) as Array<{ detail: string }>;
       return rows.map((r) => r.detail).join("\n");
+    },
+    historyFeed(afterId, limit) {
+      const rows = db.query(SQL_HISTORY_FEED).all(afterId, clampHistoryPage(limit)) as Array<{ id: number; tbl: string; key: string; op: string; at: number }>;
+      return rows.map((r) => ({ id: r.id, tbl: r.tbl as HistoryTable, key: String(r.key), op: r.op === "d" ? "d" : "u", at: r.at }));
+    },
+    historyFeedBounds() {
+      const r = db.query(`SELECT min(id) AS oldest FROM history_feed`).get() as { oldest: number | null };
+      // AUTOINCREMENT keeps the newest id ever given in sqlite_sequence, also after a prune empties the table.
+      const seq = db.query(`SELECT seq FROM sqlite_sequence WHERE name = 'history_feed'`).get() as { seq: number } | null;
+      return { ...(r.oldest !== null ? { oldest: r.oldest } : {}), newest: seq?.seq ?? 0 };
+    },
+    pruneHistoryFeed(keep) {
+      if (!Number.isInteger(keep) || keep < 0) return 0;
+      return db.query(`DELETE FROM history_feed WHERE id <= (SELECT id FROM history_feed ORDER BY id DESC LIMIT 1 OFFSET ?)`).run(keep).changes;
+    },
+    historyRows(table, keys) {
+      const spec = HISTORY_SOURCES[table];
+      const typed = spec.intKey ? keys.filter((k) => /^\d+$/.test(k)).map(Number) : keys;
+      if (typed.length === 0) return [];
+      const rows = db
+        .query(`${spec.select} WHERE ${spec.where ? `(${spec.where}) AND ` : ""}${spec.key} IN (SELECT value FROM json_each(?)) ORDER BY ${spec.key}`)
+        .all(JSON.stringify(typed)) as unknown[];
+      return rows.map((r) => spec.map(r)) as Array<{ key: string; row: HistoryRowMap[typeof table] }>;
+    },
+    historyScan(table, afterKey, limit) {
+      const spec = HISTORY_SOURCES[table];
+      const where = spec.where ? [`(${spec.where})`] : [];
+      const params: Array<string | number> = [];
+      if (afterKey !== undefined) {
+        if (spec.intKey && !/^-?\d+$/.test(afterKey)) return [];
+        where.push(`${spec.key} > ?`);
+        params.push(spec.intKey ? Number(afterKey) : afterKey);
+      }
+      params.push(clampHistoryPage(limit));
+      const rows = db
+        .query(`${spec.select} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${spec.key} LIMIT ?`)
+        .all(...params) as unknown[];
+      return rows.map((r) => spec.map(r)) as Array<{ key: string; row: HistoryRowMap[typeof table] }>;
+    },
+    historyLineage(orderIds, opts) {
+      const out = new Map<string, OrderLineage>();
+      const ids = [...new Set(orderIds)];
+      if (ids.length === 0) return out;
+      const maxDepth = Number.isFinite(opts.maxDepth) ? Math.max(0, Math.floor(opts.maxDepth)) : 0;
+      const rows = db
+        .query(
+          `WITH RECURSIVE chain(start, id, depth) AS (
+             SELECT value, value, 0 FROM json_each(?1)
+             UNION ALL
+             SELECT c.start, o.parent_order_id, c.depth + 1 FROM chain c JOIN orders o ON o.id = c.id
+             WHERE o.parent_order_id IS NOT NULL AND c.depth < ?2
+           )
+           SELECT c.start AS start, c.id AS id, o.id IS NOT NULL AS found, o.chat_id AS chat_id, o.source AS source,
+                  o.thread_id AS thread_id, o.parent_order_id AS parent_order_id, t.origin AS origin
+           FROM chain c LEFT JOIN orders o ON o.id = c.id LEFT JOIN threads t ON t.id = o.thread_id
+           ORDER BY c.start, c.depth`,
+        )
+        .all(JSON.stringify(ids), maxDepth) as Array<{
+        start: string; id: string; found: number; chat_id: number | null; source: string | null;
+        thread_id: number | null; parent_order_id: string | null; origin: string | null;
+      }>;
+      for (const id of ids) out.set(id, { orderId: id, chain: [], complete: false, tooDeep: false });
+      for (const r of rows) {
+        const l = out.get(r.start);
+        if (!l || l.missing !== undefined) continue; // the chain already broke above this node
+        if (!r.found) {
+          l.missing = r.id;
+          continue;
+        }
+        l.chain.push({
+          id: r.id, chatId: r.chat_id!, source: r.source!,
+          ...(r.thread_id !== null ? { threadId: r.thread_id } : {}),
+          ...(r.origin !== null ? { threadOrigin: r.origin as ThreadOrigin } : {}),
+          ...(r.parent_order_id !== null ? { parentOrderId: r.parent_order_id } : {}),
+        });
+      }
+      for (const l of out.values()) {
+        // The last node still has a parent: the chain went past maxDepth (or loops).
+        l.tooDeep = l.missing === undefined && l.chain.length > 0 && l.chain.at(-1)!.parentOrderId !== undefined;
+        if (l.chain.length === 0 && l.missing === undefined) l.missing = l.orderId;
+        l.complete = l.missing === undefined && !l.tooDeep;
+      }
+      return out;
+    },
+    searchWorkerLines(q, f) {
+      const where = [
+        "messages_fts MATCH ?",
+        "m.role = 'assistant'",
+        "m.kind IN ('text', 'progress')",
+        "m.chat_id <> ?",
+        "NOT EXISTS (SELECT 1 FROM threads t WHERE t.id = m.thread_id AND t.origin = 'ingress')",
+      ];
+      const params: Array<string | number> = [SNIPPET_OPEN, SNIPPET_CLOSE, safeFtsQuery(q), CUSTOMER_CHAT];
+      if (f.project !== undefined) (where.push("m.project = ?"), params.push(f.project));
+      if (f.since !== undefined) (where.push("m.at >= ?"), params.push(f.since));
+      if (f.until !== undefined) (where.push("m.at <= ?"), params.push(f.until));
+      params.push(clampPage(f.limit));
+      try {
+        const rows = db
+          .query(
+            `SELECT m.id, m.thread_id, m.project, m.at, m.role, m.kind, snippet(messages_fts, 0, ?, ?, '…', 12) AS snippet
+             FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
+             WHERE ${where.join(" AND ")} ORDER BY messages_fts.rowid DESC LIMIT ?`,
+          )
+          .all(...params) as Array<{ id: number; thread_id: number | null; project: string | null; at: number; role: string; kind: string; snippet: string }>;
+        return rows.map((r) => ({
+          id: r.id,
+          ...(r.thread_id !== null ? { threadId: r.thread_id } : {}),
+          ...(r.project !== null ? { project: r.project } : {}),
+          at: r.at,
+          role: r.role,
+          kind: r.kind as MessageKind,
+          snippet: r.snippet,
+        }));
+      } catch {
+        return [];
+      }
     },
     conversation(chatId, limit = 500) {
       // Pull the most recent `limit` (rowid breaks ties when many share one ms), then re-sort
@@ -2111,6 +2334,99 @@ interface SettleDbRow {
   spec: string | null;
 }
 const MESSAGE_COLS = `SELECT id, chat_id, role, content, at, thread_id, cause_id, surface, channel_msg_id, project, folder, order_id, kind, priority FROM messages`;
+
+/** The change-feed page read (ADR-0066); `_explain` checks it walks the primary key. */
+const SQL_HISTORY_FEED = `SELECT id, tbl, key, op, at FROM history_feed WHERE id > ? ORDER BY id LIMIT ?`;
+
+/** A history page size, clamped to 1..HISTORY_PAGE_MAX (a bad value is one full page). */
+function clampHistoryPage(limit: number): number {
+  return Number.isFinite(limit) ? Math.max(1, Math.min(HISTORY_PAGE_MAX, Math.floor(limit))) : HISTORY_PAGE_MAX;
+}
+
+/** How each history table is read (ADR-0066): its SELECT, its key column, and the source condition —
+ *  the same rows the v17 feed triggers watch (attention items of `note`/`github`/`git`; operator lines
+ *  that are not engine-surface, and digests). `map` gives the key as text, as the feed stores it. */
+const HISTORY_SOURCES: { [T in HistoryTable]: { select: string; key: string; intKey: boolean; where?: string; map(r: unknown): { key: string; row: HistoryRowMap[T] } } } = {
+  orders: {
+    select: `SELECT o.id, o.source, o.folder, o.task, o.chat_id, o.created_at, o.thread_id, o.cause_msg_id, o.parent_order_id,
+               (SELECT t.id FROM project_todos t WHERE t.order_id = o.id ORDER BY t.id DESC LIMIT 1) AS todo_id
+             FROM orders o`,
+    key: "o.id",
+    intKey: false,
+    map(raw) {
+      const r = raw as {
+        id: string; source: string; folder: string; task: string; chat_id: number; created_at: number;
+        thread_id: number | null; cause_msg_id: number | null; parent_order_id: string | null; todo_id: number | null;
+      };
+      return {
+        key: r.id,
+        row: {
+          id: r.id, source: r.source, folder: r.folder, task: r.task, chatId: r.chat_id, createdAt: r.created_at,
+          ...(r.thread_id !== null ? { threadId: r.thread_id } : {}),
+          ...(r.cause_msg_id !== null ? { causeMsgId: r.cause_msg_id } : {}),
+          ...(r.parent_order_id !== null ? { parentOrderId: r.parent_order_id } : {}),
+          ...(r.todo_id !== null ? { todoId: r.todo_id } : {}),
+        },
+      };
+    },
+  },
+  outcomes: {
+    select: `SELECT order_id, status, summary, at FROM outcomes`,
+    key: "order_id",
+    intKey: false,
+    map(raw) {
+      const r = raw as { order_id: string; status: string; summary: string | null; at: number };
+      return { key: r.order_id, row: { orderId: r.order_id, status: r.status, summary: r.summary ?? "", at: r.at } };
+    },
+  },
+  project_todos: {
+    select: `SELECT * FROM project_todos`,
+    key: "id",
+    intKey: true,
+    map(raw) {
+      const r = raw as TodoDbRow;
+      return { key: String(r.id), row: { ...mapTodoRow(r), ...(r.thread_id !== null ? { threadId: r.thread_id } : {}) } };
+    },
+  },
+  plans: {
+    select: `SELECT * FROM plans`,
+    key: "id",
+    intKey: true,
+    map(raw) {
+      const r = raw as PlanDbRow;
+      return { key: String(r.id), row: mapPlanRow(r) };
+    },
+  },
+  attention_items: {
+    select: `SELECT * FROM attention_items`,
+    key: "id",
+    intKey: true,
+    where: `source IN ('note', 'github', 'git')`,
+    map(raw) {
+      const r = raw as AttentionDbRow;
+      return { key: String(r.id), row: mapAttentionRow(r) };
+    },
+  },
+  decisions: {
+    select: `SELECT * FROM decisions`,
+    key: "id",
+    intKey: false,
+    map(raw) {
+      const r = raw as DecisionDbRow;
+      return { key: r.id, row: { ...mapDecisionRow(r), ...(r.thread_id !== null ? { threadId: r.thread_id } : {}) } };
+    },
+  },
+  messages: {
+    select: MESSAGE_COLS,
+    key: "id",
+    intKey: true,
+    where: `(role = 'user' AND coalesce(surface, '') <> 'engine') OR kind = 'digest'`,
+    map(raw) {
+      const r = raw as MessageDbRow;
+      return { key: String(r.id), row: mapMessageRow(r) };
+    },
+  },
+};
 interface PlanDbRow {
   id: number; project: string; folder: string; path: string; title: string; sha256: string; status: string;
   steps_total: number; steps_done: number; thread_id: number | null; order_id: string | null;

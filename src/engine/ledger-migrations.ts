@@ -444,6 +444,65 @@ function pins(db: Database): void {
   db.run(`CREATE TABLE pins (ref TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('pinned', 'unpinned')), at INTEGER NOT NULL)`);
 }
 
+/** Version 17 — the task history's change feed (ADR-0066 Decision 4): one row for each insert, update and
+ *  delete of a history source row, read in id order by the history indexer from its own cursor (it never
+ *  writes here). Each trigger body is one INSERT; every condition is in its WHEN clause, so a write that is
+ *  not a source (a worker's streamed line, an engine attention item, a `last_seen` or `position` bump, an
+ *  unchanged rewrite) runs no statement. The feed has no constraint a valid write can break: the text keys
+ *  are guarded `IS NOT NULL` in WHEN. The table starts empty (the history backfill reads the existing rows).
+ *  Frozen once shipped. */
+function historyFeed(db: Database): void {
+  db.run(
+    `CREATE TABLE history_feed (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       tbl TEXT NOT NULL, key TEXT NOT NULL,
+       op TEXT NOT NULL,
+       at INTEGER NOT NULL
+     )`,
+  );
+  const now = `CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER)`;
+  /** `cond(row)` is the source condition on `new` or `old`; `changed` the watched columns of an update. */
+  const feed = (spec: {
+    name: string; table: string; key: string; update: string[];
+    del?: boolean; cond?: (row: "new" | "old") => string; textKey?: boolean;
+  }): void => {
+    const when = (row: "new" | "old", extra?: string): string => {
+      const parts = [
+        ...(spec.cond ? [spec.cond(row)] : []),
+        ...(spec.textKey ? [`${row}.${spec.key} IS NOT NULL`] : []),
+        ...(extra ? [extra] : []),
+      ];
+      if (parts.length === 0) return "";
+      return `WHEN ${parts.length === 1 ? parts[0] : parts.map((p) => `(${p})`).join(" AND ")}`;
+    };
+    const insert = (row: "new" | "old", op: "u" | "d"): string =>
+      `INSERT INTO history_feed (tbl, key, op, at) VALUES ('${spec.table}', ${row}.${spec.key}, '${op}', ${now});`;
+    db.run(`CREATE TRIGGER history_feed_${spec.name}_ai AFTER INSERT ON ${spec.table} ${when("new")} BEGIN ${insert("new", "u")} END`);
+    const changed = spec.update.map((c) => `old.${c} IS NOT new.${c}`).join(" OR ");
+    db.run(
+      `CREATE TRIGGER history_feed_${spec.name}_au AFTER UPDATE OF ${spec.update.join(", ")} ON ${spec.table}
+       ${when("new", changed)} BEGIN ${insert("new", "u")} END`,
+    );
+    if (spec.del) db.run(`CREATE TRIGGER history_feed_${spec.name}_ad AFTER DELETE ON ${spec.table} ${when("old")} BEGIN ${insert("old", "d")} END`);
+  };
+  feed({ name: "orders", table: "orders", key: "id", textKey: true, update: ["task", "folder", "chat_id", "source", "thread_id", "parent_order_id"] });
+  // `INSERT OR REPLACE` deletes and inserts: its INSERT trigger fires (DELETE triggers do not, without recursive triggers).
+  feed({ name: "outcomes", table: "outcomes", key: "order_id", textKey: true, update: ["summary", "status"] });
+  feed({ name: "todos", table: "project_todos", key: "id", del: true, update: ["brief", "summary", "result", "status", "order_id", "thread_id", "project"] });
+  feed({ name: "plans", table: "plans", key: "id", update: ["title", "sha256", "status", "path", "thread_id", "order_id"] });
+  feed({
+    name: "attention", table: "attention_items", key: "id", del: true,
+    update: ["title", "detail", "facts", "resolution", "answer", "resolved_at", "dismissed"],
+    cond: (row) => `${row}.source IN ('note', 'github', 'git')`,
+  });
+  feed({ name: "decisions", table: "decisions", key: "id", textKey: true, del: true, update: ["question", "spec", "options", "answer", "status", "thread_id", "order_id"] });
+  // The busiest table: only operator lines and digests feed. A worker's text or progress line fails WHEN.
+  feed({
+    name: "messages", table: "messages", key: "id", update: ["thread_id"],
+    cond: (row) => `(${row}.role = 'user' AND coalesce(${row}.surface, '') <> 'engine') OR ${row}.kind = 'digest'`,
+  });
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -461,6 +520,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 14, name: "todo lanes", up: todoLanes },
   { version: 15, name: "attention facts and todo summaries", up: explainColumns },
   { version: 16, name: "pins", up: pins },
+  { version: 17, name: "history change feed", up: historyFeed },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good

@@ -86,7 +86,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     `migrate(db, { path, migrations })` (reuse, with its `.bak-v<N>` copy).
   - Done when: these tests pass.
 
-- [ ] **4. Ledger change feed (migration v17) and the history reads**
+- [x] **4. Ledger change feed (migration v17) and the history reads**
   - Create: `src/engine/chats.ts` (move `SUB_CHAT`, `CUSTOMER_CHAT` and `SIDE_CHAT` here, and let
     `dispatch.ts` re-export them), `tests/ledger-history-feed.test.ts`.
   - Modify: `src/engine/ledger-migrations.ts` (v17), `src/engine/ledger.ts` (the new methods and their row

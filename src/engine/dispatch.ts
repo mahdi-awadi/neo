@@ -95,20 +95,16 @@ import {
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
 import { FINISH_RULE, PLAN_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
+import { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT } from "./chats";
 
 /** Real backoff wait (tests inject opts.sleep instead). */
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 /** ADR-0060: the most a woken limit hold waits, so several held runs do not all re-send at once. */
 export const API_LIMIT_WAKE_JITTER_MS_DEFAULT = 30_000;
 
-/** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text
- *  routing (which always falls back to the default project). */
-export const SUB_CHAT = -2;
-/** Reserved chat id for company runs driven by a customer brief (never a real operator chat). */
-export const CUSTOMER_CHAT = -3;
-/** The pseudo-chat side-lane orders are recorded under (ADR-0057): never the folder's resume point,
- *  reload snapshot or consult fork, which all read SUB_CHAT. */
-export const SIDE_CHAT = -5;
+/** The reserved chat ids live in the leaf module `chats.ts` (ADR-0066), re-exported here for the callers
+ *  that already import them from dispatch. */
+export { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT };
 
 /** Function-scoped scratch workspaces (research, dev, marketing, …) for work with no project home. */
 export const DESKS_DIR = join(DEFAULT_PROJECT.folder, "desks");
