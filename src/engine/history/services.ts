@@ -7,6 +7,8 @@ import type { HistoryCfg } from "./defaults";
 export type MeaningOffReason =
   | "not_configured" | "config_refused" | "embedder_down" | "embedder_slow" | "embedder_refused"
   | "embedder_wrong_model" | "vectors_down" | "vectors_slow" | "vectors_refused" | "collection_missing"
+  /** The probe: the shared Qdrant rejects Neo's key itself (a rotated key's bad signature, or no access). */
+  | "vectors_key_rejected"
   /** A search only: the indexer has an embed request in flight, so the query is not queued behind it. */
   | "embedder_busy";
 
@@ -36,6 +38,8 @@ export function operatorStep(service: HistoryService, reason: MeaningOffReason, 
       return `the embedder runs another model or revision than ${e.model}: ${install} (it pins the model), or set history.embedder.model and revision to match`;
     case "vectors_refused":
       return `the shared Qdrant refused the key (ops may have rotated it): reload Neo to read the new key; if it still fails, ask ops for a key for ${v.collection}`;
+    case "vectors_key_rejected":
+      return `Neo's key was rejected by the shared Qdrant: ask ops to reissue ${v.keyEnv} for ${v.collection}; the daemon must reload to read it`;
     case "collection_missing":
       return `ask ops to create the collection ${v.collection} (${e.dims} dims, cosine) in the shared Qdrant`;
     case "embedder_busy":

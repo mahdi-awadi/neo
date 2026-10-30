@@ -127,7 +127,7 @@ interface Lane {
   indexesReady: boolean;
 }
 
-const OFF_REASONS = new Set<MeaningOffReason>(["not_configured", "config_refused", "embedder_refused", "embedder_wrong_model", "vectors_refused", "collection_missing"]);
+const OFF_REASONS = new Set<MeaningOffReason>(["not_configured", "config_refused", "embedder_refused", "embedder_wrong_model", "vectors_refused", "vectors_key_rejected", "collection_missing"]);
 const stateOf = (reason: MeaningOffReason): "down" | "off" => (OFF_REASONS.has(reason) ? "off" : "down");
 const yieldNow = (): Promise<void> => new Promise((r) => setImmediate(r));
 const keyOf = (ref: string): string => ref.slice(ref.indexOf(":") + 1);

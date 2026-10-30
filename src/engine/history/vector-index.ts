@@ -4,9 +4,12 @@
 // start with `neo_` or is not allowed, or the key is not a JWT whose `access` claim names only allowed
 // collections (the payload is decoded to read the claim — never verified, never printed). Points carry only
 // `id`, `vector` and the payload `{ project?, kind, at, m }`; anything else, a string over 64 characters or
-// a vector of the wrong length throws before the request. 401/403 → `vectors_refused` (on the collection
-// info: `collection_missing`), a timeout → `vectors_slow`, other failures → `vectors_down`. The key goes
-// only into the `api-key` header; results and errors carry reason codes and never the key.
+// a vector of the wrong length throws before the request. 401/403 → `vectors_refused`; on the collection
+// info a 404 → `collection_missing`, and a 401/403 asks the collection list which one it is: a list that
+// answers without the collection → `collection_missing`, a list that refuses the key too (a rotated key's
+// bad signature) or that names the collection → `vectors_key_rejected`. A timeout → `vectors_slow`, other
+// failures → `vectors_down`. The key goes only into the `api-key` header; results and errors carry reason
+// codes and never the key.
 import type { VectorsCfg } from "./defaults";
 import { isLoopbackUrl, isTimeout, type MeaningOffReason } from "./services";
 
@@ -177,12 +180,13 @@ export function openVectorIndex(
       ? "config_refused"
       : refusal(collection, cfg.allowedCollections, key);
   if (configError) return new NoVectorIndex(configError);
-  const base = `${url.replace(/\/+$/, "")}/collections/${encodeURIComponent(collection)}`;
+  const root = `${url.replace(/\/+$/, "")}/collections`;
+  const base = `${root}/${encodeURIComponent(collection)}`;
 
-  async function call(method: "GET" | "POST" | "PUT", path: string, body: unknown, timeoutMs: number, info = false): Promise<Reply> {
+  async function call(method: "GET" | "POST" | "PUT", path: string, body: unknown, timeoutMs: number, info = false, at = base): Promise<Reply> {
     let res: Response;
     try {
-      res = await doFetch(`${base}${path}`, {
+      res = await doFetch(`${at}${path}`, {
         method,
         headers: { "api-key": key, ...(body === undefined ? {} : { "content-type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -193,8 +197,7 @@ export function openVectorIndex(
       // The error text is never kept: a transport error may quote the request.
       return { ok: false, reason: isTimeout(e) ? "vectors_slow" : "vectors_down" };
     }
-    // A collection this key may not see answers 403, the same as one that does not exist.
-    if (res.status === 401 || res.status === 403) return { ok: false, reason: info ? "collection_missing" : "vectors_refused" };
+    if (res.status === 401 || res.status === 403) return { ok: false, reason: info ? await refusedInfo(timeoutMs) : "vectors_refused" };
     if (info && res.status === 404) return { ok: false, reason: "collection_missing" };
     if (!res.ok) return { ok: false, reason: "vectors_down" };
     try {
@@ -203,6 +206,15 @@ export function openVectorIndex(
       return { ok: false, reason: isTimeout(e) ? "vectors_slow" : "vectors_down" };
     }
   }
+  /** The collection info refused the key: a rejected key is refused by the list too (or the list names the
+   *  collection the key may not read); a list that answers without the collection means it does not exist. */
+  async function refusedInfo(timeoutMs: number): Promise<MeaningOffReason> {
+    const list = await call("GET", "", undefined, timeoutMs, false, root);
+    if (!list.ok) return list.reason === "vectors_refused" ? "vectors_key_rejected" : list.reason;
+    const names = (list.result as { collections?: Array<{ name?: unknown }> } | undefined)?.collections;
+    if (!Array.isArray(names)) return "vectors_down";
+    return names.some((c) => c?.name === collection) ? "vectors_key_rejected" : "collection_missing";
+  }
   const fail = <T>(r: { reason: MeaningOffReason }): VectorResult<T> => ({ ok: false, reason: r.reason });
 
   return {
@@ -210,7 +222,7 @@ export function openVectorIndex(
     offReason: () => undefined,
     async probe(tag) {
       const info = await call("GET", "", undefined, cfg.timeoutMs, true);
-      if (!info.ok) return { state: info.reason === "collection_missing" ? "off" : "down", reason: info.reason };
+      if (!info.ok) return { state: info.reason === "collection_missing" || info.reason === "vectors_key_rejected" ? "off" : "down", reason: info.reason };
       const size = (info.result as { config?: { params?: { vectors?: { size?: unknown } } } } | undefined)?.config?.params?.vectors?.size;
       if (size !== deps.dims) return { state: "off", reason: "config_refused" };
       const count = await call("POST", "/points/count", { filter: tagFilter(tag), exact: true }, cfg.timeoutMs);

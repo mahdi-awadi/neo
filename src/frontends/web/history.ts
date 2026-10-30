@@ -58,7 +58,7 @@ const KNOWN_ERRORS = new Set<string>(ERROR_CODES);
 /** The meaning-off reasons the catalogue names (`history.reason.<code>`). */
 export const OFF_REASONS = [
   "not_configured", "config_refused", "embedder_down", "embedder_slow", "embedder_refused", "embedder_wrong_model",
-  "vectors_down", "vectors_slow", "vectors_refused", "collection_missing", "embedder_busy",
+  "vectors_down", "vectors_slow", "vectors_refused", "vectors_key_rejected", "collection_missing", "embedder_busy",
 ] as const;
 const KNOWN_REASONS = new Set<string>(OFF_REASONS);
 export const VIA = ["exact", "meaning", "words", "lines"] as const;

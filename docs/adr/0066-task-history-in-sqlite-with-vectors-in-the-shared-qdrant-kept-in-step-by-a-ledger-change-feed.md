@@ -426,6 +426,9 @@ Two reviews of `feat/history-search` and the live verify found these; each has a
   embed request in flight, a search answers at once without meaning search (`off: embedder_busy`).
 - **Console in Arabic.** A hit date is digits only (`YYYY-MM-DD`) in its LTR isolate; the forget dialog
   isolates the title and the ref.
+- **Verify fix: a rejected key is not a missing collection.** A 401/403 on the collection info asks the
+  collection list: a list that refuses the key too, or names the collection, gives `vectors_key_rejected`
+  ("ask ops to reissue the key, then reload"); a 404, or a list without it, gives `collection_missing`.
 
 ### Measured (filled by the verify step)
 

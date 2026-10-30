@@ -1,8 +1,9 @@
 // A fake Qdrant REST server for the task history tests (ADR-0066): `Bun.serve` on 127.0.0.1, port 0. It
 // keeps points in memory per collection, evaluates the filters Neo sends (`match.value`, `match.any`,
 // `range`), answers count, upsert, delete (ids or filter), query (cosine), scroll and payload-index
-// requests, checks the `api-key` header, and records every request. A path can be told to answer a status
-// or to hang.
+// requests and the collection list, checks the `api-key` header (a wrong key answers 403 with Qdrant's JWT
+// error, a missing collection 404, as Qdrant does for a key scoped to it), and records every request. A
+// path can be told to answer a status or to hang.
 
 export interface FakePoint {
   id: string;
@@ -15,7 +16,7 @@ export interface FakeQdrant {
   readonly port: number;
   /** The collections that exist, with their vector size. */
   collections: Map<string, { size: number; points: Map<string, FakePoint> }>;
-  /** `<METHOD> <path suffix>` (e.g. `GET info`, `POST count`, `PUT points`) → a status, or `hang`. */
+  /** `<METHOD> <path suffix>` (e.g. `GET info`, `GET list`, `POST count`, `PUT points`) → a status, or `hang`. */
   fail: Map<string, number | "hang">;
   requests: Array<{ method: string; path: string; apiKey: string | null; body?: unknown }>;
   indexes: Array<{ collection: string; field_name: string; field_schema: unknown }>;
@@ -66,7 +67,13 @@ export function startFakeQdrant(opts: { key: string; collections?: Record<string
       const url = new URL(req.url);
       const body = req.method === "GET" ? undefined : await req.json().catch(() => undefined);
       fake.requests.push({ method: req.method, path: url.pathname + url.search, apiKey: req.headers.get("api-key"), ...(body !== undefined ? { body } : {}) });
-      if (req.headers.get("api-key") !== opts.key) return new Response("forbidden", { status: 403 });
+      if (req.headers.get("api-key") !== opts.key) return Response.json({ status: { error: "Forbidden: Invalid JWT: InvalidSignature" }, time: 0 }, { status: 403 });
+      if (url.pathname === "/collections" && req.method === "GET") {
+        const forced = fake.fail.get("GET list");
+        if (forced === "hang") return new Promise<Response>((done) => hangs.push(() => done(new Response("gone", { status: 503 }))));
+        if (forced !== undefined) return new Response("forced", { status: forced });
+        return ok({ collections: [...fake.collections.keys()].map((name) => ({ name })) });
+      }
       const m = /^\/collections\/([^/]+)(?:\/(.*))?$/.exec(url.pathname);
       if (!m) return new Response("not found", { status: 404 });
       const name = decodeURIComponent(m[1]!);
@@ -76,7 +83,7 @@ export function startFakeQdrant(opts: { key: string; collections?: Record<string
       if (forced === "hang") return new Promise<Response>((done) => hangs.push(() => done(new Response("gone", { status: 503 }))));
       if (forced !== undefined) return new Response("forced", { status: forced });
       const col = fake.collections.get(name);
-      if (!col) return new Response("forbidden", { status: 403 }); // a JWT for another name answers 403
+      if (!col) return Response.json({ status: { error: `Not found: Collection \`${name}\` doesn't exist!` }, time: 0 }, { status: 404 });
       const b = (body ?? {}) as Record<string, unknown>;
       if (op === "info" && req.method === "GET") {
         return ok({ status: "green", points_count: col.points.size, config: { params: { vectors: { size: col.size, distance: "Cosine" } } } });

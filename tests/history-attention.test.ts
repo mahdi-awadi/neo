@@ -53,6 +53,7 @@ const OFF: Array<[keyof ReturnType<typeof services>, MeaningOffReason, RegExp]> 
   ["vectors", "config_refused", /neo_history/],
   ["vectors", "vectors_refused", /reload Neo/],
   ["vectors", "collection_missing", /neo_history \(1024 dims, cosine\)/],
+  ["vectors", "vectors_key_rejected", /reissue SHARED_QDRANT_API_KEY for neo_history.*reload/],
 ];
 function services() {
   return { embedder: UP, vectors: UP };

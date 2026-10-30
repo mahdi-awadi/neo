@@ -95,15 +95,39 @@ describe("probe", () => {
     expect(fake.requests.find((r) => r.method === "GET")!.path).toBe("/collections/neo_history");
   });
 
-  test("401 or 403 on the info gives collection_missing; on other calls vectors_refused; a timeout vectors_slow", async () => {
+  test("a missing collection (404, or a 401/403 info while the list lacks it) gives collection_missing", async () => {
     const { fake, cfg, env } = setup({ timeoutMs: 150, queryTimeoutMs: 150 });
     const v = open(cfg, env);
     fake.collections.delete("neo_history");
     expect(await v.probe(TAG)).toEqual({ state: "off", reason: "collection_missing" });
-    fake.collections.set("neo_history", { size: 4, points: new Map() });
-    fake.fail.set("GET info", 401);
-    expect(await v.probe(TAG)).toEqual({ state: "off", reason: "collection_missing" });
-    fake.fail.clear();
+    for (const status of [401, 403]) {
+      fake.fail.set("GET info", status);
+      expect(await v.probe(TAG)).toEqual({ state: "off", reason: "collection_missing" });
+    }
+    expect(fake.requests.some((r) => r.method === "GET" && r.path === "/collections")).toBe(true);
+  });
+
+  test("a rejected key (a bad signature, a 401/403 the list repeats, or no access to a listed collection) gives vectors_key_rejected", async () => {
+    const { fake, cfg, env } = setup({ timeoutMs: 150, queryTimeoutMs: 150 });
+    // A rotated key: the same claims, another signature. Qdrant answers 403 InvalidSignature to every call.
+    const rotated = `${KEY.slice(0, KEY.lastIndexOf("."))}.OTHERsig${"y".repeat(20)}`;
+    expect(await open(cfg, { ...env, SHARED_QDRANT_API_KEY: rotated }).probe(TAG)).toEqual({ state: "off", reason: "vectors_key_rejected" });
+    const v = open(cfg, env);
+    for (const status of [401, 403]) {
+      fake.fail.set("GET info", status);
+      fake.fail.set("GET list", status);
+      expect(await v.probe(TAG)).toEqual({ state: "off", reason: "vectors_key_rejected" });
+    }
+    fake.fail.delete("GET list");
+    fake.fail.set("GET info", 403); // the list names the collection, yet the key may not read it
+    expect(await v.probe(TAG)).toEqual({ state: "off", reason: "vectors_key_rejected" });
+    fake.fail.set("GET list", "hang");
+    expect(await v.probe(TAG)).toEqual({ state: "down", reason: "vectors_slow" });
+  });
+
+  test("401 or 403 on other calls gives vectors_refused; a timeout vectors_slow", async () => {
+    const { fake, cfg, env } = setup({ timeoutMs: 150, queryTimeoutMs: 150 });
+    const v = open(cfg, env);
     fake.fail.set("POST count", 403);
     expect(await v.probe(TAG)).toEqual({ state: "off", reason: "vectors_refused" });
     fake.fail.clear();

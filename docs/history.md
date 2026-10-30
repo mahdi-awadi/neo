@@ -118,7 +118,8 @@ Each reply states the meaning-search mode:
 | `embedder_refused` | off | The embedder refused the key. Run `install.ts` again (the key in `.env` and the service must match). |
 | `embedder_wrong_model` | off | The service runs another model or revision than the config names. Run `install.ts` (it pins the model), or make `history.embedder.model` and `revision` match. |
 | `vectors_refused` | off | Qdrant refused the key. Ops may have rotated it. Reload Neo to read the new key. If it still fails, ask ops. |
-| `collection_missing` | off | Ask ops to create `neo_history` (1,024 dims, cosine). |
+| `vectors_key_rejected` | off | The probe found that Qdrant rejects Neo's key itself (a bad signature after a rotation, or no access to `neo_history`). Ask ops to reissue `SHARED_QDRANT_API_KEY` for `neo_history`. The daemon must reload to read it. |
+| `collection_missing` | off | Qdrant accepts the key, but `neo_history` does not exist (a 404, or a collection list without it). Ask ops to create `neo_history` (1,024 dims, cosine). |
 | `embedder_down`, `embedder_slow` | down | Check `docker compose -p neo-embedder ps` and `docker logs neo-embedder`. `install.ts` starts it again. |
 | `vectors_down`, `vectors_slow` | down | Check the shared Qdrant (an ops service) and the URL in `SHARED_QDRANT_URL`. |
 | `embedder_busy` | search only | Nothing. The indexer had an embed request in flight, so the search did not wait behind it: it gave the word, id and line matches at once. Search again later for meaning matches (after a backfill, this goes away). |
@@ -230,7 +231,8 @@ mixes two models.
 ## Key rotation
 
 The engine reads `SHARED_QDRANT_API_KEY` and `HISTORY_EMBEDDER_KEY` once, at start. When ops rotates the
-Qdrant key, meaning search goes off (`vectors_refused`) until the daemon reloads. Keyword search
+Qdrant key, meaning search goes off (`vectors_key_rejected` from the probe, `vectors_refused` from any
+other call) until the daemon reloads. Keyword search
 continues. The reload is your decision.
 
 ## Backups

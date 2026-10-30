@@ -646,6 +646,7 @@
       "vectors_down": "the shared index does not answer",
       "vectors_slow": "the shared index is too slow",
       "vectors_refused": "the shared index refused the key",
+      "vectors_key_rejected": "Neo's key was rejected — ask ops to reissue it; the daemon must reload to read it",
       "collection_missing": "the shared index has no collection for Neo",
       "embedder_busy": "the indexer is busy embedding; ask again in a moment"
     },
