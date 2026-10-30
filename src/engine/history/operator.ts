@@ -1,10 +1,12 @@
 // The operator surfaces' side of the task history (ADR-0066, spec "Surfaces"): the console's
 // `GET /api/history` and Telegram's `/find` read the same query fields — the words, a project, kinds, a UTC
 // date range and a limit — and both check them here, so a wrong value is refused with one reason code
-// before the seam is asked. Pure.
+// before the seam is asked. The Telegram replies are built here too: at most 4,096 characters, numbers
+// left-to-right in Arabic lines. Pure.
+import { RTL_SCRIPT, numbersLtrText } from "../bidi";
 import { QUERY_KINDS, type SearchCfg } from "./defaults";
-import type { HistoryKind, HistoryQuery } from "./index";
-import { dateMs } from "./tool-text";
+import type { ForgetResult, HistoryKind, HistoryQuery, HistoryResult } from "./index";
+import { dateMs, hitText, modeLine } from "./tool-text";
 
 const KNOWN = new Set<string>(QUERY_KINDS);
 /** A project name is a folder name: longer input is not one. */
@@ -67,4 +69,64 @@ export function rawFromParams(p: URLSearchParams): RawQuery {
     ...(opt("until") !== undefined ? { until: opt("until") } : {}),
     ...(opt("limit") !== undefined ? { limit: opt("limit") } : {}),
   };
+}
+
+// ── Telegram (`/find`, `/forget`) ──────────────────────────────────────────────────────────────────
+/** Telegram's limit for one message's text. */
+export const TELEGRAM_MAX = 4096;
+const FILTERS: Record<string, "project" | "kinds" | "since" | "until"> = { "p:": "project", "k:": "kinds", "since:": "since", "until:": "until" };
+
+/** `/find <words> [p:<project>] [k:<kind>,…] [since:<YYYY-MM-DD>] [until:<YYYY-MM-DD>]` → the raw fields. A
+ *  filter word may stand anywhere; the other words are the query. */
+export function parseFindArgs(args: string): RawQuery {
+  const words: string[] = [];
+  const raw: Omit<RawQuery, "query"> = {};
+  for (const w of args.split(/\s+/).filter(Boolean)) {
+    const prefix = Object.keys(FILTERS).find((p) => w.toLowerCase().startsWith(p) && w.length > p.length);
+    if (!prefix) {
+      words.push(w);
+      continue;
+    }
+    const field = FILTERS[prefix]!;
+    const v = w.slice(prefix.length);
+    if (field === "kinds") raw.kinds = v.split(",");
+    else raw[field] = v;
+  }
+  return { query: words.join(" "), ...raw };
+}
+
+/** Each line with Arabic or Hebrew script keeps its numbers left-to-right (plain-text isolates). */
+export const bidiLines = (text: string): string => text.split("\n").map((l) => (RTL_SCRIPT.test(l) ? numbersLtrText(l) : l)).join("\n");
+
+/** The console link for a query: the History tab, searching it. */
+export function historyLink(consoleUrl: string, query: string): string {
+  return `${consoleUrl.replace(/\/+$/, "")}/#history=${encodeURIComponent(query)}`;
+}
+
+/** A `/find` answer: the mode line (when meaning search is not on), at most `limit` hits, then the console
+ *  link. Never over `max` characters: fewer hits first, then the last hit cut. */
+export function findReply(r: HistoryResult, o: { query: string; limit: number; consoleUrl?: string; max?: number }): string {
+  if (!r.ok) {
+    return r.error === "history_unreadable" ? "History is not available right now (history.db could not be opened)." : `Search refused: ${r.error ?? "unknown"}.`;
+  }
+  if (!r.hits.length) return bidiLines([...(r.mode.meaning === "on" ? [] : [modeLine(r.mode)]), "No past records match."].join("\n"));
+  const max = o.max ?? TELEGRAM_MAX;
+  const head = r.mode.meaning === "on" ? [] : [modeLine(r.mode)];
+  const link = o.consoleUrl ? historyLink(o.consoleUrl, o.query) : "";
+  const tail = link ? `\n${link}` : "";
+  const hits = r.hits.slice(0, Math.max(1, o.limit)).map((h, i) => bidiLines(hitText(h, i + 1)));
+  for (let n = hits.length; n >= 1; n--) {
+    const text = [...head, ...hits.slice(0, n)].join("\n") + tail;
+    if (text.length <= max) return text;
+  }
+  const body = [...head, hits[0]!].join("\n");
+  return `${body.slice(0, Math.max(0, max - tail.length - 1))}…${tail}`;
+}
+
+/** The answer to a Forget tap. */
+export function forgetReply(ref: string, r: ForgetResult): string {
+  if (!r.ok) return `Not forgotten: ${r.error ?? "unknown"}.`;
+  const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const pending = r.pendingPoints ? `; ${plural(r.pendingPoints, "vector")} ${r.pendingPoints === 1 ? "waits" : "wait"} for the shared index` : "";
+  return `Forgot ${ref}: ${plural(r.chunks, "text chunk")} and ${plural(r.points, "vector")} removed${pending}.`;
 }

@@ -31,6 +31,10 @@ import { faults } from "./fault";
 import type { GitRead } from "./git-read";
 import { todoTitle } from "./todo-title";
 import { projectDeps, projectSummary, projectSummaries, projectUrl, projectView, recentThreads, renderProject, summaryLine } from "./project-view";
+import { FORGETTABLE, type TaskHistory } from "./history/index";
+import { HISTORY_DEFAULTS } from "./history/defaults";
+import { bidiLines, checkQuery, findReply, parseFindArgs, TELEGRAM_MAX } from "./history/operator";
+import { hitText, rememberTool } from "./history/tool-text";
 
 export interface CommandDeps {
   registry: Registry;
@@ -62,7 +66,7 @@ export interface CommandDeps {
   requestReload?: () => void;
   /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. `publicUrl` is the
    *  console base the /trace link points at. */
-  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention" | "github" | "projects">>;
+  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention" | "github" | "projects" | "history">>;
   /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
   todo?: TodoQueue;
   /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
@@ -79,6 +83,8 @@ export interface CommandDeps {
   neoFolder?: string;
   /** The git reader `/project` uses. Absent → the bounded default (`github.callTimeoutMs`). */
   gitRead?: GitRead;
+  /** The task history (ADR-0066) for /find, /remember and /forget. Absent → they say it is unavailable. */
+  history?: TaskHistory;
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -106,6 +112,9 @@ export interface CommandResult {
   /** One project's dashboard (`/project <name>`) — frontends add its buttons: attention (N), threads,
    *  open console. */
   project?: { name: string; attention: number; consoleUrl?: string };
+  /** One task-history entry to forget (`/forget`, ADR-0066): frontends add a Forget button whose tap calls
+   *  `history.forget(ref, reason)`. */
+  forget?: { ref: string; reason: string };
 }
 
 interface CommandContext {
@@ -250,6 +259,24 @@ const COMMANDS: Command[] = [
     usage: "/recent",
     summary: "recent orders + outcomes",
     run: ({ deps }) => ({ text: renderRecent(deps.ledger) }),
+  },
+  {
+    name: "find",
+    usage: "/find <words or id> [p:<project>] [k:<kind>,…] [since:YYYY-MM-DD] [until:YYYY-MM-DD]",
+    summary: "search past work (todos, orders, results, plans, notes, decisions, remembered facts) by meaning, words or id",
+    run: ({ deps, args }) => findCommand(args, deps),
+  },
+  {
+    name: "remember",
+    usage: "/remember <fact> [p:<project>]",
+    summary: "save one fact to the task history, so /find and workers find it later",
+    run: ({ deps, args }) => ({ text: rememberCommand(args, deps) }),
+  },
+  {
+    name: "forget",
+    usage: "/forget <ref> [reason]",
+    summary: "remove one entry from the task history everywhere (shows it first, with a Forget button)",
+    run: ({ deps, args }) => forgetCommand(args, deps),
   },
   {
     name: "events",
@@ -427,6 +454,67 @@ async function projectCommand(args: string, deps: CommandDeps, now: number): Pro
     faults.report("command.project", e, { project: args });
     return { text: "The project dashboard failed — the fault is reported." };
   }
+}
+
+const FIND_USAGE = "Usage: /find <words or id> [p:<project>] [k:<kind>,…] [since:YYYY-MM-DD] [until:YYYY-MM-DD]";
+const HISTORY_UNAVAILABLE = "Task history is not available on this channel (it is off, or history.db could not be opened).";
+
+/** /find — the task history's hybrid search (ADR-0066). The filters are checked here; the answer comes
+ *  `later` (the search awaits the embedder and the shared index), at most 4,096 characters. */
+function findCommand(args: string, deps: CommandDeps): CommandResult {
+  const raw = parseFindArgs(args);
+  if (!raw.query) return { text: FIND_USAGE };
+  const history = deps.history;
+  if (!history) return { text: HISTORY_UNAVAILABLE };
+  const cfg = deps.cfg?.history ?? HISTORY_DEFAULTS;
+  const checked = checkQuery(raw, cfg.search);
+  if (!checked.ok) return { text: `Search refused: ${checked.error}.` };
+  const q = { ...checked.q, limit: cfg.telegram.findLimit };
+  const consoleUrl = deps.cfg?.publicUrl || undefined;
+  return {
+    text: "",
+    later: history.search(q).then(
+      (r) => ({ text: findReply(r, { query: q.query, limit: q.limit, ...(consoleUrl ? { consoleUrl } : {}) }) }),
+      (e) => ({ text: `Search failed: ${e instanceof Error ? e.message : String(e)}` }),
+    ),
+  };
+}
+
+/** /remember — save one fact for the operator; a trailing `p:<project>` names its project. */
+function rememberCommand(args: string, deps: CommandDeps): string {
+  const words = args.trim().split(/\s+/).filter(Boolean);
+  const last = words.at(-1);
+  const project = last && /^p:./i.test(last) ? last.slice(2) : undefined;
+  const text = (project ? words.slice(0, -1) : words).join(" ");
+  if (!text) return "Usage: /remember <fact> [p:<project>]";
+  if (!deps.history) return HISTORY_UNAVAILABLE;
+  return rememberTool(deps.history, { text, ...(project ? { project } : {}) }, { by: "operator", session: "telegram" }).content[0]!.text;
+}
+
+const FORGET_USAGE = "Usage: /forget <ref> [reason] — a ref from /find, e.g. todo:884, plan:12, mem:3.";
+const FORGET_DEFAULT_REASON = "forgotten by the operator in Telegram";
+
+/** /forget — show the entry and offer the Forget button; nothing is removed until the tap. */
+function forgetCommand(args: string, deps: CommandDeps): CommandResult {
+  const [first = "", ...rest] = args.trim().split(/\s+/);
+  const ref = first.toLowerCase();
+  if (ref.startsWith("line:")) return { text: `${ref} is a worker line: worker lines are not stored in the history, so there is nothing to forget.` };
+  if (!FORGETTABLE.test(ref)) return { text: FORGET_USAGE };
+  const history = deps.history;
+  if (!history) return { text: HISTORY_UNAVAILABLE };
+  const reason = rest.join(" ").trim() || FORGET_DEFAULT_REASON;
+  return {
+    text: "",
+    later: history.search({ query: ref, limit: 10 }).then(
+      (r): CommandResult => {
+        const hit = r.ok ? r.hits.find((h) => h.ref === ref) : undefined;
+        if (!hit) return { text: r.ok ? `No history entry ${ref}.` : `Search failed: ${r.error ?? "unknown"}.` };
+        const text = ["Forget this history entry everywhere? It does not come back.", hitText(hit, 1), `Reason: ${reason}`].join("\n");
+        return { text: bidiLines(text).slice(0, TELEGRAM_MAX), forget: { ref, reason } };
+      },
+      (e) => ({ text: `Search failed: ${e instanceof Error ? e.message : String(e)}` }),
+    ),
+  };
 }
 
 /** /trace — a message's thread and everything it produced (spec §4.4). Thin: the trace owns the tree. */

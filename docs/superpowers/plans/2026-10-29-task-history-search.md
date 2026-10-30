@@ -282,7 +282,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - The i18n parity test and the no-literal-strings test pass.
   - Done when: AC18 passes. The screenshots come in task 20.
 
-- [ ] **14. Telegram `/find`, `/remember`, `/forget`**
+- [x] **14. Telegram `/find`, `/remember`, `/forget`**
   - Modify: `src/engine/commands.ts` (three commands, `later` for the async work),
     `src/frontends/telegram.ts` (the forget button), `tests/commands.test.ts` and the Telegram callback
     tests.

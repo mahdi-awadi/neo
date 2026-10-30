@@ -613,3 +613,117 @@ test("/stop and /bg answer later with the tool-control result; /list shows the r
   expect(handleCommand("/stop", 1, d)!.text).toContain("Usage: /stop <project>");
   expect(handleCommand("/list", 1, d)!.text).toContain("⏵ Bash 1m: git push origin dev");
 });
+
+// ── ADR-0066 plan task 14: /find, /remember, /forget over the task history ─────────────────────────
+import type { HistoryHit, HistoryQuery, HistoryResult, RememberInput, TaskHistory } from "../src/engine/history/index";
+import { numbersLtrText } from "../src/engine/bidi";
+import { findReply, parseFindArgs, TELEGRAM_MAX } from "../src/engine/history/operator";
+
+function hit(over: Partial<HistoryHit> = {}): HistoryHit {
+  return { ref: "todo:884", kind: "todo", project: "gold", at: Date.UTC(2026, 9, 20), title: "bus seats not freeing up", snippet: "the \u0002seats\u0003 stay taken", todo: 884, commits: ["479236d"], archived: false, via: ["words"], ...over };
+}
+function fakeHistory(result: HistoryResult = { ok: true, mode: { meaning: "on" }, hits: [hit()] }) {
+  const calls = { queries: [] as HistoryQuery[], saved: [] as RememberInput[] };
+  const h: TaskHistory = {
+    async search(q) {
+      calls.queries.push(q);
+      return result;
+    },
+    remember(e) {
+      calls.saved.push(e);
+      return e.text.length < 10 ? { ok: false, error: "too_short" } : { ok: true, ref: "mem:7", duplicate: false };
+    },
+    async indexTick() {
+      return {} as never;
+    },
+    async forget() {
+      return { ok: true, chunks: 2, points: 2, pendingPoints: 0 };
+    },
+    status: () => ({}) as never,
+    close() {},
+  };
+  return { h, calls };
+}
+const histDeps = (h?: TaskHistory, publicUrl = "https://neo.example") => ({ ...deps({ cfg: { providers: { ownWork: "subscription", customerWork: "gemini" } } }), cfg: { providers: { ownWork: "subscription" as Provider, customerWork: "gemini" as Provider }, publicUrl }, ...(h ? { history: h } : {}) });
+
+test("/find parses p:, k:, since: and until: and leaves the rest as the query", () => {
+  expect(parseFindArgs("bus seats p:gold k:todo,plan since:2026-10-01 until:2026-10-31")).toEqual({ query: "bus seats", project: "gold", kinds: ["todo", "plan"], since: "2026-10-01", until: "2026-10-31" });
+  expect(parseFindArgs("  #884  ")).toEqual({ query: "#884" });
+});
+
+test("/find with no words gives the usage; a bad filter is refused with its reason; no history says so", async () => {
+  const { h, calls } = fakeHistory();
+  expect(handleCommand("/find", 1, histDeps(h))!.text).toContain("Usage: /find");
+  expect(handleCommand("/find p:gold", 1, histDeps(h))!.text).toContain("Usage: /find");
+  expect(handleCommand("/find seats since:2026-13-01", 1, histDeps(h))!.text).toBe("Search refused: bad_date.");
+  expect(handleCommand("/find seats k:bogus", 1, histDeps(h))!.text).toBe("Search refused: unknown_kind.");
+  expect(calls.queries).toEqual([]);
+  expect(handleCommand("/find seats", 1, histDeps())!.text).toContain("not available");
+});
+
+test("/find searches with the filters and findLimit, and answers later with the hits and the console link", async () => {
+  const { h, calls } = fakeHistory();
+  const r = handleCommand("/find bus seats p:gold k:todo since:2026-10-01", 1, histDeps(h))!;
+  const text = (await r.later!).text;
+  expect(calls.queries[0]).toEqual({ query: "bus seats", project: "gold", kinds: ["todo"], since: Date.UTC(2026, 9, 1), limit: 5 });
+  expect(text).toContain("1. [todo] bus seats not freeing up · gold · 2026-10-20 · todo:884");
+  expect(text).toContain("> the «seats» stay taken");
+  expect(text).toContain("https://neo.example/#history=bus%20seats");
+  expect(text).not.toContain("Meaning search is on"); // the mode line only when not on
+});
+
+test("the mode line comes first when meaning search is not on", () => {
+  const r = findReply({ ok: true, mode: { meaning: "off", reason: "embedder_down" }, hits: [hit()] }, { query: "x", limit: 5 });
+  expect(r.split("\n")[0]).toBe("Meaning search is off (embedder_down): these are word and id matches only.");
+  expect(findReply({ ok: true, mode: { meaning: "on" }, hits: [] }, { query: "x", limit: 5 })).toBe("No past records match.");
+  expect(findReply({ ok: false, error: "query_stopwords", hits: [], mode: { meaning: "skipped" } }, { query: "x", limit: 5 })).toBe("Search refused: query_stopwords.");
+});
+
+test("a reply is at most 4,096 characters: fewer hits, and the console link stays", () => {
+  const long = Array.from({ length: 5 }, (_, i) => hit({ ref: `todo:${i}`, title: "t".repeat(200), snippet: "s".repeat(1500) }));
+  const r = findReply({ ok: true, mode: { meaning: "on" }, hits: long }, { query: "q", limit: 5, consoleUrl: "https://neo.example/" });
+  expect(r.length).toBeLessThanOrEqual(TELEGRAM_MAX);
+  expect(r).toContain("1. [todo]");
+  expect(r).not.toContain("5. [todo]");
+  expect(r.endsWith("https://neo.example/#history=q")).toBe(true);
+  // Even one hit that is too long is cut, never sent over the limit.
+  const one = findReply({ ok: true, mode: { meaning: "on" }, hits: [hit({ snippet: "x".repeat(9000) })] }, { query: "q", limit: 5, consoleUrl: "https://n" });
+  expect(one.length).toBeLessThanOrEqual(TELEGRAM_MAX);
+  expect(one.endsWith("https://n/#history=q")).toBe(true);
+});
+
+test("numbers stay LTR in Arabic lines (Unicode isolates in plain text); English lines are left alone", () => {
+  expect(numbersLtrText("حجز 1,250 دينار")).toBe("حجز ⁦1,250⁩ دينار");
+  const r = findReply({ ok: true, mode: { meaning: "on" }, hits: [hit({ title: "المقاعد لا تتحرر", snippet: "رحلة 2026-10-20 رقم 884" })] }, { query: "x", limit: 5 });
+  const [head, , snip] = r.split("\n");
+  expect(head).toContain("⁦2026-10-20⁩");
+  expect(snip).toContain("⁦2026-10-20⁩");
+  expect(snip).toContain("⁦884⁩");
+  expect(findReply({ ok: true, mode: { meaning: "on" }, hits: [hit()] }, { query: "x", limit: 5 })).not.toContain("⁦");
+});
+
+test("/remember saves for the operator (p: names the project) and refuses with the reason", () => {
+  const { h, calls } = fakeHistory();
+  expect(handleCommand("/remember gold fees live in config p:gold", 1, histDeps(h))!.text).toBe("Saved as mem:7.");
+  expect(calls.saved[0]).toEqual({ text: "gold fees live in config", project: "gold", by: "operator", session: "telegram" });
+  expect(handleCommand("/remember short", 1, histDeps(h))!.text).toBe("Not saved: too_short.");
+  expect(handleCommand("/remember", 1, histDeps(h))!.text).toContain("Usage: /remember");
+});
+
+test("/forget shows the entry and offers the button; a worker line or an unknown ref is refused", async () => {
+  const { h } = fakeHistory();
+  const r = handleCommand("/forget todo:884 wrong project", 1, histDeps(h))!;
+  const out = await r.later!;
+  expect(out.text).toContain("1. [todo] bus seats not freeing up");
+  expect(out.text).toContain("Reason: wrong project");
+  expect(out.forget).toEqual({ ref: "todo:884", reason: "wrong project" });
+  expect(handleCommand("/forget line:9", 1, histDeps(h))!.text).toContain("not stored in the history");
+  expect(handleCommand("/forget hello", 1, histDeps(h))!.text).toContain("Usage: /forget");
+  const none = await handleCommand("/forget todo:5", 1, histDeps(h))!.later!;
+  expect(none.text).toBe("No history entry todo:5.");
+  expect(none.forget).toBeUndefined();
+});
+
+test("/find, /remember and /forget are advertised in telegramCommands", () => {
+  for (const c of ["find", "remember", "forget"]) expect(telegramCommands().some((x) => x.command === c)).toBe(true);
+});

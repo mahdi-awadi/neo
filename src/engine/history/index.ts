@@ -87,7 +87,8 @@ export interface TaskHistoryDeps {
 }
 
 const HOUR = 3_600_000;
-const FORGETTABLE = /^(?:todo|order|result|msg|plan|note|att|dec|mem):[0-9a-z-]+$/i;
+/** A ref that names an entry of `history.db` (a `line:` ref names a ledger line: nothing to forget). */
+export const FORGETTABLE = /^(?:todo|order|result|msg|plan|note|att|dec|mem):[0-9a-z-]+$/i;
 const MEM = "mem:";
 
 /** The next model's embedder and index: the same collection when the dimensions match, else its own

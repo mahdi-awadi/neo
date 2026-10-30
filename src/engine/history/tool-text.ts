@@ -91,7 +91,8 @@ function plainSnippet(s: string): string {
   return s.replaceAll(SNIPPET_OPEN, "«").replaceAll(SNIPPET_CLOSE, "»").replace(/\s+/g, " ").trim();
 }
 
-function hitText(h: HistoryHit, n: number): string {
+/** One numbered hit: the head line (kind, title, project, date, ref, via), its sources, the snippet. */
+export function hitText(h: HistoryHit, n: number): string {
   const head = [`${n}. [${h.kind}] ${h.title}`, ...(h.project ? [h.project] : []), day(h.at), h.ref, `via ${h.via.join(", ")}`, ...(h.archived ? ["archived"] : [])].join(" · ");
   const source = [
     ...(h.todo !== undefined ? [`todo #${h.todo}`] : []),

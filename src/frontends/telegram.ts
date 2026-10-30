@@ -6,6 +6,8 @@ import { controlTool, DEFAULT_TOOL_CONTROL_CFG, parseToolCallback, type ToolNoti
 import type { ProjectNotes } from "../engine/project-notes";
 import type { Catalogue } from "../engine/tools-catalogue";
 import type { TaskHistory } from "../engine/history/index";
+import { forgetReply } from "../engine/history/operator";
+import { randomBytes } from "node:crypto";
 import { applyAttentionAction, isAttentionAction, attentionLabel, type AttentionAction } from "../engine/attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "../engine/producers/engine";
 import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
@@ -63,6 +65,8 @@ import {
 
 /** Telegram's limit for the toast that answers a button tap (answerCallbackQuery text). */
 const TAP_TOAST_MAX = 200;
+/** Forget buttons (ADR-0066) waiting for their tap; the oldest goes when there are more. */
+const FORGET_PENDING_MAX = 50;
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
  *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
@@ -385,6 +389,9 @@ export function createTelegramBot(
   );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
+  // A /forget card's button (ADR-0066): token → the chat it was sent to, the ref and the reason. The tap acts
+  // only in that chat, and only once.
+  const pendingForget = new Map<string, { chatId: number; ref: string; reason: string }>();
   // Inbox items whose send is waiting on its Allow/Deny press — one send per item at a time.
   const sendingInbox = new Set<string>();
   // Decisions awaiting a typed "Other / type an answer", keyed by chat id -> decision id: the
@@ -642,6 +649,7 @@ export function createTelegramBot(
     trace,
     neoFolder: reload?.neoFolder,
     gitRead: reload?.gitRead,
+    history: reload?.history, // /find, /remember, /forget (ADR-0066)
     ...(replyTo ? { replyTo } : {}),
   });
   // One command answer with the buttons its result carries. An async command (/project) is sent when
@@ -659,6 +667,11 @@ export function createTelegramBot(
       say(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
     } else if (command.attention?.length) {
       say(chatId, command.text, { reply_markup: attentionKeyboard(command.attention, (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours) });
+    } else if (command.forget) {
+      const token = randomBytes(8).toString("hex");
+      pendingForget.set(token, { chatId, ...command.forget });
+      while (pendingForget.size > FORGET_PENDING_MAX) pendingForget.delete(pendingForget.keys().next().value!);
+      say(chatId, command.text, { reply_markup: new InlineKeyboard().text("🗑 Forget", `hf:${token}`) });
     } else if (command.project) {
       const kb = projectDashKeyboard(command.project);
       say(chatId, command.text, kb.inline_keyboard.flat().length ? { reply_markup: kb } : undefined);
@@ -989,6 +1002,30 @@ export function createTelegramBot(
     const tap = parseDecisionCallback(cb);
     if (tap) {
       await handleDecisionTap(ctx, tap);
+      return;
+    }
+
+    // Tap on a /forget card's button (ADR-0066): only in the chat the card went to, only once.
+    const hfTap = /^hf:([0-9a-f]{16})$/.exec(cb);
+    if (hfTap) {
+      const entry = pendingForget.get(hfTap[1]!);
+      if (!entry) {
+        await ackCallback(ctx, "this Forget button has expired: send /forget again");
+        return;
+      }
+      if (ctx.chat?.id !== entry.chatId) {
+        await ackCallback(ctx); // another chat: ignored, the card's own chat can still tap it
+        return;
+      }
+      pendingForget.delete(hfTap[1]!);
+      const history = reload?.history;
+      const text = history ? forgetReply(entry.ref, await history.forget(entry.ref, entry.reason, Date.now())) : "Task history is not available.";
+      await ackCallback(ctx, text.length > TAP_TOAST_MAX ? `${text.slice(0, TAP_TOAST_MAX - 1)}…` : text);
+      try {
+        await ctx.editMessageText(text);
+      } catch {
+        // "message is not modified" — ignore
+      }
       return;
     }
 
