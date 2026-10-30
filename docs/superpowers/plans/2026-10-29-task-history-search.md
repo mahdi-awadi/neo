@@ -68,7 +68,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - Paragraph hashes use the normalized text. Boilerplate removal works with a given set of hashes.
   - Done when: these tests pass, and a text change in a builder breaks a test.
 
-- [ ] **3. The `history.db` store**
+- [x] **3. The `history.db` store**
   - Create: `src/engine/history/migrations.ts`, `src/engine/history/store.ts`,
     `tests/history-store.test.ts`.
   - Tests first:

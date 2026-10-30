@@ -466,10 +466,11 @@ export const MIGRATIONS: Migration[] = [
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good
  *  ones stay applied when a later one throws. Before the first pending migration a file db that
  *  already has tables is copied to `<path>.bak-v<from>` (once). A failure throws out: the daemon
- *  treats an unmigratable ledger as unrecoverable, and the message names the backup. */
+ *  treats an unmigratable ledger as unrecoverable, and the message names the backup. Another store with its
+ *  own list (the task history, ADR-0066) passes its `label` for the message. */
 export function migrate(
   db: Database,
-  opts: { path: string; migrations?: Migration[] },
+  opts: { path: string; migrations?: Migration[]; label?: string },
 ): { from: number; to: number; backup?: string } {
   const list = opts.migrations ?? MIGRATIONS;
   const from = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -489,7 +490,7 @@ export function migrate(
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `ledger migration ${m.version} (${m.name}) failed: ${why}${backup ? ` — backup at ${backup}` : ""}`,
+        `${opts.label ?? "ledger"} migration ${m.version} (${m.name}) failed: ${why}${backup ? ` — backup at ${backup}` : ""}`,
         { cause: err },
       );
     }
