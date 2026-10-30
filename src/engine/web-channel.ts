@@ -33,7 +33,7 @@ import {
 } from "./loops";
 import type { LoopInput } from "./loop-validate";
 import { dashboardSnapshot, todoDetail, type DashState, type TodoDetail } from "./dashboard";
-import { snippetHtml } from "./format";
+import { snippetHtml, TELEGRAM_MAX } from "./format";
 import { feedLine, reasonHtml, type LineTone } from "./feed-line";
 import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
@@ -46,8 +46,10 @@ import { answerDecision, routeThreadMessage } from "./reply-routing";
 import { projectDeps, projectSummaries, projectView, type ProjectSummary, type ProjectView } from "./project-view";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
 import { waitingWork, type WaitingItem } from "./waiting-work";
-import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
+import { answerable, DEFAULT_KEEP_PATTERNS, textAnswerRefusal } from "./decision-settle";
+import { answerText, isComplete } from "./structured-question";
 import { needsYou, pin, type NeedsYouItem } from "./needs-you";
+import { itemDetail, type ItemDetail } from "./needs-you-detail";
 import type { PinState } from "./ledger";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
@@ -169,6 +171,10 @@ export interface WebChannel {
   pin(ref: string, state: PinState | null): { ok: true; text: string } | { ok: false; error: string };
   /** ADR-0065: one todo's detail, or undefined. */
   todoDetail(id: number): TodoDetail | undefined;
+  /** ADR-0071: the item a pin names, with what is needed to act on it; undefined for a bad or gone ref. */
+  item(ref: string): (ItemDetail & { snoozeHours: number }) | undefined;
+  /** ADR-0071: answer (or acknowledge) a decision from the console — the same path as a Telegram answer. */
+  answerDecision(id: string, input: { answer?: string; acknowledge?: boolean; picks?: number[][] }): Promise<{ ok: boolean; text: string }>;
   /** One project's dashboard, with the snooze hours its attention buttons name. Undefined: no such project. */
   project(name: string): Promise<(ProjectView & { snoozeHours: number }) | undefined>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
@@ -592,6 +598,46 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     },
     todoDetail(id) {
       return todoDetail(opts.engine.ledger, id);
+    },
+    item(ref) {
+      const d = itemDetail({ ledger: opts.engine.ledger }, ref, Date.now());
+      // An attention item's snooze button names the configured hours, as on the project page.
+      return d ? { ...d, snoozeHours: (opts.engine.cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours } : undefined;
+    },
+    async answerDecision(id, input) {
+      const { registry, ledger, todo, cfg } = opts.engine;
+      const dec = ledger.decisionById(id);
+      if (!dec) return { ok: false, text: "no such decision" };
+      if (!answerable(dec)) return { ok: false, text: "already answered" };
+      const refusal = textAnswerRefusal(dec, ledger);
+      // An alert's OK closes it: nothing waits on its answer, so no worker is resumed.
+      if (refusal === "alert" && input.acknowledge) {
+        ledger.dismissDecision(dec.id);
+        opts.bus?.mirror("web", { kind: "notice", text: `✅ acknowledged (web console): ${dec.question.slice(0, 120)}` });
+        return { ok: true, text: "acknowledged" };
+      }
+      if (refusal === "plan") return { ok: false, text: "a plan is approved or dropped with its own buttons" };
+      if (refusal === "approval") return { ok: false, text: "an approval is answered with Allow or Deny on its card" };
+      if (refusal === "alert") return { ok: false, text: "an alert is acknowledged, not answered" };
+      // A structured card (ADR-0049) answers with its picks, joined exactly as a Telegram Submit joins them.
+      let answer: string;
+      if (input.picks !== undefined) {
+        const ask = dec.spec;
+        const valid = !!ask && input.picks.length === ask.questions.length && input.picks.every((q, i) => q.every((o) => Number.isInteger(o) && o >= 0 && o < ask.questions[i]!.options.length) && (ask.questions[i]!.multiSelect || q.length <= 1));
+        if (!ask || !valid || !isComplete(ask, input.picks)) return { ok: false, text: "pick an answer for every question" };
+        answer = answerText(ask, input.picks);
+      } else answer = (input.answer ?? "").trim();
+      // The same bound a Telegram answer has: Telegram cannot carry a longer message.
+      if (!answer || answer.length > TELEGRAM_MAX) return { ok: false, text: `an answer is 1–${TELEGRAM_MAX} characters` };
+      const resumed = answerDecision(
+        { registry, ledger, worker: cfg.providers.ownWork, ...(todo ? { parked: (d, a) => !!todo.decisionAnswered(d.id, d.question, a) } : {}) },
+        dec,
+        answer,
+        opts.chatId,
+      );
+      opts.bus?.mirror("web", { kind: "notice", text: `✅ answered (web console) — ${dec.project ?? "Neo"}: ${dec.question.slice(0, 120)}` });
+      if (resumed) void faults.contain("web.decisionResume", handleMessage(resumed.brief, resumed.homeChat, deps, "neo", inbound(answer, dec.cause?.threadId)));
+      return { ok: true, text: resumed ? `answered — resuming ${dec.project ?? "the project"}` : "answered" };
     },
     projects() {
       const { ledger, registry, cfg } = opts.engine;

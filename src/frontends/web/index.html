@@ -345,14 +345,18 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 .rrow .qrow,.tart .qrow{border-top:0;padding:0}
 .qrow .qt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .qrow .car{color:var(--muted)}:root[dir=rtl] .qrow .car{transform:scaleX(-1)}
-.sheet{border:1px solid var(--border);border-radius:16px;background:var(--panel);color:var(--fg);padding:0;width:min(640px,calc(100vw - 24px));max-height:min(86vh,900px)}
+.sheet{border:1px solid var(--border);border-radius:16px;background:var(--panel);color:var(--fg);padding:0;width:min(640px,calc(100vw - 24px));max-height:min(86vh,900px,var(--app-h,100dvh))}
 .sheet::backdrop{background:var(--scrim)}
 .sheet .sh{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel)}.sheet .sh #tdclose{margin-inline-start:auto}
 .sheet .sb{padding:14px 16px 18px;overflow-y:auto}
 .sheet h2{font-size:16px;margin:0 0 10px;line-height:1.4}
 .sheet dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:0 0 12px;font-size:13px}.sheet dt{color:var(--muted)}.sheet dd{margin:0;min-width:0;overflow-wrap:anywhere}
 .sheet pre{white-space:pre-wrap;font-family:var(--sans);font-size:13px;margin:6px 0 0;overflow-wrap:anywhere}
-@media (max-width:640px){.sheet{width:100vw;max-width:100vw;margin:auto 0 0;border-radius:16px 16px 0 0;max-height:88vh}}
+@media (max-width:640px){.sheet{width:100vw;max-width:100vw;margin:auto 0 var(--kb,0px);border-radius:16px 16px 0 0;max-height:min(88vh,var(--app-h,100dvh))}}
+.sheet .ipicks fieldset{border:1px solid var(--border);border-radius:10px;margin:0 0 10px;padding:8px 12px}.sheet .ipicks legend{padding:0 4px}.sheet .ipicks label{display:flex;gap:8px;align-items:center;min-height:44px}
+.sheet .itemb h2{overflow-wrap:anywhere}.sheet .acts{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.sheet .acts.stick{position:sticky;bottom:0;background:var(--panel);padding-block:10px;margin:0;border-top:1px solid var(--border)}
+.sheet .ireply{display:flex;flex-direction:column;gap:8px;margin-top:6px}.sheet .ireply textarea{width:100%;min-height:88px;font-size:16px;resize:vertical}
+.sheet .plandoc{margin:10px 0;padding:0}.sheet .plandoc .tx{overflow-wrap:anywhere}.sheet .plandoc pre,.sheet .plandoc table{max-width:100%;overflow-x:auto;display:block}
 details.hk>summary{cursor:pointer;min-height:44px;display:flex;align-items:center;color:var(--muted);font-size:12px}
 /* History (ADR-0067): the search, the filters (folded behind one button on a phone), the mode banner, hit cards. */
 #vhistory{gap:12px}

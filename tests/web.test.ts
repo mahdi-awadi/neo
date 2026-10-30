@@ -599,3 +599,107 @@ test("GET /api/todo/:id is the todo's detail; an unknown or malformed id is a 40
   expect((await get("/api/todo/abc")).status).toBe(404);
   expect((await a.instance.fetch(new Request(`http://neo.test/api/todo/${t.id}`))).status).toBe(401);
 });
+
+// ── A pin's Open lands on the item; a plan can be read before it is approved (ADR-0071) ─────────
+test("GET /md-file?view=html renders the plan with the console's safe renderer, under the same checks and audit", async () => {
+  const { a, root, base, get } = mdApp();
+  a.cfg.mdFiles!.maxBytes = 1024;
+  const p = join(root, "learning", "notes", "plan.md");
+  writeFileSync(p, "# Plan\n\n- step one\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n");
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const view = (path: string, c?: string) => a.instance.fetch(new Request(`http://neo.test/md-file?view=html&path=${encodeURIComponent(path)}`, c ? { headers: { cookie: c } } : {}));
+  const res = await view(p, cookie);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toContain("application/json");
+  expect(res.headers.get("cache-control")).toBe("no-store");
+  const body = (await res.json()) as { name: string; html: string };
+  expect(body.name).toBe("plan.md");
+  expect(body.html).toContain(`class="mh"`); // the feed renderer's heading
+  expect(body.html).toContain("step one");
+  expect(body.html).not.toContain("<script>"); // raw HTML is text
+  expect(body.html).toContain("&lt;script&gt;");
+  expect(body.html).not.toContain("javascript:");
+  // The same refusals, with the same status, as the download.
+  for (const [path, status] of [[join(base, "outside.md"), 403], [join(root, "learning", "escape.md"), 403], [join(root, "learning", ".env"), 403], [`${root}/learning/notes/../notes/plan.md`, 400], [join(root, "learning", "notes", "missing.md"), 404]] as const) {
+    expect((await view(path, cookie)).status).toBe(status);
+  }
+  expect((await view(p)).status).toBe(401);
+  const evs = a.ledger.listEvents({ kind: "md_file", limit: 20 });
+  expect(evs.some((e) => e.data?.view === true && e.data?.status === 200)).toBe(true);
+});
+
+test("GET /api/item returns the item a pin names; a bad ref is 400 and a gone one 404; no session is 401", async () => {
+  const a = app();
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const dec = a.ledger.openDecision({ kind: "decision", question: "Which bank?", options: ["Qi", "Zain"], folder: "/home/q", project: "q" }, 1);
+  const get = (ref: string, c: string | undefined = cookie) => a.instance.fetch(new Request(`http://neo.test/api/item?ref=${encodeURIComponent(ref)}`, c ? { headers: { cookie: c } } : {}));
+  const res = await get(`dec:${dec}`);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ type: "decision", decision: { id: dec, question: "Which bank?", options: ["Qi", "Zain"], answerable: true } });
+  expect((await get("x:../../etc")).status).toBe(400);
+  expect((await get("att:999")).status).toBe(404);
+  expect((await get(`dec:${dec}`, "")).status).toBe(401);
+});
+
+test("POST /api/decision/answer answers an open decision through the shared path; refusals are explained", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const post = (body: unknown, c: string | undefined = cookie) =>
+    a.instance.fetch(new Request("http://neo.test/api/decision/answer", { method: "POST", headers: { ...(c ? { cookie: c } : {}), "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const dec = a.ledger.openDecision({ kind: "decision", question: "Should I write a plan?", folder: scratch(), project: "neo", orderId: "o1" }, 1);
+  expect((await post({ id: dec, answer: "yes" }, "")).status).toBe(401);
+  expect((await post({ id: dec })).status).toBe(400);
+  expect(await (await post({ id: dec, answer: "   " })).json()).toMatchObject({ ok: false });
+  expect(await (await post({ id: dec, answer: "x".repeat(5000) })).json()).toMatchObject({ ok: false });
+  expect(a.ledger.decisionById(dec)!.status).toBe("open");
+  const ok = await post({ id: dec, answer: "  yes, write it  " });
+  expect(await ok.json()).toMatchObject({ ok: true });
+  expect(a.ledger.decisionById(dec)).toMatchObject({ status: "answered", answer: "yes, write it" });
+  expect(await (await post({ id: dec, answer: "again" })).json()).toMatchObject({ ok: false, text: "already answered" });
+  expect(await (await post({ id: "nope", answer: "x" })).json()).toMatchObject({ ok: false });
+  // A plan card is approved or dropped through the plan action, never answered in free text.
+  const card = a.ledger.openDecision({ kind: "decision", question: "Plan waiting for your approval: docs/p.md — P", folder: "/home/p", project: "p" }, 2);
+  a.ledger.upsertPlan({ project: "p", folder: "/home/p", path: "docs/p.md", title: "P", sha256: "x", stepsTotal: 1, stepsDone: 0, status: "sent", gate: "approval", decisionId: card } as never);
+  expect(await (await post({ id: card, answer: "ok" })).json()).toMatchObject({ ok: false });
+  expect(a.ledger.decisionById(card)!.status).toBe("open");
+  // An alert is acknowledged: dismissed, no worker resumed; it is never answered with text.
+  const alert = a.ledger.openDecision({ kind: "alert", question: "Disk 95% full", orderId: "o2" }, 3);
+  expect(await (await post({ id: alert, answer: "ok" })).json()).toMatchObject({ ok: false });
+  expect(await (await post({ id: alert, acknowledge: true })).json()).toMatchObject({ ok: true });
+  expect(a.ledger.decisionById(alert)!.status).toBe("dismissed");
+  // A governor approval (no order) is released only by its card's Allow/Deny: refused here, left open.
+  const approval = a.ledger.openDecision({ kind: "decision", question: "risky shell command: git push" }, 4);
+  expect(await (await post({ id: approval, answer: "allow" })).json()).toMatchObject({ ok: false });
+  expect(a.ledger.decisionById(approval)!.status).toBe("open");
+});
+
+test("POST /api/decision/answer takes picks for a structured card: complete picks become the answer text", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const post = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/decision/answer", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const spec = { questions: [{ question: "Which providers?", header: "Providers", options: ["Qi", "Zain", "Asia"], multiSelect: true }, { question: "When?", header: "When", options: ["Now", "Later"] }] };
+  const dec = a.ledger.openDecision({ kind: "decision", question: "Refunds", spec, folder: scratch(), project: "eticket-v3", orderId: "o1" } as never, 1);
+  expect(await (await post({ id: dec, picks: [[0, 2]] })).json()).toMatchObject({ ok: false }); // the second question is unanswered
+  expect(await (await post({ id: dec, picks: [[0, 9], [1]] })).json()).toMatchObject({ ok: false }); // out of range
+  expect((await post({ id: dec, picks: "x" })).status).toBe(400);
+  expect(await (await post({ id: dec, picks: [[0, 2], [1]] })).json()).toMatchObject({ ok: true });
+  expect(a.ledger.decisionById(dec)).toMatchObject({ status: "answered", answer: "Providers: Qi, Asia | When: Later" });
+});
+
+// Design review (2026-10-30): a state-changing request from another site — including a sibling subdomain on
+// this host — is refused, whatever the cookie; the console's own fetches are same-origin.
+test("a non-GET request whose Sec-Fetch-Site is not same-origin is refused (403) before any route runs", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const dec = a.ledger.openDecision({ kind: "decision", question: "Q?", folder: scratch(), project: "neo", orderId: "o1" }, 1);
+  const post = (site?: string) =>
+    a.instance.fetch(new Request("http://neo.test/api/decision/answer", { method: "POST", headers: { cookie, "content-type": "application/json", ...(site ? { "sec-fetch-site": site } : {}) }, body: JSON.stringify({ id: dec, answer: "yes" }) }));
+  expect((await post("cross-site")).status).toBe(403);
+  expect((await post("same-site")).status).toBe(403);
+  expect(a.ledger.decisionById(dec)!.status).toBe("open");
+  expect((await post("same-origin")).status).toBe(200);
+  expect(a.ledger.decisionById(dec)!.status).toBe("answered");
+  // A GET (the md download link, a page load) is not affected.
+  expect((await a.instance.fetch(new Request("http://neo.test/api/needs-you", { headers: { cookie, "sec-fetch-site": "cross-site" } }))).status).toBe(200);
+});

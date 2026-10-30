@@ -43,10 +43,72 @@ test("a strip row: kind, project, one-line why, its action, and a control that t
   expect(r).toContain('"/api/pin", { ref: it.ref, state: "unpinned" }, tx("pins.hidden")');
   expect(r).toContain('setAttribute("aria-label", tx("pins.hide"))');
   const a = fn("pinAction");
-  expect(a).toContain('planAction(it.plan.id, "approve", it.plan.version, btn)');
+  // ADR-0071: Retry stays one tap; every other button opens the item itself — never the project page,
+  // never a blind plan approve.
   expect(a).toContain('todoAct("retry", it.todoId, btn)');
   expect(a).toContain("openTodo(it.todoId, btn)");
-  expect(a).toContain("openThread(it.threadId)");
+  expect(a).toContain("openItem(it.ref, btn)");
+  expect(a).not.toContain("showProject(");
+  expect(a).not.toContain('planAction(it.plan.id, "approve"');
+  expect(fn("pinRow")).toContain("tx(`pins.action.${it.action}`)");
+});
+
+// ADR-0071: Open lands on the item, with its full text and its actions; a plan is read before approval.
+test("openItem reads /api/item and fills the one sheet; a todo keeps its own sheet", () => {
+  const o = fn("openItem");
+  expect(o).toContain("/api/item?ref=");
+  expect(o).toContain('setAttribute("aria-busy", "true")');
+  expect(o).toContain("renderItemSheet(");
+  expect(o).toContain("sheet().showModal()");
+  expect(o).toContain('tx("item.notFound")');
+  expect(fn("pinAction")).toContain('it.kind === "todo"');
+});
+
+test("a decision: the full question, its card, one button per option and a reply box that answers it", () => {
+  const d = fn("decisionBlock");
+  expect(d).toContain("decisionCardHtml(");
+  expect(d).toContain('dir="auto"');
+  expect(d).toContain("answerDecision(");
+  expect(d).toContain('data-compose="send"');
+  expect(d).toContain("<textarea");
+  expect(d).toContain('tx("item.reply.placeholder")');
+  expect(d).toContain('tx("pins.action.acknowledge")');
+  // A card with several questions, or a multi-select one, collects picks and sends them with one Submit
+  // (the server joins them exactly as a Telegram Submit does); a one-question card answers with a tap.
+  expect(d).toContain('type="${q.multiSelect ? "checkbox" : "radio"}"');
+  expect(d).toContain("{ picks }");
+  expect(d).toContain('tx("item.submit")');
+  const a = fn("answerDecision");
+  expect(a).toContain('"/api/decision/answer"');
+  expect(a).toContain("loadPins()");
+});
+
+test("a plan: rendered from /md-file?view=html, a Download link, Approve & build and Drop (confirmed)", () => {
+  const p = fn("planBlock");
+  expect(p).toContain("mdFileHref(");
+  expect(p).toContain('"&view=html"');
+  expect(p).toContain("download");
+  expect(p).toContain('planAction(pl.id, "approve", pl.version');
+  expect(p).toContain('planAction(pl.id, "drop", pl.version');
+  expect(p).toContain('confirm(tx("item.plan.confirmDrop"))');
+  expect(p).toContain('tx("item.plan.missing"');
+  expect(p).toContain("enhanceCode(");
+});
+
+test("an attention item: the project page's own renderer and buttons, plus the decision it is about", () => {
+  const r = fn("renderItemSheet");
+  expect(r).toContain("attentionItemHtml(");
+  expect(r).toContain("attentionButtons(");
+  expect(r).toContain("d.linked");
+  expect(r).toContain("decisionBlock(");
+  expect(r).toContain("planBlock(");
+});
+
+test("mobile typing: the sheet stays above the keyboard and a focused field scrolls into view", () => {
+  expect(SHELL).toMatch(/\.sheet\{[^}]*max-height:min\(86vh,900px,var\(--app-h,100dvh\)\)/);
+  expect(SHELL).toMatch(/max-height:min\(88vh,var\(--app-h,100dvh\)\)/);
+  expect(APP).toContain('sheet().addEventListener("focusin"');
+  expect(APP).toContain('scrollIntoView({ block: "nearest"');
 });
 
 test("todo rows in the Queue tab and on the project page are one button each that opens the detail", () => {
@@ -80,7 +142,9 @@ test("the project page: needs you first, housekeeping collapsed under its count;
 test("every dynamic key exists in EN and AR, and AR is translated", () => {
   const keys = [
     ...["plan", "decision", "alert", "todo", "attention"].map((k) => `pins.kind.${k}`),
-    ...["answer", "acknowledge", "retry", "open"].map((k) => `pins.action.${k}`),
+    ...["review", "answer", "acknowledge", "retry", "open"].map((k) => `pins.action.${k}`),
+    "item.notFound", "item.submit", "item.reply.label", "item.reply.placeholder", "item.reply.send", "item.answered", "item.closed", "item.question",
+    "item.plan.download", "item.plan.loading", "item.plan.missing", "item.plan.confirmDrop", "item.about", "threads.planAction.drop",
     ...["queued", "running", "retry", "waiting", "failed", "done", "cancelled"].map((k) => `todoDetail.status.${k}`),
     "pins.pinned", "pins.unpinned", "pins.hidden",
     "pins.title", "pins.more", "pins.less", "pins.hide", "pins.pin", "pins.unpin", "pins.toggle", "pins.noProject",

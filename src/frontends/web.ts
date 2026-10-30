@@ -21,7 +21,7 @@ import { faults } from "../engine/fault";
 import { DEFAULT_WEB_FEED_WINDOW } from "../config";
 import { isPlanAction } from "../engine/plans";
 import { readMdFilesCfg, resolveMdFile } from "../engine/md-file";
-import { snippetHtml } from "../engine/format";
+import { mdToHtml, snippetHtml } from "../engine/format";
 import { HISTORY_DEFAULTS } from "../engine/history/defaults";
 import { checkQuery, PROJECT_MAX, rawFromParams } from "../engine/history/operator";
 import { createHash } from "node:crypto";
@@ -199,6 +199,11 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 
     // --- everything below requires a valid session ---
     if (sessionUser(req) === undefined) return new Response("unauthorized", { status: 401 });
+    // CSRF (ADR-0071): the session cookie is SameSite=Lax, which a sibling subdomain on this public host
+    // still gets. A state-changing request must come from the console itself. Browsers that send
+    // Sec-Fetch-Site say so; one that does not send it keeps the SameSite protection.
+    const site = req.headers.get("sec-fetch-site");
+    if (req.method !== "GET" && req.method !== "HEAD" && site !== null && site !== "same-origin") return new Response("cross-site request refused", { status: 403 });
 
     if (req.method === "GET" && path === "/app.js") {
       // Only the current versioned URL may be kept, and only by the browser (`private`: never a CDN,
@@ -300,6 +305,24 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       }
       return Response.json(channel.pin(body.ref, state), NO_STORE);
     }
+    // ADR-0071: what a pin's Open shows, and the console's decision answer.
+    if (req.method === "GET" && path === "/api/item") {
+      const ref = url.searchParams.get("ref") ?? "";
+      if (!/^(att|todo|dec):[A-Za-z0-9_-]{1,64}$/.test(ref)) return Response.json({ ok: false, error: "bad ref" }, { status: 400, ...NO_STORE });
+      const d = channel.item(ref);
+      return d ? Response.json(d, NO_STORE) : Response.json({ ok: false, error: "no such item" }, { status: 404, ...NO_STORE });
+    }
+    if (req.method === "POST" && path === "/api/decision/answer") {
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown; answer?: unknown; acknowledge?: unknown; picks?: unknown };
+      const picks = Array.isArray(body.picks) && body.picks.length <= 20 && body.picks.every((q) => Array.isArray(q) && q.length <= 50 && q.every((o) => typeof o === "number")) ? (body.picks as number[][]) : undefined;
+      if (typeof body.id !== "string" || (typeof body.answer !== "string" && body.acknowledge !== true && !picks)) {
+        return Response.json({ ok: false, error: "id + answer, picks or acknowledge: true required" }, { status: 400, ...NO_STORE });
+      }
+      return Response.json(
+        await channel.answerDecision(body.id, { ...(typeof body.answer === "string" ? { answer: body.answer } : {}), ...(body.acknowledge === true ? { acknowledge: true } : {}), ...(picks ? { picks } : {}) }),
+        NO_STORE,
+      );
+    }
     if (req.method === "GET" && path.startsWith("/api/todo/")) {
       const raw = path.slice("/api/todo/".length);
       const id = /^\d{1,9}$/.test(raw) ? Number(raw) : undefined;
@@ -369,11 +392,18 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       const asked = url.searchParams.get("path") ?? "";
       const cfg = deps.engine.cfg.mdFiles ?? readMdFilesCfg(undefined, deps.engine.cfg.workRoot);
       const r = resolveMdFile(asked, cfg);
+      // `view=html` (ADR-0071): the same file, through the same checks and audit, rendered by the console's
+      // one safe Markdown renderer (ADR-0025) so a plan can be read before it is approved.
+      const view = url.searchParams.get("view") === "html";
       const session = createHash("sha256").update(sessionToken(req) ?? "").digest("hex").slice(0, 12);
       deps.engine.ledger.recordEvent("md_file", {
-        data: { path: asked.slice(0, 1024), ...(r.real ? { real: r.real } : {}), status: r.ok ? 200 : r.status, ...(r.ok ? {} : { reason: r.reason }), uid: sessionUser(req), session },
+        data: { path: asked.slice(0, 1024), ...(r.real ? { real: r.real } : {}), status: r.ok ? 200 : r.status, ...(r.ok ? {} : { reason: r.reason }), ...(view ? { view: true } : {}), uid: sessionUser(req), session },
       });
       if (!r.ok) return new Response(r.reason, { status: r.status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      if (view) {
+        const html = mdToHtml(new TextDecoder().decode(r.bytes), { target: "web" });
+        return Response.json({ name: r.name, html }, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin" } });
+      }
       return new Response(r.bytes, {
         headers: {
           "content-type": "text/markdown; charset=utf-8",

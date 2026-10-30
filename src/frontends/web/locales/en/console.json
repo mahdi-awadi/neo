@@ -575,6 +575,7 @@
       "attention": "Item"
     },
     "action": {
+      "review": "Review",
       "answer": "Answer",
       "acknowledge": "Acknowledge",
       "retry": "Retry",
@@ -717,6 +718,25 @@
       "save": "Save",
       "saved": "Saved as {{ref}}",
       "duplicate": "Already saved as {{ref}}"
+    }
+  },
+  "item": {
+    "notFound": "This item is gone — it was answered or closed.",
+    "question": "The question",
+    "about": "The decision it is about",
+    "answered": "Answered — the work goes on",
+    "closed": "Already answered: {{answer}}",
+    "submit": "Submit answer",
+    "reply": {
+      "label": "Your answer",
+      "placeholder": "Type your answer…",
+      "send": "Send answer"
+    },
+    "plan": {
+      "download": "Download .md",
+      "loading": "Loading the plan…",
+      "missing": "The plan cannot be shown here ({{reason}}). You can still decide.",
+      "confirmDrop": "Drop this plan? The work it describes will not be built."
     }
   }
 }

@@ -48,7 +48,7 @@ arbitrary-file-read risk.
   anywhere on the host.
 - **A preview pane with the rendered Markdown.** Optional in the order. It needs a second response
   shape and a rendered view. Kept out to stay simple: the operator's phone opens the downloaded
-  file.
+  file. *Built later by ADR-0071 (`/md-file?view=html`, same checks), to read a plan before approving it.*
 - **A signed one-shot token per link (like staged attachments).** The paths come from worker text,
   not from the engine, so there is nothing to sign at render time. The session check and the path
   rules are the boundary.

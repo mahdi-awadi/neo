@@ -3,7 +3,8 @@
 // result (`supersedeDecision` / `expireDecision`) before it derives the thread state. No AI decides.
 
 import { basename } from "node:path";
-import type { Ledger, PlanStatus } from "./ledger";
+import type { DecisionRow, Ledger, PlanStatus } from "./ledger";
+import { reviewedPath } from "./plan-review";
 
 /** Config `decisionSettle` (docs/CONFIG.md). */
 export interface DecisionSettleCfg {
@@ -67,6 +68,18 @@ export function keepsOpen(text: string, patterns: readonly string[]): boolean {
  *  one — expiry only stops it counting as waiting; a late answer still resumes its project (ADR-0053). */
 export function answerable(d: { status: string }): boolean {
   return d.status === "open" || d.status === "expired";
+}
+
+/** Why a decision may NOT be closed by a typed answer, else undefined (ADR-0054 review, ADR-0071) — the one
+ *  rule the company's `decision` tool and the console's answer share. A governor approval (no order) is
+ *  released only by its card's Allow/Deny, which unblocks the waiting tool call; an alert by its OK; a plan
+ *  card follows its plan (approve or drop) — including an expired card whose plan row is gone. */
+export function textAnswerRefusal(dec: Pick<DecisionRow, "id" | "orderId" | "kind" | "question">, ledger: Pick<Ledger, "decisionSettleFactsByIds">): "approval" | "alert" | "plan" | undefined {
+  if (dec.kind === "alert") return "alert";
+  const card = ledger.decisionSettleFactsByIds([dec.id]);
+  if (card.planOf[dec.id] !== undefined || card.replaced?.[dec.id] !== undefined || reviewedPath(dec.question) !== undefined) return "plan";
+  if (!dec.orderId) return "approval";
+  return undefined;
 }
 
 /** One open decision, as the rules see it. */

@@ -27,7 +27,7 @@ import { DEFAULT_GITHUB_CFG, type GithubCfg } from "./producers/github";
 import { humanAge } from "./liveness";
 import { todoTitle } from "./todo-title";
 import { explainAttention, type AttentionLink } from "./attention-explain";
-import type { AttentionFacts } from "./ledger";
+import type { AttentionFacts, AttentionRow } from "./ledger";
 import { attentionClass, needsYou, type AttentionClass, type NeedsYouItem } from "./needs-you";
 import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
 
@@ -52,6 +52,34 @@ export interface ThreadSummary {
   title: string;
   state: ThreadState;
   updatedAt: number;
+}
+
+/** One attention item as the console shows it (the project page and an opened pin, ADR-0071). */
+export function attentionView(r: AttentionRow, now: number, pinned: boolean): AttentionItemView {
+  const e = explainAttention(r);
+  return {
+    id: r.id,
+    source: r.source,
+    kind: r.kind,
+    severity: r.severity,
+    title: r.title,
+    ...(r.detail !== undefined ? { detail: r.detail } : {}),
+    ...(r.url !== undefined ? { url: r.url } : {}),
+    ...(r.fromProject !== undefined ? { fromProject: r.fromProject } : {}),
+    ...(r.source === "note" ? { noteKind: noteKindOf(r), noteState: noteState(r) } : {}),
+    ageMs: now - r.firstSeen,
+    ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
+    actions: attentionActions(r),
+    badge: e.badge,
+    project: e.project,
+    plain: e.plain,
+    facts: e.facts,
+    links: e.links,
+    reasonOk: e.reasonOk,
+    ...(e.brief ? { brief: e.brief } : {}),
+    cls: attentionClass(r.kind),
+    pinned,
+  };
 }
 
 export interface AttentionItemView {
@@ -359,38 +387,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     [],
   );
 
-  const attention = part(
-    "attentionView",
-    name,
-    () =>
-      c.open.map((r): AttentionItemView => {
-        const e = explainAttention(r);
-        return {
-        id: r.id,
-        source: r.source,
-        kind: r.kind,
-        severity: r.severity,
-        title: r.title,
-        ...(r.detail !== undefined ? { detail: r.detail } : {}),
-        ...(r.url !== undefined ? { url: r.url } : {}),
-        ...(r.fromProject !== undefined ? { fromProject: r.fromProject } : {}),
-        ...(r.source === "note" ? { noteKind: noteKindOf(r), noteState: noteState(r) } : {}),
-        ageMs: now - r.firstSeen,
-        ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
-        actions: attentionActions(r),
-        badge: e.badge,
-        project: e.project,
-        plain: e.plain,
-        facts: e.facts,
-        links: e.links,
-        reasonOk: e.reasonOk,
-        ...(e.brief ? { brief: e.brief } : {}),
-        cls: attentionClass(r.kind),
-        pinned: c.needs.some((i) => i.ref === `att:${r.id}` && i.pinned),
-        };
-      }),
-    [],
-  );
+  const attention = part("attentionView", name, () => c.open.map((r) => attentionView(r, now, c.needs.some((i) => i.ref === `att:${r.id}` && i.pinned))), []);
 
   const isNeo = resolve(folder) === resolve(d.neoFolder);
   const restartGated = isNeo

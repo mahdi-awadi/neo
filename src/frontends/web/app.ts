@@ -10,7 +10,8 @@ import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
 import { CONFIRM_WINDOW_MS, armedFor, confirmTap } from "./confirm";
 import { type DetailView, backAction, enterAction, popDetail, staleOnLoad } from "./nav";
 import { createCodeEnhancer } from "./code-blocks";
-import { linkMdPaths } from "./md-links";
+import { linkMdPaths, mdFileHref } from "./md-links";
+import { keyboardInset } from "./viewport";
 import { type Attachment, type SendBody, createAttachments, formatSize } from "./attachments";
 import { bindComposeBoxes, clearBox } from "./compose-box";
 import { linesHtml } from "./text-lines";
@@ -776,6 +777,8 @@ function fitViewport(): void {
     requestAnimationFrame(() => {
       queued = false;
       root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
+      // ADR-0071: on iOS the keyboard covers the layout's bottom; a bottom sheet is lifted by that much.
+      root.style.setProperty("--kb", `${keyboardInset(window.innerHeight, vv)}px`);
     });
   };
   vv.addEventListener("resize", fit);
@@ -1576,8 +1579,9 @@ function closeThread(id: number, btn: Element | null): void {
       loadThreads(true);
   });
 }
-function planAction(id: number, action: string, version: number, btn: Element | null): void {
-  void act(btn, "/api/plan", { id, action, version }).then((r) => {
+/** A plan card action; resolves to whether the engine took it. */
+function planAction(id: number, action: string, version: number, btn: Element | null): Promise<boolean> {
+  return act(btn, "/api/plan", { id, action, version }).then((r) => {
       const d = (r.data ?? {}) as Any;
       const row = feedMsg("⋯ " + linesHtml(r.text), "me", null);
       // A done plan (ADR-0034): the reply says why nothing started and offers Run anyway.
@@ -1585,11 +1589,12 @@ function planAction(id: number, action: string, version: number, btn: Element | 
         const b = document.createElement("button");
         b.className = "chip";
         b.textContent = tx("threads.planAction.anyway");
-        b.onclick = () => planAction(id, "anyway", version, b);
+        b.onclick = () => void planAction(id, "anyway", version, b);
         row.appendChild(b);
       }
       if (TH.open !== undefined) openThread(TH.open);
       loadPins();
+      return r.ok;
   });
 }
 
@@ -1655,7 +1660,7 @@ function pinRow(it: Any, after: () => void): HTMLElement {
   const a = document.createElement("button");
   a.type = "button";
   a.className = "pinact";
-  a.textContent = it.action === "approve" ? tx("threads.planAction.approve") : tx(`pins.action.${it.action}`);
+  a.textContent = tx(`pins.action.${it.action}`);
   a.onclick = () => pinAction(it, a);
   row.appendChild(a);
   const x = document.createElement("button");
@@ -1668,21 +1673,182 @@ function pinRow(it: Any, after: () => void): HTMLElement {
   row.appendChild(x);
   return row;
 }
-/** A strip row's button: approve a plan, retry a todo, open a todo, or open where the item's own buttons are. */
+/** A strip row's button (ADR-0071): Retry a failed todo stays one tap; a todo opens its own sheet; every
+ *  other item opens itself — its full text and the actions it needs — never a page where it cannot be
+ *  answered, and never a plan approved unread. */
 function pinAction(it: Any, btn: HTMLElement): void {
-  if (it.action === "approve" && it.plan) return planAction(it.plan.id, "approve", it.plan.version, btn);
   if (it.action === "retry" && it.todoId !== undefined) return void todoAct("retry", it.todoId, btn).then(loadPins);
   if (it.kind === "todo" && it.todoId !== undefined) return openTodo(it.todoId, btn);
-  if (it.threadId !== undefined) {
-    tab("threads");
-    enterDetail("vthreads");
-    return openThread(it.threadId);
+  openItem(it.ref, btn);
+}
+
+// ── An opened item (ADR-0071): a decision, a plan or an attention item, in the one sheet ──────────
+function openItem(ref: string, btn: Element | null): void {
+  if (btn?.classList.contains("busy")) return;
+  btn?.classList.add("busy");
+  btn?.setAttribute("aria-busy", "true");
+  void fetch(`/api/item?ref=${encodeURIComponent(ref)}`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (!d) return void (toast(tx("item.notFound"), false), loadPins());
+      renderItemSheet(d);
+      if (!sheet().open) sheet().showModal();
+    })
+    .catch(() => toast(tx("toast.failed"), false))
+    .finally(() => {
+      btn?.classList.remove("busy");
+      btn?.removeAttribute("aria-busy");
+    });
+}
+function renderItemSheet(d: Any): void {
+  const kind = d.type === "attention" ? "attention" : d.type === "plan" ? "plan" : d.decision.kind === "alert" ? "alert" : "decision";
+  $("tdhead").innerHTML = `<span class="tchip" id="tdtitle">${esc(tx(`pins.kind.${kind}`))}</span>`;
+  const body = $("tdbody");
+  body.innerHTML = "";
+  // Once the item is answered, approved or dropped, the strip reloads and the sheet closes.
+  const done = (): void => {
+    loadPins();
+    if (sheet().open) sheet().close();
+  };
+  if (d.type === "decision") return void body.appendChild(decisionBlock(d.decision, done));
+  if (d.type === "plan") return void body.appendChild(planBlock(d.plan, done));
+  // An attention item: the project page's own renderer and buttons.
+  const row = document.createElement("div");
+  row.className = "tart";
+  row.innerHTML = attentionItemHtml(d.attention, "", "");
+  body.appendChild(row);
+  const note = document.createElement("div");
+  note.className = "rfo";
+  note.setAttribute("aria-live", "polite");
+  body.appendChild(note);
+  attentionButtons(d.attention, d.snoozeHours, row, row, (text) => (note.textContent = text), done);
+  // A reminder about an open decision (decision_stale) carries the decision: answer it right here.
+  if (d.linked) {
+    const h = document.createElement("h4");
+    h.textContent = tx("item.about");
+    body.appendChild(h);
+    body.appendChild(d.linked.type === "plan" ? planBlock(d.linked.plan, done) : decisionBlock(d.linked.decision, done));
   }
-  tab("projects");
-  if (it.project) {
-    enterDetail("vprojects");
-    showProject(it.project);
+}
+/** A decision: its full question, its card (ADR-0049), one button per option, and a reply box. An alert is
+ *  acknowledged; a closed one shows its answer. */
+function decisionBlock(dec: Any, done: () => void): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "itemb";
+  const meta = [dec.project ? iso(dec.project) : "", iso(age(Date.now() - dec.createdAt))].filter(Boolean).join(" · ");
+  box.innerHTML = `<h2 dir="auto">${esc(dec.question)}</h2><div class="rfo">${meta}</div>${decisionCardHtml(dec.spec)}`;
+  if (!dec.answerable) {
+    box.insertAdjacentHTML("beforeend", `<div class="rfo" dir="auto">${tx("item.closed", { answer: iso(dec.answer ?? "") })}</div>`);
+    return box;
   }
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const button = (label: string, cls: string, onclick: (b: HTMLButtonElement) => void): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.dir = "auto";
+    b.textContent = label;
+    b.onclick = () => onclick(b);
+    acts.appendChild(b);
+  };
+  const qs: Any[] = dec.spec?.questions ?? [];
+  // A one-question, one-choice card (or plain options) answers with a tap.
+  const oneTap = qs.length === 1 && !qs[0].multiSelect;
+  if (dec.kind === "alert") {
+    button(tx("pins.action.acknowledge"), "run", (b) => answerDecision(dec.id, { acknowledge: true }, b, done));
+  } else if (!qs.length || oneTap) {
+    const options: string[] = dec.options ?? qs[0]?.options ?? [];
+    for (const label of options) button(label, "chip", (b) => answerDecision(dec.id, { answer: label }, b, done));
+  } else {
+    // Several questions, or a multi-select one: pick in each, then one Submit (joined as Telegram joins it).
+    const form = document.createElement("form");
+    form.className = "ipicks";
+    form.innerHTML = qs
+      .map(
+        (q, i) =>
+          `<fieldset><legend dir="auto">${esc(q.header ? `${q.header}: ${q.question}` : q.question)}</legend>` +
+          (q.options as string[]).map((label, o) => `<label dir="auto"><input type="${q.multiSelect ? "checkbox" : "radio"}" name="q${i}" value="${o}"> ${esc(label)}</label>`).join("") +
+          `</fieldset>`,
+      )
+      .join("") + `<button class="run" type="submit">${esc(tx("item.submit"))}</button>`;
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      const picks = qs.map((_, i) => [...form.querySelectorAll<HTMLInputElement>(`input[name="q${i}"]:checked`)].map((x) => Number(x.value)));
+      answerDecision(dec.id, { picks }, form.querySelector("button"), done);
+    };
+    box.appendChild(form);
+  }
+  if (dec.threadId !== undefined) {
+    button(tx("todoDetail.openThread"), "chip", () => {
+      sheet().close();
+      tab("threads");
+      enterDetail("vthreads");
+      openThread(dec.threadId);
+    });
+  }
+  box.appendChild(acts);
+  if (dec.kind !== "alert") {
+    const form = document.createElement("form");
+    form.className = "ireply";
+    form.innerHTML =
+      `<label class="rfo" for="itans">${esc(tx("item.reply.label"))}</label>` +
+      `<textarea id="itans" class="itx" rows="3" dir="auto" data-compose="send" enterkeyhint="send" placeholder="${esc(tx("item.reply.placeholder"))}"></textarea>` +
+      `<button class="run" type="submit" data-compose-submit>${esc(tx("item.reply.send"))}</button>`;
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      const ta = form.querySelector("textarea")!;
+      if (!ta.value.trim()) return ta.focus();
+      answerDecision(dec.id, { answer: ta.value }, form.querySelector("button"), done);
+    };
+    box.appendChild(form);
+  }
+  return box;
+}
+/** Answer (or acknowledge) a decision: the engine's one answer path, then the strip reloads. */
+function answerDecision(id: string, body: { answer?: string; acknowledge?: boolean; picks?: number[][] }, btn: Element | null, done: () => void): void {
+  void act(btn, "/api/decision/answer", { id, ...body }, tx("item.answered")).then((r) => {
+    if (r.ok) done();
+    else loadPins();
+  });
+}
+/** A plan card: the plan rendered (the console's safe renderer, via /md-file, ADR-0046), a Download link
+ *  to the same file, Approve & build and Drop — read first, decide after. */
+function planBlock(pl: Any, done: () => void): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "itemb";
+  const href = mdFileHref(pl.file);
+  box.innerHTML =
+    `<h2 dir="auto">${esc(pl.title)}</h2><div class="rfo">${iso(pl.project)} · ${esc(tx(`threads.planState.${pl.state}`))} · ${ltr("v" + pl.version)}</div>` +
+    `<div class="rfo"><a class="mdl" href="${esc(href)}" download dir="ltr">${esc(tx("item.plan.download"))}</a> <span dir="ltr">${esc(pl.path)}</span></div>` +
+    `<div class="tmsg plandoc"><div class="tx" dir="auto">${esc(tx("item.plan.loading"))}</div></div><div class="acts stick"></div>`;
+  const doc = box.querySelector<HTMLElement>(".plandoc .tx")!;
+  void fetch(href + "&view=html", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : r.text().then((t) => Promise.reject(new Error(t)))))
+    .then((v: Any) => {
+      doc.innerHTML = v.html;
+      enhanceCode(doc);
+    })
+    .catch((e: unknown) => (doc.textContent = tx("item.plan.missing", { reason: e instanceof Error ? e.message : "" })));
+  const acts = box.querySelector<HTMLElement>(".acts")!;
+  const button = (label: string, cls: string, onclick: (b: HTMLButtonElement) => void): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.textContent = label;
+    b.onclick = () => onclick(b);
+    acts.appendChild(b);
+  };
+  const actions = (pl.actions ?? []) as string[];
+  if (actions.includes("approve")) button(tx("threads.planAction.approve"), "run", (b) => void planAction(pl.id, "approve", pl.version, b).then((ok) => ok && done()));
+  if (actions.includes("drop")) {
+    button(tx("threads.planAction.drop"), "chip no", (b) => {
+      if (!confirm(tx("item.plan.confirmDrop"))) return;
+      void planAction(pl.id, "drop", pl.version, b).then((ok) => ok && done());
+    });
+  }
+  if (actions.includes("changes")) acts.insertAdjacentHTML("beforeend", `<div class="rfo">${esc(t("threads.changesHint"))}</div>`);
+  return box;
 }
 
 // ── Todo detail (ADR-0065): a tap on any todo row opens it ───────────────────────────────────────
@@ -1763,6 +1929,13 @@ $("tdclose").onclick = () => sheet().close();
 sheet().addEventListener("click", (ev) => {
   if (ev.target === sheet()) sheet().close();
 });
+// ADR-0071: on a phone the keyboard takes half the screen. The sheet's height follows the visual viewport
+// (--app-h, CSS); once the keyboard has opened, a focused field is scrolled back into view.
+sheet().addEventListener("focusin", (ev) => {
+  const el = ev.target as HTMLElement;
+  if (!el.matches("textarea,input")) return;
+  setTimeout(() => el.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "instant" : "smooth" }), 300);
+});
 
 // ── History (ADR-0067): search past work, remember a fact, forget an entry ───────────────────────
 const historyPanel = mountHistory({
@@ -1808,7 +1981,7 @@ document.addEventListener("click", (ev) => {
     case "thread-older":
       return olderMessages();
     case "plan":
-      return planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version), el);
+      return void planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version), el);
     case "thread-close":
       return closeThread(Number(id), el);
     case "todo-open":

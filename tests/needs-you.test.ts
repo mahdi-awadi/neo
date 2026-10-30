@@ -57,7 +57,7 @@ test("a plan card, a decision, an alert, a failed todo and an unknown-kind item 
   const att = led.insertAttention(item({ kind: "brand_new_kind", key: "k", title: "something new" }), 6);
   const got = needsYou({ ledger: led, keepPatterns: KEEP }, 10);
   expect(got.map((i) => [i.ref, i.kind, i.action])).toEqual([
-    [`dec:${card}`, "plan", "approve"],
+    [`dec:${card}`, "plan", "review"], // ADR-0071: read the plan first, never a blind approve
     [`dec:${dec}`, "decision", "answer"],
     [`dec:${alert}`, "alert", "acknowledge"],
     [`todo:${t.id}`, "todo", "retry"],

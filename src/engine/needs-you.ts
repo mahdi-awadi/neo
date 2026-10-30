@@ -55,9 +55,10 @@ export function attentionClass(kind: string): AttentionClass {
 }
 
 export type NeedsYouKind = "plan" | "decision" | "alert" | "todo" | "attention";
-/** The strip's button: approve a plan, answer a decision, acknowledge an alert, retry a failed todo, or
- *  open the item where its own buttons are. */
-export type NeedsYouAction = "approve" | "answer" | "acknowledge" | "retry" | "open";
+/** The strip's button: review a plan (read it, then approve or drop — never a blind one-tap approve,
+ *  ADR-0071), answer a decision, acknowledge an alert, retry a failed todo, or open the item. Every one but
+ *  retry opens the item itself, where its full text and its actions are. */
+export type NeedsYouAction = "review" | "answer" | "acknowledge" | "retry" | "open";
 
 export interface NeedsYouItem {
   /** The pin ref: `dec:<id>`, `todo:<id>` or `att:<id>`. */
@@ -75,21 +76,32 @@ export interface NeedsYouItem {
   plan?: { id: number; version: number };
   todoId?: number;
   attentionId?: number;
+  /** The open decision Open answers: the item's own (a decision or plan card), or the one a
+   *  `decision_stale` reminder is about (ADR-0071). */
+  decisionId?: string;
 }
 
 export interface NeedsYouDeps {
-  ledger: Pick<Ledger, "listOpenDecisions" | "planCardIds" | "planByCard" | "listTodos" | "todoById" | "getMeta" | "allOpenAttention" | "attentionById" | "listPins">;
+  ledger: Pick<Ledger, "listOpenDecisions" | "planCardIds" | "planByCard" | "listTodos" | "todoById" | "getMeta" | "allOpenAttention" | "attentionById" | "listPins" | "decisionById">;
   /** cfg.decisionSettle.keepPatterns. */
   keepPatterns: readonly string[];
 }
 
 const ACTIVE_TODO: ReadonlySet<TodoRow["status"]> = new Set(["queued", "running", "retry", "waiting", "failed"]);
 
-function attentionItem(r: AttentionRow, pinned: boolean): NeedsYouItem {
+/** The open decision a `decision_stale` reminder is about (its key is the decision id), else undefined. */
+export function staleDecisionOf(r: Pick<AttentionRow, "kind" | "key">, ledger: Pick<Ledger, "decisionById">): string | undefined {
+  if (r.kind !== "decision_stale") return undefined;
+  return ledger.decisionById(r.key)?.status === "open" ? r.key : undefined;
+}
+
+function attentionItem(r: AttentionRow, pinned: boolean, ledger: Pick<Ledger, "decisionById">): NeedsYouItem {
+  const decisionId = staleDecisionOf(r, ledger);
   return {
     ref: `att:${r.id}`,
     kind: "attention",
-    action: "open",
+    action: decisionId ? "answer" : "open",
+    ...(decisionId ? { decisionId } : {}),
     project: r.project,
     why: explainAttention(r).plain,
     since: r.firstSeen,
@@ -135,7 +147,8 @@ export function needsYou(d: NeedsYouDeps, now: number): NeedsYouItem[] {
     add({
       ref: `dec:${w.id}`,
       kind,
-      action: kind === "plan" ? "approve" : kind === "alert" ? "acknowledge" : "answer",
+      action: kind === "plan" ? "review" : kind === "alert" ? "acknowledge" : "answer",
+      decisionId: w.id,
       ...(w.project ? { project: w.project } : {}),
       why: w.ask ?? "",
       since: w.since,
@@ -145,15 +158,18 @@ export function needsYou(d: NeedsYouDeps, now: number): NeedsYouItem[] {
     });
   }
   for (const t of d.ledger.listTodos({ statuses: ["failed"] })) add(todoItem(t, pins.get(`todo:${t.id}`) === "pinned"));
+  // A "decision open 24h" reminder stands in for its decision only while that decision is open and not
+  // already listed (the operator hid it); beside its decision, or once it is answered, it is moot (ADR-0071).
+  const moot = (r: AttentionRow): boolean => r.kind === "decision_stale" && (seen.has(`dec:${r.key}`) || !staleDecisionOf(r, d.ledger));
   for (const r of d.ledger.allOpenAttention(now)) {
-    if (attentionClass(r.kind) === "needs_you") add(attentionItem(r, pins.get(`att:${r.id}`) === "pinned"));
+    if (attentionClass(r.kind) === "needs_you" && !moot(r)) add(attentionItem(r, pins.get(`att:${r.id}`) === "pinned", d.ledger));
   }
   for (const [ref, state] of pins) {
     if (state !== "pinned" || seen.has(ref)) continue;
     const target = parseRef(ref);
     if (target?.type === "att") {
       const r = d.ledger.attentionById(target.id);
-      if (r && r.resolvedAt === undefined && (r.snoozedUntil === undefined || r.snoozedUntil <= now)) add(attentionItem(r, true));
+      if (r && r.resolvedAt === undefined && (r.snoozedUntil === undefined || r.snoozedUntil <= now) && !moot(r)) add(attentionItem(r, true, d.ledger));
     } else if (target?.type === "todo") {
       const t = d.ledger.todoById(target.id);
       if (t && ACTIVE_TODO.has(t.status)) add(todoItem(t, true));
@@ -165,7 +181,7 @@ export function needsYou(d: NeedsYouDeps, now: number): NeedsYouItem[] {
 
 const REF = /^(att|todo|dec):([A-Za-z0-9_-]{1,64})$/;
 
-function parseRef(ref: string): { type: "att" | "todo"; id: number } | { type: "dec"; id: string } | undefined {
+export function parseRef(ref: string): { type: "att" | "todo"; id: number } | { type: "dec"; id: string } | undefined {
   const m = REF.exec(ref);
   if (!m) return undefined;
   if (m[1] === "dec") return { type: "dec", id: m[2]! };

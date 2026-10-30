@@ -912,6 +912,13 @@ in the "Pinned — needs you" strip at the top of every console tab, or keeps a 
 it (unpinned). Stored in the ledger, so every device shows the same strip.
 _Avoid_: favourite, star, bookmark
 
+**Opened item**:
+What a pin's Open (or Review) shows in the console: the item itself, in one sheet, with its full text and
+the actions it needs. For a decision: its options and a reply box. For a plan: the plan rendered, with
+Download, Approve & build and Drop. For an attention item: its own buttons, and the decision a stale
+reminder is about. Never the project page (ADR-0071).
+_Avoid_: detail page, popup, modal
+
 **Superseded item**:
 An open attention item made pointless by a newer one of the same kind and the same stem in the same
 project — an older `chore/agent-sdk-0.3.303` bump branch when `chore/agent-sdk-0.3.312` waits too. The

@@ -1,3 +1,15 @@
+# HANDOFF — 2026-10-30: a pin's Open lands on the item; plans are read before approval (ADR-0071, on dev, restart-gated)
+
+Open on a pinned item now opens the item itself in one sheet: a decision with its options, picks and a reply
+box (answered through the Telegram answer path, `POST /api/decision/answer`); a plan rendered from
+`/md-file?view=html` with Download, Approve & build and Drop (the strip says Review); an attention item with
+its own buttons and, for a stale reminder, the decision to answer. Approvals stay Allow/Deny on Telegram
+(`textAnswerRefusal`, shared with the `decision` tool). Non-GET requests from another site are refused
+(Sec-Fetch-Site). Mobile e2e: `tests/console-pins-mobile.e2e.test.ts` (playwright-core dev dep, local
+Chromium); manual check: `bun tools/console-demo/serve.ts` (127.0.0.1). Not pushed.
+
+---
+
 # HANDOFF — 2026-10-30: a git push is the operator's call (ADR-0069, on dev, restart-gated)
 
 Every push starts paid CI/CD runs. Workers now get the push rule in the dispatch preamble (commit locally,
