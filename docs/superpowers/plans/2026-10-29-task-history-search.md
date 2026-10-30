@@ -340,7 +340,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     `-wal` and `-shm` files aside.
   - Done when: AC21 passes.
 
-- [ ] **17. Attention items for history and backup**
+- [x] **17. Attention items for history and backup**
   - Create: `tests/history-attention.test.ts`.
   - Modify: `src/engine/producers/engine.ts` (drafts from the newest `IndexReport` and the backup state),
     `src/engine/needs-you.ts` (`history_off` and `backup_failed` are needs-you, `history_degraded` is

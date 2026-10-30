@@ -21,6 +21,8 @@ export interface BackupJob {
   kind: "snapshot" | "drill";
   /** The database name (snapshot jobs). */
   name?: string;
+  /** What the job covers, as configured: the database path, or the backup folder (the drill). */
+  path: string;
   cron: string;
   /** The child's full argv: the bun binary, the script, then the flags. */
   argv: string[];
@@ -40,6 +42,8 @@ export interface BackupFailure {
   job: string;
   kind: "snapshot" | "drill";
   name?: string;
+  /** The job's database path, or the backup folder (the drill). */
+  path: string;
   /** When the streak started, and the newest failure. */
   since: number;
   at: number;
@@ -91,12 +95,12 @@ export function backupJobs(cfg: BackupCfg, baseDir: string, bun: string): Backup
     const name = backupName(db.path);
     const source = isAbsolute(db.path) ? db.path : resolve(baseDir, db.path);
     return {
-      id: `snapshot:${name}`, kind: "snapshot", name, cron: db.cron,
+      id: `snapshot:${name}`, kind: "snapshot", name, path: db.path, cron: db.cron,
       argv: [bun, SCRIPTS.snapshot, ...snapshotArgs({ source, dir: cfg.dir, name, compress: cfg.compress, minFreeGb: cfg.minFreeGb, keep })],
     };
   });
   if (!snaps.length) return [];
-  const drill: BackupJob = { id: "drill", kind: "drill", cron: cfg.drillCron, argv: [bun, SCRIPTS.drill, ...drillArgs({ dir: cfg.dir, names: snaps.map((j) => j.name!) })] };
+  const drill: BackupJob = { id: "drill", kind: "drill", path: cfg.dir, cron: cfg.drillCron, argv: [bun, SCRIPTS.drill, ...drillArgs({ dir: cfg.dir, names: snaps.map((j) => j.name!) })] };
   return [...snaps, drill];
 }
 
@@ -163,7 +167,7 @@ export function createBackupSchedule(deps: BackupScheduleDeps): BackupSchedule {
   const failed = (job: BackupJob, code: string, reason: string): void => {
     const at = now();
     const was = failing.get(job.id);
-    const f: BackupFailure = { job: job.id, kind: job.kind, ...(job.name ? { name: job.name } : {}), since: was?.since ?? at, at, code, reason, streak: (was?.streak ?? 0) + 1 };
+    const f: BackupFailure = { job: job.id, kind: job.kind, ...(job.name ? { name: job.name } : {}), path: job.path, since: was?.since ?? at, at, code, reason, streak: (was?.streak ?? 0) + 1 };
     failing.set(job.id, f);
     if (job.kind === "drill") events("backup_drill", { ok: false, code });
     events("backup_failed", { job: job.id, kind: job.kind, ...(job.name ? { name: job.name } : {}), code, streak: f.streak });

@@ -116,7 +116,7 @@ describe("the schedule", () => {
       await h.s.tick();
       if (day === 1) {
         const st = h.s.state();
-        expect(st.failing).toEqual([{ job: "snapshot:history", kind: "snapshot", name: "history", since: T + MIN, at: T + MIN + 86_400_000, code: "timeout", reason: `ended after ${BACKUP_DEFAULTS.timeoutMs} ms`, streak: 2 }]);
+        expect(st.failing).toEqual([{ job: "snapshot:history", kind: "snapshot", name: "history", path: "data/history.db", since: T + MIN, at: T + MIN + 86_400_000, code: "timeout", reason: `ended after ${BACKUP_DEFAULTS.timeoutMs} ms`, streak: 2 }]);
       }
     }
     const failed = h.events.filter((e) => e.kind === "backup_failed").map((e) => e.data);

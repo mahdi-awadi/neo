@@ -113,6 +113,20 @@ export const ATTENTION_BRIEFS: Record<string, BriefTemplate> = {
     task: "The worktree {path} has been idle for {hours}h. If its work is committed and merged, remove it (git worktree remove); otherwise commit the work or say what is left in it.",
     doneWhen: "the worktree is removed, or what is left in it is committed or explained",
   },
+  // The task history and the snapshot backup (ADR-0066): Neo's own engine; `{step}` is what the operator
+  // or a worker does (history/services.ts operatorStep).
+  history_off: {
+    task: "Meaning search over Neo's task history is off ({service}: {reason}). The step: {step}. Do the part a worker may do (check the service, the config names, the logs; never print a key), and tell the operator exactly what is left for them (a reload, an ops request). Do NOT restart or reload Neo.",
+    doneWhen: "meaning search is on again (`bun tools/history/admin.ts status` shows both services up), or the operator has the one step left for them",
+  },
+  history_degraded: {
+    task: "Neo's task history service {service} has been down or slow ({reason}) for a long time. The step: {step}. Find why it does not answer and bring it back without touching other projects' services. Do NOT restart or reload Neo.",
+    doneWhen: "`bun tools/history/admin.ts status` shows {service} up, or the cause and the fix are reported",
+  },
+  backup_failed: {
+    task: "The snapshot backup of {path} failed ({reason}). Read docs/backup.md and the reason, fix the cause (free space, a corrupt source, a timeout), and check that the next snapshot works.",
+    doneWhen: "the cause is fixed and a new snapshot passes its integrity check, or what blocks it is reported",
+  },
   restart_gated: {
     task: "Neo has changes that are built but not running: {title}. Check the change is ready (tests and types green on the branch), then list what a restart activates. Do NOT restart or reload Neo.",
     doneWhen: "the list of what a restart activates is ready for the operator",

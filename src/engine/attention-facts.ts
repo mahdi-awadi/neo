@@ -72,6 +72,19 @@ const DERIVE: Record<string, Derive> = {
     return clean({ pct: num(m?.[1]), model: m?.[2] });
   },
   skillify_repeat: (_key, t) => clean({ days: num(/came back on (\d+) days/.exec(t)?.[1]) }),
+  history_off: (key, t) => clean({ service: key, reason: /^history search off \(\w+\): (\w+)$/.exec(t)?.[1] }),
+  history_degraded: (key, t) => clean({ service: key, reason: /^history \w+ down \S+: (\w+)$/.exec(t)?.[1] }),
+  backup_failed: (_key, t) => {
+    const m = /^(?:snapshot backup|restore drill) of (.+) failed: (\S+)$/.exec(t);
+    return clean({ path: m?.[1], code: m?.[2] });
+  },
+};
+
+/** Facts that hold a code with its own catalogue section: the console and the English reason show the
+ *  code's text (`<section>.<code>`) instead of the code. Per badge, fact name → catalogue section. */
+export const CODED_FACTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  history_off: { reason: "history.reason" },
+  history_degraded: { reason: "history.reason" },
 };
 
 /** The item's facts: the stored ones over the ones its key and title carry. Never throws. */

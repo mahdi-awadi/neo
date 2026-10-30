@@ -912,3 +912,66 @@ test("ADR-0054 D2: the console state carries the deploy gap for the header", () 
   const none = createWebChannel({ engine: engine(fakeStart(() => {}).start), chatId: 42 });
   expect((none.state() as unknown as { deploy?: unknown }).deploy).toBeUndefined();
 });
+
+// ── ADR-0066: /find, /remember and /forget typed in the console's own chat box ─────────────────────
+import type { HistoryQuery, RememberInput, TaskHistory } from "../src/engine/history/index";
+
+function webHistory() {
+  const calls = { queries: [] as HistoryQuery[], saved: [] as RememberInput[], forgot: 0 };
+  const h: TaskHistory = {
+    async search(q) {
+      calls.queries.push(q);
+      return { ok: true, mode: { meaning: "on" }, hits: [{ ref: "todo:884", kind: "todo", project: "gold", at: Date.UTC(2026, 9, 20), title: "bus seats not freeing up", snippet: "the seats stay taken", todo: 884, commits: [], archived: false, via: ["words"] }] };
+    },
+    remember(e) {
+      calls.saved.push(e);
+      return { ok: true, ref: "mem:7", duplicate: false };
+    },
+    indexTick: async () => ({}) as never,
+    async forget() {
+      calls.forgot++;
+      return { ok: true, chunks: 1, points: 1, pendingPoints: 0 };
+    },
+    status: () => ({}) as never,
+    close() {},
+  };
+  return { h, calls };
+}
+
+test("the console chat box answers /find and /remember from the task history, not 'unavailable'", async () => {
+  const { h, calls } = webHistory();
+  const ch = createWebChannel({ engine: { ...engine(fakeStart().start), history: h }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send("/find bus seats p:gold");
+  await ch.send("/remember gold fees live in config p:gold");
+  const texts = events.filter((e) => e.type === "message").map((e) => (e as { text: string }).text);
+  expect(calls.queries[0]).toMatchObject({ query: "bus seats", project: "gold" });
+  expect(texts.some((t) => t.includes("bus seats not freeing up"))).toBe(true);
+  expect(texts.some((t) => t.includes("not available"))).toBe(false);
+  // The console's own rate-limit session, the same one the History tab uses.
+  expect(calls.saved).toEqual([{ text: "gold fees live in config", project: "gold", by: "operator", session: "console" }]);
+  expect(texts.some((t) => t.includes("Saved as mem:7"))).toBe(true);
+});
+
+test("/forget in the console chat box shows the entry and points to the History tab; nothing is removed", async () => {
+  const { h, calls } = webHistory();
+  const ch = createWebChannel({ engine: { ...engine(fakeStart().start), history: h }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send("/forget todo:884 wrong project");
+  const ev = events.find((e) => e.type === "history_forget") as { text: string; ref: string } | undefined;
+  expect(ev?.ref).toBe("todo:884");
+  expect(ev?.text).toContain("bus seats not freeing up");
+  expect(calls.forgot).toBe(0);
+  // The console renders the pointer from its catalogues, translated (not copied) in Arabic.
+  const { createConsoleI18n } = await import("../src/frontends/web/i18n");
+  expect(createConsoleI18n("ar").t("history.forgetInTab")).not.toBe(createConsoleI18n("en").t("history.forgetInTab"));
+  expect(createConsoleI18n("en").exists("history.forgetInTab")).toBe(true);
+  // Without a history the chat box says so.
+  const off = createWebChannel({ engine: engine(fakeStart().start), chatId: 42 });
+  const offEvents: WebEvent[] = [];
+  off.subscribe((e) => offEvents.push(e));
+  await off.send("/find bus");
+  expect(offEvents.some((e) => e.type === "message" && (e as { text: string }).text.includes("not available"))).toBe(true);
+});

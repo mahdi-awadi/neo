@@ -5,7 +5,7 @@
 // (`att.*`), filled with these facts, so the same item reads right in English and Arabic.
 import type { AttentionFacts, AttentionRow } from "./ledger";
 import { attentionBrief } from "./attention-briefs";
-import { factsOf } from "./attention-facts";
+import { CODED_FACTS, factsOf } from "./attention-facts";
 // The console's EN catalogue is the one source of badge names; Telegram (English) reads the same text.
 import EN from "../frontends/web/locales/en/console.json";
 
@@ -47,6 +47,7 @@ const SUBJECT: Record<string, string[]> = {
   unpushed: ["branch"], no_upstream: ["branch"], stale_branch: ["branch"], drift: ["branch"], worktree: ["path"],
   thread_waiting: ["threadTitle"], thread_failed: ["threadTitle"], decision_stale: ["question"],
   approval_stuck: ["label"], dispatch_spinning: ["label"], queue_paused: ["reason"],
+  history_off: ["step"], history_degraded: ["step"],
 };
 
 export function explainAttention(row: AttentionRow): AttentionExplain {
@@ -84,6 +85,15 @@ export function explainAttention(row: AttentionRow): AttentionExplain {
 }
 
 type AttCatalogue = { att?: { kind?: Record<string, string>; why?: Record<string, string> } };
+
+/** A coded fact's English text (`CODED_FACTS`), from the EN catalogue; undefined when it has none. */
+function codedEn(badge: string, fact: string, value: string | number): string | undefined {
+  const section = CODED_FACTS[badge]?.[fact];
+  if (!section) return undefined;
+  let node: unknown = EN;
+  for (const part of [...section.split("."), String(value)]) node = node && typeof node === "object" ? (node as Record<string, unknown>)[part] : undefined;
+  return typeof node === "string" ? node : undefined;
+}
 const enKinds = (): Record<string, string> => (EN as AttCatalogue).att?.kind ?? {};
 
 /** A badge's English name, from the console's EN catalogue (`att.kind.*`); the badge key when absent. */
@@ -111,6 +121,8 @@ export function whyEn(e: Pick<AttentionExplain, "badge" | "facts">, now: number)
     if (k === "age") return typeof e.facts.since === "number" ? shortAge(now - e.facts.since) : "?";
     const v = e.facts[k];
     if (v === undefined || v === "") return "?";
+    const coded = codedEn(e.badge, k, v);
+    if (coded !== undefined) return coded;
     return REFS.has(k) ? `#${v}` : k === "pct" ? `${v}%` : String(v);
   });
 }

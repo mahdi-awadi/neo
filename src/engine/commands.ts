@@ -85,6 +85,9 @@ export interface CommandDeps {
   gitRead?: GitRead;
   /** The task history (ADR-0066) for /find, /remember and /forget. Absent → they say it is unavailable. */
   history?: TaskHistory;
+  /** The surface that typed the history command: its `/remember` rate-limit session and its default
+   *  `/forget` reason (default Telegram; the console's chat box shares the History tab's `console`). */
+  historySurface?: "telegram" | "console";
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -488,11 +491,11 @@ function rememberCommand(args: string, deps: CommandDeps): string {
   const text = (project ? words.slice(0, -1) : words).join(" ");
   if (!text) return "Usage: /remember <fact> [p:<project>]";
   if (!deps.history) return HISTORY_UNAVAILABLE;
-  return rememberTool(deps.history, { text, ...(project ? { project } : {}) }, { by: "operator", session: "telegram" }).content[0]!.text;
+  return rememberTool(deps.history, { text, ...(project ? { project } : {}) }, { by: "operator", session: deps.historySurface ?? "telegram" }).content[0]!.text;
 }
 
 const FORGET_USAGE = "Usage: /forget <ref> [reason] — a ref from /find, e.g. todo:884, plan:12, mem:3.";
-const FORGET_DEFAULT_REASON = "forgotten by the operator in Telegram";
+const FORGET_DEFAULT_REASON = (surface: CommandDeps["historySurface"]): string => `forgotten by the operator in ${surface === "console" ? "the console" : "Telegram"}`;
 
 /** /forget — show the entry and offer the Forget button; nothing is removed until the tap. */
 function forgetCommand(args: string, deps: CommandDeps): CommandResult {
@@ -502,7 +505,7 @@ function forgetCommand(args: string, deps: CommandDeps): CommandResult {
   if (!FORGETTABLE.test(ref)) return { text: FORGET_USAGE };
   const history = deps.history;
   if (!history) return { text: HISTORY_UNAVAILABLE };
-  const reason = rest.join(" ").trim() || FORGET_DEFAULT_REASON;
+  const reason = rest.join(" ").trim() || FORGET_DEFAULT_REASON(deps.historySurface);
   return {
     text: "",
     later: history.search({ query: ref, limit: 10 }).then(

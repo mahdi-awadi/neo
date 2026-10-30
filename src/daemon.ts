@@ -150,7 +150,17 @@ async function main(): Promise<void> {
    *  SDK-reported windows (ADR-0013), read once per tick. */
   const attentionEngineTick = (): void => {
     const windowTokensByModel = contextWindows(ledger, cfg.contextPolicy.windowTokensByModel);
-    runEngineProducer({ ...engineProducerDeps, measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }) }, Date.now());
+    runEngineProducer(
+      {
+        ...engineProducerDeps,
+        measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }),
+        // ADR-0066: Neo's own items — the task history's service states (newest pass) and the backup state.
+        neoFolder,
+        ...(historyRuntime.available ? { history: { cfg: historyCfg, services: () => historyRuntime.latest() } } : {}),
+        backups: () => backups.state(),
+      },
+      Date.now(),
+    );
   };
   // The running build (spec §8.4): recorded once at boot, so the restart producer and /gated can say
   // what is built but not running. The Neo repo is the daemon's working folder.

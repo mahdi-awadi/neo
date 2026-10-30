@@ -1,6 +1,8 @@
 // What the task history's two outside services share (ADR-0066 Decision 4.9): the reasons meaning search
 // is off, a service state, and the loopback rule — the embedder and the vector index accept only an
-// http(s) URL on 127.0.0.1, ::1 or localhost, with no credentials in it.
+// http(s) URL on 127.0.0.1, ::1 or localhost, with no credentials in it. Also the one line that tells the
+// operator what to do about a service state (the attention items and the admin status name it).
+import type { HistoryCfg } from "./defaults";
 
 export type MeaningOffReason =
   | "not_configured" | "config_refused" | "embedder_down" | "embedder_slow" | "embedder_refused"
@@ -9,7 +11,41 @@ export type MeaningOffReason =
 /** `off`: the operator must act (config, key, model, collection); `down`: it may come back by itself. */
 export type ServiceState = { state: "up" } | { state: "down" | "off"; reason: MeaningOffReason };
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
+/** The two outside services, by the name the attention items and the admin status use. */
+export type HistoryService = "embedder" | "vectors";
+
+/** What the operator does about a service state, one line. The names come from the config, so a renamed
+ *  key, URL or collection reads right. English data, like every attention title. */
+export function operatorStep(service: HistoryService, reason: MeaningOffReason, cfg: Pick<HistoryCfg, "embedder" | "vectors">): string {
+  const { embedder: e, vectors: v } = cfg;
+  const install = "run `bun tools/history/install.ts`, then reload Neo";
+  switch (reason) {
+    case "not_configured":
+      return service === "embedder"
+        ? `the embedder is not installed: ${install} (it writes ${e.keyEnv} into .env)`
+        : `${v.urlEnv} or ${v.keyEnv} is not in .env: ask ops for the shared Qdrant URL and a key for ${v.collection}, then reload Neo`;
+    case "config_refused":
+      return service === "embedder"
+        ? `the embedder settings were refused: history.embedder.url must be a loopback URL (now ${e.url}); fix config.json, then reload Neo`
+        : `the shared index settings were refused: ${v.urlEnv} must be a loopback URL, ${v.keyEnv} a key for ${v.collection} only, and the collection one of ${v.allowedCollections.join(", ")}; then reload Neo`;
+    case "embedder_refused":
+      return `the embedder refused the key: ${install} (the key in .env and the service must match)`;
+    case "embedder_wrong_model":
+      return `the embedder runs another model or revision than ${e.model}: ${install} (it pins the model), or set history.embedder.model and revision to match`;
+    case "vectors_refused":
+      return `the shared Qdrant refused the key (ops may have rotated it): reload Neo to read the new key; if it still fails, ask ops for a key for ${v.collection}`;
+    case "collection_missing":
+      return `ask ops to create the collection ${v.collection} (${e.dims} dims, cosine) in the shared Qdrant`;
+    case "embedder_down":
+    case "embedder_slow":
+      return "check the neo-embedder container (`docker compose -p neo-embedder ps` and its logs); `bun tools/history/install.ts` starts it again";
+    case "vectors_down":
+    case "vectors_slow":
+      return `check the shared Qdrant (an ops service) and the URL in ${v.urlEnv}`;
+  }
+}
+
+const LOOPBACK_HOSTS =new Set(["127.0.0.1", "[::1]", "localhost"]);
 
 /** True for an http(s) URL whose host is exactly 127.0.0.1, ::1 or localhost and that carries no user or
  *  password. Anything that does not parse is false. */

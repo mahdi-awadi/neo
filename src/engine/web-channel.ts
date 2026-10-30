@@ -70,6 +70,9 @@ export type WebEvent =
   | { type: "file"; name: string; url: string; project?: string }
   // What needs the operator (ADR-0018, /attention): the list and its one-tap items.
   | { type: "attention"; text: string; items: NonNullable<CommandResult["attention"]>; snoozeHours: number }
+  // `/forget` typed here (ADR-0066): the entry (safe HTML, feedLine) and its ref; the console links the History
+  // tab, whose Forget button asks for the reason and confirms. Nothing is removed by the command itself.
+  | { type: "history_forget"; text: string; ref: string }
   // A thread changed state (ADR-0017): the console moves its row without a re-fetch.
   | ({ type: "thread"; ref?: string } & ThreadChange & Partial<Pick<ThreadListRow, "messages" | "openDecisions" | "activeTodos">>);
 
@@ -337,10 +340,16 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         todo: opts.engine.todo,
         trace: opts.engine.trace,
         neoFolder: opts.neoFolder,
+        // The task history (ADR-0066): /find, /remember and /forget, as on Telegram.
+        ...(opts.engine.history ? { history: opts.engine.history } : {}),
+        historySurface: "console",
       });
       if (command !== null) {
         if (command.later) {
-          message((await command.later).text); // /project: the console's own tab has its buttons
+          const later = await command.later;
+          // /forget: the History tab is the console's Forget button; /project: the console's own tab has its buttons.
+          if (later.forget) emit({ type: "history_forget", text: feedLine(later.text).html, ref: later.forget.ref });
+          else message(later.text);
           return;
         }
         if (command.sdk) emit({ type: "sdk", sdk: command.sdk });

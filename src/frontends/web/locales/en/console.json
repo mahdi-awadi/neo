@@ -707,6 +707,7 @@
     "cancel": "Cancel",
     "forgotten": "Forgotten: {{chunks}} text parts and {{points}} vectors removed.",
     "forgetPending": "{{n}} vectors wait for the shared index.",
+    "forgetInTab": "To forget it, open it in the History tab and press Forget there:",
     "remember": {
       "title": "Remember a fact",
       "text": "A decision and its reason, a gotcha, where something lives…",

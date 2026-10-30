@@ -188,7 +188,7 @@ test("a new ctx_window_suspect item also records one event naming the model and 
 });
 
 test("every kind the producer emits is listed in ENGINE_KINDS", () => {
-  expect([...ENGINE_KINDS].sort()).toEqual(["approval_stuck", "ctx_window_suspect", "decision_stale", "dispatch_spinning", "queue_paused", "thread_failed", "thread_waiting"]);
+  expect([...ENGINE_KINDS].sort()).toEqual(["approval_stuck", "backup_failed", "ctx_window_suspect", "decision_stale", "dispatch_spinning", "history_degraded", "history_off", "queue_paused", "thread_failed", "thread_waiting"]);
 });
 
 test("readAttentionCfg: defaults, and only well-typed positive numbers are kept", () => {

@@ -19,6 +19,7 @@ import { dismissSplash } from "./splash";
 import { runAct, type ActResult } from "./act";
 import { mountHistory } from "./history";
 import { THREAD_ORIGINS } from "../../engine/thread-origins";
+import { CODED_FACTS } from "../../engine/attention-facts";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
 const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
@@ -1509,7 +1510,7 @@ function renderProjectPane(v: Any): void {
 /** The facts a description template may name (ADR-0059). A fact an item lacks reads `att.unknown`. */
 /** Facts that are references: shown as "#N". */
 const ATT_REFS = new Set(["pr", "issue", "alert", "decision"]);
-const ATT_FACTS = ["age", "label", "reason", "decision", "pct", "model", "files", "days", "pr", "dep", "from", "to", "workflow", "branch", "issue", "severity", "alert", "secretType", "ahead", "upstream", "base", "hours"];
+const ATT_FACTS = ["age", "label", "reason", "decision", "pct", "model", "files", "days", "pr", "dep", "from", "to", "workflow", "branch", "issue", "severity", "alert", "secretType", "ahead", "upstream", "base", "hours", "path"];
 /** One attention item, self-explaining (ADR-0059): severity, #id, its kind badge and project, a plain title,
  *  why it is there (`att.why.<badge>` from its facts), its links, what → todo will do (`att.next.<badge>`)
  *  and the exact brief on tap. Every value is escaped and isolated (`iso`), so ids and branch names stay
@@ -1523,6 +1524,11 @@ function attentionItemHtml(it: Any, noteChip: string, from: string): string {
     vars[k] = v === undefined || v === "" ? iso(tx("att.unknown")) : ATT_REFS.has(k) ? ltr(`#${v}`) : k === "pct" ? ltr(`${v}%`) : typeof v === "number" ? ltr(v) : iso(v);
   }
   if (typeof facts.since === "number") vars.age = iso(age(Date.now() - facts.since));
+  // A coded fact (a history reason code) reads in the operator's language from its own catalogue section.
+  for (const [k, section] of Object.entries(CODED_FACTS[it.badge] ?? {})) {
+    const v = facts[k];
+    if (v !== undefined && i18n.exists(`${section}.${v}`)) vars[k] = esc(tx(`${section}.${v}`));
+  }
   const badge = esc(it.badge ?? "other");
   const links = ((it.links ?? []) as Any[])
     .map((l) => (typeof l.href === "string" && /^https?:\/\//.test(l.href) ? `<a href="${esc(l.href)}" target="_blank" rel="noopener noreferrer">${l.kind === "url" ? esc(tx("att.openLink")) : ltr(l.label)}</a>` : ltr(l.label)))
@@ -1940,6 +1946,11 @@ es.onmessage = (ev) => {
   } else if (e.type === "notice") feedMsg("⋯ " + esc(e.text), "me", filterProject);
   else if (e.type === "projects") void loadState();
   else if (e.type === "attention") renderAttention(e);
+  else if (e.type === "history_forget") {
+    // `/forget` typed here (ADR-0066): the entry, then a link to it in the History tab, whose Forget button
+    // asks for the reason and confirms.
+    feedMsg(`<div class="tx" dir="auto">${e.text}</div><div class="rfo">${esc(tx("history.forgetInTab"))} <a href="#history=${encodeURIComponent(e.ref)}">${ltr(e.ref)}</a></div>`, "out", null);
+  }
   else if (e.type === "sdk") {
     S.sdk = e.sdk;
     renderSdk();

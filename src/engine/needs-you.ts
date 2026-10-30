@@ -21,6 +21,8 @@ const CLASS: Record<string, AttentionClass> = {
   secret_scanning: "needs_you",
   code_scanning: "needs_you",
   note_question: "needs_you",
+  history_off: "needs_you", // meaning search cannot start until the operator acts (ADR-0066)
+  backup_failed: "needs_you",
   // An agent or the engine handles these; they never raise the badge.
   pr_open: "housekeeping",
   pr_review_requested: "housekeeping",
@@ -41,6 +43,7 @@ const CLASS: Record<string, AttentionClass> = {
   note_fyi: "housekeeping",
   note_finding: "housekeeping",
   note_request: "housekeeping",
+  history_degraded: "housekeeping", // a service down or slow: it may come back by itself
 };
 
 /** The kinds the table classes (the coverage test reads it). */
