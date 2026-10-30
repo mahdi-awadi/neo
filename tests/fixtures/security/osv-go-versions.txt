@@ -1,0 +1,7 @@
+/repo/services/common/go.mod github.com/mahdi-awadi/eticket-v3/services/common
+/repo/services/common/go.mod golang.org/x/crypto v0.58.0
+/repo/services/common/go.mod github.com/quic-go/quic-go v0.59.0
+/repo/services/common/go.mod github.com/jackc/pgx/v5 v5.9.0
+/repo/services/connect-gateway/go.mod golang.org/x/crypto v0.58.0
+/repo/services/connect-gateway/go.mod github.com/quic-go/quic-go v0.59.0
+/repo/services/connect-gateway/go.mod golang.org/x/net v0.1.0

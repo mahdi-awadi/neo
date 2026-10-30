@@ -1,30 +1,69 @@
 {
   "results": [
     {
-      "source": { "path": "/repo/services/common/go.mod", "type": "lockfile" },
+      "source": {
+        "path": "/repo/services/common/go.mod",
+        "type": "lockfile"
+      },
       "packages": [
         {
-          "package": { "name": "golang.org/x/crypto", "version": "0.58.0", "ecosystem": "Go" },
-          "vulnerabilities": [{ "id": "GO-2026-5932" }],
+          "package": {
+            "name": "golang.org/x/crypto",
+            "version": "0.58.0",
+            "ecosystem": "Go"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GO-2026-5932"
+            }
+          ],
           "groups": [
             {
-              "ids": ["GO-2026-5932"],
-              "aliases": ["GO-2026-5932"],
-              "experimentalAnalysis": { "GO-2026-5932": { "called": true, "unimportant": false } },
+              "ids": [
+                "GO-2026-5932"
+              ],
+              "aliases": [
+                "GO-2026-5932"
+              ],
+              "experimental_analysis": {
+                "GO-2026-5932": {
+                  "called": true,
+                  "unimportant": false
+                }
+              },
               "max_severity": ""
             }
           ]
         },
         {
-          "package": { "name": "github.com/quic-go/quic-go", "version": "0.59.0", "ecosystem": "Go" },
-          "vulnerabilities": [{ "id": "GO-2026-5676" }, { "id": "GHSA-vvgj-x9jq-8cj9" }],
+          "package": {
+            "name": "github.com/quic-go/quic-go",
+            "version": "0.59.0",
+            "ecosystem": "Go"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GO-2026-5676"
+            },
+            {
+              "id": "GHSA-vvgj-x9jq-8cj9"
+            }
+          ],
           "groups": [
             {
-              "ids": ["GO-2026-5676", "GHSA-vvgj-x9jq-8cj9"],
-              "aliases": ["GO-2026-5676", "GHSA-vvgj-x9jq-8cj9"],
-              "experimentalAnalysis": {
-                "GO-2026-5676": { "called": false, "unimportant": false },
-                "GHSA-vvgj-x9jq-8cj9": { "called": true, "unimportant": false }
+              "ids": [
+                "GO-2026-5676",
+                "GHSA-vvgj-x9jq-8cj9"
+              ],
+              "aliases": [
+                "GO-2026-5676",
+                "GHSA-vvgj-x9jq-8cj9"
+              ],
+              "experimental_analysis": {
+                "GO-2026-5676": {
+                  "called": true,
+                  "unimportant": false
+                }
               },
               "max_severity": "9.1"
             }

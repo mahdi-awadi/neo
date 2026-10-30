@@ -628,8 +628,8 @@ _Avoid_: skipped file, partial finding
 
 **Unreachable vulnerability**:
 A Go dependency vulnerability that osv-scanner's call analysis (govulncheck) found the project never
-calls. Its finding is capped at medium and tagged `unreachable`: reported, never blocking. Only a
-`called: false` verdict for every id of the finding counts; no analysis means full severity (ADR-0066).
+calls. Its finding is capped at medium and tagged `unreachable`: reported, never blocking. It needs osv's verdicts for the finding, all
+`called: false`, made at the version osv reports; no analysis means full severity (ADR-0066).
 _Avoid_: false positive, ignored vuln, suppressed
 
 **Chained hook**:

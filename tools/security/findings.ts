@@ -7,6 +7,7 @@
 //
 //   bun tools/security/findings.ts report   [--baseline f] [--out f] [--label s] [--root repo] tool:raw.json ...
 //   bun tools/security/findings.ts baseline --baseline f [--root repo] tool:raw.json ...
+//   (both: [--missing f] scan.sh's missing parts; [--osv-go-versions f] Go's selected versions, ADR-0066)
 //   (exit 1 from `report` = new high/critical findings; exit 3 = the baseline is unreadable, warn only)
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -99,14 +100,17 @@ type Any = any;
 /** The most an unreachable vulnerability can weigh: below the blocking level, still in every report. */
 const UNREACHABLE_CAP: Severity = "medium";
 
-/** osv's Go call analysis (govulncheck, ADR-0066): true only when osv analysed this group and found
- *  every one of its vulnerabilities uncalled. Fails closed: another ecosystem, no analysis (no Go
- *  toolchain, or govulncheck failed), an id without a verdict or a verdict that is not `false`. */
+/** osv's Go call analysis (govulncheck, ADR-0066): true only when osv analysed this group and every
+ *  verdict is `called: false`. A group's ids are aliases of one vulnerability and osv keys the verdict
+ *  by the Go id only (not its GHSA alias), as its own `IsCalled` does. Fails closed: another
+ *  ecosystem, no analysis (no Go toolchain, or govulncheck failed), a verdict for an id outside the
+ *  group, or a verdict that is not the boolean `false`. */
 export function osvUnreachable(ecosystem: unknown, group: Any): boolean {
-  const verdicts = group?.experimentalAnalysis;
-  const ids: unknown[] = Array.isArray(group?.ids) ? group.ids : [];
-  if (ecosystem !== "Go" || !verdicts || typeof verdicts !== "object" || !ids.length) return false;
-  return ids.every((id) => verdicts[String(id)]?.called === false);
+  const verdicts = group?.experimental_analysis; // osv-scanner v2 JSON
+  const ids = new Set((Array.isArray(group?.ids) ? group.ids : []).map(String));
+  if (ecosystem !== "Go" || !verdicts || typeof verdicts !== "object" || Array.isArray(verdicts)) return false;
+  const entries = Object.entries(verdicts as Record<string, Any>);
+  return entries.length > 0 && entries.every(([id, v]) => ids.has(id) && v?.called === false);
 }
 
 /** Semgrep prefixes a rule id with its config file's directory, relative to where it ran
@@ -124,6 +128,26 @@ export function relPath(path: string, root?: string): string {
   return p;
 }
 
+/** The module versions Go selected when it analysed each go.mod (ADR-0066): repo-relative go.mod →
+ *  module path → version without its "v". */
+export type GoVersions = Map<string, Map<string, string>>;
+
+/** `scan.sh`'s Go versions file: one `<go.mod> <module> <version> [<replacement> <version>]` line per
+ *  module (`go list -m all`). A module replaced by another path or a local folder gets no version: the
+ *  analysed code is not the version osv reports. */
+export function parseGoVersions(text: string, root?: string): GoVersions {
+  const out: GoVersions = new Map();
+  for (const line of text.split("\n")) {
+    const [gomod, mod, version, replacement, replacementVersion] = line.trim().split(/\s+/);
+    if (!gomod || !mod) continue;
+    const effective = replacement === undefined ? version : replacement === mod ? replacementVersion : undefined;
+    const file = relPath(gomod, root);
+    if (!out.has(file)) out.set(file, new Map());
+    out.get(file)!.set(mod, String(effective ?? "").replace(/^v/, ""));
+  }
+  return out;
+}
+
 /** Semgrep without a login reports `"requires login"` for the matched code, so the code is read from
  *  the scanned source by its byte offsets. Unreadable: the reported lines, else the position. */
 function matchedCode(r: Any, base: string | undefined, cache: Map<string, Buffer | null>): string {
@@ -138,7 +162,7 @@ function matchedCode(r: Any, base: string | undefined, cache: Map<string, Buffer
   return lines && lines !== "requires login" ? squash(lines) : `@${r.start?.line ?? 0}:${r.start?.col ?? 0}`;
 }
 
-export function normalize(tool: Tool, raw: Any, ctx: { root?: string; src?: string } = {}): Finding[] {
+export function normalize(tool: Tool, raw: Any, ctx: { root?: string; src?: string; goVersions?: GoVersions } = {}): Finding[] {
   const sources = new Map<string, Buffer | null>();
   // Every finding is built here, so its file and rule are canonical before the fingerprint is taken.
   const mk = (t: Tool, rule: string, severity: Severity, file: string, line: number, message: string, key: string) =>
@@ -163,7 +187,10 @@ export function normalize(tool: Tool, raw: Any, ctx: { root?: string; src?: stri
             const pkg = `${p.package?.name}@${p.package?.version}`;
             const message = `${pkg} (${p.package?.ecosystem}) ${(g.aliases ?? g.ids ?? []).join(" ")}`;
             const full = severityFromCvss(g.max_severity);
-            if (!osvUnreachable(p.package?.ecosystem, g)) return mk("osv", id, full, res.source?.path ?? "", 0, message, pkg);
+            // A verdict counts only for the version osv reports: a workspace may have analysed another one.
+            const analysed = ctx.goVersions?.get(relPath(res.source?.path ?? "", ctx.root))?.get(String(p.package?.name));
+            const same = !!analysed && analysed === String(p.package?.version ?? "").replace(/^v/, "");
+            if (!same || !osvUnreachable(p.package?.ecosystem, g)) return mk("osv", id, full, res.source?.path ?? "", 0, message, pkg);
             const capped = RANK[full] > RANK[UNREACHABLE_CAP] ? UNREACHABLE_CAP : full;
             const f = mk("osv", id, capped, res.source?.path ?? "", 0, `unreachable (never called): ${message}`, pkg);
             return { ...f, tags: ["unreachable"] };
@@ -201,7 +228,7 @@ export function summarize(findings: Finding[]): { block: boolean; counts: Record
   return { block: counts.critical + counts.high > 0, counts };
 }
 
-function load(spec: string, ctx: { root?: string; src?: string }): Finding[] {
+function load(spec: string, ctx: { root?: string; src?: string; goVersions?: GoVersions }): Finding[] {
   const i = spec.indexOf(":");
   const tool = spec.slice(0, i) as Tool;
   const path = spec.slice(i + 1);
@@ -224,6 +251,7 @@ if (import.meta.main) {
   let root: string | undefined;
   let src: string | undefined;
   let missingPath: string | undefined;
+  let goVersionsPath: string | undefined;
   const specs: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--baseline") baselinePath = rest[++i];
@@ -232,9 +260,11 @@ if (import.meta.main) {
     else if (rest[i] === "--root") root = rest[++i];
     else if (rest[i] === "--src") src = rest[++i]; // where the scanned files are (staged: the index copy)
     else if (rest[i] === "--missing") missingPath = rest[++i]; // scan.sh's missing parts (ADR-0051)
+    else if (rest[i] === "--osv-go-versions") goVersionsPath = rest[++i]; // Go's selected versions (ADR-0066)
     else specs.push(rest[i]);
   }
-  const all = specs.flatMap((spec) => load(spec, { root, src }));
+  const goVersions = goVersionsPath && existsSync(goVersionsPath) ? parseGoVersions(readFileSync(goVersionsPath, "utf8"), root) : undefined;
+  const all = specs.flatMap((spec) => load(spec, { root, src, goVersions }));
   const incomplete = missingPath && existsSync(missingPath) ? parseMissing(readFileSync(missingPath, "utf8")) : [];
   if (cmd === "baseline") {
     if (!baselinePath) throw new Error("--baseline required");

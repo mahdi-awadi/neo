@@ -120,11 +120,14 @@ run_hadolint() { # repo-relative dockerfiles...
 
 # osv-scanner runs Go call analysis (govulncheck) only with a Go toolchain on PATH (ADR-0066), so it runs
 # in the pinned Go image. Its binary comes from OSV_BIN_URL into the neo-sec-gocache volume and is checked
-# against OSV_BIN_SHA256 before every run. Go writes go.sum/go.work.sum while it loads packages, so it
-# gets a disposable copy of the checkout (tracked + untracked-not-ignored files, reflinked where the
-# filesystem can) at the repo's own path: same paths, same fingerprints, the repo itself untouched.
-# No result (no download, a checksum mismatch, out of memory): the plain osv image runs, with no
-# analysis, and every Go finding keeps its full severity (findings.ts).
+# against OSV_BIN_SHA256 before every run. Go writes go.sum/go.work.sum while it loads packages, so the
+# repo is mounted as a copy-on-write overlay (Docker's local volume driver mounts it; the container gets
+# no extra rights): same paths, so the same fingerprints, and every write lands in $work, never in the
+# repo. In a repo with a go.work, every module joins the workspace inside the overlay, so a module the
+# workspace does not list loads its sibling modules the way the listed ones do. The run also writes the
+# module versions Go selected for each go.mod: a verdict counts only for the version osv reports.
+# No result (no download, a checksum mismatch, out of memory, no overlay): the plain osv image runs
+# read-only, with no analysis, and every Go finding keeps its full severity (findings.ts).
 osv_go_sh='set -e
 bin=/neo/bin/osv-scanner-$OSV_BIN_SHA256
 if ! echo "$OSV_BIN_SHA256  $bin" | sha256sum -c -s 2>/dev/null; then
@@ -133,19 +136,28 @@ if ! echo "$OSV_BIN_SHA256  $bin" | sha256sum -c -s 2>/dev/null; then
   echo "$OSV_BIN_SHA256  $tmp" | sha256sum -c -s || { rm -f "$tmp"; echo "osv-scanner download does not match OSV_BIN_SHA256" >&2; exit 97; }
   chmod 755 "$tmp"; mv -f "$tmp" "$bin"
 fi
+if [ -f "$1/go.work" ]; then
+  (cd "$1" && go work use -r . 2>/dev/null) || echo "go work use failed: modules outside go.work are not analysed" >&2
+fi
+find "$1" -name go.mod -not -path "*/node_modules/*" -not -path "*/vendor/*" -not -path "*/testdata/*" | while IFS= read -r m; do
+  (cd "${m%/go.mod}" && go list -m -f "{{.Path}} {{.Version}}{{with .Replace}} {{.Path}} {{.Version}}{{end}}" all 2>/dev/null) | sed "s|^|$m |" >> /meta/go-versions.txt || true
+done
 exec "$bin" scan source -r --format json "$1"'
 
 run_osv() {
-  local copy="$work/osv-src" mem
-  mem="$(cfg_int osvMemoryMb 6144)"
-  mkdir -p "$copy"
-  git -C "$repo" ls-files -z --cached --others --exclude-standard \
-    | (cd "$repo" && xargs -0r cp -P --parents --reflink=auto -t "$copy" -- 2>/dev/null)
-  docker run --rm --memory "${mem}m" -v "$copy:$repo" -v neo-sec-gocache:/neo -e GOMODCACHE=/neo/mod -e GOCACHE=/neo/build \
-    -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false -e OSV_BIN_URL="$OSV_BIN_URL" -e OSV_BIN_SHA256="$OSV_BIN_SHA256" \
-    --entrypoint sh "$GO_IMAGE" -c "$osv_go_sh" osv "$repo" > "$work/osv.json" 2>"$work/osv-go.err" || true
-  rm -rf "$copy"
+  local mem; mem="$(cfg_int osvMemoryMb 6144)"
+  mkdir -p "$work/osv-up" "$work/osv-wk" "$work/osv-meta"
+  if [[ "$repo$work" =~ [,\"=:] ]]; then # these would break the overlay's mount options
+    echo "the repo path holds a character the overlay mount cannot take" > "$work/osv-go.err"
+  else
+    docker run --rm --memory "${mem}m" \
+      --mount "type=volume,dst=$repo,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$repo,upperdir=$work/osv-up,workdir=$work/osv-wk\"" \
+      -v neo-sec-gocache:/neo -v "$work/osv-meta:/meta" -e GOMODCACHE=/neo/mod -e GOCACHE=/neo/build -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false \
+      -e OSV_BIN_URL="$OSV_BIN_URL" -e OSV_BIN_SHA256="$OSV_BIN_SHA256" \
+      --entrypoint sh "$GO_IMAGE" -c "$osv_go_sh" osv "$repo" > "$work/osv.json" 2>"$work/osv-go.err" || true
+  fi
   if [[ ! -s "$work/osv.json" ]]; then
+    rm -f "$work/osv-meta/go-versions.txt"
     sec_warn "osv-scanner with Go call analysis gave no result ($(grep -v '^Scanned' "$work/osv-go.err" | tail -1)) — scanned without it; Go findings keep full severity"
     docker run --rm -v "$repo:$repo:ro" "$OSV_IMAGE" scan source -r --format json "$repo" > "$work/osv.json" 2>/dev/null || true
   fi
@@ -180,7 +192,7 @@ report() { # label
     out=(--out "$repo/.security/reports/$1-$(date +%Y%m%d-%H%M%S).json")
   fi
   bun "$SEC_KIT/findings.ts" report --root "$repo" --src "$src" --baseline "$baseline" "${out[@]}" --label "$1" \
-    --missing "$work/missing" "${specs[@]}"
+    --missing "$work/missing" --osv-go-versions "$work/osv-meta/go-versions.txt" "${specs[@]}"
   rc=$?
   ls -1t "$repo/.security/reports/$1-"*.json 2>/dev/null | tail -n +31 | xargs -r rm -f # keep 30 per layer
   [[ $rc -eq 3 ]] && return 0 # the baseline is unreadable: findings.ts warned; never block on that
@@ -251,6 +263,7 @@ case "$mode" in
       report nightly; exit $?
     fi
     wait; mkdir -p "$repo/.security"
-    bun "$SEC_KIT/findings.ts" baseline --root "$repo" --baseline "$baseline" --missing "$work/missing" "${specs[@]}" ;;
+    bun "$SEC_KIT/findings.ts" baseline --root "$repo" --baseline "$baseline" --missing "$work/missing" \
+      --osv-go-versions "$work/osv-meta/go-versions.txt" "${specs[@]}" ;;
   *) sed -n '2,12p' "$0"; exit 2 ;;
 esac

@@ -1,33 +1,92 @@
 {
   "results": [
     {
-      "source": { "path": "/repo/services/connect-gateway/go.mod", "type": "lockfile" },
+      "source": {
+        "path": "/repo/services/connect-gateway/go.mod",
+        "type": "lockfile"
+      },
       "packages": [
         {
-          "package": { "name": "golang.org/x/crypto", "version": "0.58.0", "ecosystem": "Go" },
-          "vulnerabilities": [{ "id": "GO-2026-5932" }],
-          "groups": [{ "ids": ["GO-2026-5932"], "aliases": ["GO-2026-5932"], "max_severity": "" }]
-        },
-        {
-          "package": { "name": "github.com/quic-go/quic-go", "version": "0.59.0", "ecosystem": "Go" },
-          "vulnerabilities": [{ "id": "GO-2026-5676" }, { "id": "GHSA-vvgj-x9jq-8cj9" }],
+          "package": {
+            "name": "golang.org/x/crypto",
+            "version": "0.58.0",
+            "ecosystem": "Go"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GO-2026-5932"
+            }
+          ],
           "groups": [
             {
-              "ids": ["GO-2026-5676", "GHSA-vvgj-x9jq-8cj9"],
-              "aliases": ["GO-2026-5676", "GHSA-vvgj-x9jq-8cj9"],
-              "experimentalAnalysis": { "GO-2026-5676": { "called": false, "unimportant": false } },
+              "ids": [
+                "GO-2026-5932"
+              ],
+              "aliases": [
+                "GO-2026-5932"
+              ],
+              "max_severity": ""
+            }
+          ]
+        },
+        {
+          "package": {
+            "name": "github.com/quic-go/quic-go",
+            "version": "0.59.0",
+            "ecosystem": "Go"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GO-2026-5676"
+            },
+            {
+              "id": "GHSA-vvgj-x9jq-8cj9"
+            }
+          ],
+          "groups": [
+            {
+              "ids": [
+                "GO-2026-5676",
+                "GHSA-vvgj-x9jq-8cj9"
+              ],
+              "aliases": [
+                "GO-2026-5676",
+                "GHSA-vvgj-x9jq-8cj9"
+              ],
+              "experimental_analysis": {
+                "GO-2026-9999": {
+                  "called": false,
+                  "unimportant": false
+                }
+              },
               "max_severity": "9.1"
             }
           ]
         },
         {
-          "package": { "name": "golang.org/x/net", "version": "0.1.0", "ecosystem": "Go" },
-          "vulnerabilities": [{ "id": "GO-2026-0001" }],
+          "package": {
+            "name": "golang.org/x/net",
+            "version": "0.1.0",
+            "ecosystem": "Go"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GO-2026-0001"
+            }
+          ],
           "groups": [
             {
-              "ids": ["GO-2026-0001"],
-              "aliases": ["GO-2026-0001"],
-              "experimentalAnalysis": { "GO-2026-0001": { "called": "false" } },
+              "ids": [
+                "GO-2026-0001"
+              ],
+              "aliases": [
+                "GO-2026-0001"
+              ],
+              "experimental_analysis": {
+                "GO-2026-0001": {
+                  "called": "false"
+                }
+              },
               "max_severity": "7.5"
             }
           ]
@@ -35,16 +94,36 @@
       ]
     },
     {
-      "source": { "path": "/repo/ui/admin/package-lock.json", "type": "lockfile" },
+      "source": {
+        "path": "/repo/ui/admin/package-lock.json",
+        "type": "lockfile"
+      },
       "packages": [
         {
-          "package": { "name": "lodash", "version": "4.17.0", "ecosystem": "npm" },
-          "vulnerabilities": [{ "id": "GHSA-35jh-r3h4-6jhm" }],
+          "package": {
+            "name": "lodash",
+            "version": "4.17.0",
+            "ecosystem": "npm"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-35jh-r3h4-6jhm"
+            }
+          ],
           "groups": [
             {
-              "ids": ["GHSA-35jh-r3h4-6jhm"],
-              "aliases": ["GHSA-35jh-r3h4-6jhm"],
-              "experimentalAnalysis": { "GHSA-35jh-r3h4-6jhm": { "called": false, "unimportant": false } },
+              "ids": [
+                "GHSA-35jh-r3h4-6jhm"
+              ],
+              "aliases": [
+                "GHSA-35jh-r3h4-6jhm"
+              ],
+              "experimental_analysis": {
+                "GHSA-35jh-r3h4-6jhm": {
+                  "called": false,
+                  "unimportant": false
+                }
+              },
               "max_severity": "7.2"
             }
           ]

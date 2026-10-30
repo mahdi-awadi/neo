@@ -45,8 +45,9 @@ reads `host.json` on every call, so a change needs no restart. This host is set 
 - A fingerprint uses the matched code, read from the scanned file (semgrep without a login reports
   only "requires login" for it).
 - An **unreachable** Go vulnerability does not block (ADR-0066). osv-scanner runs govulncheck in the
-  pinned Go image; a Go finding it marks `called: false` for every id is capped at medium and tagged
-  `unreachable` (the message starts "unreachable (never called)"). It stays in every report. No
+  pinned Go image; a Go finding whose every verdict is `called: false` is capped at medium and tagged
+  `unreachable` (the message starts "unreachable (never called)"). It stays in every report. The
+  verdict counts only when Go analysed the same version osv reports for that `go.mod`. No
   analysis (no Go, govulncheck failed for that module, the binary could not be fetched or checked,
   out of memory), a missing verdict, or another ecosystem: full severity, as before.
 - Getting past a check (`--no-verify`, editing the baseline, turning a hook off) is not allowed for
@@ -111,12 +112,16 @@ osv-scanner does Go call analysis only with a Go toolchain on `PATH`, so the pus
 run it in the pinned Go image (`GO_IMAGE` in `images.env`). The osv-scanner binary is downloaded
 once from `OSV_BIN_URL` into the `neo-sec-gocache` volume and checked against `OSV_BIN_SHA256` before
 every run; `update-images.sh` takes both from the binary in `OSV_IMAGE` and refuses a release file that
-differs. The volume also holds the Go module and build caches (network is needed for the first
-download). Go writes `go.sum`/`go.work.sum` while it loads packages, so osv scans a disposable copy of
-the checkout (tracked and untracked-not-ignored files, reflinked where the filesystem can) mounted at
-the repo's own path: the project is never written, and paths and fingerprints are the same. When the
-Go run gives no output, the plain `OSV_IMAGE` scans read-only and the layer warns. `docker volume rm
-neo-sec-gocache` is always safe.
+differs. The volume also holds the Go module and build caches (the first scan downloads them).
+
+Go writes `go.sum`/`go.work.sum` while it loads packages, so the repo is mounted as a copy-on-write
+overlay at its own path: the writes go to the scan's temp folder, never to the repo, and paths and
+fingerprints stay the same. In a repo with a `go.work`, every module joins the workspace inside the
+overlay (`go work use -r .`), so a module the workspace does not list can load its sibling modules.
+The Go run also records the versions Go selected for each `go.mod` (`go list -m all`): in a workspace
+one version serves every module, so a verdict about another version than osv reports does not count.
+When the Go run gives no output, the plain `OSV_IMAGE` scans read-only and the layer warns.
+`docker volume rm neo-sec-gocache` is always safe.
 
 ## Rules
 

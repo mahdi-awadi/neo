@@ -13,7 +13,7 @@ case "$1" in
   inspect) exit 1 ;;
   run)
     if [[ " $* " == *" --entrypoint sh "* ]]; then # the osv run with Go call analysis (ADR-0066)
-      for a in "$@"; do [[ "$a" == */osv-src:* ]] && (cd "\${a%%:*}" && find . -type f | sort | sed 's/^/osv-copy /') >> "$FAKE_DOCKER_LOG"; done
+      for a in "$@"; do [[ "$a" == */osv-meta:/meta && -n "\${FAKE_OSV_GO_VERSIONS:-}" ]] && cp "$FAKE_OSV_GO_VERSIONS" "\${a%:/meta}/go-versions.txt"; done
       [[ -n "\${FAKE_OSV_GO_JSON:-}" ]] && cat "$FAKE_OSV_GO_JSON"
     fi
     exit 0 ;;
@@ -114,24 +114,30 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
   const goRun = (log: string) => osvRuns(log).find((l) => l.includes("--entrypoint sh"));
   const plainRun = (log: string) => osvRuns(log).find((l) => !l.includes("--entrypoint sh"));
 
-  test("osv runs in the pinned Go image on a disposable copy at the repo's own path, never the repo", () => {
+  test("osv runs in the pinned Go image on a copy-on-write overlay of the repo, at the repo's own path", () => {
     const s = setup(["src/a.ts"], { osvMemoryMb: 2048 });
-    writeFileSync(join(s.repo, ".gitignore"), "ignored.txt\n");
-    writeFileSync(join(s.repo, "ignored.txt"), "x");
-    writeFileSync(join(s.repo, "go.work.sum"), "untracked, not ignored\n");
     s.run("push", s.repo);
-    const log = s.log();
-    const go = goRun(log)!;
+    const go = goRun(s.log())!;
     const images = readFileSync(join(import.meta.dir, "..", "tools", "security", "images.env"), "utf8");
     const pin = (k: string) => images.match(new RegExp(`^${k}=(.+)$`, "m"))![1]!;
     expect(go).toContain(pin("GO_IMAGE"));
     expect(go).toContain(`OSV_BIN_SHA256=${pin("OSV_BIN_SHA256")}`);
     expect(go).toContain("--memory 2048m");
     expect(go).toContain("neo-sec-gocache:/neo");
-    expect(go).toMatch(new RegExp(`/osv-src:${s.repo} `)); // the copy, writable, mounted where the repo is
+    expect(go).toContain(`dst=${s.repo},volume-driver=local,volume-opt=type=overlay`);
+    expect(go).toMatch(new RegExp(`lowerdir=${s.repo},upperdir=/tmp/neo-sec\\.\\w+/osv-up,workdir=`)); // writes go to the scan's temp dir
     expect(go).not.toContain(`${s.repo}:${s.repo}`);
-    const copied = log.split("\n").filter((l) => l.startsWith("osv-copy ")).map((l) => l.slice("osv-copy ./".length)).sort();
-    expect(copied).toEqual([".gitignore", ".security/config.json", "go.work.sum", "src/a.ts"]); // ignored.txt is not
+    expect(go).toContain("go work use -r ."); // a go.work grows to every module, inside the overlay only
+  });
+
+  test("a repo path the overlay mount options cannot hold: no Go run, the plain scan", () => {
+    const s = setup(["src/a.ts"]);
+    const odd = `${s.repo},x`;
+    Bun.spawnSync(["mv", s.repo, odd]);
+    const r = s.run("push", odd);
+    expect(goRun(s.log())).toBeUndefined();
+    expect(plainRun(s.log())).toContain(`${odd}:${odd}:ro`);
+    expect(r.stderr.toString()).toContain("overlay mount cannot take");
   });
 
   test("no result with Go: the plain osv image scans read-only, so every finding keeps its full severity", () => {
@@ -148,5 +154,23 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
     s.run("push", s.repo);
     expect(goRun(s.log())).toBeDefined();
     expect(plainRun(s.log())).toBeUndefined();
+  });
+
+  test("end to end: an uncalled Go vulnerability at the analysed version is reported as medium, unreachable", () => {
+    const env: Record<string, string> = {};
+    const s = setup(["src/a.ts"], {}, env); // env is read on each run
+    const dir = mkdtempSync(join(tmpdir(), "neo-sec-osv-"));
+    const gomod = `${s.repo}/go.mod`;
+    const group = (id: string) => ({ ids: [id], aliases: [id], max_severity: "", experimental_analysis: { [id]: { called: false, unimportant: false } } });
+    writeFileSync(join(dir, "osv.json"), JSON.stringify({ results: [{ source: { path: gomod }, packages: [
+      { package: { name: "golang.org/x/crypto", version: "0.58.0", ecosystem: "Go" }, groups: [group("GO-2026-5932")] },
+      { package: { name: "golang.org/x/net", version: "0.1.0", ecosystem: "Go" }, groups: [group("GO-2026-0001")] },
+    ] }] }));
+    // x/net was analysed at another version than the go.mod's: its verdict does not count.
+    writeFileSync(join(dir, "versions.txt"), `${gomod} golang.org/x/crypto v0.58.0\n${gomod} golang.org/x/net v0.2.0\n`);
+    Object.assign(env, { FAKE_OSV_GO_JSON: join(dir, "osv.json"), FAKE_OSV_GO_VERSIONS: join(dir, "versions.txt") });
+    const out = s.run("push", s.repo).stdout.toString();
+    expect(out).toMatch(/MEDIUM\s+go\.mod\s+\[osv:GO-2026-5932\] unreachable \(never called\)/);
+    expect(out).toMatch(/HIGH\s+go\.mod\s+\[osv:GO-2026-0001\] golang\.org\/x\/net/);
   });
 });

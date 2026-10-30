@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { filterNew, incompleteWarning, normalize, parseMissing, severityFromCvss, summarize } from "../tools/security/findings";
+import { filterNew, incompleteWarning, normalize, parseGoVersions, parseMissing, severityFromCvss, summarize } from "../tools/security/findings";
 
 describe("security findings", () => {
   test("semgrep ERROR maps to high, WARNING to medium, fingerprint ignores line numbers", () => {
@@ -45,28 +45,32 @@ describe("security findings", () => {
   describe("osv Go call analysis (ADR-0066)", () => {
     const fixture = (name: string) => JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "security", `osv-${name}.json`), "utf8"));
     const by = (f: ReturnType<typeof normalize>, pkg: string) => f.find((x) => x.message.includes(`${pkg}@`))!;
+    const versionsText = readFileSync(join(import.meta.dir, "fixtures", "security", "osv-go-versions.txt"), "utf8");
+    // The module versions Go selected when it analysed each go.mod (scan.sh writes them).
+    const ctx = (text = versionsText) => ({ root: "/repo", goVersions: parseGoVersions(text, "/repo") });
 
     test("a Go vulnerability osv found uncalled drops below the blocking level, tagged and still reported", () => {
-      const f = normalize("osv", fixture("go-uncalled"), { root: "/repo" });
+      const f = normalize("osv", fixture("go-uncalled"), ctx());
       expect(f).toHaveLength(3);
       const crypto = by(f, "golang.org/x/crypto");
       expect(crypto).toMatchObject({ rule: "GO-2026-5932", severity: "medium", tags: ["unreachable"], file: "services/common/go.mod" });
       expect(crypto.message).toContain("unreachable");
+      // osv keys the verdict by the Go id only; the GHSA id in the group is its alias.
       expect(by(f, "github.com/quic-go/quic-go")).toMatchObject({ severity: "medium", tags: ["unreachable"] }); // was critical (9.1)
       expect(by(f, "github.com/jackc/pgx/v5")).toMatchObject({ severity: "low", tags: ["unreachable"] }); // never raised
       expect(summarize(f).block).toBe(false);
     });
 
-    test("a called vulnerability keeps its full severity; one called id in a group is enough", () => {
-      const f = normalize("osv", fixture("go-called"), { root: "/repo" });
+    test("a called vulnerability keeps its full severity", () => {
+      const f = normalize("osv", fixture("go-called"), ctx());
       expect(by(f, "golang.org/x/crypto")).toMatchObject({ severity: "high" }); // no score: fails closed to high
       expect(by(f, "github.com/quic-go/quic-go")).toMatchObject({ severity: "critical" });
       for (const x of f) expect(x.tags).toBeUndefined();
       expect(summarize(f).block).toBe(true);
     });
 
-    test("fails closed: no analysis, an id without a verdict, a non-boolean verdict, or a non-Go ecosystem keep full severity", () => {
-      const f = normalize("osv", fixture("go-no-analysis"), { root: "/repo" });
+    test("fails closed: no analysis, a verdict for another id, a non-boolean verdict, or a non-Go ecosystem keep full severity", () => {
+      const f = normalize("osv", fixture("go-no-analysis"), ctx());
       expect(by(f, "golang.org/x/crypto").severity).toBe("high");
       expect(by(f, "github.com/quic-go/quic-go").severity).toBe("critical");
       expect(by(f, "golang.org/x/net").severity).toBe("high");
@@ -75,8 +79,27 @@ describe("security findings", () => {
     });
 
     test("the verdict never changes a fingerprint, so a baseline still matches", () => {
-      const fp = (name: string) => by(normalize("osv", fixture(name), { root: "/repo" }), "golang.org/x/crypto").fingerprint;
+      const fp = (name: string) => by(normalize("osv", fixture(name), ctx()), "golang.org/x/crypto").fingerprint;
       expect(fp("go-uncalled")).toBe(fp("go-called"));
+      expect(by(normalize("osv", fixture("go-uncalled"), { root: "/repo" }), "golang.org/x/crypto").fingerprint).toBe(fp("go-called"));
+    });
+
+    test("fails closed: a verdict counts only for the version osv reported, as Go selected it for that go.mod", () => {
+      const sev = (c: ReturnType<typeof ctx> | { root: string }, pkg = "golang.org/x/crypto") => by(normalize("osv", fixture("go-uncalled"), c), pkg).severity;
+      expect(sev({ root: "/repo" })).toBe("high"); // no versions: the Go run did not report them
+      expect(sev(ctx(""))).toBe("high");
+      // A workspace selected a newer x/crypto than this go.mod asks for: the verdict is about other code.
+      const newer = versionsText.replace("/repo/services/common/go.mod golang.org/x/crypto v0.58.0", "/repo/services/common/go.mod golang.org/x/crypto v0.60.0");
+      expect(sev(ctx(newer))).toBe("high");
+      expect(sev(ctx(newer), "github.com/quic-go/quic-go")).toBe("medium"); // the others still count
+      // Replaced by another version or a local folder: not the reported version.
+      const swap = (to: string) => versionsText.replace("golang.org/x/crypto v0.58.0\n/repo/services/common/go.mod github.com/quic", `golang.org/x/crypto v0.58.0 ${to}\n/repo/services/common/go.mod github.com/quic`);
+      expect(sev(ctx(swap("golang.org/x/crypto v0.59.0")))).toBe("high");
+      expect(sev(ctx(swap("../crypto")))).toBe("high");
+      expect(sev(ctx(swap("golang.org/x/crypto v0.58.0")))).toBe("medium");
+      // The standard library is analysed with the image's Go, not the go.mod's: never in the list.
+      const stdlib = { results: [{ source: { path: "/repo/services/common/go.mod" }, packages: [{ package: { name: "stdlib", version: "1.26.2", ecosystem: "Go" }, groups: [{ ids: ["GO-2026-1"], max_severity: "7.5", experimental_analysis: { "GO-2026-1": { called: false } } }] }] }] };
+      expect(normalize("osv", stdlib, ctx())[0]!.severity).toBe("high");
     });
   });
 
