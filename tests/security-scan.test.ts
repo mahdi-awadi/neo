@@ -122,7 +122,7 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
     const pin = (k: string) => images.match(new RegExp(`^${k}=(.+)$`, "m"))![1]!;
     expect(go).toContain(pin("GO_IMAGE"));
     expect(go).toContain(`OSV_BIN_SHA256=${pin("OSV_BIN_SHA256")}`);
-    expect(go).toContain("--memory 2048m");
+    expect(go).toContain("--memory 2048m --memory-swap 2048m -e GOMEMLIMIT=1740MiB");
     expect(go).toContain("neo-sec-gocache:/neo");
     expect(go).toContain(`dst=${s.repo},volume-driver=local,volume-opt=type=overlay`);
     expect(go).toMatch(new RegExp(`lowerdir=${s.repo},upperdir=/tmp/neo-sec\\.\\w+/osv-up,workdir=`)); // writes go to the scan's temp dir

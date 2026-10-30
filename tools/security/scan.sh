@@ -150,7 +150,9 @@ run_osv() {
   if [[ "$repo$work" =~ [,\"=:] ]]; then # these would break the overlay's mount options
     echo "the repo path holds a character the overlay mount cannot take" > "$work/osv-go.err"
   else
-    docker run --rm --memory "${mem}m" \
+    # No swap: an analysis too big for the limit fails fast (full severity) instead of thrashing the host.
+    # GOMEMLIMIT makes osv's in-process govulncheck collect harder before it reaches the limit.
+    docker run --rm --memory "${mem}m" --memory-swap "${mem}m" -e GOMEMLIMIT="$((mem * 85 / 100))MiB" \
       --mount "type=volume,dst=$repo,volume-driver=local,volume-opt=type=overlay,volume-opt=device=overlay,\"volume-opt=o=lowerdir=$repo,upperdir=$work/osv-up,workdir=$work/osv-wk\"" \
       -v neo-sec-gocache:/neo -v "$work/osv-meta:/meta" -e GOMODCACHE=/neo/mod -e GOCACHE=/neo/build -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false \
       -e OSV_BIN_URL="$OSV_BIN_URL" -e OSV_BIN_SHA256="$OSV_BIN_SHA256" \
