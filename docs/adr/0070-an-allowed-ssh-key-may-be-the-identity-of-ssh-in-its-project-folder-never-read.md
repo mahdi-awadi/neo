@@ -29,10 +29,23 @@ or loads a config file (`-F`) that could hold one.
    check; the rest of the command is checked as before.
 3. **What it does not allow.** Any other naming of the key is still a read: another command, a `scp`
    source, an input redirection, `rsync -e "ssh -i …"`, `ssh-keygen`, `ssh-add`, the Read/Grep tools.
-   An ssh call with `-F`, a local-command `-o` option, or (scp) `-S <program>` gets no exception, and
-   neither does a command with a substitution (`$(…)`, backticks, `<(…)`) that runs locally. `sftp` is
-   left out: it runs local `!commands` from a batch file the guard cannot see.
+   The options are an ALLOW-list, parsed the way ssh/scp's getopt reads them (grouped flags, ssh's
+   second option pass right after the host, `--`): ssh `-4 -6 -C -N -T -n -q -t -v -i -l -o -p`, scp
+   `-4 -6 -C -T -p -q -r -v -i -l -P -o`, and `-o` only with IdentityFile, IdentitiesOnly, BatchMode,
+   ConnectTimeout, ConnectionAttempts, StrictHostKeyChecking, ServerAliveInterval, ServerAliveCountMax,
+   LogLevel, Port, User or Compression. Any other option (`-F`, `-A`, `-L`, `-E`, `-J`, scp `-S`,
+   ProxyCommand, LocalCommand, …) gives no exception. A block-list was the first draft; the review
+   pointed out that ssh has more options and spellings than any block-list would track.
+3. **What it does not allow.** Any other naming of the key is still a read: another command, a `scp`
+   source, an input redirection, `rsync -e "ssh -i …"`, `ssh-keygen`, `ssh-add`, the Read/Grep tools.
+   A command with a substitution (`$(…)`, backticks, `<(…)`) anywhere gets no exception, even inside
+   single quotes that only run on the remote host: the guard has no shell parser, and stripping quotes
+   by regex could open a hole. `sftp` is left out: it runs local `!commands` from a batch file.
 4. **No new secret handling.** The guard still never reads the key file; it only compares paths.
+5. **The folder is the hook's `cwd`.** Claude Code resets a session's shell to its project folder after
+   any `cd` outside its working folders (seen on this host on 2026-10-30), so another project's session
+   cannot hold `/home/prod-ops` as its `cwd`. A per-session engine value would be stronger, but it needs
+   an engine change and a restart; that can come later without changing this file's format.
 
 ## Rejected alternatives
 
@@ -47,8 +60,10 @@ or loads a config file (`-F`) that could hold one.
 
 ## Consequences
 
-- prod-ops can run `ssh -i /root/.ssh/prod_server_key deploy@<prod> …` and `scp -i …`; the key still
-  never enters any agent's context through the guarded tools.
+- prod-ops can run `ssh -i /root/.ssh/prod_server_key deploy@<prod> …` and `scp -i …`. The guard still
+  blocks every direct read of the key it can see in the command text.
+- A remote command that uses `$(…)` must be sent another way (for example a script copied with `scp`,
+  then run), because the exception never applies to a command with a substitution.
 - The guard is a best-effort check on command text, not a sandbox (ADR-0030): a key path built at run
   time (`$(…)`, a variable other than `$HOME`) was not caught before and is not caught now. ssh still
   reads `~/.ssh/config`; a `LocalCommand` placed there is outside what the guard checks.

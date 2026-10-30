@@ -36,9 +36,11 @@ reads `host.json` on every call, so a change needs no restart. This host is set 
 kit's `ssh-identities.json` (host-local, never copied or overwritten by `install.ts`) lets one key be
 the IDENTITY of `ssh`/`scp` (`-i <key>`, `-o IdentityFile=<key>`) when the session runs in the
 entry's folder: `{ "allow": [{ "key": "/root/.ssh/prod_server_key", "cwd": "/home/prod-ops" }] }`.
-Every other use of the key stays blocked (cat, cp, a `scp` source, the Read tool), and an ssh call with
-`-F`, `ProxyCommand`/`LocalCommand`/`KnownHostsCommand`/`Match`, or scp `-S` gets no exception. A
-missing or bad file means no exceptions. This host allows prod-ops to use the prod key (decision
+Every other use of the key stays blocked (cat, cp, a `scp` source, the Read tool). The other options
+are an allow-list (ssh `-4 -6 -C -N -T -n -q -t -v -l -p`, scp `-4 -6 -C -T -p -q -r -v -l -P`, and a
+few safe `-o` settings such as BatchMode or ConnectTimeout); any other option (`-F`, `-A`, `-L`, `-J`,
+ProxyCommand, scp `-S`, …) or any `$(…)`/backtick in the command, even a remote one, means no
+exception. A missing or bad file means no exceptions. This host allows prod-ops to use the prod key (decision
 #74622e42).
 
 ## Policy

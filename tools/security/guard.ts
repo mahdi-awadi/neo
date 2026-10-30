@@ -106,26 +106,47 @@ const GLOB_OPTS = new Set(["-g", "--glob", "--include"]);
 const SSH_CLIENT = new Set(["ssh", "scp"]);
 /** Shell code that runs a command inside another (`$(…)`, backticks, `<(…)`): with any, no exception. */
 const SUBSTITUTION = /\$\(|`|[<>]\(/;
-/** ssh -o options that run a local command: with one of them, the exception does not apply. */
-const SSH_LOCAL_COMMAND = /^(ProxyCommand|LocalCommand|PermitLocalCommand|KnownHostsCommand|Match)\b/i;
-const SSH_IDENTITY_OPT = /^IdentityFile(?:\s*=\s*|\s+)(.+)$/i;
+/** The only options an ssh/scp call with an allowed identity may use (getopt letters): flags without
+ *  a value, and flags that take one. Any other option (-F, -A, -L, scp -S, …) voids the exception.
+ *  ssh parses options again right after the host; scp stops at its first file. */
+const SSH_OPTIONS: Record<string, { flags: string; values: string; optionsAfterHost: boolean }> = {
+  ssh: { flags: "46CNTnqtv", values: "ilop", optionsAfterHost: true },
+  scp: { flags: "46CTpqrv", values: "ilPo", optionsAfterHost: false },
+};
+/** The `-o` settings allowed beside an allowed identity: none runs a local command or loads a file. */
+const SSH_SAFE_SETTING = /^(IdentityFile|IdentitiesOnly|BatchMode|ConnectTimeout|ConnectionAttempts|StrictHostKeyChecking|ServerAliveInterval|ServerAliveCountMax|LogLevel|Port|User|Compression)(?:\s*=\s*|\s+)(.+)$/i;
 
-/** ssh/scp: every argument except an `-i` / `-o IdentityFile` value that `allowed` accepts. A config
- *  file (`-F`), a program (scp `-S`) or a local-command option keeps every argument. */
+/** ssh/scp: every argument except an `-i` / `-o IdentityFile` value that `allowed` accepts, when every
+ *  option is on the allow-list above (an allow-list, so an option we do not know gives no exception). */
 function sshArgs(cmd: string, args: string[], allowed: (word: string) => boolean): string[] {
-  const opts = args.flatMap((a, i) => (a === "-o" ? [args[i + 1] ?? ""] : a.startsWith("-o") ? [a.slice(2)] : []));
-  if (args.some((a) => a.startsWith("-F") || (cmd !== "ssh" && a.startsWith("-S"))) || opts.some((o) => SSH_LOCAL_COMMAND.test(o))) return args;
-  const identity = (opt: string | undefined) => {
-    const m = SSH_IDENTITY_OPT.exec(opt ?? "");
-    return m !== null && allowed(m[1]!);
-  };
-  const out: string[] = [];
+  const spec = SSH_OPTIONS[cmd]!;
+  const drop = new Set<number>();
+  let positionals = 0;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if ((a === "-i" && allowed(args[i + 1] ?? "")) || (a === "-o" && identity(args[i + 1]))) i++;
-    else if (!((a.startsWith("-i") && a.length > 2 && allowed(a.slice(2))) || (a.startsWith("-o") && identity(a.slice(2))))) out.push(a);
+    if (a === "--") break; // the rest is the host and the remote command
+    if (!a.startsWith("-") || a === "-") {
+      positionals++;
+      if (positionals > (spec.optionsAfterHost ? 1 : 0)) break; // the remote command, or scp's files
+      continue;
+    }
+    for (let j = 1; j < a.length; j++) {
+      const c = a[j]!;
+      if (spec.flags.includes(c)) continue;
+      if (!spec.values.includes(c)) return args; // an option we do not allow: no exception
+      const attached = a.slice(j + 1);
+      const at = attached ? i : ++i;
+      const value = attached || args[at];
+      if (value === undefined) return args;
+      if (c === "o") {
+        const m = SSH_SAFE_SETTING.exec(value);
+        if (!m) return args;
+        if (m[1]!.toLowerCase() === "identityfile" && allowed(m[2]!)) drop.add(at);
+      } else if (c === "i" && allowed(value)) drop.add(at);
+      break;
+    }
   }
-  return out;
+  return args.filter((_, i) => !drop.has(i));
 }
 
 /** The argument words of one command that can name a file it reads, with patterns, code and

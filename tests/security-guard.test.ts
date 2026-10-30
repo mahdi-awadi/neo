@@ -226,6 +226,11 @@ describe("security guard: an allowed ssh identity", () => {
       `scp -i ${KEY} deploy@72.62.30.5:/srv/dump.sql /home/prod-ops/tmp/`,
       `cd /tmp && ssh -i ~/.ssh/prod_server_key deploy@72.62.30.5 hostname`,
       `ssh -i ${KEY} deploy@72.62.30.5 hostname | tee out.txt`,
+      `ssh -vi ${KEY} deploy@72.62.30.5 uptime`, // grouped flags
+      `ssh -i ${KEY} deploy@72.62.30.5 docker ps -a`, // -a belongs to the remote command
+      `ssh -i ${KEY} -o BatchMode=yes -o ConnectTimeout=10 deploy@72.62.30.5 -q uptime`,
+      `scp -i ${KEY} -P 2222 -r deploy@72.62.30.5:/srv/a /home/prod-ops/b`,
+      `ssh -i ${KEY} -- deploy@72.62.30.5 uptime`,
     ]) {
       expect([c, sh(c)]).toEqual([c, []]);
       expect([c, sh(c, "/home/prod-ops/docs")]).toEqual([c, []]); // a folder inside it
@@ -254,8 +259,14 @@ describe("security guard: an allowed ssh identity", () => {
     expect(secretTargets("Read", { file_path: KEY }, { cwd: "/home/prod-ops", hostEnv: "dev", sshIdentities: allow })).toEqual(["prod_server_key"]);
   });
 
-  test("an ssh option that runs a local command or loads a config file voids the exception", () => {
+  test("any ssh/scp option outside the allow-list voids the exception", () => {
     for (const c of [
+      `ssh -A -i ${KEY} host`,
+      `ssh -i ${KEY} -L 5432:localhost:5432 host`,
+      `ssh -i ${KEY} -o ProxyJump=bastion host`,
+      `ssh -i ${KEY} -E /tmp/log host`,
+      `ssh -i ${KEY} host -o ProxyCommand=x uptime`, // ssh reads options again after the host
+      `ssh -vF /tmp/cfg -i ${KEY} host`,
       `ssh -i ${KEY} -o ProxyCommand="nc %h %p" host`,
       `ssh -i ${KEY} -o PermitLocalCommand=yes -o LocalCommand=id host`,
       `ssh -i ${KEY} -o "KnownHostsCommand /bin/x" host`,
