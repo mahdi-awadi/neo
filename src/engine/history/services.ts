@@ -6,7 +6,9 @@ import type { HistoryCfg } from "./defaults";
 
 export type MeaningOffReason =
   | "not_configured" | "config_refused" | "embedder_down" | "embedder_slow" | "embedder_refused"
-  | "embedder_wrong_model" | "vectors_down" | "vectors_slow" | "vectors_refused" | "collection_missing";
+  | "embedder_wrong_model" | "vectors_down" | "vectors_slow" | "vectors_refused" | "collection_missing"
+  /** A search only: the indexer has an embed request in flight, so the query is not queued behind it. */
+  | "embedder_busy";
 
 /** `off`: the operator must act (config, key, model, collection); `down`: it may come back by itself. */
 export type ServiceState = { state: "up" } | { state: "down" | "off"; reason: MeaningOffReason };
@@ -36,6 +38,8 @@ export function operatorStep(service: HistoryService, reason: MeaningOffReason, 
       return `the shared Qdrant refused the key (ops may have rotated it): reload Neo to read the new key; if it still fails, ask ops for a key for ${v.collection}`;
     case "collection_missing":
       return `ask ops to create the collection ${v.collection} (${e.dims} dims, cosine) in the shared Qdrant`;
+    case "embedder_busy":
+      return "nothing to do: the indexer is embedding a backlog; meaning search answers again between its batches";
     case "embedder_down":
     case "embedder_slow":
       return "check the neo-embedder container (`docker compose -p neo-embedder ps` and its logs); `bun tools/history/install.ts` starts it again";
@@ -65,18 +69,35 @@ export function isTimeout(e: unknown): boolean {
 }
 
 /** Queries go first on the embedder (spec "The indexer", step 4): a search enters the gate around its
- *  query embed, and the indexer waits for the gate to be idle before each embed batch. */
+ *  query embed, and the indexer waits for the gate to be idle before each embed batch. The other way
+ *  round, a search never queues behind a batch: the indexer marks each embed request, and a search that
+ *  finds one in flight answers without meaning search (`embedder_busy`) instead of waiting for it. */
 export interface QueryGate {
   /** Mark one query in flight; call the returned function when it is done (twice is harmless). */
   enter(): () => void;
   /** Resolves when no query is in flight. */
   idle(): Promise<void>;
+  /** Mark one indexer embed request in flight; call the returned function when it ends (twice is harmless). */
+  batch(): () => void;
+  /** Whether an indexer embed request is in flight now. */
+  batchActive(): boolean;
 }
 
 export function createQueryGate(): QueryGate {
   let inFlight = 0;
+  let batches = 0;
   const waiters: Array<() => void> = [];
   return {
+    batch() {
+      batches++;
+      let done = false;
+      return () => {
+        if (done) return;
+        done = true;
+        batches--;
+      };
+    },
+    batchActive: () => batches > 0,
     enter() {
       inFlight++;
       let done = false;

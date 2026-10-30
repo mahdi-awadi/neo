@@ -38,6 +38,9 @@ export type VectorProbe = { state: "up"; count: number } | { state: "down" | "of
 
 export interface VectorIndex {
   readonly collection: string;
+  /** Why this index answers nothing at all (not configured or refused by its settings), known without a
+   *  request; undefined for a configured index. A search then never embeds its query. */
+  offReason(): MeaningOffReason | undefined;
   /** The collection info (it must exist with `dims`) and the exact count of `tag`'s points. */
   probe(tag: string): Promise<VectorProbe>;
   /** The payload indexes: `project`, `kind`, `m` keyword, `at` integer with range. Idempotent. */
@@ -62,6 +65,9 @@ export interface VectorIndex {
 export class NoVectorIndex implements VectorIndex {
   readonly collection = "";
   constructor(private readonly reason: MeaningOffReason = "not_configured") {}
+  offReason(): MeaningOffReason {
+    return this.reason;
+  }
   async probe(_tag: string): Promise<VectorProbe> {
     return { state: "off", reason: this.reason };
   }
@@ -201,6 +207,7 @@ export function openVectorIndex(
 
   return {
     collection,
+    offReason: () => undefined,
     async probe(tag) {
       const info = await call("GET", "", undefined, cfg.timeoutMs, true);
       if (!info.ok) return { state: info.reason === "collection_missing" ? "off" : "down", reason: info.reason };

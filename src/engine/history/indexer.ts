@@ -531,7 +531,13 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         const texts = store.textsWithoutVector(tag, Math.max(1, cfg.embedder.batch));
         if (!texts.length) break;
         await deps.gate.idle(); // a query goes first
-        const res = await l.embedder.embed(texts.map((t) => t.text));
+        const ended = deps.gate.batch(); // and a query that comes now does not queue behind this request
+        let res: Awaited<ReturnType<Embedder["embed"]>>;
+        try {
+          res = await l.embedder.embed(texts.map((t) => t.text));
+        } finally {
+          ended();
+        }
         if (!res.ok) {
           setService(l, "emb", { state: stateOf(res.reason), reason: res.reason }, now);
           break;

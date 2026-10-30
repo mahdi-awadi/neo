@@ -82,6 +82,7 @@ export function modeLine(m: MeaningMode): string {
     case "partial":
       return `Meaning search covers ${Math.floor(m.coverage * 100)}% of the history so far; word and id matches cover all of it.`;
     case "off":
+      if (m.reason === "embedder_busy") return "Meaning search is busy now (the indexer is embedding a backlog): these are word and id matches only; ask again later for meaning matches.";
       return `Meaning search is off (${m.reason}): these are word and id matches only.`;
     case "skipped":
       return "The query is only ids: exact matches, no meaning search.";

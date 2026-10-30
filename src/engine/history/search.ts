@@ -82,6 +82,8 @@ export interface SearchDeps {
   cfg: Pick<HistoryCfg, "search" | "vectors" | "sources">;
   gate: QueryGate;
   events: (kind: string, data: Record<string, unknown>) => void;
+  /** The shared index as the indexer's newest probe saw it: `off` (the operator must act) means no query embed. */
+  vectorsState?: () => { state: "up" | "down" | "off"; reason?: MeaningOffReason };
 }
 
 const KNOWN_KINDS = new Set<string>([...SOURCE_KINDS, "line"]);
@@ -139,7 +141,9 @@ export async function searchHistory(deps: SearchDeps, q: HistoryQuery): Promise<
     });
 
   // Meaning goes first: it awaits the embedder and Qdrant while the local lists run.
-  const meaning: Promise<{ mode: MeaningMode; list: Ranked[] }> = parsed.idOnly || !storeOn
+  // The query is embedded only when the meaning list is used: not for an id-only query, not for worker
+  // lines only, not with a meaning weight of 0.
+  const meaning: Promise<{ mode: MeaningMode; list: Ranked[] }> = parsed.idOnly || !storeOn || !(cfg.search.weights.meaning > 0)
     ? Promise.resolve({ mode: { meaning: "skipped" }, list: [] })
     : meaningList(deps, query, filter, ranked);
 
@@ -248,6 +252,12 @@ async function meaningList(
   deps: SearchDeps, query: string, filter: HistoryFilter, ranked: (h: Array<{ chunkId: number; ref: string }>) => Ranked[],
 ): Promise<{ mode: MeaningMode; list: Ranked[] }> {
   const off = (reason: MeaningOffReason) => ({ mode: { meaning: "off", reason } as MeaningMode, list: [] });
+  // No embed call when the vectors cannot answer, and none behind an indexer batch in flight.
+  const staticOff = deps.vectors.offReason();
+  if (staticOff) return off(staticOff);
+  const vs = deps.vectorsState?.();
+  if (vs?.state === "off" && vs.reason) return off(vs.reason);
+  if (deps.gate.batchActive()) return off("embedder_busy");
   const leave = deps.gate.enter();
   let qv: Awaited<ReturnType<Embedder["embedQuery"]>>;
   try {

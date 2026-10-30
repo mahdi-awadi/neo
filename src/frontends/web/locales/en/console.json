@@ -646,7 +646,8 @@
       "vectors_down": "the shared index does not answer",
       "vectors_slow": "the shared index is too slow",
       "vectors_refused": "the shared index refused the key",
-      "collection_missing": "the shared index has no collection for Neo"
+      "collection_missing": "the shared index has no collection for Neo",
+      "embedder_busy": "the indexer is busy embedding; ask again in a moment"
     },
     "kind": {
       "todo": "Todo",

@@ -293,6 +293,48 @@ describe("modes", () => {
   });
 });
 
+describe("the query embed only when meaning search is used, and never behind an indexer batch", () => {
+  test("zero embed calls when the meaning weight is 0, when only worker lines are asked, or when the shared index is refused", async () => {
+    const b = setup();
+    seed(b);
+    await index(b);
+    const calls = b.embedCalls();
+    const words = await search(b, "seats released", { cfg: { ...b.cfg, search: { ...b.cfg.search, weights: { ...b.cfg.search.weights, meaning: 0 } } } });
+    expect(words.ok).toBe(true);
+    expect(words.hits.length).toBeGreaterThan(0);
+    expect(words.mode).toEqual({ meaning: "skipped" });
+    expect((await search(b, { query: "payment step", kinds: ["line"] })).mode).toEqual({ meaning: "skipped" });
+    const refused = await search(b, "seats released", { vectors: new NoVectorIndex("vectors_refused") });
+    expect(refused.mode).toEqual({ meaning: "off", reason: "vectors_refused" });
+    expect(b.embedCalls()).toBe(calls);
+  });
+
+  test("a search while the indexer's embed request is in flight answers at once with embedder_busy; the indexer still waits for a query", async () => {
+    const b = setup();
+    seed(b);
+    await index(b);
+    const t = operatorThread(b.led);
+    b.led.addTodo(todo({ brief: "A new brief the indexer embeds while a query comes in.", cause: { msgId: t, threadId: t } }));
+    const gate = createQueryGate();
+    b.tei.queue.push("hang"); // the indexer's batch: a slow request that does not end by itself
+    const ix = createIndexer({ store: b.store, ledger: b.led, cfg: b.cfg, workRoot: b.workRoot, embedder: b.embedder, vectors: b.vectors, events: b.record, gate, pid: process.pid });
+    const pass = ix.tick(T0 + 60_000);
+    for (let i = 0; i < 100 && !gate.batchActive(); i++) await Bun.sleep(10);
+    expect(gate.batchActive()).toBe(true);
+    const calls = b.embedCalls();
+    const started = performance.now();
+    const r = await search(b, "seats released", { gate });
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(r.mode).toEqual({ meaning: "off", reason: "embedder_busy" });
+    expect(r.hits.length).toBeGreaterThan(0); // the words and exact lists answered
+    expect(b.embedCalls()).toBe(calls);
+    b.tei.stop(); // ends the hung request
+    b.tei.restart();
+    await pass;
+    expect(gate.batchActive()).toBe(false);
+  });
+});
+
 describe("AC14: Arabic", () => {
   test("مقاعد finds والمقاعدُ, ١٢٣ finds 123, and the highlight lands on the original text with its harakat", async () => {
     const b = setup();

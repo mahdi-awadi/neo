@@ -228,7 +228,7 @@ export function openTaskHistory(deps: TaskHistoryDeps): TaskHistory {
         searches.record(opts.session, at);
       }
       try {
-        return await searchHistory({ store, ledger: deps.ledger, embedder, vectors, cfg, gate, events }, q);
+        return await searchHistory({ store, ledger: deps.ledger, embedder, vectors, cfg, gate, events, vectorsState: () => indexer.services().vectors }, q);
       } catch {
         return { ok: false, error: "history_unreadable", hits: [], mode: { meaning: "skipped" } };
       }
