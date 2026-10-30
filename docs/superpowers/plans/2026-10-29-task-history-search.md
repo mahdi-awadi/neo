@@ -377,6 +377,10 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
   - Done when: each doc matches the code.
 
 - [ ] **20. Verify (live, before the merge)**
+  - Status 2026-10-30: steps 1–6, 8 (keyword-only), 9 (embedder drills), 10 and the reviews are done; numbers in
+    ADR-0066 "Measured". Open, waiting for ops to reissue Neo's shared-Qdrant key (note #547): the `--verify`
+    upload, meaning-only and hybrid eval, the Qwen comparison, hybrid latency, `vectors_down` and drift drills,
+    the `verify-clean` proof. Left unticked until those run.
   1. Run `bunx tsc --noEmit` and `bun test` in the background. Both must be green.
   2. Run `bun tools/history/install.ts`. Record the memory of `neo-embedder` at idle and at its peak during
      step 5. Set `NEO_EMBEDDER_MEM` to the peak plus 25 %.

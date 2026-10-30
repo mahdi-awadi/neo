@@ -438,13 +438,32 @@ Two reviews of `feat/history-search` and the live verify found these; each has a
 
 ### Measured (filled by the verify step)
 
-Plan task 20 writes these numbers. Until then they are open.
+Measured on 2026-10-30 against a read-only copy of the ledger. On that day the shared Qdrant refused
+Neo's key (403 `InvalidSignature`, after the ops admin-secret rotation; reissue requested, note #547), so
+every number that needs a Qdrant search or upload is still open. The open items are marked "waits for the
+key".
 
-- Embedder memory at idle and at peak; the final `NEO_EMBEDDER_MEM` (peak + 25 %): TODO
-- Backfill of the ledger copy: chunks, total time, chunks per second, CPU, upload time: TODO
-- Eval, bge-m3: recall@5 and MRR for words only, meaning only and hybrid (Arabic and English): TODO
-- Eval, `Qwen/Qwen3-Embedding-0.6B` on the same set, and the model kept: TODO
-- Tuned `vectors.minScore` and `search.weights`: TODO
-- Query latency p50 and p95, keyword-only and hybrid (50 queries): TODO
-- Down drills (`embedder_down`, `vectors_down`, drift re-upload with zero embed calls): TODO
-- Points in `neo_history` after the first live backfill: TODO
+- Embedder memory: idle 2.2 GiB, peak 3,175 MiB under load (3,525 MiB in a probe container). The first
+  start was an OOM restart loop (TEI's default batch of 16,384 tokens); `NEO_EMBEDDER_MAX_BATCH_TOKENS`
+  2,048 fixed it (`18a0272`). `NEO_EMBEDDER_MEM` stays 4g (no OOM after the fix; most of the peak is
+  reclaimable file cache).
+- Keyword pass of the ledger copy: 12,615 sources, 28,399 chunks (27,471 unique) in 34.7 s (817
+  chunks/s, 30.4 s CPU); 187 secret-shaped chunks and 16 customer-path sources skipped.
+- Embedding rate: 0.53 chunks/s on a quiet host, 0.23 chunks/s under load. All containers share a
+  4-CPU limit (`work-containers.slice`), and the embedder runs at low CPU weight by design, so the first
+  full backfill needs about 15–32 hours (ops informed, note #549). Batches that passed the request timeout
+  were wasted; the batch now halves on a timeout and grows back (`93d5a36`).
+- Eval set: 22 queries (11 Arabic, 11 English), `tools/history/eval-set.json` (`acd5c2a`). The ledger holds
+  only about 75 Arabic-heavy chunks, so most Arabic queries are cross-language.
+- Eval, words only (bge-m3 not used): recall@5 43.2 %, MRR 0.430 (Arabic 31.8 % / 0.295, English
+  54.5 % / 0.564). Meaning only and hybrid: waits for the key.
+- Qwen3-Embedding-0.6B comparison: waits for the key (needs a meaning search). bge-m3 is kept for now.
+- `vectors.minScore` and `search.weights`: unchanged (tuning needs the meaning eval).
+- Latency, 50 queries: keyword-only p50 25 ms, p95 182 ms. A search no longer waits behind an indexer
+  embed batch (`f51936c`, mode `off: embedder_busy`). Real hybrid latency: waits for the key.
+- Drills: embedder stopped → keyword-only with `embedder_down`, pass; embedder started → the waiting chunks
+  are embedded, pass. `vectors_down` and the drift re-upload: wait for the key.
+- Screenshots (360 px, AR + EN, keyword-only mode): `/home/neo/agent/history-{en,ar}-{results,banner,
+  forget,empty}-2026-10-30.png`.
+- Points in `neo_history`: none uploaded (the key was refused); a `verify-clean` proof of 0 waits for the
+  key.
