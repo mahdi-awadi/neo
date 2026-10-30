@@ -198,7 +198,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
       batch. Events carry counts only.
   - Done when: the indexer parts of AC5 to AC11 pass, and AC24 passes for the indexer events.
 
-- [ ] **9. Search**
+- [x] **9. Search**
   - Create: `src/engine/history/exact.ts`, `src/engine/history/fuse.ts`, `src/engine/history/snippet.ts`,
     `src/engine/history/search.ts`, `src/engine/history/stopwords.json` (Arabic and English),
     `tests/history-fuse.test.ts`, `tests/history-search.test.ts`.

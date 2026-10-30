@@ -1,0 +1,19 @@
+{
+  "en": [
+    "a", "about", "after", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be", "been", "before",
+    "being", "both", "but", "by", "can", "could", "did", "do", "does", "doing", "done", "down", "during", "each", "for",
+    "from", "further", "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how", "i", "if", "in",
+    "into", "is", "it", "its", "itself", "just", "me", "more", "most", "my", "no", "nor", "not", "now", "of", "off", "on",
+    "once", "only", "or", "other", "our", "ours", "out", "over", "own", "same", "she", "should", "so", "some", "such",
+    "than", "that", "the", "their", "theirs", "them", "then", "there", "these", "they", "this", "those", "through", "to",
+    "too", "under", "until", "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "will", "with", "would", "you", "your", "yours", "thing", "things", "stuff"
+  ],
+  "ar": [
+    "في", "من", "إلى", "الى", "على", "عن", "مع", "هذا", "هذه", "ذلك", "تلك", "هو", "هي", "هم", "هن", "أنا", "انا", "نحن",
+    "أنت", "انت", "أنتم", "انتم", "كان", "كانت", "يكون", "تكون", "ما", "ماذا", "لا", "لم", "لن", "إن", "ان", "أن", "إذا",
+    "اذا", "أو", "او", "ثم", "قد", "كل", "بعض", "غير", "بين", "عند", "حتى", "لكن", "بل", "التي", "الذي", "الذين", "اللذين",
+    "هناك", "هنا", "كما", "أي", "اي", "كيف", "متى", "لماذا", "أين", "اين", "و", "ف", "ب", "ل", "ك", "يا", "قبل", "بعد",
+    "فيه", "فيها", "منه", "منها", "عليه", "عليها", "له", "لها", "به", "بها", "شيء", "الشيء"
+  ]
+}
