@@ -295,7 +295,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
       callback from another chat is ignored.
   - Done when: AC19 passes.
 
-- [ ] **15. Embedder service**
+- [x] **15. Embedder service**
   - Create: `tools/history/compose.yml`, `tools/history/embedder.env`, `tools/history/install.ts`,
     `tools/lib/env-file.ts` (move `parseEnvFile` here), `tests/history-embedder-service.test.ts`.
   - Modify: `tools/browser/install.ts` (import `parseEnvFile`), `tools/disk/defaults.json` (protect

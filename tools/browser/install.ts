@@ -9,6 +9,7 @@
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseEnvFile, pickSetting } from "../lib/env-file";
 
 export interface BrowserSettings {
   image: string;
@@ -19,27 +20,13 @@ export interface BrowserSettings {
   timeoutMs: number;
 }
 
-/** KEY=value lines (comments and blanks skipped; no shell expansion). */
-export function parseEnvFile(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
-    if (m && !line.trimStart().startsWith("#")) out[m[1]!] = m[2]!.replace(/^["']|["']$/g, "");
-  }
-  return out;
-}
-
 const posInt = (v: string | undefined): number | undefined => (v && /^\d+$/.test(v) && Number(v) > 0 ? Number(v) : undefined);
 const memSize = (v: string | undefined): string | undefined => (v && /^\d+[kmg]$/i.test(v) ? v.toLowerCase() : undefined);
 
 /** Settings from env layers, later layers winning; an invalid value keeps the earlier one (fails
  *  closed). The image must be pinned by digest. */
 export function browserSettings(layers: Array<Record<string, string>>): BrowserSettings {
-  const pick = <T>(key: string, parse: (v: string | undefined) => T | undefined): T | undefined => {
-    let v: T | undefined;
-    for (const l of layers) v = parse(l[key]) ?? v;
-    return v;
-  };
+  const pick = <T>(key: string, parse: (v: string | undefined) => T | undefined): T | undefined => pickSetting(layers, key, parse);
   const image = pick("NEO_BROWSER_IMAGE", (v) => v || undefined);
   if (!image || !/@sha256:[0-9a-f]{64}$/.test(image)) throw new Error("NEO_BROWSER_IMAGE must be pinned by digest (…@sha256:<64 hex>)");
   return {

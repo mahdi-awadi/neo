@@ -3,7 +3,8 @@
 import { test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseEnvFile, browserSettings, mcpWiring, wireUserMcp, composeArgs } from "../tools/browser/install";
+import { browserSettings, mcpWiring, wireUserMcp, composeArgs } from "../tools/browser/install";
+import { parseEnvFile } from "../tools/lib/env-file";
 
 const KIT = join(import.meta.dir, "..", "tools", "browser");
 

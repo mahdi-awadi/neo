@@ -55,6 +55,7 @@ export function startFakeTei(opts: FakeTeiOpts): FakeTei {
     if (req.method === "POST") inputs = ((await req.json()) as { inputs: string[] }).inputs;
     fake.requests.push({ path, auth, ...(inputs ? { inputs } : {}) });
     if (auth !== `Bearer ${opts.key}`) return new Response("unauthorized", { status: 401 });
+    if (path === "/health") return new Response(null, { status: 200 });
     if (path === "/info") return Response.json({ ...fake.info, model_type: { embedding: { pooling: "cls" } }, max_input_length: 8192 });
     if (path !== "/embed" || !inputs) return new Response("not found", { status: 404 });
     const next = fake.queue.shift();

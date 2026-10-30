@@ -56,9 +56,10 @@ export interface EmbedderCfg {
   backoffMaxMs: number;
 }
 
-/** `revision` has no default: the operator pins it (tools/history/embedder.env); empty → not configured. */
+/** `model` and `revision` name the pair that tools/history/embedder.env pins (the embedder service test
+ *  checks they match); an empty revision → not configured. */
 export const EMBEDDER_DEFAULTS: Readonly<EmbedderCfg> = {
-  url: "http://127.0.0.1:8088", keyEnv: "HISTORY_EMBEDDER_KEY", model: "BAAI/bge-m3", revision: "", dims: 1024,
+  url: "http://127.0.0.1:8088", keyEnv: "HISTORY_EMBEDDER_KEY", model: "BAAI/bge-m3", revision: "5617a9f61b028005a4858fdac845db406aefb181", dims: 1024,
   batch: 8, timeoutMs: 60_000, queryTimeoutMs: 3_000, queryCache: 200, backoffMs: 5_000, backoffMaxMs: 300_000,
 };
 

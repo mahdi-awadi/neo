@@ -12,7 +12,9 @@
     "prod",
     "^/home/neo/data(/|$)",
     "^/home/neo/company(/|$)",
-    "^/home/neo/node_modules(/|$)"
+    "^/home/neo/node_modules(/|$)",
+    "^/var/backups/neo(/|$)",
+    "^neo-embedder-models$"
   ],
   "keepImagesFrom": [
     "~/.claude/security/images.env"

@@ -53,7 +53,7 @@
   "history": {
     "enabled": true,
     "dbPath": "data/history.db",
-    "embedder": { "url": "http://127.0.0.1:8088", "keyEnv": "HISTORY_EMBEDDER_KEY", "model": "BAAI/bge-m3", "revision": "", "dims": 1024 },
+    "embedder": { "url": "http://127.0.0.1:8088", "keyEnv": "HISTORY_EMBEDDER_KEY", "model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dims": 1024 },
     "vectors": { "urlEnv": "SHARED_QDRANT_URL", "keyEnv": "SHARED_QDRANT_API_KEY", "collection": "neo_history", "allowedCollections": ["neo_history"] },
     "indexer": { "busyPauseMs": 200 },
     "feedKeep": 200000

@@ -33,3 +33,5 @@ AGENTS.local.md
 
 # Neo shared browser: machine-local overrides (ADR-0032)
 tools/browser/browser.local.env
+# Neo embedder: machine-local overrides (ADR-0066)
+tools/history/embedder.local.env

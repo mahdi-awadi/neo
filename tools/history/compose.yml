@@ -1,0 +1,43 @@
+# Neo's embedder (ADR-0066 Decision 5): text-embeddings-inference serving BAAI/bge-m3 at a pinned revision
+# for the task history's meaning search. Neo's own container, not a shared service. Loopback only — the
+# host is public. Low CPU shares and hard caps, so a backfill never slows the host.
+#   bun tools/history/install.ts         (key into .env, up, health + test embed)   · docs/history.md
+#   bun tools/history/install.ts --down  (stop and remove it; the model volume stays)
+# Values live in embedder.env (tracked) and embedder.local.env (machine-local, untracked). The API key is
+# never in a file here: compose reads HISTORY_EMBEDDER_KEY from the environment install.ts gives it.
+services:
+  neo-embedder:
+    image: ${NEO_EMBEDDER_IMAGE:?set NEO_EMBEDDER_IMAGE in embedder.env}
+    container_name: neo-embedder
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NEO_EMBEDDER_PORT}:80"
+    environment:
+      MODEL_ID: ${NEO_EMBEDDER_MODEL}
+      REVISION: ${NEO_EMBEDDER_REVISION}
+      PORT: "80"
+      HUGGINGFACE_HUB_CACHE: /data
+      RAYON_NUM_THREADS: ${NEO_EMBEDDER_THREADS}
+      # The bearer key: from the compose process environment only (never argv, never a tracked file).
+      API_KEY: ${HISTORY_EMBEDDER_KEY:?run bun tools/history/install.ts (it writes HISTORY_EMBEDDER_KEY into .env)}
+    volumes:
+      - neo-embedder-models:/data
+    mem_limit: ${NEO_EMBEDDER_MEM}
+    memswap_limit: ${NEO_EMBEDDER_MEM}
+    cpus: ${NEO_EMBEDDER_CPUS}
+    cpu_shares: 256
+    pids_limit: ${NEO_EMBEDDER_PIDS}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      # A TCP check: /health needs the bearer key, and the key must not sit in a health-check command.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # The first start downloads the model (about 2.3 GB) before the port opens.
+      start_period: 15m
+
+volumes:
+  neo-embedder-models:
+    name: neo-embedder-models
