@@ -1348,6 +1348,12 @@ test("the dispatch preamble stays terse — every worker pays for it on every ru
   expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5000);
 });
 
+test("the preamble keeps the operator's standing wording: the planner on the highest effort, long checks in background Bash", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("`planner` subagent (strongest model, highest effort)");
+  expect(out).toContain("in the background (background Bash or a subagent)");
+});
+
 test("the preamble names project_notes ask and tools_for for a missing fact, tool or key (ADR-0050)", () => {
   const out = briefWithProjectDocs("");
   expect(out).toContain("project_notes ask");

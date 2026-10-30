@@ -411,11 +411,11 @@ export function planWaitTail(d: { id: string; question: string }): string {
 export function briefWithProjectDocs(task: string): string {
   return (
     "First read this project's rule and doc .md files (AGENTS.md, DESIGN.md, other root .md files, " +
-    "the docs this task touches); follow them with CLAUDE.md.\n\n" +
+    "docs this task touches); follow them with CLAUDE.md.\n\n" +
     "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
-    "  DESIGN — think deeply; hand it to the `planner` subagent (strongest model). With the " +
+    "  DESIGN — think deeply; hand it to the `planner` subagent (strongest model, highest effort). With the " +
     "`domain-modeling` and `codebase-design` skills: the real terms in `CONTEXT.md`, a short ADR per genuine " +
-    "decision (with rejected alternatives); a spec (acceptance criteria, edge cases) as one clean seam " +
+    "decision (with rejected options); a spec (acceptance criteria, edge cases) as one clean seam " +
     "behind a small, testable interface; a plan via `superpowers:brainstorming` → `writing-plans`. " +
     `${PLAN_RULE} For a bug, \`superpowers:systematic-debugging\` to root-cause first. (Skip CONTEXT.md/ADR ` +
     "only for a trivial edit; say so.)\n" +
@@ -423,7 +423,7 @@ export function briefWithProjectDocs(task: string): string {
     "per acceptance criterion), then `superpowers:verification-before-completion`, a final `planner` " +
     `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE}\n\n` +
     "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
-    `failure, even when it works. ${QUALITY_RULE} (1) i18n through standard per-locale catalogues (react-i18next or ` +
+    `failure, even when it works. ${QUALITY_RULE} (1) i18n via standard per-locale catalogues (react-i18next or ` +
     "equivalent), namespaced keys, AR+EN complete — never literal UI strings or a bespoke " +
     "mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, " +
     "dev by default, failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
@@ -446,11 +446,11 @@ export function briefWithProjectDocs(task: string): string {
     "When you must ask (ask_operator): for a non-technical reader, in the operator's language — the situation, " +
     "each option and its effect, your pick and why. One decision per card; no jargon.\n\n" +
     "REQUIRED — stay alive, never blocked. Neo ABORTS a run after ~5 min with no streamed step. Start " +
-    "long checks (vet/test/lint loops, builds, image pulls, CI waits) in the background (Bash " +
+    "long checks (vet/test/lint loops, builds, image pulls, CI waits) in the background (background Bash " +
     "or a subagent), each module its own log; never wrap a real test in `timeout`. Keep working and read each " +
     "result when ready; with nothing left, POLL in FOREGROUND steps under 90 s. No Monitor. Single-shot: never end your turn while a " +
     "check runs or its result is unread.\n\n" +
-    "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; the engine " +
+    "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; Neo " +
     "sends it to the operator. A small plan: build on. A BIG plan (many tasks; migrations, auth, " +
     "money, deploy, deletes; or `approval: required`) waits: when a call is denied with " +
     "STOP, end your turn — Approve & build resumes you.\n\n" +
