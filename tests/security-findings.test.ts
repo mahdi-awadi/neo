@@ -198,8 +198,9 @@ describe("security findings", () => {
 
   test("json-ok: exit 0 only for one complete JSON document", () => {
     const d = mkdtempSync(join(tmpdir(), "neo-sec-json-"));
+    let n = 0;
     const ok = (text: string | undefined) => {
-      const f = join(d, `f${Math.random()}`);
+      const f = join(d, `f${n++}`);
       if (text !== undefined) writeFileSync(f, text);
       return Bun.spawnSync(["bun", join(import.meta.dir, "../tools/security/findings.ts"), "json-ok", f]).exitCode;
     };
