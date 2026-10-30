@@ -217,7 +217,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
       `until`. An unreadable `history.db` gives `ok: false`. The `history_search` event has no query text.
   - Done when: AC1–AC4 and AC14 pass, and the search side of AC9 passes.
 
-- [ ] **10. Remember and forget**
+- [x] **10. Remember and forget**
   - Create: `src/engine/history/index.ts` (the factory and the methods),
     `tests/history-remember-forget.test.ts`.
   - Tests first:
