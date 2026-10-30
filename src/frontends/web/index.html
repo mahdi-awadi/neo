@@ -354,6 +354,40 @@ aside{position:fixed;inset-block:0;inset-inline-start:0;z-index:30;width:min(86v
 .sheet pre{white-space:pre-wrap;font-family:var(--sans);font-size:13px;margin:6px 0 0;overflow-wrap:anywhere}
 @media (max-width:640px){.sheet{width:100vw;max-width:100vw;margin:auto 0 0;border-radius:16px 16px 0 0;max-height:88vh}}
 details.hk>summary{cursor:pointer;min-height:44px;display:flex;align-items:center;color:var(--muted);font-size:12px}
+/* History (ADR-0066): the search, the filters (folded behind one button on a phone), the mode banner, hit cards. */
+#vhistory{gap:12px}
+.hsearch{display:flex;gap:8px;align-items:center;min-width:0}
+.hsearch input,.hfil input,.hrem textarea,.hrem input,#hfreason{background:var(--ink);border:1px solid var(--border);color:var(--fg);border-radius:9px;padding:8px 11px;font-family:var(--sans);font-size:13px;outline:none;min-width:0}
+.hsearch input{flex:1}
+.hsearch input:focus,.hfil input:focus,.hrem textarea:focus,.hrem input:focus,#hfreason:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--glow)}
+.hfbtn{display:none}
+.hfil{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:8px;align-items:end}
+.hfil label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);min-width:0}
+.hkinds{grid-column:1/-2;display:flex;flex-wrap:wrap;gap:6px}
+.hkc[aria-pressed=true]{border-color:var(--accent-dim);color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.hres{display:flex;flex-direction:column;gap:10px;min-width:0}
+.hstate{color:var(--faint);font-size:13px;padding:18px 4px;text-align:center}.herr{color:var(--danger)}
+.hbanner{border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));background:color-mix(in srgb,var(--warn) 7%,var(--panel));border-radius:11px;padding:9px 13px;font-size:13px}
+.hb-skipped{border-color:var(--border);background:var(--panel)}
+.hcount{font-size:11px;color:var(--muted)}
+.hcard{border:1px solid var(--border);border-radius:13px;background:var(--panel);padding:11px 14px;min-width:0;overflow-wrap:anywhere}
+.hm{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+.ht{margin:6px 0 4px;font-size:14px;font-weight:600;line-height:1.4}
+.hsn{font-size:13px;line-height:1.55;color:var(--out-fg)}.hsn mark{background:color-mix(in srgb,var(--accent) 25%,transparent);color:inherit}
+.hx{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-top:7px;font-size:11.5px;color:var(--muted)}
+.hvias{display:flex;gap:4px}.hvia{font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:999px;background:var(--panel2)}
+.harc{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
+.hrem summary{cursor:pointer;min-height:44px;display:flex;align-items:center;color:var(--muted);font-size:12px}
+.hrem textarea{width:100%;resize:vertical}.hrem .acts input{flex:1}
+#hfsheet h2{margin:0;font-size:15px}.hfentry{font-size:13px}.hflabel{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}#hfreason{width:100%;resize:vertical}
+:lang(ar) .hvia{letter-spacing:normal}
+@media (max-width:768px){
+.hfbtn{display:inline-flex}
+.hfil{display:none;grid-template-columns:minmax(0,1fr)}
+.hfil.open{display:grid}
+.hkinds{grid-column:1/-1}
+.hsearch input,.hfil input,.hrem textarea,.hrem input,#hfreason{font-size:16px}
+}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;border:3px solid var(--ink)}
 </style></head>
 <body><div class="splash" id="splash" aria-hidden="true"><svg class="logo" viewBox="2 8 100 42" focusable="false"><g fill="none" stroke="currentColor" stroke-width="7">
@@ -391,6 +425,7 @@ details.hk>summary{cursor:pointer;min-height:44px;display:flex;align-items:cente
    <button class="tab on" data-v="activity" data-i18n="tabs.activity"></button>
    <button class="tab" data-v="threads" data-i18n="tabs.threads"></button>
    <button class="tab" data-v="projects" data-i18n="tabs.projects"></button>
+   <button class="tab" data-v="history" data-i18n="tabs.history"></button>
    <button class="tab" data-v="todos"><span data-i18n="tabs.queue"></span><span id="tbadge" class="ibadge"></span></button>
    <button class="tab" data-v="loops" data-i18n="tabs.loops"></button>
    <button class="tab" data-v="usage" data-i18n="tabs.usage"></button>
@@ -429,6 +464,26 @@ details.hk>summary{cursor:pointer;min-height:44px;display:flex;align-items:cente
    <div class="tlist"><div id="pjrows"></div></div>
    <div class="tpane"><button class="back" type="button" data-act="back"><span class="arr" aria-hidden="true">‹</span><span data-i18n="nav.back"></span></button><div id="pjbody"><div class="fe" data-i18n="pj.pick"></div></div></div>
   </div>
+  <div class="view" id="vhistory">
+   <form class="hsearch" id="hform" role="search">
+    <input id="hq" type="search" maxlength="500" dir="auto" autocomplete="off" enterkeyhint="search" data-i18n-placeholder="history.placeholder" data-i18n-aria="history.placeholder">
+    <button class="chip ok" type="submit" data-i18n="history.search"></button>
+    <button class="chip hfbtn" type="button" id="hfbtn" aria-expanded="false" aria-controls="hfil" data-i18n="history.filters"></button>
+   </form>
+   <div class="hfil" id="hfil">
+    <label><span data-i18n="history.project"></span><input id="hproj" type="text" maxlength="128" dir="auto" autocomplete="off" data-i18n-placeholder="history.projectAny"></label>
+    <label><span data-i18n="history.since"></span><input id="hsince" type="date" dir="ltr"></label>
+    <label><span data-i18n="history.until"></span><input id="huntil" type="date" dir="ltr"></label>
+    <div class="hkinds" id="hkinds" role="group" data-i18n-aria="history.kinds"></div>
+    <button class="chip" type="button" id="hfclear" data-i18n="history.clear"></button>
+   </div>
+   <div class="hres" id="hres" aria-live="polite"><div class="hstate" data-i18n="history.idle"></div></div>
+   <details class="hrem">
+    <summary data-i18n="history.remember.title"></summary>
+    <textarea id="hrtext" rows="3" dir="auto" maxlength="4000" data-i18n-placeholder="history.remember.text" data-i18n-aria="history.remember.title"></textarea>
+    <div class="acts"><input id="hrproj" type="text" maxlength="128" dir="auto" autocomplete="off" data-i18n-placeholder="history.remember.project" data-i18n-aria="history.remember.project"><button class="chip ok" type="button" id="hrsave" data-i18n="history.remember.save"></button></div>
+   </details>
+  </div>
   <div class="view" id="vtodos"></div>
   <div class="view" id="vloops"></div>
   <div class="view" id="vusage"></div>
@@ -437,6 +492,11 @@ details.hk>summary{cursor:pointer;min-height:44px;display:flex;align-items:cente
  </main>
 </div>
 <dialog class="sheet" id="tdsheet" aria-labelledby="tdtitle"><div class="sh"><span id="tdhead"></span><button class="chip" type="button" id="tdclose" data-i18n="todoDetail.close"></button></div><div class="sb" id="tdbody"></div></dialog>
+<dialog class="sheet" id="hfsheet" aria-labelledby="hftitle"><div class="sh"><h2 id="hftitle" data-i18n="history.forgetTitle"></h2></div><div class="sb">
+ <p id="hfentry" class="hfentry"></p><p data-i18n="history.forgetBody"></p>
+ <label class="hflabel" for="hfreason" data-i18n="history.forgetReason"></label><textarea id="hfreason" rows="2" dir="auto" maxlength="500" data-i18n-placeholder="history.forgetReasonPlaceholder"></textarea>
+ <div class="acts"><button class="chip" type="button" id="hfcancel" data-i18n="history.cancel"></button><button class="chip no" type="button" id="hfgo" data-i18n="history.forgetConfirm"></button></div>
+</div></dialog>
 <div class="toasts" id="toasts" role="status" aria-live="polite" popover="manual"></div>
 <script type="module" src="%APP_JS%"></script>
 </body></html>

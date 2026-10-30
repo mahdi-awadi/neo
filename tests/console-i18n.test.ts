@@ -94,8 +94,9 @@ function literalText(src: string): string[] {
   return offenders;
 }
 
-test("no literal user-facing strings in the client module: text nodes and dialog/label text come from t()", () => {
+test("no literal user-facing strings in the client modules: text nodes and dialog/label text come from t()", () => {
   expect(literalText(APP)).toEqual([]);
+  expect(literalText(readFileSync(join(WEB, "history.ts"), "utf8"))).toEqual([]); // the History tab (ADR-0066)
   // The check itself catches each kind (and ignores comments, regexes and code-only strings).
   const bad = `// it's fine\nconst r = /[&<>"]/g;\nel.textContent = "Hello there";\nalert("Send failed.");\nh += '<div class="x">Nothing yet</div>';\nh += \`<b>\${t("k")}</b>\`;\nb.className = "chip ok";`;
   expect(literalText(bad)).toEqual(["Hello there", "Send failed.", '<div class="x">Nothing yet</div>']);

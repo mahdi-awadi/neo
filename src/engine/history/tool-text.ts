@@ -34,7 +34,7 @@ const reply = (text: string, isError = false): ToolReply => ({ content: [{ type:
 const refused = (why: string): ToolReply => reply(`History search refused: ${why}.`, true);
 
 /** A UTC date `YYYY-MM-DD` → its first (or last) millisecond; anything else is undefined. */
-function dateMs(v: string, end: boolean): number | undefined {
+export function dateMs(v: string, end: boolean): number | undefined {
   const m = DATE.exec(v.trim());
   if (!m) return undefined;
   const at = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));

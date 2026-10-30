@@ -58,6 +58,7 @@
     "activity": "Activity",
     "threads": "Threads",
     "projects": "Projects",
+    "history": "History",
     "queue": "Queue",
     "loops": "Loops",
     "usage": "Usage",
@@ -476,7 +477,10 @@
       "stale_branch": "Stale branch",
       "drift": "Branches out of step",
       "worktree": "Idle worktree",
-      "other": "Item"
+      "other": "Item",
+      "history_off": "History search off",
+      "history_degraded": "History search degraded",
+      "backup_failed": "Backup failed"
     },
     "why": {
       "approval_stuck": "A tool call has waited {{age}} for an approval: {{label}}.",
@@ -506,7 +510,10 @@
       "stale_branch": "No commit for {{days}} days, and not merged into {{base}}.",
       "drift": "{{branch}} is {{ahead}} commits ahead of {{base}}.",
       "worktree": "This worktree has been idle for {{hours}}h.",
-      "other": "Raised by a scan of this project."
+      "other": "Raised by a scan of this project.",
+      "history_off": "Meaning search over the task history is off: {{reason}}. Only word and id matches work.",
+      "history_degraded": "Meaning search over the task history has been down for {{age}}: {{reason}}.",
+      "backup_failed": "The snapshot backup of {{path}} failed: {{reason}}."
     },
     "next": {
       "approval_stuck": "A worker finds what the run was doing and finishes it another way, or says why it needs that approval.",
@@ -536,7 +543,10 @@
       "stale_branch": "A worker merges, finishes or deletes the branch, and says why.",
       "drift": "A worker checks the commits and merges, or says what blocks it.",
       "worktree": "A worker removes the worktree if its work is merged, or commits what is left.",
-      "other": "No worker task fits this item. Snooze or dismiss it."
+      "other": "No worker task fits this item. Snooze or dismiss it.",
+      "history_off": "A worker follows the step the item names (the embedder install or the key), then checks that meaning search is on.",
+      "history_degraded": "A worker finds why the embedder or the shared index does not answer and brings it back.",
+      "backup_failed": "A worker reads why the backup failed, fixes the cause and runs the backup again."
     },
     "noBrief": "→ todo cannot help with this item. Snooze or dismiss it.",
     "showBrief": "what the worker gets",
@@ -605,6 +615,105 @@
       "failed": "failed",
       "done": "done",
       "cancelled": "cancelled"
+    }
+  },
+  "history": {
+    "placeholder": "Search past work: words, meaning, or an id like #884",
+    "search": "Search",
+    "filters": "Filters",
+    "project": "Project",
+    "projectAny": "Any project",
+    "since": "From",
+    "until": "To",
+    "kinds": "Kinds",
+    "clear": "Clear filters",
+    "idle": "Search the todos, orders, results, plans, notes, decisions and remembered facts of every project, in Arabic or English.",
+    "loading": "Searching…",
+    "none": "Nothing in the history matches.",
+    "count": "{{n}} results",
+    "mode": {
+      "partial": "Meaning search covers {{pct}} of the history so far; word and id matches cover all of it.",
+      "off": "Meaning search is off ({{reason}}): these are word and id matches only.",
+      "skipped": "The search is only ids: exact matches, no meaning search."
+    },
+    "reason": {
+      "not_configured": "the embedder key is not set",
+      "config_refused": "the settings were refused",
+      "embedder_down": "the embedder does not answer",
+      "embedder_slow": "the embedder is too slow",
+      "embedder_refused": "the embedder refused the key",
+      "embedder_wrong_model": "the embedder runs another model",
+      "vectors_down": "the shared index does not answer",
+      "vectors_slow": "the shared index is too slow",
+      "vectors_refused": "the shared index refused the key",
+      "collection_missing": "the shared index has no collection for Neo"
+    },
+    "kind": {
+      "todo": "Todo",
+      "order": "Order",
+      "result": "Result",
+      "digest": "Digest",
+      "message": "Message",
+      "plan": "Plan",
+      "note": "Note",
+      "attention": "Attention",
+      "decision": "Decision",
+      "remembered": "Remembered",
+      "line": "Worker line"
+    },
+    "via": {
+      "exact": "id",
+      "meaning": "meaning",
+      "words": "words",
+      "lines": "lines"
+    },
+    "error": {
+      "query_empty": "Type something to search for.",
+      "query_too_long": "The search is too long (at most 500 characters).",
+      "query_stopwords": "Add a word that says what you look for.",
+      "unknown_kind": "One of the kinds is not known.",
+      "bad_range": "The start date is after the end date.",
+      "bad_date": "A date is not a real date.",
+      "bad_limit": "The number of results is not a whole number.",
+      "bad_project": "The project name is not valid.",
+      "history_off": "Task history is off on this engine.",
+      "history_unreadable": "The history store cannot be read right now.",
+      "text_required": "Write the fact to remember.",
+      "empty": "Write the fact to remember.",
+      "too_short": "The fact is too short to find later.",
+      "too_long": "The fact is too long (at most 4,000 characters).",
+      "secret": "Not saved: it looks like a secret.",
+      "rate_limited": "Too many saves this hour. Try again later.",
+      "bad_ref": "That entry reference is not valid.",
+      "reason_required": "Write why you forget it.",
+      "reason_too_long": "The reason is too long.",
+      "unknown_ref": "That entry is not in the history.",
+      "not_forgettable": "Worker lines are not stored in the history.",
+      "network": "The engine did not answer. Try again.",
+      "other": "That did not work: {{code}}"
+    },
+    "archived": "archived",
+    "commits": "Commits",
+    "plan": "Plan file",
+    "alsoIn": "Also in",
+    "openTodo": "Open todo",
+    "openThread": "Open thread",
+    "forget": "Forget",
+    "forgetTitle": "Forget this entry?",
+    "forgetBody": "It goes from every search (words, meaning and the shared index) and does not come back. The ledger keeps its own record.",
+    "forgetReason": "Reason",
+    "forgetReasonPlaceholder": "Why forget it?",
+    "forgetConfirm": "Forget it",
+    "cancel": "Cancel",
+    "forgotten": "Forgotten: {{chunks}} text parts and {{points}} vectors removed.",
+    "forgetPending": "{{n}} vectors wait for the shared index.",
+    "remember": {
+      "title": "Remember a fact",
+      "text": "A decision and its reason, a gotcha, where something lives…",
+      "project": "Project (optional)",
+      "save": "Save",
+      "saved": "Saved as {{ref}}",
+      "duplicate": "Already saved as {{ref}}"
     }
   }
 }

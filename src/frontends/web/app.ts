@@ -17,6 +17,7 @@ import { linesHtml } from "./text-lines";
 import { buildLabel } from "./build-label";
 import { dismissSplash } from "./splash";
 import { runAct, type ActResult } from "./act";
+import { mountHistory } from "./history";
 import { THREAD_ORIGINS } from "../../engine/thread-origins";
 
 /** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
@@ -83,9 +84,13 @@ function toast(text: string, ok: boolean): void {
   }, TOAST_MS);
 }
 /** Every console button's action (ADR-0065): busy while it runs, then a toast with the engine's reply.
- *  `okText`: the console's own words for a success (a pin), instead of the engine's English reply. */
-function act(btn: Element | null, path: string, body: unknown, okText?: string): Promise<ActResult> {
-  return runAct(btn as HTMLButtonElement | null, () => post(path, body), { toast: (text, ok) => toast(ok && okText ? okText : text, ok), fallback: (ok) => tx(ok ? "toast.done" : "toast.failed") });
+ *  `okText`: the console's own words for a success (a pin), instead of the engine's English reply.
+ *  `words`: the console's own words for any reply, from its body (the History tab's ref or reason code). */
+function act(btn: Element | null, path: string, body: unknown, okText?: string, words?: (ok: boolean, text: string, data: unknown) => string): Promise<ActResult> {
+  return runAct(btn as HTMLButtonElement | null, () => post(path, body), {
+    toast: (text, ok, data) => toast(words ? words(ok, text, data) : ok && okText ? okText : text, ok),
+    fallback: (ok) => tx(ok ? "toast.done" : "toast.failed"),
+  });
 }
 function fmt(n: number): string {
   n = n || 0;
@@ -777,7 +782,7 @@ function fitViewport(): void {
   fit();
 }
 
-const VIEWS = ["activity", "threads", "projects", "todos", "loops", "usage", "recent", "inbox"];
+const VIEWS = ["activity", "threads", "projects", "history", "todos", "loops", "usage", "recent", "inbox"];
 function tab(name: string): void {
   VIEWS.forEach((n) => {
     $("v" + n).classList.toggle("on", n === name);
@@ -789,6 +794,7 @@ function tab(name: string): void {
   if (name === "inbox") void loadInbox();
   if (name === "threads") openThreads();
   if (name === "projects") loadProjects();
+  if (name === "history") $("hq").focus({ preventScroll: true });
 }
 
 // ── Activity feed (ADR-0014: a bounded live window) ─────────────────────────────────────────────
@@ -1536,13 +1542,18 @@ function attentionItemHtml(it: Any, noteChip: string, from: string): string {
 }
 /** A console link `#project=<name>` (the Telegram dashboard's "open console") opens that project. */
 function openFromHash(): void {
-  const m = /^#project=(.+)$/.exec(location.hash);
+  const m = /^#(project|history)=(.+)$/.exec(location.hash);
   if (!m) return;
   let name: string;
   try {
-    name = decodeURIComponent(m[1]!);
+    name = decodeURIComponent(m[2]!);
   } catch {
     return; // a malformed link (`#project=%E0`) is ignored — it must never stop the console starting
+  }
+  if (m[1] === "history") {
+    // A Telegram `/find` reply links here with its query (ADR-0066).
+    tab("history");
+    return historyPanel.search(name);
   }
   tab("projects");
   enterDetail("vprojects");
@@ -1747,6 +1758,15 @@ sheet().addEventListener("click", (ev) => {
   if (ev.target === sheet()) sheet().close();
 });
 
+// ── History (ADR-0066): search past work, remember a fact, forget an entry ───────────────────────
+const historyPanel = mountHistory({
+  fmt: { esc, ltr, iso, t, tx, date: (at) => new Date(at).toLocaleDateString(LOCALE, { year: "numeric", month: "short", day: "numeric" }) },
+  $,
+  act,
+  toast,
+  enhance: enhanceCode,
+});
+
 // ── Wiring ──────────────────────────────────────────────────────────────────────────────────
 document.addEventListener("click", (ev) => {
   const el = (ev.target as HTMLElement).closest<HTMLElement>("[data-act],[data-v]");
@@ -1787,6 +1807,8 @@ document.addEventListener("click", (ev) => {
       return closeThread(Number(id), el);
     case "todo-open":
       return openTodo(Number(id), el);
+    case "history-forget":
+      return historyPanel.forget(el.dataset.ref ?? "");
     case "project-open":
       enterDetail("vprojects");
       return showProject(el.dataset.project ?? "");

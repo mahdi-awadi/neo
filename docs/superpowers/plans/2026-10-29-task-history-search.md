@@ -264,7 +264,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - The preamble has the sentence. `tools_for("search past work")` finds the card.
   - Done when: AC17 passes.
 
-- [ ] **13. Console History tab**
+- [x] **13. Console History tab**
   - Create: `src/frontends/web/history.ts` (the panel), `tests/console-history.test.ts`.
   - Modify:
     - `src/frontends/web.ts`: `GET /api/history`, `POST /api/history/remember`, `POST /api/history/forget`.

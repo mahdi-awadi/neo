@@ -27,11 +27,12 @@ export function actOutcome(status: number, body: unknown): ActResult {
 }
 
 /** Run one button's request with its busy state and a toast. `fallback` gives the words for a reply with
- *  no text (from the locale catalogue). Never throws. */
+ *  no text (from the locale catalogue); the toast also gets the reply body, for a caller with its own words.
+ *  Never throws. */
 export async function runAct(
   btn: ActButton | null,
   request: () => Promise<Response>,
-  o: { toast: (text: string, ok: boolean) => void; fallback: (ok: boolean) => string },
+  o: { toast: (text: string, ok: boolean, data?: unknown) => void; fallback: (ok: boolean) => string },
 ): Promise<ActResult> {
   if (btn?.classList.contains("busy")) return { ok: false, text: "" };
   if (btn) {
@@ -53,6 +54,6 @@ export async function runAct(
     btn.removeAttribute("aria-busy");
     btn.classList.remove("busy");
   }
-  o.toast(r.text, r.ok);
+  o.toast(r.text, r.ok, r.data);
   return r;
 }

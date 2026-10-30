@@ -21,6 +21,9 @@ import { faults } from "../engine/fault";
 import { DEFAULT_WEB_FEED_WINDOW } from "../config";
 import { isPlanAction } from "../engine/plans";
 import { readMdFilesCfg, resolveMdFile } from "../engine/md-file";
+import { snippetHtml } from "../engine/format";
+import { HISTORY_DEFAULTS } from "../engine/history/defaults";
+import { checkQuery, PROJECT_MAX, rawFromParams } from "../engine/history/operator";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -304,6 +307,10 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return d ? Response.json(d, NO_STORE) : Response.json({ ok: false, error: "no such todo" }, { status: 404, ...NO_STORE });
     }
 
+    // The task history (ADR-0066): search, remember, forget. Every field is checked before the seam is asked;
+    // a refused value is a 400 with its reason code, a history that is off or unreadable a 503.
+    if (path === "/api/history" || path.startsWith("/api/history/")) return historyRoute(req, url);
+
     // The thread tree behind a message ref (spec §4.4) — the same tree /trace renders, as JSON.
     if (req.method === "GET" && path.startsWith("/api/trace/")) {
       const trace = deps.engine.trace;
@@ -538,6 +545,41 @@ export function createWebApp(deps: WebAppDeps): WebApp {
     return new Response("not found", { status: 404 });
   }
 
+  async function historyRoute(req: Request, url: URL): Promise<Response> {
+    const history = deps.engine.history;
+    const refuse = (error: string, status = 400): Response => Response.json({ ok: false, error }, { status, ...NO_STORE });
+    const known = req.method === "GET" ? url.pathname === "/api/history" : req.method === "POST" && ["/api/history/remember", "/api/history/forget"].includes(url.pathname);
+    if (!known) return refuse("not found", 404);
+    if (!history) return refuse("history_off", 503);
+    const unavailable = (e?: string): number => (e === "history_unreadable" ? 503 : 400);
+
+    if (req.method === "GET") {
+      const checked = checkQuery(rawFromParams(url.searchParams), (deps.engine.cfg.history ?? HISTORY_DEFAULTS).search);
+      if (!checked.ok) return refuse(checked.error);
+      const r = await history.search(checked.q);
+      if (!r.ok) return refuse(r.error ?? "history_unreadable", unavailable(r.error));
+      // The snippet goes out as safe HTML (escaped, the match in <mark>), like /api/search.
+      return Response.json({ ok: true, mode: r.mode, hits: r.hits.map((h) => ({ ...h, snippet: snippetHtml(h.snippet) })) }, NO_STORE);
+    }
+
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (url.pathname === "/api/history/remember") {
+      if (typeof body.text !== "string") return refuse("text_required");
+      if (body.project !== undefined && (typeof body.project !== "string" || body.project.length > PROJECT_MAX)) return refuse("bad_project");
+      const project = typeof body.project === "string" ? body.project.trim() : "";
+      const r = history.remember({ text: body.text, ...(project ? { project } : {}), by: "operator", session: "console" });
+      if (!r.ok) return refuse(r.error, unavailable(r.error));
+      return Response.json({ ok: true, ref: r.ref, duplicate: r.duplicate }, NO_STORE);
+    }
+
+    if (typeof body.ref !== "string" || !body.ref || body.ref.length > FORGET_FIELD_MAX) return refuse("bad_ref");
+    if (typeof body.reason !== "string" || !body.reason.trim()) return refuse("reason_required");
+    if (body.reason.length > FORGET_FIELD_MAX) return refuse("reason_too_long");
+    const r = await history.forget(body.ref, body.reason.trim(), Date.now());
+    if (!r.ok) return refuse(r.error ?? "history_unreadable", r.error === "unknown_ref" ? 404 : unavailable(r.error));
+    return Response.json({ ok: true, chunks: r.chunks, points: r.points, pendingPoints: r.pendingPoints }, NO_STORE);
+  }
+
   return { fetch };
 }
 
@@ -546,6 +588,8 @@ export function createWebApp(deps: WebAppDeps): WebApp {
 /** Console list pages default to this many rows; the ledger clamps every page to PAGE_MAX. */
 const PAGE_DEFAULT = 50;
 const NO_STORE = { headers: { "cache-control": "no-store" } };
+/** A forget ref or reason longer than this is refused (a ref is short; a reason is one line). */
+const FORGET_FIELD_MAX = 500;
 const THREAD_STATES = new Set<string>(["open", "waiting", "done", "failed"]);
 const THREAD_ORIGINS = new Set<string>(ORIGIN_LIST);
 

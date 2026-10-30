@@ -53,7 +53,7 @@ test("the Queue tab renders the todo queues, posts its actions to /api/todo, and
   expect(APP).toContain('x.status === "failed"');
   // Every view a tab names is one the tab switch toggles (the Queue view used to be missing).
   const views = [...html.matchAll(/class="tab[^"]*" data-v="([a-z]+)"/g)].map((m) => m[1]);
-  expect(views.length).toBe(8);
+  expect(views.length).toBe(9); // + History (ADR-0066)
   for (const v of views) expect(APP).toMatch(new RegExp(`const VIEWS = \\[[^\\]]*"${v}"`));
 });
 

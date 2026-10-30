@@ -148,6 +148,8 @@ export interface NextModelCfg extends EmbedderCfg {
 
 /** Every source kind the indexer knows; `sources.kinds` may turn some off. */
 export const SOURCE_KINDS = ["todo", "order", "result", "digest", "message", "plan", "note", "attention", "decision", "remembered"] as const;
+/** Every kind a query may name: the stored kinds and the ledger's worker lines. */
+export const QUERY_KINDS = [...SOURCE_KINDS, "line"] as const;
 
 /** The whole `history` config section (spec "Config"); `readHistoryCfg` (plan task 11) fills it from `config.json`. */
 export interface HistoryCfg {
