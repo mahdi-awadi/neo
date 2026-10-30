@@ -121,6 +121,11 @@ Each reply states the meaning-search mode:
 | `collection_missing` | off | Ask ops to create `neo_history` (1,024 dims, cosine). |
 | `embedder_down`, `embedder_slow` | down | Check `docker compose -p neo-embedder ps` and `docker logs neo-embedder`. `install.ts` starts it again. |
 | `vectors_down`, `vectors_slow` | down | Check the shared Qdrant (an ops service) and the URL in `SHARED_QDRANT_URL`. |
+| `embedder_busy` | search only | Nothing. The indexer had an embed request in flight, so the search did not wait behind it: it gave the word, id and line matches at once. Search again later for meaning matches (after a backfill, this goes away). |
+
+A search embeds its query only when the meaning list is used: not for an id-only query, not for worker
+lines only, not with `search.weights.meaning` 0, and not when the shared index is off. A worker session may
+make `search.perSessionMinute` (30) searches a minute; the operator surfaces are not limited.
 
 When history is off in config (`history.enabled: false`), no store opens and no worker gets the tools.
 `/find` says the history is not available. The console route answers `503 history_off`.

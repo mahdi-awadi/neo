@@ -519,12 +519,12 @@ The section is read once at start: a change needs a daemon reload.
 | `next` | `null` | A model change: the same shape as `embedder`, plus `collection` when its `dims` differ. Kept only with a `model` and a `revision` that differ from the active model, and, for other dims, an allowed `neo_` collection. Else it is dropped. |
 | `retireAfterDays` | `7` | The old model's points and vectors go this many days after the model tag changed. |
 | `vectors` | `{ urlEnv: "SHARED_QDRANT_URL", keyEnv: "SHARED_QDRANT_API_KEY", collection: "neo_history", allowedCollections: ["neo_history"], uploadBatch: 128, timeoutMs: 10000, queryTimeoutMs: 2000, knn: 50, minScore: 0.35, driftRatio: 0.9 }` | The shared Qdrant. `urlEnv` and `keyEnv` name env variables (never values). Each `allowedCollections` entry must start with `neo_` (others are dropped); a `collection` outside the list keeps the default. `minScore` and `driftRatio` are in 0–1. |
-| `search` | `{ rrfK: 60, weights: { meaning: 1, words: 1, lines: 0.5 }, exactBoost: 1, defaultLimit: 10, maxLimit: 50, listLimit: 50, snippetChars: 240, maxQueryChars: 500, maxTerms: 12, fullCoverage: 0.99 }` | The fusion and the limits. `defaultLimit` never exceeds `maxLimit`. Coverage below `fullCoverage` reports meaning search as partial. |
+| `search` | `{ rrfK: 60, weights: { meaning: 1, words: 1, lines: 0.5 }, exactBoost: 1, defaultLimit: 10, maxLimit: 50, listLimit: 50, snippetChars: 240, maxQueryChars: 500, maxTerms: 12, fullCoverage: 0.99, perSessionMinute: 30 }` | The fusion and the limits. `defaultLimit` never exceeds `maxLimit`. Coverage below `fullCoverage` reports meaning search as partial. `meaning: 0` turns the meaning list off (no query embed). `perSessionMinute`: worker `history_search` calls per session per minute. |
 | `indexer` | `{ feedBatch: 500, sliceRows: 200, busyPauseMs: 200, reconcileRows: 500, embedBatchesPerPass: 16, uploadBatchesPerPass: 8 }` | One pass's bounds. While a pass leaves work that can go on (feed rows or a reconcile; embeds with the embedder up; uploads and deletes with Qdrant up), the next pass starts after `busyPauseMs`, not at the next heartbeat. |
 | `reconcileCron` | `17 4 * * 0` | The weekly reconcile (5-field cron, server-local). An invalid cron keeps the default. |
 | `feedKeep` | `200000` | The ledger change-feed rows kept (pruned at most once an hour). A prune past the history cursor starts a reconcile. |
 | `degradedAlertMinutes` | `60` | A service down this long raises `history_degraded`. |
-| `remember` | `{ minChars: 10, maxChars: 4000, perSessionHour: 20 }` | The `remember` limits. |
+| `remember` | `{ minChars: 10, maxChars: 4000, perSessionHour: 20 }` | The `remember` limits. A project name longer than 128 characters, or with a slash or a control character, is refused (`bad_project`). |
 | `telegram` | `{ findLimit: 5 }` | Hits in a `/find` reply. |
 | `store` | `{ lockStaleMs: 180000 }` | A writer lock older than this may be taken over. |
 
@@ -536,7 +536,7 @@ runbook (restore, drill, failures) is `docs/backup.md`.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `dir` | `/var/backups/neo` | The backup folder. Must be absolute. Made with mode 0700; files are 0600. The disk-cleanup kit protects it. |
+| `dir` | `/var/backups/neo` | The backup folder. Must be absolute and used only for these backups: a folder that holds other files is refused (`dir_not_dedicated`) and never changed. Made with mode 0700; files are 0600. The disk-cleanup kit protects it. |
 | `databases` | `[{ path: "data/history.db", cron: "41 3 * * *" }]` | The SQLite files to snapshot, each on its own cron (server-local). A relative path resolves against the daemon's folder. An entry with a bad cron, a path that is not `*.db`, a file name (without `.db`) that is not lower-case letters, digits and `_`, or the same file name as an earlier entry is dropped. The file name names the snapshots (`history-<stamp>.db.gz`). An empty list turns the job off. The ledger is not in the list: it joins only by the operator's decision (ADR-0066). |
 | `keepRecent` | `8` | The newest snapshots kept. |
 | `keepDaily` | `7` | Then the newest of each day, for this many more days (`0` allowed). |

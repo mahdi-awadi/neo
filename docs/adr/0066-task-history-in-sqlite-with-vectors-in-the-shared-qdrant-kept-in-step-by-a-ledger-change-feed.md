@@ -308,10 +308,13 @@ is `docs/history.md`. The config reference is `docs/CONFIG.md` ("Task history", 
 
 ### Changes to the decisions
 
-- **Consult runs are not in the history.** A consult run records its order on `CONSULT_CHAT`, and
-  `CONSULT_CHAT` equals `CUSTOMER_CHAT` (`-3`). The firewall excludes every order on chat `-3` and its
-  descendants, so consult questions and answers are not indexed. This fails closed. A consult run can
-  still use `history_search`. It does not get `remember`.
+- **Consult runs: the questions and answers are indexed, the runs are not.** A consult question and its
+  answer live on a project note (an `attention_items` row with source `note`), and every note is a `note:`
+  entry: title, body, refs, the answer and the resolution (`sources.ts`, no firewall step, because a note is
+  operator or worker text). The consult run itself records its order on `CONSULT_CHAT`, which equals
+  `CUSTOMER_CHAT` (`-3`): the firewall excludes that order, its descendants and their results, and the
+  worker-lines list leaves out chat `-3`, so the run's own brief, result and streamed lines are not
+  indexed. A consult run can use `history_search`. It does not get `remember`.
 - **`forget` of a remembered entry (`mem:N`) keeps no tombstone.** A remembered entry exists only in
   `history.db`, so the code deletes its row and nothing can add it again. Only a ledger-backed ref gets a
   tombstone. A `line:` ref (a ledger worker line) cannot be forgotten: it is not stored in the history.
@@ -330,9 +333,10 @@ is `docs/history.md`. The config reference is `docs/CONFIG.md` ("Task history", 
   files) to `history.db.corrupt-<UTC time>` and sends one alert. A stand-in seam then answers
   `history_unavailable` on every surface until a snapshot is restored and the daemon reloads. The engine
   keeps running.
-- **`rescan-secrets` forgets whole entries.** The admin command walks every stored chunk with today's
-  secret finder. For each entry with a match, it forgets the whole entry (all its chunks and points), not
-  only the chunk. The reason names the pattern, never the text. `--dry-run` only lists the refs.
+- **`rescan-secrets` forgets whole entries.** The admin command walks every stored chunk and title with
+  today's secret finder. For each entry with a match, it forgets the whole entry (all its chunks and
+  points), not only the chunk. It also drops each stored commit that the kept chunks and the title no
+  longer give. The reason names the pattern, never the text. `--dry-run` only lists the refs.
 - **The embedder container runs as the image's default user (root).** The named volume
   `neo-embedder-models` is created owned by root, and TEI writes the model download into it. The
   container has `cap_drop: [ALL]`, `no-new-privileges`, a pids limit, memory and CPU caps, and a port on
@@ -365,8 +369,10 @@ is `docs/history.md`. The config reference is `docs/CONFIG.md` ("Task history", 
   wrong vector length or a non-UUID point id is refused before the request. The JWT payload is decoded to
   check the `access` claim, never verified and never printed.
 - **The dispatch preamble.** One sentence for `history_search` ("Done before? `history_search` first.").
-  Other lines were made shorter, so the preamble with the codebase-memory line is 4,985 characters (limit
-  5,000).
+  The build (e3ca3e0) made room by dropping "highest effort" from the planner rule and "background" from
+  "(background Bash". Both are operator standing rules, so the review restored them word for word and
+  took the room from neutral wording ("Neo sends it", "rejected options", "via", "docs this task touches").
+  The preamble with the longest codebase-memory line is 4,992 characters (limit 5,000).
 - **Shared code, not copies.** `cronDueBetween` moved to `trigger.ts`. `fileStamp` lives in
   `backup/rotate.ts`. `parseEnvFile` moved to `tools/lib/env-file.ts` (the browser kit uses it too).
   `vacuumCopy` (the snapshot's read-only copy) is also the admin `copy-ledger`. The reserved chat ids moved
@@ -377,6 +383,49 @@ is `docs/history.md`. The config reference is `docs/CONFIG.md` ("Task history", 
   `forget`, `rescan-secrets`) and `tools/history/eval.ts` (recall@k, MRR, p50 and p95 for words only,
   meaning only and hybrid). `backfill --verify` uploads under the tag `<tag>~verify` and refuses a
   collection that holds points of another tag.
+
+### Review fixes (2026-10-30)
+
+Two reviews of `feat/history-search` and the live verify found these; each has a test.
+
+- **Point ids are derived** as Decision 4.5 says, as a UUID v5 (RFC 4122 name-based, SHA-1 as the RFC
+  requires; not a security use) of model tag, ref and chunk seq, not SHA-256. Ids stored before this are
+  moved by a saved walk (`points.rederived`): the point gets its derived id and is sent again, and the old
+  id is queued for deletion.
+- **Commits come only from kept text.** A sha-shaped value on a line the secret finder matches (a hex key
+  in `token: …`), or in a chunk dropped for a secret, is never a commit.
+- **Worker lines follow the same rules as entries:** a line with a secret shape is left out, an injection
+  phrase in the snippet or title is quoted, and the line's thread and order lineage go through the firewall.
+- **Customer-driven briefs in a live session (rule `customer_delivery`).** Dispatch may deliver a
+  customer-driven brief into an operator's live session. The history tools refuse in a session marked
+  customer-driven, and the firewall excludes a run's result, and the plans of that run, when an order it
+  excludes was made for the same folder while the run was live. Not covered by a ledger fact: plans with
+  only a thread, and the output of an operator-opened session. The full fix is a dispatch policy (never
+  deliver a customer-driven brief into a session that is not fenced for it), left to the operator.
+- **Payloads stay fresh.** A change of an entry's `at`, project or kind sends its kept points again (no
+  new embed).
+- **The weekly sweep re-sends lost points.** After the orphan pass it asks Qdrant which uploaded points it
+  holds (`POST /points` by id) and sends the missing ones again, also above the drift ratio.
+- **Forget holds for the whole work.** Forgetting a todo, its order or its result tombstones all three; a
+  tombstone spreads to the rest of the same work when the indexer meets it (a todo pruned by retention no
+  longer comes back as its order).
+- **Boilerplate recount.** The first and the weekly reconcile count paragraphs into `boilerplate_next`
+  (`history.db` v2, additive), which replaces the counts when the count ends. A feed gap before the first
+  reconcile ends restarts the first one, so no row is counted twice.
+- **Backup folder and leftovers.** An existing `backup.dir` is used only when it holds nothing but backup
+  files (`dir_not_dedicated` otherwise, and its mode is never changed). The schedule deletes a killed
+  child's temp files before each child.
+- **`install.ts`** gives `docker compose` the validated settings in its environment and no env file.
+- **Bounds.** The `remember` window drops ended sessions; a project name over 128 characters (or with a
+  slash or control character) is refused by the seam; worker `history_search` is limited per session
+  (`search.perSessionMinute`, 30).
+- **Explicit services.** The daemon hands the attention producer the two service states, not the pass
+  report.
+- **A search never waits behind an embed batch.** The query is embedded only when the meaning list is used
+  (not with meaning weight 0, not for lines only, not with the shared index off). While the indexer has an
+  embed request in flight, a search answers at once without meaning search (`off: embedder_busy`).
+- **Console in Arabic.** A hit date is digits only (`YYYY-MM-DD`) in its LTR isolate; the forget dialog
+  isolates the title and the ref.
 
 ### Measured (filled by the verify step)
 

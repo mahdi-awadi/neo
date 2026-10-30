@@ -29,6 +29,15 @@ with the manifest and deletes the temp file.
 The folder is `/var/backups/neo` (mode 0700). Files are mode 0600. The disk-cleanup kit protects the
 folder (`tools/disk/defaults.json`).
 
+The folder must be used only for these backups. When it does not exist, the child makes it with mode
+0700. When it exists and holds only snapshots, manifests and the job's temp files, the child sets it to
+mode 0700. When it holds any other file, the child refuses (`dir_not_dedicated`) and does not change the
+folder: set `backup.dir` to a folder of its own.
+
+Before each child starts, the schedule deletes the temp files that a killed child of the same job left
+(`.<name>-….tmp`, `<name>-<stamp>.manifest.json.tmp`, and `.drill-….tmp` for the drill). Only one child
+runs at a time, so no running child uses them.
+
 ## When a backup fails
 
 You get one alert for each failure streak, and the `backup_failed` attention item stays until the next
@@ -37,6 +46,7 @@ success. The ledger has a `backup_failed` event with the code for each failure.
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | `low_space` | Less than `minFreeGb` free in the folder. | Free disk space (the disk-cleanup loop), or lower `minFreeGb`. |
+| `dir_not_dedicated` | The backup folder holds files that are not backups. | Set `backup.dir` to an empty folder of its own (or move the other files out). |
 | `source_missing` | The database file does not exist. | Check the path in `backup.databases`. |
 | `copy_failed` | `VACUUM INTO` failed. | Read the alert text. Check the folder permissions and the disk. |
 | `integrity_failed` | The copy is corrupt. | The source may be corrupt. Run `PRAGMA integrity_check` on a copy of it. Do not delete old snapshots. |
@@ -97,6 +107,17 @@ Do these steps in this sequence. The daemon restart is the operator's.
 5. Start the daemon (operator). The indexer continues from the cursor in the restored file. Ledger rows
    that changed after the snapshot come back through the change feed or the next reconcile. Entries that
    were remembered or archived after the snapshot are lost.
+
+6. Do the forgets again. A restore also undoes each `forget` made after the snapshot: the restored file
+   has no tombstone for it, so the reconcile adds the entry again. Find the forgets in the ledger (the
+   `history_forget` events after the snapshot time give the refs, while retention still keeps those events)
+   and run each one again:
+
+   ```sh
+   bun tools/history/admin.ts forget <ref> --reason "<the reason again>"
+   ```
+
+   For `rescan-secrets` forgets, run `bun tools/history/admin.ts rescan-secrets` instead.
 
 If the daemon finds a corrupt `history.db` at start, it moves the file to
 `history.db.corrupt-<UTC time>` by itself and sends one alert. Then do steps 3 to 5.
