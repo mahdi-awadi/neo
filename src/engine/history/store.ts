@@ -4,7 +4,7 @@
 // delete queue, remembered entries, tombstones, boilerplate counts, state and the writer lock. The file is
 // mode 0600; its schema runs through the ledger's `migrate()` with its `.bak-v<N>` copy.
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { migrate } from "../ledger-migrations";
@@ -153,8 +153,15 @@ export interface HistoryStore {
   countToUpload(tag: string): number;
   putVectors(tag: string, rows: Array<{ textHash: string; vec: Float32Array }>): void;
   getVector(textHash: string, tag: string): Float32Array | undefined;
-  /** Give a point id to chunks that have a vector for `tag` and no point yet. Returns how many. */
+  /** Give a point id (`pointIdOf`) to chunks that have a vector for `tag` and no point yet. Returns how many. */
   addMissingPoints(tag: string, limit: number): number;
+  /** Walk the stored points (from a saved position) and give each the id `pointIdOf` derives: a point
+   *  stored before ids were derived gets its new id, is sent again, and its old id is queued for deletion. */
+  rederivePointIds(limit: number, at: number): { checked: number; changed: number };
+  /** Uploaded points of `tag` in chunk order after `afterChunkId`, at most `limit` (the weekly sweep). */
+  uploadedPoints(tag: string, afterChunkId: number, limit: number): Array<{ pointId: string; chunkId: number }>;
+  /** Forget that these points were uploaded (the weekly sweep found them missing in Qdrant). */
+  unmarkPoints(pointIds: string[]): void;
   /** Points of `tag` not yet uploaded whose vector exists, with their payload fields. */
   pointsToUpload(tag: string, limit: number): UploadPoint[];
   markUploaded(pointIds: string[], at: number): void;
@@ -207,6 +214,21 @@ function storeError(path: string, cause: unknown): HistoryStoreError {
 }
 
 const LOCK_KEY = "lock";
+/** The `state` key of the point-id walk: the last `points.rowid` checked. */
+const REDERIVE_KEY = "points.rederived";
+
+/** The namespace of the task history's point ids (RFC 4122 name-based ids). */
+const POINT_NAMESPACE = Buffer.from("6f1c2a4e8b3d4f5aa7c9e0d1b2f3a4c5", "hex");
+
+/** The Qdrant point id of one chunk under one model tag: a UUID v5 (SHA-1, RFC 4122) of the tag, the ref
+ *  and the chunk seq, so the same chunk always has the same id (ADR-0066 Decision 4). */
+export function pointIdOf(tag: string, ref: string, seq: number): string {
+  const h = createHash("sha1").update(POINT_NAMESPACE).update(`${tag}\u0000${ref}\u0000${seq}`).digest().subarray(0, 16);
+  h[6] = (h[6]! & 0x0f) | 0x50;
+  h[8] = (h[8]! & 0x3f) | 0x80;
+  const x = h.toString("hex");
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+}
 
 /** bm25 column weights: `body`, then `stems` (spec "Search"). */
 const BM25_WEIGHTS = [1.0, 0.6] as const;
@@ -261,6 +283,8 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
     pointsOfChunk: db.query(`SELECT point_id FROM points WHERE chunk_id = ?`),
     deletePointsOfChunk: db.query(`DELETE FROM points WHERE chunk_id = ?`),
     unmarkChunk: db.query(`UPDATE points SET uploaded_at = NULL WHERE chunk_id = ?`),
+    unmarkRef: db.query(`UPDATE points SET uploaded_at = NULL WHERE chunk_id IN (SELECT id FROM chunks WHERE ref = ?)`),
+    unqueueDelete: db.query(`DELETE FROM pending_deletes WHERE point_id = ?`),
     queueDelete: db.query(`INSERT OR IGNORE INTO pending_deletes (point_id, at) VALUES (?, ?)`),
     tombstone: db.query(`SELECT 1 FROM tombstones WHERE ref = ?`),
     getState: db.query(`SELECT value FROM state WHERE key = ?`),
@@ -326,6 +350,9 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
           result.tombstoned = true;
           return;
         }
+        const before = q.source.get(src.ref) as SourceDbRow | null;
+        // The payload carries kind, project and at: when one changes, the kept points are sent again.
+        if (before && (before.kind !== src.kind || before.project !== (src.project ?? null) || before.at !== src.at)) q.unmarkRef.run(src.ref);
         q.upsertSource.run(src.ref, src.kind, src.project ?? null, src.at, src.title, src.hash, JSON.stringify(src.meta), now);
         const old = new Map((q.chunksOf.all(src.ref) as Parameters<typeof mapChunk>[0][]).map((r) => [r.seq, mapChunk(r)]));
         chunks.forEach((c, seq) => {
@@ -504,13 +531,55 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
       return db.transaction(() => {
         const ids = db
           .query(
-            `SELECT c.id FROM chunks c JOIN vectors v ON v.text_hash = c.text_hash AND v.tag = ?
+            `SELECT c.id, c.ref, c.seq FROM chunks c JOIN vectors v ON v.text_hash = c.text_hash AND v.tag = ?
              WHERE NOT EXISTS (SELECT 1 FROM points p WHERE p.chunk_id = c.id AND p.tag = ?) ORDER BY c.id LIMIT ?`,
           )
-          .all(tag, tag, limit) as Array<{ id: number }>;
+          .all(tag, tag, limit) as Array<{ id: number; ref: string; seq: number }>;
         const ins = db.query(`INSERT INTO points (chunk_id, tag, point_id, uploaded_at) VALUES (?, ?, ?, NULL)`);
-        for (const { id } of ids) ins.run(id, tag, randomUUID());
+        for (const c of ids) {
+          const pointId = pointIdOf(tag, c.ref, c.seq);
+          // The same id may wait in the delete queue (the seq was dropped before): the new upsert wins.
+          q.unqueueDelete.run(pointId);
+          ins.run(c.id, tag, pointId);
+        }
         return ids.length;
+      })();
+    },
+
+    rederivePointIds(limit, at) {
+      return db.transaction(() => {
+        const after = Number((q.getState.get(REDERIVE_KEY) as { value: string } | null)?.value ?? "0");
+        const rows = db
+          .query(
+            `SELECT p.rowid AS rid, p.point_id, p.tag, c.ref, c.seq FROM points p JOIN chunks c ON c.id = p.chunk_id
+             WHERE p.rowid > ? ORDER BY p.rowid LIMIT ?`,
+          )
+          .all(after, limit) as Array<{ rid: number; point_id: string; tag: string; ref: string; seq: number }>;
+        const set = db.query(`UPDATE points SET point_id = ?, uploaded_at = NULL WHERE rowid = ?`);
+        let changed = 0;
+        for (const r of rows) {
+          const id = pointIdOf(r.tag, r.ref, r.seq);
+          if (id === r.point_id) continue;
+          q.queueDelete.run(r.point_id, at);
+          q.unqueueDelete.run(id);
+          set.run(id, r.rid);
+          changed++;
+        }
+        if (rows.length) q.setState.run(REDERIVE_KEY, String(rows.at(-1)!.rid));
+        return { checked: rows.length, changed };
+      })();
+    },
+
+    uploadedPoints(tag, afterChunkId, limit) {
+      return db
+        .query(`SELECT point_id AS pointId, chunk_id AS chunkId FROM points WHERE tag = ? AND uploaded_at IS NOT NULL AND chunk_id > ? ORDER BY chunk_id LIMIT ?`)
+        .all(tag, afterChunkId, limit) as Array<{ pointId: string; chunkId: number }>;
+    },
+
+    unmarkPoints(pointIds) {
+      const stmt = db.query(`UPDATE points SET uploaded_at = NULL WHERE point_id = ?`);
+      db.transaction(() => {
+        for (const id of pointIds) stmt.run(id);
       })();
     },
 

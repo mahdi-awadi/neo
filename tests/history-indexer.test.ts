@@ -3,6 +3,7 @@
 // tombstones, the reconcile (first, gap, weekly orphans, a saved position), the down states and their
 // recovery, drift without embed calls, the model change, and the bounds (slices, single flight, the lock,
 // a query first). Every service is a fake on 127.0.0.1.
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { CUSTOMER_CHAT } from "../src/engine/chats";
 import { TODOS_KEEP, type Ledger } from "../src/engine/ledger";
@@ -11,7 +12,7 @@ import { modelTag, openEmbedder } from "../src/engine/history/embedder";
 import { createIndexer, type IndexerDeps } from "../src/engine/history/indexer";
 import { normalize } from "../src/engine/history/normalize";
 import { createQueryGate } from "../src/engine/history/services";
-import { openHistoryStore, type HistoryStore } from "../src/engine/history/store";
+import { openHistoryStore, pointIdOf, type HistoryStore } from "../src/engine/history/store";
 import { startFakeTei } from "./fixtures/fake-tei";
 import { bench, DIMS, order, operatorThread, QDRANT_KEY, remotePoints, REV, REV2, TEI_KEY, todo, type Bench } from "./fixtures/history-harness";
 
@@ -264,6 +265,47 @@ describe("the reconcile", () => {
     expect(r.reconcile).toMatchObject({ reason: "weekly", done: true });
     expect(remotePoints(b.qdrant, TAG)).not.toContain(orphan);
     expect(remotePoints(b.qdrant, TAG)).toHaveLength(1);
+  });
+});
+
+describe("the weekly sweep", () => {
+  test("a point Qdrant lost is sent again even when the drift ratio is not crossed; no embed call", async () => {
+    const b = setup({ cfg: (c) => ({ ...c, reconcileCron: "* * * * *" }) });
+    const ix = indexer(b);
+    for (let i = 0; i < 12; i++) b.led.recordOrder(order({ id: `d${i}`, task: `A dispatch order number ${i} with enough text.` }));
+    await ix.tick(T0);
+    const pts = b.store.pointIdsOfTag(TAG);
+    expect(remotePoints(b.qdrant, TAG)).toHaveLength(12);
+    b.qdrant.collections.get("neo_history")!.points.delete(pts[3]!); // 11 of 12 left: above the drift ratio
+    const calls = b.embedCalls();
+    for (let i = 1; i < 12 && remotePoints(b.qdrant, TAG).length < 12; i++) await ix.tick(T0 + i * MIN);
+    expect(remotePoints(b.qdrant, TAG)).toContain(pts[3]);
+    expect(b.embedCalls()).toBe(calls);
+    expect(b.events.some((e) => e.kind === "history_reconcile" && (e.data.resent as number) >= 1)).toBe(true);
+  });
+});
+
+describe("point ids", () => {
+  test("a point stored with a random id is moved to its derived id: the old one leaves Qdrant, the new one is sent", async () => {
+    const b = setup();
+    const ix = indexer(b);
+    b.led.recordOrder(order({ id: "d1", task: "A dispatch order with enough text." }));
+    await ix.tick(T0);
+    const [derived] = b.store.pointIdsOfTag(TAG);
+    expect(derived).toBe(pointIdOf(TAG, "order:d1", 0));
+    // As a store written before ids were derived would hold it.
+    const old = "11111111-2222-4333-8444-555555555555";
+    const raw = new Database(b.dbPath);
+    raw.query("UPDATE points SET point_id = ? WHERE point_id = ?").run(old, derived!);
+    raw.query("DELETE FROM state WHERE key = 'points.rederived'").run();
+    raw.close();
+    const col = b.qdrant.collections.get("neo_history")!;
+    const p = col.points.get(derived!)!;
+    col.points.delete(derived!);
+    col.points.set(old, { ...p, id: old });
+    await ix.tick(T0 + MIN);
+    expect(remotePoints(b.qdrant, TAG)).toEqual([derived]);
+    expect(b.store.pointIdsOfTag(TAG)).toEqual([derived]);
   });
 });
 

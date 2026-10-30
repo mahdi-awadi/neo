@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { isHistoryStoreError, openHistoryStore, type SourceInput } from "../src/engine/history/store";
+import { isHistoryStoreError, openHistoryStore, pointIdOf, type SourceInput } from "../src/engine/history/store";
 import { hashText } from "../src/engine/history/extract";
 import { safeFtsQuery } from "../src/engine/memory-recall";
 import { normalize } from "../src/engine/history/normalize";
@@ -316,5 +316,55 @@ test("the reads the indexer and search add: chunkById, listRefs, refsWithPrefix,
   expect(s.unknownPointIds([ids[0]!, "11111111-1111-1111-1111-111111111111"])).toEqual(["11111111-1111-1111-1111-111111111111"]);
   s.markUploaded([ids[0]!], 3);
   expect(s.countToUpload("m1")).toBe(1);
+  s.close();
+});
+
+test("putSource: a change of at, project or kind alone sends the points again (the payload filters), with no new vector", () => {
+  const s = openHistoryStore(dbPath());
+  const tag = "m1";
+  s.putSource(src(), [{ text: "the bus seats are not released" }], 1);
+  s.putVectors(tag, s.chunksOf("todo:1").map((c) => ({ textHash: c.textHash, vec: vec(1, 0) })));
+  s.addMissingPoints(tag, 10);
+  s.markUploaded(s.pointIdsOfTag(tag), 2);
+  expect(s.countToUpload(tag)).toBe(0);
+  s.putSource(src({ hash: "h2" }), [{ text: "the bus seats are not released" }], 3); // the same filters
+  expect(s.countToUpload(tag)).toBe(0);
+  s.putSource(src({ hash: "h3", at: 5_000 }), [{ text: "the bus seats are not released" }], 4);
+  expect(s.pointsToUpload(tag, 10).map((p) => p.at)).toEqual([5_000]);
+  s.markUploaded(s.pointIdsOfTag(tag), 5);
+  s.putSource(src({ hash: "h4", at: 5_000, project: "waselni" }), [{ text: "the bus seats are not released" }], 6);
+  expect(s.pointsToUpload(tag, 10).map((p) => p.project)).toEqual(["waselni"]);
+  s.close();
+});
+
+test("point ids derive from the model tag, the ref and the chunk seq (UUID v5 shape); an old random id is replaced and queued for deletion", () => {
+  const a = openHistoryStore(dbPath());
+  const b = openHistoryStore(dbPath());
+  for (const s of [a, b]) {
+    s.putSource(src(), [{ text: "the bus seats are not released" }, { text: "a second chunk of the same entry" }], 1);
+    s.putVectors("m1", s.chunksOf("todo:1").map((c) => ({ textHash: c.textHash, vec: vec(1, 0) })));
+    s.addMissingPoints("m1", 10);
+  }
+  const ids = a.pointIdsOfTag("m1");
+  expect(ids).toEqual(b.pointIdsOfTag("m1"));
+  expect(ids).toEqual([pointIdOf("m1", "todo:1", 0), pointIdOf("m1", "todo:1", 1)]);
+  for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  expect(pointIdOf("m2", "todo:1", 0)).not.toBe(ids[0]);
+  b.close();
+  // A point stored before ids were derived: a random id, uploaded.
+  const path = a.path;
+  a.markUploaded(ids, 2);
+  a.close();
+  const raw = new Database(path);
+  const old = "11111111-2222-4333-8444-555555555555";
+  raw.query("UPDATE points SET point_id = ? WHERE point_id = ?").run(old, ids[0]!);
+  raw.close();
+  const s = openHistoryStore(path);
+  expect(s.rederivePointIds(1, 7)).toEqual({ checked: 1, changed: 1 });
+  expect(s.rederivePointIds(10, 7)).toEqual({ checked: 1, changed: 0 });
+  expect(s.rederivePointIds(10, 7)).toEqual({ checked: 0, changed: 0 });
+  expect(s.pointIdsOfTag("m1")).toEqual(ids);
+  expect(s.pendingDeletes(10)).toEqual([old]);
+  expect(s.pointsToUpload("m1", 10).map((p) => p.pointId)).toEqual([ids[0]]);
   s.close();
 });

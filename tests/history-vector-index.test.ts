@@ -219,6 +219,20 @@ describe("delete, deleteTag, search, scrollIds", () => {
     await expect(v.search(vec(1, 2, 3), { tag: TAG }, { limit: 5 })).rejects.toThrow();
   });
 
+  test("existing names the ids the collection holds, ids only (no payload, no vector)", async () => {
+    const { fake, cfg, env } = setup();
+    const v = open(cfg, env);
+    await v.upsert([point(1), point(2)]);
+    expect(await v.existing([id(1), id(3), id(2)])).toEqual({ ok: true, value: [id(1), id(2)] });
+    expect(await v.existing([])).toEqual({ ok: true, value: [] });
+    expect(fake.requests.filter((r) => r.method === "POST" && r.path === "/collections/neo_history/points").map((r) => r.body)).toEqual([
+      { ids: [id(1), id(3), id(2)], with_payload: false, with_vector: false },
+    ]);
+    await expect(v.existing(["nope"])).rejects.toThrow();
+    fake.fail.set("POST points", 500);
+    expect(await v.existing([id(1)])).toEqual({ ok: false, reason: "vectors_down" });
+  });
+
   test("scrollIds pages the ids of a tag", async () => {
     const { fake, cfg, env } = setup();
     const v = open(cfg, env);

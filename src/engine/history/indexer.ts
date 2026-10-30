@@ -94,12 +94,14 @@ const DAY = 86_400_000;
 
 interface ReconcileState {
   reason: ReconcileReason;
-  phase: "count" | "walk" | "gone" | "orphans";
+  phase: "count" | "walk" | "gone" | "orphans" | "missing";
   /** Index into TABLES (count/walk/gone). */
   t: number;
   /** The last key, ref or Qdrant offset done in this phase. */
   after?: string;
   rows: number;
+  /** Points the weekly sweep found missing in Qdrant and sent again. */
+  resent?: number;
 }
 
 /** What one ledger row asks of `history.db`. */
@@ -448,10 +450,30 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         await yieldNow();
         continue;
       }
-      // orphans: only the weekly run, and only while the vectors answer.
+      // orphans and missing: only the weekly run, and only while the vectors answer.
       if (st.reason !== "weekly" || active.vec.state !== "up") {
         done = true;
         break;
+      }
+      if (st.phase === "missing") {
+        // Uploaded points Qdrant no longer holds: their marks go, so the upload step sends them again.
+        const local = store.uploadedPoints(active.embedder.tag, Number(st.after ?? "0"), Math.min(ask, cfg.vectors.uploadBatch));
+        if (!local.length) {
+          done = true;
+          break;
+        }
+        const have = await active.vectors.existing(local.map((p) => p.pointId));
+        if (!have.ok) {
+          setService(active, "vec", { state: stateOf(have.reason), reason: have.reason }, now);
+          break;
+        }
+        const held = new Set(have.value);
+        const lost = local.filter((p) => !held.has(p.pointId)).map((p) => p.pointId);
+        if (lost.length) store.unmarkPoints(lost);
+        st = { ...st, after: String(local.at(-1)!.chunkId), resent: (st.resent ?? 0) + lost.length };
+        saveReconcile(st);
+        budget -= local.length;
+        continue;
       }
       const page = await active.vectors.scrollIds(active.embedder.tag, st.after, Math.min(ask, cfg.vectors.uploadBatch));
       if (!page.ok) {
@@ -468,11 +490,8 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         r.pointsDeleted += orphans.length;
       }
       budget -= Math.max(1, page.value.ids.length);
-      if (page.value.next === undefined) done = true;
-      else {
-        st = { ...st, after: page.value.next };
-        saveReconcile(st);
-      }
+      st = page.value.next === undefined ? { ...st, phase: "missing", after: undefined } : { ...st, after: page.value.next };
+      saveReconcile(st);
     }
     const position = `${st.phase}:${TABLES[st.t] ?? "-"}:${st.after ?? ""}`;
     r.reconcile = { reason: st.reason, done, position };
@@ -481,11 +500,14 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         store.setState(K.reconcile, "");
         if (st!.reason === "first") store.setState(K.firstDone, String(now));
       });
-      events("history_reconcile", { reason: st.reason, rows: st.rows, archived: r.sources.archived, orphans: r.pointsDeleted });
+      events("history_reconcile", { reason: st.reason, rows: st.rows, archived: r.sources.archived, orphans: r.pointsDeleted, resent: st.resent ?? 0 });
     }
   }
 
   async function embed(now: number, r: IndexReport): Promise<void> {
+    // Points stored before ids were derived get their derived id (a saved walk; one query once it is done).
+    const walk = Math.max(1, cfg.indexer.sliceRows);
+    while (store.rederivePointIds(walk, now).checked === walk) await yieldNow();
     for (const l of lanes) {
       const tag = l.embedder.tag;
       for (let i = 0; l.emb.state === "up" && i < cfg.indexer.embedBatchesPerPass; i++) {

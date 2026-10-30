@@ -54,6 +54,8 @@ export interface VectorIndex {
   search(vector: Float32Array | number[], filter: VectorFilter, opts: { limit: number; minScore?: number }): Promise<VectorResult<Array<{ id: string; score: number }>>>;
   /** One page of `tag`'s point ids, in id order; `next` is the offset of the next page. */
   scrollIds(tag: string, offset: string | undefined, limit: number): Promise<VectorResult<{ ids: string[]; next?: string }>>;
+  /** Which of `ids` the collection holds (the weekly sweep sends the others again). */
+  existing(ids: string[]): Promise<VectorResult<string[]>>;
 }
 
 /** The index when vectors are not configured or refused: every call answers `off` with the reason. */
@@ -75,6 +77,7 @@ export class NoVectorIndex implements VectorIndex {
     return this.off<Array<{ id: string; score: number }>>();
   }
   scrollIds(_tag: string, _offset: string | undefined, _limit: number) { return this.off<{ ids: string[]; next?: string }>(); }
+  existing(_ids: string[]) { return this.off<string[]>(); }
 }
 
 /** The longest string a payload may carry (the contract: no text ever goes to the shared service). */
@@ -257,6 +260,14 @@ export function openVectorIndex(
       if (!Array.isArray(res?.points)) return { ok: false, reason: "vectors_down" };
       const ids = res.points.flatMap((p) => (typeof p.id === "string" ? [p.id] : []));
       return { ok: true, value: { ids, ...(typeof res.next_page_offset === "string" ? { next: res.next_page_offset } : {}) } };
+    },
+    async existing(ids) {
+      if (!ids.every((id) => typeof id === "string" && UUID.test(id))) throw new Error("history vector lookup: an id is not a UUID");
+      if (ids.length === 0) return { ok: true, value: [] };
+      const r = await call("POST", "/points", { ids, with_payload: false, with_vector: false }, cfg.timeoutMs);
+      if (!r.ok) return fail(r);
+      if (!Array.isArray(r.result)) return { ok: false, reason: "vectors_down" };
+      return { ok: true, value: (r.result as Array<{ id?: unknown }>).flatMap((p) => (typeof p.id === "string" ? [p.id] : [])) };
     },
   };
 }

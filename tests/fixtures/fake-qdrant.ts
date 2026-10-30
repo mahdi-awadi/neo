@@ -92,6 +92,9 @@ export function startFakeQdrant(opts: { key: string; collections?: Record<string
         for (const p of (b.points as FakePoint[]) ?? []) col.points.set(p.id, p);
         return ok({ operation_id: 2, status: "completed" });
       }
+      if (op === "points" && req.method === "POST") {
+        return ok(((b.ids as string[]) ?? []).filter((id) => col.points.has(id)).map((id) => ({ id })));
+      }
       if (op === "delete" && req.method === "POST") {
         if (Array.isArray(b.points)) for (const id of b.points as string[]) col.points.delete(id);
         else for (const p of [...col.points.values()]) if (matches(p, b.filter as never)) col.points.delete(p.id);
