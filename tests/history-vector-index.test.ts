@@ -1,4 +1,4 @@
-// ADR-0066 vector index adapter (spec "The shared Qdrant contract", AC13, AC10 adapter part): configs
+// ADR-0067 vector index adapter (spec "The shared Qdrant contract", AC13, AC10 adapter part): configs
 // refused before any request (a non-loopback URL; a collection without `neo_` or outside the allowed list;
 // a key that is not a JWT, a global JWT, a JWT for another collection), the probe and its status mapping,
 // idempotent payload indexes, upserts that carry only id, vector and {project, kind, at, m}, deletes by

@@ -323,10 +323,10 @@ export type PlanGate = "approval" | "info";
 /** What `upsertPlan` takes: a row without its id (a new row gets one) and timestamps default to now. */
 export type PlanDraft = Omit<PlanRow, "id" | "createdAt" | "updatedAt" | "version"> & { id?: number; createdAt?: number; updatedAt?: number; version?: number };
 
-/** The most rows one history read returns (ADR-0066): the indexer's batches stay under it. */
+/** The most rows one history read returns (ADR-0067): the indexer's batches stay under it. */
 export const HISTORY_PAGE_MAX = 1000;
 
-/** An order as the task history reads it (ADR-0066): what its source and its firewall verdict need. */
+/** An order as the task history reads it (ADR-0067): what its source and its firewall verdict need. */
 export interface HistoryOrderRow {
   id: string;
   source: string;
@@ -573,7 +573,7 @@ export interface Ledger {
   searchMessages(q: string, f: { project?: string; before?: number; limit: number }): SearchHit[];
   /** TEST-ONLY seam: the EXPLAIN QUERY PLAN text of a named hot query (spec §11.11). */
   _explain(query: "messagesInThread" | "threadsByProject" | "threadsByState" | "threadsRecent" | "historyFeed"): string;
-  /** Task history (ADR-0066): the change-feed rows after `afterId`, in id order, at most `limit`
+  /** Task history (ADR-0067): the change-feed rows after `afterId`, in id order, at most `limit`
    *  (clamped to 1..HISTORY_PAGE_MAX). */
   historyFeed(afterId: number, limit: number): HistoryFeedRow[];
   /** The oldest feed id still kept (none when the feed is empty) and the newest id ever written (0 when
@@ -1031,7 +1031,7 @@ export function openLedger(
     },
     endInterruptedOrders(prevBootAt) {
       // Count the RETURNING rows, not `.changes`: bun:sqlite's count includes the rows triggers write
-      // (the history feed, ADR-0066), so it would no longer be the number of outcomes.
+      // (the history feed, ADR-0067), so it would no longer be the number of outcomes.
       return db
         .query(
           `INSERT INTO outcomes (order_id, status, summary, at)
@@ -2349,7 +2349,7 @@ interface SettleDbRow {
 }
 const MESSAGE_COLS = `SELECT id, chat_id, role, content, at, thread_id, cause_id, surface, channel_msg_id, project, folder, order_id, kind, priority FROM messages`;
 
-/** The change-feed page read (ADR-0066); `_explain` checks it walks the primary key. */
+/** The change-feed page read (ADR-0067); `_explain` checks it walks the primary key. */
 const SQL_HISTORY_FEED = `SELECT id, tbl, key, op, at FROM history_feed WHERE id > ? ORDER BY id LIMIT ?`;
 
 /** A history page size, clamped to 1..HISTORY_PAGE_MAX (a bad value is one full page). */
@@ -2357,7 +2357,7 @@ function clampHistoryPage(limit: number): number {
   return Number.isFinite(limit) ? Math.max(1, Math.min(HISTORY_PAGE_MAX, Math.floor(limit))) : HISTORY_PAGE_MAX;
 }
 
-/** How each history table is read (ADR-0066): its SELECT, its key column, and the source condition —
+/** How each history table is read (ADR-0067): its SELECT, its key column, and the source condition —
  *  the same rows the v17 feed triggers watch (attention items of `note`/`github`/`git`; operator lines
  *  that are not engine-surface, and digests). `map` gives the key as text, as the feed stores it. */
 const HISTORY_SOURCES: { [T in HistoryTable]: { select: string; key: string; intKey: boolean; where?: string; map(r: unknown): { key: string; row: HistoryRowMap[T] } } } = {

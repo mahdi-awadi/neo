@@ -1,4 +1,4 @@
-// The task history's sources (ADR-0066 Decision 3, spec "Sources"): one ledger row → one source extract
+// The task history's sources (ADR-0067 Decision 3, spec "Sources"): one ledger row → one source extract
 // (ref, kind, project, `at`, title, meta, text and the hash of all of them), after the firewall verdict
 // (firewall.ts) and the "is it a source" rules. Engine blocks and boilerplate leave a brief; a plan file is
 // read only inside its project folder under the work root (realpath, `.md`, at most `planMaxBytes`).

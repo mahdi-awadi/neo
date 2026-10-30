@@ -1,15 +1,15 @@
-# HANDOFF — 2026-10-30: task history with hybrid search + snapshot backup (ADR-0066, ledger v17, on dev, restart-gated)
+# HANDOFF — 2026-10-30: task history with hybrid search + snapshot backup (ADR-0067, ledger v17, on dev, restart-gated)
 
 Built and merged into `dev` (plan tasks 1–19 done; task 20 done except the items that need the shared Qdrant).
 Two independent reviews and the live verify found 20 defects; all are fixed and tested (full suite 2,925 green).
-Guide: `docs/history.md`. Numbers: ADR-0066 "Measured".
+Guide: `docs/history.md`. Numbers: ADR-0067 "Measured".
 Waiting: ops must reissue Neo's shared-Qdrant key (403 InvalidSignature after the ops secret rotation; note
 #547). Until then search is keyword-only (a supported mode). Then run: meaning/hybrid eval, the Qwen
 comparison, `vectors_down` and drift drills, `verify-clean` (`tools/history/admin.ts`, `tools/history/eval.ts`).
 The embedder key is already in the env file; the embedder is stopped, its model volume kept.
 Operator steps: (1) `bun tools/history/install.ts` (starts the embedder; the model is cached); (2) restart Neo
 (your permission): migration v17 runs after its `.bak-v16` copy, then the backfill starts — the first full
-backfill needs about 15–32 h on this host's 4-CPU container limit; (3) decide the ledger backup (ADR-0066,
+backfill needs about 15–32 h on this host's 4-CPU container limit; (3) decide the ledger backup (ADR-0067,
 option A recommended). Open security item for you: a customer-chat brief can still be delivered into a live
 operator session (`dispatch.ts` `dispatchToProject`); history now refuses its tools there and keeps its results
 out, but the dispatch rule itself needs a change (never deliver customer-chat work into a non-fenced session).

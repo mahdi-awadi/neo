@@ -1,4 +1,4 @@
-// The task history's embedder adapter (ADR-0066 Decision 5, spec "The embedder contract"): a client for
+// The task history's embedder adapter (ADR-0067 Decision 5, spec "The embedder contract"): a client for
 // the local text-embeddings-inference service. It accepts only a loopback URL, reads the bearer key once
 // from the environment (`cfg.keyEnv`), and keeps no vector until `/info` has reported the configured model
 // id and revision. `/embed` answers are checked for one vector of `dims` per input. 401/403 → refused,
@@ -28,12 +28,12 @@ export interface Embedder {
 /** How many characters of the revision the model tag keeps. */
 const REVISION_PREFIX = 12;
 
-/** The model tag (ADR-0066 Decision 4.6): `<model id>@<dims>:<revision prefix>`. */
+/** The model tag (ADR-0067 Decision 4.6): `<model id>@<dims>:<revision prefix>`. */
 export function modelTag(model: string, dims: number, revision: string): string {
   return `${model}@${dims}:${revision.slice(0, REVISION_PREFIX)}`;
 }
 
-/** The same embedder under another model tag (the verify step's `<tag>~verify`, ADR-0066): every call goes
+/** The same embedder under another model tag (the verify step's `<tag>~verify`, ADR-0067): every call goes
  *  to `e`; only the tag the indexer and search use changes. */
 export function withTag(e: Embedder, tag: string): Embedder {
   return { tag, dims: e.dims, probe: () => e.probe(), embed: (texts) => e.embed(texts), embedQuery: (text) => e.embedQuery(text) };

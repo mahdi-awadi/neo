@@ -444,7 +444,7 @@ function pins(db: Database): void {
   db.run(`CREATE TABLE pins (ref TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('pinned', 'unpinned')), at INTEGER NOT NULL)`);
 }
 
-/** Version 17 — the task history's change feed (ADR-0066 Decision 4): one row for each insert, update and
+/** Version 17 — the task history's change feed (ADR-0067 Decision 4): one row for each insert, update and
  *  delete of a history source row, read in id order by the history indexer from its own cursor (it never
  *  writes here). Each trigger body is one INSERT; every condition is in its WHEN clause, so a write that is
  *  not a source (a worker's streamed line, an engine attention item, a `last_seen` or `position` bump, an
@@ -527,7 +527,7 @@ export const MIGRATIONS: Migration[] = [
  *  ones stay applied when a later one throws. Before the first pending migration a file db that
  *  already has tables is copied to `<path>.bak-v<from>` (once). A failure throws out: the daemon
  *  treats an unmigratable ledger as unrecoverable, and the message names the backup. Another store with its
- *  own list (the task history, ADR-0066) passes its `label` for the message. */
+ *  own list (the task history, ADR-0067) passes its `label` for the message. */
 export function migrate(
   db: Database,
   opts: { path: string; migrations?: Migration[]; label?: string },

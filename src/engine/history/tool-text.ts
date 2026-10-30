@@ -1,4 +1,4 @@
-// The worker tools' side of the task history (ADR-0066, spec "Surfaces"): `history_search` and `remember`
+// The worker tools' side of the task history (ADR-0067, spec "Surfaces"): `history_search` and `remember`
 // as text in, text out. The arguments are checked here (a wrong value is a text error, never a throw), the
 // seam does the work, and the reply states the mode, numbers the hits with their source (ref, project,
 // date, title, the todo, order and thread, the commits and the plan path) and ends with the line that

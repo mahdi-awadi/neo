@@ -1,4 +1,4 @@
-// ADR-0066: `data/history.db`, the task history's own store — its schema (through the shared `migrate()`),
+// ADR-0067: `data/history.db`, the task history's own store — its schema (through the shared `migrate()`),
 // file mode 0600, sources and chunks with their FTS rows, vectors and point marks, the delete queue,
 // remembered entries, tombstones, boilerplate counts, the archive mark, coverage, state and the writer lock.
 import { expect, test } from "bun:test";

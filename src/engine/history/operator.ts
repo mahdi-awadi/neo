@@ -1,4 +1,4 @@
-// The operator surfaces' side of the task history (ADR-0066, spec "Surfaces"): the console's
+// The operator surfaces' side of the task history (ADR-0067, spec "Surfaces"): the console's
 // `GET /api/history` and Telegram's `/find` read the same query fields — the words, a project, kinds, a UTC
 // date range and a limit — and both check them here, so a wrong value is refused with one reason code
 // before the seam is asked. The Telegram replies are built here too: at most 4,096 characters, numbers

@@ -1,4 +1,4 @@
-// The weekly restore drill (ADR-0066 Decision 8): for each database name, take its newest snapshot, check
+// The weekly restore drill (ADR-0067 Decision 8): for each database name, take its newest snapshot, check
 // the file against its manifest (SHA-256), restore it to a temp file in the backup folder (gunzip when
 // compressed), run `PRAGMA integrity_check`, compare the row counts with the manifest, and delete the temp
 // file. Run as a child: `bun src/engine/backup/drill.ts --dir <folder> --names <a,b>` (argv entries, no

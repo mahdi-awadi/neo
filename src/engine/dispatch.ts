@@ -104,7 +104,7 @@ const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r
 /** ADR-0060: the most a woken limit hold waits, so several held runs do not all re-send at once. */
 export const API_LIMIT_WAKE_JITTER_MS_DEFAULT = 30_000;
 
-/** The reserved chat ids live in the leaf module `chats.ts` (ADR-0066), re-exported here for the callers
+/** The reserved chat ids live in the leaf module `chats.ts` (ADR-0067), re-exported here for the callers
  *  that already import them from dispatch. */
 export { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT };
 
@@ -161,7 +161,7 @@ export interface DispatchDeps {
   /** The tools catalogue (ADR-0044). Its PRESENCE gates the `tool_api` relay tool: operator surfaces wire
    *  it, the ingress path strips it, like `notes`. */
   tools?: Catalogue;
-  /** The task history (ADR-0066). Its PRESENCE gates the `history_search` and `remember` tools: the daemon
+  /** The task history (ADR-0067). Its PRESENCE gates the `history_search` and `remember` tools: the daemon
    *  wires it on the operator surfaces only (absent while history is off), and the ingress path strips it. */
   history?: TaskHistory;
   postDecision?: (
@@ -1936,7 +1936,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
       ),
     );
   }
-  // `history_search` and `remember` (ADR-0066): gated on `deps.history`, which only operator surfaces wire
+  // `history_search` and `remember` (ADR-0067): gated on `deps.history`, which only operator surfaces wire
   // (ingress strips it; a tainted run has no MCP at all). A consult run searches but never saves. `by`, the
   // cause and the rate limit's session are this session's, from the closure: never a tool argument.
   const history = deps.history;

@@ -1,6 +1,6 @@
 /** The engine producer (ADR-0018, spec §7 + §8): what the engine itself knows needs the operator — a
  *  stuck approval, a dispatch that repeats itself (the mark dispatch.ts sets, spec §8.1), a paused
- *  queue, a failed or long-waiting thread, a stale decision, an impossible context %, and (ADR-0066) the
+ *  queue, a failed or long-waiting thread, a stale decision, an impossible context %, and (ADR-0067) the
  *  task history's services off or down too long and a failing snapshot backup. It reads only the ledger,
  *  the registry and in-memory states (an injectable context measure, the newest indexer pass, the backup
  *  schedule), so it runs on every heartbeat tick. Plain code, no AI. */
@@ -85,10 +85,10 @@ export interface EngineProducerDeps {
   measure?: ContextMeasure;
   /** Where the engine's own items (history, backup) are filed; default the company. */
   neoFolder?: string;
-  /** The task history (ADR-0066), absent when it is off: its config and the service states of the newest
+  /** The task history (ADR-0067), absent when it is off: its config and the service states of the newest
    *  indexer pass (undefined before the first pass — the live items are kept, never resolved by mistake). */
   history?: { cfg: Pick<HistoryCfg, "embedder" | "vectors" | "degradedAlertMinutes">; services: () => { embedder: ServiceReport; vectors: ServiceReport } | undefined };
-  /** The snapshot backup schedule's state (ADR-0066 Decision 8). */
+  /** The snapshot backup schedule's state (ADR-0067 Decision 8). */
   backups?: () => Pick<BackupState, "failing">;
 }
 
@@ -182,7 +182,7 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
       });
     }
   });
-  // The task history's services (ADR-0066): `off` needs the operator at once, and the item names the step;
+  // The task history's services (ADR-0067): `off` needs the operator at once, and the item names the step;
   // `down` (or slow) becomes an item only after `degradedAlertMinutes`. One item per service.
   const neo = at(deps.neoFolder);
   const services = deps.history ? faults.guard("attention.engine.history", () => deps.history!.services()) : undefined;

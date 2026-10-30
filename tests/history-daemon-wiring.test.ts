@@ -1,4 +1,4 @@
-// ADR-0066 daemon wiring (plan task 11, spec "The indexer" and "Edge cases"): `startTaskHistory` is what
+// ADR-0067 daemon wiring (plan task 11, spec "The indexer" and "Edge cases"): `startTaskHistory` is what
 // the daemon calls. Disabled → no store opens and no seam exists (so no tool is attached). A corrupt
 // `history.db` → the engine goes on, the file moves to `history.db.corrupt-<time>`, one alert goes out and
 // the seam answers "history is not available". The heartbeat steps never throw out of the tick. While a

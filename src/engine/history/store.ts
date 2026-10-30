@@ -1,4 +1,4 @@
-// `data/history.db`, the task history's own store (ADR-0066, spec "Data"): every SQL statement of the
+// `data/history.db`, the task history's own store (ADR-0067, spec "Data"): every SQL statement of the
 // history lives here, parameterized. Sources and their chunks (original text in `chunks`, the normalized
 // text and Arabic stems in `chunks_fts`), vectors by text hash and model tag, Qdrant point marks, the
 // delete queue, remembered entries, tombstones, boilerplate counts, state and the writer lock. The file is
@@ -227,7 +227,7 @@ const REDERIVE_KEY = "points.rederived";
 const POINT_NAMESPACE = Buffer.from("6f1c2a4e8b3d4f5aa7c9e0d1b2f3a4c5", "hex");
 
 /** The Qdrant point id of one chunk under one model tag: a UUID v5 (SHA-1, RFC 4122) of the tag, the ref
- *  and the chunk seq, so the same chunk always has the same id (ADR-0066 Decision 4). */
+ *  and the chunk seq, so the same chunk always has the same id (ADR-0067 Decision 4). */
 export function pointIdOf(tag: string, ref: string, seq: number): string {
   const h = createHash("sha1").update(POINT_NAMESPACE).update(`${tag}\u0000${ref}\u0000${seq}`).digest().subarray(0, 16);
   h[6] = (h[6]! & 0x0f) | 0x50;

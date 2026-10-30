@@ -1,4 +1,4 @@
-// A fake Qdrant REST server for the task history tests (ADR-0066): `Bun.serve` on 127.0.0.1, port 0. It
+// A fake Qdrant REST server for the task history tests (ADR-0067): `Bun.serve` on 127.0.0.1, port 0. It
 // keeps points in memory per collection, evaluates the filters Neo sends (`match.value`, `match.any`,
 // `range`), answers count, upsert, delete (ids or filter), query (cosine), scroll and payload-index
 // requests and the collection list, checks the `api-key` header (a wrong key answers 403 with Qdrant's JWT

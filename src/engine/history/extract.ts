@@ -1,4 +1,4 @@
-// What the task history takes out of a text (ADR-0066, spec "Sources" and "Search"): commit shas, the id
+// What the task history takes out of a text (ADR-0067, spec "Sources" and "Search"): commit shas, the id
 // tokens of a query, the engine blocks Neo wraps around a brief, the continuation wrapper, and boilerplate
 // paragraphs. Pure. The engine-block recognizers are text rules on purpose: this module must not import
 // dispatch.ts. tests/history-extract.test.ts runs each rule against the real builder, so a text change in a

@@ -1,4 +1,4 @@
-// The task history in the running engine (ADR-0066, plan task 11): what the daemon starts once at boot.
+// The task history in the running engine (ADR-0067, plan task 11): what the daemon starts once at boot.
 // `startTaskHistory` opens the seam when `history.enabled` is on — never when it is off, so no store opens
 // and no worker tool is attached. A `history.db` that cannot be opened never stops the engine: a corrupt
 // file is moved to `history.db.corrupt-<UTC time>` (with its -wal and -shm files), the operator gets one

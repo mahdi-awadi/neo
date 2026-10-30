@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { filterNew, incompleteWarning, normalize, parseMissing, severityFromCvss, summarize } from "../tools/security/findings";
+import { filterNew, incompleteWarning, normalize, parseGoVersions, parseMissing, severityFromCvss, summarize } from "../tools/security/findings";
 
 describe("security findings", () => {
   test("semgrep ERROR maps to high, WARNING to medium, fingerprint ignores line numbers", () => {
@@ -40,6 +40,79 @@ describe("security findings", () => {
       results: [{ source: { path: "/src/bun.lock" }, packages: [{ package: { name: "lodash", version: "4.17.0", ecosystem: "npm" }, groups: [{ ids: ["GHSA-1"], max_severity: "7.4" }] }] }],
     });
     expect(f[0]).toMatchObject({ severity: "high", rule: "GHSA-1", file: "/src/bun.lock" });
+  });
+
+  describe("osv Go call analysis (ADR-0066)", () => {
+    const fixture = (name: string) => JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "security", `osv-${name}.json`), "utf8"));
+    const by = (f: ReturnType<typeof normalize>, pkg: string) => f.find((x) => x.message.includes(`${pkg}@`))!;
+    const versionsText = readFileSync(join(import.meta.dir, "fixtures", "security", "osv-go-versions.txt"), "utf8");
+    // The module versions Go selected when it analysed each go.mod (scan.sh writes them).
+    const ctx = (text = versionsText) => ({ root: "/repo", goVersions: parseGoVersions(text, "/repo") });
+
+    test("a Go vulnerability osv found uncalled drops below the blocking level, tagged and still reported", () => {
+      const f = normalize("osv", fixture("go-uncalled"), ctx());
+      expect(f).toHaveLength(3);
+      const crypto = by(f, "golang.org/x/crypto");
+      expect(crypto).toMatchObject({ rule: "GO-2026-5932", severity: "medium", tags: ["unreachable"], file: "services/common/go.mod" });
+      expect(crypto.message).toContain("unreachable");
+      // osv keys the verdict by the Go id only; the GHSA id in the group is its alias.
+      expect(by(f, "github.com/quic-go/quic-go")).toMatchObject({ severity: "medium", tags: ["unreachable"] }); // was critical (9.1)
+      expect(by(f, "github.com/jackc/pgx/v5")).toMatchObject({ severity: "low", tags: ["unreachable"] }); // never raised
+      expect(summarize(f).block).toBe(false);
+    });
+
+    test("a called vulnerability keeps its full severity", () => {
+      const f = normalize("osv", fixture("go-called"), ctx());
+      expect(by(f, "golang.org/x/crypto")).toMatchObject({ severity: "high" }); // no score: fails closed to high
+      expect(by(f, "github.com/quic-go/quic-go")).toMatchObject({ severity: "critical" });
+      for (const x of f) expect(x.tags).toBeUndefined();
+      expect(summarize(f).block).toBe(true);
+    });
+
+    test("fails closed: no analysis, a verdict for another id, a non-boolean verdict, or a non-Go ecosystem keep full severity", () => {
+      const f = normalize("osv", fixture("go-no-analysis"), ctx());
+      expect(by(f, "golang.org/x/crypto").severity).toBe("high");
+      expect(by(f, "github.com/quic-go/quic-go").severity).toBe("critical");
+      expect(by(f, "golang.org/x/net").severity).toBe("high");
+      expect(by(f, "lodash").severity).toBe("high");
+      for (const x of f) expect(x.tags).toBeUndefined();
+    });
+
+    test("every Go id of a group needs its own false verdict; only a GHSA alias may have none", () => {
+      const gomod = "/repo/services/common/go.mod";
+      const one = (ids: string[], analysis: unknown, ecosystem = "Go") =>
+        normalize("osv", { results: [{ source: { path: gomod }, packages: [{ package: { name: "golang.org/x/crypto", version: "0.58.0", ecosystem }, groups: [{ ids, max_severity: "7.5", experimental_analysis: analysis }] }] }] }, ctx())[0]!.severity;
+      expect(one(["GO-2026-1", "GO-2026-2", "GHSA-x"], { "GO-2026-1": { called: false } })).toBe("high"); // GO-2026-2 has none
+      expect(one(["GO-2026-1", "GO-2026-2", "GHSA-x"], { "GO-2026-1": { called: false }, "GO-2026-2": { called: false } })).toBe("medium");
+      expect(one(["GO-2026-1"], {})).toBe("high");
+      expect(one(["GO-2026-1"], [])).toBe("high");
+      expect(one(["GHSA-only"], { "GHSA-only": { called: false } })).toBe("medium");
+      expect(one(["GO-2026-1"], { "GO-2026-1": { called: false } }, "npm")).toBe("high"); // the version line exists: only the ecosystem stops it
+    });
+
+    test("the verdict never changes a fingerprint, so a baseline still matches", () => {
+      const fp = (name: string) => by(normalize("osv", fixture(name), ctx()), "golang.org/x/crypto").fingerprint;
+      expect(fp("go-uncalled")).toBe(fp("go-called"));
+      expect(by(normalize("osv", fixture("go-uncalled"), { root: "/repo" }), "golang.org/x/crypto").fingerprint).toBe(fp("go-called"));
+    });
+
+    test("fails closed: a verdict counts only for the version osv reported, as Go selected it for that go.mod", () => {
+      const sev = (c: ReturnType<typeof ctx> | { root: string }, pkg = "golang.org/x/crypto") => by(normalize("osv", fixture("go-uncalled"), c), pkg).severity;
+      expect(sev({ root: "/repo" })).toBe("high"); // no versions: the Go run did not report them
+      expect(sev(ctx(""))).toBe("high");
+      // A workspace selected a newer x/crypto than this go.mod asks for: the verdict is about other code.
+      const newer = versionsText.replace("/repo/services/common/go.mod golang.org/x/crypto v0.58.0", "/repo/services/common/go.mod golang.org/x/crypto v0.60.0");
+      expect(sev(ctx(newer))).toBe("high");
+      expect(sev(ctx(newer), "github.com/quic-go/quic-go")).toBe("medium"); // the others still count
+      // Replaced by another version or a local folder: not the reported version.
+      const swap = (to: string) => versionsText.replace("golang.org/x/crypto v0.58.0\n/repo/services/common/go.mod github.com/quic", `golang.org/x/crypto v0.58.0 ${to}\n/repo/services/common/go.mod github.com/quic`);
+      expect(sev(ctx(swap("golang.org/x/crypto v0.59.0")))).toBe("high");
+      expect(sev(ctx(swap("../crypto")))).toBe("high");
+      expect(sev(ctx(swap("golang.org/x/crypto v0.58.0")))).toBe("medium");
+      // The standard library is analysed with the image's Go, not the go.mod's: never in the list.
+      const stdlib = { results: [{ source: { path: "/repo/services/common/go.mod" }, packages: [{ package: { name: "stdlib", version: "1.26.2", ecosystem: "Go" }, groups: [{ ids: ["GO-2026-1"], max_severity: "7.5", experimental_analysis: { "GO-2026-1": { called: false } } }] }] }] };
+      expect(normalize("osv", stdlib, ctx())[0]!.severity).toBe("high");
+    });
   });
 
   test("trivy vulnerabilities, misconfigs and secrets", () => {
@@ -111,6 +184,32 @@ describe("security findings", () => {
     const blind = normalize("semgrep", { results: [hit(10, 17, 1), hit(29, 36, 2)] }, { root: "/repo", src: "/nonexistent" });
     expect(blind[0]!.fingerprint).not.toBe(blind[1]!.fingerprint);
   });
+  test("a baseline never records an unreachable finding, so it blocks when the code starts to call it (ADR-0066)", () => {
+    const d = mkdtempSync(join(tmpdir(), "neo-sec-bl-"));
+    const fx = join(import.meta.dir, "fixtures", "security");
+    const run = (...a: string[]) => Bun.spawnSync(["bun", join(import.meta.dir, "../tools/security/findings.ts"), ...a, "--root", "/repo", "--osv-go-versions", join(fx, "osv-go-versions.txt")]);
+    run("baseline", "--baseline", join(d, "baseline.json"), `osv:${join(fx, "osv-go-uncalled.json")}`);
+    const b = JSON.parse(readFileSync(join(d, "baseline.json"), "utf8"));
+    expect(b.fingerprints).toEqual([]);
+    expect(b.findings).toHaveLength(3); // still listed
+    const later = run("report", "--baseline", join(d, "baseline.json"), `osv:${join(fx, "osv-go-called.json")}`);
+    expect(later.exitCode).toBe(1);
+  });
+
+  test("json-ok: exit 0 only for one complete JSON document", () => {
+    const d = mkdtempSync(join(tmpdir(), "neo-sec-json-"));
+    let n = 0;
+    const ok = (text: string | undefined) => {
+      const f = join(d, `f${n++}`);
+      if (text !== undefined) writeFileSync(f, text);
+      return Bun.spawnSync(["bun", join(import.meta.dir, "../tools/security/findings.ts"), "json-ok", f]).exitCode;
+    };
+    expect(ok('{"results":[]}')).toBe(0);
+    expect(ok('{"results":[')).toBe(1);
+    expect(ok("")).toBe(1);
+    expect(ok(undefined)).toBe(1); // no file
+  });
+
   test("a broken baseline (merge conflict) warns with exit 3 instead of blocking every edit", () => {
     const d = mkdtempSync(join(tmpdir(), "neo-sec-bl-"));
     writeFileSync(join(d, "baseline.json"), "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> x\n");

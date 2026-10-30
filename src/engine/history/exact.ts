@@ -1,4 +1,4 @@
-// The task history's query parsing and exact-id lookups (ADR-0066, spec "Search" step 1 and 2): the id
+// The task history's query parsing and exact-id lookups (ADR-0067, spec "Search" step 1 and 2): the id
 // tokens of a query (`extract.ts` finds them), its search terms (normalized words outside the ids, without
 // stop words), whether it is only ids (then no embed call is made), and for each id token how `history.db`
 // finds its sources — direct refs, a ref prefix, a meta field, or an FTS phrase or prefix query on `body`.

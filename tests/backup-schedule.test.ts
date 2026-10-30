@@ -1,4 +1,4 @@
-// ADR-0066 Decision 8, spec "The snapshot backup", AC21 (plan task 16): the heartbeat step that runs the
+// ADR-0067 Decision 8, spec "The snapshot backup", AC21 (plan task 16): the heartbeat step that runs the
 // snapshot and drill children. It runs a job once for each cron slot, one child at a time, ends a child
 // that passes `timeoutMs`, and on a failure records `backup_failed`, sends one alert for each failure
 // streak and keeps the state the attention producer reads; a success clears it. Temp folders only.

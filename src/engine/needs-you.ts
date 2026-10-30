@@ -21,7 +21,7 @@ const CLASS: Record<string, AttentionClass> = {
   secret_scanning: "needs_you",
   code_scanning: "needs_you",
   note_question: "needs_you",
-  history_off: "needs_you", // meaning search cannot start until the operator acts (ADR-0066)
+  history_off: "needs_you", // meaning search cannot start until the operator acts (ADR-0067)
   backup_failed: "needs_you",
   // An agent or the engine handles these; they never raise the badge.
   pr_open: "housekeeping",

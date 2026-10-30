@@ -1,4 +1,4 @@
-// The task history's snippets (ADR-0066, spec "Search" step 7): about `chars` characters of a chunk's
+// The task history's snippets (ADR-0067, spec "Search" step 7): about `chars` characters of a chunk's
 // original text around the first match of a search term, the matched word marked with SNIPPET_OPEN and
 // SNIPPET_CLOSE (format.ts). Terms are matched on the normalized text and the match is mapped back through
 // the normalizer's offset map, so the mark covers the original word with its harakat. A cut never splits a

@@ -1,4 +1,4 @@
-// Neo's embedder (ADR-0066 Decision 5, spec "The embedder contract"): make the bearer key once, bring the
+// Neo's embedder (ADR-0067 Decision 5, spec "The embedder contract"): make the bearer key once, bring the
 // loopback-only TEI service up, wait for its health answer, and check it through the engine's own adapter
 // (`/info` names the pinned model and revision, one test embed has the configured length). The decisions
 // are pure and tested (tests/history-embedder-service.test.ts); main is the thin docker/IO wrapper.

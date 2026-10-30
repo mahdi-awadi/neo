@@ -1,4 +1,4 @@
-// ADR-0066 embedder adapter (spec "The embedder contract", AC9 embedder states, AC20 adapter part): only a
+// ADR-0067 embedder adapter (spec "The embedder contract", AC9 embedder states, AC20 adapter part): only a
 // loopback URL, the bearer key from the environment, `/info` model and revision checked before any vector
 // is kept, the dims check, 401/403 refused, a timeout slow, 413 split, 429/503 back off, connection refused
 // down and up again after a restart, a query cache — and the key never in a result.

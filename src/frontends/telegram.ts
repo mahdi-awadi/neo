@@ -65,7 +65,7 @@ import {
 
 /** Telegram's limit for the toast that answers a button tap (answerCallbackQuery text). */
 const TAP_TOAST_MAX = 200;
-/** Forget buttons (ADR-0066) waiting for their tap; the oldest goes when there are more. */
+/** Forget buttons (ADR-0067) waiting for their tap; the oldest goes when there are more. */
 const FORGET_PENDING_MAX = 50;
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
@@ -389,7 +389,7 @@ export function createTelegramBot(
   );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
-  // A /forget card's button (ADR-0066): token → the chat it was sent to, the ref and the reason. The tap acts
+  // A /forget card's button (ADR-0067): token → the chat it was sent to, the ref and the reason. The tap acts
   // only in that chat, and only once.
   const pendingForget = new Map<string, { chatId: number; ref: string; reason: string }>();
   // Inbox items whose send is waiting on its Allow/Deny press — one send per item at a time.
@@ -537,7 +537,7 @@ export function createTelegramBot(
     editPlan: reload?.editPlan, // and their cards follow the plan's state (ADR-0036)
     notes: reload?.notes, // the project_notes tool (ADR-0043): operator surfaces only
     tools: reload?.tools, // the tool_api relay (ADR-0044): operator surfaces only
-    history: reload?.history, // history_search + remember (ADR-0066): operator surfaces only
+    history: reload?.history, // history_search + remember (ADR-0067): operator surfaces only
     askApproval: (cid, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
@@ -649,7 +649,7 @@ export function createTelegramBot(
     trace,
     neoFolder: reload?.neoFolder,
     gitRead: reload?.gitRead,
-    history: reload?.history, // /find, /remember, /forget (ADR-0066)
+    history: reload?.history, // /find, /remember, /forget (ADR-0067)
     ...(replyTo ? { replyTo } : {}),
   });
   // One command answer with the buttons its result carries. An async command (/project) is sent when
@@ -1005,7 +1005,7 @@ export function createTelegramBot(
       return;
     }
 
-    // Tap on a /forget card's button (ADR-0066): only in the chat the card went to, only once.
+    // Tap on a /forget card's button (ADR-0067): only in the chat the card went to, only once.
     const hfTap = /^hf:([0-9a-f]{16})$/.exec(cb);
     if (hfTap) {
       const entry = pendingForget.get(hfTap[1]!);

@@ -51,7 +51,7 @@ export interface ConsultRunnerDeps {
   runOrder: typeof runOrder;
   cfg: NeoConfig;
   catalogue?: Catalogue;
-  /** The task history (ADR-0066): a consult run may search it (`history_search`), never save to it. */
+  /** The task history (ADR-0067): a consult run may search it (`history_search`), never save to it. */
   history?: TaskHistory;
   /** The order is recorded with the asker's cause and closed with a fixed outcome line (never the
    *  answer text: a withheld secret must not reach the ledger by this side door). Never recordSession (the spec's "saveSession"). */

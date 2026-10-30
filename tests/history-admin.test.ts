@@ -1,4 +1,4 @@
-// ADR-0066 plan task 18: the history admin commands (tools/history/admin.ts) that the verify step runs.
+// ADR-0067 plan task 18: the history admin commands (tools/history/admin.ts) that the verify step runs.
 // `copy-ledger` copies read-only through `VACUUM INTO` and refuses `data/` and an existing file; `backfill`
 // needs a `--db` outside `data/` and, with `--verify`, uses the verify tag and refuses a collection that
 // holds another tag's points; `verify-clean` deletes by the verify-tag filter and then requires a count of

@@ -1,4 +1,4 @@
-// The task history's ledger change feed (migration v17, ADR-0066 Decision 4) and the history reads.
+// The task history's ledger change feed (migration v17, ADR-0067 Decision 4) and the history reads.
 import { test, expect, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync } from "node:fs";

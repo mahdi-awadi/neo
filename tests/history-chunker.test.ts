@@ -1,4 +1,4 @@
-// ADR-0066: the task history chunker. About `chars` characters with `overlap`; the cut prefers a paragraph
+// ADR-0067: the task history chunker. About `chars` characters with `overlap`; the cut prefers a paragraph
 // end, then a line end, then a sentence end, then a word, then a grapheme boundary. Pure.
 import { expect, test } from "bun:test";
 import { chunkText } from "../src/engine/history/chunker";

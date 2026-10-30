@@ -1,4 +1,4 @@
-// Config `history` (ADR-0066, spec "Config"): `readHistoryCfg(raw)` keeps each value of the right type and
+// Config `history` (ADR-0067, spec "Config"): `readHistoryCfg(raw)` keeps each value of the right type and
 // range and falls back to its default for anything else, key by key, so one bad value never turns a guard
 // off. It is pure. Secrets never live here: the embedder and Qdrant keys and the Qdrant URL are named by
 // their environment variables (`keyEnv`, `urlEnv`) and read through the engine's env loader. Every
@@ -140,7 +140,7 @@ function readStore(raw: unknown, d: StoreCfg): StoreCfg {
   return { lockStaleMs: int(obj(raw).lockStaleMs, d.lockStaleMs) };
 }
 
-/** The next model during a model change (ADR-0066 Decision 4.6), or null. Kept only with a model id and a
+/** The next model during a model change (ADR-0067 Decision 4.6), or null. Kept only with a model id and a
  *  revision, a tag that differs from the active one, and an allowed `neo_` collection when its dimensions
  *  differ (the active collection holds only one size). */
 function readNext(raw: unknown, active: EmbedderCfg, vectors: VectorsCfg): NextModelCfg | null {

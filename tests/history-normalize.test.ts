@@ -1,4 +1,4 @@
-// ADR-0066 (task history): the text normalization that `body`, the stems and the query share, its map
+// ADR-0067 (task history): the text normalization that `body`, the stems and the query share, its map
 // back to the original offsets (so a highlight lands on the text with its harakat), and the Arabic light
 // stemmer (Light10 rules, as Lucene's ArabicStemmer). Pure.
 import { expect, test } from "bun:test";

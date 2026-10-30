@@ -1,4 +1,4 @@
-// ADR-0066 search (spec "Search", AC1–AC4, AC14, the search side of AC9, AC24 for its event): exact ids
+// ADR-0067 search (spec "Search", AC1–AC4, AC14, the search side of AC9, AC24 for its event): exact ids
 // first, then weighted RRF over the Qdrant nearest neighbours, the history words (body and stems) and the
 // worker lines; the filters in every list; the modes on / partial / off (each reason) / skipped; a failed
 // list never stops the others; Arabic normalization, stems and the highlight on the original text; the
@@ -319,8 +319,11 @@ describe("the query embed only when meaning search is used, and never behind an 
     b.tei.queue.push("hang"); // the indexer's batch: a slow request that does not end by itself
     const ix = createIndexer({ store: b.store, ledger: b.led, cfg: b.cfg, workRoot: b.workRoot, embedder: b.embedder, vectors: b.vectors, events: b.record, gate, pid: process.pid });
     const pass = ix.tick(T0 + 60_000);
-    for (let i = 0; i < 100 && !gate.batchActive(); i++) await Bun.sleep(10);
+    // The gate is set before the request reaches the fake: wait until the fake holds it, so the stop below
+    // ends that request (a request still on its way would take the `hang` on the restarted server).
+    for (let i = 0; i < 200 && (!gate.batchActive() || b.tei.hanging() === 0); i++) await Bun.sleep(10);
     expect(gate.batchActive()).toBe(true);
+    expect(b.tei.hanging()).toBe(1);
     const calls = b.embedCalls();
     const started = performance.now();
     const r = await search(b, "seats released", { gate });

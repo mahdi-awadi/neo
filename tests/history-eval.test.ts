@@ -1,4 +1,4 @@
-// ADR-0066 plan task 18: the eval harness (tools/history/eval.ts) that the verify step uses to compare
+// ADR-0067 plan task 18: the eval harness (tools/history/eval.ts) that the verify step uses to compare
 // words only, meaning only and hybrid search, and two embedding models: recall@k and MRR on the eval set,
 // and the latency percentiles. The metric math on fixtures; the set's schema (tools/history/eval-set.json
 // ships the schema and two sample rows); one run over the real search with the fakes.

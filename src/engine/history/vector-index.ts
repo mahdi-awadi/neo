@@ -1,4 +1,4 @@
-// The task history's vector index (ADR-0066 Decisions 1 and 4.9, spec "The shared Qdrant contract"):
+// The task history's vector index (ADR-0067 Decisions 1 and 4.9, spec "The shared Qdrant contract"):
 // `QdrantIndex` talks REST to the shared Qdrant, `NoVectorIndex` answers `off`. Before any request the
 // config is checked and refused (`config_refused`) when the URL is not loopback, the collection does not
 // start with `neo_` or is not allowed, or the key is not a JWT whose `access` claim names only allowed

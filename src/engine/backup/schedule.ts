@@ -1,4 +1,4 @@
-// The snapshot backup in the running engine (ADR-0066 Decision 8, spec "The snapshot backup"): the heartbeat
+// The snapshot backup in the running engine (ADR-0067 Decision 8, spec "The snapshot backup"): the heartbeat
 // step `backup`. Each database in `backup.databases` is a snapshot job on its own cron; the restore drill is
 // one more job on `backup.drillCron`. A job is due once for each cron slot since the last tick (a late tick
 // still runs a missed slot, once). One child runs at a time: a job that comes due meanwhile waits in the

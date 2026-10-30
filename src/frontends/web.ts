@@ -307,7 +307,7 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       return d ? Response.json(d, NO_STORE) : Response.json({ ok: false, error: "no such todo" }, { status: 404, ...NO_STORE });
     }
 
-    // The task history (ADR-0066): search, remember, forget. Every field is checked before the seam is asked;
+    // The task history (ADR-0067): search, remember, forget. Every field is checked before the seam is asked;
     // a refused value is a 400 with its reason code, a history that is off or unreadable a 503.
     if (path === "/api/history" || path.startsWith("/api/history/")) return historyRoute(req, url);
 

@@ -1,4 +1,4 @@
-// ADR-0066 plan task 14 on Telegram: `/forget <ref>` shows the entry with a Forget button; the tap forgets
+// ADR-0067 plan task 14 on Telegram: `/forget <ref>` shows the entry with a Forget button; the tap forgets
 // it and answers with the counts; a tap from another chat is ignored.
 import { test, expect, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";

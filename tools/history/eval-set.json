@@ -1,5 +1,5 @@
 {
-  "about": "The task-history eval set (ADR-0066), written by the verify step (plan task 20, 2026-10-30) from a read-only copy of the live ledger. Each query names the refs a good answer holds (ids only, no stored text). tools/history/eval.ts scores recall@k and MRR for words only, meaning only and hybrid. Schema: version 1; k (the cut-off); queries[] of { id (unique), lang (\"ar\" | \"en\"), query, expected (refs), project (optional), kinds (optional) }. Most Arabic queries ask in Arabic about work written in English (the history holds little Arabic text), so they test cross-language meaning search.",
+  "about": "The task-history eval set (ADR-0067), written by the verify step (plan task 20, 2026-10-30) from a read-only copy of the live ledger. Each query names the refs a good answer holds (ids only, no stored text). tools/history/eval.ts scores recall@k and MRR for words only, meaning only and hybrid. Schema: version 1; k (the cut-off); queries[] of { id (unique), lang (\"ar\" | \"en\"), query, expected (refs), project (optional), kinds (optional) }. Most Arabic queries ask in Arabic about work written in English (the history holds little Arabic text), so they test cross-language meaning search.",
   "version": 1,
   "k": 5,
   "queries": [

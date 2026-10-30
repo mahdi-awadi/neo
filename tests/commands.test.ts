@@ -614,7 +614,7 @@ test("/stop and /bg answer later with the tool-control result; /list shows the r
   expect(handleCommand("/list", 1, d)!.text).toContain("⏵ Bash 1m: git push origin dev");
 });
 
-// ── ADR-0066 plan task 14: /find, /remember, /forget over the task history ─────────────────────────
+// ── ADR-0067 plan task 14: /find, /remember, /forget over the task history ─────────────────────────
 import type { HistoryHit, HistoryQuery, HistoryResult, RememberInput, TaskHistory } from "../src/engine/history/index";
 import { numbersLtrText } from "../src/engine/bidi";
 import { findReply, parseFindArgs, TELEGRAM_MAX } from "../src/engine/history/operator";

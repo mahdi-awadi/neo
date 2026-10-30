@@ -1,4 +1,4 @@
-// Arabic light stemming for the task history (ADR-0066, spec "Text processing"): the Light10 rules with the
+// Arabic light stemming for the task history (ADR-0067, spec "Text processing"): the Light10 rules with the
 // prefix and suffix lists and the length limits of Lucene's ArabicStemmer. The stems go into
 // `chunks_fts.stems`, so `مقاعد` finds `والمقاعدُ`. Pure. English words get FTS5's `porter` instead.
 import { normalize } from "./normalize";

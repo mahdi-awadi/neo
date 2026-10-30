@@ -497,14 +497,14 @@ test("ADR-0059: todoSummary defaults on, haiku at low effort, 30 s; bad values k
   expect(loadConfig(d).todoSummary).toEqual({ ai: false, model: "sonnet", effort: "low", timeoutMs: 30_000 });
 });
 
-test("ADR-0066: history defaults on; config.json sets it through readHistoryCfg; a bad value keeps the default", () => {
+test("ADR-0067: history defaults on; config.json sets it through readHistoryCfg; a bad value keeps the default", () => {
   expect(loadConfig(dir()).history).toEqual(HISTORY_DEFAULTS);
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ history: { enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["shared"] } } }));
   expect(loadConfig(d).history).toMatchObject({ enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["neo_history"] } });
 });
 
-test("ADR-0066 Decision 8: backup defaults (history.db only); config.json sets it through readBackupCfg; a bad value keeps the default", () => {
+test("ADR-0067 Decision 8: backup defaults (history.db only); config.json sets it through readBackupCfg; a bad value keeps the default", () => {
   expect(loadConfig(dir()).backup).toEqual(BACKUP_DEFAULTS);
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ backup: { keepRecent: 3, dir: "relative", databases: [{ path: "data/history.db", cron: "0 */6 * * *" }] } }));

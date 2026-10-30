@@ -49,7 +49,7 @@
 
   "memory": { "scopes": ["company"] },
 
-  "// history": "ADR-0066 task history (docs/CONFIG.md, 'Task history'). Secrets stay in .env: the keys and the Qdrant URL are named here by their env variables, never written. With no key or URL set, search runs keyword-only. 'revision' is the pinned bge-m3 commit from tools/history/embedder.env.",
+  "// history": "ADR-0067 task history (docs/CONFIG.md, 'Task history'). Secrets stay in .env: the keys and the Qdrant URL are named here by their env variables, never written. With no key or URL set, search runs keyword-only. 'revision' is the pinned bge-m3 commit from tools/history/embedder.env.",
   "history": {
     "enabled": true,
     "dbPath": "data/history.db",
@@ -59,7 +59,7 @@
     "feedKeep": 200000
   },
 
-  "// backup": "ADR-0066 Decision 8 snapshot backups (docs/CONFIG.md 'Snapshot backup', runbook docs/backup.md). history.db only by default; the ledger joins only by the operator's decision. Never point dir inside the repo.",
+  "// backup": "ADR-0067 Decision 8 snapshot backups (docs/CONFIG.md 'Snapshot backup', runbook docs/backup.md). history.db only by default; the ledger joins only by the operator's decision. Never point dir inside the repo.",
   "backup": {
     "dir": "/var/backups/neo",
     "databases": [{ "path": "data/history.db", "cron": "41 3 * * *" }],

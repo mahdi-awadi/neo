@@ -1,4 +1,4 @@
-// Snapshot names and rotation (ADR-0066 Decision 8): pure, no I/O. A snapshot is
+// Snapshot names and rotation (ADR-0067 Decision 8): pure, no I/O. A snapshot is
 // `<name>-<UTC yyyymmddThhmmssZ>.db[.gz]` with its manifest `<name>-<stamp>.manifest.json`. Rotation keeps
 // the newest `keepRecent`, then the newest snapshot of each UTC day for `keepDaily` more days, then the
 // newest of each ISO week for `keepWeekly` more weeks (a day or week that already has a kept snapshot does

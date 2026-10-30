@@ -1,4 +1,4 @@
-// What the task history's two outside services share (ADR-0066 Decision 4.9): the reasons meaning search
+// What the task history's two outside services share (ADR-0067 Decision 4.9): the reasons meaning search
 // is off, a service state, and the loopback rule — the embedder and the vector index accept only an
 // http(s) URL on 127.0.0.1, ::1 or localhost, with no credentials in it. Also the one line that tells the
 // operator what to do about a service state (the attention items and the admin status name it).

@@ -4,7 +4,7 @@ approval: required
 # Task history with hybrid (meaning + words + exact) search — plan
 
 Spec: `docs/superpowers/specs/2026-10-29-task-history-search-design.md`. ADR:
-`docs/adr/0066-task-history-in-sqlite-with-vectors-in-the-shared-qdrant-kept-in-step-by-a-ledger-change-feed.md`
+`docs/adr/0067-task-history-in-sqlite-with-vectors-in-the-shared-qdrant-kept-in-step-by-a-ledger-change-feed.md`
 (proposed, revision 3). Terms: `CONTEXT.md` (Task history, History entry, Archived entry, Forget, Change
 feed, Keyword-only mode, Embedder, Model tag, Snapshot backup).
 
@@ -336,7 +336,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
       gives the event, one alert for each failure streak and the attention item. A success clears it.
     - The child gets paths as argv entries, and no shell.
   - Build: the default list is `[{ path: "data/history.db", cron: "41 3 * * *" }]`. The ledger is not in
-    the list (ADR-0066, separate decision). The runbook says: before a restore, move the old file and its
+    the list (ADR-0067, separate decision). The runbook says: before a restore, move the old file and its
     `-wal` and `-shm` files aside.
   - Done when: AC21 passes.
 
@@ -369,7 +369,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
   - Done when: these tests pass, and task 20 can run with these commands only.
 
 - [x] **19. Docs**
-  - Modify: ADR-0066 (status "accepted (as built)" and an "As built" section with the measured numbers),
+  - Modify: ADR-0067 (status "accepted (as built)" and an "As built" section with the measured numbers),
     `CONTEXT.md`, `docs/CONFIG.md`, `docs/HISTORY.md`, `HANDOFF.md`, `docs/tools/history-search.md`,
     `docs/backup.md`.
   - Create: `docs/history.md` (the operator guide: search tips, the modes, forget, the model-change
@@ -378,7 +378,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
 
 - [ ] **20. Verify (live, before the merge)**
   - Status 2026-10-30: steps 1–6, 8 (keyword-only), 9 (embedder drills), 10 and the reviews are done; numbers in
-    ADR-0066 "Measured". Open, waiting for ops to reissue Neo's shared-Qdrant key (note #547): the `--verify`
+    ADR-0067 "Measured". Open, waiting for ops to reissue Neo's shared-Qdrant key (note #547): the `--verify`
     upload, meaning-only and hybrid eval, the Qwen comparison, hybrid latency, `vectors_down` and drift drills,
     the `verify-clean` proof. Left unticked until those run.
   1. Run `bunx tsc --noEmit` and `bun test` in the background. Both must be green.
@@ -408,7 +408,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
   12. Ask the `planner` subagent for the final review against the spec. Run `requesting-code-review` and
       `/security-review` (new HTTP routes, tool inputs, a new Docker service, a shared-service client, file
       reads outside the repo, a child process).
-  13. Write the numbers into ADR-0066 ("As built") and `HANDOFF.md`. Merge into `dev`.
+  13. Write the numbers into ADR-0067 ("As built") and `HANDOFF.md`. Merge into `dev`.
 
 ---
 
@@ -420,7 +420,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
 3. Restart the daemon (your permission). Ledger migration v17 runs after its `.bak-v16` copy. Then the
    backfill starts by itself, and meaning search reports partial coverage for some hours. If you restart
    before step 2, search is keyword-only, and the `history_off` item names step 2.
-4. Decide the ledger backup (ADR-0066, a separate decision). Option A is recommended.
+4. Decide the ledger backup (ADR-0067, a separate decision). Option A is recommended.
 
 ## Ops notes (information, nothing blocks)
 

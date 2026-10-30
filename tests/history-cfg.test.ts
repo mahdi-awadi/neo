@@ -1,4 +1,4 @@
-// ADR-0066 config `history` (spec "Config", plan task 11): `readHistoryCfg` keeps a value of the right type
+// ADR-0067 config `history` (spec "Config", plan task 11): `readHistoryCfg` keeps a value of the right type
 // and falls back to the default for anything else, section by section, so one bad key never turns a guard
 // off. `allowedCollections` keeps only `neo_` names; `next` is kept only when it is a complete, different
 // model whose vectors have a place to go.

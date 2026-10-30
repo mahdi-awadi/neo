@@ -1,4 +1,4 @@
-// ADR-0066 Decision 5, spec "The embedder contract", AC20 (plan task 15): Neo's own embedder service
+// ADR-0067 Decision 5, spec "The embedder contract", AC20 (plan task 15): Neo's own embedder service
 // (TEI + BAAI/bge-m3), a digest-pinned, loopback-only, memory-capped Docker service like the shared
 // browser (ADR-0032). The installer's decisions are pure and tested here; the docker/IO wrapper around them
 // runs in the verify step (plan task 20).

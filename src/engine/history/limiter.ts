@@ -1,4 +1,4 @@
-// A per-session sliding-window limit (ADR-0066): `remember` (saves per hour) and the worker `history_search`
+// A per-session sliding-window limit (ADR-0067): `remember` (saves per hour) and the worker `history_search`
 // (searches per minute) count each session's recent calls. Each call drops the sessions with nothing left in
 // the window, so the map holds only sessions that are active now. Pure; in memory (a restart starts empty).
 

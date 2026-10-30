@@ -347,7 +347,7 @@ entries, with the commit shas that they name. It answers "what did we do about X
 meaning, by words and by exact id, in Arabic and English. Each hit cites its source (ref, kind, project,
 date, todo, order, thread, commits, plan path). The text and the word index live in `data/history.db`,
 the source of truth, which keeps entries after the ledger prunes them. The vectors live in Neo's own
-collection on the shared Qdrant, a copy that Neo can rebuild (ADR-0066). Customer text is never in it,
+collection on the shared Qdrant, a copy that Neo can rebuild (ADR-0067). Customer text is never in it,
 and consult runs are not in it either (they share the customer chat id `-3`, so the firewall excludes
 them). Guide: `docs/history.md`.
 _Avoid_: memory (bare), recall, knowledge base, `/history` (that is the Telegram alias of `/recent`)
@@ -416,7 +416,7 @@ _Avoid_: model version, embedding version
 **Snapshot backup**:
 Neo's backup of one of its SQLite files: `VACUUM INTO` from a read-only connection in a child process, an
 integrity check, compression, a manifest, a rotation and a weekly restore drill, in `/var/backups/neo`.
-`history.db` has one from the start. The ledger joins it only by an operator decision (ADR-0066).
+`history.db` has one from the start. The ledger joins it only by an operator decision (ADR-0067).
 _Avoid_: dump, `.bak` copy (that is the one-off copy that a migration makes)
 
 **Shared service**:
@@ -712,6 +712,12 @@ A piece of one scan that produced no result: a semgrep part (a group of `semgrep
 that timed out or failed, or a gitleaks scan with no output. It is recorded, never silently dropped
 (ADR-0051).
 _Avoid_: skipped file, partial finding
+
+**Unreachable vulnerability**:
+A Go dependency vulnerability that osv-scanner's call analysis (govulncheck) found the project never
+calls. Its finding is capped at medium and tagged `unreachable`: reported, never blocking. It needs osv's verdicts for the finding, all
+`called: false`, made at the version osv reports; no analysis means full severity (ADR-0066).
+_Avoid_: false positive, ignored vuln, suppressed
 
 **Chained hook**:
 The project's own git hook that ran before the kit was turned on. The kit's hook runs it after the

@@ -1557,7 +1557,7 @@ function openFromHash(): void {
     return; // a malformed link (`#project=%E0`) is ignored — it must never stop the console starting
   }
   if (m[1] === "history") {
-    // A Telegram `/find` reply links here with its query (ADR-0066).
+    // A Telegram `/find` reply links here with its query (ADR-0067).
     tab("history");
     return historyPanel.search(name);
   }
@@ -1764,7 +1764,7 @@ sheet().addEventListener("click", (ev) => {
   if (ev.target === sheet()) sheet().close();
 });
 
-// ── History (ADR-0066): search past work, remember a fact, forget an entry ───────────────────────
+// ── History (ADR-0067): search past work, remember a fact, forget an entry ───────────────────────
 const historyPanel = mountHistory({
   fmt: { esc, ltr, iso, t, tx, date: numericDate },
   $,
@@ -1947,7 +1947,7 @@ es.onmessage = (ev) => {
   else if (e.type === "projects") void loadState();
   else if (e.type === "attention") renderAttention(e);
   else if (e.type === "history_forget") {
-    // `/forget` typed here (ADR-0066): the entry, then a link to it in the History tab, whose Forget button
+    // `/forget` typed here (ADR-0067): the entry, then a link to it in the History tab, whose Forget button
     // asks for the reason and confirms.
     feedMsg(`<div class="tx" dir="auto">${e.text}</div><div class="rfo">${esc(tx("history.forgetInTab"))} <a href="#history=${encodeURIComponent(e.ref)}">${ltr(e.ref)}</a></div>`, "out", null);
   }

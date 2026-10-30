@@ -1,8 +1,8 @@
-# Snapshot backup — runbook (ADR-0066 Decision 8)
+# Snapshot backup — runbook (ADR-0067 Decision 8)
 
 Neo takes a snapshot backup of its SQLite files. By default, only `data/history.db` is in the list. That
 file holds two things that exist nowhere else: archived history entries and remembered entries. The
-ledger joins the list only by the operator's decision (ADR-0066, "Separate operator decision: the ledger
+ledger joins the list only by the operator's decision (ADR-0067, "Separate operator decision: the ledger
 backup").
 
 Config: the `backup` section (`docs/CONFIG.md`, "Snapshot backup"). Code: `src/engine/backup/`.
@@ -124,5 +124,5 @@ If the daemon finds a corrupt `history.db` at start, it moves the file to
 
 ## Off-host copies
 
-This job keeps its copies on the same host. An off-host copy is a separate decision (ADR-0066). Ops lists
+This job keeps its copies on the same host. An off-host copy is a separate decision (ADR-0067). Ops lists
 `/var/backups/neo` in the backup inventory.

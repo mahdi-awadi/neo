@@ -1,4 +1,4 @@
-// Task history text normalization (ADR-0066, spec "Text processing"). One rule for `chunks_fts.body`,
+// Task history text normalization (ADR-0067, spec "Text processing"). One rule for `chunks_fts.body`,
 // the stems and the query, never for the displayed text. Pure. The map back to the original offsets lets
 // a match on the normalized text be highlighted on the original, harakat and all.
 

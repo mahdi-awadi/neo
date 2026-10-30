@@ -27,7 +27,7 @@ The tools are `history_search` and `remember` in the `neo` MCP server.
 - Each hit gives its kind, title, project, date, ref and how it was found, then the todo, order, thread, commits and plan path when known, then the matching text. Check a hit at its source before you act on it.
 - `remember` needs `text` (one fact with where it applies); `project` defaults to this session's project. It answers `Saved as mem:N` or why it was not saved.
 
-Reference: ADR-0066, `docs/history.md`, `CONTEXT.md` (Task history).
+Reference: ADR-0067, `docs/history.md`, `CONTEXT.md` (Task history).
 
 ## When NOT to use
 

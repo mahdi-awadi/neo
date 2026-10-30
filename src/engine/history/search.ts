@@ -1,4 +1,4 @@
-// The task history's search (ADR-0066 Decision 6, spec "Search"): validate the query, then run up to four
+// The task history's search (ADR-0067 Decision 6, spec "Search"): validate the query, then run up to four
 // ranked lists — exact (the sources its ids name, then the chunks that hold an id token), meaning (the
 // query's vector against the shared Qdrant, the active model tag only), words (FTS5 on the normalized text
 // and the Arabic stems) and lines (the ledger's worker lines) — each with the same project, date and kind

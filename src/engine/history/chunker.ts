@@ -1,4 +1,4 @@
-// Task history chunker (ADR-0066, spec "Text processing"). Cuts a source text into chunks of about
+// Task history chunker (ADR-0067, spec "Text processing"). Cuts a source text into chunks of about
 // `chars` characters that repeat `overlap` characters of the one before. The cut prefers a paragraph end,
 // then a line end, then a sentence end (`. ! ? ؟ ۔`), then a space, then a grapheme boundary
 // (`Intl.Segmenter`), so an emoji or a letter with its marks is never split. Pure.

@@ -1,4 +1,4 @@
-// The task history's indexer (ADR-0066 Decision 4, spec "The indexer"): one pass reads the ledger's change
+// The task history's indexer (ADR-0067 Decision 4, spec "The indexer"): one pass reads the ledger's change
 // feed from its own cursor, walks the source tables when a reconcile is due (the first start, a feed gap,
 // the weekly cron), extracts each row (sources.ts, through the firewall), writes the changed ones to
 // `history.db` in slices of at most `sliceRows` rows per transaction, embeds the chunks that have no vector

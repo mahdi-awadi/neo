@@ -1,4 +1,4 @@
-// ADR-0066: what the task history takes out of a text — commit shas, the id tokens of a query, the engine
+// ADR-0067: what the task history takes out of a text — commit shas, the id tokens of a query, the engine
 // blocks Neo wraps around a brief (checked against the REAL builders, so a text change in a builder breaks
 // this test, not the index), the continuation wrapper, and boilerplate paragraphs.
 import { expect, test } from "bun:test";

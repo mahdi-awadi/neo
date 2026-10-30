@@ -133,7 +133,7 @@ export interface PipelineDeps {
   notes?: DispatchDeps["notes"];
   /** The tools catalogue (ADR-0044): gates the `tool_api` relay tool. Operator surfaces only. */
   tools?: DispatchDeps["tools"];
-  /** The task history (ADR-0066): gates `history_search` and `remember`. Operator surfaces only. */
+  /** The task history (ADR-0067): gates `history_search` and `remember`. Operator surfaces only. */
   history?: DispatchDeps["history"];
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */

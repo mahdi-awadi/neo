@@ -1,4 +1,4 @@
-// The task history's tunables and their defaults (ADR-0066, spec "Config"). The modules take these as
+// The task history's tunables and their defaults (ADR-0067, spec "Config"). The modules take these as
 // parameters; the config reader (`readHistoryCfg`, plan task 11) keeps a value of the right type from
 // `config.json` and falls back to these.
 
@@ -152,7 +152,7 @@ export interface RememberCfg {
 
 export const REMEMBER_DEFAULTS: Readonly<RememberCfg> = { minChars: 10, maxChars: 4000, perSessionHour: 20 };
 
-/** The next model during a model change (ADR-0066 Decision 4.6): its own embedder; a collection only when
+/** The next model during a model change (ADR-0067 Decision 4.6): its own embedder; a collection only when
  *  its dimensions differ (it must be allowed). */
 export interface NextModelCfg extends EmbedderCfg {
   collection?: string;

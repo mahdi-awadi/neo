@@ -229,10 +229,10 @@ export interface NeoConfig {
   planner?: PlannerCfg;
   /** ADR-0059: the AI summary of each new todo (`ai`, `model`, `effort`, `timeoutMs`). Read by readTodoSummaryCfg. */
   todoSummary?: TodoSummaryCfg;
-  /** ADR-0066: the task history (hybrid search over past work). Secrets are named by their env variables
+  /** ADR-0067: the task history (hybrid search over past work). Secrets are named by their env variables
    *  (`embedder.keyEnv`, `vectors.urlEnv`, `vectors.keyEnv`), never written here. Read by readHistoryCfg. */
   history?: HistoryCfg;
-  /** ADR-0066 Decision 8: the snapshot backup of Neo's SQLite files (`history.db` by default; the ledger
+  /** ADR-0067 Decision 8: the snapshot backup of Neo's SQLite files (`history.db` by default; the ledger
    *  only by the operator's decision). Read by readBackupCfg. */
   backup?: BackupCfg;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the

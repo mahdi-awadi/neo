@@ -204,7 +204,7 @@ test("migration 16 adds the pins table; pins round-trip, unpin is kept, clear re
   expect(led.listPins()).toEqual([{ ref: "dec:abc", state: "unpinned", at: 11 }]);
 });
 
-// ADR-0066 Decision 4: the task history's change feed — a table and AFTER triggers on the source tables.
+// ADR-0067 Decision 4: the task history's change feed — a table and AFTER triggers on the source tables.
 test("migration 17 adds the history feed and its triggers to a v16 ledger with rows; backup and reopen", () => {
   const dir = mkdtempSync(join(tmpdir(), "neo-mig-"));
   const path = join(dir, "ledger.db");

@@ -1,4 +1,4 @@
-// ADR-0066 Decision 8, spec "The snapshot backup" (plan task 16): the backup config reader and the pure
+// ADR-0067 Decision 8, spec "The snapshot backup" (plan task 16): the backup config reader and the pure
 // naming and rotation rules. Rotation keeps the newest `keepRecent`, then the newest of each UTC day for
 // `keepDaily` days, then the newest of each ISO week for `keepWeekly` weeks, and touches only files that
 // match the naming rule of the database it rotates.

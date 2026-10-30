@@ -30,9 +30,9 @@ ones in `.env` (`chmod 600`).
 | `COMPANY_FOLDER` | env or `config.json` | `<repo>/agent` | The always-on "company" workspace folder. |
 | `NEO_LOOP_SCHEDULER` | env or `config.json` | `1` (on) | Set `0` to disable the loop scheduler. |
 | `DECISIONS_CHAT_ID` | env or `config.json` | *(unset)* | Telegram chat/group id for the high-priority **Decisions** channel — blocking questions, escalations, failures. Keep it unmuted; mute the normal DM (the firehose). Unset → decisions are still tagged, tracked, and reminded, but post to the admin DM. |
-| `HISTORY_EMBEDDER_KEY` | yes | *(empty)* | ADR-0066: the bearer key of the local embedder (TEI). Written by `tools/history/install.ts`. Empty → meaning search is off (`not_configured`); keyword search works. The name is `history.embedder.keyEnv`. |
-| `SHARED_QDRANT_URL` | yes | *(empty)* | ADR-0066: the shared Qdrant (written by ops). Must be loopback. Empty → meaning search is off; keyword search works. The name is `history.vectors.urlEnv`. |
-| `SHARED_QDRANT_API_KEY` | yes | *(empty)* | ADR-0066: Neo's JWT for its `neo_*` collections (written by ops). A plain or global key is refused. A new key needs a reload. The name is `history.vectors.keyEnv`. |
+| `HISTORY_EMBEDDER_KEY` | yes | *(empty)* | ADR-0067: the bearer key of the local embedder (TEI). Written by `tools/history/install.ts`. Empty → meaning search is off (`not_configured`); keyword search works. The name is `history.embedder.keyEnv`. |
+| `SHARED_QDRANT_URL` | yes | *(empty)* | ADR-0067: the shared Qdrant (written by ops). Must be loopback. Empty → meaning search is off; keyword search works. The name is `history.vectors.urlEnv`. |
+| `SHARED_QDRANT_API_KEY` | yes | *(empty)* | ADR-0067: Neo's JWT for its `neo_*` collections (written by ops). A plain or global key is refused. A new key needs a reload. The name is `history.vectors.keyEnv`. |
 | `SECRETARY_CRON` | env or `config.json` | `0 8-22/2 * * *` | Cron (server-local) for the secretary digest loop. The loop is still opt-in (`/loop secretary on`). |
 
 ## Structured knobs (`config.json`)
@@ -68,7 +68,7 @@ Non-secret tuning, read only from `config.json` (copy `config.example.json`). Al
 | `apiRetryJitterFrac` | `0.2` (±20%) | Jitter magnitude (0–1) on every retry wait so co-throttled workers don't sync up: ladder waits get ±frac, reset-based waits get +frac (upward only). |
 | `apiLimitWakeEarly` | `true` | ADR-0060: when a worker's turn goes through, the same provider's other runs held in a usage-limit wait wake early instead of waiting for their reset. A wrong type keeps the default. |
 | `todoSummary` | `{ ai: true, model: "haiku", effort: "low", timeoutMs: 30000 }` | ADR-0059: a model proposes a one-line summary for each new todo; the engine keeps it only if it is one plain line of 8–90 characters with no secret shape, else the deterministic summary stays. The run has no tools, no settings and no MCP servers. `ai: false` turns it off. |
-| `history` | on, see "Task history" | ADR-0066: the task history — hybrid (meaning + words + exact) search over past work. Its keys are in the section "Task history (`history`)" below. |
+| `history` | on, see "Task history" | ADR-0067: the task history — hybrid (meaning + words + exact) search over past work. Its keys are in the section "Task history (`history`)" below. |
 | `planner` | `{ model: "opus", effort: "max" }` | ADR-0063: the `planner` subagent every dispatch, project and loop run gets for its DESIGN phase and final review. `model` is a tier alias (pinned to its id through `models.aliases`, ADR-0005) or an id; `effort` is one of `low`, `medium`, `high`, `xhigh`, `max`. A blank model or unknown effort keeps the default. |
 | `projectMessage` | `{ maxChars: 500, perProjectPerHour: 6 }` | ADR-0061: the chief of staff's `project_message` — a message longer than `maxChars` is refused (new work goes through dispatch), and at most `perProjectPerHour` messages are delivered to one project in an hour. A value that is not a positive whole number keeps its default. |
 | `apiLimitWakeJitterMs` | `30000` | ADR-0060: each early-woken run first waits a random 0..this ms, so they do not all re-send at once. A negative or non-number keeps the default. |
@@ -502,7 +502,7 @@ the line isn't already there — **never** the tracked `.gitignore` (machine-loc
 per-machine/per-checkout state, not something to commit). Fail-open and a no-op outside a git repo;
 runs at most once per process per folder.
 
-## Task history (`history`) — ADR-0066
+## Task history (`history`) — ADR-0067
 
 `readHistoryCfg` (`src/engine/history/cfg.ts`) reads the section. Each key keeps a value of the right type
 and range; any other value keeps its default. One bad key never turns a guard off. The defaults are
@@ -528,7 +528,7 @@ The section is read once at start: a change needs a daemon reload.
 | `telegram` | `{ findLimit: 5 }` | Hits in a `/find` reply. |
 | `store` | `{ lockStaleMs: 180000 }` | A writer lock older than this may be taken over. A pass renews the lock before each write and each outside call, so a long pass keeps it; a pass that finds the lock taken over stops (`locked`, event `history_lock_lost`). |
 
-## Snapshot backup (`backup`) — ADR-0066 Decision 8
+## Snapshot backup (`backup`) — ADR-0067 Decision 8
 
 `readBackupCfg` (`src/engine/backup/cfg.ts`) reads the section. Each key keeps a value of the right type;
 any other value keeps its default. The heartbeat step `backup` runs each job in a child process. The
@@ -537,7 +537,7 @@ runbook (restore, drill, failures) is `docs/backup.md`.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `dir` | `/var/backups/neo` | The backup folder. Must be absolute and used only for these backups: a folder that holds other files is refused (`dir_not_dedicated`) and never changed. Made with mode 0700; files are 0600. The disk-cleanup kit protects it. |
-| `databases` | `[{ path: "data/history.db", cron: "41 3 * * *" }]` | The SQLite files to snapshot, each on its own cron (server-local). A relative path resolves against the daemon's folder. An entry with a bad cron, a path that is not `*.db`, a file name (without `.db`) that is not lower-case letters, digits and `_`, or the same file name as an earlier entry is dropped. The file name names the snapshots (`history-<stamp>.db.gz`). An empty list turns the job off. The ledger is not in the list: it joins only by the operator's decision (ADR-0066). |
+| `databases` | `[{ path: "data/history.db", cron: "41 3 * * *" }]` | The SQLite files to snapshot, each on its own cron (server-local). A relative path resolves against the daemon's folder. An entry with a bad cron, a path that is not `*.db`, a file name (without `.db`) that is not lower-case letters, digits and `_`, or the same file name as an earlier entry is dropped. The file name names the snapshots (`history-<stamp>.db.gz`). An empty list turns the job off. The ledger is not in the list: it joins only by the operator's decision (ADR-0067). |
 | `keepRecent` | `8` | The newest snapshots kept. |
 | `keepDaily` | `7` | Then the newest of each day, for this many more days (`0` allowed). |
 | `keepWeekly` | `4` | Then the newest of each ISO week, for this many more weeks (`0` allowed). Rotation deletes only files that match the naming rule `<name>-<UTC yyyymmddThhmmssZ>.db[.gz]` (and their `.manifest.json`). |

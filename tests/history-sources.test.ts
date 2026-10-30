@@ -1,4 +1,4 @@
-// ADR-0066 sources (spec "Sources", AC3 and AC6 extraction, AC12): ledger rows → source extracts (text,
+// ADR-0067 sources (spec "Sources", AC3 and AC6 extraction, AC12): ledger rows → source extracts (text,
 // title, project, `at`, meta, hash), the rows that are not sources, plan files read only inside their
 // folder, the firewall verdict on each row, and the chunk rules: a secret-shaped chunk is dropped (the event
 // names the pattern, never the text), a secret-shaped title is replaced, an injection phrase is made

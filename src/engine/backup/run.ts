@@ -1,4 +1,4 @@
-// The snapshot child (ADR-0066 Decision 8, spec "The snapshot backup"): one online snapshot of one SQLite
+// The snapshot child (ADR-0067 Decision 8, spec "The snapshot backup"): one online snapshot of one SQLite
 // file, run as `bun src/engine/backup/run.ts --source <db> --dir <folder> --name <name> --compress 1|0
 // --min-free-gb <n> --keep <recent>,<daily>,<weekly>` (paths are argv entries; no shell), so the daemon's
 // event loop never waits on the copy. Steps:

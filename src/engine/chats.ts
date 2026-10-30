@@ -1,5 +1,5 @@
 // The reserved (pseudo) chat ids an order or a message is recorded under. A leaf module with no
-// imports, so the ledger and the task history (ADR-0066) read them without an import cycle through
+// imports, so the ledger and the task history (ADR-0067) read them without an import cycle through
 // dispatch.ts, which re-exports them. Real operator chats are Telegram ids; 0 is the web console.
 
 /** Reserved chat id for dispatched sub-projects, so they never hijack the operator's free-text

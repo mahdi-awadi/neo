@@ -1,4 +1,4 @@
-// The task history's admin commands (ADR-0066 plan task 18): what the verify step (task 20) and the operator
+// The task history's admin commands (ADR-0067 plan task 18): what the verify step (task 20) and the operator
 // run by hand. Every command goes through the engine code — the store, the adapters and the `TaskHistory`
 // seam — never raw SQL and never a hand-made request with a key. The config and the keys come from the
 // engine's loader (`loadConfig`, which reads `.env` into the environment); no key is ever printed.

@@ -1,4 +1,4 @@
-// The `history.db` schema (ADR-0066, spec "Data"). Numbered like the ledger's and run by the same
+// The `history.db` schema (ADR-0067, spec "Data"). Numbered like the ledger's and run by the same
 // `migrate()` (with its `.bak-v<N>` copy): a change is a new entry here, never an edit to an old one.
 import type { Database } from "bun:sqlite";
 import type { Migration } from "../ledger-migrations";

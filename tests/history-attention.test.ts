@@ -1,4 +1,4 @@
-// ADR-0066, spec "Events and attention items", AC22 (plan task 17): the engine producer raises
+// ADR-0067, spec "Events and attention items", AC22 (plan task 17): the engine producer raises
 // `history_off` (needs you: meaning search cannot start without the operator, and the item names the step),
 // `history_degraded` (housekeeping: a service down or slow longer than `degradedAlertMinutes`) and
 // `backup_failed` (needs you, while a backup job's failure streak lasts). Each item resolves itself when its

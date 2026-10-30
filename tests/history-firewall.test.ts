@@ -1,4 +1,4 @@
-// ADR-0066 firewall (spec "Sources", AC12): the verdict for a source row fails closed — the customer path
+// ADR-0067 firewall (spec "Sources", AC12): the verdict for a source row fails closed — the customer path
 // (a CUSTOMER_CHAT order and all its descendants, ingress threads, customer-chat messages), a missing
 // order or parent, an over-deep lineage, a missing thread and an unclassifiable row are excluded and
 // counted. The history code never imports the inbox module (checked over the whole import graph).

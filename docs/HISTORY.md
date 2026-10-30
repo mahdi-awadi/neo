@@ -1414,7 +1414,7 @@ Needs you vs housekeeping, pins, superseded items, tappable todos (2026-10-29, A
 
 Restart-gated.
 
-Task history with hybrid search, and a snapshot backup of `history.db` (2026-10-30, ADR-0066, ledger v17).
+Task history with hybrid search, and a snapshot backup of `history.db` (2026-10-30, ADR-0067, ledger v17).
 
 - Neo keeps a searchable archive of past work (todos, orders, results, digests, your messages, plans,
   notes, GitHub/git items, decisions, remembered facts) in `data/history.db`. Search fuses exact ids,

@@ -260,7 +260,7 @@ export function memorySnapshot(folder: string, cfg: MemoryCfg): string {
   return out;
 }
 
-/** The prompt-injection shapes of the memory scan below, on their own: the task history (ADR-0066) makes
+/** The prompt-injection shapes of the memory scan below, on their own: the task history (ADR-0067) makes
  *  these harmless in stored text instead of refusing the text. */
 export const MEMORY_INJECTION_PATTERNS: { pattern: RegExp; reason: string }[] = [
   { pattern: /ignore (all )?previous instructions/i, reason: "looks like a prompt-injection phrase" },

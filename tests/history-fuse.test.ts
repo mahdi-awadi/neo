@@ -1,4 +1,4 @@
-// ADR-0066 the fusion of the search lists (spec "Search", step 6): weighted reciprocal rank fusion by ref,
+// ADR-0067 the fusion of the search lists (spec "Search", step 6): weighted reciprocal rank fusion by ref,
 // the best chunk of a ref gives its rank, exact hits first, the newer hit first on a tie, equal text
 // collapsed into one hit with `alsoIn`, and the limit.
 import { describe, expect, test } from "bun:test";

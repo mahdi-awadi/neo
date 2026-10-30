@@ -1,4 +1,4 @@
-// The task history's eval harness (ADR-0066 plan task 18; the verify step, task 20, writes the real set and
+// The task history's eval harness (ADR-0067 plan task 18; the verify step, task 20, writes the real set and
 // runs it): recall@k and MRR of words-only, meaning-only and hybrid search over an eval set of queries with
 // their expected refs, and the latency percentiles. It runs the engine's own search (`searchHistory`) over
 // a store, read-only, with the mode's list weights; nothing here is a second search.

@@ -1,4 +1,4 @@
-// A task-history test bench (ADR-0066): an in-memory ledger, a temp `history.db`, the fake TEI and the fake
+// A task-history test bench (ADR-0067): an in-memory ledger, a temp `history.db`, the fake TEI and the fake
 // Qdrant on 127.0.0.1 (port 0), the real adapters pointed at them, and an event recorder. Used by the
 // indexer, search and remember/forget tests. Nothing here reaches a real service.
 import { mkdtempSync } from "node:fs";

@@ -1,4 +1,4 @@
-// The task history's fusion of its search lists (ADR-0066 Decision 6, spec "Search" step 6): weighted
+// The task history's fusion of its search lists (ADR-0067 Decision 6, spec "Search" step 6): weighted
 // reciprocal rank fusion by ref. Each list is ranked best first and may hold several chunks of one ref; the
 // first (best) one gives the ref its rank. `score = Σ weight / (k + rank)`; an exact hit adds `exactBoost`
 // on top, so exact hits come first. Ties go to the newer hit. Refs whose best chunks have the same text

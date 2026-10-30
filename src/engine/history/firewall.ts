@@ -1,4 +1,4 @@
-// The task history's customer firewall (ADR-0066 Decision 7, spec "Sources"): the verdict for one source
+// The task history's customer firewall (ADR-0067 Decision 7, spec "Sources"): the verdict for one source
 // row, decided on facts the ledger reads (an order's lineage, a thread's origin) and failing closed. An
 // order is excluded when it or any ancestor (by `parent_order_id`, up to the lineage depth) is on
 // CUSTOMER_CHAT, has a source other than `neo`, or sits on an `ingress` thread — and when the chain has a

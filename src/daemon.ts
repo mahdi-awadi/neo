@@ -154,7 +154,7 @@ async function main(): Promise<void> {
       {
         ...engineProducerDeps,
         measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }),
-        // ADR-0066: Neo's own items — the task history's service states (newest pass) and the backup state.
+        // ADR-0067: Neo's own items — the task history's service states (newest pass) and the backup state.
         neoFolder,
         ...(historyRuntime.available ? { history: { cfg: historyCfg, services: () => servicesOf(historyRuntime.latest()) } } : {}),
         backups: () => backups.state(),
@@ -325,7 +325,7 @@ async function main(): Promise<void> {
     // fault of its own, because the fault reporter alerts through here.
     operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
   };
-  // The task history (ADR-0066): off → no store and no worker tool; a history.db that cannot be opened is
+  // The task history (ADR-0067): off → no store and no worker tool; a history.db that cannot be opened is
   // moved aside (when corrupt) with one alert, and the engine runs on with history "not available". The Qdrant
   // URL and the keys come from the env the loader filled (`loadConfig`), named in the config, never logged.
   const historyCfg = cfg.history ?? HISTORY_DEFAULTS;
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
   });
   const history = historyRuntime.history;
   console.log(`  history   -> ${!historyCfg.enabled ? "OFF" : historyRuntime.available ? `${historyCfg.dbPath} (search + worker tools)` : "NOT available (history.db could not be opened; see the alert)"}`);
-  // Snapshot backups (ADR-0066 Decision 8): each listed SQLite file on its own cron, in a child process (the
+  // Snapshot backups (ADR-0067 Decision 8): each listed SQLite file on its own cron, in a child process (the
   // event loop never waits on the copy), plus the weekly restore drill. One alert per failure streak; the
   // attention producer reads `backups.state()` for the `backup_failed` item.
   const backupCfg = cfg.backup ?? BACKUP_DEFAULTS;
@@ -626,11 +626,11 @@ async function main(): Promise<void> {
           ["notes.sweepQuestions", () => notes.sweepQuestions(Date.now())],
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
           ["attention.skillify", () => skillify?.(Date.now())],
-          // The task history (ADR-0066): one indexer pass (it starts its own follow-ups while a backlog
+          // The task history (ADR-0067): one indexer pass (it starts its own follow-ups while a backlog
           // drains), and the change-feed prune, which runs also while history is off.
           ["history", () => historyRuntime.tick()],
           ["history.feedPrune", () => historyRuntime.feedPrune()],
-          // Snapshot backups (ADR-0066 Decision 8): starts a due child and returns at once; the child's
+          // Snapshot backups (ADR-0067 Decision 8): starts a due child and returns at once; the child's
           // promise is held by the fault boundary, so a tick never waits on a copy.
           ["backup", () => backups.tick()],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],

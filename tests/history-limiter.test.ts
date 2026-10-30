@@ -1,4 +1,4 @@
-// ADR-0066 review: the per-session sliding-window limit that `remember` and the worker `history_search` use.
+// ADR-0067 review: the per-session sliding-window limit that `remember` and the worker `history_search` use.
 // A session over its limit is refused until its oldest entry leaves the window; a session with nothing in the
 // window is dropped, so the map never grows with sessions that ended.
 import { expect, test } from "bun:test";

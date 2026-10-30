@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-// The console's History tab (ADR-0066, spec "Surfaces"): search past work by meaning, words and ids, with
+// The console's History tab (ADR-0067, spec "Surfaces"): search past work by meaning, words and ids, with
 // filters (project, kinds as chips, a date range) that fold away on a phone; a mode banner that says when
 // meaning search is partial, off or skipped; hit cards (kind, title, project, date, ref, the lists that
 // found it, archived, the snippet, commits, the plan file and a way to the source); "Remember" for a new

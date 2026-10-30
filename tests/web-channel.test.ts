@@ -913,7 +913,7 @@ test("ADR-0054 D2: the console state carries the deploy gap for the header", () 
   expect((none.state() as unknown as { deploy?: unknown }).deploy).toBeUndefined();
 });
 
-// ── ADR-0066: /find, /remember and /forget typed in the console's own chat box ─────────────────────
+// ── ADR-0067: /find, /remember and /forget typed in the console's own chat box ─────────────────────
 import type { HistoryQuery, RememberInput, TaskHistory } from "../src/engine/history/index";
 
 function webHistory() {

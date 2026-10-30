@@ -1,10 +1,10 @@
-# Task history with hybrid (meaning + words + exact) search — design (ADR-0066)
+# Task history with hybrid (meaning + words + exact) search — design (ADR-0067)
 
 Operator order (2026-10-29): a searchable long-term memory of every task, so that finding past work never
 depends on the recall of an AI. Search by meaning ("the thing about bus seats not freeing up"), in Arabic
 and English, and by exact ids. Every hit names its source, so the operator can check it.
 
-**Revision 3 (2026-10-29).** ADR-0066 decides the stores again with facts measured today:
+**Revision 3 (2026-10-29).** ADR-0067 decides the stores again with facts measured today:
 
 - The vectors go to the shared Qdrant (`neo_history`).
 - The text and the word index stay in `data/history.db` (SQLite FTS5).
@@ -12,7 +12,7 @@ and English, and by exact ids. Every hit names its source, so the operator can c
 - `history.db` gets a snapshot backup.
 
 The ops consumer guide exists, so nothing waits for ops. The ledger backup is a separate operator decision
-(ADR-0066).
+(ADR-0067).
 
 ## What exists (reuse, do not duplicate)
 
@@ -400,7 +400,7 @@ the indexer deletes the old tag's points (delete by filter on `m`) and its local
 - The folder `backup.dir` (`/var/backups/neo`) is made with mode 0700. `tools/disk/defaults.json`
   protects it. The runbook is `docs/backup.md`.
 - Default list: `[{ path: "data/history.db", cron: "41 3 * * *" }]`. The ledger joins only by the
-  operator decision in ADR-0066.
+  operator decision in ADR-0067.
 
 ## Config (`config.json`, secrets only in `.env`)
 
@@ -542,7 +542,7 @@ the indexer deletes the old tag's points (delete by filter on `m`) and its local
 ## Not in scope
 
 Embedding the 586,000 streamed worker lines. Rebuilding `messages_fts` with Arabic normalization (its
-Arabic recall stays as it is today, and a follow-up can rebuild it). The ledger backup (ADR-0066, a separate
+Arabic recall stays as it is today, and a follow-up can rebuild it). The ledger backup (ADR-0067, a separate
 operator decision). An off-host copy of any backup. Hosted embedding providers. A shared embedder for all
 projects (if ops offers one, it is a URL change). Running or configuring the shared services (ops owns
 them).

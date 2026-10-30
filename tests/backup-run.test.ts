@@ -1,4 +1,4 @@
-// ADR-0066 Decision 8, spec "The snapshot backup", AC21 (plan task 16): the snapshot child (`run.ts`) and
+// ADR-0067 Decision 8, spec "The snapshot backup", AC21 (plan task 16): the snapshot child (`run.ts`) and
 // the restore drill (`drill.ts`). Temp folders only: these tests never write /var/backups.
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";

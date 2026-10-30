@@ -83,7 +83,7 @@ export interface CommandDeps {
   neoFolder?: string;
   /** The git reader `/project` uses. Absent → the bounded default (`github.callTimeoutMs`). */
   gitRead?: GitRead;
-  /** The task history (ADR-0066) for /find, /remember and /forget. Absent → they say it is unavailable. */
+  /** The task history (ADR-0067) for /find, /remember and /forget. Absent → they say it is unavailable. */
   history?: TaskHistory;
   /** The surface that typed the history command: its `/remember` rate-limit session and its default
    *  `/forget` reason (default Telegram; the console's chat box shares the History tab's `console`). */
@@ -115,7 +115,7 @@ export interface CommandResult {
   /** One project's dashboard (`/project <name>`) — frontends add its buttons: attention (N), threads,
    *  open console. */
   project?: { name: string; attention: number; consoleUrl?: string };
-  /** One task-history entry to forget (`/forget`, ADR-0066): frontends add a Forget button whose tap calls
+  /** One task-history entry to forget (`/forget`, ADR-0067): frontends add a Forget button whose tap calls
    *  `history.forget(ref, reason)`. */
   forget?: { ref: string; reason: string };
 }
@@ -462,7 +462,7 @@ async function projectCommand(args: string, deps: CommandDeps, now: number): Pro
 const FIND_USAGE = "Usage: /find <words or id> [p:<project>] [k:<kind>,…] [since:YYYY-MM-DD] [until:YYYY-MM-DD]";
 const HISTORY_UNAVAILABLE = "Task history is not available on this channel (it is off, or history.db could not be opened).";
 
-/** /find — the task history's hybrid search (ADR-0066). The filters are checked here; the answer comes
+/** /find — the task history's hybrid search (ADR-0067). The filters are checked here; the answer comes
  *  `later` (the search awaits the embedder and the shared index), at most 4,096 characters. */
 function findCommand(args: string, deps: CommandDeps): CommandResult {
   const raw = parseFindArgs(args);

@@ -13,7 +13,9 @@ Check the security of this branch's changes in two passes (ADR-0024 in /home/neo
    If the kit is not installed, say so and go to step 3.
 2. **Triage.** For each NEW high or critical finding in the newest
    `.security/reports/push-*.json`, read the code and decide: real and reachable, or a false
-   positive (say why). Fix the real ones now, then run the scan again. Never edit
+   positive (say why). Fix the real ones now, then run the scan again. A medium finding tagged
+   `unreachable` is a Go vulnerability osv's call analysis found never called (ADR-0066): list it,
+   it does not block. Never edit
    `.security/baseline.json` and never use `--no-verify` to get past a finding.
 3. **Review.** Run the built-in `/security-review` on the same changes for what scanners cannot see:
    broken access control, auth and session logic, IDOR, business-logic abuse, unsafe trust in

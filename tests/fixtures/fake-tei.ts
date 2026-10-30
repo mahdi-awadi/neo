@@ -1,4 +1,4 @@
-// A fake text-embeddings-inference server for the task history tests (ADR-0066): `Bun.serve` on
+// A fake text-embeddings-inference server for the task history tests (ADR-0067): `Bun.serve` on
 // 127.0.0.1, port 0. `/info` answers the model id and revision; `/embed` answers one vector per input
 // (from `vectorOf`), checks the bearer key, and can be told to answer a status, hang, or refuse a batch
 // larger than `maxBatch` with 413. It records each request (path, auth header, inputs).
@@ -24,6 +24,9 @@ export interface FakeTei {
   vectorLength?: number;
   retryAfter?: string;
   requests: Array<{ path: string; auth: string | null; inputs?: string[] }>;
+  /** Requests held by a queued `hang` right now: a test waits for one before it stops the server, else a
+   *  request still on its way reaches the restarted server and takes the `hang` there. */
+  hanging(): number;
   /** Stop answering (connection refused) / start again on the same port. */
   stop(): void;
   restart(): void;
@@ -40,6 +43,7 @@ export function startFakeTei(opts: FakeTeiOpts): FakeTei {
     queue: [],
     maxBatch: 1_000,
     requests: [],
+    hanging: () => hangs.length,
     stop() {
       for (const h of hangs.splice(0)) h();
       server.stop(true);

@@ -1,4 +1,4 @@
-// ADR-0066 the indexer (spec "The indexer", AC5–AC11, AC24 for its events): the change feed and its
+// ADR-0067 the indexer (spec "The indexer", AC5–AC11, AC24 for its events): the change feed and its
 // mapping, updates that touch only the changed chunks, the archive, the firewall that wins over it,
 // tombstones, the reconcile (first, gap, weekly orphans, a saved position), the down states and their
 // recovery, drift without embed calls, the model change, and the bounds (slices, single flight, the lock,

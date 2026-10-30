@@ -113,7 +113,7 @@ export const ATTENTION_BRIEFS: Record<string, BriefTemplate> = {
     task: "The worktree {path} has been idle for {hours}h. If its work is committed and merged, remove it (git worktree remove); otherwise commit the work or say what is left in it.",
     doneWhen: "the worktree is removed, or what is left in it is committed or explained",
   },
-  // The task history and the snapshot backup (ADR-0066): Neo's own engine; `{step}` is what the operator
+  // The task history and the snapshot backup (ADR-0067): Neo's own engine; `{step}` is what the operator
   // or a worker does (history/services.ts operatorStep).
   history_off: {
     task: "Meaning search over Neo's task history is off ({service}: {reason}). The step: {step}. Do the part a worker may do (check the service, the config names, the logs; never print a key), and tell the operator exactly what is left for them (a reload, an ops request). Do NOT restart or reload Neo.",

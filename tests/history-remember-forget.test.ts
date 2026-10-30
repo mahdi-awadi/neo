@@ -1,4 +1,4 @@
-// ADR-0066 remember and forget through the `TaskHistory` seam (spec "The seam", AC15, AC16): a remembered
+// ADR-0067 remember and forget through the `TaskHistory` seam (spec "The seam", AC15, AC16): a remembered
 // entry is keyword-searchable at once; the refusals (empty, short, long, secret-shaped with the pattern
 // named, injection-shaped and invisible characters with the scan's reason); the same text in the same
 // project gives the same ref; the per-session hourly limit; forget removes the chunks, their FTS rows, the

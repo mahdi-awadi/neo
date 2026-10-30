@@ -65,7 +65,7 @@ export function ingressToolDeps(deps: IngressDeps): DispatchDeps {
     tools: undefined,
     // Nor does it speak into a project's session (ADR-0061): that is the operator's own voice.
     projectMessage: undefined,
-    // Nor does it search or write the operator's task history (ADR-0066): past work is the operator's.
+    // Nor does it search or write the operator's task history (ADR-0067): past work is the operator's.
     history: undefined,
   };
 }

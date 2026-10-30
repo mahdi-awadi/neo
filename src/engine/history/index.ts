@@ -1,4 +1,4 @@
-// The task history's one seam (ADR-0066 Decision 6, spec "The seam"): `openTaskHistory` builds the store,
+// The task history's one seam (ADR-0067 Decision 6, spec "The seam"): `openTaskHistory` builds the store,
 // the embedder, the vector index, the indexer and search behind the small `TaskHistory` interface that the
 // daemon and the operator surfaces use. It also owns the two writes the operator and workers make directly:
 // `remember` (an explicit entry, refused when it is empty, too short or long, secret-shaped or

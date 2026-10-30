@@ -1,4 +1,4 @@
-# Task history — operator guide (ADR-0066)
+# Task history — operator guide (ADR-0067)
 
 The task history is Neo's searchable archive of past work in every project. It answers "what did we do
 about X, and where is it". It finds work by meaning (Arabic and English), by words and by exact ids. Each

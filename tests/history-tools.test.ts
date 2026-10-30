@@ -1,4 +1,4 @@
-// ADR-0066 worker tools (plan task 12, spec "Surfaces", AC17): `history_search` and `remember` in the `neo`
+// ADR-0067 worker tools (plan task 12, spec "Surfaces", AC17): `history_search` and `remember` in the `neo`
 // MCP server. The attachment matrix: the company session and a project worker get both; a consult run gets
 // `history_search` only; a customer-driven (ingress) run and the deps it gives its dispatches get none; a
 // tainted run has no MCP at all. The reply states the mode, numbers the hits with their source and frames

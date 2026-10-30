@@ -1,4 +1,4 @@
-# Neo's embedder (ADR-0066 Decision 5): text-embeddings-inference serving BAAI/bge-m3 at a pinned revision
+# Neo's embedder (ADR-0067 Decision 5): text-embeddings-inference serving BAAI/bge-m3 at a pinned revision
 # for the task history's meaning search. Neo's own container, not a shared service. Loopback only — the
 # host is public. Low CPU shares and hard caps, so a backfill never slows the host.
 #   bun tools/history/install.ts         (key into .env, up, health + test embed)   · docs/history.md

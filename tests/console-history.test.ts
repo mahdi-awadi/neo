@@ -1,4 +1,4 @@
-// The console's History tab (ADR-0066, plan task 13, AC18): GET /api/history, POST /api/history/remember and
+// The console's History tab (ADR-0067, plan task 13, AC18): GET /api/history, POST /api/history/remember and
 // POST /api/history/forget behind the session with every field checked; the panel's hit cards, mode
 // banner and states rendered from the catalogues with ids, dates, shas and counts as LTR isolates; the
 // forget confirm with a reason; the filters folded at phone width.

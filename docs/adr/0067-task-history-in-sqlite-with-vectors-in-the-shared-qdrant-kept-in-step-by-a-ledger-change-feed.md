@@ -1,5 +1,8 @@
 # Task history: SQLite holds the text and the word index, the shared Qdrant holds only vectors, and a ledger change feed keeps them in step
 
+> Numbered 0067 on 2026-10-30: while this work was on its branch, `dev` took 0066 for the osv Go-analysis
+> decision. The branch's commits before the merge with `dev` cite this record as "ADR-0066".
+
 **Status:** accepted (as built, 2026-10-30). Built on the branch `feat/history-search` (plan tasks 1–18).
 The section "As built" at the end lists each change that the code made to this ADR and the spec. The live
 verify step (plan task 20) fills in the measured numbers. Revision 1 chose sqlite-vec.

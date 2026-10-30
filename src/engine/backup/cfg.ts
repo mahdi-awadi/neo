@@ -1,7 +1,7 @@
-// Config `backup` (ADR-0066 Decision 8, spec "The snapshot backup"): which SQLite files get a snapshot
+// Config `backup` (ADR-0067 Decision 8, spec "The snapshot backup"): which SQLite files get a snapshot
 // backup, when, where, and how many are kept. `readBackupCfg(raw)` is pure and keeps each value of the
 // right type, falling back to its default key by key, so one bad value never turns the job off. The default
-// list holds `history.db` only: the ledger joins it only by the operator's decision (ADR-0066, "Separate
+// list holds `history.db` only: the ledger joins it only by the operator's decision (ADR-0067, "Separate
 // operator decision: the ledger backup").
 import { basename } from "node:path";
 import { isValidCron } from "../trigger";
