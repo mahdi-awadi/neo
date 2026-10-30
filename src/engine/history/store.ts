@@ -126,6 +126,8 @@ export interface HistoryStore {
   markGone(refs: string[], at: number): number;
   chunksOf(ref: string): ChunkRow[];
   chunkById(id: number): ChunkRow | undefined;
+  /** Every chunk in id order after `afterId`, at most `limit` (the admin's secret rescan walks them all). */
+  scanChunks(afterId: number, limit: number): ChunkRow[];
   /** The refs of `kinds` that are not archived, in ref order after `afterRef` (the reconcile's archive walk). */
   listRefs(kinds: string[], afterRef: string | undefined, limit: number): string[];
   /** Refs that start with `prefix` (a decision id prefix), in ref order. */
@@ -367,6 +369,11 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
 
     chunksOf(ref) {
       return (q.chunksOf.all(ref) as Parameters<typeof mapChunk>[0][]).map(mapChunk);
+    },
+
+    scanChunks(afterId, limit) {
+      const rows = db.query(`SELECT id, ref, seq, text, text_hash, flags FROM chunks WHERE id > ? ORDER BY id LIMIT ?`).all(afterId, limit);
+      return (rows as Parameters<typeof mapChunk>[0][]).map(mapChunk);
     },
 
     chunkById(id) {

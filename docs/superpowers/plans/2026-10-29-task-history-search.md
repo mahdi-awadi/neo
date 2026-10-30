@@ -352,7 +352,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - The classes are right. The catalogue keys exist in both languages.
   - Done when: AC22 passes.
 
-- [ ] **18. Admin CLI and eval harness**
+- [x] **18. Admin CLI and eval harness**
   - Create: `tools/history/admin.ts` (`status`, `copy-ledger`, `backfill`, `forget`, `rescan-secrets`,
     `verify-clean`), `tools/history/eval.ts` (recall@5 and MRR), `tools/history/eval-set.json` (the schema
     and two sample rows, the real set comes in task 20), `tests/history-admin.test.ts`,

@@ -1,0 +1,19 @@
+{
+  "about": "The task-history eval set (ADR-0066). Each query names the refs a good answer holds. tools/history/eval.ts scores recall@k and MRR for words only, meaning only and hybrid. Schema: version 1; k (the cut-off); queries[] of { id (unique), lang (\"ar\" | \"en\"), query, expected (refs: todo:<n>, order:<uuid>, result:<uuid>, msg:<n>, plan:<n>, note:<n>, att:<n>, dec:<uuid>, mem:<n>, line:<n>), project (optional), kinds (optional) }. These two rows are samples: the verify step (plan task 20) writes the real set from a ledger copy, at least 10 Arabic and 10 English queries.",
+  "version": 1,
+  "k": 5,
+  "queries": [
+    {
+      "id": "en-seats",
+      "lang": "en",
+      "query": "the thing about bus seats not freeing up",
+      "expected": ["todo:1"]
+    },
+    {
+      "id": "ar-seats",
+      "lang": "ar",
+      "query": "مشكلة مقاعد الحافلة التي لا تتحرر بعد إلغاء الحجز",
+      "expected": ["todo:1"]
+    }
+  ]
+}

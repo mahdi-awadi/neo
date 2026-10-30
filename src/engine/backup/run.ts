@@ -55,6 +55,19 @@ export interface Manifest {
   ms: number;
 }
 
+/** A consistent copy of a SQLite file while writers write: a read-only connection, then `VACUUM INTO` the
+ *  target (which must not exist). The target ends with mode 0600. Throws what SQLite throws. Also used by
+ *  `tools/history/admin.ts copy-ledger`. */
+export function vacuumCopy(source: string, target: string): void {
+  const src = new Database(source, { readonly: true });
+  try {
+    src.prepare("VACUUM INTO ?").run(target);
+  } finally {
+    src.close();
+  }
+  chmodSync(target, 0o600);
+}
+
 export type SnapshotResult =
   | { ok: true; file: string; manifest: Manifest; deleted: string[] }
   | { ok: false; code: string; reason: string };
@@ -160,15 +173,11 @@ export async function takeSnapshot(opts: SnapshotOpts, deps: SnapshotDeps = {}):
     const free = (deps.freeBytes ?? freeBytesOf)(opts.dir);
     if (free < opts.minFreeGb * GIB) throw new BackupError("low_space", `${(free / GIB).toFixed(1)} GiB free, need ${opts.minFreeGb} GiB`);
 
-    const src = new Database(opts.source, { readonly: true });
     try {
-      src.prepare("VACUUM INTO ?").run(rawTmp);
+      vacuumCopy(opts.source, rawTmp);
     } catch (e) {
       throw new BackupError("copy_failed", e instanceof Error ? e.message : String(e));
-    } finally {
-      src.close();
     }
-    chmodSync(rawTmp, 0o600);
 
     const integrity = (deps.integrity ?? integrityOf)(rawTmp);
     if (integrity !== "ok") throw new BackupError("integrity_failed", integrity.split("\n").slice(0, 3).join(" | "));

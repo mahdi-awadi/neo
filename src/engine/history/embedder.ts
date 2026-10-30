@@ -32,6 +32,12 @@ export function modelTag(model: string, dims: number, revision: string): string 
   return `${model}@${dims}:${revision.slice(0, REVISION_PREFIX)}`;
 }
 
+/** The same embedder under another model tag (the verify step's `<tag>~verify`, ADR-0066): every call goes
+ *  to `e`; only the tag the indexer and search use changes. */
+export function withTag(e: Embedder, tag: string): Embedder {
+  return { tag, dims: e.dims, probe: () => e.probe(), embed: (texts) => e.embed(texts), embedQuery: (text) => e.embedQuery(text) };
+}
+
 type Call = { ok: true; res: Response } | EmbedFailure;
 
 export function openEmbedder(

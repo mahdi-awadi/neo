@@ -47,6 +47,9 @@ export interface VectorIndex {
   delete(ids: string[]): Promise<VectorResult<number>>;
   /** Delete every point of a model tag (the filter `m = tag`). */
   deleteTag(tag: string): Promise<VectorResult<void>>;
+  /** The exact count of every point in the collection, of any tag (the verify step refuses a collection that
+   *  holds another tag's points). */
+  countAll(): Promise<VectorResult<number>>;
   /** Nearest neighbours of `vector` under the filter, best first, ids and scores only. */
   search(vector: Float32Array | number[], filter: VectorFilter, opts: { limit: number; minScore?: number }): Promise<VectorResult<Array<{ id: string; score: number }>>>;
   /** One page of `tag`'s point ids, in id order; `next` is the offset of the next page. */
@@ -67,6 +70,7 @@ export class NoVectorIndex implements VectorIndex {
   upsert(_points: Point[]) { return this.off<number>(); }
   delete(_ids: string[]) { return this.off<number>(); }
   deleteTag(_tag: string) { return this.off<void>(); }
+  countAll() { return this.off<number>(); }
   search(_vector: Float32Array | number[], _filter: VectorFilter, _opts: { limit: number; minScore?: number }) {
     return this.off<Array<{ id: string; score: number }>>();
   }
@@ -227,6 +231,12 @@ export function openVectorIndex(
       if (!shortString(tag)) throw new Error("history vector delete: the tag is not a short string");
       const r = await call("POST", "/points/delete?wait=true", { filter: tagFilter(tag) }, cfg.timeoutMs);
       return r.ok ? { ok: true, value: undefined } : fail(r);
+    },
+    async countAll() {
+      const r = await call("POST", "/points/count", { exact: true }, cfg.timeoutMs);
+      if (!r.ok) return fail(r);
+      const n = (r.result as { count?: unknown } | undefined)?.count;
+      return Number.isInteger(n) ? { ok: true, value: n as number } : { ok: false, reason: "vectors_down" };
     },
     async search(vector, filter, opts) {
       const body = {
