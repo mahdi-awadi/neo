@@ -1,6 +1,17 @@
 {
   "mount": "/",
   "alertPct": 80,
+  "alertStepsPct": [
+    80,
+    90,
+    95
+  ],
+  "alertRepeatMinutes": 120,
+  "pressureFreePct": 10,
+  "pressureCooldownMinutes": 30,
+  "sampleKeepHours": 6,
+  "alertHysteresisPct": 2,
+  "pendingTimeoutMinutes": 120,
   "dailyHour": 4,
   "cooldownHours": 6,
   "nothingLeftBytes": 1000000000,
@@ -14,7 +25,8 @@
     "^/home/neo/company(/|$)",
     "^/home/neo/node_modules(/|$)",
     "^/var/backups/neo(/|$)",
-    "^neo-embedder-models$"
+    "^neo-embedder-models$",
+    "^/var/backups/shared-infra(/|$)"
   ],
   "keepImagesFrom": [
     "~/.claude/security/images.env"

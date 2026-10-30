@@ -510,3 +510,20 @@ test("ADR-0067 Decision 8: backup defaults (history.db only); config.json sets i
   writeFileSync(join(d, "config.json"), JSON.stringify({ backup: { keepRecent: 3, dir: "relative", databases: [{ path: "data/history.db", cron: "0 */6 * * *" }] } }));
   expect(loadConfig(d).backup).toMatchObject({ keepRecent: 3, dir: "/var/backups/neo", databases: [{ path: "data/history.db", cron: "0 */6 * * *" }] });
 });
+
+// ADR-0068: the disk guard is on by default and points at the installed disk kit.
+test("diskGuard: on by default with the installed kit folder; NEO_DISK_GUARD=0 turns it off", () => {
+  const { loadConfig: load } = require("../src/config") as typeof import("../src/config");
+  const dir = require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "neo-cfg-dg-"));
+  const prev = process.env.NEO_DISK_GUARD;
+  try {
+    delete process.env.NEO_DISK_GUARD;
+    const c = load(dir);
+    expect(c.diskGuard).toEqual({ enabled: true, kitDir: require("node:path").join(require("node:os").homedir(), ".local/share/neo/disk") });
+    process.env.NEO_DISK_GUARD = "0";
+    expect(load(dir).diskGuard?.enabled).toBe(false);
+  } finally {
+    if (prev === undefined) delete process.env.NEO_DISK_GUARD;
+    else process.env.NEO_DISK_GUARD = prev;
+  }
+});

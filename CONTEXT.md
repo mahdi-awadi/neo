@@ -741,6 +741,13 @@ projects with no live dev server, old test artifacts and clean finished worktree
 ADR-0041).
 _Avoid_: safe items, junk
 
+**Disk guard** (disk cleanup):
+The daemon's heartbeat step that keeps the disk from filling, in plain code with no AI session
+(ADR-0068). It runs the disk kit's Tier A at once when free space falls below a floor (10 %) and once in
+the daily hour, and alerts the operator at 80, 90 and 95 % used with the hours until full. It never
+deletes anything itself and never touches Tier B.
+_Avoid_: disk watchdog, cleanup daemon
+
 **Tier B** (disk cleanup):
 Space whose removal cannot be undone: named volumes that may hold real DB data, data folders of
 stopped DB containers, dumps and backups, and worktrees with work in them. The tool only lists it,

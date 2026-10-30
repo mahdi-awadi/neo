@@ -26,6 +26,15 @@ import { basename, dirname, join, resolve } from "node:path";
 export interface DiskConfig {
   mount: string;
   alertPct: number;
+  /** The disk guard (ADR-0068, src/engine/disk-guard.ts): alert steps, their repeat, the free-space
+   *  floor that starts Tier A at once, its cooldown, and the fill-rate window. */
+  alertStepsPct: number[];
+  alertRepeatMinutes: number;
+  pressureFreePct: number;
+  pressureCooldownMinutes: number;
+  sampleKeepHours: number;
+  alertHysteresisPct: number;
+  pendingTimeoutMinutes: number;
   dailyHour: number;
   cooldownHours: number;
   nothingLeftBytes: number;
@@ -871,7 +880,15 @@ if (import.meta.main) {
       console.log(`another cleanup is running (pid ${holder}): skipped`);
       process.exit(0);
     }
-    writeFileSync(lockFile, String(process.pid));
+    // A stale lock (its pid is gone) is removed; the new one is created atomically (`wx`), so two runs
+    // started at the same moment (the disk guard, the loop, the operator) never both proceed (ADR-0068).
+    if (holder) rmSync(lockFile, { force: true });
+    try {
+      writeFileSync(lockFile, String(process.pid), { flag: "wx" });
+    } catch {
+      console.log("another cleanup took the lock at the same moment: skipped");
+      process.exit(0);
+    }
     try {
       console.log(runCleanup({ sh: realSh, cfg, stateDir, now: Date.now(), keepDigests, dryRun: rest.includes("--dry-run") }).report);
     } finally {

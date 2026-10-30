@@ -502,6 +502,30 @@ the line isn't already there — **never** the tracked `.gitignore` (machine-loc
 per-machine/per-checkout state, not something to commit). Fail-open and a no-op outside a git repo;
 runs at most once per process per folder.
 
+## Disk guard (`diskGuard`) — ADR-0068
+
+A heartbeat step that runs the installed disk kit's Tier A at once under disk pressure and once in its
+daily hour, and alerts the operator (Decisions channel) before the disk is full. No AI session.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `diskGuard.enabled` | `true` | Off with `false` or the env `NEO_DISK_GUARD=0`. |
+| `diskGuard.kitDir` | `~/.local/share/neo/disk` | The installed kit (`bun tools/disk/install.ts`). |
+
+The thresholds live in the kit's config (`tools/disk/defaults.json`; a host overrides them in
+`config.json` next to the installed kit), read every tick:
+
+| Kit key | Default | Meaning |
+|---|---|---|
+| `alertStepsPct` | `[80, 90, 95]` | Alert when the use reaches each step. |
+| `alertRepeatMinutes` | `120` | The same step alerts again after this long. |
+| `pressureFreePct` | `10` | Less free space than this (percent) starts Tier A at once. |
+| `pressureCooldownMinutes` | `30` | No second pressure run sooner than this. |
+| `sampleKeepHours` | `6` | The fill rate (and the hours left) is measured over this window. |
+| `dailyHour` | `4` | The daily Tier A run (server-local hour). |
+
+A missing or broken value falls back to these defaults, so a bad edit never turns the guard off.
+
 ## Task history (`history`) — ADR-0067
 
 `readHistoryCfg` (`src/engine/history/cfg.ts`) reads the section. Each key keeps a value of the right type

@@ -1431,3 +1431,15 @@ Task history with hybrid search, and a snapshot backup of `history.db` (2026-10-
   restore drill (`docs/backup.md`). Operator guide: `docs/history.md`.
 
 Restart-gated.
+
+A disk guard in the heartbeat (2026-10-30, ADR-0068, note #555).
+
+- On 2026-10-30 the dev disk reached 100 %. Root cause: Tier A ran only through the `disk-cleanup` loop,
+  whose folder (`/home/neo`) is almost always busy, so the scheduler skipped it for 19 hours while the disk
+  went from about 58 % to 100 % (about 3.3 GB per hour). The 10 GB build-cache cap was already in Tier A.
+- The daemon's heartbeat now runs the kit's Tier A at once below 10 % free and once in the daily hour,
+  and alerts at 80, 90 and 95 % with the hours until full; it reports what each run freed. Thresholds in
+  `tools/disk/defaults.json`; on/off and the kit folder in config `diskGuard`.
+- Run by hand the same day: Tier A freed 95.4 GB (95.3 % → 73.1 %).
+
+Restart-gated.

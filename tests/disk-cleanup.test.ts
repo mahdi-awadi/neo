@@ -63,6 +63,14 @@ describe("disk cleanup: what is protected", () => {
     expect(isProtected(cfg, "wasilni-web:e2e-a")).toBe(false);
   });
 
+  test("ops' backups and Neo's own backups and embedder model are never candidates (ADR-0068 note #555)", () => {
+    expect(isProtected(cfg, "/var/backups/shared-infra")).toBe(true);
+    expect(isProtected(cfg, "/var/backups/shared-infra/qdrant/x.snapshot")).toBe(true);
+    expect(isProtected(cfg, "/var/backups/neo")).toBe(true);
+    expect(isProtected(cfg, "neo-embedder-models")).toBe(true);
+    expect(isProtected(cfg, "/var/backups/shared-infra-old")).toBe(false);
+  });
+
   test("the security kit's pinned scanner digests are read from images.env", () => {
     const keep = parseKeepDigests("# c\nSEMGREP_IMAGE=semgrep/semgrep@sha256:aa11\nX=bad\nGITLEAKS_IMAGE=z/g@sha256:bb22\n");
     expect([...keep].sort()).toEqual(["sha256:aa11", "sha256:bb22"]);

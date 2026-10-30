@@ -78,7 +78,12 @@ the last section maps it onto Neo.
 > kit is installed (`bun tools/security/install.ts`). Definition: `docs/loops/security-sweep.json`
 > + `.prompt.md`.
 >
-> **`disk-cleanup` (2026-10-17, live).** Every 60 minutes (interval: a busy folder delays a fire, never
+> **`disk-cleanup` (2026-10-17, live).** Tier A no longer depends on this loop: the **disk guard** in the
+> daemon's heartbeat (ADR-0068) runs it under disk pressure and in the daily hour, and alerts before the
+> disk is full — the loop's folder, `/home/neo`, is almost always busy, and on 2026-10-30 the scheduler
+> skipped it for 19 hours while the disk filled. The loop stays: when it does fire it still runs Tier A
+> (the kit's lock keeps it from running beside the guard's run) and reports the Tier B list.
+> Every 60 minutes (interval: a busy folder delays a fire, never
 > loses it), `/home/neo`, command goal
 > `cleanup.ts check`, 2 iterations, $1 per fire, `freshSession: true`. The goal fails once a day in
 > the daily hour (04:00) whatever the disk use, and outside it when the disk is at 80% or more,

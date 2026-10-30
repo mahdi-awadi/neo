@@ -2,6 +2,7 @@
 // Mirrors operant's precedence (env > config.json > defaults) but trimmed.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { Provider } from "./types";
 import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./engine/liveness";
@@ -168,6 +169,10 @@ export interface NeoConfig {
   businessName: string;
   /** When true (default), the daemon runs the loop scheduler. Disable with NEO_LOOP_SCHEDULER=0. */
   loopSchedulerEnabled: boolean;
+  /** The disk guard (ADR-0068): a heartbeat step that runs the installed disk kit's Tier A under disk
+   *  pressure and in its daily hour, and alerts before the disk is full. Its thresholds live in the kit's
+   *  config; here only on/off (NEO_DISK_GUARD=0) and the installed kit's folder. */
+  diskGuard?: { enabled: boolean; kitDir: string };
   /** Abort a dispatched sub-run that has produced NO activity for this long (ms). Default 5 min.
    *  The only automatic abort: a dispatch has no wall-clock limit, so a busy worker streaming
    *  activity runs until it is done, however long that takes (ADR-0007). */
@@ -624,6 +629,10 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
     loopSchedulerEnabled:
       process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
+    diskGuard: {
+      enabled: process.env.NEO_DISK_GUARD === "0" ? false : (fileCfg.diskGuard?.enabled ?? true),
+      kitDir: (typeof fileCfg.diskGuard?.kitDir === "string" && fileCfg.diskGuard.kitDir ? fileCfg.diskGuard.kitDir : "~/.local/share/neo/disk").replace(/^~(?=\/|$)/, homedir()),
+    },
     dispatchStallMs: fileCfg.dispatchStallMs ?? DEFAULTS.dispatchStallMs,
     dispatchGraceMs: fileCfg.dispatchGraceMs ?? DEFAULTS.dispatchGraceMs,
     dispatchSpinDigests: wholeAtLeast(fileCfg.dispatchSpinDigests, 2, DISPATCH_SPIN_DIGESTS_DEFAULT),

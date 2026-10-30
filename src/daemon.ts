@@ -49,6 +49,7 @@ import { pinnedModel } from "./engine/worker-profile";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
+import { createDiskGuardStep } from "./engine/disk-guard-runtime";
 import { CRON_RESOLUTION_MS, heartbeatMs, nextTickDelayMs, runHeartbeatTick, type HeartbeatLoop } from "./engine/heartbeat";
 import { configureFaults, createFaultReporter, faults, installSafetyNet } from "./engine/fault";
 import { createHealthMonitor, startHealthTimer } from "./engine/health";
@@ -325,6 +326,8 @@ async function main(): Promise<void> {
     // fault of its own, because the fault reporter alerts through here.
     operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
   };
+  // The disk guard's heartbeat step (ADR-0068); off with NEO_DISK_GUARD=0 or config diskGuard.enabled.
+  const diskGuardStep = cfg.diskGuard?.enabled ? createDiskGuardStep({ kitDir: cfg.diskGuard.kitDir, ledger, alert: alertOperator }) : undefined;
   // The task history (ADR-0067): off → no store and no worker tool; a history.db that cannot be opened is
   // moved aside (when corrupt) with one alert, and the engine runs on with history "not available". The Qdrant
   // URL and the keys come from the env the loader filled (`loadConfig`), named in the config, never logged.
@@ -633,6 +636,9 @@ async function main(): Promise<void> {
           // Snapshot backups (ADR-0067 Decision 8): starts a due child and returns at once; the child's
           // promise is held by the fault boundary, so a tick never waits on a copy.
           ["backup", () => backups.tick()],
+          // ADR-0068: Tier A under disk pressure and in its daily hour, and alerts before the disk is full —
+          // in plain code, so it never waits for a free loop session (the loop skips a busy folder).
+          ["disk.guard", () => diskGuardStep?.()],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed

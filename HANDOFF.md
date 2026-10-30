@@ -1,3 +1,14 @@
+# HANDOFF — 2026-10-30: disk guard in the heartbeat (ADR-0068, note #555, on dev, restart-gated)
+
+The disk reached 100 % because Tier A ran only through the `disk-cleanup` loop, which the scheduler skips while
+`/home/neo` is busy (19 h skipped). The heartbeat now runs the kit's Tier A below 10 % free and in the daily hour,
+and alerts at 80/90/95 % with the hours left (`src/engine/disk-guard*.ts`). Tier A run by hand: 95.4 GB freed.
+Go-live: `bun tools/disk/install.ts` (the installed kit is from Oct 18: it lacks the guard keys — the guard falls
+back to the same defaults — the atomic lock and the newer protect patterns for /var/backups/neo and
+neo-embedder-models), then the restart. Tier B list (approval ids): the last run report.
+
+---
+
 # HANDOFF — 2026-10-30: task history with hybrid search + snapshot backup (ADR-0067, ledger v17, on dev, restart-gated)
 
 Built and merged into `dev` (plan tasks 1–19 done; task 20 done except the items that need the shared Qdrant).
