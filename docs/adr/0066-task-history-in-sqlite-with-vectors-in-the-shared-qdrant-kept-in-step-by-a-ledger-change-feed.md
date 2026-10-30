@@ -429,6 +429,9 @@ Two reviews of `feat/history-search` and the live verify found these; each has a
 - **Verify fix: a rejected key is not a missing collection.** A 401/403 on the collection info asks the
   collection list: a list that refuses the key too, or names the collection, gives `vectors_key_rejected`
   ("ask ops to reissue the key, then reload"); a 404, or a list without it, gives `collection_missing`.
+- **Verify fix: the writer lock lives through a long pass.** A pass renews the lock before each write
+  and each outside call (not only at its start), so a 4–6 minute pass keeps it under `lockStaleMs`
+  (180 s); after a long wait it writes only if it still holds the lock, else it stops (`locked`).
 
 ### Measured (filled by the verify step)
 

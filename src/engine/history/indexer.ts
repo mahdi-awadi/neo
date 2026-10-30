@@ -5,7 +5,9 @@
 // (a query in flight goes first), uploads the points that wait, sends the queued point deletes, re-uploads
 // on drift without embedding, and retires an old model tag. A pass is single-flight, stops when another
 // process holds the writer lock, catches the error of each step and goes on with the next, and always
-// returns an `IndexReport`. Events carry ids, counts and codes only.
+// returns an `IndexReport`. A pass may outlast `store.lockStaleMs`, so it renews the lock before each write
+// and before each outside call: after a long wait it writes only while it still holds the lock, and stops
+// (`locked`) when another process took it over. Events carry ids, counts and codes only.
 import type { HistoryFeedRow, HistoryOrderRow, HistoryTable, Ledger } from "../ledger";
 import { cronDueBetween } from "../trigger";
 import type { HistoryCfg } from "./defaults";
@@ -37,7 +39,7 @@ export interface IndexReport {
   vectors: ServiceReport;
   backlog: { feed: number; toEmbed: number; toUpload: number; pendingDeletes: number };
   coverage: number;
-  /** Another process holds the writer lock: this pass did nothing. */
+  /** Another process holds the writer lock: this pass did nothing, or stopped where it lost the lock. */
   locked?: boolean;
 }
 
@@ -56,6 +58,8 @@ export interface IndexerDeps {
   gate: QueryGate;
   /** This process (the writer lock's owner). */
   pid: number;
+  /** The time of each lock heartbeat during a pass; default the pass's `now` plus the time it has run. */
+  clock?: () => number;
 }
 
 export interface Indexer {
@@ -130,6 +134,9 @@ interface Lane {
 const OFF_REASONS = new Set<MeaningOffReason>(["not_configured", "config_refused", "embedder_refused", "embedder_wrong_model", "vectors_refused", "vectors_key_rejected", "collection_missing"]);
 const stateOf = (reason: MeaningOffReason): "down" | "off" => (OFF_REASONS.has(reason) ? "off" : "down");
 const yieldNow = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+/** Another process took the writer lock during this pass: the pass stops before its next write. */
+class LockLost extends Error {}
 const keyOf = (ref: string): string => ref.slice(ref.indexOf(":") + 1);
 
 export { cronDueBetween };
@@ -161,6 +168,14 @@ export function createIndexer(deps: IndexerDeps): Indexer {
   const lanes: Lane[] = [active, ...(deps.next ? [lane("next", deps.next.embedder, deps.next.vectors)] : [])];
   let running: Promise<IndexReport> | undefined;
   let latest: IndexReport | undefined;
+  /** The heartbeat clock of the pass that runs. */
+  let clock: () => number = Date.now;
+
+  /** Renew the writer lock (a heartbeat), or throw `LockLost` when another process holds it now. Called
+   *  before each write and each outside call, never inside a transaction. */
+  function hold(): void {
+    if (!store.takeLock(deps.pid, clock()).ok) throw new LockLost();
+  }
 
   // ── Service states ──────────────────────────────────────────────────────────────────────────────────
 
@@ -265,6 +280,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
   async function writeSlices(items: Item[], now: number, r: IndexReport, rules: FirewallCounts, boilerplate: ReadonlySet<string>, last: () => void): Promise<void> {
     const size = Math.max(1, cfg.indexer.sliceRows);
     if (!items.length) {
+      hold();
       store.transaction(last);
       return;
     }
@@ -275,6 +291,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       ctx.look.prime(orderIdsOf(slice));
       const ops = slice.map((it) => opOf(it, ctx));
       const isLast = i + size >= items.length;
+      hold();
       store.transaction(() => {
         for (const o of ops) apply(o, now, r, rules);
         if (isLast) last();
@@ -336,6 +353,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
 
   async function probe(now: number): Promise<void> {
     for (const l of lanes) {
+      hold();
       setService(l, "emb", await l.embedder.probe(), now);
       const v: VectorProbe = await l.vectors.probe(l.embedder.tag);
       setService(l, "vec", v.state === "up" ? { state: "up" } : v, now);
@@ -347,6 +365,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       const uploaded = store.countUploaded(l.embedder.tag);
       if (uploaded > 0 && v.count < cfg.vectors.driftRatio * uploaded) {
         // The collection lost points: send the stored vectors again. No embed call.
+        hold();
         const cleared = store.clearUploadMarks(l.embedder.tag);
         await ensureIndexes(l, now);
         events("history_reupload", { cleared, remote: v.count });
@@ -365,6 +384,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     let cursor = Number(store.getState(K.cursor) ?? "0");
     if (!store.getState(K.firstDone) && !readReconcile()) {
       // The first start: the backfill walks every row, so the feed starts from here.
+      hold();
       store.transaction(() => {
         store.setState(K.cursor, String(bounds.newest));
         startReconcile("first");
@@ -377,6 +397,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       // Rows were pruned before this cursor read them (or the ledger is another one): walk the tables.
       r.feed.gap = true;
       cursor = bounds.newest;
+      hold();
       store.transaction(() => {
         store.setState(K.cursor, String(cursor));
         // A gap before the first reconcile ended restarts that one: it walks every row anyway.
@@ -395,6 +416,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
   async function reconcile(now: number, r: IndexReport, rules: FirewallCounts, boilerplate: ReadonlySet<string>): Promise<void> {
     let st = readReconcile();
     const checked = Number(store.getState(K.checked) ?? String(now));
+    hold();
     store.setState(K.checked, String(now));
     if (!st && !store.getState(K.firstDone)) st = startReconcile("first");
     if (!st && cronDueBetween(cfg.reconcileCron, checked, now)) st = startReconcile("weekly");
@@ -404,6 +426,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     let bp = boilerplate;
     let done = false;
     while (budget > 0 && !done) {
+      hold(); // each round writes its position; the walk's slices renew it again
       const ask = Math.min(slice, budget);
       const table: HistoryTable = TABLES[st.t]!;
       if (st.phase === "count") {
@@ -484,6 +507,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
           setService(active, "vec", { state: stateOf(have.reason), reason: have.reason }, now);
           break;
         }
+        hold();
         const held = new Set(have.value);
         const lost = local.filter((p) => !held.has(p.pointId)).map((p) => p.pointId);
         if (lost.length) store.unmarkPoints(lost);
@@ -506,6 +530,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         }
         r.pointsDeleted += orphans.length;
       }
+      hold();
       budget -= Math.max(1, page.value.ids.length);
       st = page.value.next === undefined ? { ...st, phase: "missing", after: undefined } : { ...st, after: page.value.next };
       saveReconcile(st);
@@ -513,6 +538,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     const position = `${st.phase}:${TABLES[st.t] ?? "-"}:${st.after ?? ""}`;
     r.reconcile = { reason: st.reason, done, position };
     if (done) {
+      hold();
       store.transaction(() => {
         store.setState(K.reconcile, "");
         if (st!.reason === "first") store.setState(K.firstDone, String(now));
@@ -524,13 +550,18 @@ export function createIndexer(deps: IndexerDeps): Indexer {
   async function embed(now: number, r: IndexReport): Promise<void> {
     // Points stored before ids were derived get their derived id (a saved walk; one query once it is done).
     const walk = Math.max(1, cfg.indexer.sliceRows);
-    while (store.rederivePointIds(walk, now).checked === walk) await yieldNow();
+    for (;;) {
+      hold();
+      if (store.rederivePointIds(walk, now).checked !== walk) break;
+      await yieldNow();
+    }
     for (const l of lanes) {
       const tag = l.embedder.tag;
       for (let i = 0; l.emb.state === "up" && i < cfg.indexer.embedBatchesPerPass; i++) {
         const texts = store.textsWithoutVector(tag, Math.max(1, cfg.embedder.batch));
         if (!texts.length) break;
         await deps.gate.idle(); // a query goes first
+        hold(); // the request may take up to the embed timeout
         const ended = deps.gate.batch(); // and a query that comes now does not queue behind this request
         let res: Awaited<ReturnType<Embedder["embed"]>>;
         try {
@@ -542,13 +573,18 @@ export function createIndexer(deps: IndexerDeps): Indexer {
           setService(l, "emb", { state: stateOf(res.reason), reason: res.reason }, now);
           break;
         }
+        hold(); // still ours after the wait
         store.putVectors(tag, texts.map((t, j) => ({ textHash: t.textHash, vec: res.vectors[j]! })));
         r.embedded += texts.length;
         await yieldNow();
       }
       // Chunks whose text already has a vector (a new one, or one embedded under another ref) get a point.
       const size = Math.max(1, cfg.indexer.sliceRows);
-      while (store.addMissingPoints(tag, size) === size) await yieldNow();
+      for (;;) {
+        hold();
+        if (store.addMissingPoints(tag, size) !== size) break;
+        await yieldNow();
+      }
     }
   }
 
@@ -564,11 +600,13 @@ export function createIndexer(deps: IndexerDeps): Indexer {
           const project = payloadProject(p.project);
           return { id: p.pointId, vector: p.vector, payload: { ...(project ? { project } : {}), kind: p.kind, at: p.at, m: tag } };
         });
+        hold();
         const res = await l.vectors.upsert(points);
         if (!res.ok) {
           setService(l, "vec", { state: stateOf(res.reason), reason: res.reason }, now);
           break;
         }
+        hold();
         store.markUploaded(pts.map((p) => p.pointId), now);
         r.uploaded += pts.length;
         await yieldNow();
@@ -579,6 +617,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     for (let i = 0; active.vec.state === "up" && i < cfg.indexer.uploadBatchesPerPass; i++) {
       const ids = store.pendingDeletes(Math.max(1, cfg.vectors.uploadBatch));
       if (!ids.length) break;
+      hold();
       for (const v of targets) {
         const res = await v.delete(ids);
         if (!res.ok) {
@@ -586,6 +625,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
           return;
         }
       }
+      hold();
       store.clearPendingDeletes(ids);
       r.pointsDeleted += ids.length;
     }
@@ -609,14 +649,17 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         keep.push(x);
         continue;
       }
+      hold();
       const res = await active.vectors.deleteTag(x.tag);
       if (!res.ok) {
         keep.push(x);
         continue;
       }
+      hold();
       const dropped = store.dropTag(x.tag);
       events("history_retire", { points: dropped.points.length, vectors: dropped.vectors });
     }
+    hold();
     store.transaction(() => {
       if (stored !== tag) store.setState(K.activeTag, tag);
       store.setState(K.retiring, JSON.stringify(keep));
@@ -646,6 +689,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
 
   async function pass(now: number): Promise<IndexReport> {
     const started = Date.now();
+    clock = deps.clock ?? (() => now + Date.now() - started);
     const r = emptyIndexReport();
     let lock: ReturnType<HistoryStore["takeLock"]>;
     try {
@@ -663,9 +707,15 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     const rules: FirewallCounts = {};
     let boilerplate: ReadonlySet<string> = new Set();
     const step = async (name: string, fn: () => Promise<void> | void): Promise<void> => {
+      if (r.locked) return;
       try {
         await fn();
-      } catch {
+      } catch (e) {
+        if (e instanceof LockLost) {
+          r.locked = true;
+          events("history_lock_lost", { step: name });
+          return;
+        }
         events("history_step_error", { step: name });
       }
     };

@@ -526,7 +526,7 @@ The section is read once at start: a change needs a daemon reload.
 | `degradedAlertMinutes` | `60` | A service down this long raises `history_degraded`. |
 | `remember` | `{ minChars: 10, maxChars: 4000, perSessionHour: 20 }` | The `remember` limits. A project name longer than 128 characters, or with a slash or a control character, is refused (`bad_project`). |
 | `telegram` | `{ findLimit: 5 }` | Hits in a `/find` reply. |
-| `store` | `{ lockStaleMs: 180000 }` | A writer lock older than this may be taken over. |
+| `store` | `{ lockStaleMs: 180000 }` | A writer lock older than this may be taken over. A pass renews the lock before each write and each outside call, so a long pass keeps it; a pass that finds the lock taken over stops (`locked`, event `history_lock_lost`). |
 
 ## Snapshot backup (`backup`) — ADR-0066 Decision 8
 

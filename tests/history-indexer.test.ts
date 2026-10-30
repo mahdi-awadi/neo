@@ -8,7 +8,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { CUSTOMER_CHAT } from "../src/engine/chats";
 import { TODOS_KEEP, type Ledger } from "../src/engine/ledger";
 import { safeFtsQuery } from "../src/engine/memory-recall";
-import { modelTag, openEmbedder } from "../src/engine/history/embedder";
+import type { HistoryCfg } from "../src/engine/history/defaults";
+import { modelTag, openEmbedder, type Embedder } from "../src/engine/history/embedder";
 import { createIndexer, type IndexerDeps } from "../src/engine/history/indexer";
 import { normalize } from "../src/engine/history/normalize";
 import { createQueryGate } from "../src/engine/history/services";
@@ -528,5 +529,67 @@ describe("bounds", () => {
     const all = JSON.stringify(b.events);
     expect(b.events.map((e) => e.kind)).toContain("history_pass");
     for (const bad of ["SECRETIVE", "seats", "ghp_", TEI_KEY, QDRANT_KEY, "MARKER"]) expect(all).not.toContain(bad);
+  });
+});
+
+describe("the writer lock during a long pass", () => {
+  const OTHER = process.pid + 1;
+  const STALE = 180_000; // the store's default lockStaleMs
+  /** `e`, whose every embed request takes `ms` on `clock` and runs `during` while it waits. */
+  const slow = (e: Embedder, clock: { t: number }, ms: number, during: () => void = () => {}): Embedder => ({
+    tag: e.tag, dims: e.dims, probe: () => e.probe(), embedQuery: (x) => e.embedQuery(x),
+    async embed(texts) {
+      clock.t += ms;
+      during();
+      return e.embed(texts);
+    },
+  });
+  const oneBatchEach = (c: HistoryCfg): HistoryCfg => ({ ...c, embedder: { ...c.embedder, batch: 1 } });
+  function orders(b: Bench, n: number): void {
+    for (let i = 1; i <= n; i++) b.led.recordOrder(order({ id: `long${i}`, task: `Long pass ${i}: a brief long enough to be indexed.` }));
+  }
+
+  test("a pass longer than lockStaleMs keeps the lock: a second opener cannot take it while the first is alive", async () => {
+    const b = setup({ cfg: oneBatchEach });
+    const clock = { t: T0 };
+    const other = openHistoryStore(b.dbPath);
+    const tries: boolean[] = [];
+    orders(b, 3);
+    const ix = indexer(b, { clock: () => clock.t, embedder: slow(b.embedder, clock, 100_000, () => tries.push(other.takeLock(OTHER, clock.t).ok)) });
+    const r = await ix.tick(clock.t);
+    expect(clock.t - T0).toBeGreaterThan(STALE);
+    expect(r.locked).toBeUndefined();
+    expect(r.embedded).toBeGreaterThanOrEqual(3);
+    expect(tries.length).toBeGreaterThanOrEqual(3);
+    expect(tries.every((ok) => !ok)).toBe(true);
+    expect(b.store.lockHolder()?.pid).toBe(process.pid);
+    other.close();
+  });
+
+  test("a pass that lost the lock during a long wait writes nothing after it and reports locked", async () => {
+    const b = setup({ cfg: oneBatchEach });
+    const clock = { t: T0 };
+    const other = openHistoryStore(b.dbPath);
+    orders(b, 3);
+    // The wait outlives lockStaleMs, so the other process (rightly) takes the lock over meanwhile.
+    const ix = indexer(b, { clock: () => clock.t, embedder: slow(b.embedder, clock, STALE + 1, () => void other.takeLock(OTHER, clock.t)) });
+    const r = await ix.tick(clock.t);
+    expect(r.locked).toBe(true);
+    expect(r.embedded).toBe(0);
+    expect(b.store.countWithoutVector(TAG)).toBeGreaterThanOrEqual(3);
+    expect(b.store.lockHolder()?.pid).toBe(OTHER);
+    expect(b.events.some((e) => e.kind === "history_lock_lost")).toBe(true);
+    other.close();
+  });
+
+  test("a dead holder is taken over once its heartbeat is lockStaleMs old, not before", async () => {
+    const b = setup();
+    b.store.takeLock(OTHER, T0);
+    orders(b, 1);
+    expect((await indexer(b, { clock: () => T0 + STALE - 1 }).tick(T0 + STALE - 1)).locked).toBe(true);
+    const r = await indexer(b, { clock: () => T0 + STALE }).tick(T0 + STALE);
+    expect(r.locked).toBeUndefined();
+    expect(r.sources.indexed).toBeGreaterThanOrEqual(1);
+    expect(b.store.lockHolder()).toEqual({ pid: process.pid, at: T0 + STALE });
   });
 });
