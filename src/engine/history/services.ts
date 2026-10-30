@@ -27,3 +27,31 @@ export function isLoopbackUrl(raw: string): boolean {
 export function isTimeout(e: unknown): boolean {
   return e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
 }
+
+/** Queries go first on the embedder (spec "The indexer", step 4): a search enters the gate around its
+ *  query embed, and the indexer waits for the gate to be idle before each embed batch. */
+export interface QueryGate {
+  /** Mark one query in flight; call the returned function when it is done (twice is harmless). */
+  enter(): () => void;
+  /** Resolves when no query is in flight. */
+  idle(): Promise<void>;
+}
+
+export function createQueryGate(): QueryGate {
+  let inFlight = 0;
+  const waiters: Array<() => void> = [];
+  return {
+    enter() {
+      inFlight++;
+      let done = false;
+      return () => {
+        if (done) return;
+        done = true;
+        if (--inFlight === 0) for (const w of waiters.splice(0)) w();
+      };
+    },
+    idle() {
+      return inFlight === 0 ? Promise.resolve() : new Promise<void>((r) => waiters.push(r));
+    },
+  };
+}

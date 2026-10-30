@@ -172,7 +172,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - `NoVectorIndex` answers `off`. A marker key never shows in an error or a log line.
   - Done when: AC13 and the adapter part of AC10 pass.
 
-- [ ] **8. The indexer**
+- [x] **8. The indexer**
   - Create: `src/engine/history/indexer.ts`, `tests/history-indexer.test.ts` (an in-memory ledger from
     `openLedger(":memory:")`, a temp `history.db`, and the fakes of tasks 6 and 7).
   - Tests first:

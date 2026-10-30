@@ -125,11 +125,26 @@ export interface HistoryStore {
   /** Mark sources the ledger no longer has (archived). Keeps an earlier mark. Returns the rows marked. */
   markGone(refs: string[], at: number): number;
   chunksOf(ref: string): ChunkRow[];
+  chunkById(id: number): ChunkRow | undefined;
+  /** The refs of `kinds` that are not archived, in ref order after `afterRef` (the reconcile's archive walk). */
+  listRefs(kinds: string[], afterRef: string | undefined, limit: number): string[];
+  /** Refs that start with `prefix` (a decision id prefix), in ref order. */
+  refsWithPrefix(prefix: string, limit: number): string[];
+  /** Refs whose meta names this todo, order or thread, newest first. */
+  refsByMeta(field: "todo" | "order" | "thread", value: string | number, limit: number): string[];
+  /** The chunks behind Qdrant point ids (any tag), in the order of `pointIds`; unknown ids are left out. */
+  chunksByPointIds(pointIds: string[]): Array<{ pointId: string; chunkId: number; ref: string; textHash: string }>;
+  /** Which of `pointIds` this file does not know (Qdrant orphans). */
+  unknownPointIds(pointIds: string[]): string[];
   /** FTS5 on `body` and/or `stems` (FTS5 query strings, e.g. from `safeFtsQuery`), best bm25 first, with the
    *  filters applied through the join to `sources`. Neither column → []. */
   searchWords(q: { body?: string; stems?: string }, filter: HistoryFilter, limit: number): WordHit[];
   /** Distinct chunk texts with no vector for `tag`. */
   textsWithoutVector(tag: string, limit: number): Array<{ textHash: string; text: string }>;
+  /** How many distinct chunk texts have no vector for `tag` (the embed backlog). */
+  countWithoutVector(tag: string): number;
+  /** How many points of `tag` wait for their upload (the upload backlog). */
+  countToUpload(tag: string): number;
   putVectors(tag: string, rows: Array<{ textHash: string; vec: Float32Array }>): void;
   getVector(textHash: string, tag: string): Float32Array | undefined;
   /** Give a point id to chunks that have a vector for `tag` and no point yet. Returns how many. */
@@ -354,6 +369,56 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
       return (q.chunksOf.all(ref) as Parameters<typeof mapChunk>[0][]).map(mapChunk);
     },
 
+    chunkById(id) {
+      const r = db.query(`SELECT id, ref, seq, text, text_hash, flags FROM chunks WHERE id = ?`).get(id) as Parameters<typeof mapChunk>[0] | null;
+      return r ? mapChunk(r) : undefined;
+    },
+
+    listRefs(kinds, afterRef, limit) {
+      if (!kinds.length) return [];
+      return (
+        db
+          .query(
+            `SELECT ref FROM sources WHERE kind IN (SELECT value FROM json_each(?)) AND gone_at IS NULL AND (? IS NULL OR ref > ?)
+             ORDER BY ref LIMIT ?`,
+          )
+          .all(JSON.stringify(kinds), afterRef ?? null, afterRef ?? null, limit) as Array<{ ref: string }>
+      ).map((r) => r.ref);
+    },
+
+    refsWithPrefix(prefix, limit) {
+      if (!prefix) return [];
+      // A range on the primary key: every ref that starts with `prefix` sorts between it and prefix + U+FFFF.
+      return (db.query(`SELECT ref FROM sources WHERE ref >= ? AND ref < ? ORDER BY ref LIMIT ?`).all(prefix, `${prefix}￿`, limit) as Array<{ ref: string }>).map((r) => r.ref);
+    },
+
+    refsByMeta(field, value, limit) {
+      const path = { todo: "$.todo", order: "$.order", thread: "$.thread" }[field];
+      return (
+        db.query(`SELECT ref FROM sources WHERE json_extract(meta, ?) = ? ORDER BY at DESC, ref LIMIT ?`).all(path, value, limit) as Array<{ ref: string }>
+      ).map((r) => r.ref);
+    },
+
+    chunksByPointIds(pointIds) {
+      if (!pointIds.length) return [];
+      const rows = db
+        .query(
+          `SELECT p.point_id AS pointId, c.id AS chunkId, c.ref AS ref, c.text_hash AS textHash
+           FROM points p JOIN chunks c ON c.id = p.chunk_id WHERE p.point_id IN (SELECT value FROM json_each(?))`,
+        )
+        .all(JSON.stringify(pointIds)) as Array<{ pointId: string; chunkId: number; ref: string; textHash: string }>;
+      const byId = new Map(rows.map((r) => [r.pointId, r]));
+      return pointIds.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+    },
+
+    unknownPointIds(pointIds) {
+      if (!pointIds.length) return [];
+      const known = new Set(
+        (db.query(`SELECT point_id FROM points WHERE point_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pointIds)) as Array<{ point_id: string }>).map((r) => r.point_id),
+      );
+      return pointIds.filter((id) => !known.has(id));
+    },
+
     searchWords(match, filter, limit) {
       const parts: string[] = [];
       if (match.body) parts.push(`body : (${match.body})`);
@@ -388,6 +453,18 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
            GROUP BY c.text_hash ORDER BY MIN(c.id) LIMIT ?`,
         )
         .all(tag, limit) as Array<{ textHash: string; text: string }>;
+    },
+
+    countWithoutVector(tag) {
+      return (
+        db
+          .query(`SELECT count(DISTINCT c.text_hash) AS n FROM chunks c WHERE NOT EXISTS (SELECT 1 FROM vectors v WHERE v.text_hash = c.text_hash AND v.tag = ?)`)
+          .get(tag) as { n: number }
+      ).n;
+    },
+
+    countToUpload(tag) {
+      return (db.query(`SELECT count(*) AS n FROM points WHERE tag = ? AND uploaded_at IS NULL`).get(tag) as { n: number }).n;
     },
 
     putVectors(tag, rows) {

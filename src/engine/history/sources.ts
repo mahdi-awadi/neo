@@ -241,9 +241,15 @@ function gate(ref: string, v: Exclude<Verdict, { verdict: "ok" }>): Extracted {
   return v.verdict === "wait" ? { status: "wait", ref } : { status: "excluded", ref, rule: v.rule };
 }
 
-/** A brief's own words: the continuation wrapper unwrapped, engine blocks and boilerplate paragraphs gone. */
+/** A brief without the engine's text: the continuation wrapper unwrapped and the engine blocks gone. The
+ *  boilerplate count (the indexer's backfill) hashes the paragraphs of this text. */
+export function ownBrief(brief: string): string {
+  return stripEngineBlocks(unwrapContinuation(stripEngineBlocks(brief)));
+}
+
+/** A brief's own words: `ownBrief` without the boilerplate paragraphs. */
 function briefText(brief: string, ctx: SourceCtx): string {
-  return removeBoilerplate(stripEngineBlocks(unwrapContinuation(stripEngineBlocks(brief))), ctx.boilerplate).trim();
+  return removeBoilerplate(ownBrief(brief), ctx.boilerplate).trim();
 }
 
 function decisionText(d: DecisionSourceRow): string {

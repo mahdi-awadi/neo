@@ -286,3 +286,35 @@ test("transaction rolls back on a throw", () => {
   expect(s.getState("k")).toBeUndefined();
   s.close();
 });
+
+test("the reads the indexer and search add: chunkById, listRefs, refsWithPrefix, refsByMeta, point lookups, backlogs", () => {
+  const s = openHistoryStore(dbPath());
+  s.putSource(src({ ref: "todo:1", meta: { todo: 1, order: "o1", thread: 7, commits: [] }, at: 1 }), [{ text: "alpha one" }], 1);
+  s.putSource(src({ ref: "result:o1", kind: "result", meta: { todo: 1, order: "o1", commits: [] }, at: 5 }), [{ text: "alpha one" }, { text: "beta two" }], 1);
+  s.putSource(src({ ref: "dec:ab12cd34-0000", kind: "decision", meta: { thread: 7, commits: [] } }), [{ text: "gamma" }], 1);
+  s.markGone(["todo:1"], 9);
+  const [c] = s.chunksOf("result:o1");
+  expect(s.chunkById(c!.id)).toEqual(c);
+  expect(s.chunkById(99_999)).toBeUndefined();
+  expect(s.listRefs(["todo", "result"], undefined, 10)).toEqual(["result:o1"]);
+  expect(s.listRefs(["decision", "result"], "dec:z", 10)).toEqual(["result:o1"]);
+  expect(s.listRefs([], undefined, 10)).toEqual([]);
+  expect(s.refsWithPrefix("dec:ab12cd34", 5)).toEqual(["dec:ab12cd34-0000"]);
+  expect(s.refsWithPrefix("dec:ab12cd35", 5)).toEqual([]);
+  expect(s.refsByMeta("todo", 1, 5)).toEqual(["result:o1", "todo:1"]);
+  expect(s.refsByMeta("order", "o1", 5)).toEqual(["result:o1", "todo:1"]);
+  expect(s.refsByMeta("thread", 7, 5).sort()).toEqual(["dec:ab12cd34-0000", "todo:1"]);
+  expect(s.countWithoutVector("m1")).toBe(3); // "alpha one" is one text under two refs
+  s.putVectors("m1", [{ textHash: hashText("alpha one"), vec: vec(1, 0) }]);
+  expect(s.countWithoutVector("m1")).toBe(2);
+  expect(s.addMissingPoints("m1", 10)).toBe(2);
+  expect(s.countToUpload("m1")).toBe(2);
+  const ids = s.pointIdsOfTag("m1");
+  const found = s.chunksByPointIds([ids[1]!, "nope", ids[0]!]);
+  expect(found.map((f) => f.pointId)).toEqual([ids[1]!, ids[0]!]);
+  expect(found.every((f) => f.textHash === hashText("alpha one"))).toBe(true);
+  expect(s.unknownPointIds([ids[0]!, "11111111-1111-1111-1111-111111111111"])).toEqual(["11111111-1111-1111-1111-111111111111"]);
+  s.markUploaded([ids[0]!], 3);
+  expect(s.countToUpload("m1")).toBe(1);
+  s.close();
+});
