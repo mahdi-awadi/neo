@@ -115,7 +115,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - `EXPLAIN QUERY PLAN` of the feed read uses the primary key.
   - Done when: these tests and the full ledger suite pass. The migration runs only at the next restart.
 
-- [ ] **5. Sources and the firewall**
+- [x] **5. Sources and the firewall**
   - Create: `src/engine/history/firewall.ts`, `src/engine/history/sources.ts`,
     `tests/history-sources.test.ts`, `tests/history-firewall.test.ts`.
   - Tests first:

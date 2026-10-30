@@ -25,6 +25,8 @@ export interface SourceMeta {
   thread?: number;
   path?: string;
   commits?: string[];
+  /** A project note's sender project (the target is the source's project). */
+  from?: string;
   /** A plan file that is gone: the last indexed text stays. */
   fileMissing?: boolean;
   /** The text was cut (`planMaxBytes`, `maxPerRef`). */

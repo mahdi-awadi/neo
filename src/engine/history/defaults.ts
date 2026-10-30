@@ -24,3 +24,14 @@ export const STORE_DEFAULTS: Readonly<StoreCfg> = { lockStaleMs: 180_000 };
 
 /** A paragraph in at least this many distinct orders or todos is boilerplate (`sources.boilerplateMinRows`). */
 export const BOILERPLATE_MIN_ROWS = 25;
+
+export interface SourcesCfg {
+  /** A plan file is read up to this many bytes; the rest is cut and the source flagged. */
+  planMaxBytes: number;
+  /** A paragraph in at least this many distinct orders or todos is boilerplate. */
+  boilerplateMinRows: number;
+  /** The firewall follows `parent_order_id` at most this many levels up; a deeper chain is excluded. */
+  lineageDepth: number;
+}
+
+export const SOURCES_DEFAULTS: Readonly<SourcesCfg> = { planMaxBytes: 1_048_576, boilerplateMinRows: BOILERPLATE_MIN_ROWS, lineageDepth: 8 };
