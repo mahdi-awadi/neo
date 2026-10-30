@@ -54,7 +54,7 @@ async function governed(tool: string, input: Record<string, unknown>, source: Or
 }
 
 test("trusted: a new project auto-approves a risky command (what trust is for)", async () => {
-  const r = await governed("Bash", { command: "git push --dry-run" });
+  const r = await governed("Bash", { command: "rm -rf build" });
   expect(r.decision).toBe("allow");
   expect(r.auto.length).toBe(1);
 });
@@ -72,10 +72,11 @@ test("trusted: an out-of-folder write is still fenced — it asks the operator, 
   }
 });
 
-test("the governor marks an out-of-folder write as a fence escalation, and nothing else", () => {
+test("the governor marks operator-only escalations (an out-of-folder write, a git push — ADR-0069), and nothing else", () => {
   const ctx = { folder: "/home/p" };
   expect(decide("Write", { file_path: "/etc/x" }, ctx)).toMatchObject({ fenced: true });
-  expect(decide("Bash", { command: "git push" }, ctx)).not.toHaveProperty("fenced");
+  expect(decide("Bash", { command: "git push" }, ctx)).toMatchObject({ fenced: true });
+  expect(decide("Bash", { command: "rm -rf build" }, ctx)).not.toHaveProperty("fenced");
   expect(decide("WebFetch", {}, ctx)).not.toHaveProperty("fenced");
 });
 

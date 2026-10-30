@@ -96,7 +96,7 @@ import {
   type ApiCooldown,
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
-import { FINISH_RULE, PLAN_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
+import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
 import { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT } from "./chats";
 
 /** Real backoff wait (tests inject opts.sleep instead). */
@@ -421,7 +421,7 @@ export function briefWithProjectDocs(task: string): string {
     "only for a trivial edit; say so.)\n" +
     "  BUILD — implement against that spec with `superpowers:test-driven-development` (failing test first, " +
     "per acceptance criterion), then `superpowers:verification-before-completion`, a final `planner` " +
-    `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE}\n\n` +
+    `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE} ${PUSH_RULE}\n\n` +
     "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
     `failure, even when it works. ${QUALITY_RULE} (1) i18n via standard per-locale catalogues (react-i18next or ` +
     "equivalent), namespaced keys, AR+EN complete — never literal UI strings or a bespoke " +

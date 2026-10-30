@@ -197,9 +197,9 @@ describe("the hint in dispatchToProject", () => {
 });
 
 
-test("the dispatch preamble names the shared tools (P5.1) and stays under 5000 chars with the codebase-memory line", () => {
+test("the dispatch preamble names the shared tools (P5.1) and stays under 5200 chars (5000 + the push rule, ADR-0069) with the codebase-memory line", () => {
   const pre = briefWithProjectDocs("");
   expect(pre).toContain("`neo-tool-*`");
   expect(pre).toContain("`tool_api`");
-  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5000);
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5200);
 });

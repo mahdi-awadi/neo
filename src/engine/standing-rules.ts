@@ -7,6 +7,14 @@
 export const FINISH_RULE =
   "Then execute the plan to the end, non-stop, in committed checkpoints: never stop halfway or end a turn with work you could still do.";
 
+/** Rule 6 (operator, 2026-10-30, ADR-0069): every push starts paid CI/CD runs. The governor enforces it too:
+ *  a `git push` is an operator-only escalation that trust never lifts. */
+export const PUSH_RULE =
+  "Commit locally in checkpoints. Do NOT `git push` during the task. Push once, only when the whole task is complete, and only after asking the operator (ask_operator).";
+
+/** The same rule for a loop iteration: it cannot ask the operator, and Neo denies its escalations. */
+export const LOOP_PUSH_RULE = "Commit locally; never `git push` (a push needs the operator, and a loop cannot ask).";
+
 /** Rules 2 and 3: rich, ambitious plans, made (and reviewed) with the strongest model at the highest effort. */
 export const PLAN_RULE =
   "Plans are complete and ambitious, never the minimum: the whole goal, every feature the domain needs, edge cases, UX, tests and ops.";
@@ -24,7 +32,7 @@ export const STOP_RULE = "Stop only for such a decision or a hard blocker, and s
 /** A loop iteration's brief: the standing rules, then the loop's own standing prompt (ADR-0004 amended by
  *  ADR-0063: the engine adds the rules, it still never rewrites the loop's prompt). */
 export function loopBrief(prompt: string): string {
-  return `Standing rules (Neo): plan the iteration fully. ${FINISH_RULE} Stop only for a real operator decision or a hard blocker, and say what remains. ${QUALITY_RULE} ${TECH_RULE}\n\n${prompt}`;
+  return `Standing rules (Neo): plan the iteration fully. ${FINISH_RULE} Stop only for a real operator decision or a hard blocker, and say what remains. ${LOOP_PUSH_RULE} ${QUALITY_RULE} ${TECH_RULE}\n\n${prompt}`;
 }
 
 /** The `planner` subagent's own instructions (its model and effort come from config `planner`). */

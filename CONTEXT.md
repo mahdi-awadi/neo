@@ -666,7 +666,8 @@ _Avoid_: trust flag, known project
 
 **Fence escalation**:
 An escalation that only the operator can approve: a file write outside the session's project
-folder, when `governor.outOfFolderWrites` is `"ask"` or the work is customer-sourced. **Trust**
+folder, when `governor.outOfFolderWrites` is `"ask"` or the work is customer-sourced, a write into
+another project (ADR-0031), and every `git push` (ADR-0069: a push starts paid CI/CD runs). **Trust**
 never approves it automatically; autonomous paths deny it.
 _Avoid_: hard escalation, blocked write
 

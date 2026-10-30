@@ -49,7 +49,8 @@ export interface RouteTarget {
  */
 export type Verdict =
   | { allow: true; updatedInput?: Record<string, unknown> }
-  /** `fenced`: a fence escalation — only the operator may approve it, never trust (ADR-0011). */
+  /** `fenced`: a fence escalation — only the operator may approve it, never trust (ADR-0011): a write
+   *  outside the fence, into another project (ADR-0031), or a `git push` (ADR-0069). */
   | { escalate: string; fenced?: true }
   | { deny: string };
 

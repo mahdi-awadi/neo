@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { briefWithProjectDocs, codebaseMemoryLine } from "../src/engine/dispatch";
 import { consultPrompt } from "../src/engine/consult";
-import { FINISH_RULE, PLAN_RULE, QUALITY_RULE, TECH_RULE, loopBrief } from "../src/engine/standing-rules";
+import { FINISH_RULE, LOOP_PUSH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, TECH_RULE, loopBrief } from "../src/engine/standing-rules";
 import { profileDeps } from "../src/engine/worker-profile";
 import { DEFAULT_MODELS, DEFAULT_PLANNER } from "../src/config";
 
@@ -26,9 +26,26 @@ test("the dispatch preamble carries all five standing rules once, merged into it
   expect(pre.endsWith("TASK")).toBe(true);
 });
 
+// ADR-0069 (operator, 2026-10-30): every push starts paid CI/CD runs.
+test("the dispatch preamble carries the push rule once, in BUILD, beside the checkpoint rule", () => {
+  const pre = briefWithProjectDocs("TASK");
+  expect(PUSH_RULE).toBe(
+    "Commit locally in checkpoints. Do NOT `git push` during the task. Push once, only when the whole task is complete, and only after asking the operator (ask_operator).",
+  );
+  expect(pre.split(PUSH_RULE).length).toBe(2);
+  expect(pre.indexOf(PUSH_RULE)).toBeGreaterThan(pre.indexOf("  BUILD —"));
+  expect(pre.indexOf(PUSH_RULE)).toBeLessThan(pre.indexOf("REQUIRED — engineering baseline"));
+});
+
+test("a loop iteration is told it never pushes (a loop cannot ask the operator)", () => {
+  expect(loopBrief("x")).toContain(LOOP_PUSH_RULE);
+  expect(LOOP_PUSH_RULE).toContain("never `git push`");
+});
+
 test("the preamble stays under the ceiling with a long codebase-memory line", () => {
   const pre = briefWithProjectDocs("");
-  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5000);
+  // 5000 (ADR-0063), plus the operator's push rule verbatim (ADR-0069).
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5200);
 });
 
 test("a loop iteration's brief starts with the standing rules, then the loop's own prompt", () => {

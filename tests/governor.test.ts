@@ -12,6 +12,43 @@ test("governor auto-allows safe read-only tools", () => {
   expect(decide("Task", { prompt: "x" }, CTX)).toEqual({ allow: true });
 });
 
+// ADR-0069: a push is an operator-only escalation (trust never lifts it), found by the shell reader, so
+// `git -C`, `cd … &&` and `sh -c` shapes are caught too.
+test("git push is an operator-only escalation in every shape", () => {
+  for (const command of ["git push origin dev", "git -C /p/sub push", "cd sub && git push --tags", "FOO=1 git push", "bash -c 'git push origin main'", "git -c core.x=y push"]) {
+    const v = decide("Bash", { command }, CTX);
+    expect(v).toMatchObject({ fenced: true });
+    expect("escalate" in v && v.escalate).toContain("operator");
+  }
+});
+
+test("other git commands and a mere mention of 'git push' are not operator-only", () => {
+  expect(decide("Bash", { command: "git commit -m 'x'" }, CTX)).toEqual({ allow: true });
+  expect(decide("Bash", { command: "git status && git log --oneline -3" }, CTX)).toEqual({ allow: true });
+  const mention = decide("Bash", { command: 'grep -rn "git push" src' }, CTX); // the keyword backstop: trust may approve
+  expect("escalate" in mention).toBe(true);
+  expect("fenced" in mention).toBe(false);
+  // Quoted text and heredoc bodies are not commands (review 2026-10-30).
+  for (const command of [`git commit -m "fix; git push later"`, `rg -n "git commit|git push" docs/`, `echo "Next: make build && git push"`, `git commit -m "$(cat <<'EOF'\nfeat: x\n\ngit push later\nEOF\n)"`]) {
+    expect("fenced" in decide("Bash", { command }, CTX)).toBe(false);
+  }
+});
+
+test("push shapes the old reader missed are operator-only too", () => {
+  for (const command of [
+    `for d in a b; do git -C "$d" push; done`,
+    "if x; then y; else git -C . push; fi",
+    "git -C /p \\\n  push origin dev",
+    "bash -lc 'git -C /p push'",
+    "git subtree push --prefix=x origin main",
+    "/usr/bin/git push",
+    "env -i git push",
+    "echo hi & git push",
+  ]) {
+    expect(decide("Bash", { command }, CTX)).toMatchObject({ fenced: true });
+  }
+});
+
 test("governor allows Neo's own MCP tools, escalates foreign MCP tools", () => {
   expect(decide("mcp__neo__dispatch", { project: "x" }, CTX)).toEqual({ allow: true });
   expect("escalate" in decide("mcp__foreign__thing", {}, CTX)).toBe(true);

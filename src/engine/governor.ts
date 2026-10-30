@@ -110,6 +110,20 @@ function bashForeignWrite(command: string, folder: string, fence: ProjectFence):
   });
 }
 
+const PUSH = (command: string) =>
+  `git push needs the operator's approval (operator rule: commit locally; push once, when the whole task is done, after asking — every push starts paid CI/CD runs): ${command}`;
+
+/** True when a shell command runs `git push` in any shape the shell reader parses (`git -C`, `cd … &&`,
+ *  `VAR=… git`, `sh -c '…'`). ADR-0069. */
+function gitPushIn(command: string, folder: string): boolean {
+  return (
+    walkBash(command, folder, (seg) => {
+      const git = gitCall(seg);
+      return git && (git.sub === "push" || (git.sub === "subtree" && git.args[0] === "push")) ? "push" : undefined;
+    }) !== undefined
+  );
+}
+
 /** Risky bash patterns that must never auto-run — they escalate to Neo. Defense-in-depth
  *  only (a keyword regex is bypassable); the real guards are the path fence + default-escalate. */
 export const RISKY_BASH =
@@ -194,6 +208,8 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
     const command = typeof input.command === "string" ? input.command : "";
     const other = ctx.projectFence ? bashForeignWrite(command, ctx.folder, ctx.projectFence) : undefined;
     if (other) return { escalate: CROSS(other), fenced: true };
+    // A push starts paid CI/CD runs: always the operator's call, never trust's (ADR-0069).
+    if (gitPushIn(command, ctx.folder)) return { escalate: PUSH(command), fenced: true };
     if (RISKY_BASH.test(command)) return { escalate: `risky shell command: ${command}` };
     return { allow: true };
   }

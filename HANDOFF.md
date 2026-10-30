@@ -1,3 +1,13 @@
+# HANDOFF — 2026-10-30: a git push is the operator's call (ADR-0069, on dev, restart-gated)
+
+Every push starts paid CI/CD runs. Workers now get the push rule in the dispatch preamble (commit locally,
+push once at the end, after ask_operator); loops are told never to push. The governor makes every `git push`
+(any shape the shell reader parses: `git -C`, `cd … &&`, `sh -c`) an operator-only escalation: trust never
+approves it, loops and customer work deny it. Committed on dev locally, not pushed (operator rule; the
+tool-card fix 16d51e7 also stays local by operator answer).
+
+---
+
 # HANDOFF — 2026-10-30: tool-call cards leave Telegram when the call ends (ADR-0058 amendment, on dev, restart-gated)
 
 The Stop/Background card used to stay after its command ended: the daemon dropped the posted message id.

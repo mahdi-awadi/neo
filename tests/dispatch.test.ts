@@ -1343,9 +1343,9 @@ test("the dispatch preamble tells every worker to write decisions for a non-tech
 test("the dispatch preamble stays terse — every worker pays for it on every run", () => {
   // A ceiling, not a target: the preamble is engine-owned context charged to the operator on each
   // dispatch, so a new rule must be phrased tightly rather than appended as prose.
-  expect(briefWithProjectDocs("").length).toBeLessThan(5000);
+  expect(briefWithProjectDocs("").length).toBeLessThan(5200); // 5000 + the operator's push rule (ADR-0069)
   // ...including the codebase-memory line the engine adds once the index is known (a long name)
-  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5000);
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5200);
 });
 
 test("the preamble keeps the operator's standing wording: the planner on the highest effort, long checks in background Bash", () => {

@@ -282,7 +282,7 @@ test("startOrder reports streamed cost via onCost", async () => {
 });
 
 test("trust auto-approves a risky tool: allows, records via onAutoApprove, skips onEscalation", async () => {
-  const { q, decisions } = fakeQuery([{ tool: "Bash", input: { command: "git push" } }]);
+  const { q, decisions } = fakeQuery([{ tool: "Bash", input: { command: "rm -rf build" } }]);
   const auto: string[] = [];
   let escalated = false;
   await runOrder(
@@ -296,8 +296,8 @@ test("trust auto-approves a risky tool: allows, records via onAutoApprove, skips
     { query: q },
   );
   expect(decisions[0].behavior).toBe("allow");
-  expect(decisions[0].updatedInput).toEqual({ command: "git push" });
-  expect(auto[0]).toContain("git push");
+  expect(decisions[0].updatedInput).toEqual({ command: "rm -rf build" });
+  expect(auto[0]).toContain("rm -rf build");
   expect(escalated).toBe(false);
 });
 

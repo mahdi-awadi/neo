@@ -137,5 +137,5 @@ test("the preamble tells workers (and their helpers) to send cross-project work 
   expect(p).toContain("another project");
   expect(p).toContain("helper");
   expect(p).toContain("`project_notes`"); // ADR-0043
-  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + p).length).toBeLessThan(5000);
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + p).length).toBeLessThan(5200); // + the push rule (ADR-0069)
 });
