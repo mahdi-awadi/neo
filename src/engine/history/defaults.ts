@@ -35,3 +35,29 @@ export interface SourcesCfg {
 }
 
 export const SOURCES_DEFAULTS: Readonly<SourcesCfg> = { planMaxBytes: 1_048_576, boilerplateMinRows: BOILERPLATE_MIN_ROWS, lineageDepth: 8 };
+
+export interface EmbedderCfg {
+  /** The TEI service; must be loopback. */
+  url: string;
+  /** The environment variable that holds the bearer key (never the key itself). */
+  keyEnv: string;
+  /** The model id and revision `/info` must report; both are part of the model tag. */
+  model: string;
+  revision: string;
+  dims: number;
+  /** Texts per `/embed` request. */
+  batch: number;
+  timeoutMs: number;
+  queryTimeoutMs: number;
+  /** Query vectors kept (least recently used goes first). */
+  queryCache: number;
+  /** The first back-off after a 429 or 503 (doubles while they repeat, up to `backoffMaxMs`). */
+  backoffMs: number;
+  backoffMaxMs: number;
+}
+
+/** `revision` has no default: the operator pins it (tools/history/embedder.env); empty → not configured. */
+export const EMBEDDER_DEFAULTS: Readonly<EmbedderCfg> = {
+  url: "http://127.0.0.1:8088", keyEnv: "HISTORY_EMBEDDER_KEY", model: "BAAI/bge-m3", revision: "", dims: 1024,
+  batch: 8, timeoutMs: 60_000, queryTimeoutMs: 3_000, queryCache: 200, backoffMs: 5_000, backoffMaxMs: 300_000,
+};

@@ -137,7 +137,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - Static: no file under `src/engine/history/` imports `inbox`.
   - Done when: AC12 passes, and the extraction parts of AC3 and AC6 pass.
 
-- [ ] **6. Embedder adapter**
+- [x] **6. Embedder adapter**
   - Create: `src/engine/history/embedder.ts`, `tests/fixtures/fake-tei.ts` (`Bun.serve` on port 0),
     `tests/history-embedder.test.ts`.
   - Tests first:
