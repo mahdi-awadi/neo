@@ -9,7 +9,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { hashText } from "../src/engine/history/extract";
 import { todoTitle } from "../src/engine/todo-title";
 import { openTaskHistory, type HistoryCfg, type TaskHistory } from "../src/engine/history/index";
-import { bench, operatorThread, remotePoints, todo, type Bench } from "./fixtures/history-harness";
+import { TODOS_KEEP } from "../src/engine/ledger";
+import { bench, operatorThread, order, remotePoints, todo, type Bench } from "./fixtures/history-harness";
 
 const T0 = Date.UTC(2026, 9, 29, 10, 0, 0);
 const MIN = 60_000;
@@ -139,6 +140,38 @@ describe("forget", () => {
     for (let i = 2; i < 5; i++) await h.indexTick(T0 + i * MIN); // the feed, and weekly reconciles
     expect(b.store.getSource(ref)).toBeUndefined();
     expect(b.store.tombstoned([ref]).has(ref)).toBe(true);
+  });
+
+  test("forgetting a todo holds for its order and result, also after retention prunes the todo", async () => {
+    const { b, h } = setup({ cfg: (c) => ({ ...c, reconcileCron: "* * * * *" }) });
+    const t = operatorThread(b.led);
+    const brief = "Forget this whole piece of work about the seat release.";
+    // Dispatched before the forget, and dispatched only after it.
+    const before = b.led.addTodo(todo({ brief, cause: { msgId: t, threadId: t } })).id;
+    b.led.recordOrder(order({ id: "o-before", task: brief }), { cause: { msgId: t, threadId: t } });
+    b.led.updateTodo(before, { orderId: "o-before" });
+    b.led.recordOutcome("o-before", "done", "Seat release shipped for the forgotten work.", T0);
+    const after = b.led.addTodo(todo({ brief: `${brief} Second one.`, cause: { msgId: t, threadId: t } })).id;
+    await h.indexTick(T0);
+    expect(b.store.getSource("result:o-before")).toBeDefined();
+    expect((await h.forget(`todo:${before}`, "operator asked", T0 + MIN)).ok).toBe(true);
+    expect((await h.forget(`todo:${after}`, "operator asked", T0 + MIN)).ok).toBe(true);
+    for (const ref of ["order:o-before", "result:o-before"]) expect(b.store.getSource(ref)).toBeUndefined();
+    b.led.recordOrder(order({ id: "o-after", task: brief }), { cause: { msgId: t, threadId: t } });
+    b.led.updateTodo(after, { orderId: "o-after" });
+    b.led.recordOutcome("o-after", "done", "Seat release shipped for the second forgotten work.", T0);
+    await h.indexTick(T0 + 2 * MIN);
+    // Retention prunes both todos: their orders would become sources of their own.
+    for (const id of [before, after]) b.led.updateTodo(id, { status: "done" });
+    b.led.transaction(() => {
+      for (let i = 0; i < TODOS_KEEP; i++) b.led.updateTodo(b.led.addTodo(todo({ brief: "x" })).id, { status: "cancelled" });
+    });
+    expect(b.led.todoById(before)).toBeUndefined();
+    for (let i = 3; i < 8; i++) await h.indexTick(T0 + i * MIN);
+    for (const ref of ["order:o-before", "result:o-before", "order:o-after", "result:o-after"]) {
+      expect(b.store.getSource(ref)).toBeUndefined();
+      expect(b.store.tombstoned([ref]).has(ref)).toBe(true);
+    }
   });
 
   test("an unknown ref, a line, a bad ref or no reason gives ok: false", async () => {

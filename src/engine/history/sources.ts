@@ -274,6 +274,19 @@ function decisionText(d: DecisionSourceRow): string {
   return parts.map((p) => p.trim()).filter(Boolean).join("\n\n");
 }
 
+const WORK = /^(todo|order|result):(.+)$/;
+
+/** The refs of one piece of work: a todo, its order and that order's result (from the ref and its meta).
+ *  Forget tombstones all of them, so the work cannot come back under another of its refs (an order whose
+ *  todo retention pruned is a source of its own). Another ref gives only itself. */
+export function sameWorkRefs(ref: string, link: { todo?: number; order?: string }): string[] {
+  const m = WORK.exec(ref);
+  if (!m) return [ref];
+  const order = m[1] === "todo" ? link.order : m[2];
+  const todo = m[1] === "todo" ? m[2] : link.todo;
+  return [...new Set([ref, ...(todo !== undefined ? [`todo:${todo}`] : []), ...(order !== undefined ? [`order:${order}`, `result:${order}`] : [])])];
+}
+
 /** The commit shas of `texts`, never one on a line the secret finder matches (a hex key in a `token: …`
  *  line is sha-shaped). The indexer calls it again on the chunks it keeps, so a sha only in a dropped
  *  chunk is never a commit either. */

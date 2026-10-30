@@ -19,7 +19,7 @@ const src = (over: Partial<SourceInput> = {}): SourceInput => ({
 const words = (q: string) => safeFtsQuery(normalize(q), { mode: "any" });
 const vec = (...xs: number[]) => Float32Array.from(xs);
 
-test("a new file has the spec schema at version 1, FTS5 contentless-delete with porter, and mode 0600", () => {
+test("a new file has the spec schema at version 2, FTS5 contentless-delete with porter, and mode 0600", () => {
   const path = dbPath();
   const s = openHistoryStore(path);
   s.putSource(src(), [{ text: "the bus seats are not released" }], 1);
@@ -27,9 +27,9 @@ test("a new file has the spec schema at version 1, FTS5 contentless-delete with 
   expect(statSync(path).mode & 0o777).toBe(0o600);
   if (existsSync(`${path}-wal`)) expect(statSync(`${path}-wal`).mode & 0o777).toBe(0o600);
   const db = new Database(path, { readonly: true });
-  expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(1);
+  expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(2);
   const names = (db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((r) => r.name);
-  for (const t of ["sources", "chunks", "chunks_fts", "vectors", "points", "pending_deletes", "remembered", "tombstones", "boilerplate", "state"]) {
+  for (const t of ["sources", "chunks", "chunks_fts", "vectors", "points", "pending_deletes", "remembered", "tombstones", "boilerplate", "boilerplate_next", "state"]) {
     expect(names).toContain(t);
   }
   const fts = (db.query("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").get() as { sql: string }).sql;

@@ -16,7 +16,7 @@ import { findShas, hashText } from "./extract";
 import { createIndexer, type IndexReport, type ServiceReport } from "./indexer";
 import { searchHistory, type HistoryQuery, type HistoryRef, type HistoryResult } from "./search";
 import { createQueryGate } from "./services";
-import { prepareChunks } from "./sources";
+import { prepareChunks, sameWorkRefs } from "./sources";
 import { openHistoryStore, type HistoryStore } from "./store";
 import { NoVectorIndex, openVectorIndex, type VectorIndex } from "./vector-index";
 
@@ -152,6 +152,24 @@ export function openTaskHistory(deps: TaskHistoryDeps): TaskHistory {
     }
   }
 
+  /** The ledger's link of a todo to its order, or of an order to its todo (the stored meta may predate it). */
+  function workLink(ref: string): { todo?: number; order?: string } {
+    try {
+      const [kind, key] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
+      if (kind === "todo") {
+        const t = deps.ledger.historyRows("project_todos", [key])[0]?.row;
+        return t?.orderId !== undefined ? { order: t.orderId } : {};
+      }
+      if (kind === "order" || kind === "result") {
+        const o = deps.ledger.historyRows("orders", [key])[0]?.row;
+        return o?.todoId !== undefined ? { todo: o.todoId } : {};
+      }
+    } catch {
+      // the stored meta is enough
+    }
+    return {};
+  }
+
   async function forget(ref: HistoryRef, reason: string, at: number): Promise<ForgetResult> {
     const none = (error: string): ForgetResult => ({ ok: false, error, chunks: 0, points: 0, pendingPoints: 0 });
     if (typeof ref !== "string" || !FORGETTABLE.test(ref)) return none(ref?.startsWith?.("line:") ? "not_forgettable" : "bad_ref");
@@ -163,12 +181,20 @@ export function openTaskHistory(deps: TaskHistoryDeps): TaskHistory {
       const src = store.getSource(ref);
       const mem = isMem && Number.isInteger(memId) ? store.getRemembered(memId) : undefined;
       if (!src && !mem) return none("unknown_ref");
+      // A todo, its order and the order's result are one piece of work: each of them goes and is tombstoned.
+      const refs = mem ? [ref] : sameWorkRefs(ref, { ...workLink(ref), ...src!.meta });
       removed = store.transaction(() => {
-        const r = src ? store.removeSource(ref, at) : { chunks: 0, points: [] as string[] };
+        const r = { chunks: 0, points: [] as string[] };
+        for (const each of refs) {
+          if (!store.getSource(each)) continue;
+          const x = store.removeSource(each, at);
+          r.chunks += x.chunks;
+          r.points.push(...x.points);
+        }
         // A remembered entry lives only in history.db: deleting its row is enough, and no tombstone is kept
         // (its id may be given again to a new entry). A ledger-backed ref gets a tombstone.
         if (mem) store.deleteRemembered(memId);
-        else store.addTombstone(ref, reason.trim(), at);
+        else for (const each of refs) store.addTombstone(each, reason.trim(), at);
         return r;
       });
     } catch {

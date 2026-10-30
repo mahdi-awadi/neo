@@ -13,7 +13,7 @@ import type { Embedder } from "./embedder";
 import { paragraphHashes } from "./extract";
 import { countRule, type FirewallCounts, type FirewallRule } from "./firewall";
 import type { MeaningOffReason, QueryGate } from "./services";
-import { extractSource, ledgerLookups, ownBrief, prepareChunks, safeCommits, type SourceCtx, type SourceExtract } from "./sources";
+import { extractSource, ledgerLookups, ownBrief, prepareChunks, safeCommits, sameWorkRefs, type SourceCtx, type SourceExtract } from "./sources";
 import type { ChunkInput, HistoryKind, HistoryStore } from "./store";
 import type { Point, VectorIndex, VectorProbe } from "./vector-index";
 
@@ -200,7 +200,17 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       return;
     }
     const src = o.source;
-    if (store.tombstoned([src.ref]).size) return;
+    // A forgotten piece of work stays forgotten under each of its refs: the tombstone spreads to the rest.
+    const work = sameWorkRefs(src.ref, src.meta);
+    const stones = store.tombstoned(work);
+    if (stones.size) {
+      for (const ref of work) {
+        if (stones.has(ref)) continue;
+        if (store.getSource(ref)) r.chunks.deleted += store.removeSource(ref, now).chunks;
+        store.addTombstone(ref, "same work as a forgotten entry", now);
+      }
+      return;
+    }
     const existing = store.getSource(src.ref);
     if (existing && existing.hash === src.hash && existing.goneAt === undefined) {
       r.sources.unchanged++;
@@ -316,8 +326,10 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     }
   }
   const saveReconcile = (st: ReconcileState): void => store.setState(K.reconcile, JSON.stringify(st));
+  /** The first and the weekly reconcile count the paragraphs again (into staged counts) before they walk. */
   function startReconcile(reason: ReconcileReason): ReconcileState {
-    const st: ReconcileState = { reason, phase: reason === "first" ? "count" : "walk", t: 0, rows: 0 };
+    const st: ReconcileState = { reason, phase: reason === "gap" ? "walk" : "count", t: 0, rows: 0 };
+    if (st.phase === "count") store.startParagraphCount();
     saveReconcile(st);
     return st;
   }
@@ -367,7 +379,8 @@ export function createIndexer(deps: IndexerDeps): Indexer {
       cursor = bounds.newest;
       store.transaction(() => {
         store.setState(K.cursor, String(cursor));
-        startReconcile("gap");
+        // A gap before the first reconcile ended restarts that one: it walks every row anyway.
+        startReconcile(store.getState(K.firstDone) ? "gap" : "first");
       });
     }
     const rows = ledger.historyFeed(cursor, cfg.indexer.feedBatch);
@@ -397,8 +410,12 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         const counted = (Object.keys(COUNTED) as HistoryTable[]);
         const ct: HistoryTable | undefined = counted.includes(table) ? table : counted.find((t) => TABLES.indexOf(t) > st!.t);
         if (!ct) {
-          st = { ...st, phase: "walk", t: 0, after: undefined };
-          saveReconcile(st);
+          const walk: ReconcileState = { ...st, phase: "walk", t: 0, after: undefined };
+          store.transaction(() => {
+            store.publishParagraphCount();
+            saveReconcile(walk);
+          });
+          st = walk;
           bp = store.boilerplate(cfg.sources.boilerplateMinRows); // the counts are complete now
           continue;
         }
@@ -412,7 +429,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
           ? { ...st, t: st.t + 1, after: undefined, rows: st.rows + rows.length }
           : { ...st, after: rows.at(-1)!.key, rows: st.rows + rows.length };
         store.transaction(() => {
-          for (const { row } of rows) store.countParagraphs(paragraphHashes(ownBrief(text(row))));
+          for (const { row } of rows) store.stageParagraphs(paragraphHashes(ownBrief(text(row))));
           saveReconcile(nextSt);
         });
         st = nextSt;

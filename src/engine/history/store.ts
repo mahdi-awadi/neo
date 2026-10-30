@@ -187,6 +187,12 @@ export interface HistoryStore {
   tombstoned(refs: string[]): Set<string>;
   /** Count each paragraph hash of one source row once. */
   countParagraphs(hashes: string[]): void;
+  /** A recount starts: the staged counts are cleared. */
+  startParagraphCount(): void;
+  /** Count each paragraph hash of one source row once, in the staged counts. */
+  stageParagraphs(hashes: string[]): void;
+  /** The recount is complete: the staged counts replace the counts. */
+  publishParagraphCount(): void;
   /** The paragraph hashes seen in at least `minRows` rows. */
   boilerplate(minRows: number): Set<string>;
   getState(key: string): string | undefined;
@@ -693,6 +699,25 @@ export function openHistoryStore(path: string, opts: Partial<StoreCfg> & { busyT
       const stmt = db.query(`INSERT INTO boilerplate (hash, rows) VALUES (?, 1) ON CONFLICT(hash) DO UPDATE SET rows = rows + 1`);
       db.transaction(() => {
         for (const h of new Set(hashes)) stmt.run(h);
+      })();
+    },
+
+    startParagraphCount() {
+      db.query(`DELETE FROM boilerplate_next`).run();
+    },
+
+    stageParagraphs(hashes) {
+      const stmt = db.query(`INSERT INTO boilerplate_next (hash, rows) VALUES (?, 1) ON CONFLICT(hash) DO UPDATE SET rows = rows + 1`);
+      db.transaction(() => {
+        for (const h of new Set(hashes)) stmt.run(h);
+      })();
+    },
+
+    publishParagraphCount() {
+      db.transaction(() => {
+        db.query(`DELETE FROM boilerplate`).run();
+        db.query(`INSERT INTO boilerplate (hash, rows) SELECT hash, rows FROM boilerplate_next`).run();
+        db.query(`DELETE FROM boilerplate_next`).run();
       })();
     },
 

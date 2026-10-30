@@ -252,6 +252,41 @@ describe("the reconcile", () => {
     expect(found(b.store, "gamma")).toEqual([`todo:${ids[2]}`]);
   });
 
+  test("the weekly run counts the paragraphs again: a paragraph the feed made common becomes boilerplate", async () => {
+    const b = setup({ cfg: (c) => ({ ...c, reconcileCron: "* * * * *", sources: { ...c.sources, boilerplateMinRows: 3 } }) });
+    const t = operatorThread(b.led);
+    const shared = "Follow the project rules and keep the tests green before you report.";
+    const add = (w: string) => b.led.addTodo(todo({ brief: `${shared}\n\nThe ${w} task has its own words here.`, cause: { msgId: t, threadId: t } })).id;
+    const ids = [add("alpha"), add("beta")];
+    const ix = indexer(b);
+    await ix.tick(T0); // the first reconcile: two rows, not boilerplate yet
+    expect(b.store.chunksOf(`todo:${ids[0]}`).map((c) => c.text).join(" ")).toContain("project rules");
+    ids.push(add("gamma")); // through the feed only
+    for (let i = 1; i < 8; i++) await ix.tick(T0 + i * MIN);
+    for (const id of ids) expect(b.store.chunksOf(`todo:${id}`).map((c) => c.text).join(" ")).not.toContain("project rules");
+  });
+
+  test("a feed gap during the first count does not count a row twice", async () => {
+    const b = setup({ cfg: (c) => ({ ...c, indexer: { ...c.indexer, reconcileRows: 2, sliceRows: 1 } }) });
+    const t = operatorThread(b.led);
+    const shared = "Follow the project rules and keep the tests green before you report.";
+    for (const w of ["alpha", "beta", "gamma"]) b.led.addTodo(todo({ brief: `${shared}\n\nThe ${w} task has its own words here.`, cause: { msgId: t, threadId: t } }));
+    const ix = indexer(b);
+    await ix.tick(T0); // counts one row
+    const counted = new Database(b.dbPath, { readonly: true });
+    expect((counted.query("SELECT max(rows) AS n FROM boilerplate_next").get() as { n: number }).n).toBe(1); // staged
+    counted.close();
+    b.led.addTodo(todo({ brief: "Written while the feed was pruned.", cause: { msgId: t, threadId: t } }));
+    b.led.pruneHistoryFeed(0);
+    let r = await ix.tick(T0 + MIN);
+    for (let i = 2; i < 60 && !(r.reconcile?.done && b.store.getState("reconcile.first")); i++) r = await ix.tick(T0 + i * MIN);
+    expect(b.store.getState("reconcile.first")).toBeDefined();
+    const raw = new Database(b.dbPath, { readonly: true });
+    const max = (raw.query("SELECT max(rows) AS n FROM boilerplate").get() as { n: number }).n;
+    raw.close();
+    expect(max).toBe(3);
+  });
+
   test("the weekly run deletes orphan ids in Qdrant", async () => {
     const b = setup({ cfg: (c) => ({ ...c, reconcileCron: "* * * * *" }) });
     const ix = indexer(b);

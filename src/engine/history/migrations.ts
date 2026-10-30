@@ -57,4 +57,13 @@ function base(db: Database): void {
   db.run(`CREATE INDEX remembered_hash ON remembered (text_hash, project)`);
 }
 
-export const HISTORY_MIGRATIONS: Migration[] = [{ version: 1, name: "task history", up: base }];
+function boilerplateRecount(db: Database): void {
+  // The paragraph counts of a reconcile in progress; they replace `boilerplate` when the count ends, so a
+  // recount (weekly, or a first count restarted) never adds to the old counts and never shows half of them.
+  db.run(`CREATE TABLE boilerplate_next (hash TEXT PRIMARY KEY, rows INTEGER NOT NULL)`);
+}
+
+export const HISTORY_MIGRATIONS: Migration[] = [
+  { version: 1, name: "task history", up: base },
+  { version: 2, name: "boilerplate recount", up: boilerplateRecount },
+];
