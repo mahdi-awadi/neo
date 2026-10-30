@@ -61,3 +61,27 @@ export const EMBEDDER_DEFAULTS: Readonly<EmbedderCfg> = {
   url: "http://127.0.0.1:8088", keyEnv: "HISTORY_EMBEDDER_KEY", model: "BAAI/bge-m3", revision: "", dims: 1024,
   batch: 8, timeoutMs: 60_000, queryTimeoutMs: 3_000, queryCache: 200, backoffMs: 5_000, backoffMaxMs: 300_000,
 };
+
+export interface VectorsCfg {
+  /** The environment variables that hold the shared Qdrant's URL and key (never the values). */
+  urlEnv: string;
+  keyEnv: string;
+  /** Must start with `neo_` and be in `allowedCollections`. */
+  collection: string;
+  allowedCollections: string[];
+  /** Points per upsert request. */
+  uploadBatch: number;
+  timeoutMs: number;
+  queryTimeoutMs: number;
+  /** Nearest neighbours one search asks for. */
+  knn: number;
+  /** Hits below this cosine score are dropped. */
+  minScore: number;
+  /** A remote count below this share of the local upload marks is drift: upload again. */
+  driftRatio: number;
+}
+
+export const VECTORS_DEFAULTS: Readonly<VectorsCfg> = {
+  urlEnv: "SHARED_QDRANT_URL", keyEnv: "SHARED_QDRANT_API_KEY", collection: "neo_history", allowedCollections: ["neo_history"],
+  uploadBatch: 128, timeoutMs: 10_000, queryTimeoutMs: 2_000, knn: 50, minScore: 0.35, driftRatio: 0.9,
+};

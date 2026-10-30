@@ -152,7 +152,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - A marker key never shows in an error or a reason.
   - Done when: the adapter part of AC20 and the embedder states of AC9 pass.
 
-- [ ] **7. Vector index adapter (Qdrant)**
+- [x] **7. Vector index adapter (Qdrant)**
   - Create: `src/engine/history/vector-index.ts`, `tests/fixtures/fake-qdrant.ts`,
     `tests/history-vector-index.test.ts`.
   - Tests first:
