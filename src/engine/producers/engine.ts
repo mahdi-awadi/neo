@@ -187,7 +187,7 @@ function engineScan(deps: EngineProducerDeps, now: number): { drafts: AttentionD
   const neo = at(deps.neoFolder);
   const services = deps.history ? faults.guard("attention.engine.history", () => deps.history!.services()) : undefined;
   if (deps.history && services === undefined) failed.add("history_off").add("history_degraded");
-  const serviceList = services ? (Object.entries(services) as Array<[HistoryService, ServiceReport]>) : [];
+  const serviceList: Array<[HistoryService, ServiceReport]> = services ? [["embedder", services.embedder], ["vectors", services.vectors]] : [];
   kind("history_off", () => {
     for (const [service, s] of serviceList) {
       if (s.state !== "off" || !s.reason) continue;

@@ -73,6 +73,14 @@ test("each off reason gives history_off on its service, filed under Neo, with th
   }
 });
 
+test("only the two services are read: other fields of what the seam hands over are never items", () => {
+  const h = setup();
+  const off: ServiceReport = { state: "off", since: T0, reason: "not_configured" };
+  // As a whole pass report would hand them over (it has more fields, some with a `state`).
+  h.set({ ...services(), reconcile: off, feed: off } as never);
+  expect(engineDrafts(h.deps, T0 + MIN)).toEqual([]);
+});
+
 test("history_degraded comes only after degradedAlertMinutes, for each down service", () => {
   const h = setup();
   const minutes = HISTORY_DEFAULTS.degradedAlertMinutes;

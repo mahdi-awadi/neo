@@ -136,6 +136,21 @@ export function historyQuery(form: { q: string; project?: string; kinds?: string
   return p.toString();
 }
 
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+
+/** A hit's day as digits only (local time, `YYYY-MM-DD`): it sits in an LTR isolate, where a localized
+ *  month name (an Arabic one) would be reordered with the digits. */
+export function numericDate(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** The entry line of the forget dialog: the ref as an LTR isolate, the title as an isolate of its own
+ *  direction, so in Arabic the ref never lands inside an English title (or the other way). */
+export function forgetEntryHtml(ref: string, title: string | undefined, f: Fmt): string {
+  return title !== undefined ? `${f.ltr(ref)} ${f.iso(title)}` : f.ltr(ref);
+}
+
 /** The toast after a forget: the counts, and the vectors that still wait for the shared index. */
 export function forgetToast(d: { chunks?: number; points?: number; pendingPoints?: number }, f: Fmt): string {
   const done = f.tx("history.forgotten", { chunks: d.chunks ?? 0, points: d.points ?? 0 });
@@ -262,7 +277,7 @@ export function mountHistory(d: PanelDeps): HistoryPanel {
       if (!forgettable(ref)) return;
       target = ref;
       const hit = state.kind === "done" ? state.hits.find((h) => h.ref === ref) : undefined;
-      $("hfentry").innerHTML = `${f.ltr(ref)}${hit ? ` <span dir="auto">${f.esc(hit.title)}</span>` : ""}`;
+      $("hfentry").innerHTML = forgetEntryHtml(ref, hit?.title, f);
       ($("hfreason") as HTMLTextAreaElement).value = "";
       dlg.showModal();
       $("hfreason").focus();

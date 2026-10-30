@@ -17,7 +17,7 @@ import { linesHtml } from "./text-lines";
 import { buildLabel } from "./build-label";
 import { dismissSplash } from "./splash";
 import { runAct, type ActResult } from "./act";
-import { mountHistory } from "./history";
+import { mountHistory, numericDate } from "./history";
 import { THREAD_ORIGINS } from "../../engine/thread-origins";
 import { CODED_FACTS } from "../../engine/attention-facts";
 
@@ -1766,7 +1766,7 @@ sheet().addEventListener("click", (ev) => {
 
 // ── History (ADR-0066): search past work, remember a fact, forget an entry ───────────────────────
 const historyPanel = mountHistory({
-  fmt: { esc, ltr, iso, t, tx, date: (at) => new Date(at).toLocaleDateString(LOCALE, { year: "numeric", month: "short", day: "numeric" }) },
+  fmt: { esc, ltr, iso, t, tx, date: numericDate },
   $,
   act,
   toast,

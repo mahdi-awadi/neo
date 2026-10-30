@@ -11,7 +11,7 @@ import { renameSync, existsSync } from "node:fs";
 import { fileStamp } from "../backup/rotate";
 import type { Ledger } from "../ledger";
 import type { HistoryCfg } from "./defaults";
-import { openTaskHistory, type IndexReport, type TaskHistory, type TaskHistoryDeps } from "./index";
+import { openTaskHistory, type IndexReport, type ServiceReport, type TaskHistory, type TaskHistoryDeps } from "./index";
 import { emptyIndexReport } from "./indexer";
 import { isHistoryStoreError } from "./store";
 
@@ -60,6 +60,11 @@ export interface HistoryRuntime {
   latest(): IndexReport | undefined;
   /** Stop the follow-ups and close the store (shutdown). */
   close(): void;
+}
+
+/** The two service states of a pass report (what the attention producer reads), or undefined before the first pass. */
+export function servicesOf(r: IndexReport | undefined): { embedder: ServiceReport; vectors: ServiceReport } | undefined {
+  return r ? { embedder: r.embedder, vectors: r.vectors } : undefined;
 }
 
 const NODE_TIMERS: HistoryTimers = {

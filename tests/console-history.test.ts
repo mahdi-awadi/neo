@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { createHash, createHmac } from "node:crypto";
 import { createWebApp } from "../src/frontends/web";
 import { createConsoleI18n } from "../src/frontends/web/i18n";
-import { ERROR_CODES, OFF_REASONS, QUERY_KINDS, VIA, errorText, forgetToast, hitCard, historyQuery, modeBanner, resultsHtml, type Fmt, type HitView } from "../src/frontends/web/history";
+import { ERROR_CODES, OFF_REASONS, QUERY_KINDS, VIA, errorText, forgetEntryHtml, forgetToast, hitCard, historyQuery, modeBanner, numericDate, resultsHtml, type Fmt, type HitView } from "../src/frontends/web/history";
 import { loadConfig } from "../src/config";
 import { openLedger } from "../src/engine/ledger";
 import { openAdminStore } from "../src/engine/admin";
@@ -177,7 +177,7 @@ function fmt(lang: "en" | "ar"): Fmt {
   return {
     esc, ltr: (s) => `<bdi dir="ltr" class="ref">${esc(s)}</bdi>`, iso: (s) => `<bdi>${esc(s)}</bdi>`,
     t: (k, v) => i.t(k, v ?? {}), tx: (k, v) => i.t(k, { ...v, interpolation: { escapeValue: false } }),
-    date: (at) => new Date(at).toISOString().slice(0, 10),
+    date: numericDate,
   };
 }
 const HIT: HitView = {
@@ -243,6 +243,23 @@ test("in Arabic, ids, dates, shas and counts are LTR isolates, and numbers insid
   expect(h).toContain(">خطة<");
   expect(resultsHtml({ kind: "done", mode: { meaning: "partial", coverage: 0.5 }, hits: [HIT] }, f)).toContain('<bdi dir="ltr" class="ref">50%</bdi>');
   expect(resultsHtml({ kind: "done", mode: { meaning: "on" }, hits: [HIT] }, f)).toContain('<bdi dir="ltr" class="ref">1</bdi>');
+});
+
+test("in Arabic a hit date is digits only inside its LTR isolate (no month name to reorder); the console formats it so", () => {
+  const at = new Date(2026, 9, 29, 15, 0).getTime();
+  expect(numericDate(at)).toBe("2026-10-29");
+  expect(hitCard(HIT, fmt("ar"))).toMatch(/<bdi dir="ltr" class="ref">\d{4}-\d{2}-\d{2}<\/bdi>/);
+  // The page's own formatter for the panel is the numeric one, never a localized month name.
+  expect(APP).toMatch(/date: numericDate\b/);
+  expect(APP).not.toMatch(/date: \(at\) => new Date\(at\)\.toLocaleDateString/);
+});
+
+test("the forget dialog isolates the entry's title (direction auto) and its ref (LTR), so the ref never lands inside the title", () => {
+  const f = fmt("ar");
+  const html = forgetEntryHtml("plan:12", "Fees <b>plan</b>", f);
+  expect(html).toBe('<bdi dir="ltr" class="ref">plan:12</bdi> <bdi>Fees &lt;b&gt;plan&lt;/b&gt;</bdi>');
+  expect(forgetEntryHtml("todo:9", undefined, f)).toBe('<bdi dir="ltr" class="ref">todo:9</bdi>');
+  expect(PANEL).toContain('$("hfentry").innerHTML = forgetEntryHtml(');
 });
 
 test("the query string carries only the filled fields", () => {

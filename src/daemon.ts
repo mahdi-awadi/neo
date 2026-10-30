@@ -62,7 +62,7 @@ import { createTrace } from "./engine/trace";
 import { planDepsFrom } from "./engine/plans";
 import { createEngineUpdater, registryBusy } from "./engine/update-engine";
 import { HISTORY_DEFAULTS } from "./engine/history/defaults";
-import { startTaskHistory, type HistoryRuntime } from "./engine/history/runtime";
+import { servicesOf, startTaskHistory, type HistoryRuntime } from "./engine/history/runtime";
 import { BACKUP_DEFAULTS } from "./engine/backup/cfg";
 import { createBackupSchedule } from "./engine/backup/schedule";
 
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
         measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }),
         // ADR-0066: Neo's own items — the task history's service states (newest pass) and the backup state.
         neoFolder,
-        ...(historyRuntime.available ? { history: { cfg: historyCfg, services: () => historyRuntime.latest() } } : {}),
+        ...(historyRuntime.available ? { history: { cfg: historyCfg, services: () => servicesOf(historyRuntime.latest()) } } : {}),
         backups: () => backups.state(),
       },
       Date.now(),
