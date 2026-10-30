@@ -23,11 +23,11 @@ usage:
 The tools are `history_search` and `remember` in the `neo` MCP server.
 
 - `history_search` needs `query`: plain words (Arabic or English) or ids (`#884`, `todo 884`, a commit sha, a decision id, an order id, a PNR). Optional: `project`, `since` and `until` (UTC dates, `YYYY-MM-DD`, inclusive), `kinds` (`todo`, `order`, `result`, `digest`, `message`, `plan`, `note`, `attention`, `decision`, `remembered`, `line`), `limit` (1–20).
-- The first line of the reply says whether meaning search is on, partial (with its coverage) or off (with the reason). With meaning search off, the hits are word and id matches only.
+- The first line of the reply says whether meaning search is on, partial (with its coverage), off (with the reason) or skipped (the query is only ids). With meaning search off, the hits are word and id matches only.
 - Each hit gives its kind, title, project, date, ref and how it was found, then the todo, order, thread, commits and plan path when known, then the matching text. Check a hit at its source before you act on it.
 - `remember` needs `text` (one fact with where it applies); `project` defaults to this session's project. It answers `Saved as mem:N` or why it was not saved.
 
-Reference: ADR-0066, `CONTEXT.md` (Task history).
+Reference: ADR-0066, `docs/history.md`, `CONTEXT.md` (Task history).
 
 ## When NOT to use
 

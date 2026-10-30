@@ -43,6 +43,7 @@ success. The ledger has a `backup_failed` event with the code for each failure.
 | `compress_failed` | Gzip failed. | Check the disk. |
 | `timeout` | The child ran longer than `timeoutMs`. | Check the disk speed and the database size. Raise `timeoutMs` if needed. |
 | `checksum_mismatch`, `count_mismatch`, `restore_failed`, `no_snapshot`, `manifest_unreadable` | The drill failed. | The newest snapshot is not good. Do not delete the older snapshots. Run a snapshot by hand (below) and then the drill. |
+| `spawn_failed`, `child_failed`, `bad_args`, `error` | The child did not start, ended with no known code, got wrong arguments, or failed in another way. | Read the alert text. Run the same command by hand (below) and read its output. |
 
 To list the snapshots:
 

@@ -368,7 +368,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - Each command goes through the engine code: no raw SQL, and no `curl` with the key.
   - Done when: these tests pass, and task 20 can run with these commands only.
 
-- [ ] **19. Docs**
+- [x] **19. Docs**
   - Modify: ADR-0066 (status "accepted (as built)" and an "As built" section with the measured numbers),
     `CONTEXT.md`, `docs/CONFIG.md`, `docs/HISTORY.md`, `HANDOFF.md`, `docs/tools/history-search.md`,
     `docs/backup.md`.

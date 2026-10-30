@@ -1,3 +1,16 @@
+# HANDOFF — 2026-10-30: task history with hybrid search + snapshot backup (ADR-0066, ledger v17, on feat/history-search, not merged, restart-gated)
+
+Built on the branch `feat/history-search` (worktree /home/neo-wt-history, plan tasks 1–19). Not merged into `dev`
+yet: plan task 20 (the live verify: embedder memory, backfill speed, Arabic/English eval, down drills, 360 px
+screenshots, final review) comes first and writes its numbers into ADR-0066 "As built". Guide: `docs/history.md`.
+Operator steps after the merge: (1) `bun tools/history/install.ts` (pulls the embedder and the model, about
+2.3 GB, and writes HISTORY_EMBEDDER_KEY into the env file); (2) restart Neo (your permission): migration v17 runs
+after its `.bak-v16` copy, then the backfill starts and meaning search reports partial coverage for some hours;
+(3) decide the ledger backup (ADR-0066, option A recommended). A restart before step 1 gives keyword-only search
+and a `history_off` item that names step 1.
+
+---
+
 # HANDOFF — 2026-10-29: needs you vs housekeeping, pins, tappable todos (ADR-0065, ledger v16, on dev, restart-gated)
 
 ATTENTION now means "something only you can move" (plan cards, decisions, alerts, failed todos, needs-you kinds);

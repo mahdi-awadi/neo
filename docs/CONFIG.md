@@ -506,7 +506,8 @@ runs at most once per process per folder.
 
 `readHistoryCfg` (`src/engine/history/cfg.ts`) reads the section. Each key keeps a value of the right type
 and range; any other value keeps its default. One bad key never turns a guard off. The defaults are
-dev-safe: with no key or URL in `.env`, history runs keyword-only.
+dev-safe: with no key or URL in `.env`, history runs keyword-only. The operator guide is `docs/history.md`.
+The section is read once at start: a change needs a daemon reload.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
@@ -517,7 +518,7 @@ dev-safe: with no key or URL in `.env`, history runs keyword-only.
 | `embedder` | `{ url: "http://127.0.0.1:8088", keyEnv: "HISTORY_EMBEDDER_KEY", model: "BAAI/bge-m3", revision: "5617a9f61b028005a4858fdac845db406aefb181", dims: 1024, batch: 8, timeoutMs: 60000, queryTimeoutMs: 3000, queryCache: 200, backoffMs: 5000, backoffMaxMs: 300000 }` | The local TEI service. The URL must be loopback. `keyEnv` names the env variable (never the key). `model` and `revision` must name the pair that `tools/history/embedder.env` pins (a test checks the defaults match). An empty `revision` → meaning search is off (`not_configured`). |
 | `next` | `null` | A model change: the same shape as `embedder`, plus `collection` when its `dims` differ. Kept only with a `model` and a `revision` that differ from the active model, and, for other dims, an allowed `neo_` collection. Else it is dropped. |
 | `retireAfterDays` | `7` | The old model's points and vectors go this many days after the model tag changed. |
-| `vectors` | `{ urlEnv: "SHARED_QDRANT_URL", keyEnv: "SHARED_QDRANT_API_KEY", collection: "neo_history", allowedCollections: ["neo_history"], uploadBatch: 128, timeoutMs: 10000, queryTimeoutMs: 2000, knn: 50, minScore: 0.35, driftRatio: 0.9 }` | The shared Qdrant. Each `allowedCollections` entry must start with `neo_` (others are dropped); a `collection` outside the list keeps the default. `minScore` and `driftRatio` are in 0–1. |
+| `vectors` | `{ urlEnv: "SHARED_QDRANT_URL", keyEnv: "SHARED_QDRANT_API_KEY", collection: "neo_history", allowedCollections: ["neo_history"], uploadBatch: 128, timeoutMs: 10000, queryTimeoutMs: 2000, knn: 50, minScore: 0.35, driftRatio: 0.9 }` | The shared Qdrant. `urlEnv` and `keyEnv` name env variables (never values). Each `allowedCollections` entry must start with `neo_` (others are dropped); a `collection` outside the list keeps the default. `minScore` and `driftRatio` are in 0–1. |
 | `search` | `{ rrfK: 60, weights: { meaning: 1, words: 1, lines: 0.5 }, exactBoost: 1, defaultLimit: 10, maxLimit: 50, listLimit: 50, snippetChars: 240, maxQueryChars: 500, maxTerms: 12, fullCoverage: 0.99 }` | The fusion and the limits. `defaultLimit` never exceeds `maxLimit`. Coverage below `fullCoverage` reports meaning search as partial. |
 | `indexer` | `{ feedBatch: 500, sliceRows: 200, busyPauseMs: 200, reconcileRows: 500, embedBatchesPerPass: 16, uploadBatchesPerPass: 8 }` | One pass's bounds. While a pass leaves work that can go on (feed rows or a reconcile; embeds with the embedder up; uploads and deletes with Qdrant up), the next pass starts after `busyPauseMs`, not at the next heartbeat. |
 | `reconcileCron` | `17 4 * * 0` | The weekly reconcile (5-field cron, server-local). An invalid cron keeps the default. |
@@ -536,16 +537,16 @@ runbook (restore, drill, failures) is `docs/backup.md`.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `dir` | `/var/backups/neo` | The backup folder. Must be absolute. Made with mode 0700; files are 0600. The disk-cleanup kit protects it. |
-| `databases` | `[{ path: "data/history.db", cron: "41 3 * * *" }]` | The SQLite files to snapshot, each on its own cron (server-local). A relative path resolves against the daemon's folder. An entry with a bad cron, a path that is not `*.db`, or the same file name as an earlier entry is dropped. An empty list turns the job off. The ledger is not in the list: it joins only by the operator's decision (ADR-0066). |
+| `databases` | `[{ path: "data/history.db", cron: "41 3 * * *" }]` | The SQLite files to snapshot, each on its own cron (server-local). A relative path resolves against the daemon's folder. An entry with a bad cron, a path that is not `*.db`, a file name (without `.db`) that is not lower-case letters, digits and `_`, or the same file name as an earlier entry is dropped. The file name names the snapshots (`history-<stamp>.db.gz`). An empty list turns the job off. The ledger is not in the list: it joins only by the operator's decision (ADR-0066). |
 | `keepRecent` | `8` | The newest snapshots kept. |
-| `keepDaily` | `7` | Then the newest of each day, for this many more days. |
-| `keepWeekly` | `4` | Then the newest of each ISO week, for this many more weeks. Rotation deletes only files that match the naming rule `<name>-<UTC yyyymmddThhmmssZ>.db[.gz]` (and their `.manifest.json`). |
+| `keepDaily` | `7` | Then the newest of each day, for this many more days (`0` allowed). |
+| `keepWeekly` | `4` | Then the newest of each ISO week, for this many more weeks (`0` allowed). Rotation deletes only files that match the naming rule `<name>-<UTC yyyymmddThhmmssZ>.db[.gz]` (and their `.manifest.json`). |
 | `compress` | `true` | Gzip each snapshot. |
 | `drillCron` | `23 5 * * 0` | The weekly restore drill: the newest snapshot of each database is checked against its manifest, restored to a temp file, `integrity_check`ed and its row counts compared. |
-| `minFreeGb` | `20` | A snapshot does not start with less free space (GiB) in `dir`. |
+| `minFreeGb` | `20` | A snapshot does not start with less free space (GiB) in `dir`. Any number from `0`. |
 | `timeoutMs` | `900000` | A snapshot or drill child that runs longer is ended (a failure). |
 
-A failure records `backup_failed` (codes only), sends one alert for each failure streak and keeps the
+The failure codes and the restore steps are in `docs/backup.md`. A failure records `backup_failed` (codes only), sends one alert for each failure streak and keeps the
 `backup_failed` attention item until the job works again. A success records `backup_done` (or
 `backup_drill`).
 

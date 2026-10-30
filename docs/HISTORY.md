@@ -1413,3 +1413,21 @@ Needs you vs housekeeping, pins, superseded items, tappable todos (2026-10-29, A
   toast with the reply. AR + EN keys; screenshots `agent/needs-you-*-2026-10-29.png`.
 
 Restart-gated.
+
+Task history with hybrid search, and a snapshot backup of `history.db` (2026-10-30, ADR-0066, ledger v17).
+
+- Neo keeps a searchable archive of past work (todos, orders, results, digests, your messages, plans,
+  notes, GitHub/git items, decisions, remembered facts) in `data/history.db`. Search fuses exact ids,
+  meaning (a local bge-m3 embedder, vectors in the shared Qdrant `neo_history`), words (FTS5 with Arabic
+  normalization and stems) and the ledger's worker lines. Each hit cites its source.
+- A ledger change feed (migration v17) keeps the history in step. Entries that the ledger's retention
+  deletes stay as archived entries. The firewall excludes chat `-3` (customer work and consult runs) and
+  ingress threads. Secret-shaped chunks are never stored.
+- Surfaces: the console History tab, Telegram `/find`, `/remember` and `/forget`, and the worker tools
+  `history_search` and `remember`. When the embedder or Qdrant is down, search is keyword-only and says
+  why. The `history_off`, `history_degraded` and `backup_failed` attention items name the step.
+- `tools/history/install.ts` runs the embedder (loopback, capped). `admin.ts` and `eval.ts` serve the
+  operator and the verify step. A nightly snapshot of `history.db` goes to `/var/backups/neo`, with a weekly
+  restore drill (`docs/backup.md`). Operator guide: `docs/history.md`.
+
+Restart-gated.

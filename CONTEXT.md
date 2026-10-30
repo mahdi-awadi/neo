@@ -347,7 +347,9 @@ entries, with the commit shas that they name. It answers "what did we do about X
 meaning, by words and by exact id, in Arabic and English. Each hit cites its source (ref, kind, project,
 date, todo, order, thread, commits, plan path). The text and the word index live in `data/history.db`,
 the source of truth, which keeps entries after the ledger prunes them. The vectors live in Neo's own
-collection on the shared Qdrant, a copy that Neo can rebuild (ADR-0066). Customer text is never in it.
+collection on the shared Qdrant, a copy that Neo can rebuild (ADR-0066). Customer text is never in it,
+and consult runs are not in it either (they share the customer chat id `-3`, so the firewall excludes
+them). Guide: `docs/history.md`.
 _Avoid_: memory (bare), recall, knowledge base, `/history` (that is the Telegram alias of `/recent`)
 
 **History entry**:
@@ -359,18 +361,22 @@ _Avoid_: document (bare), record
 **Archived entry**:
 A history entry whose ledger row was deleted by the ledger's retention (old todos, resolved attention
 items, closed decisions). It stays searchable, and its hit says that the ledger no longer has the row.
-Only `forget` removes it.
+Only `forget` (or a firewall verdict that changes to "excluded") removes it.
 _Avoid_: deleted entry, stale entry
 
 **Remembered entry**:
-An explicit "remember this" that the operator or a worker saves into the task history: a short text, its
-project and who saved it. It exists only in `history.db`, is searchable like any other entry, and never
-expires.
+An explicit "remember this" that the operator, the company or a worker saves into the task history: a
+short text, its project and who saved it. Its ref is `mem:N`. It exists only in `history.db`, is
+keyword-searchable at once like any other entry, and never expires. Only `forget` removes it. Secret-shaped
+and injection-shaped text is refused.
 _Avoid_: note (that is a project note), pin
 
 **Forget**:
-The operator's removal of one history entry everywhere (chunks, word index, vectors, Qdrant points). A
-tombstone keeps the ref, so a later sync never adds it again. The ledger row itself does not change.
+The operator's removal of one history entry everywhere (chunks, word index, vectors, Qdrant points). For a
+ledger-backed ref, a tombstone keeps the ref, so a later sync never adds it again. A remembered entry
+(`mem:N`) has no ledger row, so its row is deleted and no tombstone is kept. The ledger row itself does not
+change. Points that Qdrant does not take now wait in a queue. The admin `rescan-secrets` also forgets
+(whole entries with a secret shape).
 _Avoid_: delete (bare), purge
 
 **Change feed**:
@@ -382,23 +388,27 @@ _Avoid_: outbox (a general pattern name), event log (that is the `events` table)
 **Hybrid search**:
 One query run on up to four ranked lists: exact ids, meaning (vector nearest neighbours), words (full
 text in `history.db`) and lines (the ledger's streamed worker lines). Reciprocal rank fusion joins them.
-Exact hits rank first. The filters (project, date, kind) apply in each list.
+Exact hits rank first. The filters (project, date, kind) apply in each list. A query that is only ids
+makes no embed call (mode `skipped`).
 _Avoid_: semantic search (that is only one list), AI search
 
 **Keyword-only mode**:
-The state of a history search when meaning search is off (the embedder or the shared Qdrant does not
-answer, or a key is refused). Search then answers from the word lists, and each reply says why meaning
-search is off. Nothing is lost: the waiting chunks are embedded and uploaded when the service answers.
+The state of a history search when meaning search is off (mode `off` with a reason code: the embedder or
+the shared Qdrant does not answer, is not configured, or refuses the key or the model). Search then answers
+from the exact, words and lines lists, and each reply says why meaning search is off. Nothing is lost: the
+waiting chunks are embedded and uploaded when the service answers. Not the same as `partial` (meaning
+search works but covers only part of the history, for example during the first backfill).
 _Avoid_: fallback mode, degraded search
 
 **Embedder**:
 The local service that turns text into vectors: text-embeddings-inference with `BAAI/bge-m3` in a pinned,
-loopback-only, memory-capped Docker container (`neo-embedder`). It is Neo's own container, not a shared
-service.
+loopback-only, memory-capped Docker container (`neo-embedder`, port 8088). `tools/history/install.ts`
+starts it and writes its key. It is Neo's own container, not a shared service.
 _Avoid_: model (bare), AI
 
 **Model tag**:
-The name of the vector space of a vector: model id, dimensions and revision, derived by code. Each local
+The name of the vector space of a vector: model id, dimensions and revision, derived by code
+(`<model>@<dims>:<revision prefix>`). Each local
 vector, each Qdrant point id and each point payload carries it, and a query reads only the active tag, so
 search never mixes two models.
 _Avoid_: model version, embedding version

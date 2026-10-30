@@ -1,10 +1,11 @@
 # Task history: SQLite holds the text and the word index, the shared Qdrant holds only vectors, and a ledger change feed keeps them in step
 
-**Status:** proposed, revision 3 (2026-10-29). The plan waits for approval. Revision 1 chose sqlite-vec.
+**Status:** accepted (as built, 2026-10-30). Built on the branch `feat/history-search` (plan tasks 1–18).
+The section "As built" at the end lists each change that the code made to this ADR and the spec. The live
+verify step (plan task 20) fills in the measured numbers. Revision 1 chose sqlite-vec.
 Revision 2 followed the operator ruling in note #500. Revision 3 decides each store again with facts
-measured today, adds the sync design, and proposes a ledger backup as a separate operator decision. The ops
-consumer guide now exists (`agent/desks/ops/shared-infra/CONSUMERS.md`), so the wiring does not wait any
-more. Related: ADR-0020 (project memory), ADR-0024 (security), ADR-0032 (shared Docker services), ADR-0043
+measured on 2026-10-29, adds the sync design, and proposes a ledger backup as a separate operator decision.
+The ops consumer guide exists (`agent/desks/ops/shared-infra/CONSUMERS.md`). Related: ADR-0020 (project memory), ADR-0024 (security), ADR-0032 (shared Docker services), ADR-0043
 (secret shapes), ADR-0062 (secrets through env), ADR-0065 (attention classes), the customer firewall.
 
 ## Context
@@ -298,3 +299,94 @@ is a further decision. The backup folder is `/var/backups/neo`, beside the ops f
   search continues.
 - The first backfill embeds about 15,000 to 25,000 chunks on CPU. It takes hours. Meaning search reports
   partial coverage until it is complete.
+
+## As built (2026-10-30)
+
+The code follows the decisions above. These are the changes that the build made, read from the code and
+the commit messages of plan tasks 1–18 (`eea1bad..7b7f52d` on `feat/history-search`). The operator guide
+is `docs/history.md`. The config reference is `docs/CONFIG.md` ("Task history", "Snapshot backup").
+
+### Changes to the decisions
+
+- **Consult runs are not in the history.** A consult run records its order on `CONSULT_CHAT`, and
+  `CONSULT_CHAT` equals `CUSTOMER_CHAT` (`-3`). The firewall excludes every order on chat `-3` and its
+  descendants, so consult questions and answers are not indexed. This fails closed. A consult run can
+  still use `history_search`. It does not get `remember`.
+- **`forget` of a remembered entry (`mem:N`) keeps no tombstone.** A remembered entry exists only in
+  `history.db`, so the code deletes its row and nothing can add it again. Only a ledger-backed ref gets a
+  tombstone. A `line:` ref (a ledger worker line) cannot be forgotten: it is not stored in the history.
+- **The seam has a fifth method, `status()`.** The admin command and the attention producer read it: the
+  newest pass, the two service states, the coverage of each model tag, the queued point deletes and the
+  writer lock.
+- **A writer lock in `history.db`.** One process at a time indexes. A lock older than
+  `store.lockStaleMs` (3 minutes, three heartbeats) can be taken over. A pass that finds the lock held by
+  another process does nothing (`locked`).
+- **Backfill pacing.** When a pass leaves work that can go on now, the next pass starts after
+  `indexer.busyPauseMs` (200 ms), not at the next heartbeat. "Can go on" means feed rows or a reconcile;
+  embeds only while the embedder is up; uploads and deletes only while Qdrant is up. A pass that moved
+  nothing, or found the lock held, starts no follow-up. New bounds for one pass: `indexer.reconcileRows`,
+  `indexer.embedBatchesPerPass` and `indexer.uploadBatchesPerPass`.
+- **A corrupt `history.db` is moved aside.** At start, the daemon renames it (and its `-wal` and `-shm`
+  files) to `history.db.corrupt-<UTC time>` and sends one alert. A stand-in seam then answers
+  `history_unavailable` on every surface until a snapshot is restored and the daemon reloads. The engine
+  keeps running.
+- **`rescan-secrets` forgets whole entries.** The admin command walks every stored chunk with today's
+  secret finder. For each entry with a match, it forgets the whole entry (all its chunks and points), not
+  only the chunk. The reason names the pattern, never the text. `--dry-run` only lists the refs.
+- **The embedder container runs as the image's default user (root).** The named volume
+  `neo-embedder-models` is created owned by root, and TEI writes the model download into it. The
+  container has `cap_drop: [ALL]`, `no-new-privileges`, a pids limit, memory and CPU caps, and a port on
+  `127.0.0.1` only. A non-root user is a later hardening step (a pre-owned volume).
+- **The embedder health check is a TCP connect.** `/health` needs the bearer key, and the key must not be
+  in a health-check command. `install.ts` checks `/health`, `/info` and one test embed with the key.
+- **Pinned versions.** TEI `cpu-1.9` resolved to `cpu-1.9.4`, pinned by digest in
+  `tools/history/embedder.env`. `BAAI/bge-m3` is pinned at Hub commit `5617a9f61b02…`. The engine default
+  `history.embedder.revision` names the same commit, and a test checks that the two match.
+- **Model retirement with other dimensions.** The indexer deletes an old tag's points from the active
+  collection. When the new model has other dimensions (a new collection), the old collection keeps its
+  points. Ask ops to delete the old collection after the change.
+- **Telegram `/forget` reason.** The console needs a reason. In Telegram the reason is optional. With no
+  reason, the code records "forgotten by the operator in Telegram" (or "in the console" from the console
+  chat box). Nothing is removed until the operator taps the Forget button.
+- **The console chat box also takes `/find`, `/remember` and `/forget`.** It shares the rate-limit
+  session `console` with the History tab. `/forget` there shows the entry and links it in the History tab.
+- **Attention items.** `history_off` (needs you) names the operator step from the config names.
+  `history_degraded` (housekeeping) appears only after `degradedAlertMinutes`. `backup_failed` (needs you)
+  names the job's path and code. Each resolves itself on recovery. After a restart, open items are kept
+  until the first pass reports.
+- **Change-feed prune.** The prune runs at most once an hour. It also runs when `history.enabled` is
+  `false`, so the feed never grows without a limit.
+- **Ledger fix in migration v17.** `endInterruptedOrders` now counts the `RETURNING` rows. With the feed
+  triggers, `bun:sqlite`'s `.changes` also counts the rows that the triggers write.
+- **More search and embedder tunables.** `search.exactBoost`, `search.maxQueryChars` (500, a longer query
+  is refused, not cut), `search.maxTerms` (12) and `search.fullCoverage` (0.99, below it the mode is
+  `partial`); `embedder.backoffMs` and `embedder.backoffMaxMs` (429 and 503 back-off, `Retry-After` wins).
+- **The vector-index guards are stricter than the request rule.** A payload string over 64 characters, a
+  wrong vector length or a non-UUID point id is refused before the request. The JWT payload is decoded to
+  check the `access` claim, never verified and never printed.
+- **The dispatch preamble.** One sentence for `history_search` ("Done before? `history_search` first.").
+  Other lines were made shorter, so the preamble with the codebase-memory line is 4,985 characters (limit
+  5,000).
+- **Shared code, not copies.** `cronDueBetween` moved to `trigger.ts`. `fileStamp` lives in
+  `backup/rotate.ts`. `parseEnvFile` moved to `tools/lib/env-file.ts` (the browser kit uses it too).
+  `vacuumCopy` (the snapshot's read-only copy) is also the admin `copy-ledger`. The reserved chat ids moved
+  to the leaf module `chats.ts`.
+- **Backup failure codes.** Besides the codes in `docs/backup.md`, a child can fail with `error`,
+  `child_failed`, `spawn_failed` or `bad_args`.
+- **Admin and eval tools.** `tools/history/admin.ts` (`status`, `copy-ledger`, `backfill`, `verify-clean`,
+  `forget`, `rescan-secrets`) and `tools/history/eval.ts` (recall@k, MRR, p50 and p95 for words only,
+  meaning only and hybrid). `backfill --verify` uploads under the tag `<tag>~verify` and refuses a
+  collection that holds points of another tag.
+
+### Measured (filled by the verify step)
+
+Plan task 20 writes these numbers. Until then they are open.
+
+- Embedder memory at idle and at peak; the final `NEO_EMBEDDER_MEM` (peak + 25 %): TODO
+- Backfill of the ledger copy: chunks, total time, chunks per second, CPU, upload time: TODO
+- Eval, bge-m3: recall@5 and MRR for words only, meaning only and hybrid (Arabic and English): TODO
+- Eval, `Qwen/Qwen3-Embedding-0.6B` on the same set, and the model kept: TODO
+- Tuned `vectors.minScore` and `search.weights`: TODO
+- Query latency p50 and p95, keyword-only and hybrid (50 queries): TODO
+- Down drills (`embedder_down`, `vectors_down`, drift re-upload with zero embed calls): TODO
+- Points in `neo_history` after the first live backfill: TODO
