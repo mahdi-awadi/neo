@@ -86,8 +86,60 @@ ways out were `/kill` (which loses the session) or the chief of staff killing PI
   never pid 1), `docker-exec.ts` (exec instance by command, via the Docker API), `tool-control.ts`
   (the seam, notices), `/stop`, `/bg`, `/list`, `tool_control`, the console strip.
 
+## Amendment (2026-10-30): the Telegram card leaves the chat when its call ends
+
+**Context.** The operator found cards still in the chat, with live Stop / Background buttons, long
+after their command had ended (screenshot of 2026-10-30, eticket-v3). A tap then showed only a toast,
+"that command has already ended", or a "Could not move … to the background: not_running" line. Root
+cause: the daemon posted the card and dropped the `sendMessage` result. The notice store knew a key's
+call, but not its card, so when the call ended nothing could find the card. The heartbeat only
+forgot the key, so a later tap resolved to nothing. After a tap, the handler replaced the card's
+text with the result instead of removing the card.
+
+**Decision.**
+1. The notice store keeps the card (chat and message id) of each notice. When the call ends, by
+   itself, by Stop or by Background, from any surface (a button, `/stop`, `/bg`, the console,
+   `tool_control`), the store hands the card over **once** for removal. A card attached after its call
+   already ended is queued at once.
+2. Removal (`src/frontends/telegram-tool-cards.ts`, `removeToolCard`) does **`deleteMessage`** first.
+   Only when Telegram **refuses** it (a 400/403, for example a message older than 48 h) does it drop the
+   buttons with `editMessageReplyMarkup`. "Message not found" counts as done.
+3. **Telegram limits.** The flood gate now also covers `deleteMessage(s)` (not `deleteWebhook`). A
+   held delete does not count as a message "not delivered", because the sweep retries it. A 429 (or
+   the gate's hold) is never answered with the fallback edit: the card waits for `retry_after`. A
+   Telegram 5xx or a network error is retried after `cardSweepMs × 2^attempts`. After
+   `toolControl.cardRemoveAttempts` tries, the card is left and the failure is logged.
+4. **When.** A timer every `toolControl.cardSweepMs` (default 5 s) checks the in-memory call list. It
+   calls Telegram only for a card to remove. The heartbeat's notice tick posts and sweeps. One card job
+   runs at a time. At shutdown, after the drain, every remaining card is removed (one try, bounded
+   by `cardSweepMs`), because the next boot cannot act on it.
+5. **A tap.**
+   - Confirm stop or Background that acts: the toast says what happened and the card is deleted at
+     once. A chat line is sent only when it adds something: the log path of a backgrounded call, or a
+     stop's extras (container processes, survivors).
+   - A tap on a stale card (the call ended, or a key from before a restart), or one whose command ended
+     between the tap and the action: the card is removed quietly, with an empty answer.
+   - A stop that could not be **confirmed** keeps the card, and a line says why. The SDK stop first
+     moves the call to the background, so in practice the call leaves the running list and the next
+     sweep removes the card.
+   - A toast or a line that fails (a stale query, a held 429) is logged. It never stops the card's
+     removal.
+
+**Rejected.**
+- **Edit the card's text into the result** (the old behaviour). It leaves one dead card per long call
+  in the operator's chat.
+- **Remove only the buttons.** The operator asked for the card to go. Removing the buttons is only the
+  fallback.
+- **An event from the session runner on each tool result.** It would add plumbing across the runner,
+  the registry and the daemon to save at most `cardSweepMs`. The sweep reads the same in-memory list
+  the notices already use.
+- **Store cards in the ledger to survive a restart.** Keys are random per boot (stale buttons never hit
+  a new call), and a tap on a card from before a restart now removes it. A migration is not worth it.
+
 ## Known limits
 
+- A card the shutdown sweep could not remove (a 429 at that moment, a crash with no drain) is removed
+  only when someone taps it: the new process does not know it.
 - A process that leaves its process group and does not inherit the marker (a daemonized child that
   clears its environment) survives a stop. The engine reports what it could not find.
 - Codex: stop costs the whole turn; no background.

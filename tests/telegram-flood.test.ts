@@ -43,6 +43,33 @@ describe("createFloodGate", () => {
     expect(calls).toBe(1);
   });
 
+  test("gates deleteMessage too: a chat under a long 429 is not hit by card deletes (ADR-0058 amendment)", async () => {
+    const h = harness(30_000);
+    await h.gate.run("sendMessage", 1, async () => tooMany(33_261));
+    let calls = 0;
+    const r = await h.gate.run("deleteMessage", 1, async () => (calls++, OK));
+    expect(calls).toBe(0);
+    expect(r.error_code).toBe(429);
+  });
+
+  test("a card delete is retried by its owner, so it never counts as a message not delivered", async () => {
+    const h = harness(30_000);
+    await h.gate.run("deleteMessage", 1, async () => tooMany(600)); // the delete trips the block
+    await h.gate.run("deleteMessage", 1, async () => OK); // held
+    h.advance(600_000);
+    await h.gate.run("deleteMessage", 1, async () => OK);
+    expect(h.recovered).toEqual([]); // nothing was lost: no "not delivered" notice
+    expect(h.logs.some((l) => l.includes("lifted"))).toBe(true);
+  });
+
+  test("deleteWebhook (bot start) is not gated", async () => {
+    const h = harness(30_000);
+    await h.gate.run("sendMessage", undefined, async () => tooMany(600)); // blocks the "global" key
+    let calls = 0;
+    await h.gate.run("deleteWebhook", undefined, async () => (calls++, OK));
+    expect(calls).toBe(1);
+  });
+
   test("logs a non-429 send failure instead of swallowing it", async () => {
     const h = harness();
     await h.gate.run("sendMessage", 7, async () => ({ ok: false, error_code: 400, description: "Bad Request: chat not found" }));

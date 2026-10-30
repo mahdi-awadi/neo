@@ -118,8 +118,8 @@ test("Codex: stop ends the turn (said plainly); background is refused", async ()
 });
 
 test("config: defaults, and a bad value keeps its default", () => {
-  expect(DEFAULT_TOOL_CONTROL_CFG).toEqual({ killGraceMs: 5000, noticeAfterMs: 120000, dockerSocket: "/var/run/docker.sock" });
-  expect(readToolControlCfg({ killGraceMs: -1, noticeAfterMs: 60000, dockerSocket: "relative" })).toEqual({ ...DEFAULT_TOOL_CONTROL_CFG, noticeAfterMs: 60000 });
+  expect(DEFAULT_TOOL_CONTROL_CFG).toEqual({ killGraceMs: 5000, noticeAfterMs: 120000, dockerSocket: "/var/run/docker.sock", cardSweepMs: 5000, cardRemoveAttempts: 5 });
+  expect(readToolControlCfg({ killGraceMs: -1, noticeAfterMs: 60000, dockerSocket: "relative", cardSweepMs: 0, cardRemoveAttempts: 2 })).toEqual({ ...DEFAULT_TOOL_CONTROL_CFG, noticeAfterMs: 60000, cardRemoveAttempts: 2 });
 });
 
 test("controlByProject: the project's main session; several running calls → a numbered list, then pick one", async () => {
@@ -160,6 +160,65 @@ test("tool notices: one per call past the threshold, short keys for Telegram, go
   expect(parseToolCallback("tc:S:7")).toEqual({ step: "confirmStop", key: 7 });
   expect(parseToolCallback("tc:b:7")).toEqual({ step: "background", key: 7 });
   expect(parseToolCallback("att:1:x")).toBeUndefined();
+});
+
+// ADR-0058 amendment (2026-10-30): the card of a notice is removed when its call ends.
+const noticeRig = (calls: { toolUseId: string; tool: string; summary: string; since: number }[]) => {
+  const registry = createRegistry();
+  const s = registry.add({ id: "s1", source: "neo", folder: "/home/eticket-v3", task: "t", chatId: 1, createdAt: 0 }, 0);
+  let running = calls;
+  registry.attachControl(s.id, { followUp: () => {}, interrupt: async () => {}, tools: { provider: "claude", running: () => running, background: async () => ({ ok: true }), stop: async () => ({ ok: true }) } } as never);
+  return { registry, set: (c: typeof calls) => void (running = c) };
+};
+
+test("tool notices remember each card; a call that ends hands its card over for removal, once", async () => {
+  const { createToolNotices } = await import("../src/engine/tool-control");
+  const r = noticeRig([{ toolUseId: "toolu_A", tool: "Bash", summary: "sleep 600", since: 0 }]);
+  const n = createToolNotices();
+  const [d] = n.due(r.registry, 130_000, 120_000);
+  n.attach(d!.key, { chatId: 42, messageId: 7 });
+  n.sweep(r.registry);
+  expect(n.takeEnded(130_000)).toEqual([]); // still running: the card stays
+  r.set([]);
+  n.sweep(r.registry); // the call ended by itself
+  expect(n.takeEnded(131_000)).toEqual([{ chatId: 42, messageId: 7, attempts: 0, notBefore: 0 }]);
+  expect(n.takeEnded(132_000)).toEqual([]); // handed over once
+  expect(n.resolve(d!.key)).toBeUndefined();
+});
+
+test("tool notices: retire hands back the card at once (a Stop/Background tap); a card attached after its call ended is queued", async () => {
+  const { createToolNotices } = await import("../src/engine/tool-control");
+  const A = { toolUseId: "toolu_A", tool: "Bash", summary: "a", since: 0 };
+  const B = { toolUseId: "toolu_B", tool: "Bash", summary: "b", since: 0 };
+  const r = noticeRig([A, B]);
+  const n = createToolNotices();
+  const [a, b] = n.due(r.registry, 130_000, 120_000);
+  n.attach(a!.key, { chatId: 42, messageId: 7 });
+  expect(n.retire(a!.key)).toEqual({ chatId: 42, messageId: 7 });
+  expect(n.resolve(a!.key)).toBeUndefined();
+  expect(n.retire(a!.key)).toBeUndefined();
+  r.set([B]);
+  n.sweep(r.registry);
+  expect(n.takeEnded(130_000)).toEqual([]); // a retired card is not removed twice
+  expect(n.due(r.registry, 140_000, 120_000)).toEqual([]); // and nothing is announced again
+  r.set([]);
+  n.sweep(r.registry); // toolu_B ended while its card was being sent
+  n.attach(b!.key, { chatId: 42, messageId: 8 });
+  expect(n.takeEnded(140_000)).toEqual([{ chatId: 42, messageId: 8, attempts: 0, notBefore: 0 }]);
+});
+
+test("tool notices: a removal Telegram asks to retry waits for notBefore and gives up after maxAttempts", async () => {
+  const { createToolNotices } = await import("../src/engine/tool-control");
+  const n = createToolNotices();
+  expect(n.requeue({ chatId: 42, messageId: 7 }, 10_000, 3)).toBe(true);
+  expect(n.takeEnded(9_999)).toEqual([]);
+  const [c1] = n.takeEnded(10_000);
+  expect(c1).toEqual({ chatId: 42, messageId: 7, attempts: 1, notBefore: 10_000 });
+  n.requeue(c1!, 0, 3);
+  const [c2] = n.takeEnded(0);
+  expect(c2!.attempts).toBe(2);
+  expect(n.requeue(c2!, 0, 3)).toBe(false); // the third failure: dropped
+  expect(n.takeEnded(1e12)).toEqual([]);
 });
 
 // Review fixes (2026-10-29): only the call's own attached processes, the exec looked up before the

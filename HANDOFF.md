@@ -1,3 +1,14 @@
+# HANDOFF — 2026-10-30: tool-call cards leave Telegram when the call ends (ADR-0058 amendment, on dev, restart-gated)
+
+The Stop/Background card used to stay after its command ended: the daemon dropped the posted message id.
+Now the notice store keeps each card; when the call ends (by itself, Stop or Background, from any surface)
+the card is deleted, or its buttons are dropped when Telegram refuses the delete. A stale tap removes the
+card quietly. Deletes go through the flood gate; a 429 waits for retry_after
+(`src/frontends/telegram-tool-cards.ts`; config `toolControl.cardSweepMs`, `cardRemoveAttempts`). Cards
+left at a crash go only when tapped; the drain removes the rest. Committed on dev locally, not pushed (operator rule).
+
+---
+
 # HANDOFF — 2026-10-30: disk guard in the heartbeat (ADR-0068, note #555, on dev, restart-gated)
 
 The disk reached 100 % because Tier A ran only through the `disk-cleanup` loop, which the scheduler skips while

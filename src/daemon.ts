@@ -3,6 +3,7 @@
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
 import { inboxSecretOf } from "./engine/bearer";
 import { createToolNotices, DEFAULT_TOOL_CONTROL_CFG } from "./engine/tool-control";
+import { clearToolCards, postToolNotices, sweepToolCards } from "./frontends/telegram-tool-cards";
 import { DEFAULT_LANES_CFG } from "./engine/lanes";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -408,6 +409,8 @@ async function main(): Promise<void> {
   // again, forever. Stopping the poller up front also means the offset is already committed if
   // systemd SIGKILLs us mid-drain, and messages sent during the drain simply wait for the restart.
   const stopHooks: Array<() => Promise<unknown>> = [];
+  // Set once the operator Bot API and the notice store exist (below); a no-op before that.
+  let clearCards: () => Promise<void> = async () => {};
   let drainStarted = false;
   const shutdown = (why: string): void => {
     if (drainStarted) return;
@@ -422,6 +425,8 @@ async function main(): Promise<void> {
       .then(() => drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs, memory: cfg.memory, companyFolder: cfg.companyFolder }))
       .then((r) => console.log(`[reload] drained ${r.drained.length} · interrupted ${r.interrupted.length} · persisted ${r.persisted} — exiting for restart`))
       .catch((e) => console.log(`[reload] drain error: ${e instanceof Error ? e.message : e}`))
+      // Tool-call cards: the next boot cannot act on them, so they leave the chat now (bounded wait).
+      .then(() => Promise.race([clearCards().catch(() => {}), new Promise((r) => setTimeout(r, (cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG).cardSweepMs))]))
       .finally(() => {
         faults.guard("history.close", () => historyRuntime.close());
         process.exit(0);
@@ -432,16 +437,32 @@ async function main(): Promise<void> {
   const requestReload = (): void => shutdown("/reload");
 
   const toolNotices = createToolNotices();
-  const postToolNotices = async (): Promise<void> => {
+  const toolCfg = cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG;
+  // A card leaves the chat when its call ends — by itself, by Stop or by Background, from any surface
+  // (ADR-0058 amendment). An in-memory check; Telegram is called only for a card to remove.
+  // One card job at a time: the heartbeat's post+sweep and the sweep timer never overlap.
+  let cardsBusy = false;
+  const oneCardJob = async (job: () => Promise<void>): Promise<void> => {
+    if (cardsBusy) return;
+    cardsBusy = true;
+    try {
+      await job();
+    } finally {
+      cardsBusy = false;
+    }
+  };
+  if (operatorApi) {
+    const api = operatorApi;
+    setInterval(() => void oneCardJob(() => sweepToolCards({ notices: toolNotices, registry, api, cfg: toolCfg, now: Date.now })).catch((e: unknown) => faults.report("toolNotices.sweep", e)), toolCfg.cardSweepMs).unref();
+    clearCards = () => clearToolCards({ notices: toolNotices, api });
+  }
+  const postNotices = async (): Promise<void> => {
     const target = admin.adminId();
     if (!operatorApi || target === undefined) return;
-    for (const n of toolNotices.due(registry, Date.now(), (cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG).noticeAfterMs)) {
-      const mins = Math.round((Date.now() - n.call.since) / 60_000);
-      const buttons = [{ text: "⏹ Stop", callback_data: `tc:s:${n.key}` }, ...(n.provider === "claude" ? [{ text: "⏩ Background", callback_data: `tc:b:${n.key}` }] : [])];
-      await operatorApi
-        .sendMessage(target, `⏵ ${n.name} has run ${n.call.tool} for ${mins}m: ${n.call.summary}\nStop ends only this command (the session goes on); Background keeps it running with a log.`, { reply_markup: { inline_keyboard: [buttons] } })
-        .catch((e: unknown) => faults.report("toolNotices.send", e, { session: n.sessionId }));
-    }
+    const api = operatorApi;
+    await oneCardJob(() =>
+      postToolNotices({ notices: toolNotices, registry, api, target, cfg: toolCfg, now: Date.now, report: (e, session) => faults.report("toolNotices.send", e, { session }) }),
+    );
   };
   // The one plan poster (ADR-0019): every plan a run writes — from Telegram, the web console, a
   // dispatch or a loop — reaches the operator as the same card, in the Decisions chat (else the DM).
@@ -596,7 +617,7 @@ async function main(): Promise<void> {
           ["todo", () => todo.pump()],
           // A tool call running past toolControl.noticeAfterMs gets ONE Telegram notice with Stop /
           // Background buttons (ADR-0058) — the operator never has to /kill a session for one command.
-          ["toolNotices", postToolNotices],
+          ["toolNotices", postNotices],
           // The daily toolchain check (and the retry of items a busy session deferred).
           ["updates", runScheduledUpdate],
           [

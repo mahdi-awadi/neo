@@ -37,6 +37,7 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry, 
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
+import { handleToolCardTap } from "./telegram-tool-cards";
 import { knownIds, type LineIds, type OperatorBus, type OperatorSink } from "../engine/operator-bus";
 import { refSuffix, type Cause, type Trace } from "../engine/trace";
 import type { ReplyMeta } from "../engine/pipeline";
@@ -803,31 +804,25 @@ export function createTelegramBot(
     const cb = ctx.callbackQuery.data;
     // ADR-0058: Stop (a second tap confirms) or Background ONE long-running tool call from its notice.
     const tcb = parseToolCallback(cb);
-    if (tcb) {
-      const target = reload?.toolNotices?.resolve(tcb.key);
-      if (!target) {
-        await ackCallback(ctx, "that command has already ended");
-        return;
-      }
-      if (tcb.step === "stop") {
-        await ackCallback(ctx, "tap Confirm stop to stop only this command");
-        try {
+    const tcMessage = ctx.callbackQuery.message;
+    if (tcb && !tcMessage) return ackCallback(ctx); // the card is not reachable any more
+    if (tcb && tcMessage) {
+      const tc = cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG;
+      // Without the notice store (a frontend started without it), every card is stale.
+      const notices = reload?.toolNotices ?? { resolve: () => undefined, retire: () => undefined, requeue: () => false };
+      await handleToolCardTap(tcb, {
+        notices,
+        api: ctx.api,
+        card: { chatId: tcMessage.chat.id, messageId: tcMessage.message_id },
+        cfg: tc,
+        now: Date.now,
+        control: (target, action) => controlTool({ registry, ledger, cfg: tc }, { ...target, action, by: { kind: "operator", surface: "telegram" } }),
+        ack: (text) => ackCallback(ctx, text),
+        reply: (text) => ctx.reply(text),
+        confirmStop: async () => {
           await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [[{ text: "⏹ Confirm stop", callback_data: `tc:S:${tcb.key}` }, { text: "⏩ Background", callback_data: `tc:b:${tcb.key}` }]] } });
-        } catch {
-          // the notice was already edited
-        }
-        return;
-      }
-      const r = await controlTool(
-        { registry, ledger, cfg: cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG },
-        { sessionId: target.sessionId, toolUseId: target.toolUseId, action: tcb.step === "background" ? "background" : "stop", by: { kind: "operator", surface: "telegram" } },
-      );
-      await ackCallback(ctx, r.ok ? (r.outcome === "stopped" ? "stopped" : "moved to the background") : "not done");
-      try {
-        await ctx.editMessageText(r.text);
-      } catch {
-        // "message is not modified" — ignore
-      }
+        },
+      });
       return;
     }
     // Tap a project to make it active (use:) or kill it (kill:) — shared engine functions.

@@ -7,6 +7,7 @@ import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { openTrustStore } from "../src/engine/trust";
 import { openInbox } from "../src/engine/inbox";
+import { DEFAULT_TOOL_CONTROL_CFG } from "../src/engine/tool-control";
 import type { Order, Provider } from "../src/types";
 
 function order(over: Partial<Order> = {}): Order {
@@ -604,7 +605,7 @@ test("/stop and /bg answer later with the tool-control result; /list shows the r
       stop: async (id: string) => (calls.push(`stop ${id}`), { ok: true, taskId: "bx" }),
     },
   } as never);
-  const d = { ...deps({ registry }), toolControl: { killGraceMs: 1, noticeAfterMs: 1, dockerSocket: "/nonexistent.sock" } };
+  const d = { ...deps({ registry }), toolControl: { ...DEFAULT_TOOL_CONTROL_CFG, killGraceMs: 1, noticeAfterMs: 1, dockerSocket: "/nonexistent.sock" } };
   const bg = handleCommand("/bg app", 1, d)!;
   expect((await bg.later!).text).toContain("Moved `git push origin dev` in app to the background");
   const stop = handleCommand("/stop app", 1, d)!;
