@@ -8,6 +8,7 @@
 //   bun tools/security/findings.ts report   [--baseline f] [--out f] [--label s] [--root repo] tool:raw.json ...
 //   bun tools/security/findings.ts baseline --baseline f [--root repo] tool:raw.json ...
 //   (both: [--missing f] scan.sh's missing parts; [--osv-go-versions f] Go's selected versions, ADR-0066)
+//   bun tools/security/findings.ts json-ok <file>   (exit 0 = one complete JSON document)
 //   (exit 1 from `report` = new high/critical findings; exit 3 = the baseline is unreadable, warn only)
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -100,17 +101,19 @@ type Any = any;
 /** The most an unreachable vulnerability can weigh: below the blocking level, still in every report. */
 const UNREACHABLE_CAP: Severity = "medium";
 
-/** osv's Go call analysis (govulncheck, ADR-0066): true only when osv analysed this group and every
- *  verdict is `called: false`. A group's ids are aliases of one vulnerability and osv keys the verdict
- *  by the Go id only (not its GHSA alias), as its own `IsCalled` does. Fails closed: another
- *  ecosystem, no analysis (no Go toolchain, or govulncheck failed), a verdict for an id outside the
- *  group, or a verdict that is not the boolean `false`. */
+/** osv's Go call analysis (govulncheck, ADR-0066): true only when osv analysed this group and found it
+ *  not called. A group's ids are aliases of one vulnerability. osv gives a verdict per Go advisory id
+ *  (`GO-…`), never for a GHSA alias, and gives none for an advisory it could not match to an import, so
+ *  every Go id needs its own verdict. Fails closed: another ecosystem, no analysis (no Go toolchain, or
+ *  govulncheck failed), a Go id without a verdict, a verdict for an id outside the group, or a verdict
+ *  that is not the boolean `false`. */
 export function osvUnreachable(ecosystem: unknown, group: Any): boolean {
   const verdicts = group?.experimental_analysis; // osv-scanner v2 JSON
-  const ids = new Set((Array.isArray(group?.ids) ? group.ids : []).map(String));
+  const ids = (Array.isArray(group?.ids) ? group.ids : []).map(String);
   if (ecosystem !== "Go" || !verdicts || typeof verdicts !== "object" || Array.isArray(verdicts)) return false;
   const entries = Object.entries(verdicts as Record<string, Any>);
-  return entries.length > 0 && entries.every(([id, v]) => ids.has(id) && v?.called === false);
+  if (!entries.length || !entries.every(([id, v]) => ids.includes(id) && v?.called === false)) return false;
+  return ids.filter((id: string) => id.startsWith("GO-")).every((id: string) => Object.hasOwn(verdicts, id));
 }
 
 /** Semgrep prefixes a rule id with its config file's directory, relative to where it ran
@@ -245,6 +248,15 @@ function load(spec: string, ctx: { root?: string; src?: string; goVersions?: GoV
 
 if (import.meta.main) {
   const [cmd, ...rest] = process.argv.slice(2);
+  if (cmd === "json-ok") {
+    // scan.sh's check that a scanner wrote one complete JSON document (`bun -e` hides a parse error).
+    try {
+      JSON.parse(readFileSync(rest[0] ?? "", "utf8"));
+      process.exit(0);
+    } catch {
+      process.exit(1);
+    }
+  }
   let baselinePath: string | undefined;
   let outPath: string | undefined;
   let label = "scan";
@@ -268,7 +280,9 @@ if (import.meta.main) {
   const incomplete = missingPath && existsSync(missingPath) ? parseMissing(readFileSync(missingPath, "utf8")) : [];
   if (cmd === "baseline") {
     if (!baselinePath) throw new Error("--baseline required");
-    const fingerprints = [...new Set(all.map((f) => f.fingerprint))].sort();
+    // An unreachable finding is listed, never baselined: when the code starts to call it, it is new and
+    // blocks (its fingerprint does not change with reachability, ADR-0066).
+    const fingerprints = [...new Set(all.filter((f) => !f.tags?.includes("unreachable")).map((f) => f.fingerprint))].sort();
     const created = new Date().toISOString();
     writeFileSync(baselinePath, `${JSON.stringify({ created, fingerprints, incomplete, findings: all }, null, 2)}\n`);
     console.log(`[security] baseline written: ${fingerprints.length} findings tracked → ${baselinePath}`);

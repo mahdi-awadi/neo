@@ -78,6 +78,18 @@ describe("security findings", () => {
       for (const x of f) expect(x.tags).toBeUndefined();
     });
 
+    test("every Go id of a group needs its own false verdict; only a GHSA alias may have none", () => {
+      const gomod = "/repo/services/common/go.mod";
+      const one = (ids: string[], analysis: unknown, ecosystem = "Go") =>
+        normalize("osv", { results: [{ source: { path: gomod }, packages: [{ package: { name: "golang.org/x/crypto", version: "0.58.0", ecosystem }, groups: [{ ids, max_severity: "7.5", experimental_analysis: analysis }] }] }] }, ctx())[0]!.severity;
+      expect(one(["GO-2026-1", "GO-2026-2", "GHSA-x"], { "GO-2026-1": { called: false } })).toBe("high"); // GO-2026-2 has none
+      expect(one(["GO-2026-1", "GO-2026-2", "GHSA-x"], { "GO-2026-1": { called: false }, "GO-2026-2": { called: false } })).toBe("medium");
+      expect(one(["GO-2026-1"], {})).toBe("high");
+      expect(one(["GO-2026-1"], [])).toBe("high");
+      expect(one(["GHSA-only"], { "GHSA-only": { called: false } })).toBe("medium");
+      expect(one(["GO-2026-1"], { "GO-2026-1": { called: false } }, "npm")).toBe("high"); // the version line exists: only the ecosystem stops it
+    });
+
     test("the verdict never changes a fingerprint, so a baseline still matches", () => {
       const fp = (name: string) => by(normalize("osv", fixture(name), ctx()), "golang.org/x/crypto").fingerprint;
       expect(fp("go-uncalled")).toBe(fp("go-called"));
@@ -172,6 +184,31 @@ describe("security findings", () => {
     const blind = normalize("semgrep", { results: [hit(10, 17, 1), hit(29, 36, 2)] }, { root: "/repo", src: "/nonexistent" });
     expect(blind[0]!.fingerprint).not.toBe(blind[1]!.fingerprint);
   });
+  test("a baseline never records an unreachable finding, so it blocks when the code starts to call it (ADR-0066)", () => {
+    const d = mkdtempSync(join(tmpdir(), "neo-sec-bl-"));
+    const fx = join(import.meta.dir, "fixtures", "security");
+    const run = (...a: string[]) => Bun.spawnSync(["bun", join(import.meta.dir, "../tools/security/findings.ts"), ...a, "--root", "/repo", "--osv-go-versions", join(fx, "osv-go-versions.txt")]);
+    run("baseline", "--baseline", join(d, "baseline.json"), `osv:${join(fx, "osv-go-uncalled.json")}`);
+    const b = JSON.parse(readFileSync(join(d, "baseline.json"), "utf8"));
+    expect(b.fingerprints).toEqual([]);
+    expect(b.findings).toHaveLength(3); // still listed
+    const later = run("report", "--baseline", join(d, "baseline.json"), `osv:${join(fx, "osv-go-called.json")}`);
+    expect(later.exitCode).toBe(1);
+  });
+
+  test("json-ok: exit 0 only for one complete JSON document", () => {
+    const d = mkdtempSync(join(tmpdir(), "neo-sec-json-"));
+    const ok = (text: string | undefined) => {
+      const f = join(d, `f${Math.random()}`);
+      if (text !== undefined) writeFileSync(f, text);
+      return Bun.spawnSync(["bun", join(import.meta.dir, "../tools/security/findings.ts"), "json-ok", f]).exitCode;
+    };
+    expect(ok('{"results":[]}')).toBe(0);
+    expect(ok('{"results":[')).toBe(1);
+    expect(ok("")).toBe(1);
+    expect(ok(undefined)).toBe(1); // no file
+  });
+
   test("a broken baseline (merge conflict) warns with exit 3 instead of blocking every edit", () => {
     const d = mkdtempSync(join(tmpdir(), "neo-sec-bl-"));
     writeFileSync(join(d, "baseline.json"), "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> x\n");

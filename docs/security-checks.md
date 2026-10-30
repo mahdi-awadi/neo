@@ -47,7 +47,7 @@ reads `host.json` on every call, so a change needs no restart. This host is set 
 - An **unreachable** Go vulnerability does not block (ADR-0066). osv-scanner runs govulncheck in the
   pinned Go image; a Go finding whose every verdict is `called: false` is capped at medium and tagged
   `unreachable` (the message starts "unreachable (never called)"). It stays in every report. The
-  verdict counts only when Go analysed the same version osv reports for that `go.mod`. No
+  verdict counts only when Go analysed that `go.mod` on its own, at the version osv reports. No
   analysis (no Go, govulncheck failed for that module, the binary could not be fetched or checked,
   out of memory), a missing verdict, or another ecosystem: full severity, as before.
 - Getting past a check (`--no-verify`, editing the baseline, turning a hook off) is not allowed for
@@ -85,6 +85,8 @@ built-in `/security-review`.
 | `semgrepChunkFiles` | Files per semgrep part (default 200). Lower it when a part times out (ADR-0051). |
 | `semgrepTimeoutSec` | Time limit for one semgrep part, in seconds (default 1800; write-time is always 50). |
 | `osvMemoryMb` | Memory limit (no swap) for osv-scanner with Go call analysis, in MB (default 8192). Over it: no analysis, full severity (ADR-0066). |
+| `osvTimeoutSec` | Time limit for osv-scanner with Go call analysis, and for waiting on another one, in seconds (default 2400). |
+| `osvGoTags` | Build tags for the Go call analysis, comma-separated (letters, digits, `_ . ,`). Set it when a build uses tags. |
 
 Semgrep runs in parts: each part is staged, scanned and removed on its own, under its own time
 limit, so a slow part loses only its own files. A value that is not a positive integer uses the
@@ -109,18 +111,26 @@ leaves nothing running. `docker rm -f` on them is always safe: the next scan sta
 ## osv-scanner and Go call analysis (ADR-0066)
 
 osv-scanner does Go call analysis only with a Go toolchain on `PATH`, so the push and nightly layers
-run it in the pinned Go image (`GO_IMAGE` in `images.env`). The osv-scanner binary is downloaded
-once from `OSV_BIN_URL` into the `neo-sec-gocache` volume and checked against `OSV_BIN_SHA256` before
-every run; `update-images.sh` takes both from the binary in `OSV_IMAGE` and refuses a release file that
-differs. The volume also holds the Go module and build caches (the first scan downloads them).
+run it in the pinned Go image (`GO_IMAGE` in `images.env`) through `osv-go.sh`. The osv-scanner
+binary is downloaded once from `OSV_BIN_URL` into the `neo-sec-gocache` volume and checked against
+`OSV_BIN_SHA256` before every run; `update-images.sh` takes both from the binary in `OSV_IMAGE` and
+refuses a release file that differs. The volume also holds the Go module and build caches (the first
+scan downloads them).
 
-Go writes `go.sum`/`go.work.sum` while it loads packages, so the repo is mounted as a copy-on-write
-overlay at its own path: the writes go to the scan's temp folder, never to the repo, and paths and
-fingerprints stay the same. In a repo with a `go.work`, every module joins the workspace inside the
-overlay (`go work use -r .`), so a module the workspace does not list can load its sibling modules.
-The Go run also records the versions Go selected for each `go.mod` (`go list -m all`): in a workspace
-one version serves every module, so a verdict about another version than osv reports does not count.
-When the Go run gives no output, the plain `OSV_IMAGE` scans read-only and the layer warns.
+- **The repo is a copy-on-write overlay** at its own path: Go may write `go.sum` files, the writes go
+  to the scan's temp folder, never to the repo, and paths and fingerprints stay the same.
+- **Each module is analysed on its own** (`GOWORK=off`, `-mod=readonly`), as its own build sees it.
+  `gomods.ts` links a local `replace` target that has no `go.mod` (a Docker mount placeholder such as
+  eticket-v3's `services/*/common`) to the repo's module of that path, inside the overlay only.
+- **A verdict counts only at the version osv reports.** `osv-go.sh` records the versions Go selected
+  for each `go.mod` (`go list -m all`); the standard library never counts.
+- **Limits:** `osvMemoryMb` (no swap; `GOMEMLIMIT` at 85% of it), `osvTimeoutSec`, and one Go
+  analysis at a time on the host. Build tags for the analysis: `osvGoTags`.
+- With no usable output the plain `OSV_IMAGE` scans read-only and the layer warns; a module whose
+  analysis failed is named in a warning, and its findings keep full severity.
+- An unreachable finding is never written into `baseline.json`'s fingerprints, so it shows as a new
+  medium finding in each scan and blocks the day the code calls it.
+
 `docker volume rm neo-sec-gocache` is always safe.
 
 ## Rules

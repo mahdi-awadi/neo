@@ -13,6 +13,10 @@ case "$1" in
   inspect) exit 1 ;;
   run)
     if [[ " $* " == *" --entrypoint sh "* ]]; then # the osv run with Go call analysis (ADR-0066)
+      for a in "$@"; do
+        if [[ "$a" == *upperdir=* ]]; then u="\${a#*upperdir=}"; u="\${u%%,*}"; (cd "$u" && find . -type l -printf 'upper-link %P -> %l\\n') >> "$FAKE_DOCKER_LOG"; fi
+      done
+      [[ -n "\${FAKE_OSV_GO_ERR:-}" ]] && echo "$FAKE_OSV_GO_ERR" >&2
       for a in "$@"; do [[ "$a" == */osv-meta:/meta && -n "\${FAKE_OSV_GO_VERSIONS:-}" ]] && cp "$FAKE_OSV_GO_VERSIONS" "\${a%:/meta}/go-versions.txt"; done
       [[ -n "\${FAKE_OSV_GO_JSON:-}" ]] && cat "$FAKE_OSV_GO_JSON"
     fi
@@ -54,8 +58,10 @@ function setup(files: string[], config: Record<string, unknown> = {}, extraEnv: 
   const log = join(bin, "log");
   writeFileSync(log, "");
   const run = (...args: string[]) =>
-    Bun.spawnSync(["bash", SCAN, ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_LOG: log, ...extraEnv } });
-  return { repo, run, log: () => readFileSync(log, "utf8") };
+    Bun.spawnSync(["bash", SCAN, ...args], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_LOG: log, NEO_SEC_OSV_LOCK: join(bin, "osv.lock"), ...extraEnv },
+    });
+  return { repo, run, log: () => readFileSync(log, "utf8"), lock: join(bin, "osv.lock") };
 }
 
 const baselineOf = (repo: string) => JSON.parse(readFileSync(join(repo, ".security", "baseline.json"), "utf8"));
@@ -110,9 +116,13 @@ describe("security scan: semgrep in parts (ADR-0051)", () => {
 });
 
 describe("security scan: osv with Go call analysis (ADR-0066)", () => {
-  const osvRuns = (log: string) => log.split("\n").filter((l) => l.startsWith("run ") && l.includes("scan source"));
-  const goRun = (log: string) => osvRuns(log).find((l) => l.includes("--entrypoint sh"));
-  const plainRun = (log: string) => osvRuns(log).find((l) => !l.includes("--entrypoint sh"));
+  const goRun = (log: string) => log.split("\n").find((l) => l.startsWith("run ") && l.includes("/kit/osv-go.sh"));
+  const plainRun = (log: string) => log.split("\n").find((l) => l.startsWith("run ") && l.includes("scan source"));
+  const okJson = () => {
+    const out = join(mkdtempSync(join(tmpdir(), "neo-sec-osv-")), "osv.json");
+    writeFileSync(out, JSON.stringify({ results: [] }));
+    return out;
+  };
 
   test("osv runs in the pinned Go image on a copy-on-write overlay of the repo, at the repo's own path", () => {
     const s = setup(["src/a.ts"], { osvMemoryMb: 2048 });
@@ -127,7 +137,60 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
     expect(go).toContain(`dst=${s.repo},volume-driver=local,volume-opt=type=overlay`);
     expect(go).toMatch(new RegExp(`lowerdir=${s.repo},upperdir=/tmp/neo-sec\\.\\w+/osv-up,workdir=`)); // writes go to the scan's temp dir
     expect(go).not.toContain(`${s.repo}:${s.repo}`);
-    expect(go).toContain("go work use -r ."); // a go.work grows to every module, inside the overlay only
+    // Each module standalone, as its own build sees it; go.mod/go.sum as written, never a stale vendor/.
+    expect(go).toContain("-e GOWORK=off -e GOFLAGS=-buildvcs=false -mod=readonly -e OSV_TIMEOUT=2400");
+    expect(go).toMatch(/\/security\/osv-go\.sh:\/kit\/osv-go\.sh:ro /);
+    expect(go).toContain(`/kit/osv-go.sh ${s.repo} /meta/modules.txt /meta/go-versions.txt /neo`);
+  });
+
+  test("a local replace target that is only a mount placeholder is linked to the repo's module, in the overlay", () => {
+    const s = setup(["src/a.ts"]);
+    mkdirSync(join(s.repo, "common"));
+    mkdirSync(join(s.repo, "svc", "common"), { recursive: true });
+    writeFileSync(join(s.repo, "common", "go.mod"), "module example.com/app/common\n");
+    writeFileSync(join(s.repo, "svc", "go.mod"), "module example.com/app/svc\nreplace example.com/app/common => ./common\n");
+    writeFileSync(join(s.repo, "svc", "common", ".dockermount"), "x\n");
+    s.run("push", s.repo);
+    expect(s.log()).toContain(`upper-link svc/common -> ${s.repo}/common`);
+    expect(existsSync(join(s.repo, "svc", "common", ".dockermount"))).toBe(true);
+  });
+
+  test("osvGoTags and osvTimeoutSec reach the Go run; tags with other characters are refused", () => {
+    const s = setup(["src/a.ts"], { osvGoTags: "prod,linux", osvTimeoutSec: 99 });
+    s.run("push", s.repo);
+    expect(goRun(s.log())).toContain("-mod=readonly -tags=prod,linux -e OSV_TIMEOUT=99");
+    const bad = setup(["src/a.ts"], { osvGoTags: "x -toolexec=evil" });
+    const r = bad.run("push", bad.repo);
+    expect(goRun(bad.log())).not.toContain("toolexec");
+    expect(r.stderr.toString()).toContain("osvGoTags ignored");
+  });
+
+  test("invalid output from the Go run: the plain scan runs instead", () => {
+    const out = join(mkdtempSync(join(tmpdir(), "neo-sec-osv-")), "osv.json");
+    writeFileSync(out, '{"results": [');
+    const s = setup(["src/a.ts"], {}, { FAKE_OSV_GO_JSON: out });
+    const r = s.run("push", s.repo);
+    expect(plainRun(s.log())).toBeDefined();
+    expect(r.stderr.toString()).toContain("Go call analysis gave no result");
+  });
+
+  test("modules whose analysis failed are named in a warning", () => {
+    const env: Record<string, string> = { FAKE_OSV_GO_JSON: okJson() };
+    const s = setup(["src/a.ts"], {}, env);
+    env.FAKE_OSV_GO_ERR = `Failed to run code analysis (govulncheck) on '${s.repo}/svc/go.mod' because govulncheck: loading packages: x`;
+    const r = s.run("push", s.repo);
+    expect(r.stderr.toString()).toContain("Go call analysis failed for svc/go.mod");
+    expect(plainRun(s.log())).toBeUndefined();
+  });
+
+  test("one Go analysis at a time: a lock held past osvTimeoutSec means the plain scan", async () => {
+    const s = setup(["src/a.ts"], { osvTimeoutSec: 1 });
+    const holder = Bun.spawn(["flock", s.lock, "sleep", "5"]);
+    await Bun.sleep(300);
+    const r = s.run("push", s.repo);
+    holder.kill();
+    expect(goRun(s.log())).toBeUndefined();
+    expect(r.stderr.toString()).toContain("held the host lock");
   });
 
   test("a repo path the overlay mount options cannot hold: no Go run, the plain scan", () => {
@@ -148,9 +211,7 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
   });
 
   test("a result with Go: no second osv run", () => {
-    const out = join(mkdtempSync(join(tmpdir(), "neo-sec-osv-")), "osv.json");
-    writeFileSync(out, JSON.stringify({ results: [] }));
-    const s = setup(["src/a.ts"], {}, { FAKE_OSV_GO_JSON: out });
+    const s = setup(["src/a.ts"], {}, { FAKE_OSV_GO_JSON: okJson() });
     s.run("push", s.repo);
     expect(goRun(s.log())).toContain("--memory 8192m --memory-swap 8192m"); // the default
     expect(plainRun(s.log())).toBeUndefined();
