@@ -3,9 +3,10 @@
 The disk reached 100 % because Tier A ran only through the `disk-cleanup` loop, which the scheduler skips while
 `/home/neo` is busy (19 h skipped). The heartbeat now runs the kit's Tier A below 10 % free and in the daily hour,
 and alerts at 80/90/95 % with the hours left (`src/engine/disk-guard*.ts`). Tier A run by hand: 95.4 GB freed.
-Go-live: `bun tools/disk/install.ts` (the installed kit is from Oct 18: it lacks the guard keys — the guard falls
-back to the same defaults — the atomic lock and the newer protect patterns for /var/backups/neo and
-neo-embedder-models), then the restart. Tier B list (approval ids): the last run report.
+The kit is already reinstalled from 887d728 (`~/.local/share/neo/disk`, 2026-10-30 08:46); go-live is only the
+restart (your permission). Note #555 is resolved with 887d728. Tier B list (approval ids): the last run report;
+recommended deletes b-48675d2e, b-6b713509, b-bae04626, b-c952cc71, b-ad4b7d80, b-1f95dfb7, b-829c279a,
+b-b0613997, b-3d2ac8c3, b-62efcabc (keep b-1f16f126, b-d809a096): `cleanup.ts delete --ids <ids>`.
 
 ---
 
