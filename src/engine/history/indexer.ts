@@ -7,7 +7,7 @@
 // process holds the writer lock, catches the error of each step and goes on with the next, and always
 // returns an `IndexReport`. Events carry ids, counts and codes only.
 import type { HistoryFeedRow, HistoryOrderRow, HistoryTable, Ledger } from "../ledger";
-import { cronMatches } from "../trigger";
+import { cronDueBetween } from "../trigger";
 import type { HistoryCfg } from "./defaults";
 import type { Embedder } from "./embedder";
 import { paragraphHashes } from "./extract";
@@ -90,10 +90,7 @@ const K = {
   retiring: "tag.retiring",
 } as const;
 
-const MINUTE = 60_000;
 const DAY = 86_400_000;
-/** The weekly cron is checked minute by minute since the last pass, at most this far back. */
-const CRON_LOOKBACK_MINUTES = 8 * 24 * 60;
 
 interface ReconcileState {
   reason: ReconcileReason;
@@ -133,13 +130,7 @@ const stateOf = (reason: MeaningOffReason): "down" | "off" => (OFF_REASONS.has(r
 const yieldNow = (): Promise<void> => new Promise((r) => setImmediate(r));
 const keyOf = (ref: string): string => ref.slice(ref.indexOf(":") + 1);
 
-/** True when `expr` matches a minute in (from, to], looking back at most CRON_LOOKBACK_MINUTES. */
-export function cronDueBetween(expr: string, from: number, to: number): boolean {
-  const last = Math.floor(to / MINUTE);
-  const first = Math.max(Math.floor(from / MINUTE) + 1, last - CRON_LOOKBACK_MINUTES + 1);
-  for (let m = first; m <= last; m++) if (cronMatches(expr, m * MINUTE)) return true;
-  return false;
-}
+export { cronDueBetween };
 
 /** A report with no work and both services off: the start of each pass, and what a pass that cannot run gives. */
 export function emptyIndexReport(): IndexReport {

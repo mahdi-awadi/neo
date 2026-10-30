@@ -55,6 +55,20 @@ export function cronMatches(expr: string, at: number): boolean {
   );
 }
 
+const CRON_MINUTE = 60_000;
+/** A cron is checked minute by minute since the last check, at most this far back (8 days: a weekly
+ *  cron is never missed by a pause shorter than that). */
+const CRON_LOOKBACK_MINUTES = 8 * 24 * 60;
+
+/** True when `expr` matches a minute in (from, to], looking back at most CRON_LOOKBACK_MINUTES. A job
+ *  that remembers `to` as its next `from` runs once for each cron slot, even when a tick is late. */
+export function cronDueBetween(expr: string, from: number, to: number): boolean {
+  const last = Math.floor(to / CRON_MINUTE);
+  const first = Math.max(Math.floor(from / CRON_MINUTE) + 1, last - CRON_LOOKBACK_MINUTES + 1);
+  for (let m = first; m <= last; m++) if (cronMatches(expr, m * CRON_MINUTE)) return true;
+  return false;
+}
+
 /** Structural + range validity of a 5-field cron expression (min hour dom month dow). */
 export function isValidCron(expr: string): boolean {
   const parts = expr.trim().split(/\s+/);

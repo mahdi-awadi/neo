@@ -59,6 +59,15 @@
     "feedKeep": 200000
   },
 
+  "// backup": "ADR-0066 Decision 8 snapshot backups (docs/CONFIG.md 'Snapshot backup', runbook docs/backup.md). history.db only by default; the ledger joins only by the operator's decision. Never point dir inside the repo.",
+  "backup": {
+    "dir": "/var/backups/neo",
+    "databases": [{ "path": "data/history.db", "cron": "41 3 * * *" }],
+    "keepRecent": 8, "keepDaily": 7, "keepWeekly": 4,
+    "drillCron": "23 5 * * 0",
+    "minFreeGb": 20
+  },
+
   "// workerEnv": "Claude Code env knobs apply only with providers.ownWork=\"subscription\". When ownWork=\"codex\", CLAUDE_*, ANTHROPIC_*, and MAX_MCP_OUTPUT_TOKENS are filtered before launch.",
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",

@@ -63,6 +63,8 @@ import { planDepsFrom } from "./engine/plans";
 import { createEngineUpdater, registryBusy } from "./engine/update-engine";
 import { HISTORY_DEFAULTS } from "./engine/history/defaults";
 import { startTaskHistory, type HistoryRuntime } from "./engine/history/runtime";
+import { BACKUP_DEFAULTS } from "./engine/backup/cfg";
+import { createBackupSchedule } from "./engine/backup/schedule";
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
 // wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
@@ -328,6 +330,18 @@ async function main(): Promise<void> {
   });
   const history = historyRuntime.history;
   console.log(`  history   -> ${!historyCfg.enabled ? "OFF" : historyRuntime.available ? `${historyCfg.dbPath} (search + worker tools)` : "NOT available (history.db could not be opened; see the alert)"}`);
+  // Snapshot backups (ADR-0066 Decision 8): each listed SQLite file on its own cron, in a child process (the
+  // event loop never waits on the copy), plus the weekly restore drill. One alert per failure streak; the
+  // attention producer reads `backups.state()` for the `backup_failed` item.
+  const backupCfg = cfg.backup ?? BACKUP_DEFAULTS;
+  const backups = createBackupSchedule({
+    cfg: backupCfg,
+    baseDir: process.cwd(),
+    bun: process.execPath,
+    events: (kind, data) => ledger.recordEvent(kind, { data }),
+    alert: alertOperator,
+  });
+  console.log(`  backup    -> ${backups.jobs.length ? `${backupCfg.dir} (${backupCfg.databases.map((d) => `${d.path} @ ${d.cron}`).join(", ")}; drill @ ${backupCfg.drillCron})` : "OFF (no database listed)"}`);
 
   // Project notes (ADR-0043): one project tells another. A request or a high finding is told to the
   // operator at once (through the flood gate, like the digest); the rest wait for the digest.
@@ -606,6 +620,9 @@ async function main(): Promise<void> {
           // drains), and the change-feed prune, which runs also while history is off.
           ["history", () => historyRuntime.tick()],
           ["history.feedPrune", () => historyRuntime.feedPrune()],
+          // Snapshot backups (ADR-0066 Decision 8): starts a due child and returns at once; the child's
+          // promise is held by the fault boundary, so a tick never waits on a copy.
+          ["backup", () => backups.tick()],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed

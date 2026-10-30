@@ -1,4 +1,5 @@
 import { HISTORY_DEFAULTS } from "../src/engine/history/defaults";
+import { BACKUP_DEFAULTS } from "../src/engine/backup/cfg";
 import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -501,4 +502,11 @@ test("ADR-0066: history defaults on; config.json sets it through readHistoryCfg;
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ history: { enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["shared"] } } }));
   expect(loadConfig(d).history).toMatchObject({ enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["neo_history"] } });
+});
+
+test("ADR-0066 Decision 8: backup defaults (history.db only); config.json sets it through readBackupCfg; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).backup).toEqual(BACKUP_DEFAULTS);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ backup: { keepRecent: 3, dir: "relative", databases: [{ path: "data/history.db", cron: "0 */6 * * *" }] } }));
+  expect(loadConfig(d).backup).toMatchObject({ keepRecent: 3, dir: "/var/backups/neo", databases: [{ path: "data/history.db", cron: "0 */6 * * *" }] });
 });

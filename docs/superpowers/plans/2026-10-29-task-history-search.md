@@ -318,7 +318,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     bearer key, does one test embed (1,024 dims), and prints the endpoint, the model and the caps.
   - Done when: AC20 passes.
 
-- [ ] **16. Snapshot backup job (for `history.db`)**
+- [x] **16. Snapshot backup job (for `history.db`)**
   - Create: `src/engine/backup/cfg.ts`, `src/engine/backup/rotate.ts` (pure), `src/engine/backup/run.ts`
     (child entry), `src/engine/backup/drill.ts` (child entry), `src/engine/backup/schedule.ts` (the
     heartbeat step), `docs/backup.md` (the runbook), `tests/backup-rotate.test.ts`,

@@ -8,6 +8,7 @@
 // `indexer.busyPauseMs` instead of at the next heartbeat (so a first backfill takes hours, not days);
 // `feedPrune` keeps the ledger's change feed at `feedKeep` rows, also while history is off.
 import { renameSync, existsSync } from "node:fs";
+import { fileStamp } from "../backup/rotate";
 import type { Ledger } from "../ledger";
 import type { HistoryCfg } from "./defaults";
 import { openTaskHistory, type IndexReport, type TaskHistory, type TaskHistoryDeps } from "./index";
@@ -69,11 +70,6 @@ const NODE_TIMERS: HistoryTimers = {
   },
   clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 };
-
-/** `20261030T091500Z`: a UTC time that sorts and fits in a file name. */
-export function fileStamp(at: number): string {
-  return new Date(at).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-}
 
 /** True when the pass left work that the next pass can do now: local work (feed rows, a reconcile) always;
  *  embeds only with the embedder up; uploads and point deletes only with Qdrant up. A pass that moved

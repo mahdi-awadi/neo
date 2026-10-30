@@ -22,6 +22,7 @@ import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
 import { readTodoSummaryCfg, type TodoSummaryCfg } from "./engine/todo-summary-cfg";
 import { readHistoryCfg } from "./engine/history/cfg";
+import { readBackupCfg, type BackupCfg } from "./engine/backup/cfg";
 import type { HistoryCfg } from "./engine/history/defaults";
 import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
 import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
@@ -231,6 +232,9 @@ export interface NeoConfig {
   /** ADR-0066: the task history (hybrid search over past work). Secrets are named by their env variables
    *  (`embedder.keyEnv`, `vectors.urlEnv`, `vectors.keyEnv`), never written here. Read by readHistoryCfg. */
   history?: HistoryCfg;
+  /** ADR-0066 Decision 8: the snapshot backup of Neo's SQLite files (`history.db` by default; the ledger
+   *  only by the operator's decision). Read by readBackupCfg. */
+  backup?: BackupCfg;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
    *  scheduler can't amplify a rate-limit storm. Default 60 s. */
   apiCooldownMs: number;
@@ -668,6 +672,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     planner: readPlannerCfg(fileCfg.planner),
     todoSummary: readTodoSummaryCfg(fileCfg.todoSummary),
     history: readHistoryCfg(fileCfg.history),
+    backup: readBackupCfg(fileCfg.backup),
     waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
     mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),

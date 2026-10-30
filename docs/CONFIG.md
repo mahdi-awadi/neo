@@ -527,6 +527,28 @@ dev-safe: with no key or URL in `.env`, history runs keyword-only.
 | `telegram` | `{ findLimit: 5 }` | Hits in a `/find` reply. |
 | `store` | `{ lockStaleMs: 180000 }` | A writer lock older than this may be taken over. |
 
+## Snapshot backup (`backup`) — ADR-0066 Decision 8
+
+`readBackupCfg` (`src/engine/backup/cfg.ts`) reads the section. Each key keeps a value of the right type;
+any other value keeps its default. The heartbeat step `backup` runs each job in a child process. The
+runbook (restore, drill, failures) is `docs/backup.md`.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `dir` | `/var/backups/neo` | The backup folder. Must be absolute. Made with mode 0700; files are 0600. The disk-cleanup kit protects it. |
+| `databases` | `[{ path: "data/history.db", cron: "41 3 * * *" }]` | The SQLite files to snapshot, each on its own cron (server-local). A relative path resolves against the daemon's folder. An entry with a bad cron, a path that is not `*.db`, or the same file name as an earlier entry is dropped. An empty list turns the job off. The ledger is not in the list: it joins only by the operator's decision (ADR-0066). |
+| `keepRecent` | `8` | The newest snapshots kept. |
+| `keepDaily` | `7` | Then the newest of each day, for this many more days. |
+| `keepWeekly` | `4` | Then the newest of each ISO week, for this many more weeks. Rotation deletes only files that match the naming rule `<name>-<UTC yyyymmddThhmmssZ>.db[.gz]` (and their `.manifest.json`). |
+| `compress` | `true` | Gzip each snapshot. |
+| `drillCron` | `23 5 * * 0` | The weekly restore drill: the newest snapshot of each database is checked against its manifest, restored to a temp file, `integrity_check`ed and its row counts compared. |
+| `minFreeGb` | `20` | A snapshot does not start with less free space (GiB) in `dir`. |
+| `timeoutMs` | `900000` | A snapshot or drill child that runs longer is ended (a failure). |
+
+A failure records `backup_failed` (codes only), sends one alert for each failure streak and keeps the
+`backup_failed` attention item until the job works again. A success records `backup_done` (or
+`backup_drill`).
+
 ## There is no `idlePollMs` / `loopTickMs`
 
 The daemon's scheduler tick is **derived**, not a fixed config knob. `heartbeatMs()`
