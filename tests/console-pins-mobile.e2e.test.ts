@@ -107,7 +107,13 @@ test.skipIf(!run)(
     expect(got.status).toBe(200);
     expect(got.disposition).toContain("attachment");
     expect(got.text).toContain("# Plan: cut the memory");
-    await expect(sheet.locator(".acts.stick button", { hasText: "Approve & build" }).count()).resolves.toBe(1);
+    // A long plan: the action bar sticks to the bottom of the sheet, in view without scrolling to the end.
+    const approve = sheet.locator(".acts.stick button", { hasText: "Approve & build" });
+    await expect(approve.count()).resolves.toBe(1);
+    await expect(sheet.evaluate((el) => el.scrollHeight > el.clientHeight * 2)).resolves.toBe(true);
+    const ab = (await approve.boundingBox())!;
+    expect(ab.y).toBeGreaterThan(0);
+    expect(ab.y + ab.height).toBeLessThanOrEqual(844);
     await sheet.locator(".plandoc").evaluate((el) => el.scrollIntoView({ block: "end" }));
     await shot(page, "plan-review-actions-390");
     page.once("dialog", (d) => void d.accept());

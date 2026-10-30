@@ -23,7 +23,8 @@ typed. Plan pins approved in one tap, and the plan could not be read first. Root
 
 1. **Open shows the item itself** in the existing sheet (the todo detail's `<dialog>`), from one seam,
    `itemDetail` (`src/engine/needs-you-detail.ts`, `GET /api/item?ref=`):
-   - **Decision:** the full question and its card. A one-choice card answers with a tap. A card with
+   - **Decision:** the full question and its card. The view says how it is closed (`closedBy`). A
+     governor approval shows a hint (Allow/Deny on its Telegram card), never a reply box that cannot work. A one-choice card answers with a tap. A card with
      several questions or a multi-select one uses picks and one Submit. Every decision also has a reply box.
    - **Plan:** the plan rendered, Download .md, Approve & build, and Drop (confirmed). The strip's button
      says **Review**: no plan is approved unread.
@@ -42,7 +43,10 @@ typed. Plan pins approved in one tap, and the plan could not be read first. Root
    not listed itself (the operator hid it). Once the decision is answered, the reminder is gone.
 4. **The plan is rendered by `/md-file?view=html`:** the same `resolveMdFile` checks, the same audit
    event (marked `view`), and the console's one safe renderer (`mdToHtml`, web target). No second
-   file-read path and no second viewer.
+   file-read path and no second viewer. Rendering runs on the engine's one thread, so it has its own
+   cap: a file over `mdFiles.viewMaxBytes` (default 256 KiB) is refused (413) and can still be
+   downloaded. A render whose `Sec-Fetch-Site` is not `same-origin` is refused (403), because a GET is
+   not covered by the non-GET CSRF check.
 5. **Typing on a phone:** the sheet's height follows the visual viewport (`--app-h`). On iOS, which does
    not resize the layout for the keyboard, the sheet is lifted by `--kb` (`viewport.ts`,
    `keyboardInset`). A focused field is scrolled into view, and the reply box uses 16 px text so iOS does
@@ -76,6 +80,8 @@ typed. Plan pins approved in one tap, and the plan could not be read first. Root
 
 - **Plans the console cannot serve:** a plan in a worktree outside `mdFiles.roots` (for example under
   `/tmp`) is refused, and the sheet shows the reason. Approve and Drop still work.
+- **Refusal texts:** the engine's refusal reasons (for example "already answered") are English in the
+  Arabic console. The labels and hints are translated.
 - **Concurrent answers:** `resolveDecision` does not check the row's status. The console checks and
   answers with no wait in between, but two surfaces answering at the same moment could both resume the
   worker. This is not changed here; it applies to Telegram too.

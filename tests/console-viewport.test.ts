@@ -24,3 +24,7 @@ test("the console keeps --kb current and the phone sheet sits above it, its heig
   expect(fit).toContain('root.style.setProperty("--kb", `${keyboardInset(window.innerHeight, vv)}px`)');
   expect(SHELL).toMatch(/@media \(max-width:640px\)\{\.sheet\{[^}]*margin:auto 0 var\(--kb,0px\)[^}]*max-height:min\(88vh,var\(--app-h,100dvh\)\)/);
 });
+
+test("the sheet's body does not trap the sticky action bar: the dialog is the one scroller", () => {
+  expect(SHELL).toMatch(/\.sheet \.sb\{padding:14px 16px 18px;overflow:visible\}/);
+});

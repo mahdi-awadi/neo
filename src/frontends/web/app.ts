@@ -1755,7 +1755,10 @@ function decisionBlock(dec: Any, done: () => void): HTMLElement {
   const qs: Any[] = dec.spec?.questions ?? [];
   // A one-question, one-choice card (or plain options) answers with a tap.
   const oneTap = qs.length === 1 && !qs[0].multiSelect;
-  if (dec.kind === "alert") {
+  if (dec.closedBy === "approval") {
+    // A governor approval is released only by Allow/Deny on its card, which unblocks the waiting tool call.
+    box.insertAdjacentHTML("beforeend", `<div class="rfo" dir="auto">${esc(tx("item.approvalHint"))}</div>`);
+  } else if (dec.closedBy === "alert") {
     button(tx("pins.action.acknowledge"), "run", (b) => answerDecision(dec.id, { acknowledge: true }, b, done));
   } else if (!qs.length || oneTap) {
     const options: string[] = dec.options ?? qs[0]?.options ?? [];
@@ -1788,12 +1791,12 @@ function decisionBlock(dec: Any, done: () => void): HTMLElement {
     });
   }
   box.appendChild(acts);
-  if (dec.kind !== "alert") {
+  if (dec.closedBy === "text") {
     const form = document.createElement("form");
     form.className = "ireply";
     form.innerHTML =
       `<label class="rfo" for="itans">${esc(tx("item.reply.label"))}</label>` +
-      `<textarea id="itans" class="itx" rows="3" dir="auto" data-compose="send" enterkeyhint="send" placeholder="${esc(tx("item.reply.placeholder"))}"></textarea>` +
+      `<textarea id="itans" class="itx" rows="3" dir="auto" data-compose="send" placeholder="${esc(tx("item.reply.placeholder"))}"></textarea>` +
       `<button class="run" type="submit" data-compose-submit>${esc(tx("item.reply.send"))}</button>`;
     form.onsubmit = (ev) => {
       ev.preventDefault();
@@ -1823,13 +1826,18 @@ function planBlock(pl: Any, done: () => void): HTMLElement {
     `<div class="rfo"><a class="mdl" href="${esc(href)}" download dir="ltr">${esc(tx("item.plan.download"))}</a> <span dir="ltr">${esc(pl.path)}</span></div>` +
     `<div class="tmsg plandoc"><div class="tx" dir="auto">${esc(tx("item.plan.loading"))}</div></div><div class="acts stick"></div>`;
   const doc = box.querySelector<HTMLElement>(".plandoc .tx")!;
+  const dl = box.querySelector<HTMLElement>("a.mdl")!;
   void fetch(href + "&view=html", { cache: "no-store" })
     .then((r) => (r.ok ? r.json() : r.text().then((t) => Promise.reject(new Error(t)))))
     .then((v: Any) => {
       doc.innerHTML = v.html;
       enhanceCode(doc);
     })
-    .catch((e: unknown) => (doc.textContent = tx("item.plan.missing", { reason: e instanceof Error ? e.message : "" })));
+    .catch((e: unknown) => {
+      doc.textContent = tx("item.plan.missing", { reason: e instanceof Error ? e.message : "" });
+      // Too large to show is still downloadable; anything else (gone, outside the roots) is not served at all.
+      if (!(e instanceof Error && /download/.test(e.message))) dl.hidden = true;
+    });
   const acts = box.querySelector<HTMLElement>(".acts")!;
   const button = (label: string, cls: string, onclick: (b: HTMLButtonElement) => void): void => {
     const b = document.createElement("button");

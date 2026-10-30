@@ -472,7 +472,7 @@ function mdApp() {
   writeFileSync(join(root, "learning", ".env"), "dotenv fixture\n");
   writeFileSync(join(base, "outside.md"), "outside\n");
   symlinkSync(join(base, "outside.md"), join(root, "learning", "escape.md"));
-  a.cfg.mdFiles = { roots: [root], maxBytes: 32 };
+  a.cfg.mdFiles = { roots: [root], maxBytes: 32, viewMaxBytes: 32 };
   const get = (path: string, cookie?: string) =>
     a.instance.fetch(new Request(`http://neo.test/md-file?path=${encodeURIComponent(path)}`, cookie ? { headers: { cookie } } : {}));
   return { a, root, base, get };
@@ -604,6 +604,7 @@ test("GET /api/todo/:id is the todo's detail; an unknown or malformed id is a 40
 test("GET /md-file?view=html renders the plan with the console's safe renderer, under the same checks and audit", async () => {
   const { a, root, base, get } = mdApp();
   a.cfg.mdFiles!.maxBytes = 1024;
+  a.cfg.mdFiles!.viewMaxBytes = 1024;
   const p = join(root, "learning", "notes", "plan.md");
   writeFileSync(p, "# Plan\n\n- step one\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n");
   const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
@@ -702,4 +703,46 @@ test("a non-GET request whose Sec-Fetch-Site is not same-origin is refused (403)
   expect(a.ledger.decisionById(dec)!.status).toBe("answered");
   // A GET (the md download link, a page load) is not affected.
   expect((await a.instance.fetch(new Request("http://neo.test/api/needs-you", { headers: { cookie, "sec-fetch-site": "cross-site" } }))).status).toBe(200);
+});
+
+
+// Final review (2026-10-30): rendering runs on the engine's one thread, so it has its own, smaller cap, and only
+// the console itself may ask for it.
+test("GET /md-file?view=html: a file over the render cap is 413 (download it instead); a cross-site request is 403", async () => {
+  const { a, root, get } = mdApp();
+  a.cfg.mdFiles!.maxBytes = 4096;
+  a.cfg.mdFiles!.viewMaxBytes = 100;
+  const p = join(root, "learning", "notes", "long.md");
+  writeFileSync(p, "word ".repeat(100));
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const view = (site?: string) => a.instance.fetch(new Request(`http://neo.test/md-file?view=html&path=${encodeURIComponent(p)}`, { headers: { cookie, ...(site ? { "sec-fetch-site": site } : {}) } }));
+  expect((await view()).status).toBe(413);
+  expect((await get(p, cookie)).status).toBe(200); // the download still works
+  a.cfg.mdFiles!.viewMaxBytes = 4096;
+  expect((await view("cross-site")).status).toBe(403);
+  expect((await view("same-site")).status).toBe(403);
+  expect((await view("same-origin")).status).toBe(200);
+  expect((await view()).status).toBe(200);
+  const hidden = await a.instance.fetch(new Request(`http://neo.test/md-file?view=html&path=${encodeURIComponent(join(root, "learning", ".env"))}`, { headers: { cookie } }));
+  expect(hidden.status).toBe(403);
+});
+
+test("POST /api/decision/answer: picks are validated (single-select one pick, no duplicates, integers, bounded) and an answer resumes the project", async () => {
+  const a = app({ start: fakeStart() });
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const post = (body: unknown) =>
+    a.instance.fetch(new Request("http://neo.test/api/decision/answer", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const spec = { questions: [{ question: "Which providers?", header: "Providers", options: ["Qi", "Zain", "Asia"], multiSelect: true }, { question: "When?", header: "When", options: ["Now", "Later"] }] };
+  const folder = scratch();
+  const dec = a.ledger.openDecision({ kind: "decision", question: "Refunds", spec, folder, project: "eticket-v3", orderId: "o1" } as never, 1);
+  expect(await (await post({ id: dec, picks: [[0], [0, 1]] })).json()).toMatchObject({ ok: false }); // single-select, two picks
+  expect(await (await post({ id: dec, picks: [[0, 0], [1]] })).json()).toMatchObject({ ok: false }); // a duplicate pick
+  expect(await (await post({ id: dec, picks: [[0.5], [1]] })).json()).toMatchObject({ ok: false }); // not an integer
+  expect((await post({ id: dec, picks: Array.from({ length: 30 }, () => [0]) })).status).toBe(400); // over the bound
+  expect(a.ledger.decisionById(dec)!.status).toBe("open");
+  expect(await (await post({ id: dec, picks: [[2, 0], [0]] })).json()).toMatchObject({ ok: true, text: "answered — resuming eticket-v3" });
+  expect(a.ledger.decisionById(dec)!.answer).toBe("Providers: Asia, Qi | When: Now");
+  // The resumed project runs: a session was started in its folder.
+  await Bun.sleep(20);
+  expect(a.registry.list().some((s) => s.order.folder === folder)).toBe(true);
 });

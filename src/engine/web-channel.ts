@@ -623,7 +623,11 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       let answer: string;
       if (input.picks !== undefined) {
         const ask = dec.spec;
-        const valid = !!ask && input.picks.length === ask.questions.length && input.picks.every((q, i) => q.every((o) => Number.isInteger(o) && o >= 0 && o < ask.questions[i]!.options.length) && (ask.questions[i]!.multiSelect || q.length <= 1));
+        // Every pick an option of its question, at most one for a single-select question, none twice.
+        const valid =
+          !!ask &&
+          input.picks.length === ask.questions.length &&
+          input.picks.every((q, i) => q.every((o) => Number.isInteger(o) && o >= 0 && o < ask.questions[i]!.options.length) && new Set(q).size === q.length && (ask.questions[i]!.multiSelect || q.length <= 1));
         if (!ask || !valid || !isComplete(ask, input.picks)) return { ok: false, text: "pick an answer for every question" };
         answer = answerText(ask, input.picks);
       } else answer = (input.answer ?? "").trim();

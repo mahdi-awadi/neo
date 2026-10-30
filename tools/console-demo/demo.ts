@@ -56,10 +56,14 @@ export function startConsoleDemo(port = 0): ConsoleDemo {
       "```",
       "",
       "<script>alert('raw html is shown as text')</script>",
+      "",
+      "## Appendix: measurements",
+      "",
+      ...Array.from({ length: 60 }, (_, i) => `- worker ${i + 1}: 450 MB resident, 1 browser`),
     ].join("\n"),
   );
 
-  const cfg = { ...loadConfig(mkdtempSync(join(tmpdir(), "neo-console-demo-cfg-"))), telegramToken: token, workRoot: work, mdFiles: { roots: [work], maxBytes: 2 * 1024 * 1024 } };
+  const cfg = { ...loadConfig(mkdtempSync(join(tmpdir(), "neo-console-demo-cfg-"))), telegramToken: token, workRoot: work, mdFiles: { roots: [work], maxBytes: 2 * 1024 * 1024, viewMaxBytes: 256 * 1024 } };
   const ledger = openLedger(":memory:");
   const registry = createRegistry();
   const trace = createTrace({ ledger, registry });

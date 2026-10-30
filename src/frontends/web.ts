@@ -395,11 +395,22 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       // `view=html` (ADR-0071): the same file, through the same checks and audit, rendered by the console's
       // one safe Markdown renderer (ADR-0025) so a plan can be read before it is approved.
       const view = url.searchParams.get("view") === "html";
+      // A render is asked only by the console itself (a GET, so the non-GET CSRF check does not cover it),
+      // and only up to the render cap: rendering runs on the engine's one thread. Refused as such, not read.
+      const site = req.headers.get("sec-fetch-site");
+      const viewRefusal: { status: 403 | 413; reason: string } | undefined = !view
+        ? undefined
+        : site !== null && site !== "same-origin"
+          ? { status: 403, reason: "cross-site request refused" }
+          : r.ok && r.bytes.byteLength > cfg.viewMaxBytes
+            ? { status: 413, reason: "too large to show here — download it" }
+            : undefined;
+      const fail = !r.ok ? { status: r.status, reason: r.reason } : viewRefusal;
       const session = createHash("sha256").update(sessionToken(req) ?? "").digest("hex").slice(0, 12);
       deps.engine.ledger.recordEvent("md_file", {
-        data: { path: asked.slice(0, 1024), ...(r.real ? { real: r.real } : {}), status: r.ok ? 200 : r.status, ...(r.ok ? {} : { reason: r.reason }), ...(view ? { view: true } : {}), uid: sessionUser(req), session },
+        data: { path: asked.slice(0, 1024), ...(r.real ? { real: r.real } : {}), status: fail ? fail.status : 200, ...(fail ? { reason: fail.reason } : {}), ...(view ? { view: true } : {}), uid: sessionUser(req), session },
       });
-      if (!r.ok) return new Response(r.reason, { status: r.status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      if (fail || !r.ok) return new Response(fail?.reason ?? "not found", { status: fail?.status ?? 404, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
       if (view) {
         const html = mdToHtml(new TextDecoder().decode(r.bytes), { target: "web" });
         return Response.json({ name: r.name, html }, { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin" } });

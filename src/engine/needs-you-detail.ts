@@ -5,7 +5,7 @@
  *  /md-file, ADR-0046). A todo is not here: the console has its own todo sheet. */
 import { join } from "node:path";
 import type { DecisionRow, Ledger } from "./ledger";
-import { answerable } from "./decision-settle";
+import { answerable, textAnswerRefusal } from "./decision-settle";
 import { parseRef, staleDecisionOf } from "./needs-you";
 import { planActions, planState, type PlanAction, type PlanState } from "./plans";
 import { attentionView, type AttentionItemView } from "./project-view";
@@ -16,6 +16,9 @@ export interface DecisionView {
   status: DecisionRow["status"];
   /** Open (or expired, ADR-0053): an answer is still taken. */
   answerable: boolean;
+  /** How it is closed: by a typed answer or a pick (`text`), or only by its own card — a governor approval's
+   *  Allow/Deny, an alert's OK — so the console never offers a reply that cannot work. */
+  closedBy: "text" | "approval" | "alert";
   project?: string;
   question: string;
   options?: string[];
@@ -43,15 +46,17 @@ export type ItemDetail =
   | { type: "attention"; attention: AttentionItemView; linked?: Exclude<ItemDetail, { type: "attention" }> };
 
 export interface ItemDetailDeps {
-  ledger: Pick<Ledger, "decisionById" | "planByCard" | "attentionById" | "listPins">;
+  ledger: Pick<Ledger, "decisionById" | "planByCard" | "attentionById" | "listPins" | "decisionSettleFactsByIds">;
 }
 
-function decisionView(d: DecisionRow): DecisionView {
+function decisionView(d: DecisionRow, ledger: ItemDetailDeps["ledger"]): DecisionView {
+  const refusal = textAnswerRefusal(d, ledger);
   return {
     id: d.id,
     kind: d.kind,
     status: d.status,
     answerable: answerable(d),
+    closedBy: refusal === "approval" || refusal === "alert" ? refusal : "text",
     ...(d.project ? { project: d.project } : {}),
     question: d.question,
     ...(d.options?.length ? { options: d.options } : {}),
@@ -66,7 +71,7 @@ function decisionDetail(deps: ItemDetailDeps, id: string): Exclude<ItemDetail, {
   const d = deps.ledger.decisionById(id);
   if (!d) return undefined;
   const p = deps.ledger.planByCard(d.id);
-  if (!p) return { type: "decision", decision: decisionView(d) };
+  if (!p) return { type: "decision", decision: decisionView(d, deps.ledger) };
   return {
     type: "plan",
     decisionId: d.id,

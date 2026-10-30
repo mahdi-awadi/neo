@@ -727,6 +727,7 @@
     "answered": "Answered — the work goes on",
     "closed": "Already answered: {{answer}}",
     "submit": "Submit answer",
+    "approvalHint": "This is an approval request. Answer it with Allow or Deny on its Telegram card: that releases the command that waits for it.",
     "reply": {
       "label": "Your answer",
       "placeholder": "Type your answer…",

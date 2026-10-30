@@ -13,18 +13,23 @@ export interface MdFilesCfg {
   roots: string[];
   /** Largest file served, in bytes. Default 2 MiB. */
   maxBytes: number;
+  /** Largest file rendered in the console (`view=html`, ADR-0071), in bytes. Rendering runs on the engine's
+   *  one thread, so it has its own, smaller cap; a larger file is downloaded instead. Default 256 KiB. */
+  viewMaxBytes: number;
 }
 
 export const DEFAULT_MD_FILES_MAX_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_MD_FILES_VIEW_MAX_BYTES = 256 * 1024;
 
 /** Parse the config value; a missing or bad field keeps its default (a bad value never opens the fence). */
 export function readMdFilesCfg(raw: unknown, workRoot: string): MdFilesCfg {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const roots = Array.isArray(r.roots) ? r.roots.filter((x): x is string => typeof x === "string" && isAbsolute(x)) : [];
-  const max = r.maxBytes;
+  const bytes = (v: unknown, d: number) => (typeof v === "number" && Number.isInteger(v) && v > 0 ? v : d);
   return {
     roots: roots.length ? roots : [workRoot],
-    maxBytes: typeof max === "number" && Number.isInteger(max) && max > 0 ? max : DEFAULT_MD_FILES_MAX_BYTES,
+    maxBytes: bytes(r.maxBytes, DEFAULT_MD_FILES_MAX_BYTES),
+    viewMaxBytes: bytes(r.viewMaxBytes, DEFAULT_MD_FILES_VIEW_MAX_BYTES),
   };
 }
 

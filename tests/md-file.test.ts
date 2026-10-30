@@ -28,7 +28,7 @@ beforeAll(() => {
   symlinkSync(join(outside, "foreign.md"), join(root, "proj", "escape.md"));
   symlinkSync(join(root, "proj", "notes", "data.txt"), join(root, "proj", "fake.md"));
   symlinkSync(outside, join(root, "proj", "linkdir"));
-  cfg = { roots: [root], maxBytes: 1024 };
+  cfg = { roots: [root], maxBytes: 1024, viewMaxBytes: 1024 };
 });
 
 test("a regular .md file inside a readable root is read, with its real path and name", () => {
@@ -66,7 +66,7 @@ test(".env, .env.md and hidden folders are refused (403)", () => {
   expect(resolveMdFile(join(root, "proj", ".env"), cfg)).toMatchObject({ ok: false, status: 403 });
   expect(resolveMdFile(join(root, "proj", ".env.md"), cfg)).toMatchObject({ ok: false, status: 403 });
   expect(resolveMdFile(join(root, "proj", ".git", "notes.md"), cfg)).toMatchObject({ ok: false, status: 403 });
-  expect(resolveMdFile("/root/.claude/CLAUDE.md", { roots: ["/"], maxBytes: 1024 })).toMatchObject({ ok: false, status: 403 });
+  expect(resolveMdFile("/root/.claude/CLAUDE.md", { roots: ["/"], maxBytes: 1024, viewMaxBytes: 1024 })).toMatchObject({ ok: false, status: 403 });
 });
 
 test("a relative path, a .. or . segment, or a NUL is refused (400)", () => {
@@ -93,9 +93,10 @@ test("a root that does not exist is skipped; no valid root refuses everything", 
   expect(resolveMdFile(p, { ...cfg, roots: ["/nonexistent-neo-root"] })).toMatchObject({ ok: false, status: 403 });
 });
 
-test("readMdFilesCfg: defaults to [workRoot] and 2 MiB; a bad value keeps the default", () => {
-  expect(readMdFilesCfg(undefined, "/home")).toEqual({ roots: ["/home"], maxBytes: 2 * 1024 * 1024 });
-  expect(readMdFilesCfg({ roots: ["/srv/a", "relative", 5], maxBytes: 10 }, "/home")).toEqual({ roots: ["/srv/a"], maxBytes: 10 });
-  expect(readMdFilesCfg({ roots: [], maxBytes: -1 }, "/home")).toEqual({ roots: ["/home"], maxBytes: 2 * 1024 * 1024 });
-  expect(readMdFilesCfg({ roots: "/x", maxBytes: 1.5 }, "/w")).toEqual({ roots: ["/w"], maxBytes: 2 * 1024 * 1024 });
+test("readMdFilesCfg: defaults to [workRoot], 2 MiB and a 256 KiB render cap; a bad value keeps the default", () => {
+  const V = 256 * 1024;
+  expect(readMdFilesCfg(undefined, "/home")).toEqual({ roots: ["/home"], maxBytes: 2 * 1024 * 1024, viewMaxBytes: V });
+  expect(readMdFilesCfg({ roots: ["/srv/a", "relative", 5], maxBytes: 10, viewMaxBytes: 5 }, "/home")).toEqual({ roots: ["/srv/a"], maxBytes: 10, viewMaxBytes: 5 });
+  expect(readMdFilesCfg({ roots: [], maxBytes: -1, viewMaxBytes: 0 }, "/home")).toEqual({ roots: ["/home"], maxBytes: 2 * 1024 * 1024, viewMaxBytes: V });
+  expect(readMdFilesCfg({ roots: "/x", maxBytes: 1.5 }, "/w")).toEqual({ roots: ["/w"], maxBytes: 2 * 1024 * 1024, viewMaxBytes: V });
 });

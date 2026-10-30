@@ -78,6 +78,9 @@ test("a decision: the full question, its card, one button per option and a reply
   expect(d).toContain('type="${q.multiSelect ? "checkbox" : "radio"}"');
   expect(d).toContain("{ picks }");
   expect(d).toContain('tx("item.submit")');
+  // An approval is closed only by Allow/Deny on its Telegram card: the sheet says so, with no reply box.
+  expect(d).toContain('dec.closedBy === "approval"');
+  expect(d).toContain('tx("item.approvalHint")');
   const a = fn("answerDecision");
   expect(a).toContain('"/api/decision/answer"');
   expect(a).toContain("loadPins()");
@@ -93,6 +96,8 @@ test("a plan: rendered from /md-file?view=html, a Download link, Approve & build
   expect(p).toContain('confirm(tx("item.plan.confirmDrop"))');
   expect(p).toContain('tx("item.plan.missing"');
   expect(p).toContain("enhanceCode(");
+  // The download link shows only when the file is served.
+  expect(p).toContain('dl.hidden = true');
 });
 
 test("an attention item: the project page's own renderer and buttons, plus the decision it is about", () => {
@@ -143,7 +148,7 @@ test("every dynamic key exists in EN and AR, and AR is translated", () => {
   const keys = [
     ...["plan", "decision", "alert", "todo", "attention"].map((k) => `pins.kind.${k}`),
     ...["review", "answer", "acknowledge", "retry", "open"].map((k) => `pins.action.${k}`),
-    "item.notFound", "item.submit", "item.reply.label", "item.reply.placeholder", "item.reply.send", "item.answered", "item.closed", "item.question",
+    "item.notFound", "item.submit", "item.approvalHint", "item.reply.label", "item.reply.placeholder", "item.reply.send", "item.answered", "item.closed", "item.question",
     "item.plan.download", "item.plan.loading", "item.plan.missing", "item.plan.confirmDrop", "item.about", "threads.planAction.drop",
     ...["queued", "running", "retry", "waiting", "failed", "done", "cancelled"].map((k) => `todoDetail.status.${k}`),
     "pins.pinned", "pins.unpinned", "pins.hidden",

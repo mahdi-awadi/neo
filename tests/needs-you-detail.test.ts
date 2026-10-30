@@ -98,3 +98,16 @@ test("needsYou: a stale reminder is not listed beside its own decision, and goes
   led.resolveDecision(dec, "yes");
   expect(refs()).toEqual([]); // answered: the reminder is moot
 });
+
+
+// Final review (2026-10-30): the sheet knows how a decision is closed, so it never offers a reply box that
+// cannot work (an approval: Allow/Deny on its card).
+test("itemDetail: a decision says how it is closed — by text, or only by its card (approval, alert)", () => {
+  const led = openLedger(":memory:");
+  const work = led.openDecision({ kind: "decision", question: "Which bank?", folder: "/home/q", project: "q", orderId: "o1" }, 1);
+  const approval = led.openDecision({ kind: "decision", question: "risky shell command: git push" }, 1);
+  const alert = led.openDecision({ kind: "alert", question: "Disk 95% full", orderId: "o2" }, 1);
+  expect((itemDetail({ ledger: led }, `dec:${work}`, 10) as Record<string, any>).decision.closedBy).toBe("text");
+  expect((itemDetail({ ledger: led }, `dec:${approval}`, 10) as Record<string, any>).decision.closedBy).toBe("approval");
+  expect((itemDetail({ ledger: led }, `dec:${alert}`, 10) as Record<string, any>).decision.closedBy).toBe("alert");
+});
