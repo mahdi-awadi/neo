@@ -249,7 +249,7 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
     - A failing heartbeat step never throws out of the tick.
   - Done when: the heartbeat part of AC5 and the engine part of AC9 pass.
 
-- [ ] **12. Worker tools**
+- [x] **12. Worker tools**
   - Create: `docs/tools/history-search.md` (a tool card with frontmatter like `project-notes.md`),
     `tests/history-tools.test.ts`.
   - Modify: `src/engine/dispatch.ts` (the tools `history_search` and `remember`, `history` in

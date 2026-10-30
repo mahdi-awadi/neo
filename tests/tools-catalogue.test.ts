@@ -155,7 +155,7 @@ test("the real docs/tools loads with zero errors", () => {
   expect(errors).toEqual([]);
   const active = cards.filter((c) => c.status === "active" && c.kind !== "recipe").map((c) => c.id).sort();
   expect(active).toEqual([
-    "chrome-devtools", "codebase-memory", "create-loop", "disk-kit", "eticket-data-mcp", "playwright",
+    "chrome-devtools", "codebase-memory", "create-loop", "disk-kit", "eticket-data-mcp", "history-search", "playwright",
     "project-message", "project-notes", "security-kit", "shared-browser", "stitch",
   ]);
   const recipes = cards.filter((c) => c.kind === "recipe" && c.status === "active").map((c) => c.id).sort();

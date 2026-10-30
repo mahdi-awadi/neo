@@ -300,6 +300,35 @@ async function main(): Promise<void> {
     windowMs: cfg.budgetWindowMs,
   });
   summaryGate.meter = meter;
+  // Post an ALERT-priority engine line (watchdog stalls, loop-failure) straight to the operator over
+  // the raw Bot API — these fire from the daemon tick, outside the pipeline/sink. Routes to the
+  // unmuted Decisions chat when configured (so a stall/crash is never lost in the muted DM), else
+  // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
+  // Every engine-side Bot API call goes through the same flood gate as the bot (installFloodGate).
+  const operatorApi = cfg.telegramToken ? createOperatorApi(cfg.telegramToken) : undefined;
+  const alertOperator = (text: string): void => {
+    const target = cfg.decisionsChatId ?? admin.adminId();
+    if (!operatorApi || target === undefined) return;
+    // A failed alert is logged (the API logs a refused call; this logs a network error) — never a
+    // fault of its own, because the fault reporter alerts through here.
+    operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
+  };
+  // The task history (ADR-0066): off → no store and no worker tool; a history.db that cannot be opened is
+  // moved aside (when corrupt) with one alert, and the engine runs on with history "not available". The Qdrant
+  // URL and the keys come from the env the loader filled (`loadConfig`), named in the config, never logged.
+  const historyCfg = cfg.history ?? HISTORY_DEFAULTS;
+  const historyRuntime: HistoryRuntime = startTaskHistory({
+    cfg: historyCfg,
+    ledger,
+    workRoot: cfg.workRoot,
+    env: process.env,
+    events: (kind, data) => ledger.recordEvent(kind, { data }),
+    alert: alertOperator,
+    report: (component, err) => faults.report(component, err),
+  });
+  const history = historyRuntime.history;
+  console.log(`  history   -> ${!historyCfg.enabled ? "OFF" : historyRuntime.available ? `${historyCfg.dbPath} (search + worker tools)` : "NOT available (history.db could not be opened; see the alert)"}`);
+
   // Project notes (ADR-0043): one project tells another. A request or a high finding is told to the
   // operator at once (through the flood gate, like the digest); the rest wait for the digest.
   // Questions (ADR-0050): a read-only consult run answers them; notes from main and late answers reach
@@ -315,7 +344,7 @@ async function main(): Promise<void> {
     notifyNow: (row) => {
       faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));
     },
-    consult: createConsultRunner({ runOrder, cfg, catalogue: tools, ledger, meter }),
+    consult: createConsultRunner({ runOrder, cfg, catalogue: tools, ledger, meter, history }),
     catalogue: tools,
     meter,
     ...notesWiring({
@@ -352,8 +381,6 @@ async function main(): Promise<void> {
   // again, forever. Stopping the poller up front also means the offset is already committed if
   // systemd SIGKILLs us mid-drain, and messages sent during the drain simply wait for the restart.
   const stopHooks: Array<() => Promise<unknown>> = [];
-  /** The task history (ADR-0066), started below once faults can alert; closed after the drain. */
-  let historyRuntime: HistoryRuntime | undefined;
   let drainStarted = false;
   const shutdown = (why: string): void => {
     if (drainStarted) return;
@@ -369,7 +396,7 @@ async function main(): Promise<void> {
       .then((r) => console.log(`[reload] drained ${r.drained.length} · interrupted ${r.interrupted.length} · persisted ${r.persisted} — exiting for restart`))
       .catch((e) => console.log(`[reload] drain error: ${e instanceof Error ? e.message : e}`))
       .finally(() => {
-        faults.guard("history.close", () => historyRuntime?.close());
+        faults.guard("history.close", () => historyRuntime.close());
         process.exit(0);
       });
   };
@@ -377,12 +404,6 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
   const requestReload = (): void => shutdown("/reload");
 
-  // Post an ALERT-priority engine line (watchdog stalls, loop-failure) straight to the operator over
-  // the raw Bot API — these fire from the daemon tick, outside the pipeline/sink. Routes to the
-  // unmuted Decisions chat when configured (so a stall/crash is never lost in the muted DM), else
-  // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
-  // Every engine-side Bot API call goes through the same flood gate as the bot (installFloodGate).
-  const operatorApi = cfg.telegramToken ? createOperatorApi(cfg.telegramToken) : undefined;
   const toolNotices = createToolNotices();
   const postToolNotices = async (): Promise<void> => {
     const target = admin.adminId();
@@ -394,13 +415,6 @@ async function main(): Promise<void> {
         .sendMessage(target, `⏵ ${n.name} has run ${n.call.tool} for ${mins}m: ${n.call.summary}\nStop ends only this command (the session goes on); Background keeps it running with a log.`, { reply_markup: { inline_keyboard: [buttons] } })
         .catch((e: unknown) => faults.report("toolNotices.send", e, { session: n.sessionId }));
     }
-  };
-  const alertOperator = (text: string): void => {
-    const target = cfg.decisionsChatId ?? admin.adminId();
-    if (!operatorApi || target === undefined) return;
-    // A failed alert is logged (the API logs a refused call; this logs a network error) — never a
-    // fault of its own, because the fault reporter alerts through here.
-    operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
   };
   // The one plan poster (ADR-0019): every plan a run writes — from Telegram, the web console, a
   // dispatch or a loop — reaches the operator as the same card, in the Decisions chat (else the DM).
@@ -421,22 +435,6 @@ async function main(): Promise<void> {
       cfg.faults,
     ),
   );
-
-  // The task history (ADR-0066): off → no store and no worker tool; a history.db that cannot be opened is
-  // moved aside (when corrupt) with one alert, and the engine runs on with history "not available". The Qdrant
-  // URL and the keys come from the env the loader filled (`loadConfig`), named in the config, never logged.
-  const historyCfg = cfg.history ?? HISTORY_DEFAULTS;
-  historyRuntime = startTaskHistory({
-    cfg: historyCfg,
-    ledger,
-    workRoot: cfg.workRoot,
-    env: process.env,
-    events: (kind, data) => ledger.recordEvent(kind, { data }),
-    alert: alertOperator,
-    report: (component, err) => faults.report(component, err),
-  });
-  const history = historyRuntime.history;
-  console.log(`  history   -> ${!historyCfg.enabled ? "OFF" : historyRuntime.available ? `${historyCfg.dbPath} (search + worker tools)` : "NOT available (history.db could not be opened; see the alert)"}`);
 
   // The toolchain updater (ADR-0009): a deterministic engine job, not a loop. It never restarts the
   // daemon — an SDK bump lands on master behind green tests and waits for the operator's restart.
@@ -606,8 +604,8 @@ async function main(): Promise<void> {
           ["attention.skillify", () => skillify?.(Date.now())],
           // The task history (ADR-0066): one indexer pass (it starts its own follow-ups while a backlog
           // drains), and the change-feed prune, which runs also while history is off.
-          ["history", () => historyRuntime?.tick()],
-          ["history.feedPrune", () => historyRuntime?.feedPrune()],
+          ["history", () => historyRuntime.tick()],
+          ["history.feedPrune", () => historyRuntime.feedPrune()],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed

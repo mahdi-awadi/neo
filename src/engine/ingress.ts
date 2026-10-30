@@ -50,6 +50,26 @@ export type IngressDeps = DispatchDeps & {
   now?: () => number;
 };
 
+/** The deps an untainted customer-driven run builds its tools from — and that its dispatches inherit,
+ *  through the `dispatch` tool's closure. The operator's deps are spread, so every operator-only dep is
+ *  stripped here explicitly, for this run and its dispatches. */
+export function ingressToolDeps(deps: IngressDeps): DispatchDeps {
+  return {
+    ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv,
+    // Customer-driven: dispatches run as source "neo", so strip the operator's standing
+    // write approval here explicitly — they keep the fence (ADR-0012).
+    governor: undefined,
+    // A customer-driven run never sends or reads project notes (ADR-0043).
+    notes: undefined,
+    // Nor does it reach the API relay (ADR-0044): keys stay behind operator surfaces.
+    tools: undefined,
+    // Nor does it speak into a project's session (ADR-0061): that is the operator's own voice.
+    projectMessage: undefined,
+    // Nor does it search or write the operator's task history (ADR-0066): past work is the operator's.
+    history: undefined,
+  };
+}
+
 export async function runCompanyBrief(
   brief: string,
   deps: IngressDeps,
@@ -91,17 +111,7 @@ export async function runCompanyBrief(
             resume:
               (canResumeWith(company.sdkProvider, deps.cfg.providers?.ownWork) ? company.sdkSessionId : "") || undefined,
             mcpServers: neoMcpServers(
-              { ...deps, workRoot: deps.cfg.workRoot, trust: denyAllTrust(), dispatchProgressMs: deps.cfg.dispatchProgressMs, dispatchStallMs: deps.cfg.dispatchStallMs, dispatchGraceMs: deps.cfg.dispatchGraceMs, apiRetryLadderMs: deps.cfg.apiRetryLadderMs, apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac, contextPolicy: deps.cfg.contextPolicy, workers: deps.cfg.workers, models: deps.cfg.models, providers: deps.cfg.providers, workerEnv: deps.cfg.workerEnv,
-                // Customer-driven: dispatches run as source "neo", so strip the operator's standing
-                // write approval here explicitly — they keep the fence (ADR-0012).
-                governor: undefined,
-                // A customer-driven run never sends or reads project notes (ADR-0043): these deps are
-                // the operator's, spread, so notes is stripped here — for this run and its dispatches.
-                notes: undefined,
-                // Nor does it reach the API relay (ADR-0044): keys stay behind operator surfaces.
-                tools: undefined,
-                // Nor does it speak into a project's session (ADR-0061): that is the operator's own voice.
-                projectMessage: undefined },
+              ingressToolDeps(deps),
               CUSTOMER_CHAT,
               // BACKGROUND: a customer brief is not the operator's turn — nobody is waiting at the
               // keyboard — so dispatches this run makes stay under the interactive reserve.

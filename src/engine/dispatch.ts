@@ -80,6 +80,7 @@ import { applyPlanAction, offerPlanFile, onRunEndPlans, headSha, planDepsFrom, D
 import { supportsRunConfigField } from "./model-resolver";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
 import type { TaskHistory } from "./history/index";
+import { HISTORY_SEARCH_DESCRIPTION, historySearchTool, REMEMBER_DESCRIPTION, rememberTool, TOOL_LIMIT_MAX, type RememberCaller } from "./history/tool-text";
 import { repliedContextBrief } from "./reply-routing";
 import { reviewedPath } from "./plan-review";
 import { answerable } from "./decision-settle";
@@ -409,10 +410,10 @@ export function planWaitTail(d: { id: string; question: string }): string {
  *  2026-10-29, ADR-0063). Concise — every brief pays for it; the rule sentences live in standing-rules.ts. */
 export function briefWithProjectDocs(task: string): string {
   return (
-    "First read this project's rule and doc .md files (AGENTS.md, DESIGN.md, other root .md files besides " +
-    "CLAUDE.md, the docs this task touches); follow them with CLAUDE.md.\n\n" +
+    "First read this project's rule and doc .md files (AGENTS.md, DESIGN.md, other root .md files, " +
+    "the docs this task touches); follow them with CLAUDE.md.\n\n" +
     "REQUIRED — work in two phases: DESIGN, then BUILD.\n" +
-    "  DESIGN — think deeply; hand it to the `planner` subagent (strongest model, highest effort). With the " +
+    "  DESIGN — think deeply; hand it to the `planner` subagent (strongest model). With the " +
     "`domain-modeling` and `codebase-design` skills: the real terms in `CONTEXT.md`, a short ADR per genuine " +
     "decision (with rejected alternatives); a spec (acceptance criteria, edge cases) as one clean seam " +
     "behind a small, testable interface; a plan via `superpowers:brainstorming` → `writing-plans`. " +
@@ -435,7 +436,8 @@ export function briefWithProjectDocs(task: string): string {
     "payment, upload or input-handling work.\n\n" +
     "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
     "may your helper agents. Work for another project: send it there with `project_notes`. " +
-    "Missing a fact, tool or key? `project_notes ask` and `tools_for` (`neo-tool-*` skills, `tool_api`) — never wait silently, never paste keys.\n\n" +
+    "Missing a fact, tool or key? `project_notes ask` and `tools_for` (`neo-tool-*` skills, `tool_api`) — never wait silently, never paste keys. " +
+    "Done before? `history_search` first.\n\n" +
     "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
     "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch " +
     "or a workaround. Escalate ONLY what is genuinely the operator's: " +
@@ -444,7 +446,7 @@ export function briefWithProjectDocs(task: string): string {
     "When you must ask (ask_operator): for a non-technical reader, in the operator's language — the situation, " +
     "each option and its effect, your pick and why. One decision per card; no jargon.\n\n" +
     "REQUIRED — stay alive, never blocked. Neo ABORTS a run after ~5 min with no streamed step. Start " +
-    "long checks (vet/test/lint loops, builds, image pulls, CI waits) in the background (background Bash " +
+    "long checks (vet/test/lint loops, builds, image pulls, CI waits) in the background (Bash " +
     "or a subagent), each module its own log; never wrap a real test in `timeout`. Keep working and read each " +
     "result when ready; with nothing left, POLL in FOREGROUND steps under 90 s. No Monitor. Single-shot: never end your turn while a " +
     "check runs or its result is unread.\n\n" +
@@ -1707,8 +1709,9 @@ export interface NeoToolOpts {
   playwright?: boolean;
 }
 
-/** The deps a consult tool set reads: the catalogue and the memory gate's inputs, nothing else. */
-export type ConsultToolDeps = Pick<DispatchDeps, "tools" | "memory" | "companyFolder" | "contextPolicy">;
+/** The deps a consult tool set reads: the catalogue, the memory gate's inputs and the task history (search
+ *  only), nothing else. */
+export type ConsultToolDeps = Pick<DispatchDeps, "tools" | "memory" | "companyFolder" | "contextPolicy" | "history">;
 
 /** Build the project's in-process MCP tools: `send_file` always; `dispatch` only for the company.
  *  When `opts.stitch` is set AND a `opts.stitchKey` is configured, the operator's Stitch HTTP MCP
@@ -1932,6 +1935,48 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
         },
       ),
     );
+  }
+  // `history_search` and `remember` (ADR-0066): gated on `deps.history`, which only operator surfaces wire
+  // (ingress strips it; a tainted run has no MCP at all). A consult run searches but never saves. `by`, the
+  // cause and the rate limit's session are this session's, from the closure: never a tool argument.
+  const history = deps.history;
+  if (history) {
+    tools.push(
+      tool(
+        "history_search",
+        HISTORY_SEARCH_DESCRIPTION,
+        {
+          query: z.string().describe("what you look for, in plain words (Arabic or English) or ids; 1–500 characters"),
+          project: z.string().optional().describe('only this project, e.g. "eticket-v3"'),
+          since: z.string().optional().describe("from this UTC date, YYYY-MM-DD"),
+          until: z.string().optional().describe("to this UTC date, YYYY-MM-DD (inclusive)"),
+          kinds: z.array(z.string()).optional().describe("only these kinds: todo, order, result, digest, message, plan, note, attention, decision, remembered, line"),
+          limit: z.number().int().optional().describe(`how many hits, 1–${TOOL_LIMIT_MAX} (default from config)`),
+        },
+        async (args: unknown) => historySearchTool(history, args),
+      ),
+    );
+    if (!consult) {
+      const caller: RememberCaller = {
+        by: opts.dispatch ? "company" : "worker",
+        session: opts.sessionId ?? opts.folder,
+        ...(opts.projectName ? { project: opts.projectName } : {}),
+      };
+      tools.push(
+        tool(
+          "remember",
+          REMEMBER_DESCRIPTION,
+          {
+            text: z.string().describe("the fact, in plain words, with where it applies; never a secret"),
+            project: z.string().optional().describe("the project it belongs to (default: this session's project)"),
+          },
+          async (args: unknown) => {
+            const cause = opts.cause?.();
+            return rememberTool(history, args, { ...caller, ...(cause ? { cause } : {}) });
+          },
+        ),
+      );
+    }
   }
   if (!consult && opts.dispatch) {
     tools.push(

@@ -1,6 +1,6 @@
 /** Consult runs (ADR-0050 rev. 2, spec §6): the read-only one-shot run that answers another agent's
  *  question in the target project's folder. It wraps `runOrder` with the `consult` worker profile —
- *  no writes, no shell, no helper agents, a `neo` server with only `tools_for` and `memory_search`,
+ *  no writes, no shell, no helper agents, a `neo` server with only `tools_for`, `memory_search` and (when history is on) `history_search`,
  *  the project fence, a turn cap — and every escalation is denied. When the notes module asks for a
  *  fork, it resumes the target's idle session with `forkSession` (a side copy; the parent never sees
  *  it). A consult is never a registry session and never saves its SDK session: it answers, then it is
@@ -15,6 +15,7 @@ import { supportsRunConfigField } from "./model-resolver";
 import type { Meter } from "./budget";
 import { neoMcpServers } from "./dispatch";
 import type { Catalogue, ToolMatch } from "./tools-catalogue";
+import type { TaskHistory } from "./history/index";
 import { DEFAULT_NOTES_CFG, type ConsultRunner, type Need } from "./project-notes";
 import { QUALITY_RULE, TECH_RULE } from "./standing-rules";
 
@@ -50,6 +51,8 @@ export interface ConsultRunnerDeps {
   runOrder: typeof runOrder;
   cfg: NeoConfig;
   catalogue?: Catalogue;
+  /** The task history (ADR-0066): a consult run may search it (`history_search`), never save to it. */
+  history?: TaskHistory;
   /** The order is recorded with the asker's cause and closed with a fixed outcome line (never the
    *  answer text: a withheld secret must not reach the ledger by this side door). Never recordSession (the spec's "saveSession"). */
   ledger: Pick<Ledger, "recordOrder" | "recordOutcome">;
@@ -71,7 +74,7 @@ export function createConsultRunner(deps: ConsultRunnerDeps): ConsultRunner {
       abortController: abort,
       maxTurns: notesCfg.questions.consultMaxTurns,
       mcpServers: neoMcpServers(
-        { tools: deps.catalogue, memory: cfg.memory, companyFolder: cfg.companyFolder, contextPolicy: cfg.contextPolicy },
+        { tools: deps.catalogue, memory: cfg.memory, companyFolder: cfg.companyFolder, contextPolicy: cfg.contextPolicy, history: deps.history },
         CONSULT_CHAT,
         { profile: "consult", dispatch: false, folder: job.folder, workClass: job.workClass },
       ),
