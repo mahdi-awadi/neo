@@ -152,7 +152,7 @@ describe("security scan: osv with Go call analysis (ADR-0066)", () => {
     writeFileSync(out, JSON.stringify({ results: [] }));
     const s = setup(["src/a.ts"], {}, { FAKE_OSV_GO_JSON: out });
     s.run("push", s.repo);
-    expect(goRun(s.log())).toBeDefined();
+    expect(goRun(s.log())).toContain("--memory 8192m --memory-swap 8192m"); // the default
     expect(plainRun(s.log())).toBeUndefined();
   });
 

@@ -84,7 +84,7 @@ built-in `/security-review`.
 | `testCmd` | The project's security test command, run at pre-push (for example authz tests). |
 | `semgrepChunkFiles` | Files per semgrep part (default 200). Lower it when a part times out (ADR-0051). |
 | `semgrepTimeoutSec` | Time limit for one semgrep part, in seconds (default 1800; write-time is always 50). |
-| `osvMemoryMb` | Memory limit for osv-scanner with Go call analysis, in MB (default 6144). Over it: no analysis, full severity (ADR-0066). |
+| `osvMemoryMb` | Memory limit (no swap) for osv-scanner with Go call analysis, in MB (default 8192). Over it: no analysis, full severity (ADR-0066). |
 
 Semgrep runs in parts: each part is staged, scanned and removed on its own, under its own time
 limit, so a slow part loses only its own files. A value that is not a positive integer uses the

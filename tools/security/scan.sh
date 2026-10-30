@@ -145,7 +145,7 @@ done
 exec "$bin" scan source -r --format json "$1"'
 
 run_osv() {
-  local mem; mem="$(cfg_int osvMemoryMb 6144)"
+  local mem; mem="$(cfg_int osvMemoryMb 8192)"
   mkdir -p "$work/osv-up" "$work/osv-wk" "$work/osv-meta"
   if [[ "$repo$work" =~ [,\"=:] ]]; then # these would break the overlay's mount options
     echo "the repo path holds a character the overlay mount cannot take" > "$work/osv-go.err"
