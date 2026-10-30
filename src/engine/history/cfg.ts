@@ -124,6 +124,7 @@ function readIndexer(raw: unknown, d: IndexerCfg): IndexerCfg {
     busyPauseMs: int(r.busyPauseMs, d.busyPauseMs, 0),
     reconcileRows: int(r.reconcileRows, d.reconcileRows),
     embedBatchesPerPass: int(r.embedBatchesPerPass, d.embedBatchesPerPass),
+    embedGrowAfter: int(r.embedGrowAfter, d.embedGrowAfter),
     uploadBatchesPerPass: int(r.uploadBatchesPerPass, d.uploadBatchesPerPass),
   };
 }

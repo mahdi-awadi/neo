@@ -139,6 +139,9 @@ The engine never stops, and search always answers from `history.db`.
 - **Qdrant down, or its key refused.** Vectors are made and kept in `history.db`. Uploads and point
   deletes wait in a queue.
 - **On recovery,** the indexer embeds and uploads the waiting work in bounded batches. Nothing is lost.
+- **On a slow host,** an embed batch that times out is halved and its first chunks are sent again, down to
+  one chunk. After `indexer.embedGrowAfter` successes in a row the batch doubles again, up to
+  `embedder.batch`.
 - **Collection emptied or lost (drift).** Each pass compares the point count with its upload marks. When
   the collection is much smaller, the indexer uploads the stored vectors again, with no new embed.
 - **`history.db` corrupt.** At start, the daemon moves it to `history.db.corrupt-<UTC time>` (with its

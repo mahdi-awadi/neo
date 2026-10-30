@@ -45,6 +45,7 @@ describe("readHistoryCfg", () => {
     expect(c.search.weights).toEqual({ ...HISTORY_DEFAULTS.search.weights, lines: 0.25 });
     expect(c.search.defaultLimit).toBe(5);
     expect(c.indexer.busyPauseMs).toBe(500);
+    expect(readHistoryCfg({ indexer: { embedGrowAfter: 2 } }).indexer.embedGrowAfter).toBe(2);
     expect(c.remember.perSessionHour).toBe(5);
     expect(c.telegram.findLimit).toBe(3);
     expect(c.degradedAlertMinutes).toBe(30);
@@ -58,7 +59,7 @@ describe("readHistoryCfg", () => {
       embedder: { url: 42, keyEnv: "my key", model: "", revision: 7, dims: 0, batch: -1, timeoutMs: NaN, queryTimeoutMs: "3000", queryCache: -1, backoffMs: 0, backoffMaxMs: null },
       vectors: { urlEnv: "url-env", keyEnv: "", collection: "history", uploadBatch: 0, timeoutMs: -1, queryTimeoutMs: 0, knn: 0, minScore: 1.5, driftRatio: 2 },
       search: { rrfK: 0, weights: { meaning: -1, words: "1" }, exactBoost: -1, defaultLimit: 0, maxLimit: 0, listLimit: 0, snippetChars: 0, maxQueryChars: 0, maxTerms: 0, fullCoverage: 1.2 },
-      indexer: { feedBatch: 0, sliceRows: -2, busyPauseMs: -1, reconcileRows: 0, embedBatchesPerPass: 0, uploadBatchesPerPass: "8" },
+      indexer: { feedBatch: 0, sliceRows: -2, busyPauseMs: -1, reconcileRows: 0, embedBatchesPerPass: 0, embedGrowAfter: 0, uploadBatchesPerPass: "8" },
       remember: { minChars: 0, maxChars: -1, perSessionHour: 0 },
       telegram: { findLimit: 0 },
       store: { lockStaleMs: 0 },

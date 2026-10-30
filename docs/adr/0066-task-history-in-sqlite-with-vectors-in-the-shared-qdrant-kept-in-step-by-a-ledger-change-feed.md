@@ -432,6 +432,9 @@ Two reviews of `feat/history-search` and the live verify found these; each has a
 - **Verify fix: the writer lock lives through a long pass.** A pass renews the lock before each write
   and each outside call (not only at its start), so a 4–6 minute pass keeps it under `lockStaleMs`
   (180 s); after a long wait it writes only if it still holds the lock, else it stops (`locked`).
+- **Verify fix: the embed batch adapts to a slow host.** A timed-out batch is halved (down to one chunk)
+  and its first chunks sent again, never the same batch twice; after `indexer.embedGrowAfter` (4)
+  successes in a row it doubles back toward `embedder.batch`.
 
 ### Measured (filled by the verify step)
 

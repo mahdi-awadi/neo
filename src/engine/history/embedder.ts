@@ -2,13 +2,14 @@
 // the local text-embeddings-inference service. It accepts only a loopback URL, reads the bearer key once
 // from the environment (`cfg.keyEnv`), and keeps no vector until `/info` has reported the configured model
 // id and revision. `/embed` answers are checked for one vector of `dims` per input. 401/403 → refused,
-// a timeout → slow, 413 → the batch is split, 429/503 → a back-off with no request until it ends,
+// a timeout → slow (marked `timedOut`, so the indexer can send a smaller batch), 413 → the batch is split, 429/503 → a back-off with no request until it ends,
 // connection refused → down (and `/info` is checked again before the next vector). Results carry reason
 // codes only: the key, and any transport error text that could hold it, never leave this module.
 import type { EmbedderCfg } from "./defaults";
 import { isLoopbackUrl, isTimeout, type MeaningOffReason, type ServiceState } from "./services";
 
-export type EmbedFailure = { ok: false; reason: MeaningOffReason; retryAfterMs?: number };
+/** `timedOut`: the request ran out of time (a smaller batch may fit), unlike a back-off. */
+export type EmbedFailure = { ok: false; reason: MeaningOffReason; retryAfterMs?: number; timedOut?: true };
 export type EmbedResult = { ok: true; vectors: Float32Array[] } | EmbedFailure;
 export type QueryVector = { ok: true; vector: Float32Array } | EmbedFailure;
 
@@ -76,7 +77,7 @@ export function openEmbedder(
       return { ok: true, res };
     } catch (e) {
       // The error text is never kept: a transport error may quote the request.
-      if (isTimeout(e)) return fail("embedder_slow");
+      if (isTimeout(e)) return { ...fail("embedder_slow"), timedOut: true };
       verified = false;
       return fail("embedder_down");
     }

@@ -593,3 +593,69 @@ describe("the writer lock during a long pass", () => {
     expect(b.store.lockHolder()).toEqual({ pid: process.pid, at: T0 + STALE });
   });
 });
+
+describe("the adaptive embed batch", () => {
+  /** `e` that times out every batch of more than `cap()` texts; each batch sent is recorded. */
+  const capped = (e: Embedder, cap: () => number, sent: string[][]): Embedder => ({
+    tag: e.tag, dims: e.dims, probe: () => e.probe(), embedQuery: (x) => e.embedQuery(x),
+    async embed(texts) {
+      sent.push(texts);
+      return texts.length > cap() ? { ok: false, reason: "embedder_slow", timedOut: true } : e.embed(texts);
+    },
+  });
+  const cfgOf = (growAfter: number, perPass = 50) => (c: HistoryCfg): HistoryCfg => ({
+    ...c, embedder: { ...c.embedder, batch: 8 }, indexer: { ...c.indexer, embedBatchesPerPass: perPass, embedGrowAfter: growAfter },
+  });
+  function orders(b: Bench, n: number): void {
+    for (let i = 1; i <= n; i++) b.led.recordOrder(order({ id: `batch${i}`, task: `Adaptive batch ${i}: a brief long enough to be indexed.` }));
+  }
+  const key = (texts: string[]) => texts.join("\u0000");
+
+  test("a timeout halves the batch and retries the same chunks; a batch that timed out is never sent again", async () => {
+    const b = setup({ cfg: cfgOf(100) });
+    orders(b, 10);
+    const sent: string[][] = [];
+    const r = await indexer(b, { embedder: capped(b.embedder, () => 2, sent) }).tick(T0);
+    expect(sent.slice(0, 3).map((x) => x.length)).toEqual([8, 4, 2]);
+    expect(sent[1]).toEqual(sent[0]!.slice(0, 4));
+    expect(sent[2]).toEqual(sent[0]!.slice(0, 2));
+    expect(sent.slice(2).every((x) => x.length <= 2)).toBe(true); // the size holds until it has earned growth
+    expect(new Set(sent.map(key)).size).toBe(sent.length);
+    expect(b.store.countWithoutVector(TAG)).toBe(0);
+    expect(r.embedder.state).toBe("up");
+    expect(b.events.filter((e) => e.kind === "history_embed_batch").map((e) => e.data.size)).toEqual([4, 2]);
+  });
+
+  test("after embedGrowAfter successes in a row the batch doubles, never past embedder.batch; the size carries to the next pass", async () => {
+    const b = setup({ cfg: cfgOf(2) });
+    orders(b, 40);
+    let cap = 2;
+    const sent: string[][] = [];
+    const ix = indexer(b, { embedder: capped(b.embedder, () => cap, sent) });
+    await ix.tick(T0);
+    const first = sent.map((x) => x.length);
+    expect(first.slice(0, 4)).toEqual([8, 4, 2, 2]);
+    expect(first[4]).toBe(4); // two successes at 2: grown to 4, which times out again
+    expect(first[5]).toBe(2);
+    expect(Math.max(...first)).toBe(8);
+    cap = 8;
+    for (let i = 41; i <= 80; i++) b.led.recordOrder(order({ id: `batch${i}`, task: `Adaptive batch ${i}: a brief long enough to be indexed.` }));
+    const at = sent.length;
+    await ix.tick(T0 + MIN);
+    const next = sent.slice(at).map((x) => x.length);
+    expect(next[0]).toBeLessThan(8); // the size the last pass ended with, not the configured 8
+    expect(next).toContain(8);
+    expect(Math.max(...next)).toBe(8);
+    expect(b.store.countWithoutVector(TAG)).toBe(0);
+  });
+
+  test("a timeout at one chunk ends the embedding of this pass as embedder_slow, without sending it again", async () => {
+    const b = setup({ cfg: cfgOf(2) });
+    orders(b, 3);
+    const sent: string[][] = [];
+    const r = await indexer(b, { embedder: capped(b.embedder, () => 0, sent) }).tick(T0);
+    expect(sent.map((x) => x.length)).toEqual([3, 1]);
+    expect(r.embedded).toBe(0);
+    expect(r.embedder).toMatchObject({ state: "down", reason: "embedder_slow" });
+  });
+});

@@ -96,14 +96,17 @@ export interface IndexerCfg {
   busyPauseMs: number;
   /** Ledger rows one pass walks during a reconcile (in slices of `sliceRows`). */
   reconcileRows: number;
-  /** Embed requests (of `embedder.batch` texts) one pass sends for each model tag. */
+  /** Embed requests one pass sends for each model tag (of at most `embedder.batch` texts each). */
   embedBatchesPerPass: number;
+  /** A timed-out embed batch is halved (down to one text) and its first chunks sent again; after this many
+   *  successes in a row the batch doubles again, up to `embedder.batch`. */
+  embedGrowAfter: number;
   /** Upsert requests (of `vectors.uploadBatch` points) one pass sends for each model tag. */
   uploadBatchesPerPass: number;
 }
 
 export const INDEXER_DEFAULTS: Readonly<IndexerCfg> = {
-  feedBatch: 500, sliceRows: 200, busyPauseMs: 200, reconcileRows: 500, embedBatchesPerPass: 16, uploadBatchesPerPass: 8,
+  feedBatch: 500, sliceRows: 200, busyPauseMs: 200, reconcileRows: 500, embedBatchesPerPass: 16, embedGrowAfter: 4, uploadBatchesPerPass: 8,
 };
 
 export interface SearchCfg {

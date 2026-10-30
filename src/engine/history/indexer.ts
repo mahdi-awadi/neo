@@ -2,7 +2,8 @@
 // feed from its own cursor, walks the source tables when a reconcile is due (the first start, a feed gap,
 // the weekly cron), extracts each row (sources.ts, through the firewall), writes the changed ones to
 // `history.db` in slices of at most `sliceRows` rows per transaction, embeds the chunks that have no vector
-// (a query in flight goes first), uploads the points that wait, sends the queued point deletes, re-uploads
+// (a query in flight goes first; a timed-out batch is halved and sent again, and grows back after
+// `indexer.embedGrowAfter` successes), uploads the points that wait, sends the queued point deletes, re-uploads
 // on drift without embedding, and retires an old model tag. A pass is single-flight, stops when another
 // process holds the writer lock, catches the error of each step and goes on with the next, and always
 // returns an `IndexReport`. A pass may outlast `store.lockStaleMs`, so it renews the lock before each write
@@ -129,6 +130,10 @@ interface Lane {
   emb: ServiceReport;
   vec: ServiceReport;
   indexesReady: boolean;
+  /** Texts per embed request now: `embedder.batch`, halved on each timeout, doubled back on a streak. */
+  batch: number;
+  /** Embed requests in a row that succeeded at this `batch`. */
+  streak: number;
 }
 
 const OFF_REASONS = new Set<MeaningOffReason>(["not_configured", "config_refused", "embedder_refused", "embedder_wrong_model", "vectors_refused", "vectors_key_rejected", "collection_missing"]);
@@ -163,6 +168,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
   const kinds = new Set(cfg.sources.kinds);
   const lane = (role: Lane["role"], embedder: Embedder, vectors: VectorIndex): Lane => ({
     role, embedder, vectors, emb: { state: "off", since: 0 }, vec: { state: "off", since: 0 }, indexesReady: false,
+    batch: Math.max(1, cfg.embedder.batch), streak: 0,
   });
   const active = lane("active", deps.embedder, deps.vectors);
   const lanes: Lane[] = [active, ...(deps.next ? [lane("next", deps.next.embedder, deps.next.vectors)] : [])];
@@ -558,7 +564,7 @@ export function createIndexer(deps: IndexerDeps): Indexer {
     for (const l of lanes) {
       const tag = l.embedder.tag;
       for (let i = 0; l.emb.state === "up" && i < cfg.indexer.embedBatchesPerPass; i++) {
-        const texts = store.textsWithoutVector(tag, Math.max(1, cfg.embedder.batch));
+        const texts = store.textsWithoutVector(tag, l.batch);
         if (!texts.length) break;
         await deps.gate.idle(); // a query goes first
         hold(); // the request may take up to the embed timeout
@@ -569,10 +575,16 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         } finally {
           ended();
         }
+        if (!res.ok && res.timedOut && texts.length > 1) {
+          // Too big for the time limit: the first half of the same chunks goes next, never this batch again.
+          resize(l, Math.floor(texts.length / 2));
+          continue;
+        }
         if (!res.ok) {
           setService(l, "emb", { state: stateOf(res.reason), reason: res.reason }, now);
           break;
         }
+        if (++l.streak >= cfg.indexer.embedGrowAfter && l.batch < cfg.embedder.batch) resize(l, Math.min(cfg.embedder.batch, l.batch * 2));
         hold(); // still ours after the wait
         store.putVectors(tag, texts.map((t, j) => ({ textHash: t.textHash, vec: res.vectors[j]! })));
         r.embedded += texts.length;
@@ -586,6 +598,14 @@ export function createIndexer(deps: IndexerDeps): Indexer {
         await yieldNow();
       }
     }
+  }
+
+  /** A new embed batch size for the lane; the streak starts again. */
+  function resize(l: Lane, size: number): void {
+    l.streak = 0;
+    if (size === l.batch) return;
+    l.batch = Math.max(1, size);
+    events("history_embed_batch", { model: l.role, size: l.batch });
   }
 
   const payloadProject = (p: string | undefined): string | undefined => (p && p.length <= 64 ? p : undefined);

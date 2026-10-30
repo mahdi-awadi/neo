@@ -109,12 +109,15 @@ describe("/embed", () => {
     expect(await e.embed(["alpha"])).toMatchObject({ ok: false, reason: "embedder_refused" });
   });
 
-  test("a timeout gives embedder_slow", async () => {
+  test("a timeout gives embedder_slow, marked timedOut (a back-off is not)", async () => {
     const { fake, cfg } = setup({ timeoutMs: 150, queryTimeoutMs: 150 });
     const e = openEmbedder(cfg, env);
     expect(await e.probe()).toEqual({ state: "up" });
     fake.queue.push("hang");
-    expect(await e.embed(["alpha"])).toMatchObject({ ok: false, reason: "embedder_slow" });
+    expect(await e.embed(["alpha"])).toEqual({ ok: false, reason: "embedder_slow", timedOut: true });
+    fake.queue.push(429);
+    expect(await e.embed(["alpha"])).not.toHaveProperty("timedOut");
+    fake.queue.push("hang");
     fake.queue.push("hang");
     expect(await e.embedQuery("beta")).toMatchObject({ ok: false, reason: "embedder_slow" });
   });
