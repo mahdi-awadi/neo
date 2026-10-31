@@ -250,6 +250,31 @@ test("a free-text order with no active project routes to the default project", a
   expect(h.replies.some((r) => r.toLowerCase().includes("resum"))).toBe(true);
 });
 
+// ADR-0072: a message that starts with a size override is an order for the company, not a command.
+test("/quick fix the picker reaches the company as text (with its prefix); a bare /quick gets the usage line", async () => {
+  const f = fakeStart();
+  const tasks: string[] = [];
+  const start = ((o: Order, h: RunHandlers, d?: { resume?: string }) => (tasks.push(o.task), f.start(o, h, d))) as typeof f.start;
+  const h = harness({ start });
+  const def = h.registry.add({ id: "def", source: "neo", folder: "/home/neo/agent", task: "init", chatId: -1, createdAt: 1 }, 1);
+  h.registry.setDefault(def.id);
+  h.registry.setStatus(def.id, "idle");
+  h.registry.setSdkSessionId(def.id, "sdk-def");
+
+  await handleMessage("/quick fix the picker", 9, h.base);
+  expect(h.replies.some((r) => r.includes("not an order"))).toBe(false);
+  expect(tasks.some((t) => t.includes("/quick fix the picker"))).toBe(true);
+
+  const before = tasks.length;
+  for (const bare of ["/quick", "/full"]) {
+    const replied = h.replies.length;
+    await handleMessage(bare, 9, h.base);
+    expect(h.replies.slice(replied)).toContain("usage: /quick <order> (or /full <order>)");
+  }
+  expect(tasks.length).toBe(before);
+  expect(f.followUps()).toEqual([]);
+});
+
 // The interactive reserve exists to keep headroom FOR the operator against background work, so it
 // must never refuse the operator's own turn. (2026-09-13: `/open /home/waselni say hi back` was
 // answered "throttled: protecting interactive headroom" after background dispatches had spent

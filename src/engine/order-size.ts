@@ -557,6 +557,9 @@ export function measureFailedText(error: string, size: OrderSize): string {
 export const GUARD_ERROR_TEXT =
   "Not run: Neo could not check this call against the order's size (an internal error, reported to the operator). Try once more; if it repeats, end your turn and say so.";
 
+/** The reply to a size override with no order after it (spec §4). */
+export const SIZE_USAGE = "usage: /quick <order> (or /full <order>)";
+
 /** The `dispatch` tool's guide to the sizes (spec §4). */
 export const SIZE_GUIDE =
   "Size (`size`) — how much process the worker runs; pick it while you write the brief. `quick`: one page or " +

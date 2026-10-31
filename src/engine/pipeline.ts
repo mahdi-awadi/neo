@@ -9,6 +9,7 @@ import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { FollowUpTiming, Order, OrderSource, SessionInfo } from "../types";
 import type { Cause, Ledger, MessageKind } from "./ledger";
 import type { Registry } from "./registry";
+import { DEFAULT_SIZES_CFG, SIZE_USAGE, parseSizeOverride } from "./order-size";
 import type { Meter } from "./budget";
 import type { UsageMeter } from "./usage";
 import { noteProjectStart, type TrustStore } from "./trust";
@@ -372,9 +373,17 @@ export async function handleMessage(
   //    decides what to do with the order. A project is addressed EXPLICITLY and ONE-SHOT: a chat's
   //    focus (mode "once") reverts to the company after this one message, so a stray next message
   //    never sticks to a project. An explicit `/pin` (mode "pinned") holds focus across messages.
+  //    An order that starts with a size override (`/quick …`, `/full …`, ADR-0072) is plain text too: it
+  //    goes to the addressed session with its prefix, so the chief of staff sees it (the tools read it
+  //    from this message in code). With nothing after it, it is answered here and goes to nobody.
+  const sizeOrder = text.trim().startsWith("/") ? parseSizeOverride(text, deps.cfg.sizes ?? DEFAULT_SIZES_CFG) : undefined;
+  if (sizeOrder && !sizeOrder.rest) {
+    await deps.reply(chatId, SIZE_USAGE);
+    return null;
+  }
   const focus = registry.getFocus(chatId);
   const addressed = focus?.session ?? registry.getDefault();
-  if (addressed && !text.trim().startsWith("/")) {
+  if (addressed && (!text.trim().startsWith("/") || sizeOrder)) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
     const out = await deliverToSession(addressed, text, chatId, deps, cause, {
       now,
@@ -669,6 +678,7 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     plans: deps.cfg.plans,
     commitFinish: deps.cfg.commitFinish,
     lanes: deps.cfg.lanes,
+    sizes: deps.cfg.sizes,
     toolControl: deps.cfg.toolControl,
     ...(chatId !== undefined ? { dispatcher: companyLink(deps, chatId) } : {}),
   };

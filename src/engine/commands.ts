@@ -355,6 +355,9 @@ export function toTelegramCommands(cmds: { name: string; summary: string }[]): T
 const PIPELINE_COMMANDS: { name: string; summary: string }[] = [
   { name: "open", summary: "start or resume a project" },
   { name: "loop", summary: "list, run, or enable/disable automation loops" },
+  // ADR-0072: an order with a size override goes to the company as text (pipeline branch 1).
+  { name: "quick", summary: "send an order as a quick fix — no plan" },
+  { name: "full", summary: "send an order through the full plan flow" },
 ];
 
 /** The engine's operator commands in Telegram's setMyCommands shape: the COMMANDS registry plus the
@@ -838,6 +841,8 @@ function renderHelp(): string {
     "(plain chat goes to the company; address a project with /use, then it reverts to the company)",
     ...COMMANDS.map((c) => `${c.usage} — ${c.summary}`),
     "/loop [<project> <goal>] — run a verifiable loop (e.g. /loop green)",
+    "/quick <order> — send an order as a quick fix — no plan",
+    "/full <order> — send an order through the full plan flow",
   ];
   return lines.join("\n");
 }

@@ -96,7 +96,7 @@ import {
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
 import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
-import { DEFAULT_SIZES_CFG, operatorUpLine, sizeReason, sizeTag, type OrderSize, type SizesCfg, type SizeUp } from "./order-size";
+import { DEFAULT_SIZES_CFG, ORDER_SIZES, SIZE_GUIDE, operatorUpLine, parseSizeOverride, resolveSize, sizeReason, sizeTag, type OrderSize, type SizesCfg, type SizeUp } from "./order-size";
 import { createSizeGuard, type SizeEnd, type SizeGuard } from "./size-guard";
 import { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT } from "./chats";
 
@@ -1735,6 +1735,8 @@ export async function dispatchToProject(
 /** The `lane` / `kind` arguments of the `dispatch` and `todo` tools (ADR-0057). */
 const LANE_ARG = z.enum(["side", "queue"]).optional().describe('"side" = run beside a busy project\'s main task (needs `kind`); "queue" (default) = wait in its main queue');
 const KIND_ARG = z.enum(LANE_KINDS).optional().describe("what a side lane does: ops | test | read-only | code — the engine enforces it");
+/** The `size` argument of the `dispatch` and `todo` tools (ADR-0072). */
+const SIZE_ARG = z.enum(ORDER_SIZES).optional().describe("quick | standard | big — how much process the worker runs (see Size in the dispatch description); no size = big");
 /** The lane fields the todo queue takes from a tool call: only a side lane with its kind. */
 function laneArgs(a: { lane?: "side" | "queue"; kind?: LaneKind }): { lane?: "side"; kind?: LaneKind } {
   return a.lane === "side" && a.kind ? { lane: "side", kind: a.kind } : {};
@@ -1953,6 +1955,26 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
     const live = (opts.workCause ?? opts.cause)?.();
     if (live) return live;
     return trace ? faults.guard("dispatch.workRoot", () => trace.root({ origin: "dispatcher", title: todoTitle(title), ...(project ? { project } : {}) })) : undefined;
+  };
+  /** The operator's size override (ADR-0072 §2.3), read in code from their own message — never from a tool
+   *  argument: first the live message the company answers now, then the root of the thread the work is
+   *  filed under. Only a line the operator wrote (role user, on Telegram or the web) counts, so a turn that a
+   *  schedule fired or an engine-written root gives none. */
+  const operatorSizeFor = (work: Cause | undefined): OrderSize | undefined =>
+    faults.guard("dispatch.operatorSize", () => {
+      const cfg = deps.sizes ?? DEFAULT_SIZES_CFG;
+      for (const id of [(opts.workCause ?? opts.cause)?.()?.msgId, work?.threadId]) {
+        const m = id === undefined ? undefined : deps.ledger.messageById(id);
+        if (!m || m.role !== "user" || (m.surface !== "telegram" && m.surface !== "web")) continue;
+        const o = parseSizeOverride(m.content, cfg);
+        if (o) return o.size;
+      }
+      return undefined;
+    });
+  /** The size fields a tool call hands to the todo queue: the chief of staff's and the operator's. */
+  const sizeArgs = (size: OrderSize | undefined, work: Cause | undefined): { size?: OrderSize; operatorSize?: OrderSize } => {
+    const operatorSize = operatorSizeFor(work);
+    return { size, ...(operatorSize ? { operatorSize } : {}) };
   };
   const THREAD_ARG = z
     .string()
@@ -2235,7 +2257,9 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           "If the project is busy (mid-task), the brief is QUEUED in that project's todo queue and the reply says \"queued as #N for <project>, position P\": it starts by itself when the current task is done, so confirm the number and position to the operator and never re-send or forward it. " +
           "The run has NO time limit — it works until it is done, even for hours; only a worker that goes completely silent (hung) is stopped. While it runs you get a `[dispatch progress]` line every few minutes (FYI — no reply needed), and you ALWAYS get a `[dispatch result]` message when it ends — including when it was cut short, in which case the result says where it stopped (last commit / latest note) so you can dispatch a follow-up that resumes from there. " +
           "Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run. " +
-          LANE_GUIDE,
+          LANE_GUIDE +
+          " " +
+          SIZE_GUIDE,
         {
           project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
@@ -2247,9 +2271,10 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             ),
           lane: LANE_ARG,
           kind: KIND_ARG,
+          size: SIZE_ARG,
           thread: THREAD_ARG,
         },
-        async (args: { project: string; task: string; team?: "frontend-backend"; lane?: "side" | "queue"; kind?: LaneKind; thread?: string }) => {
+        async (args: { project: string; task: string; team?: "frontend-backend"; lane?: "side" | "queue"; kind?: LaneKind; size?: OrderSize; thread?: string }) => {
           const laneError = laneArgError(args.lane, args.kind);
           if (laneError) return { content: [{ type: "text" as const, text: laneError }] };
           // The dispatch inherits the class of the worker calling the tool: the company session
@@ -2259,9 +2284,13 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           // The thread this work belongs to (ADR-0053), and the order of the session making it.
           const cause = workCauseFor(args.thread, args.task, args.project);
           if (typeof cause === "string") return { content: [{ type: "text" as const, text: cause }] };
+          const sized = sizeArgs(args.size, cause);
+          // Without the queue, dispatch runs it at once at the resolved size (a customer chat is always big).
+          const direct = () =>
+            resolveSize({ chosen: sized.size, override: sized.operatorSize, ...(replyChat === CUSTOMER_CHAT ? { forced: "customer" as const } : {}) }, deps.sizes ?? DEFAULT_SIZES_CFG).size;
           const out = deps.todo
-            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId, ...laneArgs(args) }, deps, replyChat)
-            : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass, cause, parentOrderId: opts.orderId });
+            ? await deps.todo.submit({ project: args.project, brief: args.task, team: args.team, workClass, cause, parentOrderId: opts.orderId, ...laneArgs(args), ...sized }, deps, replyChat)
+            : await dispatchToProject(args.project, args.task, deps, replyChat, { root: deps.workRoot, team: args.team, workClass, cause, parentOrderId: opts.orderId, size: direct() });
           return { content: [{ type: "text" as const, text: out }] };
         },
       ),
@@ -2294,7 +2323,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
             "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued or retry todos only), `retry` (`id`: re-run a failed todo, or a waiting retry now — the SAME todo; never dispatch a new brief to redo a failed one; on a RUNNING todo held in a usage-limit wait or an API retry wait — `list` and `sessions` show \"held: limit wait\" or \"held: API retry\" — it resumes that run NOW: the brief goes back into the same session, no second run. Never tell the operator to /kill a held todo: `retry` it), `pause` / `resume` (`project`). " +
             "A todo that stopped for a passing reason (stall, restart, API or account error) is kept as `retry` and re-runs by itself. " +
-            "For `add`, " + LANE_GUIDE + " Returns text.",
+            "For `add`, " + LANE_GUIDE + " `size`: as in `dispatch` (quick | standard | big; none = big). Returns text.",
           {
             action: z.enum(["list", "add", "reorder", "cancel", "retry", "pause", "resume"]),
             project: z.string().optional().describe("project folder name, e.g. \"eticket-v3\""),
@@ -2304,9 +2333,10 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
             team: z.enum(["frontend-backend"]).optional().describe("opt-in team mode, for add (as in dispatch)"),
             lane: LANE_ARG,
             kind: KIND_ARG,
+            size: SIZE_ARG,
             thread: THREAD_ARG,
           },
-          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend"; lane?: "side" | "queue"; kind?: LaneKind; thread?: string }) => {
+          async (args: { action: string; project?: string; id?: number; position?: number; task?: string; team?: "frontend-backend"; lane?: "side" | "queue"; kind?: LaneKind; size?: OrderSize; thread?: string }) => {
             const need = (what: string) => `todo ${args.action} needs ${what}.`;
             const text = await (async () => {
               switch (args.action) {
@@ -2319,7 +2349,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
                   const cause = workCauseFor(args.thread, args.task, args.project);
                   if (typeof cause === "string") return cause;
                   return todo.submit(
-                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause, parentOrderId: opts.orderId, ...laneArgs(args) },
+                    { project: args.project, brief: args.task, team: args.team, workClass: opts.workClass ?? DEFAULT_WORK_CLASS, cause, parentOrderId: opts.orderId, ...laneArgs(args), ...sizeArgs(args.size, cause) },
                     deps,
                     replyChat,
                   );
