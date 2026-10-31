@@ -108,3 +108,30 @@ test("telegramCommands and /help list quick and full", () => {
   expect(help).toContain("/quick <order>");
   expect(help).toContain("/full <order>");
 });
+
+// Review fix (ADR-0072 as built): an old /quick never carries over to the work a later engine turn files.
+import { flushDispatcherInbox, liveCompanyLink } from "../src/engine/dispatch-report";
+
+test("review: a dispatch result delivered under the /quick message gives no override to the work filed in that turn", async () => {
+  const t = tools();
+  const registry = t.d.registry;
+  const company = registry.add({ id: "co", source: "neo", folder: "/home/neo/agent", task: "x", chatId: 1, createdAt: 0 }, 0);
+  registry.setDefault(company.id);
+  // The pipeline's control: every input it is given is delivered to the registry with its cause.
+  registry.attachControl(company.id, { followUp: (_text: string, _t: unknown, c?: Cause) => registry.deliver(company.id, c), queued: () => 0, active: () => false, interrupt: async () => {} } as never);
+  const live = () => registry.causeOf(company.id);
+  const servers = neoMcpServers(t.d, 1, { dispatch: true, folder: "/home/neo/agent", cause: live, workCause: live });
+  const dispatch = (servers.neo as { instance: { _registeredTools: Record<string, Tool> } }).instance._registeredTools["dispatch"]!;
+  // The operator's own `/quick` turn: the override applies.
+  const op = line(t.d, "/quick fix the picker");
+  registry.deliver(company.id, op);
+  await dispatch.handler({ project: "p", task: "fix the picker" }, {});
+  expect(t.submitted.at(-1)!.operatorSize).toBe("quick");
+  registry.endTurn(company.id, { all: true });
+  // Later the picker's result comes back under the same message; the chief of staff files new work.
+  t.d.ledger.queueDispatcherReport("p", "[dispatch result] p: fixed", 2, op);
+  expect(await flushDispatcherInbox(t.d.ledger, liveCompanyLink(registry), 3)).toBe(true);
+  expect(registry.causeOf(company.id)).toMatchObject({ msgId: op.msgId, threadId: op.threadId });
+  await dispatch.handler({ project: "p", task: "now build the wallet", size: "big" }, {});
+  expect(t.submitted.at(-1)!.operatorSize).toBeUndefined();
+});

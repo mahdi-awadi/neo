@@ -350,3 +350,123 @@ test("an engine size is stored by engine; a code lane's merge todo is big, by en
   const merge = s.ledger.listTodos({ lane: "main", statuses: ["queued"] }).find((x) => x.brief.includes(`side/${side.id}`));
   expect(merge).toMatchObject({ size: "big", sizeBy: "engine" });
 });
+
+// ── Review fixes (ADR-0072 as built) ─────────────────────────────────────────────────────────────────
+
+test("review: a todo in plan first that the operator killed is not re-queued — it ends failed, as big", async () => {
+  const s = queueSetup();
+  await s.submit("fix the picker", { size: "quick" });
+  await settle();
+  toolCall(s.runs[0]!.h, "t1", "Write", { file_path: join(s.folder, "src/auth/token.ts"), content: "x\n" });
+  s.runs[0]!.finish({ ok: false, sessionId: "", summary: "killed by the operator", costUsd: 0 });
+  await settle(80);
+  expect(s.ledger.todoById(1)).toMatchObject({ status: "failed", size: "big" });
+  expect(s.ledger.listEvents({ kind: "todo_size_requeued" })).toHaveLength(0);
+  expect(s.runs).toHaveLength(1);
+  const reports = s.ledger.pendingDispatcherReports().map((r) => r.text).join("\n") + s.notes.join("\n");
+  expect(reports).not.toContain("re-queued as big");
+});
+
+test("review: a todo in plan first that stopped for a passing reason is re-queued as big", async () => {
+  const s = queueSetup();
+  await s.submit("fix the picker", { size: "quick" });
+  await settle();
+  toolCall(s.runs[0]!.h, "t1", "Write", { file_path: join(s.folder, "src/auth/token.ts"), content: "x\n" });
+  s.queue.pause("eticket-v3");
+  s.runs[0]!.finish({ ok: false, sessionId: "", summary: "overloaded", costUsd: 0, apiError: "overloaded" } as RunResult);
+  await settle(80);
+  expect(s.ledger.todoById(1)).toMatchObject({ status: "queued", size: "big" });
+  expect(s.ledger.listEvents({ kind: "todo_size_requeued" })).toHaveLength(1);
+});
+
+test("review: a side lane moved to big and killed is not moved to the main queue", async () => {
+  const s = queueSetup();
+  await s.submit("build", { size: "big" });
+  await settle();
+  await s.submit("make an admin", { lane: "side", kind: "ops" });
+  await settle(60);
+  const side = s.ledger.listTodos({ lane: "side" })[0]!;
+  toolCall(s.runs[1]!.h, "t1", "Write", { file_path: join(s.folder, "src/auth/token.ts"), content: "x\n" });
+  s.runs[1]!.finish({ ok: false, sessionId: "", summary: "killed", costUsd: 0 });
+  await settle(80);
+  expect(s.ledger.todoById(side.id)).toMatchObject({ status: "failed", lane: "side", size: "big" });
+  expect(s.ledger.listEvents({ kind: "todo_size_requeued" })).toHaveLength(0);
+});
+
+test("review: the dispatcher's note on a re-queue says so — never 'starts now' or a retry", async () => {
+  const s = queueSetup();
+  await s.submit("fix the picker", { size: "quick" });
+  await s.submit("later work", { size: "quick" });
+  await settle();
+  toolCall(s.runs[0]!.h, "t1", "Write", { file_path: join(s.folder, "src/auth/token.ts"), content: "x\n" });
+  s.runs[0]!.finish(done("stopped for a plan"));
+  await settle(80);
+  const reports = s.ledger.pendingDispatcherReports().map((r) => r.text).join("\n") + s.notes.join("\n");
+  expect(reports).toContain("[todo] #1 re-queued as big");
+  expect(reports).toContain("do NOT dispatch it again");
+  expect(reports).not.toContain("starts now");
+  expect(reports).not.toContain("#2");
+  // A transient stop in plan first: re-queued, not a retry.
+  const t = queueSetup();
+  await t.submit("fix the picker", { size: "quick" });
+  await settle();
+  toolCall(t.runs[0]!.h, "t1", "Write", { file_path: join(t.folder, "src/auth/token.ts"), content: "x\n" });
+  t.queue.pause("eticket-v3");
+  t.runs[0]!.finish({ ok: false, sessionId: "", summary: "stalled", costUsd: 0, apiError: "overloaded" } as RunResult);
+  await settle(80);
+  const r2 = t.ledger.pendingDispatcherReports().map((r) => r.text).join("\n") + t.notes.join("\n");
+  expect(r2).toContain("[todo] #1 re-queued as big");
+  expect(r2).not.toContain("re-runs by itself");
+  // A side lane moved to big: it joins the main queue.
+  const u = queueSetup();
+  await u.submit("build", { size: "big" });
+  await settle();
+  await u.submit("make an admin", { lane: "side", kind: "ops" });
+  await settle(60);
+  toolCall(u.runs[1]!.h, "t1", "Write", { file_path: join(u.folder, "src/auth/token.ts"), content: "x\n" });
+  u.runs[1]!.finish(done("stopped"));
+  await settle(80);
+  const r3 = u.ledger.pendingDispatcherReports().map((r) => r.text).join("\n") + u.notes.join("\n");
+  expect(r3).toContain("joins the main queue as big");
+  expect(r3).toContain("do NOT dispatch it again");
+});
+
+test("review: a settled handoff of a run whose end re-queues the todo queues no continuation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-tsz-ho-"));
+  const folder = join(root, "eticket-v3");
+  mkdirSync(folder);
+  const g = (...a: string[]) => Bun.spawnSync(["git", "-C", folder, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
+  g("init", "-q");
+  writeFileSync(join(folder, "a.txt"), "1");
+  g("add", ".");
+  g("commit", "-q", "-m", "first");
+  const ledger = openLedger(":memory:");
+  const registry = createRegistry();
+  const deps: DispatchDeps = {
+    ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"),
+    reply: () => {}, askApproval: async () => "deny", workRoot: root,
+    contextPolicy: { sweetSpotPct: 0.4, checkpointPct: 0.6, emergencyPct: 0.9, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70, maxTurns: 200, maxAgeMs: 1e12, handoffTimeoutMs: 1_000, staleResumePct: 0.35, cacheTtlFallbackMs: 3_600_000, cacheTtlMinObservations: 5 },
+  };
+  const runs: Array<{ h: RunHandlers; finish: (r: RunResult) => void }> = [];
+  const start = (_o: unknown, h: RunHandlers) => {
+    let finish!: (r: RunResult) => void;
+    const p = new Promise<RunResult>((res) => (finish = res));
+    runs.push({ h, finish });
+    return { followUp: () => {}, queued: () => 0, active: () => false, closed: () => false, close: () => {}, interrupt: async () => {}, done: p };
+  };
+  const tails: Array<string | undefined> = [];
+  const note = "## Goal\nfix\n## Done\nhalf\n## Next steps\n1. finish the fix\n## Open decisions\nnone\n";
+  // The fake handoff turn calls `next` at once — before the run's end reaches the queue.
+  const handoff = async (_s: unknown, _c: unknown, hd: { next?: (n: string) => string | undefined }) => void tails.push(hd.next?.(note));
+  const queue = createTodoQueue({ ledger, registry, onFailure: () => "continue", dispatchOpts: { start: start as never, now: () => 1_000, signals: () => ({ occupancy: 0.41, turns: 5, ageMs: 0, idleMs: 0 }), handoff: handoff as never } });
+  queue.setLauncher(() => ({ deps, replyChat: 1 }));
+  await queue.submit({ project: "eticket-v3", brief: "fix the picker", workClass: "interactive", size: "quick" }, deps, 1);
+  await settle();
+  toolCall(runs[0]!.h, "t1", "Write", { file_path: join(folder, "src/auth/token.ts"), content: "x\n" });
+  runs[0]!.finish(done("stopped for a plan"));
+  await settle(100);
+  expect(ledger.listTodos({}).filter((t) => t.brief.startsWith("Continue this task"))).toHaveLength(0);
+  expect(tails).toEqual([expect.stringContaining("re-queued as big")]);
+  expect(ledger.listEvents({ kind: "todo_size_requeued" })).toHaveLength(1);
+  expect(ledger.listTodos({})).toHaveLength(1);
+});

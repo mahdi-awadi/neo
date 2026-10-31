@@ -32,10 +32,13 @@ test("readSizesCfg: the spec §10 defaults", () => {
   expect(d.standard).toEqual({ maxFiles: 20, maxLines: 1000, maxServices: 3 });
   expect(d.guard.serviceMarkers).toEqual(["Dockerfile", "Containerfile"]);
   expect(d.guard.rules.map((r) => [r.name, r.to])).toEqual([
-    ["migration", "big"], ["auth", "big"], ["money", "big"], ["secrets", "big"], ["deploy", "big"],
+    ["migration", "big"], ["auth", "big"], ["auth", "big"], ["money", "big"], ["secrets", "big"], ["deploy", "big"],
     ["prod", "big"], ["module", "big"], ["proto", "standard"], ["deps", "standard"],
   ]);
   expect(d.guard.rules.find((r) => r.name === "module")?.created).toBe(true);
+  // The second auth rule is the auth-token words, with design and parser tokens exempt (review, ADR-0072).
+  expect(d.guard.rules.filter((r) => r.name === "auth")[1]?.words).toEqual(["tokens?"]);
+  expect(d.guard.rules.filter((r) => r.always).map((r) => r.name)).toEqual(["secrets", "deploy"]);
   expect(d.guard.ignore).toContain("docs/**");
   expect(d.guard.ignore).toContain("**/*.pb.go");
   expect(d.guard.ignore).toHaveLength(20);

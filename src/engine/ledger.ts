@@ -40,6 +40,10 @@ export const TOOL_ACTIONS_PRUNE_INTERVAL = 1000;
 export interface Cause {
   msgId: number;
   threadId: number;
+  /** In memory only: the input that carries this cause is engine-written (a dispatch report delivered to
+   *  the company under the operator message it answers), not that operator message itself. The operator's
+   *  size override is read from the message only on its own turn (ADR-0072). */
+  engine?: true;
 }
 
 export type MessageKind =

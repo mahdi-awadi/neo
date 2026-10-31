@@ -26,6 +26,7 @@ import { heldText, resumeClock, type ApiWaits } from "./api-wait";
 import { awaitHandoff, continuationBrief, handoffInFlight, type HandoffNext } from "./context-policy";
 import { awaitCommitFinish, commitFinishInFlight } from "./commit-finish";
 import { DEFAULT_SIZES_CFG, resolveSize, sizeNote, sizeReason, sizeTag, type OrderSize, type SizeUp } from "./order-size";
+import type { SizeEnd } from "./size-guard";
 import { CUSTOMER_CHAT } from "./chats";
 
 import { TODO_RETRY_BACKOFF_MS_DEFAULT, type TodoFailurePolicy } from "../config";
@@ -271,10 +272,28 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     return resolveProject(project, deps?.workRoot ?? launcher()?.deps.workRoot ?? q.dispatchOpts?.root, q.dispatchOpts?.desks ?? DESKS_DIR);
   };
 
-  /** What the queue will do after todo `t` ends with `ok` (and `failure`, ADR-0027) — for the
-   *  dispatcher's result. */
-  const nextNote = (t: TodoRow, ok: boolean, failure?: string): string | undefined => {
+  /** Does a run's end send todo `t` back to the queue as big (ADR-0072 §5.4)? A main-lane run that ended in
+   *  plan first with no plan of its own waiting, or a side lane moved to big — and only after a good end or a
+   *  passing stop (ADR-0027 transient): an operator's /kill or a task failure ends as usual, the row stays big. */
+  const requeuesBig = (t: TodoRow, e: { ok: boolean; failure?: string; size?: SizeEnd }): boolean => {
+    if (!e.ok && !classifyEnd(e.failure).transient) return false;
+    if (e.size?.requeue && t.lane === "main") return true;
+    return t.lane === "side" && e.size?.size === "big" && !e.size.late;
+  };
+
+  /** What the queue will do after todo `t` ends with `ok` (and `failure`, ADR-0027; `size`, ADR-0072) — for
+   *  the dispatcher's result. Built before the queue acts on the end, so it says what WILL happen. */
+  const nextNote = (t: TodoRow, ok: boolean, failure?: string, size?: SizeEnd): string | undefined => {
     const folder = t.folder;
+    if (requeuesBig(t, { ok, failure, size })) {
+      const up = movedThisRun(t);
+      return [
+        up ? `[size] #${t.id} moved up ${up.from} → ${up.to}: ${sizeReason(up)}.` : undefined,
+        t.lane === "side"
+          ? `[todo] side #${t.id} stopped: it joins the main queue as big and runs from there with the full flow (plan first) — do NOT dispatch it again.`
+          : `[todo] #${t.id} re-queued as big: it runs again by itself with the full flow (plan first) — do NOT dispatch it again.`,
+      ].filter(Boolean).join("\n");
+    }
     // A transient end with retries left: the todo re-runs by itself — say so, so nobody re-dispatches it.
     const again = !ok && classifyEnd(failure).transient ? nextRetry(t.attempts, ladder(), now()) : undefined;
     // A move up in this run (ADR-0072) comes first: the dispatcher sizes its next orders from it.
@@ -338,9 +357,9 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
           );
         },
         onRefused: (reason) => void (refused = reason),
-        resultNote: (ok, failure) => nextNote(ledger.todoById(t.id) ?? t, ok, failure),
+        resultNote: (ok, failure, size) => nextNote(ledger.todoById(t.id) ?? t, ok, failure, size),
         onEnd: (end) => finish(end, l),
-        onHandoff: ({ orderId, next, note }) => afterHandoff(orderId, next, note),
+        onHandoff: ({ orderId, next, note, size }) => afterHandoff(orderId, next, note, size),
         // ADR-0072: the row follows the order's size — a move up, or a brief that went out big (fail closed).
         onSizeUp: (up) => ledger.updateTodo(t.id, { size: up.to, sizeUp: up }),
         onSizeForced: (why) => {
@@ -420,8 +439,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     // Moved up to big and ended in plan first with no plan of its own awaiting approval (ADR-0072): the
     // same todo runs again, as big, with the full flow. A side lane moved to big was stopped (it has no
     // plan gate): it joins the main queue. A late move found the work already done: it ends as today.
-    if (end.size?.requeue && t.lane === "main") return requeueBig(t, end, l);
-    if (t.lane === "side" && end.size?.size === "big" && !end.size.late) return requeueBig(t, end, l);
+    // A killed or failed run is not re-queued: it ends below, as big.
+    if (requeuesBig(t, end)) return requeueBig(t, end, l);
     // Handed off at a safe checkpoint (ADR-0021): the work is not finished. Its continuation goes to
     // the HEAD of the project's queue, so the release below starts it before anything else.
     const cont =
@@ -639,9 +658,12 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
 
   /** After a handoff at the "task done" boundary (ADR-0029): queue the continuation at the head, park
    *  it on the decision this run raised, or nothing — and return the notice's tail. */
-  const afterHandoff = (orderId: string, next: HandoffNext, note: string): string | undefined => {
+  const afterHandoff = (orderId: string, next: HandoffNext, note: string, size?: SizeEnd): string | undefined => {
     const t = ledger.todoByOrder(orderId);
     if (!t) return undefined;
+    // The run's end re-queues the todo as big (ADR-0072): that todo IS the continuation — a second one
+    // would run the same work twice. The handoff may complete before or after the queue saw the end.
+    if (requeuesBig(t, { ok: true, size })) return "re-queued as big — it runs again with the full flow: plan first";
     const answers = takeAnswers(orderId); // answered while the note was being written: continue with it
     if (!answers && next.kind === "idle") return "done, idle";
     if (!answers && next.kind === "plan") return planWaitTail(next.decision);

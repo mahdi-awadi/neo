@@ -227,3 +227,90 @@ test("operatorUpLine: one line with the project, the todo, the move and what hap
 test("SIZE_GUIDE tells the chief of staff the three sizes and that big is the default", () => {
   for (const s of ["`quick`", "`standard`", "`big`", "No size = `big`", "`/quick`", "never down"]) expect(SIZE_GUIDE).toContain(s);
 });
+
+// ── Review fixes (ADR-0072 as built): rule gaps, and secrets/deploy before the ignore list ─────────────────────
+
+test("review: secrets, auth tokens, crypto and data-model paths move an order to big", () => {
+  const cases: Array<[string, string]> = [
+    [".envrc", "secrets"],
+    ["services/api/.envrc", "secrets"],
+    [".dev.vars", "secrets"],
+    ["workers/mail/.dev.vars", "secrets"],
+    ["config/service-account.json", "secrets"],
+    ["deploy-keys/service_account-prod.json", "secrets"],
+    ["src/lib/crypto.ts", "secrets"],
+    ["src/util/encryption.go", "secrets"],
+    ["pkg/hmac/sign.go", "secrets"],
+    ["src/lib/refreshToken.ts", "auth"],
+    ["src/api/access-tokens.ts", "auth"],
+    ["services/core/ent/schema/booking.go", "migration"],
+    ["db/schema.sql", "migration"],
+    ["prisma/models/booking.prisma", "migration"],
+  ];
+  for (const [p, rule] of cases) {
+    const j = judgeTouch("quick", EMPTY, onePath(p), RULES);
+    expect(j.kind === "up" ? [j.to, j.up.rule] : j.kind, p).toEqual(["big", rule]);
+  }
+});
+
+test("review: tokens and crypto are word-anchored; design tokens, a lexer's tokens and cryptic names stay quick", () => {
+  for (const p of [
+    "src/theme/tokens.ts",
+    "packages/ui/src/design-tokens.ts",
+    "styles/tokens.scss",
+    "src/lexer/token.go",
+    "src/parser/tokens.ts",
+    "src/tokenizer.ts",
+    "src/cryptic-label.tsx",
+    "src/components/KeyboardShortcuts.tsx",
+    "docs/secrets-howto.txt.md",
+  ]) {
+    expect(judgeTouch("quick", EMPTY, onePath(p), RULES), p).toEqual({ kind: "ok" });
+  }
+});
+
+test("review: package-runner, container and psql forms of a schema change move an order to big", () => {
+  for (const c of [
+    "pnpm prisma migrate dev",
+    "pnpm exec prisma migrate",
+    "npx -y prisma migrate",
+    "bunx --bun prisma migrate",
+    "yarn prisma migrate deploy",
+    "bunx prisma db push",
+    "npx drizzle-kit push",
+    "psql -c ALTER TABLE users ADD COLUMN x int",
+    "psql -c create table t (id int)",
+    "psql -c DROP TABLE t",
+  ]) {
+    const j = judgeTouch("quick", EMPTY, oneCommand(c), RULES);
+    expect(j.kind === "up" ? [j.to, j.up.rule] : j.kind, c).toEqual(["big", "migration"]);
+  }
+  for (const c of ["psql -c SELECT * FROM users", "pnpm prisma generate", "bunx prisma studio"]) {
+    expect(judgeTouch("quick", EMPTY, oneCommand(c), RULES), c).toEqual({ kind: "ok" });
+  }
+});
+
+test("review: secrets and deploy are checked before the ignore list; a document stays a document", () => {
+  for (const [p, rule] of [
+    ["docs/.env.production", "secrets"],
+    ["generated/certs/server.pem", "secrets"],
+    ["docs/examples/docker-compose.yml", "deploy"],
+    ["gen/k8s/deployment.yaml", "deploy"],
+  ] as const) {
+    const j = judgeTouch("quick", EMPTY, onePath(p), RULES);
+    expect(j.kind === "up" ? [j.to, j.up.rule] : j.kind, p).toEqual(["big", rule]);
+  }
+  // Docs about the topic are not the thing itself; other rules still skip ignored paths.
+  for (const p of ["docs/deploy/runbook.md", "docs/secrets.md", ".github/pull_request_template.md", "docs/auth/login-flow.md", "docs/payments.txt"]) {
+    expect(judgeTouch("quick", EMPTY, onePath(p), RULES), p).toEqual({ kind: "ok" });
+  }
+  // An ignored path still counts toward no limit.
+  expect(judgeTouch("quick", sofar(5), onePath("docs/.env.production", true, 0), RULES)).toMatchObject({ kind: "up", to: "big", up: { rule: "secrets" } });
+});
+
+test("review: a rule's `always` reads from the config; a bad type rejects the list", () => {
+  const ok = readSizesCfg({ guard: { rules: [{ name: "x", to: "big", names: ["^x$"], always: true }] } });
+  expect(ok.guard.rules[0]).toEqual({ name: "x", to: "big", names: ["^x$"], always: true });
+  const bad = readSizesCfg({ guard: { rules: [{ name: "x", to: "big", names: ["^x$"], always: "yes" }] } });
+  expect(bad.guard.rules).toBe(DEFAULT_SIZES_CFG.guard.rules);
+});

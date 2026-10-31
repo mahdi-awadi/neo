@@ -140,3 +140,31 @@ Differences from the plan:
   comes from the catalogues; numbers, paths, commands and a project's own rule names are LTR isolates.
 - **Telegram lines** carry the `[size]` tag (`sizeTag`: `[quick]`, or `[quick→big]` after a move up) on the
   queue lines, the project status and the dispatch start line. An unsized dispatch has no tag on its start line.
+
+Fixes from the final review (one line each):
+
+- **Re-queue only after a good or passing end.** A run in plan first (or a side lane moved to big) is queued
+  again as big only when it ended well or stopped for a passing reason (ADR-0027); an operator's `/kill` or a
+  task failure ends as usual, and the row stays big.
+- **Side lanes in the main folder measure nothing.** `read-only`, `ops` and `test` lanes get no baseline
+  (estimates and command rules only), so the main lane's edits never move them up; a `code` lane keeps its own.
+- **git failed at the start → the order runs big (fail closed).** `readRunBaseline` tells "not in git" and "git
+  ignores the folder" (no baseline, fine) from "git failed" (a `.git` is there but git cannot read it). On a
+  failure a quick or standard order runs big with `size_forced`, and `size_measure_failed` is recorded. Chosen
+  over denying every commit, which would leave the worker unable to commit work it cannot finish otherwise.
+- **No carry-over of an old `/quick`.** A dispatch report delivered to the company carries its cause marked
+  `engine`; the override is read only on the operator's own turn.
+- **Rule gaps.** `.envrc`, `.dev.vars`, `service-account*.json`, crypto words (secrets); auth-token words, not
+  design or parser tokens (a second `auth` rule); `*.prisma`, `ent/schema/**`, `schema.sql`; package-runner and
+  in-container migrate commands (`commandHeads` looks past `docker compose exec|run <svc>` and `pnpm exec`);
+  `psql -c` DDL. `secrets` and `deploy` are `always` rules: checked before the ignore list (Markdown excepted).
+- **No continuation beside a re-queue.** A settled handoff of a run whose end re-queues the todo queues no
+  continuation (`onHandoff` carries the size end, so the order of the two does not matter).
+- **The dispatcher's note on a re-queue** says "re-queued as big … do NOT dispatch it again" (`resultNote`
+  carries the size end); never "starts now" or a retry.
+- **The worker SDK is read once** per dispatch: the size, the preamble and the guard always agree.
+- **Spec gaps.** Plan first lets `Skill`, `ToolSearch`, `BashOutput` and `TaskOutput` run; `measureRunChange`
+  filters untracked paths by the baseline and the ignore list before it reads them, and reads no more once the
+  files pass the standard limit; a big run gets a guard with no opinion that measures its end for the record
+  (`size_measured`, size big); a run moved to big that ends with its plan waiting adds `PLAN_WAITS_TEXT` to its
+  result (AC 13).

@@ -75,7 +75,7 @@ import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { canResumeWith } from "./sdk-choice";
 import { createPlanWatch } from "./plan-watch";
-import { commitFinishLine, createCommitFinish, realCommitFinishGit, runBaseline, type CommitFinishCfg, type RunBaseline } from "./commit-finish";
+import { commitFinishLine, createCommitFinish, readRunBaseline, realCommitFinishGit, type BaselineRead, type CommitFinishCfg, type RunBaseline } from "./commit-finish";
 import { applyPlanAction, offerPlanFile, onRunEndPlans, headSha, planDepsFrom, planState, DEFAULT_PLANS_CFG, type PlanDeps, type PlanRun, type PlansCfg, type PostPlan, type EditPlanCard } from "./plans";
 import { supportsRunConfigField } from "./model-resolver";
 import { formatToolsReply, type Catalogue } from "./tools-catalogue";
@@ -96,7 +96,7 @@ import {
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
 import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
-import { DEFAULT_SIZES_CFG, ORDER_SIZES, SIZE_GUIDE, operatorUpLine, parseSizeOverride, resolveSize, sizeReason, sizeTag, type OrderSize, type SizesCfg, type SizeUp } from "./order-size";
+import { DEFAULT_SIZES_CFG, ORDER_SIZES, PLAN_WAITS_TEXT, SIZE_GUIDE, operatorUpLine, parseSizeOverride, resolveSize, sizeReason, sizeTag, type OrderSize, type SizesCfg, type SizeUp } from "./order-size";
 import { createSizeGuard, type SizeEnd, type SizeGuard } from "./size-guard";
 import { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT } from "./chats";
 
@@ -308,7 +308,9 @@ export interface TodoEnd {
   /** A `code` side lane's worktree end (ADR-0057): the queue merges or raises it. */
   lane?: LaneWorktreeEnd;
   /** A guarded run's end (ADR-0072): its final size, `requeue` (it ended in plan first with no plan of
-   *  its own awaiting approval: the todo runs again, as big) and any `late` move. Absent = not guarded. */
+   *  its own awaiting approval: the todo runs again, as big — the queue does so only after a good or a
+   *  passing end), any `late` move, and `planWaits`. A big run's guard only measures. Absent = no guard
+   *  (Codex, sizes off, a guard that could not be made). */
   size?: SizeEnd;
 }
 
@@ -565,7 +567,7 @@ export interface DispatchHooks {
   onRefused?: (reason: string) => void;
   /** Extra line for the dispatcher's final result (e.g. what the queue does next). `ok` is false
    *  for any bad end: failure, stall abort, or a reload cut. */
-  resultNote?: (ok: boolean, failure?: string) => string | undefined;
+  resultNote?: (ok: boolean, failure?: string, size?: SizeEnd) => string | undefined;
   /** The run is over and its result has reached the operator and the dispatcher inbox. A
    *  `continuation` means the run was handed off at a safe checkpoint (ADR-0021): the task is NOT
    *  finished, and this brief continues it in a fresh session. */
@@ -573,7 +575,7 @@ export interface DispatchHooks {
   /** After a handoff at the "task done" boundary (ADR-0029): act on what happens next — queue the
    *  continuation, or park it on the decision this run raised — and return the notice's tail
    *  ("continuing as #12"). Absent (no queue): dispatch says it itself. */
-  onHandoff?: (h: { orderId: string; next: HandoffNext; note: string }) => string | undefined;
+  onHandoff?: (h: { orderId: string; next: HandoffNext; note: string; size?: SizeEnd }) => string | undefined;
   /** Skip the "→ dispatching to …" line (the queue sends its own start line). */
   quietStart?: boolean;
   /** The upgrade guard moved the order up a size (ADR-0072): the queue updates the todo's row. */
@@ -657,12 +659,15 @@ export async function dispatchToProject(
     models: deps.models,
     governor: deps.governor,
   };
+  // The worker SDK, read ONCE (ADR-0072): the size, the preamble, the guard and the run must all see the same
+  // value, so a config flip during this dispatch can never give a quick preamble with no guard.
+  const ownWork = providerCfg.providers?.ownWork;
   /** Whose account this run spends: a usage limit is one provider's (ADR-0060). */
-  const runProvider: string = providerCfg.providers?.ownWork ?? "claude";
+  const runProvider: string = ownWork ?? "claude";
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.
   const teamAgents =
-    opts.team === "frontend-backend" && supportsRunConfigField(providerCfg.providers?.ownWork, "agents")
+    opts.team === "frontend-backend" && supportsRunConfigField(ownWork, "agents")
       ? frontendBackend
       : undefined;
   if (deps.lifecycle?.draining()) {
@@ -695,7 +700,7 @@ export async function dispatchToProject(
 
   // A side lane (ADR-0057) is enforced by the Claude governor hook; the Codex SDK has no such hook.
   const sideKind = opts.lane?.kind;
-  if (sideKind && providerCfg.providers?.ownWork === "codex") {
+  if (sideKind && ownWork === "codex") {
     event("dispatch_refused", { data: { project, workClass, reason: "lane_unsupported", kind: sideKind } });
     hooks.onRefused?.("lane_unsupported");
     return `Side lanes need the Claude worker SDK (its governor hook enforces the lane); the worker SDK is Codex, so this brief was not run as a side lane. Queue it instead (lane "queue").`;
@@ -722,7 +727,7 @@ export async function dispatchToProject(
   // live session is delivered into that session's run, where no guard of its own can attach: big too.
   const sizesCfg = deps.sizes ?? DEFAULT_SIZES_CFG;
   const asked: OrderSize = opts.size ?? "big";
-  const codexWorker = providerCfg.providers?.ownWork === "codex";
+  const codexWorker = ownWork === "codex";
   const size: OrderSize = !sizesCfg.enabled || codexWorker || teamAgents || wasRunning ? "big" : asked;
   const todoId = opts.todoId ?? opts.lane?.todoId;
   /** The start line's size tag: only when the caller sized the order, so an unsized dispatch reads as before. */
@@ -892,7 +897,7 @@ export async function dispatchToProject(
 
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
   // versa) is rejected outright, and before the ownership check that read as an API failure.
-  const worker = providerCfg.providers?.ownWork;
+  const worker = ownWork;
   const resume = sideKind
     ? undefined // a side lane always starts fresh — never the main session's context
     : (canResumeWith(existing?.sdkProvider, worker) ? existing?.sdkSessionId : undefined) ||
@@ -1033,11 +1038,12 @@ export async function dispatchToProject(
             },
           })
         : undefined;
-    // The upgrade guard (ADR-0072), created below with the run's baseline. A quick or standard order only:
-    // big is today's flow, and `size` is big for Codex.
+    // The upgrade guard (ADR-0072), created below with the run's baseline. A quick or standard order is
+    // guarded; a big one (today's flow) gets a guard with no opinion that only measures at the end, for the
+    // record. None for Codex (no governor hook) or with sizes off.
     let guard: SizeGuard | undefined;
     /** Moved up to big by the guard: each new plan version waits for the operator (forceApproval). */
-    const movedToBig = (): boolean => guard?.size() === "big";
+    const movedToBig = (): boolean => size !== "big" && guard?.size() === "big";
     // The plan gate (ADR-0036): a big plan this worker writes holds it until Approve & build. Only
     // where a card can be posted, and only a Claude worker can be steered (the PreToolUse hook).
     // A quick run's watch sends a plan but never holds; a standard run held by its own plan is big now.
@@ -1076,10 +1082,32 @@ export async function dispatchToProject(
     // only the run's own changes count at its end. Best-effort: a git fault costs only the check.
     // One baseline for the run (ADR-0072), shared by the commit finish and the size guard.
     const finishOn = !!deps.commitFinish?.enabled && !sideKind;
-    const guardOn = size !== "big" && worker !== "codex";
-    const baseline: RunBaseline | undefined = finishOn || guardOn ? faults.guard("dispatch.runBaseline", () => runBaseline(order.folder), { folder: order.folder }) : undefined;
+    const guardOn = sizesCfg.enabled && worker !== "codex";
+    // A side lane that works in the main folder (read-only, ops, test) would count the main lane's edits as its
+    // own: its guard has no baseline — estimates and command rules only. A `code` lane has its own worktree.
+    const sharesFolder = !!sideKind && sideKind !== "code";
+    const read: BaselineRead | undefined =
+      finishOn || (guardOn && !sharesFolder)
+        ? faults.guard("dispatch.runBaseline", () => readRunBaseline(order.folder), { folder: order.folder }) ?? { kind: "failed", error: "an engine fault, reported" }
+        : undefined;
+    const baseline: RunBaseline | undefined = read?.kind === "ok" ? read.baseline : undefined;
     const commitFinish = finishOn ? faults.guard("dispatch.commitFinish", () => createCommitFinish(folder, deps.commitFinish!, realCommitFinishGit, baseline), { folder }) : undefined;
-    if (guardOn) {
+    /** A smaller order runs big after all (fail closed): the big preamble in place of the small one. */
+    const runBig = (why: string): void => {
+      const big = briefForSize("big", workerTask);
+      const at = order.task.lastIndexOf(sizedBrief);
+      order.task = at >= 0 ? order.task.slice(0, at) + big + order.task.slice(at + sizedBrief.length) : big;
+      faults.guard("dispatch.recordOrder", () => deps.ledger.recordOrder(order));
+      forceBig(why, name);
+    };
+    // git failed on the repository at the start (ADR-0072, fail closed): a smaller order could never be
+    // measured, so it runs big — its size is not checked, so it gets the full flow — and the failure is recorded.
+    const failedRead = guardOn && !sharesFolder && read?.kind === "failed" ? read : undefined;
+    if (failedRead) {
+      event("size_measure_failed", { orderId: order.id, folder, data: { project: name, size, at: "start", error: failedRead.error } });
+      if (size !== "big") runBig(`Neo could not read git at the start (${failedRead.error}), so its size cannot be measured`);
+    }
+    if (guardOn && !(failedRead && size !== "big")) {
       guard = faults.guard("dispatch.sizeGuard", () => createSizeGuard({
         size,
         folder: order.folder,
@@ -1087,22 +1115,18 @@ export async function dispatchToProject(
         ...(sideKind ? { side: sideKind } : {}),
         cfg: sizesCfg,
         planPaths: (deps.plans ?? DEFAULT_PLANS_CFG).paths,
-        baseline,
+        ...(sharesFolder ? {} : { baseline }),
         startSha: headSha(order.folder),
         planApproved: () => planWatch?.approvedHeld() ?? false,
         onUp: (up) => sizeUp(up),
         now,
       }), { folder: order.folder });
-      if (!guard) {
-        // Fail closed (ADR-0072): a quick or standard brief never runs without its guard. The fault is
-        // reported (faults.guard above); the order runs big — the big preamble in place of the small one.
-        const big = briefForSize("big", workerTask);
-        const at = order.task.lastIndexOf(sizedBrief);
-        order.task = at >= 0 ? order.task.slice(0, at) + big + order.task.slice(at + sizedBrief.length) : big;
-        faults.guard("dispatch.recordOrder", () => deps.ledger.recordOrder(order));
-        forceBig("its size guard could not be made (an engine fault, reported)", name);
-      }
+      // Fail closed (ADR-0072): a quick or standard brief never runs without its guard. The fault is
+      // reported (faults.guard above); the order runs big — the big preamble in place of the small one.
+      if (!guard && size !== "big") runBig("its size guard could not be made (an engine fault, reported)");
     }
+    /** The guard as a steer: a quick or standard order's only. */
+    const steering = size !== "big" ? guard : undefined;
     /** One move up: the event, one line to the operator under the cause, a quiet note to the dispatcher, the queue's row. */
     const sizeUp = (up: SizeUp): void => {
       event("size_up", { orderId: order.id, folder, data: { project: name, from: up.from, to: up.to, rule: up.rule, path: up.path, command: up.command, value: up.value, max: up.max, late: up.late } });
@@ -1277,9 +1301,10 @@ export async function dispatchToProject(
         // A held plan speaks first (ADR-0036), then the size guard (ADR-0072), then an armed context
         // checkpoint (ADR-0021). The commit finish's turn is the task's tail: a checkpoint that arms in it
         // never steers (ADR-0037); the guard still does (its commit point measures the change).
+        // A big run's guard has no opinion (it only measures at the end): it is not a steer.
         contextSteer:
-          watch || planWatch || guard
-            ? (tool, input) => planWatch?.steer(tool, input) ?? guard?.steer(tool, input) ?? (commitBrief ? undefined : watch?.steer(tool, input))
+          watch || planWatch || steering
+            ? (tool, input) => planWatch?.steer(tool, input) ?? steering?.steer(tool, input) ?? (commitBrief ? undefined : watch?.steer(tool, input))
             : undefined,
         onTurnComplete: (result) => {
           lastActivityAt = now();
@@ -1512,7 +1537,7 @@ export async function dispatchToProject(
     if (sizeEnd?.measured) {
       const m = sizeEnd.measured;
       event("size_measured", { orderId: order.id, folder, data: { project: name, size: sizeEnd.size, files: m.files.size, lines: m.lines, services: [...m.services] } });
-    } else if (guard && baseline) {
+    } else if (guard && baseline && !sharesFolder) {
       event("size_measure_failed", { orderId: order.id, folder, data: { project: name, size: guard.size() } });
     }
     // The final report is built FIRST and queued in the dispatcher inbox in the same synchronous step
@@ -1537,13 +1562,14 @@ export async function dispatchToProject(
     const failure = good
       ? undefined
       : reloading ? "reload" : timedOut ? "stall" : checkpointLost ? "checkpoint" : !result.ok && result.apiError ? `api:${result.apiError}` : undefined;
+    const sized = (text: string): string => (good && sizeEnd?.planWaits ? `${text}\n${PLAN_WAITS_TEXT}` : text);
     const summary = atCheckpoint
       ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
       : checkpointLost
         ? `stopped at a context checkpoint (${Math.round(armed!.occupancy * 100)}%) that could not complete — uncommitted changes appeared after it; Neo's handoff note may be partial, dispatch it again to continue`
         : reloading
         ? `${result.summary || (result.ok ? "done" : "failed")} (wrapped up early for an engine reload — ${hooks.onEnd ? "its todo queue re-runs it" : "resume it after the restart"})`
-        : result.summary;
+        : sized(result.summary);
     const stopLine = stop ? formatStopPoint(stop) : "";
     const line =
       (ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
@@ -1576,7 +1602,7 @@ export async function dispatchToProject(
       });
       let note: string | undefined;
       try {
-        note = hooks.resultNote?.(good, failure);
+        note = hooks.resultNote?.(good, failure, sizeEnd);
       } catch {
         note = undefined; // the queue's note is extra — the result itself must still be queued
       }
@@ -1629,7 +1655,7 @@ export async function dispatchToProject(
             // decisions (ADR-0029). Never a bare "the next session starts from the note".
             const next = (note: string): string | undefined => {
               const n = nextAfterHandoff({ note, openDecisions: deps.ledger.openDecisionsForOrder(order.id) });
-              const told = hooks.onHandoff?.({ orderId: order.id, next: n, note });
+              const told = hooks.onHandoff?.({ orderId: order.id, next: n, note, ...(sizeEnd ? { size: sizeEnd } : {}) });
               if (told) return told;
               return n.kind === "continue"
                 ? "the next dispatch to this project starts from Neo's note"
@@ -1959,11 +1985,15 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   /** The operator's size override (ADR-0072 §2.3), read in code from their own message — never from a tool
    *  argument: first the live message the company answers now, then the root of the thread the work is
    *  filed under. Only a line the operator wrote (role user, on Telegram or the web) counts, so a turn that a
-   *  schedule fired or an engine-written root gives none. */
+   *  schedule fired or an engine-written root gives none. A turn the engine started under that message (a
+   *  dispatch result, marked `engine` on its cause) is not the operator's turn: an old `/quick` never carries
+   *  over to the work the chief of staff files then. */
   const operatorSizeFor = (work: Cause | undefined): OrderSize | undefined =>
     faults.guard("dispatch.operatorSize", () => {
       const cfg = deps.sizes ?? DEFAULT_SIZES_CFG;
-      for (const id of [(opts.workCause ?? opts.cause)?.()?.msgId, work?.threadId]) {
+      const live = (opts.workCause ?? opts.cause)?.();
+      if (live?.engine) return undefined;
+      for (const id of [live?.msgId, work?.threadId]) {
         const m = id === undefined ? undefined : deps.ledger.messageById(id);
         if (!m || m.role !== "user" || (m.surface !== "telegram" && m.surface !== "web")) continue;
         const o = parseSizeOverride(m.content, cfg);

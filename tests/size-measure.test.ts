@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { runBaseline } from "../src/engine/commit-finish";
+import { readRunBaseline, runBaseline, realCommitFinishGit } from "../src/engine/commit-finish";
 import { measureRunChange } from "../src/engine/size-guard";
 import { compileSizeRules, DEFAULT_SIZES_CFG } from "../src/engine/order-size";
 import { DEFAULT_PLAN_PATHS } from "../src/engine/plans";
@@ -154,4 +154,54 @@ test("runBaseline: outside git → undefined; inside, own() is true for clean pa
   expect(b.own("src/b.ts")).toBe(true);
   writeFileSync(join(dir, "src", "a.ts"), "dirty and changed again\n");
   expect(b.own("src/a.ts")).toBe(true);
+});
+
+// ── Review fixes (ADR-0072 as built) ─────────────────────────────────────────────────────────────────
+
+test("review: untracked paths are filtered by the baseline and the ignore list BEFORE their contents are read", () => {
+  const { dir, start } = repo();
+  const baseline = runBaseline(dir);
+  mkdirSync(join(dir, "docs"));
+  writeFileSync(join(dir, "docs", "big.ts"), "x\n".repeat(10));
+  writeFileSync(join(dir, "notes.md"), "n\n");
+  writeFileSync(join(dir, "src", "new.ts"), "1\n2\n");
+  const read: string[] = [];
+  const files = { exists: (p: string) => require("node:fs").existsSync(p), read: (p: string) => (read.push(p), "1\n2\n") };
+  const m = measure(dir, start, { files, baseline })!;
+  expect([...m.files.keys()]).toEqual(["src/new.ts"]);
+  expect(read).toEqual([join(dir, "src", "new.ts")]);
+  // The ignored paths are listed (for the secrets and deploy rules), never read and never counted.
+  expect([...m.ignored].sort()).toEqual(["docs/big.ts", "notes.md"]);
+});
+
+test("review: past the standard file limit no more untracked contents are read", () => {
+  const { dir, start } = repo();
+  const baseline = runBaseline(dir);
+  for (let i = 0; i < 40; i++) writeFileSync(join(dir, "src", `n${i}.ts`), "x\n");
+  let reads = 0;
+  const files = { exists: (p: string) => require("node:fs").existsSync(p), read: () => (reads++, "x\n") };
+  const m = measure(dir, start, { files, baseline })!;
+  expect(m.files.size).toBe(40);
+  expect(reads).toBe(DEFAULT_SIZES_CFG.standard.maxFiles + 1);
+});
+
+test("review: readRunBaseline tells a folder outside git and an ignored folder from a git that failed", () => {
+  expect(readRunBaseline(mkdtempSync(join(tmpdir(), "neo-sm-nogit-")))).toEqual({ kind: "none", why: "not-git" });
+  const { dir } = repo();
+  const ok = readRunBaseline(dir);
+  expect(ok.kind).toBe("ok");
+  mkdirSync(join(dir, "skip"));
+  writeFileSync(join(dir, ".gitignore"), "skip/\n");
+  expect(readRunBaseline(join(dir, "skip"))).toEqual({ kind: "none", why: "ignored" });
+  // A repository git cannot read (a timeout, an error): failed, never "no baseline".
+  const failing = { ...realCommitFinishGit, root: () => undefined };
+  expect(readRunBaseline(dir, failing)).toMatchObject({ kind: "failed" });
+  const statusFails = { ...realCommitFinishGit, status: () => undefined };
+  expect(readRunBaseline(dir, statusFails)).toMatchObject({ kind: "failed" });
+  // A broken .git: git cannot read it, but it is a repository.
+  const broken = mkdtempSync(join(tmpdir(), "neo-sm-broken-"));
+  mkdirSync(join(broken, ".git"));
+  expect(readRunBaseline(broken)).toMatchObject({ kind: "failed" });
+  // runBaseline stays the plain form.
+  expect(runBaseline(broken)).toBeUndefined();
 });

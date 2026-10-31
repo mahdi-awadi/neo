@@ -627,7 +627,8 @@ export async function deliverToCompany(
     // A dispatch result carries its thread: the company's turn that reads it is filed there.
     // A dispatch report is an engine brief for the company: it waits for the turn, never steers it.
     const brief = withLiveNotes(deps, company.id, company.order.folder, text, now());
-    if (opts.cause) control.followUp(brief, "after-turn", opts.cause);
+    // Its cause is marked engine-written: the turn it starts is not the operator's message (ADR-0072).
+    if (opts.cause) control.followUp(brief, "after-turn", { ...opts.cause, engine: true });
     else control.followUp(brief, "after-turn");
     registry.touch(company.id, now());
     return true;
@@ -636,7 +637,7 @@ export async function deliverToCompany(
   // it right now — a resume in progress, an ingress brief's one-shot run — and a second resume of
   // the same SDK session would race it. The report stays in the inbox for a later flush.
   if (!opts.wake || company.status === "running" || resuming.has(company.id)) return false;
-  await resumeSession(company, text, chatId, deps, now, deps.start ?? startOrder, undefined, opts.cause);
+  await resumeSession(company, text, chatId, deps, now, deps.start ?? startOrder, undefined, opts.cause ? { ...opts.cause, engine: true } : undefined);
   return true;
 }
 

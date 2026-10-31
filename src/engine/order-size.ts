@@ -48,6 +48,9 @@ export interface SizeRule {
   created?: boolean;
   /** Globs exempt from this rule. */
   except?: string[];
+  /** Checked on ignored paths too, by `paths` and `names` only (not `words`): an ignored folder never hides a
+   *  secret or a deploy file (`docs/.env.production`). The defaults set it on `secrets` and `deploy`. */
+  always?: boolean;
 }
 
 export interface SizeLimits {
@@ -77,31 +80,47 @@ export interface SizesCfg {
 
 // The tools that move a database schema, run through a package script, a runner or a script file.
 const RUNNER = "(?:make|just|task|(?:bun|npm|pnpm|yarn)(?:\\s+run)?)";
+// A package runner in front of a tool: `npx -y`, `bunx --bun`, `pnpm exec`, `yarn dlx`, a bare `pnpm`/`yarn`.
+const PKG = "(?:(?:npx|bunx|pnpx)(?:\\s+-\\S+)*\\s+|(?:pnpm|yarn|npm|bun)\\s+(?:(?:exec|dlx|x)\\s+)?(?:-\\S+\\s+)*)?";
+// A document about a topic is not the thing itself: the always-checked rules skip these.
+const DOCUMENTS = ["**/*.md", "**/*.mdx"];
 
 /** The default rules (spec §5.2): the sensitive areas move an order to big, an API contract and the
  *  dependencies to standard. */
 const DEFAULT_RULES: SizeRule[] = [
   { name: "migration", to: "big",
-    paths: ["**/migrations/**", "**/migration/**", "**/migrate/**", "**/schema.prisma", "**/drizzle/**", "**/alembic/**"],
+    // The data model: migrations, and the schema files they come from (Prisma, ent, a plain schema.sql).
+    paths: ["**/migrations/**", "**/migration/**", "**/migrate/**", "**/*.prisma", "**/drizzle/**", "**/alembic/**",
+            "**/ent/schema/**", "**/schema.sql"],
     words: ["migrat\\w*"],
     commands: ["^(?:goose|migrate|atlas|dbmate|flyway|liquibase|alembic)\\b",
-               "^(?:(?:npx|bunx)\\s+)?(?:prisma|drizzle-kit|knex|sequelize|typeorm|sqlx)\\b.*\\bmigrat",
+               `^${PKG}(?:prisma|drizzle-kit|knex|sequelize|typeorm|sqlx)\\b.*\\bmigrat`,
+               `^${PKG}(?:prisma\\s+db\\s+push|drizzle-kit\\s+push)\\b`,
                `^${RUNNER}\\s+\\S*migrat`,
-               "^(?:go\\s+run|node|bun|deno|python3?|sh|bash)\\s+\\S*migrat"] },
+               "^(?:go\\s+run|node|bun|deno|python3?|sh|bash)\\s+\\S*migrat",
+               // `psql -c <sql>` (touchOf's head of a psql call): DDL changes the schema by hand.
+               "^psql\\s+-c\\s.*\\b(?:(?:alter|create|drop)\\s+(?:table|index|schema|type|view|sequence|database|extension)|truncate)\\b"] },
   { name: "auth", to: "big",
     words: ["o?auth(?!or(?!i[sz]))\\w*", "jwt\\w*", "login\\w*", "logout", "sign(?:in|up|on|out)", "sessions?",
             "passwords?", "passwd", "permissions?", "roles?", "rbac", "acl", "otp", "mfa", "2fa", "totp", "identity",
             "credentials?", "csrf", "sso", "saml", "oidc"] },
+  // An auth token by word (`refreshToken.ts`, `access-tokens.ts`); a design system's or a parser's tokens are not.
+  { name: "auth", to: "big",
+    words: ["tokens?"],
+    except: ["**/theme/**", "**/themes/**", "**/styles/**", "**/style/**", "**/design/**", "**/design-system/**",
+             "**/*design-token*", "**/*design_token*", "**/lexer/**", "**/parser/**", "**/*.{css,scss,sass,less}"] },
   { name: "money", to: "big",
     words: ["payments?", "pay", "payouts?", "billing", "wallets?", "invoices?", "refunds?", "finance", "financial",
             "balances?", "prices?", "pricing", "fares?", "commissions?", "markups?", "settlements?", "checkout",
             "currenc(?:y|ies)", "money", "charges?", "receipts?", "tax(?:es)?", "discounts?", "coupons?", "topups?"] },
-  { name: "secrets", to: "big",
+  { name: "secrets", to: "big", always: true, except: DOCUMENTS,
     paths: ["**/secrets/**", ".security/**"],
     names: ["^\\.env(?:\\.(?!example$|sample$|template$|dist$)[^/]+)?$", "\\.(?:pem|key|p12|pfx|jks|keystore)$",
-            "^id_(?:rsa|ed25519|ecdsa)", "^credentials", "^\\.(?:npmrc|netrc|pypirc)$"],
-    words: ["secrets?", "vault"] },
-  { name: "deploy", to: "big",
+            "^id_(?:rsa|ed25519|ecdsa)", "^credentials", "^\\.(?:npmrc|netrc|pypirc)$", "^\\.envrc$",
+            "^\\.dev\\.vars(?:\\.[^/]+)?$", "^service[-_]?account[\\w.-]*\\.json$"],
+    // Crypto code (`crypto.ts`, `encryption.go`, `hmac/`), word-anchored: `cryptic` and `keyboard` are not.
+    words: ["secrets?", "vault", "crypto(?:graphy|graphic)?", "encrypt\\w*", "decrypt\\w*", "ciphers?", "hmac", "kms", "keyring"] },
+  { name: "deploy", to: "big", always: true, except: DOCUMENTS,
     paths: [".github/**", ".gitlab/**", ".circleci/**", ".husky/**", "**/k8s/**", "**/kubernetes/**", "**/helm/**",
             "**/charts/**", "**/ansible/**", "**/terraform/**", "**/infra/**", "**/infrastructure/**", "**/deploy/**",
             "**/deployment/**", "**/*.tf", "**/*.tfvars"],
@@ -172,9 +191,10 @@ function readRule(raw: unknown): SizeRule | undefined {
     if ((k === "names" || k === "words" || k === "commands") && !regexesOk(r[k] as string[])) return undefined;
     rule[k] = r[k] as string[];
   }
-  if (r.created !== undefined) {
-    if (typeof r.created !== "boolean") return undefined;
-    rule.created = r.created;
+  for (const k of ["created", "always"] as const) {
+    if (r[k] === undefined) continue;
+    if (typeof r[k] !== "boolean") return undefined;
+    rule[k] = r[k] as boolean;
   }
   return rule;
 }
@@ -332,6 +352,7 @@ interface CompiledRule {
   words?: RegExp;
   commands?: RegExp;
   created: boolean;
+  always: boolean;
   except: Bun.Glob[];
 }
 
@@ -365,6 +386,7 @@ export function compileSizeRules(cfg: SizesCfg, project: string, planPaths: stri
       words: anyOf(r.words, (w) => `^(?:${w})$`),
       commands: anyOf(r.commands),
       created: r.created === true,
+      always: r.always === true,
       except: globs(r.except),
     })),
     ignore: globs([...cfg.guard.ignore, ...(own?.except ?? [])]),
@@ -405,13 +427,14 @@ export function serviceOf(path: string, rules: SizeRules, hasFile: (relPath: str
 const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const rank = (s: OrderSize) => ORDER_SIZES.indexOf(s);
 
-function pathHits(r: CompiledRule, p: Touch["paths"][number]): boolean {
+/** Does rule `r` hit path `p`? `words` only when asked: an ignored path is matched by `paths` and `names` alone. */
+function pathHits(r: CompiledRule, p: Touch["paths"][number], words = true): boolean {
   if (r.created && !p.created) return false;
   if (r.except.some((g) => g.match(p.path))) return false;
   return (
     r.paths.some((g) => g.match(p.path)) ||
     (r.names?.test(basename(p.path)) ?? false) ||
-    (r.words !== undefined && pathWords(p.path).some((w) => r.words!.test(w)))
+    (words && r.words !== undefined && pathWords(p.path).some((w) => r.words!.test(w)))
   );
 }
 
@@ -424,7 +447,8 @@ function passed(limits: SizeLimits, files: number, lines: number, services: stri
 }
 
 /** Judge one call against the order's size (spec §5.3): (1) the planner is denied in quick and standard;
- *  (2) a quick order creates no plan, spec or ADR file; (3) the rule hits → the largest `to`; (4) the
+ *  (2) a quick order creates no plan, spec or ADR file; (3) the rule hits → the largest `to` (an ignored path
+ *  meets only the `always` rules, by path and name); (4) the
  *  limits → the smallest size whose limits hold the totals of `sofar` and `touch`; (5) the larger of the
  *  two, `up` when it is above `size`, with the facts of what decided (a rule hit wins a tie). Big has no
  *  move up. Pure: the caller keeps `sofar`. */
@@ -434,13 +458,18 @@ export function judgeTouch(size: OrderSize, sofar: ChangeSoFar, touch: Touch, ru
   if (size === "quick" && touch.paths.some((p) => p.created && rules.noNewFiles.some((g) => g.match(p.path)))) {
     return { kind: "deny", why: "just-fix" };
   }
-  const counted = touch.paths.filter((p) => !rules.ignore.some((g) => g.match(p.path)));
+  const isIgnored = (p: Touch["paths"][number]) => rules.ignore.some((g) => g.match(p.path));
+  const counted = touch.paths.filter((p) => !isIgnored(p));
 
   let hit: { to: OrderSize; up: Omit<SizeUp, "from" | "to" | "at"> } | undefined;
   const consider = (r: CompiledRule, fact: { path: string } | { command: string }) => {
     if (!hit || rank(r.to) > rank(hit.to)) hit = { to: r.to, up: { rule: r.name, ...fact } };
   };
-  for (const p of counted) for (const r of rules.rules) if (pathHits(r, p)) consider(r, { path: p.path });
+  // The secrets and deploy rules (`always`) come before the ignore list; the limits never count an ignored path.
+  for (const p of touch.paths) {
+    const ignored = isIgnored(p);
+    for (const r of rules.rules) if ((!ignored || r.always) && pathHits(r, p, !ignored)) consider(r, { path: p.path });
+  }
   for (const c of touch.commands) for (const r of rules.rules) if (r.commands?.test(c)) consider(r, { command: c });
 
   const files = new Map(sofar.files);
@@ -551,6 +580,8 @@ export function plannerDenyText(size: OrderSize): string {
 }
 export const JUST_FIX_TEXT =
   "Not run: quick task — just fix. A quick order writes no plan, spec or ADR file. If the fix cannot be done without one, say so in one line and end your turn; the chief of staff sends it again as a bigger order.";
+/** The line a run moved to big adds to its result when it ends with its plan waiting (spec AC 13). */
+export const PLAN_WAITS_TEXT = "Neo moved this order up to big: its plan waits for the operator's Approve & build; the build runs after that.";
 export function measureFailedText(error: string, size: OrderSize): string {
   return `Not run: Neo could not measure this order's change (${error}), and a ${size} order commits only after its size is checked. Run the commit again; if this repeats, end your turn and say so.`;
 }

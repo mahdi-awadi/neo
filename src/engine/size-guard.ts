@@ -80,6 +80,9 @@ export interface ChangeMeasure {
   created: Set<string>;
   services: Set<string>;
   lines: number;
+  /** The run's own paths that `sizes.guard.ignore` exempts: never read and never counted, but the secrets and
+   *  deploy rules (`always`) still see them. */
+  ignored: Set<string>;
 }
 
 /** Parse `git diff --numstat --summary -z` output into path → changed lines, and the created paths. The
@@ -118,7 +121,9 @@ function parseDiff(out: string, prefix: string): { lines: Map<string, number>; c
 /** Measure the run's own change (spec §5.3): the working tree against the run's start (committed and
  *  uncommitted together) plus the untracked files (their lines read, at most 2 MB, binary = 0), minus the
  *  paths the baseline says are not the run's (dirty at the start and untouched) and the ignored paths.
- *  Undefined when git cannot read the folder — never a partial measure. */
+ *  An untracked path is checked against the baseline and the ignore list BEFORE its file is read, and once the
+ *  counted files pass the standard file limit (the order is big by files) no more files are read: those count
+ *  0 lines. Undefined when git cannot read the folder — never a partial measure. */
 export function measureRunChange(o: {
   folder: string;
   startSha?: string;
@@ -139,22 +144,31 @@ export function measureRunChange(o: {
   if (others === undefined) return undefined;
 
   const { lines, created } = parseDiff(diff, prefix);
-  for (const p of others.split("\0").filter(Boolean)) {
-    const text = files.read(join(o.folder, p), READ_MAX_BYTES);
-    lines.set(p, text === undefined || text.includes("\0") ? 0 : lineCount(text));
-    created.add(p);
-  }
-
-  const out: ChangeMeasure = { files: new Map(), created: new Set(), services: new Set(), lines: 0 };
+  const out: ChangeMeasure = { files: new Map(), created: new Set(), services: new Set(), lines: 0, ignored: new Set() };
   const hasFile = (rel: string) => files.exists(join(o.folder, rel));
-  for (const [p, n] of lines) {
-    if (o.baseline && !o.baseline.own(prefix + p)) continue;
-    if (o.rules.ignore.some((g) => g.match(p))) continue;
-    out.files.set(p, n);
-    out.lines += n;
-    if (created.has(p)) out.created.add(p);
+  /** Keep path `p` when it is the run's own: an ignored one is listed only; a counted one adds `n()` lines. */
+  const keep = (p: string, isNew: boolean, n: () => number): void => {
+    if (o.baseline && !o.baseline.own(prefix + p)) return;
+    if (o.rules.ignore.some((g) => g.match(p))) {
+      out.ignored.add(p);
+      return;
+    }
+    const count = n();
+    out.files.set(p, count);
+    out.lines += count;
+    if (isNew) out.created.add(p);
     const service = serviceOf(p, o.rules, hasFile);
     if (service) out.services.add(service);
+  };
+  for (const [p, n] of lines) keep(p, created.has(p), () => n);
+  const readMax = o.rules.limits.standard.maxFiles;
+  for (const p of others.split("\0").filter(Boolean)) {
+    if (lines.has(p)) continue;
+    keep(p, true, () => {
+      if (out.files.size > readMax) return 0; // big by files already: the lines change nothing
+      const text = files.read(join(o.folder, p), READ_MAX_BYTES);
+      return text === undefined || text.includes("\0") ? 0 : lineCount(text);
+    });
   }
   return out;
 }
@@ -191,6 +205,67 @@ function occurrences(hay: string, needle: string): number {
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** The options of `docker [compose] exec|run` (and podman's) that take a value: the word after one is not the
+ *  service. An `--opt=value` word is one word. */
+const CONTAINER_VALUE_OPTS = new Set([
+  "-e", "--env", "--env-file", "-w", "--workdir", "-u", "--user", "--name", "--entrypoint", "-v", "--volume", "-p",
+  "--publish", "-l", "--label", "--index", "--network", "--mount", "--platform", "-f", "--file", "--project-name",
+  "--profile", "--project-directory",
+]);
+/** The options of a package manager in front of `exec`/`dlx` that take a value (`pnpm --filter api exec …`). */
+const PKG_VALUE_OPTS = new Set(["--filter", "-F", "-C", "--dir", "--cwd", "-w", "--workspace", "-p", "--package"]);
+
+/** Skip options from `i`: the index of the first word that is not an option (or an option's value). */
+function pastOptions(words: string[], i: number, valued: Set<string>): number {
+  while (i < words.length && words[i]!.startsWith("-")) i += valued.has(words[i]!) ? 2 : 1;
+  return i;
+}
+
+/** The command a wrapper runs: past `docker compose exec|run [opts] <svc>`, `docker exec|run [opts] <ctr>`,
+ *  `npx|bunx|pnpx [opts]` and `pnpm|yarn|npm|bun [opts] exec|dlx|x [opts]`. Undefined when it wraps nothing. */
+function innerCommand(words: string[]): string[] | undefined {
+  const w0 = words[0] ?? "";
+  let i: number;
+  if (w0 === "docker-compose" || w0 === "podman-compose") i = pastOptions(words, 1, CONTAINER_VALUE_OPTS);
+  else if ((w0 === "docker" || w0 === "podman") && words[1] === "compose") i = pastOptions(words, 2, CONTAINER_VALUE_OPTS);
+  else if (w0 === "docker" || w0 === "podman") i = 1;
+  else if (w0 === "npx" || w0 === "bunx" || w0 === "pnpx") {
+    const at = pastOptions(words, 1, PKG_VALUE_OPTS);
+    return at > 1 && at < words.length ? words.slice(at) : undefined; // a bare `npx tool` is its own head
+  } else if (w0 === "pnpm" || w0 === "yarn" || w0 === "npm" || w0 === "bun") {
+    const at = pastOptions(words, 1, PKG_VALUE_OPTS);
+    if (!["exec", "dlx", "x"].includes(words[at] ?? "")) return undefined;
+    const tool = pastOptions(words, at + 1, PKG_VALUE_OPTS);
+    return tool < words.length ? words.slice(tool) : undefined;
+  } else return undefined;
+  if (words[i] !== "exec" && words[i] !== "run") return undefined;
+  const svc = pastOptions(words, i + 1, CONTAINER_VALUE_OPTS);
+  return svc + 1 < words.length ? words.slice(svc + 1) : undefined;
+}
+
+/** The SQL of a `psql -c|--command` call, as one head (`psql -c <sql>`) for the command rules. */
+function psqlHead(words: string[]): string | undefined {
+  if (words[0] !== "psql") return undefined;
+  const sql: string[] = [];
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i]!;
+    if ((w === "-c" || w === "--command") && words[i + 1] !== undefined) sql.push(words[++i]!);
+    else if (w.startsWith("--command=")) sql.push(w.slice("--command=".length));
+  }
+  return sql.length ? `psql -c ${sql.join("; ")}` : undefined;
+}
+
+/** The heads (first 4 words) a command rule sees: the command's own, the command a container or package
+ *  runner wraps (a 4-word head hides it), and a psql call's SQL. */
+export function commandHeads(words: string[]): string[] {
+  const heads = [words.slice(0, 4).join(" ")];
+  const inner = innerCommand(words);
+  if (inner) heads.push(inner.slice(0, 4).join(" "));
+  const sql = psqlHead(inner ?? words);
+  if (sql) heads.push(sql);
+  return heads;
+}
 
 /** What one tool call changes or runs, from its input (spec §5.1). Paths are folder-relative; a path
  *  outside the folder is not the project's change and is dropped. Bash writes count 0 lines (the commit
@@ -229,7 +304,7 @@ export function touchOf(tool: string, input: unknown, o: { folder: string; files
   } else if (tool === "NotebookEdit" && target) add(target, () => linesOf(str(inp.new_source)).length);
   else if (tool === "Bash" && typeof inp.command === "string") {
     walkBash(inp.command, o.folder, (seg) => {
-      touch.commands.push(seg.words.slice(0, 4).join(" "));
+      touch.commands.push(...commandHeads(seg.words));
       // `sed -i SCRIPT FILE…`: writeTargets names every word; the script (no -e/-f given) is not a file.
       const script = seg.words[0] === "sed" && !seg.words.some((w) => /^(?:-e|-f|--expression|--file)/.test(w)) ? seg.words.slice(1).find((w) => !w.startsWith("-")) : undefined;
       for (const t of [...seg.redirects, ...writeTargets(seg).filter((w) => w !== script)]) add(resolve(seg.cwd, t), () => 0);
@@ -275,6 +350,8 @@ export interface SizeEnd {
   measured?: ChangeMeasure;
   /** A move the final measure found, after nothing could be stopped. */
   late?: SizeUp;
+  /** Moved up to big in this run, and it ended with its own plan waiting for Approve & build (spec AC 13). */
+  planWaits?: true;
 }
 
 export interface SizeGuard {
@@ -296,6 +373,9 @@ const EMPTY: ChangeSoFar = { files: new Map(), services: new Set() };
 /** Steer-built touches kept for the stream's onToolUse (the hook and the stream may come in either order). */
 const SEEN_MAX = 64;
 const MARKDOWN = new Bun.Glob("**/*.md");
+/** Plan first lets these run besides the reads: they change nothing in the project (load a skill or a tool's
+ *  schema, read a background command's output). */
+const PLAN_FIRST_TOOLS = new Set(["Skill", "ToolSearch", "BashOutput", "TaskOutput"]);
 
 export function createSizeGuard(o: SizeGuardOpts): SizeGuard {
   const now = o.now ?? Date.now;
@@ -326,13 +406,16 @@ export function createSizeGuard(o: SizeGuardOpts): SizeGuard {
     o.baseline ? measureRunChange({ folder: o.folder, startSha: o.startSha, baseline: o.baseline, rules, git: o.git, files }) : undefined;
   /** The measured change as one touch for the judge. The no-new-files paths are left out: those are the
    *  steer's to deny at the call, never a size. */
-  const measuredPaths = (m: ChangeMeasure): Touch["paths"] =>
-    [...m.files]
+  const measuredPaths = (m: ChangeMeasure): Touch["paths"] => [
+    ...[...m.files]
       .filter(([p]) => !rules.noNewFiles.some((g) => g.match(p)))
       .map(([p, lines]) => {
         const service = serviceOf(p, rules, hasFile);
         return { path: p, lines, created: m.created.has(p), ...(service ? { service } : {}) };
-      });
+      }),
+    // The ignored paths: no limit counts them; the secrets and deploy rules still see them.
+    ...[...m.ignored].map((p) => ({ path: p, lines: 0, created: false })),
+  ];
   /** Move up to `to` (never down); `from` stays the size the run started at. Calls onUp once a move. */
   const move = (to: OrderSize, facts: Omit<SizeUp, "from" | "to" | "at">): SizeUp | undefined => {
     if (rank(to) <= rank(size)) return undefined;
@@ -342,9 +425,10 @@ export function createSizeGuard(o: SizeGuardOpts): SizeGuard {
     faults.guard("sizeGuard.onUp", () => o.onUp(up), ctx);
     return up;
   };
-  /** In plan first, these run: reads, Neo's and codebase-memory's tools, helper agents, Markdown files. */
+  /** In plan first, these run: reads, Neo's and codebase-memory's tools, helper agents, the plan-writing skill
+   *  and tool search, a background check's output, Markdown files. */
   const planFirstLets = (tool: string, input: unknown): boolean => {
-    if (READ_TOOLS.has(tool) || tool.startsWith("mcp__neo__") || tool.startsWith("mcp__codebase-memory__")) return true;
+    if (READ_TOOLS.has(tool) || PLAN_FIRST_TOOLS.has(tool) || tool.startsWith("mcp__neo__") || tool.startsWith("mcp__codebase-memory__")) return true;
     if (tool === "Agent" || tool === "Task") return true;
     if (tool !== "Write" && tool !== "Edit" && tool !== "MultiEdit") return false;
     const file = (input && typeof input === "object" ? (input as Record<string, unknown>).file_path : undefined);
@@ -425,6 +509,7 @@ export function createSizeGuard(o: SizeGuardOpts): SizeGuard {
     end({ planAwaiting }) {
       // An approved plan ends plan first even when no call came after it (Approve & build runs the build).
       const requeue = () => planFirst && !planAwaiting && !(faults.guard("sizeGuard.planApproved", o.planApproved, ctx) ?? false);
+      const waits = () => (from !== "big" && size === "big" && planAwaiting ? { planWaits: true as const } : {});
       try {
         const measured = measure();
         let late: SizeUp | undefined;
@@ -432,10 +517,10 @@ export function createSizeGuard(o: SizeGuardOpts): SizeGuard {
           const j = judgeTouch(size, EMPTY, { paths: measuredPaths(measured), commands: [], commit: false, planner: false }, rules);
           if (j.kind === "up") late = move(j.to, { ...j.up, late: true });
         }
-        return { size, requeue: requeue(), ...(measured ? { measured } : {}), ...(late ? { late } : {}) };
+        return { size, requeue: requeue(), ...(measured ? { measured } : {}), ...(late ? { late } : {}), ...waits() };
       } catch (err) {
         faults.report("sizeGuard", err, ctx);
-        return { size, requeue: requeue() };
+        return { size, requeue: requeue(), ...waits() };
       }
     },
   };

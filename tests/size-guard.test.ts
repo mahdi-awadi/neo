@@ -383,3 +383,55 @@ test("a big guard has no opinion on any call (planner and plan files included); 
   expect(end.measured?.files.size).toBe(40);
   expect(ups).toHaveLength(0);
 });
+
+// ── Review fixes (ADR-0072 as built) ─────────────────────────────────────────────────────────────────
+
+test("review: touchOf looks past `docker compose exec|run <svc>` and package runners; psql -c gives its SQL", () => {
+  const o = { folder: FOLDER, files: fakeFiles() };
+  const t = (cmd: string) => touchOf("Bash", { command: cmd }, o).commands;
+  expect(t("docker compose exec -T api goose up")).toEqual(["docker compose exec -T", "goose up"]);
+  expect(t("docker compose run --rm -e DB=x api npm run migrate")).toEqual(["docker compose run --rm", "npm run migrate"]);
+  expect(t("docker-compose exec db migrate -path x up")).toEqual(["docker-compose exec db migrate", "migrate -path x up"]);
+  expect(t("docker exec -it eticket-db psql -U app -c 'ALTER TABLE t ADD c int'")).toEqual([
+    "docker exec -it eticket-db",
+    "psql -U app -c",
+    "psql -c ALTER TABLE t ADD c int",
+  ]);
+  expect(t("psql -h localhost -d app --command='DROP TABLE x'")).toContain("psql -c DROP TABLE x");
+  expect(t("pnpm --filter api exec prisma migrate dev")).toEqual(["pnpm --filter api exec", "prisma migrate dev"]);
+  expect(t("ls -la")).toEqual(["ls -la"]);
+});
+
+test("review: a schema change run inside a container moves a quick order to big", () => {
+  for (const command of ["docker compose exec -T api goose up", "docker compose exec db psql -U app -c 'CREATE TABLE x (id int)'", "pnpm --filter api exec prisma migrate dev"]) {
+    const { sg } = guard("quick");
+    expect(sg.steer("Bash", { command }), command).toStartWith("STOP — Neo moved this order up from QUICK to BIG");
+  }
+});
+
+test("review: plan first lets the plan-writing skill, tool search and a background check's output run", () => {
+  const { sg } = guard("quick");
+  sg.steer("Write", write("src/auth/login.ts"));
+  expect(sg.planFirst()).toBe(true);
+  for (const [tool, input] of [
+    ["Skill", { skill: "superpowers:writing-plans" }],
+    ["ToolSearch", { query: "select:Monitor" }],
+    ["BashOutput", { bash_id: "b1" }],
+    ["TaskOutput", { task_id: "b1" }],
+  ] as const) {
+    expect(sg.steer(tool, input), tool).toBeUndefined();
+  }
+  expect(sg.steer("Bash", { command: "ls" })).toStartWith("STOP — this order is BIG now");
+});
+
+test("review: end says when a run moved to big ends with its plan waiting for Approve & build", () => {
+  const a = guard("quick");
+  a.sg.steer("Write", write("src/auth/login.ts"));
+  expect(a.sg.end({ planAwaiting: true })).toMatchObject({ size: "big", requeue: false, planWaits: true });
+  const b = guard("quick");
+  b.sg.steer("Write", write("src/auth/login.ts"));
+  expect(b.sg.end({ planAwaiting: false }).planWaits).toBeUndefined();
+  // A run that started big has no move: its waiting plan is today's flow.
+  const c = guard("big");
+  expect(c.sg.end({ planAwaiting: true }).planWaits).toBeUndefined();
+});

@@ -120,8 +120,9 @@ export function liveCompanyLink(registry: Registry, lifecycle?: { draining(): bo
       const company = registry.getDefault();
       const control = company ? registry.getControl(company.id) : undefined;
       if (!control || control.closed?.() === true) return false;
-      // A dispatch result is an engine brief for the company: it waits for the turn, never steers it.
-      if (opts.cause) control.followUp(text, "after-turn", opts.cause);
+      // A dispatch result is an engine brief for the company: it waits for the turn, never steers it. Its
+      // cause is marked engine-written: the turn it starts is not the operator's message (ADR-0072).
+      if (opts.cause) control.followUp(text, "after-turn", { ...opts.cause, engine: true });
       else control.followUp(text, "after-turn");
       return true;
     },

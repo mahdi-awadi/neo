@@ -2,8 +2,8 @@
 // asked ONCE, in the same still-open session, to commit them (or say why not), then end. While that
 // follow-up runs, every worktree of the repository (keyed by its git common dir, ADR-0034) is held, so
 // no queued todo starts on top of the files. Deterministic: git status, file stats and globs — no AI.
-import { statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { git, headOf } from "./git-read";
 import { uncommittedIn } from "./dispatch-report";
 import { repoOf } from "./plan-execute";
@@ -76,6 +76,19 @@ export interface CommitFinishGit {
   repoKey(folder: string): string;
   /** A path's working-tree fingerprint: size + mtime, or "gone". */
   fingerprint(path: string): string;
+  /** Does git ignore the folder itself (ADR-0072: no baseline is right there)? Absent → not ignored. */
+  ignored?(folder: string): boolean;
+  /** Is the folder inside a repository by the file system (a `.git` in it or above), whether git can read it
+   *  or not? It tells "not a repository" from "git failed" (ADR-0072). Absent → not a repository. */
+  inRepo?(folder: string): boolean;
+}
+
+/** A `.git` (folder or file) in `folder` or a folder above it. */
+function hasDotGit(folder: string): boolean {
+  for (let dir = resolve(folder); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".git"))) return true;
+    if (dirname(dir) === dir) return false;
+  }
 }
 
 export const realCommitFinishGit: CommitFinishGit = {
@@ -92,6 +105,9 @@ export const realCommitFinishGit: CommitFinishGit = {
       return "gone";
     }
   },
+  // check-ignore exits 0 (git returns "") when the folder is ignored; 1 or a failure gives undefined.
+  ignored: (folder) => git(folder, ["check-ignore", "-q", "."]) !== undefined,
+  inRepo: hasDotGit,
 };
 
 /** Repositories held by running commit finishes: key → each run's hold (two worktrees may both finish). */
@@ -129,15 +145,29 @@ export interface RunBaseline {
   own(path: string): boolean;
 }
 
+/** What reading a run's baseline gave (ADR-0072): a baseline; none, rightly (the folder is not in a
+ *  repository, or git ignores it); or a git that failed on a repository (a timeout, an error). */
+export type BaselineRead =
+  | { kind: "ok"; baseline: RunBaseline }
+  | { kind: "none"; why: "not-git" | "ignored" }
+  | { kind: "failed"; error: string };
+
+/** Read `folder`'s baseline at the run's start, and say why there is none. */
+export function readRunBaseline(folder: string, g: CommitFinishGit = realCommitFinishGit): BaselineRead {
+  const root = g.root(folder);
+  if (!root) return g.inRepo?.(folder) ? { kind: "failed", error: "git could not read the repository" } : { kind: "none", why: "not-git" };
+  const dirty = g.status(folder);
+  if (!dirty) return g.ignored?.(folder) ? { kind: "none", why: "ignored" } : { kind: "failed", error: "git status failed" };
+  const print = (p: string) => g.fingerprint(join(root, p));
+  const before = new Map<string, string>(dirty.map((p) => [p, print(p)]));
+  return { kind: "ok", baseline: { root, own: (p) => before.get(p) !== print(p) } };
+}
+
 /** Record `folder`'s baseline. Call at the run's start. Undefined when git cannot read the folder (not a
  *  repository, a folder git ignores, a failed read): then nothing is the run's own change by git. */
 export function runBaseline(folder: string, g: CommitFinishGit = realCommitFinishGit): RunBaseline | undefined {
-  const root = g.root(folder);
-  const dirty = root ? g.status(folder) : undefined;
-  if (!root || !dirty) return undefined;
-  const print = (p: string) => g.fingerprint(join(root, p));
-  const before = new Map<string, string>(dirty.map((p) => [p, print(p)]));
-  return { root, own: (p) => before.get(p) !== print(p) };
+  const r = readRunBaseline(folder, g);
+  return r.kind === "ok" ? r.baseline : undefined;
 }
 
 /** Create one run's commit finish from the run's baseline (`runBaseline`, taken at the run's start), so
