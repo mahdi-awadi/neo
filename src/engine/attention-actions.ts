@@ -8,6 +8,7 @@ import { ENGINE_CHAT_ID, type Trace } from "./trace";
 import { isDue } from "./trigger";
 import { dismiss, listOpen, snooze } from "./attention";
 import { attentionBrief, ATTENTION_BRIEFS } from "./attention-briefs";
+import { DEFAULT_SIZES_CFG, type OrderSize, type SizesCfg } from "./order-size";
 import { badgeLabel, explainAttention, whyEn } from "./attention-explain";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
@@ -170,6 +171,12 @@ export const attentionTitle = (r: AttentionRow, now: number = Date.now()): strin
   return `[${badgeLabel(e.badge)}] ${todoTitle(e.plain)}${why ? ` — ${why}` : ""}${r.fromProject ? ` — from ${r.fromProject}` : ""}`;
 };
 
+/** An attention todo's size (ADR-0072, spec §9): `sizes.attention[kind]`, else the brief's size; an unknown
+ *  kind is big (today's full flow). */
+export function attentionSize(kind: string, cfg: SizesCfg): OrderSize {
+  return cfg.attention[kind] ?? ATTENTION_BRIEFS[kind]?.size ?? "big";
+}
+
 async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<AttentionActionResult> {
   const { ledger } = deps;
   // The linked todo is THE todo unless it failed or was cancelled — even "done": a brief delivered into
@@ -191,7 +198,8 @@ async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<Att
     // The todo THIS tap made: a project note joins a thread that may already hold todos (ADR-0043), so
     // never "the thread's first todo" — the one in this folder that was not there before the submit.
     const before = ledger.newestTodoInThread(cause.threadId, row.folder)?.id ?? 0;
-    const text = await deps.todo.submit({ project: row.folder, brief, workClass: "interactive", cause }, launcher.deps, launcher.replyChat);
+    const engineSize = attentionSize(row.kind, launcher.deps.sizes ?? DEFAULT_SIZES_CFG);
+    const text = await deps.todo.submit({ project: row.folder, brief, workClass: "interactive", cause, engineSize }, launcher.deps, launcher.replyChat);
     const made = ledger.newestTodoInThread(cause.threadId, row.folder);
     const todo = made && made.id > before ? made : undefined;
     if (!todo || todo.status === "cancelled") return { ok: false, text }; // refused or held: nothing runs

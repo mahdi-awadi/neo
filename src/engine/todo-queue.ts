@@ -547,7 +547,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     // continues on it), so a half-done change is never queued for merging, nor merged twice.
     if (w && w.commits > 0 && end.ok) {
       merge = addTodo(
-        { project: t.project, folder: t.folder, brief: mergeBrief(w.branch, w.base, t.id, todoLabel(t)), workClass: t.workClass, createdBy: t.createdBy, cause: t.cause },
+        // A merge into the base is big, by an engine rule: today's full flow (ADR-0072, spec §9).
+        { project: t.project, folder: t.folder, brief: mergeBrief(w.branch, w.base, t.id, todoLabel(t)), workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, size: "big", sizeBy: "engine" },
         now(),
       );
       ledger.recordEvent("todo_lane_merge", { folder: t.folder, data: { project: t.project, id: t.id, merge: merge.id, branch: w.branch, base: w.base, commits: w.commits }, cause: t.cause });

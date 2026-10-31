@@ -782,7 +782,8 @@ async function executePlan(deps: PlanDeps, plan: PlanRow, anyway: boolean): Prom
   let text: string;
   try {
     // Returns once the todo is queued or its run has started — never after the run (dispatch runs in the background).
-    text = await deps.todo.submit({ project: verdict.folder, brief, workClass: "interactive", cause, planId: target.id }, launcher.deps, launcher.replyChat);
+    // An Execute builds an approved plan: big, today's full flow (ADR-0072, spec §9).
+    text = await deps.todo.submit({ project: verdict.folder, brief, workClass: "interactive", cause, planId: target.id, engineSize: "big" }, launcher.deps, launcher.replyChat);
   } catch (e) {
     restore();
     throw e;

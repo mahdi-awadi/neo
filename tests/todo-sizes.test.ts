@@ -332,3 +332,21 @@ test("(b) a quick todo delivered into a live session is recorded big, by Neo, an
   expect(s.ledger.listEvents({ kind: "todo_size_forced" })[0]!.data).toMatchObject({ id: 1, from: "quick", to: "big" });
   expect(out).toContain("— size big (delivered into a live session: no size guard there)");
 });
+
+// ADR-0072 (spec §9, AC 22): engine-made todos get their size by rule.
+test("an engine size is stored by engine; a code lane's merge todo is big, by engine", async () => {
+  const s = queueSetup({ git: true });
+  await s.queue.submit({ project: "eticket-v3", brief: "commit the left work", workClass: "interactive", engineSize: "quick" }, s.deps, 1);
+  expect(s.ledger.todoById(1)).toMatchObject({ size: "quick", sizeBy: "engine" });
+  await settle();
+  await s.submit("fix the typo in a.txt", { lane: "side", kind: "code" });
+  await settle(60);
+  const side = s.ledger.listTodos({ lane: "side" })[0]!;
+  const wt = s.runs[1]!.folder;
+  writeFileSync(join(wt, "a.txt"), "b\n");
+  spawnSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "fix typo"]);
+  s.runs[1]!.finish(done());
+  await settle(150);
+  const merge = s.ledger.listTodos({ lane: "main", statuses: ["queued"] }).find((x) => x.brief.includes(`side/${side.id}`));
+  expect(merge).toMatchObject({ size: "big", sizeBy: "engine" });
+});

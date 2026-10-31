@@ -134,6 +134,15 @@ test("AC2: Run anyway skips only the done check", async () => {
   expect(row(ledger, dir, PLAN)).toMatchObject({ status: "executing", todoId: 1 });
 });
 
+test("ADR-0072: an Execute is big, by an engine rule", async () => {
+  const dir = repo();
+  const { ledger, deps, submitted } = rig();
+  put(dir, PLAN, OPEN);
+  await seen(deps, dir, "gold");
+  await applyPlanAction(deps, row(ledger, dir, PLAN).id, "execute");
+  expect(submitted[0]).toMatchObject({ engineSize: "big" });
+});
+
 test("AC3: a todo queued for the plan in ANOTHER worktree of the same repo → busy, no second todo", async () => {
   const main = repo();
   put(main, PLAN, OPEN);

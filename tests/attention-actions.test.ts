@@ -190,3 +190,39 @@ test("ADR-0059: Telegram's /attention line is [badge] plain title, from the EN c
   expect(text).toContain("[Dependency update PR] next 15.5.15 → 16.4.3");
   expect(text).not.toContain("(deps)(deps)");
 });
+
+// ADR-0072 (spec §9, AC 22): an attention todo gets its size by rule — its brief's size, over which
+// `sizes.attention` wins; an unknown kind is big. The queue stores it `by: "engine"`.
+test("every brief kind has a size; the spec's defaults hold", async () => {
+  const { isOrderSize } = await import("../src/engine/order-size");
+  for (const [kind, b] of Object.entries(ATTENTION_BRIEFS)) expect(isOrderSize(b.size), kind).toBe(true);
+  const want: Record<string, string[]> = {
+    quick: ["dirty", "stale_branch", "worktree", "unpushed", "no_upstream", "decision_stale", "thread_waiting"],
+    standard: ["ci_failed", "dependabot", "pr_open", "pr_review_requested", "thread_failed", "dispatch_spinning", "queue_paused", "approval_stuck", "skillify_repeat", "ctx_window_suspect", "note_finding", "note_fyi", "drift"],
+    big: ["code_scanning", "secret_scanning", "note_request", "issue_open", "history_off", "history_degraded", "backup_failed", "restart_gated"],
+  };
+  for (const [size, kinds] of Object.entries(want)) for (const k of kinds) expect(ATTENTION_BRIEFS[k]?.size, k).toBe(size as never);
+});
+
+test("attentionSize: the brief's size, sizes.attention over it, an unknown kind big", async () => {
+  const { attentionSize } = await import("../src/engine/attention-actions");
+  const { DEFAULT_SIZES_CFG } = await import("../src/engine/order-size");
+  expect(attentionSize("dirty", DEFAULT_SIZES_CFG)).toBe("quick");
+  expect(attentionSize("dirty", { ...DEFAULT_SIZES_CFG, attention: { dirty: "standard" } })).toBe("standard");
+  expect(attentionSize("no_such_kind", DEFAULT_SIZES_CFG)).toBe("big");
+});
+
+test("→ todo on a dirty item submits it as an engine size: quick by default, the config's size when set", async () => {
+  const { DEFAULT_SIZES_CFG } = await import("../src/engine/order-size");
+  for (const [sizes, want] of [[undefined, "quick"], [{ ...DEFAULT_SIZES_CFG, attention: { dirty: "standard" } }, "standard"]] as const) {
+    const r = rig();
+    const seen: unknown[] = [];
+    const q = r.deps.todo as unknown as { submit: (p: unknown) => Promise<string>; launcher: () => unknown };
+    const inner = q.submit;
+    q.submit = (p) => (seen.push(p), inner(p));
+    q.launcher = () => ({ deps: sizes ? { sizes } : {}, replyChat: 1 });
+    const [id] = reconcile(r.ledger, "engine", "gold", [draft({ kind: "dirty", key: "dirty:1", title: "3 uncommitted files" })], 100).opened;
+    expect((await applyAttentionAction(r.deps, id!, "todo", 200)).ok).toBe(true);
+    expect(seen[0]).toMatchObject({ engineSize: want });
+  }
+});
