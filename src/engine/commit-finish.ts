@@ -120,18 +120,41 @@ export interface CommitFinish {
   end(): CommitFinishOutcome | undefined;
 }
 
-/** Create one run's commit finish. Call at the run's start: it records the folder's dirty paths then,
- *  so only the run's own changes count at its end (ADR-0037 §2). */
-export function createCommitFinish(folder: string, cfg: CommitFinishCfg, g: CommitFinishGit = realCommitFinishGit): CommitFinish {
+/** A run's baseline (ADR-0037 §2, ADR-0072): the folder's dirty paths at the run's start, so only the
+ *  run's own changes count. One per run, shared by the commit finish and the size guard. */
+export interface RunBaseline {
+  /** The repository's top-level folder. */
+  root: string;
+  /** Is this repo-relative path the run's own change: not dirty at the start, or changed since? */
+  own(path: string): boolean;
+}
+
+/** Record `folder`'s baseline. Call at the run's start. Undefined when git cannot read the folder (not a
+ *  repository, a folder git ignores, a failed read): then nothing is the run's own change by git. */
+export function runBaseline(folder: string, g: CommitFinishGit = realCommitFinishGit): RunBaseline | undefined {
+  const root = g.root(folder);
+  const dirty = root ? g.status(folder) : undefined;
+  if (!root || !dirty) return undefined;
+  const print = (p: string) => g.fingerprint(join(root, p));
+  const before = new Map<string, string>(dirty.map((p) => [p, print(p)]));
+  return { root, own: (p) => before.get(p) !== print(p) };
+}
+
+/** Create one run's commit finish from the run's baseline (`runBaseline`, taken at the run's start), so
+ *  only the run's own changes count at its end (ADR-0037 §2). */
+export function createCommitFinish(
+  folder: string,
+  cfg: CommitFinishCfg,
+  g: CommitFinishGit = realCommitFinishGit,
+  baseline: RunBaseline | undefined = cfg.enabled ? runBaseline(folder, g) : undefined,
+): CommitFinish {
   const matchers = cfg.ignore.map((p) => new Bun.Glob(p));
-  const root = cfg.enabled ? g.root(folder) : undefined;
-  const print = (p: string) => g.fingerprint(join(root!, p));
-  const baseline = new Map<string, string>((root ? (g.status(folder) ?? []) : []).map((p) => [p, print(p)]));
+  const root = cfg.enabled ? baseline?.root : undefined;
   /** The run's own changes now; undefined when git cannot read the folder. */
   const own = (): string[] | undefined => {
     const all = g.status(folder);
     if (!all) return undefined;
-    return all.filter((p) => !matchers.some((m) => m.match(p)) && baseline.get(p) !== print(p));
+    return all.filter((p) => !matchers.some((m) => m.match(p)) && baseline!.own(p));
   };
   let sent = false;
   /** Release this run's repository hold (idempotent). */
