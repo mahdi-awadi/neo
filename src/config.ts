@@ -18,6 +18,7 @@ import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
 import { readLanesCfg, type LanesCfg } from "./engine/lanes";
+import { readSizesCfg, type SizesCfg } from "./engine/order-size";
 import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
 import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
@@ -313,6 +314,9 @@ export interface NeoConfig {
   /** Side lanes (ADR-0057): the switch, caps and the `code` worktree root. Optional like `plans`;
    *  `loadConfig` always fills it. */
   lanes?: LanesCfg;
+  /** Order sizes (ADR-0072): the switch, the default, the override phrases, each size's limits and the
+   *  upgrade guard's rules. Optional like `plans`; `loadConfig` always fills it. */
+  sizes?: SizesCfg;
   /** Stop or background one running tool call (ADR-0058): kill grace, Telegram notice, Docker socket.
    *  Optional like `plans`; `loadConfig` always fills it. */
   toolControl?: ToolControlCfg;
@@ -675,6 +679,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     attention: readAttentionCfg(fileCfg.attention),
     notes: readNotesCfg(fileCfg.notes),
     lanes: readLanesCfg(fileCfg.lanes),
+    sizes: readSizesCfg(fileCfg.sizes),
     toolControl: readToolControlCfg(fileCfg.toolControl),
     tools: readToolsCfg(fileCfg.tools),
     projectMessage: readProjectMessageCfg(fileCfg.projectMessage),

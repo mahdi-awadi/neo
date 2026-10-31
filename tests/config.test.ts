@@ -527,3 +527,12 @@ test("diskGuard: on by default with the installed kit folder; NEO_DISK_GUARD=0 t
     else process.env.NEO_DISK_GUARD = prev;
   }
 });
+
+// ADR-0072: order sizes — `cfg.sizes` always holds the defaults when config.json has no `sizes`.
+test("sizes: the defaults when config.json has none; a configured field is read", () => {
+  const { DEFAULT_SIZES_CFG } = require("../src/engine/order-size") as typeof import("../src/engine/order-size");
+  expect(loadConfig(dir()).sizes).toEqual(DEFAULT_SIZES_CFG);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ sizes: { default: "standard", quick: { maxFiles: 0 } } }));
+  expect(loadConfig(d).sizes).toEqual({ ...DEFAULT_SIZES_CFG, default: "standard" });
+});
