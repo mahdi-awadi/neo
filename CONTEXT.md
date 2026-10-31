@@ -119,12 +119,14 @@ _Avoid_: todo title (the first-60-characters rule it replaces), label
 **Standing rules**:
 The rules every worker gets in every project, from one text (`standing-rules.ts`, ADR-0063): plan fully,
 then finish non-stop; rich, complete plans; production-grade code; the best technology, recorded in an ADR.
-The dispatch preamble, loop briefs and consult runs carry them.
+The dispatch preamble, loop briefs and consult runs carry them. A big order gets all of them. A quick or
+standard order gets the short set of its size, with the same push, security and fence rules (ADR-0072).
 _Avoid_: preamble rules (the preamble is one carrier), guidelines
 
 **Planner**:
 The SDK subagent every dispatch, project and loop run gets for its DESIGN phase and final review, on the
-planning model at the planning effort (config `planner`, default Opus at `max`). The main run builds.
+planning model at the planning effort (config `planner`, default Opus at `max`). The main run builds. A quick
+or standard order may not call it; a big order may (ADR-0072).
 _Avoid_: plan run, planning session (it runs inside the worker's task)
 
 **Cooldown**:
@@ -218,8 +220,8 @@ folder's HEAD, then hands the worker that exact name, so the worker never lists,
 _Avoid_: index (unqualified), codebase map, project name (for the index name)
 
 **Todo**:
-One dispatched brief the engine tracks from hand-over to end: its project, brief, who it came from,
-and its status — `queued`, `running`, then `done`, `failed` or `cancelled`, or `retry` while it
+One dispatched brief the engine tracks from hand-over to end: its project, brief, who it came from, its
+order size, and its status — `queued`, `running`, then `done`, `failed` or `cancelled`, or `retry` while it
 waits to re-run after a transient end. Every brief the company dispatches is a todo, whether it
 starts at once or waits. Known by its number (`#12`). A `failed` todo is never removed (ADR-0027).
 _Avoid_: task, job, ticket, item
@@ -305,7 +307,8 @@ The fixed instruction block the engine prepends to every dispatched brief, befor
 text. It carries what a worker cannot be trusted to know or be told by hand: read the project's
 rules, query the structural map first, design then build, meet the engineering baseline, challenge
 yourself before asking, stay alive. It is engine-owned, so no brief can omit it — and it is context
-the operator pays for on every run, so it stays terse.
+the operator pays for on every run, so it stays terse. There is one for each order size; the big one is
+the full text (ADR-0072).
 _Avoid_: prompt, system prompt, header
 
 **Engineering baseline**:
@@ -324,6 +327,67 @@ The governor's `PreToolUse` hook. The SDK runs it before a project's settings al
 the same `decide()` as `canUseTool` and sends every call the governor does not allow to
 `canUseTool`, so no allow rule can approve that call first (ADR-0006).
 _Avoid_: permission hook, pre-hook
+
+### Order sizes (ADR-0072)
+
+**Order size**:
+How much process an order gets: **quick**, **standard** or **big**. The chief of staff sets it when it writes
+the brief, and the operator's size override beats it. With neither, it is big. An engine-made todo gets its
+size by rule. Only the upgrade guard changes it during the work, and only upward.
+_Avoid_: task size, complexity, priority, scope, effort (effort is how deeply a model reasons)
+
+**Quick order**:
+One page or screen, a small change, no data-model change. The worker reads the code and fixes it. It adds a
+test only when logic changes, typechecks, takes one Arabic and one English screenshot for a UI change, makes one
+commit and reports in 2–3 lines. It has no planner, spec, ADR or plan file, and the plan gate never holds it.
+_Avoid_: hotfix (a release word), trivial task
+
+**Standard order**:
+A change across a few files or services. The worker plans briefly in its own task list, works test-first and
+writes an ADR only for a real decision. It has no planner and no approval gate.
+_Avoid_: normal order, medium order
+
+**Big order**:
+New modules or services, migrations, auth, payment or money, prod or deploy, multi-service work. It gets the
+full flow: the planner, the domain terms, ADRs, a spec and a plan, and a big plan waits for the operator's
+Approve & build. An order that nobody sized is big.
+_Avoid_: full order, epic, large order
+
+**Size override**:
+The operator's own size for an order: a message that starts with `/quick`, `/full` or "quick fix". The engine
+reads it in code from the operator's message (or from the root of its thread), and it beats the chief of
+staff's size. It cannot stop the upgrade guard.
+_Avoid_: size hint, size flag
+
+**Upgrade guard**:
+The deterministic check on every tool call of a quick or standard order. It moves the order up a size when the
+call touches a sensitive area (auth, money, migrations, secrets, deploy/CI, prod, a new module) or makes the
+change larger than its size allows (files, changed lines, services). It denies the call that crossed the line,
+tells the worker the rules of its new size and sends the operator one line. It never moves a size down, and it
+never allows a call that the governor denies.
+_Avoid_: size classifier, size escalation (an escalation asks the operator; the guard decides)
+
+**Size up**:
+One move of an order to a larger size, with its reason: the rule and its facts (the path or command, the count
+and the limit). It is recorded on the todo and as an event.
+_Avoid_: escalation, promotion, upgrade (alone)
+
+**Plan first**:
+The state of a running order that the upgrade guard moved up to big. Until a plan that the worker writes is
+approved, only reads, Neo's tools, helper agents and Markdown files are not denied. A run that ends there
+without such a plan runs again as big.
+_Avoid_: held plan (the hold after the plan exists), freeze
+
+**Service** (upgrade guard):
+The deployable unit that a file belongs to: the nearest folder below the repository root that holds a service
+marker (a Dockerfile by default). A file under no such folder is shared code and belongs to no service.
+_Avoid_: module, package, app
+
+**Change measure**:
+What a run changed, read from git: the files and the changed lines (added plus deleted) since the run started,
+with new untracked files. It leaves out the paths that were already dirty and are untouched, and the paths
+that the guard ignores. It also gives the services of those files.
+_Avoid_: diff size, churn
 
 ### What a worker remembers
 
@@ -1149,8 +1213,9 @@ any implementation. `info`: the card informs, and the worker goes on. A **big** 
 `approval`: front matter `approval: required`, more tasks or steps than `plans.approval`, or a line
 that matches `plans.approval.patterns` (migrations, auth, money, deploy, deletes). A worker can make a
 plan big but never small. At a run end every unfinished plan waits (`approval`), because nobody is
-building it any more.
-_Avoid_: size, risk level
+building it any more. The gate never holds a quick order. A plan written after the upgrade guard moved its
+order to big always gets `approval` (ADR-0072).
+_Avoid_: size (that is the order size), risk level
 
 **Held plan**:
 A big plan its writing worker is stopped at (ADR-0036). The worker's tool calls are denied with a
