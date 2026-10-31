@@ -221,7 +221,8 @@ test("migration 17 adds the history feed and its triggers to a v16 ledger with r
   v16.close();
 
   const db = new Database(path);
-  const r = migrate(db, { path });
+  const upTo17 = MIGRATIONS.filter((x) => x.version <= 17);
+  const r = migrate(db, { path, migrations: upTo17 });
   expect(r.from).toBe(16);
   expect(r.to).toBe(17);
   expect(r.backup).toBe(`${path}.bak-v16`);
@@ -238,9 +239,38 @@ test("migration 17 adds the history feed and its triggers to a v16 ledger with r
 
   // Reopening runs nothing again; the backup is not rewritten; writes now feed.
   const again = new Database(path);
-  expect(migrate(again, { path })).toEqual({ from: 17, to: 17, backup: undefined });
+  expect(migrate(again, { path, migrations: upTo17 })).toEqual({ from: 17, to: 17, backup: undefined });
   again.close();
   const led = openLedger(path);
   led.recordOrder({ id: "o2", source: "neo", folder: "/f", task: "t", chatId: -2, createdAt: 3 });
   expect(led.historyFeed(0, 10).map((f) => [f.tbl, f.key, f.op])).toEqual([["orders", "o2", "u"]]);
+});
+
+// ADR-0072 spec §11: a todo has a size; rows made before v18 are big, set by nobody (read as Neo).
+test("migration 18 adds the todo size columns to a v17 ledger with rows; backup and reopen", () => {
+  const dir = mkdtempSync(join(tmpdir(), "neo-mig-"));
+  const path = join(dir, "ledger.db");
+  const v17 = new Database(path);
+  migrate(v17, { path, migrations: MIGRATIONS.filter((x) => x.version <= 17) });
+  v17.run(`INSERT INTO project_todos (project, folder, brief, work_class, created_by, created_at, status, position) VALUES ('p', '/f', 'b', 'interactive', 'operator', 1, 'queued', 1)`);
+  v17.run(`INSERT INTO orders (id, source, folder, task, chat_id, created_at) VALUES ('o1', 'neo', '/f', 'build it', -2, 1)`);
+  const counts = (db: Database) => ["project_todos", "orders", "history_feed"].map((t) => (db.query(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n);
+  const rowsBefore = counts(v17);
+  v17.close();
+
+  const db = new Database(path);
+  const r = migrate(db, { path });
+  expect(r).toEqual({ from: 17, to: 18, backup: `${path}.bak-v17` });
+  expect(existsSync(`${path}.bak-v17`)).toBe(true);
+  expect(counts(db)).toEqual(rowsBefore);
+  expect(db.query(`SELECT size, size_by, size_up FROM project_todos`).get()).toEqual({ size: "big", size_by: null, size_up: null });
+  db.close();
+
+  const again = new Database(path);
+  expect(migrate(again, { path })).toEqual({ from: 18, to: 18, backup: undefined });
+  again.close();
+  const [t] = openLedger(path).listTodos({});
+  expect(t!.size).toBe("big");
+  expect(t!.sizeBy).toBeUndefined();
+  expect(t!.sizeUp).toBeUndefined();
 });

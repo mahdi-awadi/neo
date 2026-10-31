@@ -1,6 +1,7 @@
 // Durable record of orders and their outcomes. The deterministic bookkeeping layer —
 // the part of operant that already was an "engine" (ported to bun:sqlite, trimmed).
 import { isLaneKind, type LaneKind } from "./lanes";
+import { isOrderSize, type OrderSize, type SizeBy, type SizeUp } from "./order-size";
 import { Database } from "bun:sqlite";
 import { openSqlite } from "./sqlite";
 import { migrate } from "./ledger-migrations";
@@ -717,8 +718,10 @@ export interface Ledger {
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
-    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief" | "lane" | "summary">> & {
+    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief" | "lane" | "summary" | "size">> & {
       retryAt?: number | null;
+      /** The latest move up (ADR-0072), stored as JSON; `null` clears it. */
+      sizeUp?: SizeUp | null;
       waitingOn?: string | null;
       /** `null` clears it (a side todo moved to the main lane, ADR-0057). */
       laneKind?: LaneKind | null;
@@ -770,11 +773,19 @@ export interface NewTodo {
   /** A short human line saying what the todo does (ADR-0059): written when it is created, shown on every
    *  surface instead of the brief's first characters. Absent on older rows: derived when read. */
   summary?: string;
+  /** How much process it gets (ADR-0072); none = `big`. */
+  size?: OrderSize;
+  /** Who set the size. Absent on rows made before ledger v18. */
+  sizeBy?: SizeBy;
 }
 
 export interface TodoRow extends NewTodo {
   id: number;
   lane: "main" | "side";
+  /** Never absent on a row: an old or unknown size reads as `big` (fail safe). */
+  size: OrderSize;
+  /** The latest move up by the upgrade guard, when it moved. */
+  sizeUp?: SizeUp;
   status: TodoStatus;
   position: number;
   createdAt: number;
@@ -2184,14 +2195,14 @@ export function openLedger(
         .get(rec.folder, rec.lane === "side" && rec.laneKind ? "side" : "main") as { next: number };
       const r = db
         .query(
-          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id, lane, lane_kind, summary)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO project_todos (project, folder, brief, team, work_class, created_by, created_at, status, position, cause_msg_id, thread_id, plan_id, lane, lane_kind, summary, size, size_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
         )
         .get(
           rec.project, rec.folder, rec.brief, rec.team ?? null, rec.workClass, rec.createdBy, at, next,
           rec.cause?.msgId ?? null, rec.cause?.threadId ?? null, rec.planId ?? null,
           rec.lane === "side" && rec.laneKind ? "side" : "main", rec.lane === "side" && rec.laneKind ? rec.laneKind : null,
-          rec.summary ?? null,
+          rec.summary ?? null, isOrderSize(rec.size) ? rec.size : "big", rec.sizeBy ?? null,
         ) as { id: number };
       return todoById(r.id)!;
     },
@@ -2241,9 +2252,11 @@ export function openLedger(
       const cols: Record<string, string> = {
         status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at",
         attempts: "attempts", retryAt: "retry_at", failure: "failure", brief: "brief", waitingOn: "waiting_on",
-        lane: "lane", laneKind: "lane_kind", summary: "summary",
+        lane: "lane", laneKind: "lane_kind", summary: "summary", size: "size", sizeUp: "size_up",
       };
-      const sets = Object.entries(patch).filter(([k, v]) => k in cols && v !== undefined);
+      const sets = Object.entries(patch)
+        .filter(([k, v]) => k in cols && v !== undefined)
+        .map(([k, v]): [string, unknown] => [k, k === "sizeUp" && v !== null ? JSON.stringify(v) : v]);
       if (sets.length === 0) return;
       db.query(`UPDATE project_todos SET ${sets.map(([k]) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`).run(
         ...sets.map(([, v]) => v as string | number | null),
@@ -2663,9 +2676,27 @@ interface TodoDbRow {
   lane: string;
   lane_kind: string | null;
   summary?: string | null;
+  size?: string | null;
+  size_by?: string | null;
+  size_up?: string | null;
+}
+
+const SIZE_BYS: readonly SizeBy[] = ["operator", "company", "engine"];
+
+/** A stored `size_up`: JSON of a `SizeUp`, else none — a bad value never throws (ADR-0072). */
+function parseSizeUp(raw: string | null | undefined): SizeUp | undefined {
+  if (!raw) return undefined;
+  try {
+    const v = JSON.parse(raw) as Partial<SizeUp> | null;
+    if (!v || typeof v !== "object" || !isOrderSize(v.from) || !isOrderSize(v.to) || typeof v.rule !== "string" || typeof v.at !== "number") return undefined;
+    return v as SizeUp;
+  } catch {
+    return undefined;
+  }
 }
 
 function mapTodoRow(r: TodoDbRow): TodoRow {
+  const sizeUp = parseSizeUp(r.size_up);
   return {
     id: r.id,
     project: r.project,
@@ -2690,6 +2721,9 @@ function mapTodoRow(r: TodoDbRow): TodoRow {
     lane: r.lane === "side" && isLaneKind(r.lane_kind) ? "side" : "main",
     ...(r.lane === "side" && isLaneKind(r.lane_kind) ? { laneKind: r.lane_kind } : {}),
     ...(r.summary ? { summary: r.summary } : {}),
+    size: isOrderSize(r.size) ? r.size : "big",
+    ...(SIZE_BYS.includes(r.size_by as SizeBy) ? { sizeBy: r.size_by as SizeBy } : {}),
+    ...(sizeUp ? { sizeUp } : {}),
   };
 }
 

@@ -503,6 +503,16 @@ function historyFeed(db: Database): void {
   });
 }
 
+/** Version 18 — todo sizes (ADR-0072 spec §11): how much process a todo gets (`quick`, `standard`, `big`; old
+ *  rows are big), who set it (`operator`, `company`, `engine`; NULL on rows before v18) and the facts of its
+ *  latest move up (JSON `SizeUp`; NULL = never moved). The history feed's triggers (v17) watch other columns,
+ *  so a size change writes no feed row. Frozen once shipped. */
+function todoSizes(db: Database): void {
+  db.run(`ALTER TABLE project_todos ADD COLUMN size TEXT NOT NULL DEFAULT 'big'`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN size_by TEXT`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN size_up TEXT`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -521,6 +531,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 15, name: "attention facts and todo summaries", up: explainColumns },
   { version: 16, name: "pins", up: pins },
   { version: 17, name: "history change feed", up: historyFeed },
+  { version: 18, name: "todo sizes", up: todoSizes },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good
