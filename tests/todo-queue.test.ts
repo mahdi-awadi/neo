@@ -156,7 +156,7 @@ test("when the running todo completes, its result goes out first, then the next 
   expect(ledger.todoById(2)?.status).toBe("running");
 
   const finished = replies.findIndex((r) => r.text.includes("finished"));
-  const line = replies.findIndex((r) => r.text === "eticket-v3: done #1, starting #2 'fare step UI'");
+  const line = replies.findIndex((r) => r.text === "eticket-v3: done #1, starting #2 [big] 'fare step UI'");
   expect(finished).toBeGreaterThanOrEqual(0);
   expect(line).toBeGreaterThan(finished); // the result reached the operator first
   expect(replies.filter((r) => r.text.startsWith("→ dispatching")).length).toBe(1); // no duplicate start line
@@ -207,7 +207,7 @@ test("failure policy continue: a failed todo is reported and the next one starts
   await settle();
   expect(ledger.todoById(1)).toMatchObject({ status: "failed", result: "boom" });
   expect(runs).toHaveLength(2);
-  expect(replies.some((r) => r.text === "eticket-v3: #1 failed, starting #2 'second'")).toBe(true);
+  expect(replies.some((r) => r.text === "eticket-v3: #1 failed, starting #2 [big] 'second'")).toBe(true);
 });
 
 test("failure policy pause: a failed todo pauses the queue and the next one waits", async () => {
@@ -348,13 +348,13 @@ test("list renders running + queued per project, and a single project's recent h
   await queue.submit({ project: "eticket-v3", brief: "seat map", workClass: "interactive" }, deps, 1);
   const all = queue.list();
   expect(all).toContain("eticket-v3");
-  expect(all).toContain("▶ #1 running");
-  expect(all).toContain("1. #2 seat map");
+  expect(all).toContain("▶ #1 [big] running");
+  expect(all).toContain("1. #2 [big] seat map");
   runs[0].finish(ok());
   await settle();
   const one = queue.list("eticket-v3");
-  expect(one).toContain("✓ #1 done");
-  expect(one).toContain("▶ #2 running");
+  expect(one).toContain("✓ #1 [big] done");
+  expect(one).toContain("▶ #2 [big] running");
   expect(queue.list("waselni")).toContain("empty");
 });
 
@@ -386,12 +386,12 @@ test("the company's dispatch tool goes through the queue; a todo tool lists and 
   expect(await dispatch({ project: "eticket-v3", task: "second" })).toContain("queued as #2 for eticket-v3, position 1");
   expect(await todo({ action: "add", project: "eticket-v3", task: "third" })).toContain("queued as #3");
   expect(runs).toHaveLength(1);
-  expect(await todo({ action: "list" })).toContain("1. #2 second");
+  expect(await todo({ action: "list" })).toContain("1. #2 [big] second");
   expect(await todo({ action: "reorder", id: 3, position: 1 })).toContain("position 1");
   expect(await todo({ action: "cancel", id: 2 })).toContain("cancelled #2");
   expect(await todo({ action: "pause", project: "eticket-v3" })).toContain("paused");
   expect(await todo({ action: "resume", project: "eticket-v3" })).toContain("resumed");
-  expect(await todo({ action: "list", project: "eticket-v3" })).toContain("#3 third");
+  expect(await todo({ action: "list", project: "eticket-v3" })).toContain("#3 [big] third");
   expect(await todo({ action: "cancel" })).toContain("needs");
 });
 
@@ -407,8 +407,8 @@ test("/todo commands: list all, one project, cancel, up, pause, resume", async (
   await queue.submit({ project: "eticket-v3", brief: "a", workClass: "interactive" }, deps, 1);
   await queue.submit({ project: "eticket-v3", brief: "b", workClass: "interactive" }, deps, 1);
   const cmd = (t: string) => handleCommand(t, 1, { registry, ledger, trust: deps.trust, todo: queue })!.text;
-  expect(cmd("/todo")).toContain("▶ #1 running");
-  expect(cmd("/todo eticket-v3")).toContain("2. #3 b");
+  expect(cmd("/todo")).toContain("▶ #1 [big] running");
+  expect(cmd("/todo eticket-v3")).toContain("2. #3 [big] b");
   expect(cmd("/todo up 3")).toContain("position 1");
   expect(cmd("/todo cancel 2")).toContain("cancelled #2");
   expect(cmd("/todo pause eticket-v3")).toContain("paused");
@@ -634,8 +634,8 @@ test("list: a running todo waiting for a limit reset says so, with its resume ti
   // clock is 1_000; the re-send is due at 500 + 10m = 600_500 → 00:10 UTC.
   ledger.recordEvent("api_retry", { orderId: "o-wait", at: 500, data: { kind: "rate_limit", delayMs: 600_000 } });
   const text = queue.list();
-  expect(text).toContain(`⏳ #${a.id} held: limit wait · resumes 00:10 UTC · /todo retry ${a.id} resumes now — fix the fare cache`);
-  expect(text).toContain(`▶ #${b.id} running 0m — ship the build`);
+  expect(text).toContain(`⏳ #${a.id} [big] held: limit wait · resumes 00:10 UTC · /todo retry ${a.id} resumes now — fix the fare cache`);
+  expect(text).toContain(`▶ #${b.id} [big] running 0m — ship the build`);
   expect(ledger.todoById(a.id)?.status).toBe("running");
 });
 
@@ -644,7 +644,7 @@ test("list: a limit wait that resumes on another day names the date too (a weekl
   const a = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "weekly wait", workClass: "interactive", createdBy: "operator" }, 0);
   ledger.updateTodo(a.id, { status: "running", orderId: "o-week", startedAt: 0 });
   ledger.recordEvent("api_retry", { orderId: "o-week", at: 0, data: { kind: "rate_limit", delayMs: 2 * 86_400_000 + 3_600_000 } });
-  expect(queue.list()).toContain(`⏳ #${a.id} held: limit wait · resumes 1970-01-03 01:00 UTC · /todo retry ${a.id} resumes now — weekly wait`);
+  expect(queue.list()).toContain(`⏳ #${a.id} [big] held: limit wait · resumes 1970-01-03 01:00 UTC · /todo retry ${a.id} resumes now — weekly wait`);
 });
 
 // ADR-0060: `todo retry` on a running todo that is held in an API wait ends the wait now — the brief is

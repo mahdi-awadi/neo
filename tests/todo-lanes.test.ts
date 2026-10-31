@@ -243,8 +243,8 @@ test("/todo and the todo tool list side lanes in their own group with kind; main
   expect(mainPart).toContain("1. #");
   expect(mainPart).toContain("build B");
   expect(mainPart).not.toContain("check docker");
-  expect(sidePart).toMatch(/▷ #\d+ side·ops running \d+m — check docker/);
-  expect(sidePart).toMatch(/▷ #\d+ side·test waits for a side slot — run the API test/);
+  expect(sidePart).toMatch(/▷ #\d+ \[quick\] side·ops running \d+m — check docker/);
+  expect(sidePart).toMatch(/▷ #\d+ \[quick\] side·test waits for a side slot — run the API test/);
 });
 
 test("the console's todos carry lane and kind; queue positions count the main lane only", async () => {

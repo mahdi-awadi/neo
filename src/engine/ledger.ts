@@ -718,7 +718,7 @@ export interface Ledger {
   /** `retryAt: null` clears it. */
   updateTodo(
     id: number,
-    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief" | "lane" | "summary" | "size">> & {
+    patch: Partial<Pick<TodoRow, "status" | "orderId" | "result" | "startedAt" | "endedAt" | "attempts" | "failure" | "brief" | "lane" | "summary" | "size" | "sizeBy">> & {
       retryAt?: number | null;
       /** The latest move up (ADR-0072), stored as JSON; `null` clears it. */
       sizeUp?: SizeUp | null;
@@ -2252,7 +2252,7 @@ export function openLedger(
       const cols: Record<string, string> = {
         status: "status", orderId: "order_id", result: "result", startedAt: "started_at", endedAt: "ended_at",
         attempts: "attempts", retryAt: "retry_at", failure: "failure", brief: "brief", waitingOn: "waiting_on",
-        lane: "lane", laneKind: "lane_kind", summary: "summary", size: "size", sizeUp: "size_up",
+        lane: "lane", laneKind: "lane_kind", summary: "summary", size: "size", sizeBy: "size_by", sizeUp: "size_up",
       };
       const sets = Object.entries(patch)
         .filter(([k, v]) => k in cols && v !== undefined)

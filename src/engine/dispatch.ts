@@ -578,6 +578,9 @@ export interface DispatchHooks {
   quietStart?: boolean;
   /** The upgrade guard moved the order up a size (ADR-0072): the queue updates the todo's row. */
   onSizeUp?: (up: SizeUp) => void;
+  /** A quick or standard order went out BIG, not at its size (ADR-0072, fail closed): it was delivered into a
+   *  live session, where no guard of its own can attach, or its guard could not be made. The queue records it. */
+  onSizeForced?: (why: string) => void;
 }
 
 /** dispatchToProject's options (test seams + per-call choices). */
@@ -709,13 +712,37 @@ export async function dispatchToProject(
     }
     laneWt = wt;
   }
+  // Reuse an already-open session for this folder (resume it) instead of duplicating it as
+  // "<name>-2"; only register a fresh entry when nothing is open for the folder.
+  // A side lane never reuses the main session: it is a fresh, single-brief session of its own.
+  const existing = sideKind ? undefined : deps.registry.findByFolder(folder);
+  const wasRunning = existing?.status === "running";
   // The order's size (ADR-0072). Only a Claude worker can be guarded (the PreToolUse hook), and a team
-  // order is big by rule: those, and sizes turned off, run big with no guard — today's flow.
+  // order is big by rule: those, and sizes turned off, run big with no guard — today's flow. A brief for a
+  // live session is delivered into that session's run, where no guard of its own can attach: big too.
   const sizesCfg = deps.sizes ?? DEFAULT_SIZES_CFG;
-  const size: OrderSize = !sizesCfg.enabled || providerCfg.providers?.ownWork === "codex" || teamAgents ? "big" : (opts.size ?? "big");
+  const asked: OrderSize = opts.size ?? "big";
+  const codexWorker = providerCfg.providers?.ownWork === "codex";
+  const size: OrderSize = !sizesCfg.enabled || codexWorker || teamAgents || wasRunning ? "big" : asked;
   const todoId = opts.todoId ?? opts.lane?.todoId;
   /** The start line's size tag: only when the caller sized the order, so an unsized dispatch reads as before. */
   const startTag = opts.size ? ` ${sizeTag({ size })}` : "";
+  /** A smaller order goes out big (fail closed): the event, and the queue records it. Called only once the
+   *  brief is accepted, so a refused dispatch never changes its todo's size. */
+  const forceBig = (why: string, name: string): void => {
+    event("size_forced", { orderId, folder, data: { project: name, from: asked, to: "big", why } });
+    faults.guard("dispatch.onSizeForced", () => hooks.onSizeForced?.(why), { folder });
+  };
+  const forcedWhy =
+    asked === "big" || size !== "big"
+      ? undefined
+      : wasRunning
+        ? "delivered into a live session, where no size guard can attach"
+        : !sizesCfg.enabled
+          ? "sizes are off"
+          : codexWorker
+            ? "the worker SDK is Codex"
+            : "a team order";
   const sessionLane = sideKind ? { kind: sideKind, projectFolder: folder, ...(opts.lane?.todoId !== undefined ? { todoId: opts.lane.todoId } : {}) } : undefined;
 
   // Build + record the order with its BASE task (project-docs preamble only — no memory snapshot
@@ -726,11 +753,14 @@ export async function dispatchToProject(
   // settled (see the comment down there) — never here, so a resumed sub-session never gets a
   // repeated "authoritative ground truth" block stacked mid-conversation.
   const laneTask = sideKind ? `${lanePreamble(sideKind, project, laneWt)}\n\n${task}` : task;
+  const workerTask = teamAgents ? teamLeadPreamble(laneTask) : laneTask;
+  /** The brief at its size; the run swaps it for the big one if its guard cannot be made (fail closed). */
+  const sizedBrief = briefForSize(size, workerTask);
   const order: Order = {
     id: orderId,
     source: "neo",
     folder: laneWt?.path ?? folder,
-    task: briefForSize(size, teamAgents ? teamLeadPreamble(laneTask) : laneTask),
+    task: sizedBrief,
     chatId: sideKind ? SIDE_CHAT : SUB_CHAT,
     createdAt: now(),
   };
@@ -738,11 +768,6 @@ export async function dispatchToProject(
   // A project's first sight: trusted by default when `trustNewProjects` is on (the customer path
   // passes denyAllTrust, whose noteProject never trusts).
   noteProjectStart(deps, order);
-  // Reuse an already-open session for this folder (resume it) instead of duplicating it as
-  // "<name>-2"; only register a fresh entry when nothing is open for the folder.
-  // A side lane never reuses the main session: it is a fresh, single-brief session of its own.
-  const existing = sideKind ? undefined : deps.registry.findByFolder(folder);
-  const wasRunning = existing?.status === "running";
   const session = existing ?? deps.registry.add(order, now(), sessionLane ? { lane: sessionLane } : undefined);
   // A dispatch a customer-driven company run made (ingress) marks its session for good: it runs fenced,
   // and the operator's own tools (project_message, ADR-0061) never speak into it.
@@ -811,6 +836,7 @@ export async function dispatchToProject(
       const brief = withLiveNotes(deps, existing.id, folder, order.task, now());
       if (cause) control.followUp(brief, "after-turn", cause);
       else control.followUp(brief, "after-turn");
+      if (forcedWhy) forceBig(forcedWhy, name);
       hooks.onLaunched?.(order.id, "delivered");
       deps.registry.touch(existing.id, now());
       // A brief arriving answers (or supersedes) a raised DECISION; a pending approval is left
@@ -859,6 +885,7 @@ export async function dispatchToProject(
   // The run's first input carries this dispatch's cause: its thread reads as active work until the
   // run ends (spec §5), and later briefs delivered into the run bring their own.
   if (cause) deps.registry.setCause(session.id, cause);
+  if (forcedWhy) forceBig(forcedWhy, name);
   hooks.onLaunched?.(order.id, "run");
   refreshThread(deps, cause?.threadId);
   if (!hooks.quietStart) await say(`→ dispatching to ${name}${startTag}: ${task}`, undefined, { kind: "ack", cause });
@@ -1066,6 +1093,15 @@ export async function dispatchToProject(
         onUp: (up) => sizeUp(up),
         now,
       }), { folder: order.folder });
+      if (!guard) {
+        // Fail closed (ADR-0072): a quick or standard brief never runs without its guard. The fault is
+        // reported (faults.guard above); the order runs big — the big preamble in place of the small one.
+        const big = briefForSize("big", workerTask);
+        const at = order.task.lastIndexOf(sizedBrief);
+        order.task = at >= 0 ? order.task.slice(0, at) + big + order.task.slice(at + sizedBrief.length) : big;
+        faults.guard("dispatch.recordOrder", () => deps.ledger.recordOrder(order));
+        forceBig("its size guard could not be made (an engine fault, reported)", name);
+      }
     }
     /** One move up: the event, one line to the operator under the cause, a quiet note to the dispatcher, the queue's row. */
     const sizeUp = (up: SizeUp): void => {

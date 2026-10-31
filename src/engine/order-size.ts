@@ -281,6 +281,12 @@ export const SIZE_WHY = {
   default: "default: no size was given",
 } as const;
 
+/** What a reply to the chief of staff says about a new todo's size (spec §4): `— size quick (yours)`. */
+export function sizeNote(r: { size: OrderSize; by: SizeBy; why?: string }): string {
+  const who = r.by === "company" ? "yours" : r.by === "operator" ? `the operator's ${r.size === "big" ? "/full" : "/quick"}` : (r.why ?? "set by Neo");
+  return `— size ${r.size} (${who})`;
+}
+
 /** The size of a new todo, decided once (spec §2). First match wins: sizes off → forced big →
  *  the operator's override → the chief of staff's size → an engine rule → a side brief's kind → the default. */
 export function resolveSize(i: SizeInput, cfg: SizesCfg): { size: OrderSize; by: SizeBy; why?: string } {

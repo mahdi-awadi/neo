@@ -296,8 +296,8 @@ test("the Queue tab and /todo show retry and failed todos with how to retry them
   expect(snap.todos.find((t) => t.id === 1)).toMatchObject({ attempts: 1, retryAt: 61_000 });
   const cmd = (t: string) => handleCommand(t, 1, { registry, ledger, trust: deps.trust, todo: queue })!.text;
   const all = cmd("/todo");
-  expect(all).toContain("↻ #1 retry 1/2");
-  expect(all).toContain("✗ #2 failed");
+  expect(all).toContain("↻ #1 [big] retry 1/2");
+  expect(all).toContain("✗ #2 [big] failed");
   expect(all).toContain("/todo retry 2");
 });
 

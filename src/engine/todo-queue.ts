@@ -25,6 +25,8 @@ import { apiWait } from "./api-retry";
 import { heldText, resumeClock, type ApiWaits } from "./api-wait";
 import { awaitHandoff, continuationBrief, handoffInFlight, type HandoffNext } from "./context-policy";
 import { awaitCommitFinish, commitFinishInFlight } from "./commit-finish";
+import { DEFAULT_SIZES_CFG, resolveSize, sizeNote, sizeReason, sizeTag, type OrderSize, type SizeUp } from "./order-size";
+import { CUSTOMER_CHAT } from "./chats";
 
 import { TODO_RETRY_BACKOFF_MS_DEFAULT, type TodoFailurePolicy } from "../config";
 
@@ -90,6 +92,11 @@ export interface TodoQueue {
       /** The chief of staff's lane (ADR-0057): `side` runs beside a busy project's main task, as `kind`. */
       lane?: "side" | "queue";
       kind?: LaneKind;
+      /** The order's size (ADR-0072): the chief of staff's `size`, the operator's override read from their
+       *  own message, and an engine rule's size. `resolveSize` decides once, here. */
+      size?: OrderSize;
+      operatorSize?: OrderSize;
+      engineSize?: OrderSize;
     },
     deps: DispatchDeps,
     replyChat: number,
@@ -238,7 +245,23 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     ledger.recordEvent("todo_lane_moved", { folder: t.folder, data: { project: t.project, id: t.id, kind: t.laneKind, reason: why }, cause: t.cause });
   };
   const busy = (folder: string) => !!runningTodo(folder) || projectBusy(registry, folder);
-  const tag = (t: TodoRow) => `#${t.id} '${todoLabel(t)}'`;
+  const tag = (t: TodoRow) => `#${t.id} ${sizeTag(t)} '${todoLabel(t)}'`;
+  /** A todo's size moved up during its latest run (ADR-0072). */
+  const movedThisRun = (t: TodoRow): SizeUp | undefined =>
+    t.sizeUp && t.startedAt !== undefined && t.sizeUp.at >= t.startedAt ? t.sizeUp : undefined;
+  /** A todo that continues `t`'s work (ADR-0021, ADR-0029, ADR-0057): the same project, thread, lane and
+   *  summary, with its size. A quick order that needed a context handoff was not quick: its continuation is
+   *  standard, with a size up (rule `handoff`). An answered side question (`keepSize`) keeps the size. */
+  const continuationOf = (t: TodoRow, brief: string, o: { keepSize?: boolean } = {}): TodoRow => {
+    const handoff = t.size === "quick" && !o.keepSize;
+    const c = addTodo(
+      { project: t.project, folder: t.folder, brief, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind, summary: todoLabel(t), size: handoff ? "standard" : t.size, ...(t.sizeBy ? { sizeBy: t.sizeBy } : {}) },
+      now(),
+    );
+    const sizeUp: SizeUp | undefined = handoff ? { from: "quick", to: "standard", rule: "handoff", at: now() } : t.sizeUp;
+    if (sizeUp) ledger.updateTodo(c.id, { sizeUp });
+    return ledger.todoById(c.id) ?? c;
+  };
   /** A line about a todo's run: a result-like line under the todo's own cause (its thread's ref). */
   const todoLine = (t: TodoRow): ReplyMeta => ({ kind: "result", folder: t.folder, ...(t.cause ? { cause: t.cause } : {}) });
 
@@ -254,9 +277,15 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     const folder = t.folder;
     // A transient end with retries left: the todo re-runs by itself — say so, so nobody re-dispatches it.
     const again = !ok && classifyEnd(failure).transient ? nextRetry(t.attempts, ladder(), now()) : undefined;
-    const retryLine = again
-      ? `[todo] #${t.id} stopped for a passing reason (${failure}); it is kept and re-runs by itself ${dueIn(again.retryAt - now())} (retry ${t.attempts + 1}/${ladder().length}) — do NOT dispatch it again.`
-      : undefined;
+    // A move up in this run (ADR-0072) comes first: the dispatcher sizes its next orders from it.
+    const up = movedThisRun(t);
+    const sizeLine = up ? `[size] #${t.id} moved up ${up.from} → ${up.to}: ${sizeReason(up)}.` : undefined;
+    const retryLine = [
+      sizeLine,
+      again
+        ? `[todo] #${t.id} stopped for a passing reason (${failure}); it is kept and re-runs by itself ${dueIn(again.retryAt - now())} (retry ${t.attempts + 1}/${ladder().length}) — do NOT dispatch it again.`
+        : undefined,
+    ].filter(Boolean).join("\n") || undefined;
     const waiting = queued(folder);
     // A side lane's end says nothing about the main queue it never held (ADR-0057).
     if (t.lane === "side" || waiting.length === 0) return retryLine;
@@ -288,6 +317,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       cause: t.cause,
       parentOrderId: parents.get(t.id),
       ...(t.lane === "side" && t.laneKind ? { lane: { kind: t.laneKind, todoId: t.id } } : {}),
+      size: t.size,
+      todoId: t.id,
       hooks: {
         quietStart: quiet,
         onLaunched: (orderId, mode) => {
@@ -310,6 +341,12 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         resultNote: (ok, failure) => nextNote(ledger.todoById(t.id) ?? t, ok, failure),
         onEnd: (end) => finish(end, l),
         onHandoff: ({ orderId, next, note }) => afterHandoff(orderId, next, note),
+        // ADR-0072: the row follows the order's size — a move up, or a brief that went out big (fail closed).
+        onSizeUp: (up) => ledger.updateTodo(t.id, { size: up.to, sizeUp: up }),
+        onSizeForced: (why) => {
+          ledger.updateTodo(t.id, { size: "big", sizeBy: "engine" });
+          ledger.recordEvent("todo_size_forced", { folder: t.folder, data: { project: t.project, id: t.id, from: t.size, to: "big", why }, cause: t.cause });
+        },
       },
     });
     parents.delete(t.id);
@@ -380,11 +417,16 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     live.delete(end.orderId);
     const t = ledger.todoByOrder(end.orderId);
     if (!t || t.status !== "running") return;
+    // Moved up to big and ended in plan first with no plan of its own awaiting approval (ADR-0072): the
+    // same todo runs again, as big, with the full flow. A side lane moved to big was stopped (it has no
+    // plan gate): it joins the main queue. A late move found the work already done: it ends as today.
+    if (end.size?.requeue && t.lane === "main") return requeueBig(t, end, l);
+    if (t.lane === "side" && end.size?.size === "big" && !end.size.late) return requeueBig(t, end, l);
     // Handed off at a safe checkpoint (ADR-0021): the work is not finished. Its continuation goes to
     // the HEAD of the project's queue, so the release below starts it before anything else.
     const cont =
       end.ok && end.continuation
-        ? addTodo({ project: t.project, folder: t.folder, brief: end.continuation + takeAnswers(end.orderId), team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind, summary: todoLabel(t) }, now())
+        ? continuationOf(t, end.continuation + takeAnswers(end.orderId))
         : undefined;
     if (cont) {
       ledger.moveTodo(cont.id, 1);
@@ -443,22 +485,64 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     await pumpSides(launcher() ?? l);
   };
 
+  /** A code lane's worktree kept with uncommitted work: a high `dirty` item for it. Contained. */
+  const raiseSideDirty = (t: TodoRow, w: NonNullable<TodoEnd["lane"]>): void => {
+    if (!w.dirty?.length) return;
+    faults.guard("todo.sideDirty", () => {
+      const shown = w.dirty!.slice(0, 10).join(", ") + (w.dirty!.length > 10 ? ` (+${w.dirty!.length - 10} more)` : "");
+      raise(ledger, {
+        project: t.project, folder: w.path, source: "git", kind: DIRTY_KINDS[0], key: w.path, severity: "high",
+        title: `${w.dirty!.length} uncommitted file${w.dirty!.length === 1 ? "" : "s"} in side lane #${t.id}'s worktree (kept)`,
+        detail: `${t.cause ? `thread ${msgRef(t.cause.threadId)} · ` : ""}branch ${w.branch} · ${w.path} · files: ${shown}`,
+        facts: { files: w.dirty!.length, todo: t.id, branch: w.branch, path: w.path },
+      }, now());
+    }, { todo: t.id });
+  };
+
+  /** A todo moved up to big that must run again with the full flow (ADR-0072 §5.4): the same row, as big,
+   *  `attempts` unchanged, its result naming the move (`retryBrief` carries it into the next run). No dirty
+   *  item: the next run goes on from those files. A main-lane todo goes to the head of its queue; a side lane
+   *  (no plan gate there) to the end of the main queue, a code lane's branch kept and named. */
+  const requeueBig = async (t: TodoRow, end: TodoEnd, l: TodoLauncher): Promise<void> => {
+    const side = t.lane === "side";
+    const up = t.sizeUp;
+    const from = up?.from ?? t.size;
+    const w = side ? end.lane : undefined;
+    if (w) raiseSideDirty(t, w);
+    const kept = w && w.commits > 0 ? `branch ${w.branch} kept (${w.commits} commit${w.commits === 1 ? "" : "s"}, not merged)` : "";
+    const result =
+      `Neo moved this order up from ${from} to big (${up ? sizeReason(up) : "it outgrew its size"}); it runs again with the full flow: plan first.` +
+      (kept ? ` Its side-lane ${kept}: build on it.` : "");
+    ledger.updateTodo(t.id, { status: "queued", size: "big", result, endedAt: now(), retryAt: null, ...(side ? { lane: "main" as const, laneKind: null } : {}) });
+    ledger.moveTodo(t.id, side ? Number.MAX_SAFE_INTEGER : 1);
+    ledger.recordEvent("todo_size_requeued", { folder: t.folder, orderId: end.orderId, data: { project: t.project, id: t.id, from, to: "big", lane: t.lane, ...(w ? { branch: w.branch } : {}) }, cause: t.cause });
+    refresh(launcher()?.deps ?? l.deps, t.cause);
+    const out = launcher() ?? l;
+    if (side) {
+      const head = `${t.project}: side #${t.id} (${t.laneKind ?? "side"}) moved up ${from} → big — it joins the main queue as big (position ${describePosition(t)})${kept ? `; ${kept}` : ""}`;
+      await out.deps.reply(out.replyChat, head, t.project, undefined, todoLine(t));
+      await pumpAll();
+      return;
+    }
+    const head = `${t.project}: #${t.id} moved up ${from} → big — it runs again with the full flow: plan first`;
+    const r = await release(t.folder, out, true);
+    const line = r.started?.id === t.id
+      ? `${head}; starting it now`
+      : r.started
+        ? `${head}; starting ${tag(r.started)}`
+        : r.waits === "paused"
+          ? `${head} — queue paused, ${queued(t.folder).length} waiting (/todo resume ${t.project})`
+          : head;
+    await out.deps.reply(out.replyChat, line, t.project, undefined, todoLine(t));
+    await pumpSides(out);
+  };
+
   /** A side-lane todo ended (ADR-0057): a code lane's dirty worktree is raised and its commits queued
    *  as a main-lane merge todo; then free side slots are filled, here and on every project. */
   const finishSide = async (t: TodoRow, end: TodoEnd, again: { retryAt: number } | undefined, l: TodoLauncher): Promise<void> => {
     const w = end.lane;
     let merge: TodoRow | undefined;
-    if (w?.dirty?.length) {
-      faults.guard("todo.sideDirty", () => {
-        const shown = w.dirty!.slice(0, 10).join(", ") + (w.dirty!.length > 10 ? ` (+${w.dirty!.length - 10} more)` : "");
-        raise(ledger, {
-          project: t.project, folder: w.path, source: "git", kind: DIRTY_KINDS[0], key: w.path, severity: "high",
-          title: `${w.dirty!.length} uncommitted file${w.dirty!.length === 1 ? "" : "s"} in side lane #${t.id}'s worktree (kept)`,
-          detail: `${t.cause ? `thread ${msgRef(t.cause.threadId)} · ` : ""}branch ${w.branch} · ${w.path} · files: ${shown}`,
-          facts: { files: w.dirty!.length, todo: t.id, branch: w.branch, path: w.path },
-        }, now());
-      }, { todo: t.id });
-    }
+    if (w) raiseSideDirty(t, w);
     // Only a finished lane's branch is merged; a failed or retried one keeps its branch (the retry
     // continues on it), so a half-done change is never queued for merging, nor merged twice.
     if (w && w.commits > 0 && end.ok) {
@@ -476,10 +560,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const answers = takeAnswers(end.orderId);
       const open = ledger.openDecisionsForOrder(end.orderId).filter((d) => !d.plan);
       if (answers || open.length) {
-        cont = addTodo(
-          { project: t.project, folder: t.folder, brief: `${t.brief}${answers}`, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: "side", laneKind: t.laneKind, summary: todoLabel(t) },
-          now(),
-        );
+        cont = continuationOf(t, `${t.brief}${answers}`, { keepSize: true });
         if (!answers) ledger.updateTodo(cont.id, { status: "waiting", waitingOn: open[0]!.id });
         carryLinks(t.id, cont.id);
         ledger.updateTodo(t.id, { result: `${end.summary} → ${answers ? "continuing" : "waiting on the operator"} as side #${cont.id}` });
@@ -537,7 +618,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     for (const folder of ledger.queuedTodoFolders()) {
       try {
         for (const t of await releaseSide(folder, l)) {
-          await l.deps.reply(l.replyChat, `${t.project}: starting side #${t.id} (${t.laneKind}) — ${todoLabel(t)}`, t.project, undefined, todoLine(t));
+          await l.deps.reply(l.replyChat, `${t.project}: starting side #${t.id} ${sizeTag(t)} (${t.laneKind}) — ${todoLabel(t)}`, t.project, undefined, todoLine(t));
         }
       } catch {
         // one project's side release must never stop the others
@@ -567,10 +648,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     // A parked continuation may run hours later, after other todos: it carries the note itself, and
     // the pending handoff is claimed so an unrelated todo is not told it "continues earlier work".
     const carried = parking && note.trim() ? `\n\nNeo's handoff note from the finished run:\n--- note ---\n${note.trim()}\n--- end of note ---` : "";
-    const cont = addTodo(
-      { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + carried + answers, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind, summary: todoLabel(t) },
-      now(),
-    );
+    const cont = continuationOf(t, continuationBrief(t.brief) + carried + answers);
     carryLinks(t.id, cont.id);
     if (!parking) {
       ledger.moveTodo(cont.id, 1);
@@ -619,21 +697,21 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const wait = apiWait(ledger, t.orderId, t0);
       lines.push(
         wait
-          ? `  ⏳ #${t.id} ${heldText(wait.limit)} · resumes ${resumeClock(wait.resumesAt, t0)} UTC · /todo retry ${t.id} resumes now — ${todoLabel(t)}`
-          : `  ▶ #${t.id} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoLabel(t)}`,
+          ? `  ⏳ #${t.id} ${sizeTag(t)} ${heldText(wait.limit)} · resumes ${resumeClock(wait.resumesAt, t0)} UTC · /todo retry ${t.id} resumes now — ${todoLabel(t)}`
+          : `  ▶ #${t.id} ${sizeTag(t)} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoLabel(t)}`,
       );
     }
-    all.filter((t) => t.status === "queued" && t.lane === "main").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${todoLabel(t)}`));
+    all.filter((t) => t.status === "queued" && t.lane === "main").forEach((t, i) => lines.push(`  ${i + 1}. #${t.id} ${sizeTag(t)} ${todoLabel(t)}`));
     // Parked continuations (ADR-0029): each waits on one decision.
     for (const t of ledger.listTodos({ folder, statuses: ["waiting"] })) {
-      lines.push(`  ⏸ #${t.id} waiting on decision #${(t.waitingOn ?? "?").slice(0, 8)} — ${todoLabel(t)}`);
+      lines.push(`  ⏸ #${t.id} ${sizeTag(t)} waiting on decision #${(t.waitingOn ?? "?").slice(0, 8)} — ${todoLabel(t)}`);
     }
     // Kept work (ADR-0027): waiting retries, then failed todos with how to re-run them.
     for (const t of ledger.listTodos({ folder, statuses: ["retry"] })) {
-      lines.push(`  ↻ #${t.id} retry ${t.attempts}/${ladder().length} ${dueIn((t.retryAt ?? t0) - t0)} (${t.failure ?? "stopped"}) — ${todoLabel(t)}`);
+      lines.push(`  ↻ #${t.id} ${sizeTag(t)} retry ${t.attempts}/${ladder().length} ${dueIn((t.retryAt ?? t0) - t0)} (${t.failure ?? "stopped"}) — ${todoLabel(t)}`);
     }
     for (const t of ledger.listTodos({ folder, statuses: ["failed"], limit: FAILED_SHOWN })) {
-      lines.push(`  ✗ #${t.id} failed — ${todoLabel(t)} (/todo retry ${t.id})`);
+      lines.push(`  ✗ #${t.id} ${sizeTag(t)} failed — ${todoLabel(t)} (/todo retry ${t.id})`);
     }
     // Side lanes (ADR-0057): their own group, with the kind — running ones, then those waiting for a slot.
     const side = all.filter((t) => t.lane === "side");
@@ -642,14 +720,14 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       for (const t of side) {
         lines.push(
           t.status === "running"
-            ? `  ▷ #${t.id} side·${t.laneKind} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoLabel(t)}`
-            : `  ▷ #${t.id} side·${t.laneKind} waits for a side slot — ${todoLabel(t)}`,
+            ? `  ▷ #${t.id} ${sizeTag(t)} side·${t.laneKind} running ${Math.max(0, Math.round((t0 - (t.startedAt ?? t0)) / 60_000))}m — ${todoLabel(t)}`
+            : `  ▷ #${t.id} ${sizeTag(t)} side·${t.laneKind} waits for a side slot — ${todoLabel(t)}`,
         );
       }
     }
     if (history) {
       for (const t of ledger.listTodos({ folder, statuses: ["done", "cancelled"], limit: HISTORY_SHOWN })) {
-        lines.push(`  ${t.status === "done" ? "✓" : "–"} #${t.id} ${t.status} — ${todoLabel(t)}`);
+        lines.push(`  ${t.status === "done" ? "✓" : "–"} #${t.id} ${sizeTag(t)} ${t.status} — ${todoLabel(t)}`);
       }
     }
     return lines.join("\n");
@@ -666,39 +744,54 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const project = basename(folder);
       const paused = ledger.todoPaused(folder);
       const mustWait = busy(folder) || queued(folder).length > 0 || !!paused || commitHeld(folder);
+      // The order's size (ADR-0072), decided once, here. Big when a smaller size cannot be guarded or is
+      // not allowed: a customer-driven run, a Codex worker (no governor hook), a team order.
+      const forced = replyChat === CUSTOMER_CHAT ? "customer" : deps.providers?.ownWork === "codex" ? "codex" : p.team ? "team" : undefined;
+      const sideKind = p.lane === "side" && p.kind ? p.kind : undefined;
+      const sized = resolveSize(
+        { chosen: p.size, override: p.operatorSize, engine: p.engineSize, ...(sideKind ? { side: sideKind } : {}), ...(forced ? { forced } : {}) },
+        deps.sizes ?? DEFAULT_SIZES_CFG,
+      );
+      const sizeFields = { size: sized.size, sizeBy: sized.by };
+      const sizeSet = (t: TodoRow) =>
+        ledger.recordEvent("todo_size_set", { folder, data: { project, id: t.id, size: sized.size, by: sized.by, chosen: p.size, override: p.operatorSize, forced }, cause: p.cause });
+      const said = ` ${sizeNote(sized)}`;
       // A side brief (ADR-0057) for a project whose main lane cannot take it now runs beside it, or
-      // waits for a side slot. For a free project it simply runs in the main lane, below.
-      let sideNote = "";
-      if (p.lane === "side" && p.kind && mustWait) {
+      // waits for a side slot. For a free project it simply runs in the main lane, below. A big one runs
+      // in the main lane: a big order needs the plan gate, which a side lane does not have (ADR-0072).
+      let sideNote = sideKind && sized.size === "big" ? " (not as a side lane: a big order runs in the main lane, where its plan waits for the operator's approval)" : "";
+      if (sideKind && sized.size !== "big" && mustWait) {
         const can = sideCheck(folder, deps, p.workClass);
         if ("queue" in can) {
           sideNote = ` (not as a side lane: ${can.queue})`;
         } else {
           const t = addTodo(
-            { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause, planId: p.planId, lane: "side", laneKind: p.kind },
+            { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause, planId: p.planId, lane: "side", laneKind: sideKind, ...sizeFields },
             now(),
           );
+          sizeSet(t);
           if (p.parentOrderId) parents.set(t.id, p.parentOrderId);
           refresh(deps, p.cause);
           if ("ok" in can) {
             const r = await launch(t, { deps, replyChat }, false);
-            if (r.kind !== "refused") return `${r.text} (todo #${t.id})`;
+            if (r.kind !== "refused") return `${r.text} (todo #${t.id})${said}`;
             if (r.reason.startsWith("lane_")) {
               toMainLane(t, r.reason);
-              return `${r.text} — so it was queued in the main lane as #${t.id} instead; it starts after the work ahead of it.`;
+              return `${r.text} — so it was queued in the main lane as #${t.id} instead; it starts after the work ahead of it.${said}`;
             }
             // Held after all (reload, cooldown): it stays a queued side todo and the next tick retries.
           }
           const why = "wait" in can ? can.wait : "a hold";
           ledger.recordEvent("todo_queued", { folder, data: { project, id: t.id, lane: "side", kind: p.kind, reason: why }, cause: p.cause });
-          await deps.reply(replyChat, `→ queued side #${t.id} for ${project} (${p.kind}): waits for a side slot — ${why}`, project, undefined, {
+          await deps.reply(replyChat, `→ queued side #${t.id} ${sizeTag(t)} for ${project} (${p.kind}): waits for a side slot — ${why}`, project, undefined, {
             kind: "ack",
             folder,
             ...(p.cause ? { cause: p.cause } : {}),
           });
           return (
             `queued as side #${t.id} for ${project} (${p.kind}) — it waits for a free side slot (${why}) and then starts by itself ` +
-            `beside the main task, without waiting for the main queue. Do NOT forward it again; you get its result like any dispatch.`
+            `beside the main task, without waiting for the main queue. Do NOT forward it again; you get its result like any dispatch.` +
+            said
           );
         }
       }
@@ -708,16 +801,17 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         return dispatchToProject(folder, p.brief, deps, replyChat, { ...q.dispatchOpts, root: deps.workRoot ?? q.dispatchOpts?.root, workClass: p.workClass, ...traced });
       }
       const t = addTodo(
-        { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause, planId: p.planId },
+        { project, folder, brief: p.brief, team: p.team, workClass: p.workClass, createdBy: p.workClass === "interactive" ? "operator" : "company", cause: p.cause, planId: p.planId, ...sizeFields },
         now(),
       );
+      sizeSet(t);
       if (p.parentOrderId) parents.set(t.id, p.parentOrderId);
       refresh(deps, p.cause); // a queued todo is the thread's open work
       if (mustWait) {
         const position = describePosition(t);
         const heldAt = heldPlanOf(registry, folder);
         ledger.recordEvent("todo_queued", { folder, data: { project, id: t.id, position, paused: !!paused }, cause: p.cause });
-        await deps.reply(replyChat, `→ queued #${t.id} for ${project} (position ${position}): ${todoLabel(t)}`, project, undefined, {
+        await deps.reply(replyChat, `→ queued #${t.id} ${sizeTag(t)} for ${project} (position ${position}): ${todoLabel(t)}`, project, undefined, {
           kind: "ack",
           folder,
           ...(p.cause ? { cause: p.cause } : {}),
@@ -730,7 +824,8 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
               ? ` — ${project} is held at its big plan ${heldAt} until the operator taps Approve & build (or Changes / Drop) on its card; this brief starts by itself once the hold lifts. `
               : ` — ${project} is busy, so this brief waits and starts by itself when the work ahead of it is done. `) +
           `Do NOT forward it again; you get its result like any dispatch. Tell the operator its number and position.` +
-          sideNote
+          sideNote +
+          said
         );
       }
       const r = await launch(t, { deps, replyChat }, false);
@@ -740,7 +835,9 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         refresh(deps, p.cause);
         return r.text;
       }
-      return `${r.text} (todo #${t.id})`;
+      // The size it runs at: a brief delivered into a live session went out big (ADR-0072, fail closed).
+      const ran = ledger.todoById(t.id) ?? t;
+      return `${r.text} (todo #${t.id})${sideNote} ${ran.size === sized.size ? sizeNote(sized) : `— size big (${r.kind === "delivered" ? "delivered into a live session: no size guard there" : "Neo ran it big"})`}`;
     },
 
     async pump() {
@@ -797,10 +894,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
         void awaitHandoff(t.folder).then(() => {
           const left = takeAnswers(orderId);
           if (!left) return;
-          const cont = addTodo(
-            { project: t.project, folder: t.folder, brief: continuationBrief(t.brief) + left, team: t.team, workClass: t.workClass, createdBy: t.createdBy, cause: t.cause, lane: t.lane, laneKind: t.laneKind, summary: todoLabel(t) },
-            now(),
-          );
+          const cont = continuationOf(t, continuationBrief(t.brief) + left);
           carryLinks(t.id, cont.id);
           ledger.moveTodo(cont.id, 1);
           refresh(launcher()?.deps, t.cause);

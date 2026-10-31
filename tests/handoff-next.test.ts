@@ -187,7 +187,7 @@ test("a finished task blocked on its own open decision parks a waiting todo, the
   expect(tails).toEqual([`paused: waiting on decision #${decId.slice(0, 8)} — What may /public show? (continues as #${waiting.id} once answered)`]);
   expect(runs).toHaveLength(1); // nothing spins
   // visible: /todo and the console
-  expect(handleCommand("/todo", 1, { registry, ledger, trust: deps.trust, todo: queue })!.text).toContain(`⏸ #${waiting.id} waiting on decision #${decId.slice(0, 8)}`);
+  expect(handleCommand("/todo", 1, { registry, ledger, trust: deps.trust, todo: queue })!.text).toContain(`⏸ #${waiting.id} [big] waiting on decision #${decId.slice(0, 8)}`);
   expect(dashboardSnapshot({ registry, ledger, chatId: 1, reposRoot: "/nonexistent" }).todos.some((x) => x.id === waiting.id && x.status === "waiting")).toBe(true);
   // answered → the same todo runs with the answer, and no operator session is seeded
   const dec = ledger.decisionById(decId)!;

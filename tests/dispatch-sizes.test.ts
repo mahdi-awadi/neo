@@ -309,3 +309,71 @@ test("one runBaseline for each run, shared by the commit finish and the guard", 
     spy.mockRestore();
   }
 });
+
+// Fail closed (Task 8 review): a quick or standard brief never runs without its guard.
+import * as sizeGuardModule from "../src/engine/size-guard";
+import { configureFaults, createFaultReporter } from "../src/engine/fault";
+
+test("(a) the guard cannot be made: the order runs BIG — the big preamble, no small rules — and the fault is reported", async () => {
+  const { root } = project();
+  const faultsSeen: string[] = [];
+  configureFaults(createFaultReporter({ log: (l) => void faultsSeen.push(l) }, { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false, maxHandoffsPerHour: 0 }));
+  const spy = spyOn(sizeGuardModule, "createSizeGuard").mockImplementation(() => {
+    throw new Error("boom in the guard");
+  });
+  try {
+    const { d, replies } = makeDeps();
+    const forced: string[] = [];
+    const { ctl, start } = drivenStart();
+    await dispatchToProject("proj", "fix it", d, 1, { start: start as never, root, size: "quick", hooks: { onSizeForced: (why) => void forced.push(why) } });
+    await settle();
+    expect(ctl.order!.task).toBe(briefWithProjectDocs("fix it"));
+    expect(ctl.h!.contextSteer?.("Agent", { subagent_type: "planner", prompt: "x" })).toBeUndefined();
+    expect(forced).toEqual([expect.stringContaining("guard")]);
+    expect(d.ledger.listEvents({ kind: "size_forced" })[0]!.data).toMatchObject({ project: "proj", from: "quick", to: "big" });
+    expect(faultsSeen.some((l) => l.includes("dispatch.sizeGuard") && l.includes("boom in the guard"))).toBe(true);
+    // Its result is not clamped as quick.
+    ctl.resolve!(good("a\nb\nc\nd\ne"));
+    await settle(60);
+    expect(replies.find((r) => r.text.startsWith("proj finished:"))!.text).toBe("proj finished: a\nb\nc\nd\ne");
+  } finally {
+    spy.mockRestore();
+    configureFaults(createFaultReporter({ log: (l) => console.error(l) }, { dedupeMs: 0, maxAlertsPerHour: 0, companyHandoff: false, maxHandoffsPerHour: 0 }));
+  }
+});
+
+test("(b) a quick brief delivered into an already-live session goes out with the BIG preamble and is recorded big", async () => {
+  const { root, dir } = project();
+  const { d, replies } = makeDeps();
+  const live = d.registry.add({ id: "d1", source: "neo", folder: dir, task: "x", chatId: -2, createdAt: 0 }, 0);
+  d.registry.setStatus(live.id, "running");
+  const followUps: string[] = [];
+  d.registry.attachControl(live.id, { followUp: (t: string) => void followUps.push(t), queued: () => 0, active: () => false, interrupt: async () => {} });
+  const forced: string[] = [];
+  const launched: string[] = [];
+  await dispatchToProject("proj", "fix it", d, 1, {
+    start: (() => {
+      throw new Error("must not start a second run");
+    }) as never,
+    root,
+    size: "quick",
+    hooks: { onSizeForced: (why) => void forced.push(why), onLaunched: (_o, mode) => void launched.push(mode) },
+  });
+  expect(followUps).toEqual([briefWithProjectDocs("fix it")]);
+  expect(launched).toEqual(["delivered"]);
+  expect(forced).toEqual([expect.stringContaining("live session")]);
+  expect(d.ledger.listEvents({ kind: "size_forced" })[0]!.data).toMatchObject({ from: "quick", to: "big" });
+  expect(replies.some((r) => r.text === "→ dispatching to proj [big]: fix it")).toBe(true);
+});
+
+test("a big brief delivered into a live session is not 'forced' (it is big already)", async () => {
+  const { root, dir } = project();
+  const { d } = makeDeps();
+  const live = d.registry.add({ id: "d1", source: "neo", folder: dir, task: "x", chatId: -2, createdAt: 0 }, 0);
+  d.registry.setStatus(live.id, "running");
+  d.registry.attachControl(live.id, { followUp: () => {}, queued: () => 0, active: () => false, interrupt: async () => {} });
+  const forced: string[] = [];
+  await dispatchToProject("proj", "build it", d, 1, { root, size: "big", hooks: { onSizeForced: (why) => void forced.push(why) } });
+  expect(forced).toEqual([]);
+  expect(d.ledger.listEvents({ kind: "size_forced" })).toHaveLength(0);
+});
