@@ -8,7 +8,7 @@ import { join } from "node:path";
 import {
   findIdTokens, findShas, hashText, paragraphHashes, removeBoilerplate, stripEngineBlocks, unwrapContinuation,
 } from "../src/engine/history/extract";
-import { briefWithProjectDocs, codebaseMemoryLine } from "../src/engine/dispatch";
+import { briefForSize, briefWithProjectDocs, codebaseMemoryLine } from "../src/engine/dispatch";
 import { lanePreamble } from "../src/engine/lanes";
 import { teamLeadPreamble } from "../src/engine/agent-teams";
 import { applyMemoryOp, memorySnapshot } from "../src/engine/memory";
@@ -62,6 +62,13 @@ test("query ids carry their span, so the caller can tell an id-only query", () =
 test("engine blocks: the dispatch preamble from the real builder is removed", () => {
   expect(stripEngineBlocks(briefWithProjectDocs(TASK))).toBe(TASK);
   expect(stripEngineBlocks(briefWithProjectDocs(""))).toBe("");
+});
+
+test("engine blocks: the quick and standard preambles from the real builder are removed (ADR-0072)", () => {
+  for (const size of ["quick", "standard"] as const) {
+    expect(stripEngineBlocks(briefForSize(size, TASK))).toBe(TASK);
+    expect(stripEngineBlocks(briefForSize(size, ""))).toBe("");
+  }
 });
 
 test("engine blocks: both codebase-memory lines from the real builder are removed", () => {

@@ -96,6 +96,7 @@ import {
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
 import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
+import type { OrderSize } from "./order-size";
 import { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT } from "./chats";
 
 /** Real backoff wait (tests inject opts.sleep instead). */
@@ -405,8 +406,59 @@ export function planWaitTail(d: { id: string; question: string }): string {
   return `paused: waiting on plan approval #${d.id.slice(0, 8)} — ${d.question} (its Execute tap queues the work)`;
 }
 
+// The preamble's paragraphs (ADR-0072): the big preamble is built from them exactly as before, and the quick and
+// standard preambles reuse the ones they share, so a shared rule has one wording. Each ends with its blank line.
+
+/** The operator's engineering baseline (2026-09-18) with the quality and technology rules (big and standard). */
+const BASELINE_PARAGRAPH =
+  "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
+  `failure, even when it works. ${QUALITY_RULE} (1) i18n via standard per-locale catalogues (react-i18next or ` +
+  "equivalent), namespaced keys, AR+EN complete — never literal UI strings or a bespoke " +
+  "mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, " +
+  "dev by default, failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
+  "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it, never " +
+  `a second implementation. (6) ${TECH_RULE} A change that misses one is not done.\n\n`;
+
+/** The security kit's rules (ADR-0024; every size). */
+const SECURITY_PARAGRAPH =
+  "REQUIRED — security: a NEW high or critical scan finding (edit/commit/push) blocks; fix " +
+  "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
+  "positive instead. Never read or print secret files; you may write an operator-supplied dev secret into " +
+  "`.env` (chmod 600). `/security-review` before finishing auth, " +
+  "payment, upload or input-handling work.\n\n";
+
+/** The project fence (ADR-0030), the notes, the tools and the task history (every size). */
+const FENCE_PARAGRAPH =
+  "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
+  "may your helper agents. Work for another project: send it there with `project_notes`. " +
+  "Missing a fact, tool or key? `project_notes ask` and `tools_for` (`neo-tool-*` skills, `tool_api`) — never wait silently, never paste keys. " +
+  "Done before? `history_search` first.\n\n";
+
+/** Challenge yourself before an operator question (big and standard). */
+const CHALLENGE_PARAGRAPH =
+  "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
+  "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch " +
+  "or a workaround. Escalate ONLY what is genuinely the operator's: " +
+  "product/UX policy, cost, an irreversible, prod or external action, or a real trade-off between two sound " +
+  `options. If there is one correct standard fix, do it and report it — do not ask. ${STOP_RULE} ` +
+  "When you must ask (ask_operator): for a non-technical reader, in the operator's language — the situation, " +
+  "each option and its effect, your pick and why. One decision per card; no jargon.\n\n";
+
+/** The stall monitor's facts, said once (every size's stay-alive paragraph). */
+const ABORT_SENTENCE = "Neo ABORTS a run after ~5 min with no streamed step.";
+const NO_TIMEOUT = "never wrap a real test in `timeout`";
+
+/** Stay alive (big and standard). */
+const ALIVE_PARAGRAPH =
+  `REQUIRED — stay alive, never blocked. ${ABORT_SENTENCE} Start ` +
+  "long checks (vet/test/lint loops, builds, image pulls, CI waits) in the background (background Bash " +
+  `or a subagent), each module its own log; ${NO_TIMEOUT}. Keep working and read each ` +
+  "result when ready; with nothing left, POLL in FOREGROUND steps under 90 s. No Monitor. Single-shot: never end your turn while a " +
+  "check runs or its result is unread.\n\n";
+
 /** The dispatch preamble: the standing rules every dispatched worker gets (operator rules 2026-09-18 and
- *  2026-10-29, ADR-0063). Concise — every brief pays for it; the rule sentences live in standing-rules.ts. */
+ *  2026-10-29, ADR-0063). Concise — every brief pays for it; the rule sentences live in standing-rules.ts.
+ *  This is a BIG order's preamble (ADR-0072: `briefForSize("big", t)`). */
 export function briefWithProjectDocs(task: string): string {
   return (
     "First read this project's rule and doc .md files (AGENTS.md, DESIGN.md, other root .md files, " +
@@ -421,40 +473,79 @@ export function briefWithProjectDocs(task: string): string {
     "  BUILD — implement against that spec with `superpowers:test-driven-development` (failing test first, " +
     "per acceptance criterion), then `superpowers:verification-before-completion`, a final `planner` " +
     `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE} ${PUSH_RULE}\n\n` +
-    "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
-    `failure, even when it works. ${QUALITY_RULE} (1) i18n via standard per-locale catalogues (react-i18next or ` +
-    "equivalent), namespaced keys, AR+EN complete — never literal UI strings or a bespoke " +
-    "mechanism; numbers stay LTR in RTL (+964 left of the phone). (2) `.env` + environments, " +
-    "dev by default, failing closed to dev-safe behaviour and never to prod. (3) Everything runs in Docker. (4) No " +
-    "hardcoding — values live in env/DB/config. (5) Read the existing code FIRST and REUSE it, never " +
-    `a second implementation. (6) ${TECH_RULE} A change that misses one is not done.\n\n` +
-    "REQUIRED — security: a NEW high or critical scan finding (edit/commit/push) blocks; fix " +
-    "the code. Never `--no-verify`, edit `.security/baseline.json` or disable a hook; report a false " +
-    "positive instead. Never read or print secret files; you may write an operator-supplied dev secret into " +
-    "`.env` (chmod 600). `/security-review` before finishing auth, " +
-    "payment, upload or input-handling work.\n\n" +
-    "REQUIRED — stay in this project: never write, branch or commit in another project under /home, nor " +
-    "may your helper agents. Work for another project: send it there with `project_notes`. " +
-    "Missing a fact, tool or key? `project_notes ask` and `tools_for` (`neo-tool-*` skills, `tool_api`) — never wait silently, never paste keys. " +
-    "Done before? `history_search` first.\n\n" +
-    "REQUIRED — challenge yourself BEFORE you ask the operator anything. Trace the real root cause " +
-    "in the code, not the symptom. Choose the correct industry-standard fix, not the quickest patch " +
-    "or a workaround. Escalate ONLY what is genuinely the operator's: " +
-    "product/UX policy, cost, an irreversible, prod or external action, or a real trade-off between two sound " +
-    `options. If there is one correct standard fix, do it and report it — do not ask. ${STOP_RULE} ` +
-    "When you must ask (ask_operator): for a non-technical reader, in the operator's language — the situation, " +
-    "each option and its effect, your pick and why. One decision per card; no jargon.\n\n" +
-    "REQUIRED — stay alive, never blocked. Neo ABORTS a run after ~5 min with no streamed step. Start " +
-    "long checks (vet/test/lint loops, builds, image pulls, CI waits) in the background (background Bash " +
-    "or a subagent), each module its own log; never wrap a real test in `timeout`. Keep working and read each " +
-    "result when ready; with nothing left, POLL in FOREGROUND steps under 90 s. No Monitor. Single-shot: never end your turn while a " +
-    "check runs or its result is unread.\n\n" +
+    BASELINE_PARAGRAPH +
+    SECURITY_PARAGRAPH +
+    FENCE_PARAGRAPH +
+    CHALLENGE_PARAGRAPH +
+    ALIVE_PARAGRAPH +
     "Write any plan or spec under `docs/superpowers/plans/` or `docs/superpowers/specs/`; Neo " +
     "sends it to the operator. A small plan: build on. A BIG plan (many tasks; migrations, auth, " +
     "money, deploy, deletes; or `approval: required`) waits: when a call is denied with " +
     "STOP, end your turn — Approve & build resumes you.\n\n" +
     task
   );
+}
+
+/** A QUICK order's preamble (ADR-0072, spec §7): read, fix, check, commit once — no planner, spec, ADR or plan
+ *  file. It keeps the security, fence and push rules, AR+EN and LTR numbers; the size guard moves it up. */
+function quickBrief(task: string): string {
+  return (
+    "QUICK order — Neo's rules for a small fix: read the code, fix it, check it, commit once. No planner, spec, ADR or plan file: just fix.\n" +
+    "First read the rule .md files of this project that the fix touches (AGENTS.md, DESIGN.md); follow them with CLAUDE.md.\n\n" +
+    "REQUIRED — fix it:\n" +
+    "  FIND — the root cause in the code, not the symptom (`superpowers:systematic-debugging` for a bug). Change the fewest lines " +
+    "that fix it the standard way; reuse what exists; never reformat files you did not change.\n" +
+    "  CHECK — a test only when you change logic (failing first); run the typecheck and the tests near the change. A UI change: " +
+    "one screenshot in Arabic (RTL) and one in English; numbers stay LTR.\n" +
+    `  COMMIT — one commit. ${PUSH_RULE}\n` +
+    "  SIZE — Neo moves this order up a size, and tells you, when it grows (more than a few files or lines, or a second service) " +
+    "or touches auth, money, migrations, secrets, deploy/CI or prod. Then follow the rules it gives you.\n" +
+    "  RESULT — end with 2–3 lines: the cause, the fix (files), the commit.\n\n" +
+    `REQUIRED — engineering baseline: ${QUALITY_RULE} (1) i18n through the project's per-locale catalogues, AR+EN complete — ` +
+    "never literal UI strings; numbers stay LTR in RTL. (2) `.env`, dev by default. (3) Docker. (4) No hardcoding. " +
+    "(5) Reuse the existing code, never a second implementation.\n\n" +
+    SECURITY_PARAGRAPH +
+    FENCE_PARAGRAPH +
+    "REQUIRED — ask the operator (ask_operator) only for a real decision (product/UX policy, cost, an irreversible, prod or " +
+    "external action): for a non-technical reader, in the operator's language, one decision per card. Otherwise do the " +
+    "standard fix and report it.\n\n" +
+    `REQUIRED — stay alive: ${ABORT_SENTENCE} Run long checks in the background (background Bash or a subagent) and read ` +
+    `each result before you end; ${NO_TIMEOUT}.\n\n` +
+    "The order:\n" +
+    task
+  );
+}
+
+/** A STANDARD order's preamble (ADR-0072, spec §7): a short plan in the task list, test-first, checkpoints — no
+ *  plan file, spec or planner. The baseline, security, fence, challenge and stay-alive paragraphs are big's. */
+function standardBrief(task: string): string {
+  return (
+    "STANDARD order — Neo's rules for a change of a few files: plan briefly, build test-first, commit in checkpoints.\n" +
+    "First read this project's rule and doc .md files (AGENTS.md, DESIGN.md, docs this change touches); follow them with CLAUDE.md.\n\n" +
+    "REQUIRED — plan briefly, then build:\n" +
+    "  PLAN — a short plan (the steps and their tests) in your task list (TodoWrite): no plan file, no spec, no planner subagent. " +
+    "For a bug, `superpowers:systematic-debugging` to root-cause first. New domain words go in CONTEXT.md; an ADR only for a " +
+    "real decision between sound options, with the rejected ones.\n" +
+    "  BUILD — `superpowers:test-driven-development`: a failing test first for each behaviour you change, then the code; " +
+    `\`superpowers:verification-before-completion\` before you say done. ${FINISH_RULE} ${PUSH_RULE}\n` +
+    "  SIZE — Neo moves this order up to big, and tells you, when it grows (many files, lines or services) or touches auth, " +
+    "money, migrations, secrets, deploy/CI or prod: then it needs a plan the operator approves.\n" +
+    "  RESULT — end with a short result: what changed (files), the tests, the commits.\n\n" +
+    BASELINE_PARAGRAPH +
+    SECURITY_PARAGRAPH +
+    FENCE_PARAGRAPH +
+    CHALLENGE_PARAGRAPH +
+    ALIVE_PARAGRAPH +
+    "The order:\n" +
+    task
+  );
+}
+
+/** The dispatch preamble of an order's size (ADR-0072). Big is `briefWithProjectDocs`, byte for byte. */
+export function briefForSize(size: OrderSize, task: string): string {
+  if (size === "quick") return quickBrief(task);
+  if (size === "standard") return standardBrief(task);
+  return briefWithProjectDocs(task);
 }
 
 /** How the todo queue (ADR-0008) follows one dispatch. All optional; absent → today's behaviour. */

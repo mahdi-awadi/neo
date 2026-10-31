@@ -90,6 +90,10 @@ const ENGINE_BLOCKS: Array<{ builder: string; re: RegExp }> = [
   // dispatch.ts codebaseMemoryLine, both forms.
   { builder: "codebaseMemoryLine", re: /^REQUIRED — use the `codebase-memory` MCP FIRST\.[^\n]*$/gm },
   { builder: "codebaseMemoryLine", re: /^codebase-memory: no index is available for this project[^\n]*$/gm },
+  // dispatch.ts briefForSize, quick and standard (ADR-0072): the brief follows "The order:". Before the big
+  // rule, whose opening sentence the standard preamble shares.
+  { builder: "briefForSize:quick", re: /QUICK order — Neo's rules for a small fix:[\s\S]*?\nThe order:\n/g },
+  { builder: "briefForSize:standard", re: /STANDARD order — Neo's rules for a change of a few files:[\s\S]*?\nThe order:\n/g },
   // dispatch.ts briefWithProjectDocs: the brief follows its last sentence.
   { builder: "briefWithProjectDocs", re: /First read this project's rule and doc \.md files[\s\S]*?Approve & build resumes you\./g },
   // agent-teams.ts teamLeadPreamble: the brief follows "THE TASK:".
