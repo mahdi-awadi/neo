@@ -55,7 +55,7 @@ company's rules file.
 **Files:** create `src/engine/order-size.ts`; modify `src/config.ts` (`NeoConfig.sizes`, `readSizesCfg` in
 `loadConfig`). Tests: `tests/order-size.test.ts`, one case in `tests/config.test.ts`.
 
-- [ ] Step 1: failing tests (spec AC 1–3):
+- [x] Step 1: failing tests (spec AC 1–3):
   - `ORDER_SIZES` order, `larger`, `isOrderSize`;
   - `readSizesCfg(undefined)` equals `DEFAULT_SIZES_CFG` (spec §10); a size that is not one, a limit of 0 or a
     float, a non-array `override.quick`, and a rule list with one bad regex each keep their default;
@@ -65,9 +65,9 @@ company's rules file.
   - `resolveSize`: each precedence pair of spec §2 (`forced` > `override` > `chosen` > `engine` > `side` >
     `default`) with `by` and `why`; `enabled: false` → big for every input;
   - `loadConfig` exposes `cfg.sizes` with the defaults when `config.json` has no `sizes`.
-- [ ] Step 2: implement the types, `DEFAULT_SIZES_CFG` (with spec §5.2's rule table and ignore list as data),
+- [x] Step 2: implement the types, `DEFAULT_SIZES_CFG` (with spec §5.2's rule table and ignore list as data),
   `readSizesCfg`, `parseSizeOverride`, `resolveSize`.
-- [ ] Step 3: green; commit `feat(sizes): the order-size model, its config and the operator's override (ADR-0072)`.
+- [x] Step 3: green; commit `feat(sizes): the order-size model, its config and the operator's override (ADR-0072)`.
 
 ## Task 2: Ledger v18 — a todo has a size
 
@@ -76,15 +76,15 @@ company's rules file.
 `mapTodoRow`, `addTodo`, `updateTodo` patch `size` and `sizeUp`). Tests: `tests/ledger-migrations.test.ts`,
 `tests/todo-sizes.test.ts` (its ledger part).
 
-- [ ] Step 1: failing tests (spec AC 5):
+- [x] Step 1: failing tests (spec AC 5):
   - pin the existing migration-17 test to `MIGRATIONS.filter((x) => x.version <= 17)`, so that it still proves 16 → 17;
   - a v17 file ledger with a todo row migrates to 18: same row counts, backup `${path}.bak-v17`, `size = 'big'`,
     `size_by` and `size_up` NULL; reopening runs nothing (`{ from: 18, to: 18, backup: undefined }`);
   - `openLedger(...).listTodos({})[0]` reads `size: "big"` and `sizeBy: undefined` for the old row;
   - `addTodo({ …, size: "quick", sizeBy: "operator" })` round-trips; `updateTodo(id, { size: "big", sizeUp })`
     round-trips the JSON; a stored `size_up` of `{not json` reads as none; a stored size `huge` reads as `big`.
-- [ ] Step 2: implement the three `ALTER TABLE … ADD COLUMN` statements (spec §11) and the mapping.
-- [ ] Step 3: green; commit `feat(sizes): todo size, size_by and size_up — ledger v18 (ADR-0072)`.
+- [x] Step 2: implement the three `ALTER TABLE … ADD COLUMN` statements (spec §11) and the mapping.
+- [x] Step 3: green; commit `feat(sizes): todo size, size_by and size_up — ledger v18 (ADR-0072)`.
 
 ## Task 3: A dispatch preamble for each size
 
@@ -92,16 +92,16 @@ company's rules file.
 (only if a quick sentence is shared), `src/engine/history/extract.ts` (two `ENGINE_BLOCKS` rules). Tests:
 `tests/size-briefs.test.ts`, `tests/history-extract.test.ts`.
 
-- [ ] Step 1: failing tests (spec AC 6). First a characterization test: the sha256 of `briefWithProjectDocs("TASK")`
+- [x] Step 1: failing tests (spec AC 6). First a characterization test: the sha256 of `briefWithProjectDocs("TASK")`
   as it is today, written into the test before any refactor. Then:
   - `briefForSize("big", "T") === briefWithProjectDocs("T")`, and the hash is unchanged;
   - the quick and standard texts contain, and do not contain, what AC 6 lists; each ends with `\n\nThe order:\n` + task;
   - the ceilings: quick < 3,000 and < 3,700 with `codebaseMemoryLine({ project: "home-" + "x".repeat(80) })`;
     standard < 4,500 and < 5,200 with it;
   - `stripEngineBlocks(briefForSize(s, TASK)) === TASK` for each size, also inside `continuationBrief`.
-- [ ] Step 2: move the shared paragraphs of `briefWithProjectDocs` into module constants (the output is the same
+- [x] Step 2: move the shared paragraphs of `briefWithProjectDocs` into module constants (the output is the same
   string), then write the quick and standard texts of spec §7.
-- [ ] Step 3: green (all existing preamble tests unchanged); commit `feat(sizes): a dispatch preamble for each order size (ADR-0072)`.
+- [x] Step 3: green (all existing preamble tests unchanged); commit `feat(sizes): a dispatch preamble for each order size (ADR-0072)`.
 
 ## Task 4: The guard's rules and limits — one pure judge
 
@@ -109,7 +109,7 @@ company's rules file.
 `sizeReason`, `upSteer`, `planFirstSteer`, `sideStopSteer`, `operatorUpLine`, `SIZE_GUIDE`). Test:
 `tests/order-size-rules.test.ts`.
 
-- [ ] Step 1: failing tests (spec AC 7, 8 and 10, the pure parts):
+- [x] Step 1: failing tests (spec AC 7, 8 and 10, the pure parts):
   - `pathWords`: `PaymentMethodPicker.tsx` → `payment method picker tsx`; `HTTPServer.go` → `http server go`;
     `oauth2/2fa.ts` keeps `oauth2` and `2fa`;
   - every positive and negative case that AC 7 lists, through `judgeTouch` with a one-path or one-command touch,
@@ -122,9 +122,9 @@ company's rules file.
   - `sizes.projects.<p>.rules` adds a rule and `except` exempts a path for that project only;
   - the texts: `sizeTag` (`[quick]`, `[quick→big]`), `sizeReason` for each rule kind, and `upSteer`, which
     contains the new size's limits from the config.
-- [ ] Step 2: implement. The rule regexes compile once in `compileSizeRules`; all with the `i` flag; `words`
+- [x] Step 2: implement. The rule regexes compile once in `compileSizeRules`; all with the `i` flag; `words`
   are anchored to one whole path word.
-- [ ] Step 3: green; commit `feat(sizes): the upgrade guard's rules and limits as one pure judge (ADR-0072)`.
+- [x] Step 3: green; commit `feat(sizes): the upgrade guard's rules and limits as one pure judge (ADR-0072)`.
 
 ## Task 5: Measure a run's own change; one run baseline
 
@@ -132,23 +132,23 @@ company's rules file.
 an argument), `src/engine/size-guard.ts` (`measureRunChange`). Tests: `tests/size-measure.test.ts` (a temp git
 repo), `tests/commit-finish.test.ts` (unchanged, still green).
 
-- [ ] Step 1: failing tests (spec AC 9, the measure part), in a temp repo made by the test:
+- [x] Step 1: failing tests (spec AC 9, the measure part), in a temp repo made by the test:
   - a committed change and an uncommitted change since the start sha are both counted, with numstat lines;
   - a new untracked file counts its lines; a binary file counts as a file with 0 lines; a rename counts both
     paths; a deletion counts;
   - a path that was dirty before the run and is untouched is not counted; when it is touched, it is;
   - ignored paths (`docs/**`, `*.md`) are not counted; services come from `Dockerfile` folders;
   - a folder outside git → `undefined`; a git that fails (an injected `GitRunner`) → `undefined`.
-- [ ] Step 2: implement with `git diff --numstat --summary -z --relative <startSha>` and
+- [x] Step 2: implement with `git diff --numstat --summary -z --relative <startSha>` and
   `git ls-files --others --exclude-standard -z` through the `GitRunner` seam. Read at most 2 MB of a new file.
-- [ ] Step 3: green (commit-finish tests unchanged); commit `feat(sizes): measure a run's own change from git; one run baseline for the commit finish and the guard (ADR-0072)`.
+- [x] Step 3: green (commit-finish tests unchanged); commit `feat(sizes): measure a run's own change from git; one run baseline for the commit finish and the guard (ADR-0072)`.
 
 ## Task 6: The size guard — deny, move up, plan first
 
 **Files:** `src/engine/size-guard.ts` (`createSizeGuard`, `touchOf`). Test: `tests/size-guard.test.ts` (fake files
 and git through the seams; real `walkBash`).
 
-- [ ] Step 1: failing tests (spec AC 8–11 and 23):
+- [x] Step 1: failing tests (spec AC 8–11 and 23):
   - `touchOf`: Write (new and existing, multiset lines), Edit (`replace_all`), MultiEdit, NotebookEdit,
     Bash redirect, `sed -i`, `git rm`, `cp`; the command heads after `sudo`/`env`/`VAR=`; the commit points of
     `git commit`, `git -C <repo> commit`, `git merge`, `git cherry-pick`; `Agent` with `subagent_type: "planner"`;
@@ -168,24 +168,24 @@ and git through the seams; real `walkBash`).
     one fault; `steer` never throws;
   - a guard created with size big returns undefined from `steer` for every call (planner and plan files
     included); its `end()` still measures.
-- [ ] Step 2: implement. `steer` is synchronous and wrapped in try/catch; the pending touches are keyed by the
+- [x] Step 2: implement. `steer` is synchronous and wrapped in try/catch; the pending touches are keyed by the
   tool-use id; the service lookups are cached.
-- [ ] Step 3: green; commit `feat(sizes): the upgrade guard — deny, move up, plan first (ADR-0072)`.
+- [x] Step 3: green; commit `feat(sizes): the upgrade guard — deny, move up, plan first (ADR-0072)`.
 
 ## Task 7: The plan gate never holds a quick order
 
 **Files:** `src/engine/plan-watch.ts` (`mayHold`, `plans()`, `approvedHeld()`), `src/engine/plans.ts`
 (`PlanRun.forceApproval` in `register`). Test: `tests/plan-gate.test.ts` (new cases next to AC3/AC4 there).
 
-- [ ] Step 1: failing tests (spec AC 12):
+- [x] Step 1: failing tests (spec AC 12):
   - `mayHold: () => false`: a big plan written mid-run is registered and sent, `held()` is undefined, and `steer`
     has no opinion;
   - `forceApproval`: a small plan registers with gate `approval` and holds the worker;
   - `plans()` lists the ids that the watch registered; `approvedHeld()` is false while held and true after the
     plan becomes `executing`;
   - without the new options, every existing plan-gate test is unchanged.
-- [ ] Step 2: implement.
-- [ ] Step 3: green; commit `feat(sizes): the plan gate never holds a quick order; a plan after a move to big is big (ADR-0072)`.
+- [x] Step 2: implement.
+- [x] Step 3: green; commit `feat(sizes): the plan gate never holds a quick order; a plan after a move to big is big (ADR-0072)`.
 
 ## Task 8: Dispatch runs each order at its size
 
@@ -194,7 +194,7 @@ and git through the seams; real `walkBash`).
 `tests/dispatch-commit-finish.test.ts` do, then call `handlers.contextSteer`. The `recordingStart` of
 `tests/dispatch-lanes.test.ts` ignores the handlers, so extend it or use those two as the model.
 
-- [ ] Step 1: failing tests (spec AC 13, 14 (dispatch part), 16 and 17):
+- [x] Step 1: failing tests (spec AC 13, 14 (dispatch part), 16 and 17):
   - `opts.size: "quick"` → the order's task starts with the quick preamble; no size → big;
   - the run's `contextSteer` is `planWatch ?? guard ?? checkpoint`: a planner call in a quick run is denied by the
     guard; a held plan's STOP still comes first;
@@ -209,15 +209,15 @@ and git through the seams; real `walkBash`).
     not clamped; the dispatcher report keeps the full text;
   - Codex own work: no guard is created (and the size is big, Task 9);
   - a side lane gets its guard with `side`; one `runBaseline` is shared by the commit finish and the guard.
-- [ ] Step 2: implement the wiring as listed in spec §3.
-- [ ] Step 3: green (`tests/dispatch*.test.ts` unchanged); commit `feat(sizes): dispatch runs each order at its size, with the guard in the governor hook (ADR-0072)`.
+- [x] Step 2: implement the wiring as listed in spec §3.
+- [x] Step 3: green (`tests/dispatch*.test.ts` unchanged); commit `feat(sizes): dispatch runs each order at its size, with the guard in the governor hook (ADR-0072)`.
 
 ## Task 9: The todo queue stores, passes and shows the size
 
 **Files:** `src/engine/todo-queue.ts`. Tests: `tests/todo-sizes.test.ts` (its queue part), `tests/todo-queue.test.ts`
 (the lines now carry the tag; update only those expectations).
 
-- [ ] Step 1: failing tests (spec AC 3, 13–16 and 20, the queue part):
+- [x] Step 1: failing tests (spec AC 3, 13–16 and 20, the queue part):
   - `submit` stores the size and `sizeBy` from `resolveSize` and records `todo_size_set`. A customer reply chat,
     a Codex provider and `team` → big, with the reason in the reply. A `big` side brief → main lane;
   - `launch` passes `size: t.size` to `dispatchToProject`;
@@ -230,8 +230,8 @@ and git through the seams; real `walkBash`).
   - `retry` keeps the size;
   - the lines of spec §8: `renderProject`, `tag`, the queued and side-queued acks, the transition line;
     `nextNote` adds `[size] #N moved up …` after a move in this run; every reply names the size and who set it.
-- [ ] Step 2: implement.
-- [ ] Step 3: green; commit `feat(sizes): the todo queue stores, passes and shows each todo's size (ADR-0072)`.
+- [x] Step 2: implement.
+- [x] Step 3: green; commit `feat(sizes): the todo queue stores, passes and shows each todo's size (ADR-0072)`.
 
 ## Task 10: The chief of staff sets the size; the operator overrides it
 
@@ -240,7 +240,7 @@ and git through the seams; real `walkBash`).
 `src/engine/commands.ts` (`PIPELINE_COMMANDS`, `renderHelp`). Test: `tests/size-tools.test.ts` (on the model of
 `tests/dispatch-lane-tools.test.ts`).
 
-- [ ] Step 1: failing tests (spec AC 4, 18 and 19):
+- [x] Step 1: failing tests (spec AC 4, 18 and 19):
   - both tools accept `size` and reject `size: "huge"`; the `dispatch` description contains `SIZE_GUIDE`; the
     `todo` description points to it;
   - `size` reaches `submit` from both tools;
@@ -251,8 +251,8 @@ and git through the seams; real `walkBash`).
   - `handleMessage("/quick fix the picker")` delivers the text to the company (not "not an order");
     `handleMessage("/quick")` replies with the usage line and delivers nothing;
   - `telegramCommands()` contains `quick` and `full`; `/help` lists them.
-- [ ] Step 2: implement.
-- [ ] Step 3: green; commit `feat(sizes): the chief of staff sets size; /quick, /full and "quick fix" override it in code (ADR-0072)`.
+- [x] Step 2: implement.
+- [x] Step 3: green; commit `feat(sizes): the chief of staff sets size; /quick, /full and "quick fix" override it in code (ADR-0072)`.
 
 ## Task 11: Size badges on the console and in Telegram
 
@@ -262,7 +262,7 @@ view's todo line, the sheet's Size row), `src/frontends/web/index.html` (`.sz-*`
 `src/frontends/web/locales/{en,ar}/console.json` (spec §8's keys). Tests: `tests/console-sizes.test.ts`,
 `tests/console-i18n.test.ts` (the new key families), `tests/todo-detail.test.ts`.
 
-- [ ] Step 1: failing tests (spec AC 20 and 21):
+- [x] Step 1: failing tests (spec AC 20 and 21):
   - `activeTodos` and `todoDetail` carry `size`, `sizeBy`, `sizeUp`;
   - `/project <p>` shows `#812 [quick] running`;
   - the bundle's `todoRowHtml` renders the chip with the catalogue label, ` ↑` and the title when moved up;
@@ -270,10 +270,10 @@ view's todo line, the sheet's Size row), `src/frontends/web/index.html` (`.sz-*`
     project's own rule name falls back to the name as an LTR isolate;
   - catalogue parity: the families `queue.size.*`, `todoDetail.sizeBy.*`, `todoDetail.sizeUp.*` and
     `todoDetail.area.*` exist in en and ar with the same placeholders.
-- [ ] Step 2: implement; numbers, paths and commands through `ltr()`.
-- [ ] Step 3: take RTL (ar) and LTR (en) screenshots of the Queue tab and of a moved-up todo's sheet through the
+- [x] Step 2: implement; numbers, paths and commands through `ltr()`.
+- [x] Step 3: take RTL (ar) and LTR (en) screenshots of the Queue tab and of a moved-up todo's sheet through the
   shared browser (ADR-0032); check that the numbers and paths read left to right; attach them to the result.
-- [ ] Step 4: green; commit `feat(sizes): size badges on the console and in Telegram (ADR-0072)`.
+- [x] Step 4: green; commit `feat(sizes): size badges on the console and in Telegram (ADR-0072)`.
 
 ## Task 12: Engine-made todos get their size by rule
 
@@ -281,11 +281,11 @@ view's todo line, the sheet's Size row), `src/frontends/web/index.html` (`.sz-*`
 (`engineSize`, with `sizes.attention` overrides), `src/engine/plans.ts` (`executePlan` → `engineSize: "big"`),
 `src/engine/todo-queue.ts` (the merge todo → big). Tests: `tests/attention-actions.test.ts` (it already checks that every producer kind has a brief), `tests/todo-sizes.test.ts`.
 
-- [ ] Step 1: failing tests (spec AC 22): every kind in `ATTENTION_BRIEFS` has a size; `→ todo` on a `dirty`
+- [x] Step 1: failing tests (spec AC 22): every kind in `ATTENTION_BRIEFS` has a size; `→ todo` on a `dirty`
   item stores `quick`, by `engine`; `sizes.attention.dirty = "standard"` overrides it; an unknown kind is big;
   an Execute and a merge todo are big.
-- [ ] Step 2: implement.
-- [ ] Step 3: green; commit `feat(sizes): engine-made todos get their size by rule (ADR-0072)`.
+- [x] Step 2: implement.
+- [x] Step 3: green; commit `feat(sizes): engine-made todos get their size by rule (ADR-0072)`.
 
 ## Task 13: Docs, the company's rules, review, ADR accepted
 
@@ -293,16 +293,18 @@ view's todo line, the sheet's Size row), `src/frontends/web/index.html` (`.sz-*`
 200 lines), `docs/HISTORY.md`, `docs/adr/0072-…` (status accepted, plus "As built"), and the untracked
 `/home/neo/agent/CLAUDE.md` (below).
 
-- [ ] Step 1: write the docs. In `CLAUDE.md`, the second line of item 6 becomes (one line for one line):
+- [x] Step 1: write the docs. In `CLAUDE.md`, the second line of item 6 becomes (one line for one line):
   ```markdown
      plan by order size (ADR-0072: big = rich plans + `planner`) and finish non-stop — ADR-0063, `standing-rules.ts`.
   ```
-- [ ] Step 2: edit `/home/neo/agent/CLAUDE.md` in place, as written in "The company's rules" below. It is untracked.
+- [x] Step 2: edit `/home/neo/agent/CLAUDE.md` in place, as written in "The company's rules" below. It is untracked.
   From a worktree outside `/home`, the write is a fenced escalation that the operator approves (ADR-0031). Do it
   from `/home/neo`, or leave the text in the result for the operator.
-- [ ] Step 3: run `/security-review` (the guard is a new steer that denies tool calls) and
+- [x] Step 3: run `/security-review` (the guard is a new steer that denies tool calls) and
   `superpowers:requesting-code-review`; a final `planner` review against the spec. Fix the findings.
-- [ ] Step 4: run the full `bun test` in the background and poll it, plus `bunx tsc --noEmit`; all green. Commit
+  *(Done as one security-focused planner review against the spec; its 9 findings are fixed in 07286c4. The
+  built-in `/security-review` command was not run separately.)*
+- [x] Step 4: run the full `bun test` in the background and poll it, plus `bunx tsc --noEmit`; all green. Commit
   `docs(sizes): config, history and the company's rules for order sizes; ADR-0072 accepted`. Remove the worktree
   (the branch stays). Do not push.
 
