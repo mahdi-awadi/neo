@@ -335,6 +335,9 @@ export interface PlanRun {
   orderId?: string;
   /** The chat the run reports to — the decision's raising chat (a reply resumes there). */
   chatId: number;
+  /** The size guard moved this run to big (ADR-0072): each new plan version waits for the operator,
+   *  whatever its text says. */
+  forceApproval?: boolean;
 }
 
 /** The folder's HEAD sha (a run records it at start), or undefined (not a repo, no commit yet). */
@@ -402,7 +405,8 @@ interface Registered {
 function register(deps: PlanDeps, run: PlanRun, path: string, content: string): Registered {
   const { ledger } = deps;
   const prev = ledger.planByPath(run.folder, path);
-  const gate = !prev || prev.sha256 !== reviewHash(content) || !prev.gate ? gateOf(deps, run.folder, path, content) : prev.gate;
+  const fresh = !prev || prev.sha256 !== reviewHash(content) || !prev.gate;
+  const gate = fresh ? (run.forceApproval ? "approval" : gateOf(deps, run.folder, path, content)) : prev.gate;
   let { plan } = registerPlan(ledger, { project: run.project, folder: run.folder, path, content, cause: run.cause, orderId: run.orderId, gate });
   // Revised into a small plan: nobody waits on it any more.
   if (plan.heldAt !== undefined && plan.gate === "info") plan = ledger.upsertPlan({ ...plan, heldAt: undefined });

@@ -49,7 +49,7 @@ const PLAN = "docs/superpowers/plans/bars.md";
 const BIG = "# Wallet bars\n### Task 1: table\n- [ ] add the bars migration\n- [ ] charge the wallet\n";
 const SMALL = "# Rename a label\n- [ ] rename it\n- [ ] test it\n";
 
-function rig() {
+function rig(o: { mayHold?: () => boolean; forceApproval?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "neo-plan-watch-"));
   spawnSync("git", ["init", "-q"], { cwd: dir });
   const ledger = openLedger(":memory:");
@@ -59,8 +59,8 @@ function rig() {
   const editPlan: EditPlanCard = async (at, card) => (edits.push({ messageId: at.messageId, caption: card.caption, actions: card.actions }), true);
   const deps: PlanDeps = { ledger, cfg: DEFAULT_PLANS_CFG, postPlan, editPlan };
   const held: string[] = [];
-  const run = { project: "gold", folder: dir, orderId: "o1", chatId: 42 };
-  const watch = createPlanWatch(deps, () => run, { onHold: (p) => held.push(p.path) });
+  const run = { project: "gold", folder: dir, orderId: "o1", chatId: 42, ...(o.forceApproval ? { forceApproval: true } : {}) };
+  const watch = createPlanWatch(deps, () => run, { onHold: (p) => held.push(p.path), ...(o.mayHold ? { mayHold: o.mayHold } : {}) });
   const write = async (rel: string, body: string, id = "t1") => {
     mkdirSync(join(dir, rel, ".."), { recursive: true });
     watch.onToolUse(id, "Write", { file_path: join(dir, rel), content: body });
@@ -242,4 +242,48 @@ test("a big plan whose card cannot be posted does not hold the worker", async ()
   expect(watch.steer("Bash", { command: "ls" })).toBeUndefined();
   expect(r.ledger.planByPath(r.dir, PLAN)!.heldAt).toBeUndefined();
   expect(r.ledger.listEvents({ kind: "plan_hold_released" })).toHaveLength(1);
+});
+
+// ── Order sizes (ADR-0072, AC 12): a quick run never holds; a run moved to big gates every plan ───
+
+test("mayHold false: a big plan written mid-run is registered and sent, and nothing holds the worker", async () => {
+  const r = rig({ mayHold: () => false });
+  await r.write(PLAN, BIG);
+  expect(r.posts).toHaveLength(1);
+  expect(r.ledger.planByPath(r.dir, PLAN)).toMatchObject({ gate: "approval" });
+  expect(r.ledger.planByPath(r.dir, PLAN)!.heldAt).toBeUndefined();
+  expect(r.held).toEqual([]);
+  expect(r.watch.held()).toBeUndefined();
+  expect(r.watch.steer("Bash", { command: "bun test" })).toBeUndefined();
+  expect(r.ledger.listEvents({ kind: "plan_held" })).toHaveLength(0);
+});
+
+test("forceApproval: a small plan gets gate approval and holds the worker", async () => {
+  const r = rig({ forceApproval: true });
+  await r.write(PLAN, SMALL);
+  expect(r.ledger.planByPath(r.dir, PLAN)).toMatchObject({ gate: "approval" });
+  expect(r.posts[0]!.actions).toEqual(["approve", "changes", "drop"]);
+  expect(r.held).toEqual([PLAN]);
+  expect(r.watch.steer("Bash", { command: "ls" })).toStartWith(`STOP — ${PLAN}`);
+});
+
+test("plans() lists the plans the watch registered; approvedHeld() is true once a held plan is approved", async () => {
+  const r = rig();
+  expect(r.watch.plans()).toEqual([]);
+  expect(r.watch.approvedHeld()).toBe(false);
+  await r.write("docs/superpowers/plans/a.md", SMALL, "t0");
+  await r.write(PLAN, BIG);
+  const plan = r.ledger.planByPath(r.dir, PLAN)!;
+  expect(r.watch.plans()).toEqual([r.ledger.planByPath(r.dir, "docs/superpowers/plans/a.md")!.id, plan.id]);
+  expect(r.watch.approvedHeld()).toBe(false);
+  await applyPlanAction(r.deps, plan.id, "approve", 1, { canResume: true });
+  expect(r.ledger.planById(plan.id)!.status).toBe("executing");
+  expect(r.watch.approvedHeld()).toBe(true);
+});
+
+test("approvedHeld() stays false when the held plan is dropped", async () => {
+  const r = rig();
+  await r.write(PLAN, BIG);
+  await applyPlanAction(r.deps, r.ledger.planByPath(r.dir, PLAN)!.id, "drop", 1);
+  expect(r.watch.approvedHeld()).toBe(false);
 });

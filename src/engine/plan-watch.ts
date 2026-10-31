@@ -4,7 +4,9 @@
  *  `approval` that is not approved yet holds the worker: the governor hook's steer (ADR-0021's seam)
  *  denies every tool call except reads, Neo's own tools and edits to plan files, and tells it to
  *  STOP. The hold lifts by itself once the plan is no longer awaiting (approved, dropped, revised
- *  into a small plan). Deterministic: file, ledger and config only. */
+ *  into a small plan). Deterministic: file, ledger and config only.
+ *  Order sizes (ADR-0072): `mayHold` false (a quick run) registers and sends a plan but never holds;
+ *  `plans()` and `approvedHeld()` tell the size guard whether a plan waits and when plan first ends. */
 import { readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import type { PlanRow } from "./ledger";
@@ -27,18 +29,24 @@ export interface PlanWatch {
   held(): string | undefined;
   /** Settles when every card this watch started posting has landed (or failed). */
   settled(): Promise<void>;
+  /** The plan ids this watch registered, in the order first seen. */
+  plans(): number[];
+  /** A plan this watch held is now approved, executing or done (ADR-0072: plan first ends). */
+  approvedHeld(): boolean;
 }
 
 export function createPlanWatch(
   deps: PlanDeps,
   /** The run as it is now (its cause moves with each turn). */
   run: () => PlanRun,
-  opts: { onHold?: (plan: PlanRow) => void; now?: () => number } = {},
+  opts: { onHold?: (plan: PlanRow) => void; now?: () => number; mayHold?: () => boolean } = {},
 ): PlanWatch {
   const now = opts.now ?? Date.now;
   const pending = new Map<string, string>(); // tool-use id -> plan path (relative to the folder)
   const inFlight = new Set<Promise<unknown>>();
   let held: number | undefined; // the plan id the worker is held on
+  const registered: number[] = []; // every plan id this watch registered
+  const everHeld = new Set<number>(); // every plan id this watch held
 
   /** `file` as a plan path relative to the run's folder, else undefined. */
   const planPath = (file: unknown): string | undefined => {
@@ -61,6 +69,7 @@ export function createPlanWatch(
     const noted = notePlanWritten(deps, run(), path);
     if (!noted) return;
     let plan = noted.plan;
+    if (!registered.includes(plan.id)) registered.push(plan.id);
     // A hold needs a card the operator can act on: if the post did not land, the worker is let go
     // (the run end sends the card later; Approve & build then queues the build).
     const track = noted.sent
@@ -73,9 +82,10 @@ export function createPlanWatch(
       })
       .finally(() => inFlight.delete(track));
     inFlight.add(track);
-    if (awaiting(plan)) {
+    if (awaiting(plan) && (opts.mayHold?.() ?? true)) {
       if (plan.heldAt === undefined) plan = deps.ledger.upsertPlan({ ...plan, heldAt: now() });
       held = plan.id;
+      everHeld.add(plan.id);
       deps.ledger.recordEvent("plan_held", { folder: plan.folder, orderId: run().orderId, data: { project: plan.project, planId: plan.id, path: plan.path } });
       faults.guard("planWatch.onHold", () => opts.onHold?.(plan));
     } else if (held === plan.id) {
@@ -117,6 +127,17 @@ export function createPlanWatch(
     },
     async settled() {
       while (inFlight.size) await Promise.all([...inFlight]);
+    },
+    plans() {
+      return [...registered];
+    },
+    approvedHeld() {
+      return faults.guard("planWatch.approvedHeld", () =>
+        [...everHeld].some((id) => {
+          const s = deps.ledger.planById(id)?.status;
+          return s === "approved" || s === "executing" || s === "done";
+        }),
+      ) ?? false;
     },
   };
 }
