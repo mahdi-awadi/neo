@@ -13,10 +13,10 @@ import { notePlanWritten, planState, type PlanDeps, type PlanRun } from "./plans
 import { faults } from "./fault";
 
 /** Tools that write a file, and the input field naming it. */
-const WRITE_TOOLS: Record<string, string> = { Write: "file_path", Edit: "file_path", MultiEdit: "file_path", NotebookEdit: "notebook_path" };
+export const WRITE_TOOLS: Record<string, string> = { Write: "file_path", Edit: "file_path", MultiEdit: "file_path", NotebookEdit: "notebook_path" };
 
 /** Tools that only read: a held worker may still look around (and tidy its todo list). */
-const READ_TOOLS = new Set(["Read", "Glob", "Grep", "NotebookRead", "ListMcpResources", "ReadMcpResource", "TodoWrite", "WebSearch"]);
+export const READ_TOOLS = new Set(["Read", "Glob", "Grep", "NotebookRead", "ListMcpResources", "ReadMcpResource", "TodoWrite", "WebSearch"]);
 
 export interface PlanWatch {
   onToolUse(id: string | undefined, tool: string, input: unknown): void;
