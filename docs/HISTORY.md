@@ -1443,3 +1443,22 @@ A disk guard in the heartbeat (2026-10-30, ADR-0068, note #555).
 - Run by hand the same day: Tier A freed 95.4 GB (95.3 % → 73.1 %).
 
 Restart-gated.
+
+Order sizes: quick, standard or big; the engine only moves a size up (2026-10-31, ADR-0072, ledger v18).
+
+- Before, every brief got the full flow (planner, spec, ADR, plan, approval gate), so a one-page fix cost an
+  hour of documents. Now each order has a size, and each size has its own preamble. The big preamble is the
+  old text, byte for byte. Security, the push rule, LTR numbers and AR+EN are the same at every size.
+- The chief of staff sets `size` on `dispatch` and `todo add`. The operator's `/quick`, `/full` or "quick fix"
+  overrides it in code. No size means big. Customer, Codex and team orders are always big. Engine-made todos
+  get their size by rule (Execute and merge: big).
+- The upgrade guard in the governor hook moves a run up when it touches a sensitive area (migrations, auth,
+  money, secrets, deploy, prod, a new module) or passes a size's limits on files, lines or services. It
+  estimates on each call and measures with git at each commit point. A move to big means plan first, through
+  the existing plan gate. The plan gate never holds a quick order.
+- Fail closed: a guard that cannot be made, or a small brief sent into a live session, runs big (`size_forced`).
+- A todo shows its size in `/todo`, the queue lines and Telegram (`[quick]`, `[quick→big]`), and on the
+  console as an AR+EN chip and a Size row in the todo sheet. A quick result is clamped to 3 lines.
+- Config key `sizes` (`docs/CONFIG.md`); `sizes.enabled: false` brings back the old flow.
+
+Restart-gated.

@@ -1,7 +1,7 @@
 # ADR-0072: an order has a size — quick, standard or big — and the engine only moves it up
 
-**Status:** proposed (2026-10-31). The plan `docs/superpowers/plans/2026-10-31-order-sizes.md` waits for the
-operator's Approve & build. Spec: `docs/superpowers/specs/2026-10-31-order-sizes.md`.
+**Status:** accepted (2026-10-31, built on dev, restart-gated). Plan:
+`docs/superpowers/plans/2026-10-31-order-sizes.md`. Spec: `docs/superpowers/specs/2026-10-31-order-sizes.md`.
 Amends ADR-0063 (the standing rules are per size), ADR-0036 (the plan gate never holds a quick order, and a plan
 written after a move to big is always big), ADR-0008 and ADR-0057 (a todo has a size; a big side brief runs in
 the main lane). Related: ADR-0006 (the governor hook and its steer), ADR-0037 (a run's own changes), ADR-0069
@@ -107,3 +107,36 @@ rule stay.
 - Restart-gated: migration v18 (additive; one backup `ledger.db.bak-v<from>`), the preambles, the guard, the
   tool argument, `/quick` and `/full`. `sizes.enabled: false` plus a reload sends every order back to today's
   flow. The company's `agent/CLAUDE.md` (untracked) gets a "Order sizes" section.
+
+## As built (2026-10-31)
+
+Commits on `dev` (`git log --oneline 9b5c313..`):
+
+- `82433dc` feat(sizes): the order-size model, its config and the operator's override
+- `0d06fbe` feat(sizes): todo size, size_by and size_up — ledger v18
+- `2151a24` feat(sizes): a dispatch preamble for each order size
+- `8995cf3` feat(sizes): the upgrade guard's rules and limits as one pure judge
+- `2f10a3e` feat(sizes): measure a run's own change from git; one run baseline for the commit finish and the guard
+- `0c4fe57` feat(sizes): the upgrade guard — deny, move up, plan first
+- `1061ba2` feat(sizes): the plan gate never holds a quick order; a plan after a move to big is big
+- `73a2d06` feat(sizes): dispatch runs each order at its size, with the guard in the governor hook
+- `a7c5d9f` feat(sizes): the todo queue stores, passes and shows each todo's size
+- `6a8232d` feat(sizes): the chief of staff sets size; /quick, /full and "quick fix" override it in code
+- `f4bae4f` feat(sizes): size badges on the console and in Telegram
+- `901c69f` feat(sizes): engine-made todos get their size by rule
+
+Differences from the plan:
+
+- **Fail closed in dispatch** (found in the review of the dispatch task). A quick or standard brief goes out
+  with the big preamble when its guard cannot be made, or when it is delivered into a live session (that
+  session already runs with its own preamble). Dispatch records a `size_forced` event, and the queue records
+  the todo as big (`todo_size_forced`).
+- **Screenshots** come from a local Playwright harness, not the shared Docker browser (ADR-0032). The shared
+  browser cannot reach a console on 127.0.0.1. `tests/console-sizes-mobile.e2e.test.ts` runs the real console
+  (`tools/console-demo`) with `playwright-core` and Chromium from the local cache, at a phone's size, in English
+  and Arabic. `NEO_SHOTS_DIR=<dir>` saves the screenshots. The test is skipped when that browser is not installed.
+- **The console rendering** is in its own module, `src/frontends/web/todo-size.ts`: the size chip, the threads
+  view's todo line and the todo sheet's Size row. Its functions are pure, so they are unit-tested. Every word
+  comes from the catalogues; numbers, paths, commands and a project's own rule names are LTR isolates.
+- **Telegram lines** carry the `[size]` tag (`sizeTag`: `[quick]`, or `[quick→big]` after a move up) on the
+  queue lines, the project status and the dispatch start line. An unsized dispatch has no tag on its start line.

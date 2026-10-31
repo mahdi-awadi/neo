@@ -94,7 +94,7 @@ Code that is not industry-standard is a **failure / no-go**, even when it works:
 4. **No hardcoding** — values live in env/DB/config.
 5. **Read the existing code first and REUSE it** — extend what exists; never a second implementation.
 6. **Production-grade, tested code; the best technology** (not the quickest hack), the choice in an ADR. Plus:
-   plan fully (rich plans, `planner` subagent) and finish non-stop — ADR-0063, `src/engine/standing-rules.ts`.
+   plan by order size (ADR-0072: big = rich plans + `planner`) and finish non-stop — ADR-0063, `standing-rules.ts`.
 
 Every dispatched worker gets this automatically: the dispatch preamble (`briefWithProjectDocs` in
 `src/engine/dispatch.ts`) carries it, because a worker sent into another folder loads *that*
