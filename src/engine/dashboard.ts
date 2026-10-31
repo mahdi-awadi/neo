@@ -2,6 +2,7 @@
 // the known repos (for the New-project picker). The dashboard is all UI controls over this
 // data + the action endpoints; no command typing. Deterministic, AI-free.
 import type { LaneKind } from "./lanes";
+import type { OrderSize, SizeBy, SizeUp } from "./order-size";
 import { readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Registry } from "./registry";
@@ -127,7 +128,18 @@ export interface DashTodo {
   /** A side-lane todo (ADR-0057) and its kind. Absent = the main lane. */
   lane?: "side";
   kind?: LaneKind;
+  /** The order's size (ADR-0072), who set it (absent on rows before ledger v18) and its latest move up. */
+  size: OrderSize;
+  sizeBy?: SizeBy;
+  sizeUp?: SizeUp;
 }
+
+/** A todo row's size fields, as the queue and the detail both carry them (ADR-0072). */
+const sizeOf = (t: TodoRow): { size: OrderSize; sizeBy?: SizeBy; sizeUp?: SizeUp } => ({
+  size: t.size,
+  ...(t.sizeBy ? { sizeBy: t.sizeBy } : {}),
+  ...(t.sizeUp ? { sizeUp: t.sizeUp } : {}),
+});
 
 /** Running + queued todos (all projects, or one folder's): running first, then each queue in order;
  *  `position` is the 1-based queue position, 0 for a running todo. The one todo mapping — the console
@@ -161,6 +173,7 @@ export function activeTodos(ledger: Ledger, folder?: string, now: number = Date.
       ...(t.waitingOn ? { waitingOn: t.waitingOn } : {}),
       ...(wait ? (wait.limit ? { limitResumesAt: wait.resumesAt } : { apiResumesAt: wait.resumesAt }) : {}),
       ...(t.lane === "side" && t.laneKind ? { lane: "side" as const, kind: t.laneKind } : {}),
+      ...sizeOf(t),
     };
   });
 }
@@ -200,6 +213,10 @@ export interface TodoDetail {
   attention: Array<{ id: number; title: string }>;
   actions: TodoDetailAction[];
   pinned: boolean;
+  /** The size, who set it and the latest move up (ADR-0072). */
+  size: OrderSize;
+  sizeBy?: SizeBy;
+  sizeUp?: SizeUp;
 }
 
 const cap = (s: string): string => (s.length > BRIEF_MAX ? `${s.slice(0, BRIEF_MAX - 1)}…` : s);
@@ -239,6 +256,7 @@ export function todoDetail(ledger: Ledger, id: number, now: number = Date.now())
     attention: ledger.attentionByTodo(t.id).map((r) => ({ id: r.id, title: r.title })),
     actions,
     pinned: ledger.listPins().some((p) => p.ref === `todo:${t.id}` && p.state === "pinned"),
+    ...sizeOf(t),
   };
 }
 

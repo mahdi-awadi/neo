@@ -53,3 +53,21 @@ test("a done todo has no actions; an unknown id is undefined; a huge brief and r
   expect(d.result!.length).toBeLessThanOrEqual(4000);
   expect(todoDetail(led, 9_999, 400)).toBeUndefined();
 });
+
+// ADR-0072: the size, who set it and the latest move up reach the queue rows and the detail.
+test("activeTodos and todoDetail carry size, sizeBy and sizeUp; an old row reads big with no setter", async () => {
+  const { activeTodos } = await import("../src/engine/dashboard");
+  const { led, add } = setup();
+  const old = add("an old todo");
+  const q = add("fix the picker", { size: "quick", sizeBy: "operator" });
+  const up = { from: "quick", to: "big", rule: "money", path: "src/wallet/refund.ts", at: 150 } as const;
+  led.updateTodo(q.id, { size: "big", sizeUp: up } as never);
+  const rows = activeTodos(led, "/home/gold", 200);
+  expect(rows.find((r) => r.id === old.id)).toMatchObject({ size: "big" });
+  expect(rows.find((r) => r.id === old.id)!.sizeBy).toBeUndefined();
+  expect(rows.find((r) => r.id === q.id)).toMatchObject({ size: "big", sizeBy: "operator", sizeUp: up });
+  expect(todoDetail(led, q.id, 200)).toMatchObject({ size: "big", sizeBy: "operator", sizeUp: up });
+  const d = todoDetail(led, old.id, 200)!;
+  expect(d.size).toBe("big");
+  expect(d.sizeUp).toBeUndefined();
+});

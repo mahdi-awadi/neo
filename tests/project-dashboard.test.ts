@@ -75,9 +75,9 @@ function view(over: Partial<ProjectView> = {}): ProjectView {
     folder: "/home/gold",
     now: { state: "working", line: "working · Bash: bun test · up 12m", thread: { id: 9, ref: "m4g2", title: "fare list port", state: "waiting", updatedAt: NOW } },
     queue: [
-      { id: 31, project: "gold", status: "running", position: 0, title: "fare list", brief: "b", createdAt: 1 },
-      { id: 32, project: "gold", status: "queued", position: 1, title: "admin fees", brief: "b", createdAt: 1 },
-      { id: 33, project: "gold", status: "queued", position: 2, title: "x", brief: "b", createdAt: 1 },
+      { id: 31, project: "gold", status: "running", position: 0, title: "fare list", brief: "b", createdAt: 1, size: "quick" },
+      { id: 32, project: "gold", status: "queued", position: 1, title: "admin fees", brief: "b", createdAt: 1, size: "standard" },
+      { id: 33, project: "gold", status: "queued", position: 2, title: "x", brief: "b", createdAt: 1, size: "big" },
     ],
     git: { branch: "dev", lastCommit: "a1b2c3 fix fees", lastCommitAt: NOW - 2 * 3_600_000, unpushed: 3, dirty: 0, drift: { from: "dev", to: "main", ahead: 14 }, worktrees: 1 },
     github: { prs: 2, ciFailed: 1, issues: 4, alerts: 1, scannedAt: NOW - 60_000 },
@@ -96,7 +96,8 @@ test("renderProject: the Telegram sketch — health, now, queue, git, github, de
   const lines = text.split("\n");
   expect(lines[0]).toBe("gold · 🟠 attention");
   expect(text).toContain("now: working · Bash: bun test · up 12m — fare list port · m4g2");
-  expect(text).toContain("queue: #31 running, 2 queued");
+  // ADR-0072: the running todo carries its size tag (spec §8).
+  expect(text).toContain("queue: #31 [quick] running, 2 queued");
   expect(text).toContain("git: dev a1b2c3 fix fees (2h) · 3 unpushed · dev→main +14 · 1 worktree");
   expect(text).toContain("github: 2 PRs · CI ❌ 1 · 4 issues · 1 alert");
   expect(text).toContain("decide: ship fee change to prod? (3h) · m4g7");

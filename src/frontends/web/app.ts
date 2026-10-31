@@ -18,7 +18,8 @@ import { linesHtml } from "./text-lines";
 import { buildLabel } from "./build-label";
 import { dismissSplash } from "./splash";
 import { runAct, type ActResult } from "./act";
-import { mountHistory, numericDate } from "./history";
+import { mountHistory, numericDate, type Fmt } from "./history";
+import { sizeChipHtml, sizeRowHtml } from "./todo-size";
 import { THREAD_ORIGINS } from "../../engine/thread-origins";
 import { CODED_FACTS } from "../../engine/attention-facts";
 
@@ -64,6 +65,8 @@ function ltr(s: unknown): string {
 function iso(s: unknown): string {
   return `<bdi>${esc(s)}</bdi>`;
 }
+/** The page's helpers as one object, for the pure render modules (History, the size marks). */
+const FMT: Fmt = { esc, ltr, iso, t, tx, date: numericDate };
 function post(p: string, b: unknown): Promise<Response> {
   return fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
 }
@@ -1242,7 +1245,7 @@ function renderThreadPane(v: Any): void {
   }
   if (v.todos.length) {
     h += `<div class="tsect"><h4>${t("threads.todos")}</h4>`;
-    h += v.todos.map((x: Any) => `<div class="tart">${ltr("#" + x.id)}<span class="tchip">${t(`threads.todoStatus.${x.status}`)}</span>${esc(x.project)}</div>`).join("");
+    h += v.todos.map((x: Any) => `<div class="tart">${ltr("#" + x.id)}${sizeChipHtml(x, FMT)}<span class="tchip">${t(`threads.todoStatus.${x.status}`)}</span>${esc(x.project)}</div>`).join("");
     h += "</div>";
   }
   if (v.plans.length) {
@@ -1860,11 +1863,11 @@ function planBlock(pl: Any, done: () => void): HTMLElement {
 }
 
 // ── Todo detail (ADR-0065): a tap on any todo row opens it ───────────────────────────────────────
-/** One todo row: a button (one tap target) with its lead, #id and summary. */
+/** One todo row: a button (one tap target) with its lead, #id, size chip (ADR-0072) and summary. */
 function todoRowHtml(x: Any, lead: string): string {
   return (
     `<button class="qrow" type="button" data-act="todo-open" data-id="${esc(x.id)}" aria-label="${esc(tx("todoDetail.open", { id: x.id }))}: ${esc(x.title)}">` +
-    `${lead}${ltr("#" + x.id)}<span class="qt" dir="auto">${esc(x.title)}</span><span class="car" aria-hidden="true">›</span></button>`
+    `${lead}${ltr("#" + x.id)}${sizeChipHtml(x, FMT)}<span class="qt" dir="auto">${esc(x.title)}</span><span class="car" aria-hidden="true">›</span></button>`
   );
 }
 function sheet(): HTMLDialogElement {
@@ -1895,6 +1898,7 @@ function renderTodoSheet(d: Any): void {
     ["todoDetail.project", iso(d.project)],
     ["todoDetail.lane", d.lane === "side" ? tx("todoDetail.laneSide", { kind: iso(tx(`queue.kind.${d.kind}`)) }) : esc(tx("todoDetail.laneMain"))],
     ["todoDetail.state", esc(tx(`todoDetail.status.${d.status}`)) + (d.position ? " · " + tx("todoDetail.position", { pos: ltr(d.position) }) : "")],
+    ["todoDetail.size", sizeRowHtml(d, FMT)],
     ["todoDetail.created", when(d.createdAt)],
   ];
   if (d.startedAt) rows.push(["todoDetail.started", when(d.startedAt)]);
@@ -1947,7 +1951,7 @@ sheet().addEventListener("focusin", (ev) => {
 
 // ── History (ADR-0067): search past work, remember a fact, forget an entry ───────────────────────
 const historyPanel = mountHistory({
-  fmt: { esc, ltr, iso, t, tx, date: numericDate },
+  fmt: FMT,
   $,
   act,
   toast,

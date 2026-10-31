@@ -16,6 +16,7 @@ import type { ProjectCfg } from "./producers/git";
 import type { ScanMeta } from "./producers/scan";
 import type { DeployMeta, ProbeMeta } from "./producers/probe";
 import { activeTodos, type DashTodo } from "./dashboard";
+import { sizeTag } from "./order-size";
 import { describeSession, stateOf } from "./session-status";
 import { listOpen } from "./attention";
 import { attentionActions, type AttentionAction } from "./attention-actions";
@@ -584,7 +585,7 @@ export function renderProject(v: ProjectView, now: number, o: { maxLines: number
   const running = v.queue.filter((q) => q.status === "running");
   const count = (st: string) => v.queue.filter((q) => q.status === st).length;
   const [queued, retry, waiting, failed] = [count("queued"), count("retry"), count("waiting"), count("failed")];
-  const parts = [...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : []), ...(retry ? [`${retry} to retry`] : []), ...(waiting ? [`${waiting} waiting on a decision`] : []), ...(failed ? [`${failed} failed (/todo retry <id>)`] : [])];
+  const parts = [...running.map((r) => `#${r.id} ${sizeTag(r)} running`), ...(queued ? [`${queued} queued`] : []), ...(retry ? [`${retry} to retry`] : []), ...(waiting ? [`${waiting} waiting on a decision`] : []), ...(failed ? [`${failed} failed (/todo retry <id>)`] : [])];
   L.push(parts.length ? `queue: ${parts.join(", ")}` : "queue: empty");
 
   const g = v.git;

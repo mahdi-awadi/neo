@@ -18,6 +18,8 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
 import { createSessionStore } from "../src/engine/web-session";
 import { openTrustStore } from "../src/engine/trust";
+import { DEFAULT_SIZES_CFG, ORDER_SIZES } from "../src/engine/order-size";
+import { SIZE_UP_KINDS } from "../src/frontends/web/todo-size";
 
 const WEB = join(import.meta.dir, "../src/frontends/web");
 const APP = readFileSync(join(WEB, "app.ts"), "utf8");
@@ -59,6 +61,12 @@ test("every key the module and the page shell use exists in the catalogue", () =
   for (const s of ["new", "with-agent", "drafted", "replied"]) expect(EN.has(`inbox.status.${s}`)).toBe(true);
   for (const s of ["handoff", "clear", "deferred", "resumed", "fresh"]) expect(EN.has(`recent.verdict.${s}`)).toBe(true);
   for (const s of ["draft", "sent", "approved", "executing", "done", "abandoned"]) expect(EN.has(`threads.planStatus.${s}`)).toBe(true);
+  // ADR-0072: the size families, keyed by the engine's own sizes, setters, move kinds and default rules.
+  for (const s of ORDER_SIZES) expect(EN.has(`queue.size.${s}`), s).toBe(true);
+  for (const s of ["operator", "company", "engine"]) expect(EN.has(`todoDetail.sizeBy.${s}`), s).toBe(true);
+  for (const s of SIZE_UP_KINDS) expect(EN.has(`todoDetail.sizeUp.${s}`), s).toBe(true);
+  expect(EN.has("todoDetail.sizeUp.late")).toBe(true);
+  for (const r of DEFAULT_SIZES_CFG.guard.rules) expect(EN.has(`todoDetail.area.${r.name}`), r.name).toBe(true);
 });
 
 /** Text that a person reads: a letter (Latin or Arabic) outside markup. */

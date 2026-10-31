@@ -156,7 +156,13 @@
       "ops": "ops",
       "test": "test",
       "code": "code"
-    }
+    },
+    "size": {
+      "quick": "quick",
+      "standard": "standard",
+      "big": "big"
+    },
+    "sizeMoved": "moved up from {{from}}"
   },
   "recent": {
     "title": "Recent orders",
@@ -616,6 +622,33 @@
       "failed": "failed",
       "done": "done",
       "cancelled": "cancelled"
+    },
+    "size": "Size",
+    "sizeBy": {
+      "operator": "set by you",
+      "company": "set by the chief of staff",
+      "engine": "set by Neo"
+    },
+    "sizeUp": {
+      "files": "moved up from {{from}}: {{value}} files changed (the limit is {{max}})",
+      "lines": "moved up from {{from}}: {{value}} lines changed (the limit is {{max}})",
+      "services": "moved up from {{from}}: {{value}} services changed (the limit is {{max}})",
+      "rule": "moved up from {{from}}: it touches {{area}} ({{path}})",
+      "command": "moved up from {{from}}: it ran {{area}} tooling ({{command}})",
+      "plan": "moved up from {{from}}: its plan needs your approval",
+      "handoff": "moved up from {{from}}: it needed a context handoff",
+      "late": "(after it ended)"
+    },
+    "area": {
+      "migration": "a database migration",
+      "auth": "sign-in, sessions and permissions",
+      "money": "payments and money",
+      "secrets": "secrets",
+      "deploy": "deploy or CI",
+      "prod": "production",
+      "module": "a new module",
+      "proto": "an API contract (proto)",
+      "deps": "dependencies"
     }
   },
   "history": {

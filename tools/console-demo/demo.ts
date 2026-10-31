@@ -22,7 +22,7 @@ export interface ConsoleDemo {
   port: number;
   ledger: ReturnType<typeof openLedger>;
   /** The seeded items: the hidden decision behind the stale reminder, the options decision, the plan card. */
-  ids: { hidden: string; options: string; card: string; planId: number };
+  ids: { hidden: string; options: string; card: string; planId: number; todos: { running: number; moved: number; quick: number } };
   stop(): void;
 }
 
@@ -81,6 +81,21 @@ export function startConsoleDemo(port = 0): ConsoleDemo {
   const card = ledger.openDecision({ kind: "decision", question: `Plan waiting for your approval: ${planPath} — Cut browser memory`, folder: project, project: "neo" }, now - 600_000);
   const plan = ledger.upsertPlan({ project: "neo", folder: project, path: planPath, title: "Cut browser memory", sha256: "demo", stepsTotal: 3, stepsDone: 0, status: "sent", gate: "approval", version: 1, decisionId: card } as never);
 
+  // ADR-0072: one project's queue with each size — a running standard todo, a quick order the guard moved to
+  // big (back at the head of the queue), and a queued quick fix the operator sized.
+  const eticket = join(work, "eticket-v3");
+  mkdirSync(eticket, { recursive: true });
+  const todo = (summary: string, size: "quick" | "standard" | "big", sizeBy: "operator" | "company" | "engine", at: number) =>
+    ledger.addTodo({ project: "eticket-v3", folder: eticket, brief: `${summary}.`, summary, workClass: "interactive", createdBy: "operator", size, sizeBy }, at);
+  const running = todo("Add a status filter to bookings", "standard", "company", now - 20 * 60_000);
+  ledger.updateTodo(running.id, { status: "running", startedAt: now - 3 * 60_000 });
+  const moved = todo("Fix the refund total on the booking page", "quick", "company", now - 15 * 60_000);
+  ledger.updateTodo(moved.id, {
+    size: "big",
+    sizeUp: { from: "quick", to: "big", rule: "money", path: "ui/agency-ui/src/components/booking/PaymentMethodPicker.tsx", at: now - 10 * 60_000 },
+  });
+  const quick = todo("Fix the Arabic filter label", "quick", "operator", now - 5 * 60_000);
+
   const never = new Promise<RunResult>(() => {});
   const start = (): SessionRun => ({ followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done: never });
   const admin = openAdminStore(":memory:");
@@ -101,7 +116,7 @@ export function startConsoleDemo(port = 0): ConsoleDemo {
     loginUrl: `http://127.0.0.1:${server.port}/auth/telegram?${new URLSearchParams(data)}`,
     port: server.port!,
     ledger,
-    ids: { hidden, options, card, planId: plan.id },
+    ids: { hidden, options, card, planId: plan.id, todos: { running: running.id, moved: moved.id, quick: quick.id } },
     stop: () => server.stop(true),
   };
 }
