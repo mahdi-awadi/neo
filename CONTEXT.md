@@ -978,9 +978,10 @@ _Avoid_: favourite, star, bookmark
 
 **Opened item**:
 What a pin's Open (or Review) shows in the console: the item itself, in one sheet, with its full text and
-the actions it needs. For a decision: its options and a reply box. For a plan: the plan rendered, with
-Download, Approve & build and Drop. For an attention item: its own buttons, and the decision a stale
-reminder is about. Never the project page (ADR-0071).
+the actions it needs. For a decision: its options and a reply box. For a plan: the plan rendered (the version
+on its card when that sent file is kept, ADR-0073; else the file as it is now), with Download, Approve & build
+and Drop. For an attention item: its own buttons, and the decision a stale reminder is about. Never the project
+page (ADR-0071).
 _Avoid_: detail page, popup, modal
 
 **Superseded item**:
@@ -1236,7 +1237,8 @@ One version of a plan as the operator receives it: the file, a caption with its 
 version, thread ref and state line, and the buttons its state offers (`planActions`). Every state
 change edits the same message (ADR-0036), and a newer version marks the older card "superseded".
 An `awaiting` card is a tracked decision, so it is reminded, and a reply to it is the operator's
-change request. An `info` card is not a decision.
+change request. An `info` card is not a decision. Its document is a sent file (ADR-0073), so the console can
+show the version that is on the card.
 _Avoid_: plan message, plan notification
 
 **Design unit**:
@@ -1323,7 +1325,8 @@ _Avoid_: fatal error
 
 **Console feed**:
 The console's running list of lines: worker output, mirrored echoes and notices, escalations, and
-files. It is a live view, not a record — the ledger and Telegram keep the record.
+files. It is a live view, not a record — the ledger and Telegram keep the record. A file row comes from
+its sent-file record (ADR-0073).
 _Avoid_: history, transcript, log
 
 **Replay window**:
@@ -1418,3 +1421,61 @@ operator approved. The send is refused (*stale*) when the draft changed since, o
 already replied (from any channel). A second Send while one is in flight is refused (*busy*). This is the send's
 idempotency key: a customer never gets a reply twice or a reply the operator did not see.
 _Avoid_: revision, draft id
+
+### Files sent to the operator (ADR-0073)
+
+**Sent file**:
+A file the engine sends to the operator: a worker's `send_file`, or the document of a plan card. It is copied
+and recorded before it is delivered, so the console shows it where it was sent and Telegram gets the same bytes.
+_Avoid_: attachment (that is the operator's own upload, a staged attachment), outbound file, upload
+
+**Sent-file record**:
+The ledger row of one sent file (`sent_files`, migration v19): its file ref, name, caption, sha256, size, type
+and view, the project folder and path it came from, its thread and trace line, its order, its plan version, its
+deliveries and its state. Written once, never deleted; only its state changes.
+_Avoid_: file log, attachment row
+
+**File ref**:
+The public name of a sent-file record: `f` and 22 random base64url characters. The only way the console names a
+sent file — never a path, the row id or the hash.
+_Avoid_: token (that is a staged attachment's one-shot token), file id
+
+**File store**:
+The content-addressed copies of sent files (`sentFiles.dir`, `data/sent-files/<aa>/<sha256>`): one copy per
+content, written before delivery, capped by size and age. The console serves only these copies.
+_Avoid_: cache, uploads folder, outbox (the company's `agent/outbox/` holds files it is about to send)
+
+**File state**:
+Whether the store has the copy of a sent file. `kept`: yes. `not_kept`: no copy was made (the store was full or
+failed, or a `noCopy` rule). `evicted`: the copy was dropped for its age, for the cap, or because it went missing.
+`removed`: the operator removed it from the console. Only a kept file can be opened or downloaded.
+_Avoid_: deleted (that is a state of the original), archived
+
+**Original** (of a sent file):
+The file at the path a sent file came from. The console says whether it is `unchanged`, `ticked` (a plan whose
+only change is checkbox marks), `changed`, `deleted` or `unknown` (too large to check) since it was sent. It is
+never served.
+_Avoid_: source file, current version (unqualified)
+
+**File view**:
+How the console shows a sent file: `markdown`, `text`, `image`, `svg`, `pdf`, `video`, `audio` or `download`.
+Decided once, when the copy is made, and only when the extension and the bytes agree; otherwise `download`.
+HTML and XML are `text`: their source, never the page.
+_Avoid_: mime type (that is the served type), preview
+
+**File sheet**:
+The console's sheet for one sent file: its state, its original, its Telegram delivery, the viewer of its view,
+and Download, Open, Open thread, Review (a plan) and Remove.
+_Avoid_: file modal, preview page
+
+**Delivery** (of a sent file):
+One surface's receipt of a sent file. On Telegram: the chat, the message id, the file id and the status — `sent`,
+`link` (too large for Telegram: the operator got a console link) or `failed`. A Telegram reply to the document
+joins the file's thread.
+_Avoid_: send log
+
+**Backfilled record**:
+A record the engine made after the update for a plan card sent before it, from the current file or a git version
+whose review hash matches the card. Files sent with `send_file` before the update have none: nothing recorded
+their bytes, and a bot cannot read Telegram's history.
+_Avoid_: imported, recovered
