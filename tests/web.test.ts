@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { createHash, createHmac } from "node:crypto";
 import { consoleAppJs, consoleAppJsVersion, createWebApp } from "../src/frontends/web";
 import { openLedger } from "../src/engine/ledger";
+import { openInbox } from "../src/engine/inbox";
 import { openAdminStore } from "../src/engine/admin";
 import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
@@ -99,7 +100,7 @@ function fakeStart(onStart?: (h: RunHandlers) => void) {
   return start;
 }
 
-function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnType<typeof fakeStart>; traced?: boolean } = {}) {
+function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnType<typeof fakeStart>; traced?: boolean; inbox?: ReturnType<typeof openInbox> } = {}) {
   const registry = createRegistry();
   const admin = over.admin ?? openAdminStore(":memory:");
   const config = cfg();
@@ -113,6 +114,7 @@ function app(over: { admin?: ReturnType<typeof openAdminStore>; start?: ReturnTy
     cfg: config,
     instance: createWebApp({
       engine: { cfg: config, ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(":memory:"), start: over.start, ...(trace ? { trace } : {}) },
+      ...(over.inbox ? { inbox: over.inbox } : {}),
       botToken: TOKEN,
       botUsername: "neo_bot",
       sessions: createSessionStore({ secret: "websecret", ttlSec: 100000 }),
@@ -598,4 +600,16 @@ test("GET /api/todo/:id is the todo's detail; an unknown or malformed id is a 40
   expect((await get("/api/todo/99999")).status).toBe(404);
   expect((await get("/api/todo/abc")).status).toBe(404);
   expect((await a.instance.fetch(new Request(`http://neo.test/api/todo/${t.id}`))).status).toBe(401);
+});
+
+
+test("the inbox explains that customer drafting is unavailable on Codex", async () => {
+  const inbox = openInbox(":memory:");
+  const item = inbox.record({ from: "a@x.com", subject: "Question", text: "Hello" });
+  const a = app({ inbox }); a.cfg.providers.ownWork = "codex";
+  const cookie = cookieFrom(await a.instance.fetch(new Request(loginUrl(555))));
+  const response = await a.instance.fetch(new Request("http://neo.test/api/inbox/draft", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ id: item.id }) }));
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ ok: false, error: expect.stringContaining("zero-tool") });
+  expect(inbox.get(item.id)?.status).toBe("new");
 });

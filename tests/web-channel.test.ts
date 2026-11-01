@@ -914,3 +914,15 @@ test("ADR-0054 D2: the console state carries the deploy gap for the header", () 
   const none = createWebChannel({ engine: engine(fakeStart(() => {}).start), chatId: 42 });
   expect((none.state() as unknown as { deploy?: unknown }).deploy).toBeUndefined();
 });
+
+test('selecting Codex in the console routes the next direct project open to Codex', async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  let provider: unknown;
+  const eng = engine(((order: Order, handlers: RunHandlers, deps?: import('../src/engine/session-runner').RunDeps) => { provider = deps?.provider; return f.start(order, handlers); }) as typeof f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  expect(ch.setSdk('codex').ok).toBe(true);
+  await ch.openProject(dir, 'read project');
+  expect(provider).toBe('codex');
+  f.finish({ ok: true, sessionId: 'codex-id', summary: 'done', costUsd: 0 });
+});

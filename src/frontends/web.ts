@@ -13,7 +13,7 @@ import type { UsageMeter } from "../engine/usage";
 import { verifyTelegramLogin } from "../engine/telegram-auth";
 import { createWebChannel, type EngineDeps, type WebChannel } from "../engine/web-channel";
 import type { CommandDeps } from "../engine/commands";
-import { runCompanyBrief } from "../engine/ingress";
+import { runCompanyBrief, TaintedIsolationUnavailable } from "../engine/ingress";
 import { draftInboxReply, sendInboxReply } from "../engine/inbox-actions";
 import type { Inbox } from "../engine/inbox";
 import type { OperatorBus } from "../engine/operator-bus";
@@ -218,13 +218,18 @@ export function createWebApp(deps: WebAppDeps): WebApp {
       if (!item || !deps.inbox) return Response.json({ ok: false }, { status: 404, headers: { "cache-control": "no-store" } });
       const instr = typeof b.instructions === "string" ? b.instructions.trim() : "";
       // Shared with the Telegram /inbox loop — single source of truth for the brief (inbox-actions).
-      const draft = await draftInboxReply(deps.inbox, item.id, instr, {
-        cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
-        meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage, trace: deps.engine.trace,
-        reply: (_c, text, project) => channel.notify(text, project),
-        askApproval: async () => "deny",
-      });
-      return Response.json({ ok: true, draft }, { headers: { "cache-control": "no-store" } });
+      try {
+        const draft = await draftInboxReply(deps.inbox, item.id, instr, {
+          cfg: deps.engine.cfg, ledger: deps.engine.ledger, registry: deps.engine.registry,
+          meter: deps.engine.meter, trust: deps.engine.trust, usage: deps.usage, trace: deps.engine.trace,
+          reply: (_c, text, project) => channel.notify(text, project),
+          askApproval: async () => "deny",
+        });
+        return Response.json({ ok: true, draft }, { headers: { "cache-control": "no-store" } });
+      } catch (error) {
+        if (error instanceof TaintedIsolationUnavailable) return Response.json({ ok: false, error: error.message }, { status: 409, headers: { "cache-control": "no-store" } });
+        throw error;
+      }
     }
 
     // Operator approves & sends the (possibly edited) reply to the customer, via the gateway.

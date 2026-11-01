@@ -1,10 +1,12 @@
 import type { Provider } from "../types";
+import type { Registry } from "./registry";
 
 export type WorkerSdkProvider = Extract<Provider, "subscription" | "codex">;
 
 export interface WorkerSdkState {
   provider: Provider;
   label: string;
+  switching?: Array<{ name: string; provider: WorkerSdkProvider | "unknown"; blocked: boolean }>;
   choices: Array<{ provider: WorkerSdkProvider; label: string; active: boolean }>;
 }
 
@@ -42,13 +44,12 @@ export function normalizeWorkerSdk(input: string): WorkerSdkProvider | undefined
  * same dead id, and the run never survived long enough to mint a live one.
  *
  * A KNOWN mismatch is refused here, so the doomed attempt never happens. An id with no recorded
- * owner (written before ids carried their SDK) is still tried: continuity is worth more than one
- * round-trip, and if it turns out dead the runner restarts cold on its own (RESUME_MISSING_RE in
- * session-runner) and re-mints an id that IS tagged. Prevention where we have proof, recovery
- * where we don't.
+ * owner (written before ids carried their SDK) is still tried on Claude, whose runner recovers
+ * from a missing conversation. Codex has no equivalent missing-thread recovery, so an unowned id
+ * starts fresh there instead of potentially leaving the project unreachable.
  */
 export function canResumeWith(mintedBy: Provider | undefined, worker: Provider | undefined): boolean {
-  return mintedBy === undefined || mintedBy === worker;
+  return mintedBy === worker || (mintedBy === undefined && worker !== "codex");
 }
 
 export function workerSdkLabel(provider: Provider): string {
@@ -87,6 +88,7 @@ export function setWorkerSdk(cfg: WorkerSdkConfig, raw: string): { ok: boolean; 
 export function createWorkerSdkSelection(
   cfg: WorkerSdkConfig,
   store: { getMeta(key: string): { value: unknown } | undefined; setMeta(key: string, value: unknown, at: number): void },
+  registry?: Pick<Registry, "list" | "getControl">,
 ): { get(): WorkerSdkProvider; set(raw: string): ReturnType<typeof setWorkerSdk> } {
   const key = "worker_sdk_provider";
   const saved = store.getMeta(key)?.value;
@@ -106,7 +108,23 @@ export function createWorkerSdkSelection(
       } catch {
         return { ok: false, error: "Could not save the worker SDK selection.", sdk: workerSdkState(cfg.providers.ownWork), changed: false };
       }
-      return setWorkerSdk(cfg, provider);
+      const result = setWorkerSdk(cfg, provider);
+      if (result.changed && registry) {
+        for (const session of registry.list()) {
+          if (session.order.source !== "neo" || session.customerDriven) continue;
+          const control = registry.getControl(session.id);
+          const runningProvider = control?.tools?.provider === "claude" ? "subscription" : control?.tools?.provider ?? session.sdkProvider;
+          if (control && runningProvider !== provider) {
+            try {
+              if (!control.closed?.()) {
+                if (control.switchProvider) control.switchProvider();
+                else control.close?.();
+              }
+            } catch { /* dashboard shows the blocked session */ }
+          }
+        }
+      }
+      return result;
     },
   };
 }

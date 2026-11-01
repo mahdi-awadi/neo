@@ -953,7 +953,7 @@ export function openLedger(
         .query(
           `SELECT sdk_session_id FROM orders
            WHERE folder = ? AND chat_id = ? AND sdk_session_id IS NOT NULL AND sdk_session_id != ''
-             AND (?3 IS NULL OR sdk_provider IS NULL OR sdk_provider = ?3)
+             AND (?3 IS NULL OR sdk_provider = ?3 OR (sdk_provider IS NULL AND ?3 != 'codex'))
            ORDER BY created_at DESC LIMIT 1`,
         )
         .get(folder, chatId, provider ?? null) as { sdk_session_id: string } | null;

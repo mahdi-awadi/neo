@@ -27,6 +27,9 @@
     "codex": "Codex",
     "claudeFoot": "Claude SDK",
     "codexFoot": "Codex SDK",
+    "switching": "{{count}} session(s) switching",
+    "switchBlocked": "Waiting for session to close",
+    "switchDraining": "Finishing accepted work",
     "claudeLabel": "Claude Agent SDK",
     "codexLabel": "OpenAI Codex SDK",
     "switchFailed": "SDK switch failed"

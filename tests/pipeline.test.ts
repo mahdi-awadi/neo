@@ -1568,3 +1568,20 @@ test("a follow-up to a worker that can't steer (Codex) says honestly it runs aft
   const line = h.replies.find((r) => r.startsWith("↩︎"))!;
   expect(line).toContain("runs after its current turn");
 });
+
+test('SDK switching waits for a pending API retry before closing the old worker', async () => {
+  const { createWorkerSdkSelection } = await import('../src/engine/sdk-choice');
+  const dir = gitScratch();
+  const { f, base } = sweetHarness(0.3);
+  let wake!: () => void;
+  const b = { ...base, sleep: () => new Promise<void>((resolve) => { wake = resolve; }) } as typeof base;
+  await handleMessage(`/open ${dir} work`, 9, b);
+  const run = f.runs[0];
+  run.h.onTurnComplete?.({ ok: false, sessionId: 's1', summary: '', costUsd: 0, apiError: 'rate_limit' });
+  createWorkerSdkSelection(b.cfg, b.ledger, b.registry).set('codex');
+  expect(run.closed).toBe(false);
+  wake(); await tick();
+  expect(run.followUps).toHaveLength(1);
+  run.h.onTurnComplete?.(ok('s1')); run.h.onSettled?.();
+  expect(run.closed).toBe(true);
+});

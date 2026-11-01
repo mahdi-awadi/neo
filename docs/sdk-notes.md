@@ -207,10 +207,7 @@ Neo wrapper behavior:
 - Codex live sessions are implemented as sequential turns on one Codex thread: the first task starts
   a turn, `followUp()` queues later turns, `close()` resolves after the queue drains, and
   `interrupt()` aborts the active turn via `AbortSignal`.
-- Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server
-  shape. Neo therefore maps read-only judge deny-lists to `sandboxMode: "read-only"` and records a
-  `worker_compat_warning` event for Claude-only `RunDeps` fields (`mcpServers`, `skills`, `agents`,
-  `maxTurns`, unsupported `disallowedTools`) on Codex runs.
+- Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server shape. Neo maps read-only judge deny-lists to `sandboxMode: "read-only"`. Registered Neo-owned servers are bridged via authenticated loopback; unrelated configured MCP servers are disabled for the run. Unsupported external servers and Claude-only controls are reported. This does not make the Codex sandbox equivalent to the Claude governor.
 
 ## Resume ids are private to their SDK (verified 2026-07-31)
 
@@ -272,3 +269,5 @@ Run with a real streaming-input `query()` (haiku), a foreground Bash `bash -c 's
 ### Codex run-scoped MCP transport spike (2026-11-01)
 
 `@openai/codex-sdk` 0.145.0 successfully discovered and called a harmless tool served over loopback with MCP SDK 1.32.1 `WebStandardStreamableHTTPServerTransport`, using Codex `mcp_servers.<name>.url`, `bearer_token_env_var`, and a per-tool `approval_mode = "approve"`. The bearer was supplied through the SDK process environment, not argv. An unauthenticated HTTP request was rejected. With `approvalPolicy: "never"` and no per-tool approval setting the call was cancelled before reaching the server. This probe used `gpt-5.6-terra`; inherited `gpt-6.1-terra` and an attempted `gpt-5.4` were rejected by this account, so model compatibility is a separate possible failure. The probe does not prove Neo tool scope, governance, lifetime, customer isolation, or the actual UI failure.
+
+The 2026-11-01 disposable end-to-end smoke used the actual Neo runner and dispatch tool: a Codex company worker dispatched a Codex project worker, and the child returned the marker without modifying project files. The actual reported UI failure still needs verification against the running deployment.

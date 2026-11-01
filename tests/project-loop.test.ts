@@ -95,3 +95,14 @@ test("ADR-0063: each loop iteration's brief is the standing rules, then the loop
   expect(tasks).toEqual([loopBrief("make tests pass")]);
   expect(tasks[0]!.startsWith("Standing rules (Neo):")).toBe(true);
 });
+
+test('a provider switch between loop iterations starts a fresh SDK thread', async () => {
+  let provider: 'subscription' | 'codex' = 'subscription';
+  const seen: Array<{ provider?: string; resume?: string }> = [];
+  let checks = 0;
+  await runProjectLoop({ folder: '/tmp', prompt: 'work', goal: { kind: 'judge', criteria: 'done' }, bounds: { maxIterations: 2 }, resolveRunDeps: () => ({ provider }) }, {
+    check: async () => ({ met: ++checks > 2, detail: 'checking' }),
+    run: (async (_order: unknown, _handlers: unknown, deps?: import("../src/engine/session-runner").RunDeps) => { seen.push({ provider: deps?.provider, resume: deps?.resume }); provider = 'codex'; return { ok: true, sessionId: 'claude-id', summary: 'done', costUsd: 0 }; }) as never,
+  });
+  expect(seen).toEqual([{ provider: 'subscription', resume: undefined }, { provider: 'codex', resume: undefined }]);
+});

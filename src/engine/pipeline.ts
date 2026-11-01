@@ -784,6 +784,7 @@ function startSession(
   let lastSessionId = runDeps.resume ?? "";
   // An API retry is waiting to push the brief back in: the session must not be closed under it.
   let retryPending = false;
+  let sdkSwitchRequested = false;
   // Set when the settle check closes the run for a handoff; consumed by the run.done handler.
   let pendingClose: PendingClose | undefined;
   // Every input this run is given goes through here, in order, so the registry's turn accounting
@@ -990,12 +991,21 @@ function startSession(
       run.followUp(text, timing);
     },
     held: () => planWatch?.held(),
+    closed: () => sdkSwitchRequested || run.closed(),
+    switchProvider: () => {
+      sdkSwitchRequested = true;
+      if (!retryPending && !run.active() && run.queued() === 0) run.close();
+    },
   };
   registry.attachControl(registryId, control);
 
   /** The settled boundary (ADR-0021): hand off now, while the cache is warm, if the session is above
    *  the sweet spot — or complete an armed checkpoint. Closes the run; run.done does the rest. */
   const settleCheck = (): void => {
+    if (sdkSwitchRequested) {
+      if (!retryPending && (run.queued?.() ?? 0) === 0) run.close();
+      return;
+    }
     if (pendingClose || retryPending || run.closed?.() === true || (run.queued?.() ?? 0) > 0) return;
     const armed = watch?.armed();
     let next: Omit<PendingClose, "release">;

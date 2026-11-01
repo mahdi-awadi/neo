@@ -1387,3 +1387,23 @@ test("a long-running worker session runs with the Telegram channel plugin off an
   run.close();
   await run.done;
 });
+
+test('Codex reports external MCP servers it cannot safely attach', async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } }] });
+  const messages: string[] = [];
+  await runOrder(order(), { onMessage: text => messages.push(text), onEscalation: async () => 'deny' }, { provider: 'codex', codexFactory: f.factory, mcpServers: { playwright: { type: 'stdio', command: 'playwright' } } });
+  expect(messages.join(' ')).toContain('playwright');
+  expect(messages.join(' ')).toContain('unavailable');
+});
+
+test('Codex uses a configured default model when no provider-native model was specified', async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } }] });
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => 'deny' }, { provider: 'codex', env: { NEO_CODEX_MODEL: 'test-codex-model' }, codexFactory: f.factory });
+  expect(f.starts[0]).toMatchObject({ model: 'test-codex-model' });
+});
+
+test('an explicit Codex model wins over the configured default', async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } }] });
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => 'deny' }, { provider: 'codex', model: 'explicit-model', env: { NEO_CODEX_MODEL: 'fallback-model' }, codexFactory: f.factory });
+  expect(f.starts[0]).toMatchObject({ model: 'explicit-model' });
+});

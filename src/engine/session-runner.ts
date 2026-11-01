@@ -19,6 +19,8 @@
 //
 // Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
+import { codexBinaryPath, codexMcpDisableOverrides, discoverCodexMcpServers, registeredCodexMcpTools, startCodexMcpBridge } from "./codex-mcp-bridge";
+import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { createToolCalls, markCommand } from "./tool-calls";
 import type { SessionLane } from "./lanes";
 import { basename } from "node:path";
@@ -766,7 +768,9 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
     approvalPolicy: deps.codexApprovalPolicy ?? "on-request",
     skipGitRepoCheck: deps.codexSkipGitRepoCheck ?? true,
   };
-  if (model.model) c.model = model.model;
+  const configuredModel = deps.env?.NEO_CODEX_MODEL ?? process.env.NEO_CODEX_MODEL;
+  const selectedModel = model.model || configuredModel?.trim();
+  if (selectedModel) c.model = selectedModel;
   const effort = codexEffort(model.effort);
   if (effort) c.modelReasoningEffort = effort;
   if (deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
@@ -801,9 +805,67 @@ function codexClientOptions(deps: RunDeps): CodexOptions {
   return c;
 }
 
-async function makeCodexClient(deps: RunDeps): Promise<CodexClientLike> {
+async function makeCodexClient(deps: RunDeps, cwd: string, handlers: RunHandlers, bridges: Array<Awaited<ReturnType<typeof startCodexMcpBridge>>> = []): Promise<CodexClientLike> {
   const factory = deps.codexFactory ?? ((options: CodexOptions) => new Codex(options));
-  return factory(codexClientOptions(deps));
+  const options = codexClientOptions(deps);
+  const servers = Object.assign({}, ...bridges.map((bridge) => bridge.codexConfig.mcp_servers));
+  const env = { ...mergedSdkEnv("codex", deps.env ?? {}, deps.envScrub), ...Object.assign({}, ...bridges.map((bridge) => bridge.env)) };
+  let disabled: Record<string, string | boolean> = {};
+  if (!deps.codexFactory) {
+    const binary = codexBinaryPath();
+    const ambientNames = await discoverCodexMcpServers(binary, cwd, env);
+    disabled = codexMcpDisableOverrides(ambientNames, Object.keys(servers));
+    const unavailable = ambientNames.filter((server) => !Object.hasOwn(servers, server.name)).map((server) => server.name);
+    if (unavailable.length) {
+      handlers.onEvent?.("worker_mcp_unavailable", { provider: "codex", servers: unavailable });
+      observe(() => handlers.onMessage(`Codex: external tools unavailable: ${unavailable.join(", ")}.`, "tool"));
+    }
+    options.codexPathOverride = binary;
+  }
+  options.config = { ...disabled, ...(bridges.length ? { mcp_servers: servers } : {}) };
+  if (bridges.length || options.env) options.env = env;
+  return factory(options);
+}
+
+function codexUnsupportedFields(deps: RunDeps): string[] {
+  const unsupported = unsupportedRunFields("codex", deps);
+  const servers = Object.values(deps.mcpServers ?? {});
+  const allBridged = servers.every((value) => {
+    const server = value as McpSdkServerConfigWithInstance | undefined;
+    return !!server && server.type === "sdk" && !!registeredCodexMcpTools(server);
+  });
+  return allBridged ? unsupported.filter((name) => name !== "mcpServers") : unsupported;
+}
+
+function reportCodexExternalMcp(deps: RunDeps, handlers: RunHandlers): void {
+  const unavailable = Object.entries(deps.mcpServers ?? {})
+    .filter(([, config]) => !!config && typeof config === "object" && (config as { type?: string }).type !== "sdk")
+    .map(([name]) => name.replace(/[^a-zA-Z0-9_.-]/g, "?"));
+  if (unavailable.length) {
+    handlers.onEvent?.("worker_mcp_unavailable", { provider: "codex", servers: unavailable });
+    observe(() => handlers.onMessage(`Codex: external tools unavailable: ${unavailable.join(", ")}.`, "tool"));
+  }
+}
+
+async function codexMcpBridges(deps: RunDeps) {
+  const bridges: Array<Awaited<ReturnType<typeof startCodexMcpBridge>>> = [];
+  try {
+    const tokenNames = new Set<string>();
+    for (const [name, candidate] of Object.entries(deps.mcpServers ?? {})) {
+      const server = candidate as McpSdkServerConfigWithInstance | undefined;
+      if (!server || server.type !== "sdk") continue;
+      const tokenName = name.toUpperCase();
+      if (tokenNames.has(tokenName)) throw new Error("Codex MCP server names collide");
+      tokenNames.add(tokenName);
+      const names = registeredCodexMcpTools(server);
+      if (!names) throw new Error(`Codex MCP server ${name} is unavailable: its tool scope was not registered`);
+      bridges.push(await startCodexMcpBridge(server, names, name));
+    }
+    return bridges;
+  } catch (error) {
+    await Promise.all(bridges.map((bridge) => bridge.close()));
+    throw error;
+  }
 }
 
 function apiErrorFromCodexMessage(message: string): ApiErrorKind | undefined {
@@ -1029,12 +1091,18 @@ async function runCodexOrder(
 ): Promise<RunResult> {
   deps = resolvedRunDeps(deps, "codex", handlers);
   handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
-  const unsupported = unsupportedRunFields("codex", deps);
+  const unsupported = codexUnsupportedFields(deps);
   if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
-  const client = await makeCodexClient(deps);
-  const options = codexThreadOptions(order, deps);
-  const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
-  return consumeCodexTurn(thread, order.task, handlers, deps.abortController?.signal);
+  reportCodexExternalMcp(deps, handlers);
+  const bridges = await codexMcpBridges(deps);
+  try {
+    const client = await makeCodexClient(deps, order.folder, handlers, bridges);
+    const options = codexThreadOptions(order, deps);
+    const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
+    return await consumeCodexTurn(thread, order.task, handlers, deps.abortController?.signal);
+  } finally {
+    await Promise.all(bridges.map((bridge) => bridge.close()));
+  }
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
@@ -1222,11 +1290,14 @@ function startCodexOrder(
 
   const done = (async () => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
-    const unsupported = unsupportedRunFields("codex", deps);
+    const unsupported = codexUnsupportedFields(deps);
     if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
+    reportCodexExternalMcp(deps, handlers);
     let final: RunResult = { ok: false, sessionId: deps.resume ?? "", summary: "", costUsd: 0 };
+    let bridges: Awaited<ReturnType<typeof codexMcpBridges>> = [];
     try {
-      const client = await makeCodexClient(deps);
+      bridges = await codexMcpBridges(deps);
+      const client = await makeCodexClient(deps, order.folder, handlers, bridges);
       const options = codexThreadOptions(order, deps);
       const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
       for (;;) {
@@ -1247,6 +1318,8 @@ function startCodexOrder(
       turnActive = false;
       const reason = err instanceof Error ? err.message : String(err);
       final = { ok: false, sessionId: final.sessionId, summary: reason, costUsd: 0, apiError: apiErrorFromCodexMessage(reason) };
+    } finally {
+      await Promise.all(bridges.map((bridge) => bridge.close()));
     }
     if (interruptRequested && !final.summary) {
       handlers.onEvent?.("session_interrupted");

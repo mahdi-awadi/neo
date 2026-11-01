@@ -237,9 +237,7 @@ Set `ownWork` to `"codex"` to run operator workers through the OpenAI Codex SDK 
 { "providers": { "ownWork": "codex", "customerWork": "gemini" } }
 ```
 
-At runtime, the operator can switch the same value for new sessions with `/sdk claude`,
-`/sdk codex`, or the Worker SDK segmented control in the web console. Existing sessions keep the
-SDK they started with; restart persistence still comes from `config.json`.
+At runtime, `/sdk claude`, `/sdk codex`, and the console SDK control save the operator choice in the ledger, taking precedence over the config default on restart. New work uses the selection. Existing operator sessions finish their accepted work before closing and reopen on the selected SDK; the console shows sessions still switching. Loop iterations re-read the selection and start a fresh thread when it changes. Customer-direct routing remains separate. Customer-tainted inbox drafting is unavailable on Codex because its adapter cannot guarantee a zero-tool run; Neo reports the limitation and leaves the inbox item unchanged.
 
 The runner wrapper keeps the engine-facing API the same (`runOrder` / `startOrder`), including live
 follow-ups and resume. The Claude adapter keeps Neo's existing `canUseTool` governor and in-process
@@ -253,7 +251,7 @@ message/activity/event hooks. Compatibility is table-driven in `src/engine/model
 | `effort` | Forwarded to the Claude adapter. | Forwarded as Codex reasoning effort (`max` becomes Codex `xhigh`). |
 | `skills` / `maxTurns` | Forwarded to Claude Code. | Dropped from worker profiles and omitted from Codex launch config; direct `RunDeps` usage records `worker_compat_warning`. |
 | `agents` / dispatch team mode | Forwarded to Claude Code; team dispatch adds the lead-agent preamble. | Unsupported. Team dispatch falls back to a normal single-worker brief; direct `agents` usage records `worker_compat_warning`. |
-| `mcpServers` | In-process MCP servers attach to the Claude SDK. | Unsupported by the current Codex wrapper shape; records `worker_compat_warning`. |
+| `mcpServers` | In-process MCP servers attach to the Claude SDK. | Registered Neo-owned servers attach through an authenticated loopback bridge scoped to the run. Ambient and other external servers are disabled and reported unavailable. |
 | `disallowedTools` | Forwarded to Claude Code/governor. | The standard read-only deny-list (`Write`, `Edit`, `NotebookEdit`, `Bash`) becomes Codex `sandboxMode: "read-only"`. Other tool deny-lists record `worker_compat_warning`. |
 | `workerEnv` | Merged over `process.env` unchanged. | `CLAUDE_*`, `ANTHROPIC_*`, and `MAX_MCP_OUTPUT_TOKENS` are filtered before launch; other keys such as `CODEX_API_KEY` stay available. |
 
@@ -264,6 +262,8 @@ through unchanged, but a Claude tier does not leak into Codex: `haiku` maps to C
 aliases (`claude-sonnet-5-5` → `medium`, `claude-opus-5-5[1m]` → `high`). A Claude id with no tier
 word in it is dropped with no effort set, because no effort can be inferred from it. An explicit
 `effort` in the worker profile wins over the tier-derived effort.
+
+Set `NEO_CODEX_MODEL` in the environment or `workerEnv` to a model supported by your Codex account when its configured default is unavailable. Explicit provider-native worker models take precedence. With no override, Codex uses its own configured default.
 
 Codex SDK auth is handled by Codex itself: use your local Codex login or provide `CODEX_API_KEY` in
 the process environment. Neo does not read or store that key directly.

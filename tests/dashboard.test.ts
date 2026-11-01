@@ -231,3 +231,11 @@ test("dashboardSnapshot: a running todo in a limit wait carries limitResumesAt; 
   expect(s.todos.find((t) => t.id === a.id)).toMatchObject({ status: "running", limitResumesAt: 61_000 });
   expect(s.todos.find((t) => t.id === b.id)?.limitResumesAt).toBeUndefined();
 });
+
+test('SDK state exposes sessions still draining on the previous provider', () => {
+  const registry = createRegistry();
+  const session = registry.add(order({ id: 'switch', folder: '/p/switch' }), 0);
+  registry.attachControl(session.id, { followUp() {}, interrupt: async () => {}, closed: () => true, tools: { provider: 'claude', running: () => [], background: async () => ({ ok: false }), stop: async () => ({ ok: false }) } });
+  const snapshot = dashboardSnapshot({ registry, ledger: openLedger(':memory:'), chatId: 0, reposRoot: '/nonexistent', sdkProvider: 'codex' });
+  expect((snapshot.sdk as any).switching).toEqual([{ name: session.name, provider: 'subscription', blocked: false }]);
+});

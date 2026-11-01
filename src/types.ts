@@ -71,6 +71,10 @@ export interface SessionControl {
    *  when it waits for the current turn to finish (Codex runs one turn per input). */
   steersMidTurn?: boolean;
   interrupt(): Promise<void>;
+  /** Gracefully stop accepting input after draining already accepted turns. */
+  close?(): void;
+  /** Drain accepted work before switching the platform SDK. */
+  switchProvider?(): void;
   /** Follow-ups waiting behind the in-flight turn (observability; optional for old fakes). */
   queued?(): number;
   /** True while a turn is being processed RIGHT NOW, as opposed to the session sitting idle

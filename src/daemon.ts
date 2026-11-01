@@ -126,13 +126,12 @@ async function main(): Promise<void> {
     // A short human summary for each new todo (ADR-0059): AI proposes, the engine accepts or keeps its own.
     // Claude only (a Codex own-work setup has no Claude model to ask); it waits while the reserve is held or the
     // API is throttled, and its cost goes on the meter (both built below, read when a todo is made).
-    ...(cfg.providers?.ownWork === "codex"
-      ? {}
-      : { summarize: createTodoSummarizer({
-          cfg: todoSummaryCfg, model: pinnedModel(cfg.models, todoSummaryCfg.model) ?? todoSummaryCfg.model,
-          mayRun: () => !summaryGate.meter?.shouldThrottleBackground() && !summaryGate.cooldown?.activeAt(Date.now()),
-          noteCost: (costUsd) => summaryGate.meter?.note({ costUsd }),
-        }) }),
+    summarize: createTodoSummarizer({
+      cfg: todoSummaryCfg, model: pinnedModel(cfg.models, todoSummaryCfg.model) ?? todoSummaryCfg.model,
+      provider: () => cfg.providers.ownWork,
+      mayRun: () => !summaryGate.meter?.shouldThrottleBackground() && !summaryGate.cooldown?.activeAt(Date.now()),
+      noteCost: (costUsd) => summaryGate.meter?.note({ costUsd }),
+    }),
     lanes: () => cfg.lanes ?? DEFAULT_LANES_CFG,
     onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
   });
@@ -305,7 +304,6 @@ async function main(): Promise<void> {
   // Questions (ADR-0050): a read-only consult run answers them; notes from main and late answers reach
   // a worker of the folder at its next step (notesWiring: steered into a live turn, never into an idle
   // session — the pipeline and dispatch prepend them to its next follow-up or resume).
-  const ownWork = cfg.providers?.ownWork;
   const notes = createProjectNotes({
     ledger,
     cfg: cfg.notes ?? DEFAULT_NOTES_CFG,
@@ -321,7 +319,7 @@ async function main(): Promise<void> {
     ...notesWiring({
       registry,
       notes: () => notes,
-      worker: ownWork,
+      get worker() { return cfg.providers.ownWork; },
       lastSessionFor: (folder) => ledger.lastSessionRow(folder, SUB_CHAT),
       occupancyPct: (folder, sid) => {
         const sig = sessionContext(folder, sid, { windowTokensByModel: contextWindows(ledger, cfg.contextPolicy.windowTokensByModel) });

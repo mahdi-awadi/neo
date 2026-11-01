@@ -474,7 +474,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       emit({ type: "loops", items: listLoops(opts.engine.ledger) });
     },
     setSdk(provider) {
-      const result = createWorkerSdkSelection(opts.engine.cfg, opts.engine.ledger).set(provider);
+      const result = createWorkerSdkSelection(opts.engine.cfg, opts.engine.ledger, opts.engine.registry).set(provider);
       if (result.ok) emit({ type: "sdk", sdk: result.sdk });
       return result.ok ? { ok: true, sdk: result.sdk } : { ok: false, error: result.error, sdk: result.sdk };
     },

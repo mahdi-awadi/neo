@@ -352,6 +352,17 @@ export function dashboardSnapshot(opts: {
   } catch {
     // skip on error
   }
+  const selectedSdk = opts.sdkProvider ?? "subscription";
+  const switching: NonNullable<WorkerSdkState["switching"]> = [];
+  for (const session of opts.registry.list()) {
+    if (session.order.source !== "neo" || session.customerDriven) continue;
+    const control = opts.registry.getControl(session.id);
+    if (!control) continue;
+    const actual = (control.tools?.provider === "claude" ? "subscription" : control.tools?.provider ?? session.sdkProvider) ?? "unknown";
+    if ((actual === "subscription" || actual === "codex" || actual === "unknown") && actual !== selectedSdk) {
+      switching.push({ name: session.name, provider: actual, blocked: !control.closed?.() });
+    }
+  }
   return {
     todos,
     contextEvents,
@@ -360,7 +371,7 @@ export function dashboardSnapshot(opts: {
     ...(opts.build ? { build: opts.build } : {}),
     running: runningCalls(opts.registry),
     projects,
-    sdk: workerSdkState(opts.sdkProvider ?? "subscription"),
+    sdk: { ...workerSdkState(selectedSdk), switching },
     usage: opts.usage ? opts.usage.snapshot(now) : null,
     loops: listLoops(opts.ledger),
     recent,

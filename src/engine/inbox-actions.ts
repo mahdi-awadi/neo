@@ -106,16 +106,21 @@ export async function draftInboxReply(
   const item = inbox.get(id);
   if (!item) return undefined;
   inbox.setStatus(item.id, "with-agent");
-  const draft = await runCompanyBrief(
-    buildDraftBrief(item, instructions, {
-      meetingLink: briefDeps.cfg.meetingLink,
-      businessName: briefDeps.cfg.businessName,
-    }),
-    briefDeps,
-    { tainted: true }, // customer email is untrusted input — the drafting worker gets zero tools
-  );
-  inbox.setDraft(item.id, draft);
-  return draft;
+  try {
+    const draft = await runCompanyBrief(
+      buildDraftBrief(item, instructions, {
+        meetingLink: briefDeps.cfg.meetingLink,
+        businessName: briefDeps.cfg.businessName,
+      }),
+      briefDeps,
+      { tainted: true }, // customer email is untrusted input — the drafting worker gets zero tools
+    );
+    inbox.setDraft(item.id, draft);
+    return draft;
+  } catch (error) {
+    if (inbox.get(item.id)?.status === "with-agent") inbox.setStatus(item.id, item.status);
+    throw error;
+  }
 }
 
 // ── Sending: post the approved reply to the gateway (the exact web /api/inbox/send path) ──

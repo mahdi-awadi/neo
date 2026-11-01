@@ -191,3 +191,12 @@ test("a normal start is untouched: no resume id, no retry", async () => {
   expect(res.ok).toBe(true);
   expect(res.resumeMissing).toBeUndefined();
 });
+
+test('Codex starts fresh for untagged legacy ids rather than trying an unprovable thread', () => {
+  const led = openLedger(':memory:');
+  led.recordOrder(order({ id: 'untagged-codex', folder: '/p', chatId: 9 }));
+  led.recordSession('untagged-codex', 'legacy-id');
+  expect(led.lastSessionFor('/p', 9, 'codex')).toBeUndefined();
+  expect(canResumeWith(undefined, 'codex')).toBe(false);
+  expect(led.lastSessionFor('/p', 9, 'subscription')).toBe('legacy-id');
+});

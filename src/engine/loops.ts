@@ -3,6 +3,7 @@
 // (manual/interval/cron), and Bounds (iterations + budget). /loop lists them; /loop <name> starts
 // one now; /loop <name> on|off toggles its schedule. Work runs through runProjectLoop, so it's
 // governed and escalation-auto-denied (never pushes/deploys). See docs/loops.md.
+import { registerCodexMcpTools } from "./codex-mcp-bridge";
 import { basename, join } from "node:path";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
@@ -506,7 +507,9 @@ function dreamMcpServers(folder: string, cfg: NeoConfig): Record<string, unknown
       diary,
     },
   });
-  return { memory: createSdkMcpServer({ name: "memory", version: "1.0.0", tools }) };
+  const server = createSdkMcpServer({ name: "memory", version: "1.0.0", tools });
+  registerCodexMcpTools(server, tools.map((t) => t.name));
+  return { memory: server };
 }
 
 /** cfg-derived extras for a loop run: per-path RunDeps profiles (loop worker + judge), the
@@ -521,6 +524,7 @@ function loopRunExtras(
   deps: { run?: typeof runOrder; check?: GoalCheck; cfg?: NeoConfig; store?: LoopStore },
 ): {
   runDeps?: RunDeps;
+  resolveRunDeps?: () => RunDeps;
   freshSession?: boolean;
   gateResume?: (id: string) => Promise<string | undefined>;
   check: GoalCheck;
@@ -528,10 +532,13 @@ function loopRunExtras(
   const cfg = deps.cfg;
   // The secretary digest runs on its own worker profile (the latest model, `workers.secretary`);
   // every other loop uses the shared `loop` profile.
-  const runDeps = cfg ? profileDeps(cfg, loop.secretary ? "secretary" : "loop") : undefined;
-  if (runDeps && cfg && loop.dreamMemory) runDeps.mcpServers = dreamMcpServers(loop.folder, cfg);
+  const resolveRunDeps = cfg ? () => {
+    const runDeps = profileDeps(cfg, loop.secretary ? "secretary" : "loop");
+    if (loop.dreamMemory) runDeps.mcpServers = dreamMcpServers(loop.folder, cfg);
+    return runDeps;
+  } : undefined;
   return {
-    runDeps,
+    resolveRunDeps,
     freshSession: loop.freshSession,
     gateResume: cfg
       ? async (id: string) => {
@@ -554,11 +561,11 @@ function loopRunExtras(
       : undefined,
     check:
       deps.check ??
-      makeGoalCheck(loop.goal, {
+      (() => makeGoalCheck(loop.goal, {
         cwd: loop.folder,
         run: deps.run,
         runDeps: cfg ? profileDeps(cfg, "judge", { disallowedTools: READONLY_DENY }) : undefined,
-      }),
+      })()),
   };
 }
 
