@@ -82,3 +82,31 @@ export function setWorkerSdk(cfg: WorkerSdkConfig, raw: string): { ok: boolean; 
   cfg.providers.ownWork = provider;
   return { ok: true, sdk: workerSdkState(provider), changed: current !== provider };
 }
+
+/** Durable operator SDK selection shared by all entry points. */
+export function createWorkerSdkSelection(
+  cfg: WorkerSdkConfig,
+  store: { getMeta(key: string): { value: unknown } | undefined; setMeta(key: string, value: unknown, at: number): void },
+): { get(): WorkerSdkProvider; set(raw: string): ReturnType<typeof setWorkerSdk> } {
+  const key = "worker_sdk_provider";
+  const saved = store.getMeta(key)?.value;
+  if (typeof saved === "string") {
+    const restored = normalizeWorkerSdk(saved);
+    if (restored) cfg.providers.ownWork = restored;
+  }
+  return {
+    get() {
+      return normalizeWorkerSdk(cfg.providers.ownWork) ?? "subscription";
+    },
+    set(raw) {
+      const provider = normalizeWorkerSdk(raw);
+      if (!provider) return { ok: false, error: "Use claude or codex.", sdk: workerSdkState(cfg.providers.ownWork), changed: false };
+      try {
+        store.setMeta(key, provider, Date.now());
+      } catch {
+        return { ok: false, error: "Could not save the worker SDK selection.", sdk: workerSdkState(cfg.providers.ownWork), changed: false };
+      }
+      return setWorkerSdk(cfg, provider);
+    },
+  };
+}

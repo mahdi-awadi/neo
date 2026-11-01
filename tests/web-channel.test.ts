@@ -255,6 +255,7 @@ test("state exposes the selected worker SDK and setSdk changes new-session routi
   expect(res.ok).toBe(true);
   expect(res.sdk.provider).toBe("codex");
   expect(eng.cfg.providers.ownWork).toBe("codex");
+  expect(eng.ledger.getMeta("worker_sdk_provider")?.value).toBe("codex");
   expect(ch.state().sdk.label).toContain("Codex");
   expect(events.some((e) => e.type === "sdk" && e.sdk.provider === "codex")).toBe(true);
 });
@@ -269,6 +270,7 @@ test("typed /sdk over the web mutates config and emits an sdk event", async () =
   await ch.send("/sdk codex");
 
   expect(eng.cfg.providers.ownWork).toBe("codex");
+  expect(eng.ledger.getMeta("worker_sdk_provider")?.value).toBe("codex");
   expect(events.some((e) => e.type === "sdk" && e.sdk.provider === "codex")).toBe(true);
 });
 

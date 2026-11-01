@@ -21,7 +21,7 @@ import { renderInboxList, type InboxListEntry } from "./inbox-actions";
 import { sessionContext, contextWindows, contextLabel, lastContextReset, resetLabel, type BandCfg, type ContextSignals } from "./context-policy";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
-import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
+import { createWorkerSdkSelection, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import type { TodoQueue } from "./todo-queue";
 import type { Updater } from "./updater";
 import { renderTrace, type Trace } from "./trace";
@@ -268,7 +268,7 @@ const COMMANDS: Command[] = [
     aliases: ["provider"],
     usage: "/sdk [claude|codex]",
     summary: "show or switch the worker SDK for new own-work sessions",
-    run: ({ deps, args }) => sdkCommand(args.trim(), deps.cfg),
+    run: ({ deps, args }) => sdkCommand(args.trim(), deps.cfg, deps.ledger),
   },
   {
     name: "reload",
@@ -543,7 +543,7 @@ function resolveTrustTarget(targetArg: string, chatId: number, registry: Registr
   return { name: targetArg.startsWith("/") ? basename(folder) : targetArg, folder };
 }
 
-function sdkCommand(arg: string, cfg: CommandDeps["cfg"]): CommandResult {
+function sdkCommand(arg: string, cfg: CommandDeps["cfg"], ledger: Ledger): CommandResult {
   if (!cfg) return { text: "SDK switching unavailable on this channel." };
   if (!arg) {
     const current = workerSdkState(cfg.providers.ownWork);
@@ -552,9 +552,9 @@ function sdkCommand(arg: string, cfg: CommandDeps["cfg"]): CommandResult {
       sdk: current,
     };
   }
-  const result = setWorkerSdk(cfg, arg);
+  const result = createWorkerSdkSelection(cfg, ledger).set(arg);
   if (!result.ok) {
-    return { text: `Unknown SDK: ${arg}\n${result.error}`, sdk: result.sdk };
+    return { text: result.error === "Use claude or codex." ? `Unknown SDK: ${arg}\n${result.error}` : result.error ?? "SDK switching failed.", sdk: result.sdk };
   }
   const changed = result.changed ? "set to" : "already set to";
   return {

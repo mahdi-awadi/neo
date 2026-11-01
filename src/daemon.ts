@@ -1,6 +1,7 @@
 // Neo engine — entry point. Loads config, opens the ledger, owns the shared live-session
 // registry + budget meter + idle watchdog + admin store, and starts the operator frontends:
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
+import { createWorkerSdkSelection } from "./engine/sdk-choice";
 import { inboxSecretOf } from "./engine/bearer";
 import { createToolNotices, DEFAULT_TOOL_CONTROL_CFG } from "./engine/tool-control";
 import { DEFAULT_LANES_CFG } from "./engine/lanes";
@@ -86,6 +87,7 @@ async function main(): Promise<void> {
   mkdirSync("data", { recursive: true });
   const busyTimeoutMs = cfg.sqliteBusyTimeoutMs;
   const ledger = openLedger(LEDGER_PATH, { routeKeep: cfg.routeKeep, eventsKeep: cfg.eventsKeep, decisionsKeep: cfg.decisionsKeep, toolActionsKeep: cfg.toolActionsKeep, busyTimeoutMs });
+  createWorkerSdkSelection(cfg, ledger); // restore the operator's last selected SDK before wiring workers
   // A dispatch the previous daemon started but never finished (reload or crash) is reported to the
   // company with where it stopped. Runs FIRST — before any frontend or the scheduler can start a
   // new dispatch that would look unfinished. Queued in the dispatcher inbox, NOT delivered now: the

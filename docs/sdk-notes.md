@@ -268,3 +268,7 @@ Run with a real streaming-input `query()` (haiku), a foreground Bash `bash -c 's
 - **A PreToolUse hook's `updatedInput` applies with NO permission decision,** even when a settings allow
   rule (`allowedTools: ["Bash"]`) skips `canUseTool`: `echo MARK=$NEO_TOOL_USE_ID` printed the
   hook-injected id. The governor hook is therefore the one place that adds the per-call marker.
+
+### Codex run-scoped MCP transport spike (2026-11-01)
+
+`@openai/codex-sdk` 0.145.0 successfully discovered and called a harmless tool served over loopback with MCP SDK 1.32.1 `WebStandardStreamableHTTPServerTransport`, using Codex `mcp_servers.<name>.url`, `bearer_token_env_var`, and a per-tool `approval_mode = "approve"`. The bearer was supplied through the SDK process environment, not argv. An unauthenticated HTTP request was rejected. With `approvalPolicy: "never"` and no per-tool approval setting the call was cancelled before reaching the server. This probe used `gpt-5.6-terra`; inherited `gpt-6.1-terra` and an attempted `gpt-5.4` were rejected by this account, so model compatibility is a separate possible failure. The probe does not prove Neo tool scope, governance, lifetime, customer isolation, or the actual UI failure.
