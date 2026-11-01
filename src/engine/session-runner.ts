@@ -1294,32 +1294,39 @@ function startCodexOrder(
     if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
     reportCodexExternalMcp(deps, handlers);
     let final: RunResult = { ok: false, sessionId: deps.resume ?? "", summary: "", costUsd: 0 };
-    let bridges: Awaited<ReturnType<typeof codexMcpBridges>> = [];
+    let threadId = deps.resume;
     try {
-      bridges = await codexMcpBridges(deps);
-      const client = await makeCodexClient(deps, order.folder, handlers, bridges);
-      const options = codexThreadOptions(order, deps);
-      const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
       for (;;) {
         const next = await queue.next();
         if (next === undefined) break;
-        currentAbort = new AbortController();
-        turnSince = Date.now();
-        turnActive = true;
-        observe(() => handlers.onTurnStart?.(1));
-        final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
-        turnActive = false;
-        observe(() => handlers.onTurnEnd?.());
-        currentAbort = undefined;
-        if (!final.ok) break;
+        // The Codex SDK starts a new CLI process for every turn. Each process initializes a new
+        // MCP session, so its run-scoped servers need a fresh transport and capability each time.
+        const bridges = await codexMcpBridges(deps);
+        try {
+          const client = await makeCodexClient(deps, order.folder, handlers, bridges);
+          if (interruptRequested) break;
+          const options = codexThreadOptions(order, deps);
+          const thread = threadId ? client.resumeThread(threadId, options) : client.startThread(options);
+          currentAbort = new AbortController();
+          turnSince = Date.now();
+          turnActive = true;
+          observe(() => handlers.onTurnStart?.(1));
+          const turn = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
+          final = { ...turn, sessionId: turn.sessionId || threadId || "" };
+          if (turn.sessionId) threadId = turn.sessionId;
+          turnActive = false;
+          observe(() => handlers.onTurnEnd?.());
+          currentAbort = undefined;
+          if (!final.ok) break;
+        } finally {
+          await Promise.all(bridges.map((bridge) => bridge.close()));
+        }
       }
     } catch (err) {
       if (turnActive) observe(() => handlers.onTurnEnd?.());
       turnActive = false;
       const reason = err instanceof Error ? err.message : String(err);
       final = { ok: false, sessionId: final.sessionId, summary: reason, costUsd: 0, apiError: apiErrorFromCodexMessage(reason) };
-    } finally {
-      await Promise.all(bridges.map((bridge) => bridge.close()));
     }
     if (interruptRequested && !final.summary) {
       handlers.onEvent?.("session_interrupted");

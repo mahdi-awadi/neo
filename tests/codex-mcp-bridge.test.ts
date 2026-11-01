@@ -84,3 +84,38 @@ test('a failed Codex client startup tears down its scoped MCP listener', async (
   })).rejects.toThrow('startup failed');
   await expect(fetch(url)).rejects.toThrow();
 });
+
+test('successive Codex turns each initialize Neo tools and keep the same thread', async () => {
+  const { startOrder } = await import('../src/engine/session-runner');
+  const { registerCodexMcpTools } = await import('../src/engine/codex-mcp-bridge');
+  let calls = 0;
+  const server = createSdkMcpServer({ name: 'neo', version: '1', tools: [tool('probe', 'probe', {}, async () => { calls++; return { content: [{ type: 'text', text: 'ok' }] }; })] });
+  registerCodexMcpTools(server, ['probe']);
+  const statuses: number[] = []; const resumes: string[] = []; const urls: string[] = []; const tokens: string[] = [];
+  let run: ReturnType<typeof startOrder>; let settled = 0;
+  const factory = async (options: any) => {
+    const cfg = options.config.mcp_servers.neo;
+    urls.push(cfg.url); tokens.push(options.env[cfg.bearer_token_env_var]);
+    const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${options.env[cfg.bearer_token_env_var]}` };
+    const thread = (id: string | null) => ({ id, async runStreamed() {
+      const init = await fetch(cfg.url, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }) });
+      statuses.push(init.status);
+      if (!init.ok) throw new Error(`MCP initialize returned ${init.status}`);
+      const session = init.headers.get('mcp-session-id')!;
+      const call = await fetch(cfg.url, { method: 'POST', headers: { ...headers, 'mcp-session-id': session }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'probe', arguments: {} } }) });
+      if (!call.ok) throw new Error(`MCP call returned ${call.status}`);
+      return { events: (async function* () { if (!id) yield { type: 'thread.started', thread_id: 'thread-1' }; yield { type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } }; })() };
+    } });
+    return { startThread: () => thread(null), resumeThread: (id: string) => { resumes.push(id); return thread(id); } } as never;
+  };
+  run = startOrder({ id: 'two-turns', source: 'neo', folder: '/tmp', task: 'first', chatId: 1, createdAt: Date.now() }, {
+    onMessage() {}, onEscalation: async () => 'deny', onSettled: () => { if (++settled === 1) run.followUp('second', 'after-turn'); else run.close(); },
+  }, { provider: 'codex', mcpServers: { neo: server }, codexFactory: factory });
+  const result = await run.done;
+  expect(statuses).toEqual([200, 200]);
+  expect(calls).toBe(2);
+  expect(resumes).toEqual(['thread-1']);
+  expect(new Set(tokens).size).toBe(2);
+  for (const url of urls) await expect(fetch(url)).rejects.toThrow();
+  expect(result.ok).toBe(true);
+}, 10_000);

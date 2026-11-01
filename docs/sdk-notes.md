@@ -206,7 +206,10 @@ Neo wrapper behavior:
 - `providers.ownWork: "codex"` selects the Codex adapter at `runOrder` / `startOrder`.
 - Codex live sessions are implemented as sequential turns on one Codex thread: the first task starts
   a turn, `followUp()` queues later turns, `close()` resolves after the queue drains, and
-  `interrupt()` aborts the active turn via `AbortSignal`.
+  `interrupt()` aborts the active turn via `AbortSignal`. The SDK launches a fresh CLI process for
+  each turn. Each process initializes a fresh MCP session, so Neo reconnects its scoped servers and
+  creates new bridge capabilities per turn, while resuming the same Codex thread. Reusing a single
+  stateful MCP transport made the tools disappear after the first turn (verified 2026-11-01).
 - Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server shape. Neo maps read-only judge deny-lists to `sandboxMode: "read-only"`. Registered Neo-owned servers are bridged via authenticated loopback; unrelated configured MCP servers are disabled for the run. Unsupported external servers and Claude-only controls are reported. This does not make the Codex sandbox equivalent to the Claude governor.
 
 ## Resume ids are private to their SDK (verified 2026-07-31)
