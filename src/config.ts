@@ -284,6 +284,9 @@ export interface NeoConfig {
   /** Longest Telegram 429 `retry_after` (ms) the flood gate waits out and retries; a longer one
    *  holds sends to that chat until it lifts (frontends/telegram-flood.ts). Default 30 s. */
   telegramFloodMaxWaitMs: number;
+  /** Backoff before one retry of an idempotent Telegram plan-card caption edit after a transient
+   *  gateway response. A bad value keeps the dev-safe default of 250 ms. */
+  telegramPlanEditRetryMs?: number;
   /** Thresholds behind the DERIVED session state (working/quiet/idle/awaiting-operator/wedged) the
    *  operator and the company session are shown. See engine/liveness.ts + ADR 0003. Optional:
    *  absent ⇒ DEFAULT_LIVENESS_THRESHOLDS at the point of use, so no caller has to thread it. */
@@ -334,8 +337,8 @@ export interface NeoConfig {
   /** The repo scan (spec §7): how often git + GitHub are read for every tracked repo, and how long one
    *  git/gh call may take. Optional like `plans`; `loadConfig` always fills it. */
   github?: GithubCfg;
-  /** Per-project scan settings by project name (spec §7): trackedBranches, driftPairs, issueLabel,
-   *  ignoreKinds, deployedVersionUrl, healthUrl. No repo, branch or label name is in code. */
+  /** Per-project scan + explicit Codex Docker workflow settings by project name (spec §7).
+   * No repo, branch, label or Docker socket name is in code. */
   projects?: Record<string, ProjectCfg>;
   /** The web console's language when the operator has not picked one (its EN | ع switch sets a
    *  cookie): "en" or "ar". Optional like `trace`; `loadConfig` always fills it. */
@@ -482,6 +485,7 @@ const DEFAULTS = {
   messageRoutesCacheCap: 2_000,
   telegramToolSteps: false,
   telegramFloodMaxWaitMs: 30_000,
+  telegramPlanEditRetryMs: 250,
   liveness: DEFAULT_LIVENESS_THRESHOLDS,
   // Operator order (2026-10-06): out-of-folder writes are always approved (ADR-0012).
   governor: DEFAULT_GOVERNOR_CFG,
@@ -670,6 +674,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     messageRoutesCacheCap: fileCfg.messageRoutesCacheCap ?? DEFAULTS.messageRoutesCacheCap,
     telegramToolSteps: fileCfg.telegramToolSteps ?? DEFAULTS.telegramToolSteps,
     telegramFloodMaxWaitMs: fileCfg.telegramFloodMaxWaitMs ?? DEFAULTS.telegramFloodMaxWaitMs,
+    telegramPlanEditRetryMs: wholeAtLeast(fileCfg.telegramPlanEditRetryMs, 1, DEFAULTS.telegramPlanEditRetryMs),
     liveness: { ...DEFAULTS.liveness, ...(fileCfg.liveness ?? {}) },
     governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },

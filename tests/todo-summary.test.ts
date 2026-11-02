@@ -108,3 +108,15 @@ test("review: an API error is never a summary; a held reserve skips the run; one
   expect([a, b]).toEqual(["Make attention items explain themselves", undefined]); // the second found it busy
   expect(runs).toBe(1);
 });
+
+test('the tainted summary worker does not call Claude while Codex is selected', async () => {
+  let provider: 'subscription' | 'codex' = 'codex';
+  let calls = 0;
+  const run = (async () => { calls++; return { ok: true, summary: 'A useful short title', costUsd: 0 }; }) as never;
+  const summarize = createTodoSummarizer({ cfg: DEFAULT_TODO_SUMMARY_CFG, model: 'claude-haiku-4-5', run, provider: () => provider });
+  expect(await summarize(todo)).toBeUndefined();
+  expect(calls).toBe(0);
+  provider = 'subscription';
+  expect(await summarize(todo)).toBe('A useful short title');
+  expect(calls).toBe(1);
+});

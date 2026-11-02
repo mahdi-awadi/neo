@@ -229,12 +229,13 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
   const queuedSide = (folder: string) => ledger.listTodos({ folder, statuses: ["queued"], lane: "side" });
   const lanesCfg = (): LanesCfg => q.lanes?.() ?? DEFAULT_LANES_CFG;
   /** May a side todo of `folder` start now (the caps, the provider, a hold)? */
-  const sideCheck = (folder: string, deps: DispatchDeps, workClass: WorkClass) =>
+  const sideCheck = (folder: string, deps: DispatchDeps, workClass: WorkClass, kind?: LaneKind) =>
     canStartSide(
       {
         sideRunning: ledger.listTodos({ folder, statuses: ["running"], lane: "side" }).length,
         hostRunning: ledger.listTodos({ statuses: ["running"] }).length,
         codex: deps.providers?.ownWork === "codex",
+        kind,
         hold: holdReason(deps, workClass, now()),
       },
       lanesCfg(),
@@ -610,7 +611,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
     for (;;) {
       const next = queuedSide(folder)[0];
       if (!next) return started;
-      const can = sideCheck(folder, l.deps, next.workClass);
+      const can = sideCheck(folder, l.deps, next.workClass, next.laneKind ?? undefined);
       if ("queue" in can) {
         toMainLane(next, can.queue);
         continue;
@@ -784,7 +785,7 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       // in the main lane: a big order needs the plan gate, which a side lane does not have (ADR-0072).
       let sideNote = sideKind && sized.size === "big" ? " (not as a side lane: a big order runs in the main lane, where its plan waits for the operator's approval)" : "";
       if (sideKind && sized.size !== "big" && mustWait) {
-        const can = sideCheck(folder, deps, p.workClass);
+        const can = sideCheck(folder, deps, p.workClass, sideKind);
         if ("queue" in can) {
           sideNote = ` (not as a side lane: ${can.queue})`;
         } else {

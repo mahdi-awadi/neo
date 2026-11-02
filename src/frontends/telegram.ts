@@ -34,7 +34,7 @@ import { routeReply, answerDecision } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type CommandResult, type SelectableProject, type TelegramCommand } from "../engine/commands";
 import { handleLoop, listLoops, matchLoop, launchLoop } from "../engine/loops";
 import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry, type InboxSendOutcome } from "../engine/inbox-actions";
-import type { IngressDeps } from "../engine/ingress";
+import { TaintedIsolationUnavailable, type IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
 import { handleToolCardTap } from "./telegram-tool-cards";
@@ -268,6 +268,7 @@ export function createTelegramBot(
   // the operator is told how many messages they missed.
   floodGate = createFloodGate({
     maxWaitMs: cfg.telegramFloodMaxWaitMs,
+    planEditRetryMs: cfg.telegramPlanEditRetryMs,
     onRecovered: (chatId, dropped) =>
       faults.contain("telegram.send", () =>
         bot.api.sendMessage(
@@ -871,7 +872,19 @@ export function createTelegramBot(
       faults.contain(
         "telegram.inboxDraft",
         async () => {
-          const draft = await draftInboxReply(inbox, id, "", briefDeps(chatId));
+          let draft: string | undefined;
+          try {
+            draft = await draftInboxReply(inbox, id, "", briefDeps(chatId));
+          } catch (error) {
+            if (!(error instanceof TaintedIsolationUnavailable)) throw error;
+            await bot.api.sendMessage(chatId, error.message);
+            const view = renderInboxItem(inbox, id);
+            if (view) {
+              const kb = inboxItemKeyboard(view.item.id, view.item.status);
+              await bot.api.sendMessage(chatId, view.text, kb ? { reply_markup: kb } : undefined);
+            }
+            return;
+          }
           if (draft === undefined) {
             await bot.api.sendMessage(chatId, "That message is no longer in the inbox.");
             return;
@@ -1355,4 +1368,3 @@ export function superviseTelegramPolling(
   };
   void run().catch((e) => deps.report(e)); // report/exit/sleep throwing must not become a rejection
 }
-

@@ -93,6 +93,84 @@ test("a side brief for a BUSY project starts now as a side lane; the main run go
   expect(s.ledger.listTodos({ lane: "main", statuses: ["running"] })).toHaveLength(1);
 });
 
+test("Codex queues main work and runs a read-only side check beside it with restricted tools", async () => {
+  const s = setup({ deps: { providers: { ownWork: "codex" } as never } });
+  await s.submit("eticket-v3", "build the feature");
+  await settle();
+  const out = await s.submit("eticket-v3", "inspect project status", "side", "read-only");
+  await settle();
+  expect(out).toContain("side lane (read-only)");
+  expect(s.runs).toHaveLength(2);
+  const run = s.runs[1]!.deps;
+  expect(run).toMatchObject({ provider: "codex", lane: { kind: "read-only" }, codexSandboxMode: "read-only", codexApprovalPolicy: "never", codexNetworkAccessEnabled: false });
+  expect(run.mcpServers).toEqual({});
+  expect(s.ledger.listTodos({ lane: "main", statuses: ["running"] })).toHaveLength(1);
+});
+
+test("Codex main queue advances in order while a read-only side lane runs", async () => {
+  const s = setup({ deps: { providers: { ownWork: "codex" } as never } });
+  await s.submit("eticket-v3", "first main task");
+  await settle();
+  await s.submit("eticket-v3", "read-only side", "side", "read-only");
+  const queued = await s.submit("eticket-v3", "second main task");
+  await settle();
+  expect(queued).toContain("queued as");
+  expect(s.runs).toHaveLength(2);
+  s.runs[0]!.finish(ok());
+  await settle(80);
+  expect(s.runs).toHaveLength(3);
+  expect(s.runs[2]!.task).toContain("second main task");
+  expect(s.runs[2]!.deps.provider).toBe("codex");
+  expect(s.ledger.listTodos({ lane: "side", statuses: ["running"] })).toHaveLength(1);
+});
+
+test("Codex runs work for different projects independently while each main queue stays ordered", async () => {
+  const s = setup({ deps: { providers: { ownWork: "codex" } as never } });
+  await s.submit("eticket-v3", "first project work");
+  await s.submit("waselni", "other project work");
+  await s.submit("eticket-v3", "queued project work");
+  await settle();
+  expect(s.runs).toHaveLength(2);
+  expect(s.runs.map((run) => run.deps.provider)).toEqual(["codex", "codex"]);
+  expect(s.ledger.listTodos({ lane: "main", statuses: ["queued"] })).toHaveLength(1);
+  s.runs[0]!.finish(ok());
+  await settle(100);
+  expect(s.runs).toHaveLength(3);
+  expect(s.runs[2]!.task).toContain("queued project work");
+  expect(s.runs[2]!.deps.provider).toBe("codex");
+});
+
+test("Codex read-only side checks wait for a slot and start without waiting for the main queue", async () => {
+  const s = setup({ deps: { providers: { ownWork: "codex" } as never } });
+  await s.submit("eticket-v3", "main build");
+  await settle();
+  await s.submit("eticket-v3", "first check", "side", "read-only");
+  await settle();
+  expect(await s.submit("eticket-v3", "second check", "side", "read-only")).toContain("side slot");
+  expect(s.ledger.listTodos({ lane: "side", statuses: ["queued"] })).toHaveLength(1);
+  s.runs[1]!.finish(ok());
+  await settle(100);
+  expect(s.runs).toHaveLength(3);
+  expect(s.runs[2]!.task).toContain("second check");
+  expect(s.runs[2]!.deps.codexSandboxMode).toBe("read-only");
+});
+
+test("switching to Codex moves an unsupported queued side lane into the main queue", async () => {
+  const providers = { ownWork: "subscription" as "subscription" | "codex", customerWork: "gemini" as const };
+  const s = setup({ deps: { providers } });
+  await s.submit("eticket-v3", "main build");
+  await settle();
+  await s.submit("eticket-v3", "first check", "side", "read-only");
+  await settle();
+  await s.submit("eticket-v3", "database task", "side", "ops");
+  providers.ownWork = "codex";
+  s.runs[1]!.finish(ok());
+  await settle(100);
+  expect(s.runs).toHaveLength(2);
+  expect(s.ledger.listTodos({ lane: "side", statuses: ["queued"] })).toHaveLength(0);
+  expect(s.ledger.listTodos({ lane: "main", statuses: ["queued"] }).some((todo) => todo.brief === "database task")).toBe(true);
+});
+
 test("per-project cap: the second side brief waits as a queued side todo and starts when the slot frees", async () => {
   const s = setup();
   await s.submit("eticket-v3", "build");

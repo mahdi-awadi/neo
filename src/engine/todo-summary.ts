@@ -40,6 +40,8 @@ export function summaryPrompt(brief: string): string {
 export function createTodoSummarizer(deps: {
   cfg: TodoSummaryCfg;
   model: string;
+  /** Codex cannot guarantee the zero-tool sandbox this tainted brief requires. */
+  provider?: () => import("../types").Provider;
   run?: typeof runOrder;
   now?: () => number;
   /** False skips the run (the deterministic summary stays): the reserve is held or the API is throttled. */
@@ -52,7 +54,7 @@ export function createTodoSummarizer(deps: {
   // its deterministic summary.
   let busy = false;
   return async (t) => {
-    if (!deps.cfg.ai || busy || deps.mayRun?.() === false) return undefined;
+    if (!deps.cfg.ai || busy || (deps.provider && deps.provider() !== "subscription") || deps.mayRun?.() === false) return undefined;
     busy = true;
     const order: Order = { id: crypto.randomUUID(), source: "neo", folder: t.folder, task: summaryPrompt(t.brief), chatId: SUMMARY_CHAT, createdAt: (deps.now ?? Date.now)() };
     let text = "";

@@ -83,6 +83,13 @@ export function profileDeps(
     const model = pinnedModel(cfg.models, planner.model) ?? planner.model;
     d.agents = { planner: { description: PLANNER_DESCRIPTION, prompt: plannerPrompt(), model, effort: planner.effort }, ...(d.agents ?? {}) };
   }
+  if (PLANNER_PATHS.has(path) && sdkProvider(d.provider) === "codex" && !d.codexPlanner) {
+    const model = cfg.workerEnv.NEO_CODEX_PLANNER_MODEL?.trim();
+    const configuredEffort = cfg.workerEnv.NEO_CODEX_PLANNER_EFFORT?.trim();
+    const effort = configuredEffort && ["minimal", "low", "medium", "high", "xhigh"].includes(configuredEffort)
+      ? configuredEffort as "minimal" | "low" | "medium" | "high" | "xhigh" : "high";
+    if (model) d.codexPlanner = { model, effort, instructions: plannerPrompt() };
+  }
   const env = filterSdkEnv(d.provider, { ...cfg.workerEnv, ...(base.env ?? {}) });
   if (Object.keys(env).length) d.env = env;
   return d;

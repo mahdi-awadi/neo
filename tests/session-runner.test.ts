@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { runOrder, startOrder, runConfig, type RunResult } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
+import { existsSync, readFileSync } from "node:fs";
 
 function order(task = "do it", folder = "/tmp"): Order {
   return { id: "o1", source: "neo", folder, task, chatId: 1, createdAt: 1 };
@@ -694,6 +695,173 @@ test("runOrder can execute through the Codex SDK adapter", async () => {
   expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "working through codex", costUsd: 0 });
 });
 
+test("a writable Codex turn receives its prepared native permission profile", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let clientOptions: Record<string, unknown> | undefined;
+
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    {
+      provider: "codex",
+      codexFactory: async (options) => {
+        clientOptions = options as Record<string, unknown>;
+        return f.factory();
+      },
+      codexWorkspaceFactory: async () => ({
+        config: {
+          default_permissions: "neo-project",
+          "permissions.neo-project.extends": ":workspace",
+          "permissions.neo-project.filesystem.\"/tmp/project/.git\"": "write",
+          "permissions.neo-project.network.enabled": true,
+          "permissions.neo-project.network.unix_sockets.\"/var/run/docker.sock\"": "allow",
+        },
+        env: { DOCKER_HOST: "unix:///var/run/docker.sock", DOCKER_CONTEXT: "" },
+      }),
+      codexNetworkAccessEnabled: true,
+    },
+  );
+
+  expect(f.starts[0]).toMatchObject({
+    workingDirectory: "/tmp",
+  });
+  expect(f.starts[0]).not.toHaveProperty("sandboxMode");
+  expect(f.starts[0]).not.toHaveProperty("networkAccessEnabled");
+  expect(clientOptions?.config).toMatchObject({
+    default_permissions: "neo-project",
+    "permissions.neo-project.filesystem.\"/tmp/project/.git\"": "write",
+    "permissions.neo-project.network.enabled": true,
+    "permissions.neo-project.network.unix_sockets.\"/var/run/docker.sock\"": "allow",
+  });
+  expect((clientOptions?.env as Record<string, string>).DOCKER_HOST).toBe("unix:///var/run/docker.sock");
+});
+
+test("Codex planner role reaches the SDK with its own model and is removed after the turn", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let rolePath = "";
+  let roleContent = "";
+  let config: Record<string, unknown> = {};
+  const result = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Review the plan." },
+    codexWorkspaceFactory: async () => ({ env: {} }),
+    codexFactory: async (options) => {
+      config = options.config as Record<string, unknown>;
+      rolePath = config["agents.planner.config_file"] as string;
+      roleContent = readFileSync(rolePath, "utf8");
+      return f.factory();
+    },
+  });
+  expect(result.ok).toBe(true);
+  expect(config["features.multi_agent"]).toBe(true);
+  expect(config.developer_instructions).toContain("planner");
+  expect(roleContent).toContain('model = "gpt-6-astra"');
+  expect(roleContent).toContain('model_reasoning_effort = "high"');
+  expect(roleContent).toContain('developer_instructions = "Review the plan."');
+  expect(f.prompts[0]).toContain("delegate");
+  expect(f.prompts[0]).toContain("do it");
+  expect(existsSync(rolePath)).toBe(false);
+});
+
+test("Codex worker uses a configured default effort while explicit effort still wins", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  for (const effort of [undefined, "high"] as const) {
+    await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+      provider: "codex", codexFactory: f.factory, env: { NEO_CODEX_EFFORT: "medium" }, effort,
+    });
+  }
+  expect((f.starts[0] as { modelReasoningEffort: string }).modelReasoningEffort).toBe("medium");
+  expect((f.starts[1] as { modelReasoningEffort: string }).modelReasoningEffort).toBe("high");
+});
+
+test("Codex exposes native subagent activity while waiting for a planner", async () => {
+  const f = fakeCodexFactory({ turns: () => [
+    { type: "item.started", item: { type: "collab_tool_call", tool: "wait", status: "in_progress" } },
+    { type: "item.completed", item: { type: "collab_tool_call", tool: "wait", status: "completed" } },
+    { type: "turn.completed", usage: null },
+  ] });
+  const activity: string[] = [];
+  const messages: string[] = [];
+  await runOrder(order(), { onMessage: (text) => messages.push(text), onEscalation: async () => "deny", onActivity: (text) => activity.push(text) }, {
+    provider: "codex", codexFactory: f.factory,
+  });
+  expect(activity).toContain("Agent: wait");
+  expect(messages.some((text) => text.includes("Agent") && text.includes("wait"))).toBe(true);
+});
+
+test("Codex removes a planner role even when the SDK client fails to start", async () => {
+  let path = "";
+  await expect(runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Plan." },
+    codexWorkspaceFactory: async () => ({ env: {} }),
+    codexFactory: async (options) => {
+      path = (options.config as Record<string, string>)["agents.planner.config_file"]!;
+      throw new Error("client failed");
+    },
+  })).rejects.toThrow("client failed");
+  expect(path).not.toBe("");
+  expect(existsSync(path)).toBe(false);
+});
+
+test("Codex read-only runs never receive a planner role even if one was supplied", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let options: Record<string, unknown> = {};
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash"],
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Plan." },
+    codexFactory: async (cfg) => { options = cfg as Record<string, unknown>; return f.factory(); },
+  });
+  expect((options.config as Record<string, unknown>)["agents.planner.config_file"]).toBeUndefined();
+  expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only" });
+});
+
+test("a Codex read-only side lane cannot override its sandbox, approvals or networking", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let clientConfig: Record<string, unknown> = {};
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex", codexFactory: async (opts) => { clientConfig = opts.config as Record<string, unknown>; return f.factory(); },
+    lane: { kind: "read-only", projectFolder: "/tmp" },
+    codexSandboxMode: "danger-full-access", codexApprovalPolicy: "on-request", codexNetworkAccessEnabled: true,
+    codexWorkspaceProfile: true, codexWorkspaceConfig: { default_permissions: "unrestricted" },
+  });
+  expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only", approvalPolicy: "never", networkAccessEnabled: false, webSearchMode: "disabled" });
+  expect(clientConfig).toMatchObject({ "features.hooks": false, "features.plugins": false, "features.multi_agent": false });
+  expect(clientConfig.default_permissions).toBeUndefined();
+});
+
+test("Codex refuses other side-lane kinds even if the provider changes after queue selection", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  await expect(runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex", codexFactory: f.factory, lane: { kind: "ops", projectFolder: "/tmp" },
+  })).rejects.toThrow("Codex only supports read-only side lanes");
+  expect(() => startOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex", codexFactory: f.factory, lane: { kind: "code", projectFolder: "/tmp" },
+  })).toThrow("Codex only supports read-only side lanes");
+  expect(f.starts).toHaveLength(0);
+});
+
+test("a read-only Codex turn never creates a workspace capability", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let prepared = false;
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    {
+      provider: "codex",
+      codexFactory: f.factory,
+      disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash"],
+      codexWorkspaceFactory: async () => {
+        prepared = true;
+        throw new Error("must not prepare read-only run");
+      },
+    },
+  );
+  expect(prepared).toBe(false);
+  expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only" });
+});
+
 test("Codex adapter translates Claude model aliases before opening a thread", async () => {
   const f = fakeCodexFactory({
     turns: () => [
@@ -706,7 +874,8 @@ test("Codex adapter translates Claude model aliases before opening a thread", as
   await runOrder(
     order(),
     { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (kind, data) => events.push({ kind, data }) },
-    { provider: "codex", codexFactory: f.factory, model: "claude-3-5-sonnet-latest" },
+    // Keep the alias assertion hermetic when the daemon host selects a Codex model globally.
+    { provider: "codex", codexFactory: f.factory, model: "claude-3-5-sonnet-latest", env: { NEO_CODEX_MODEL: "" } },
   );
 
   expect(f.starts[0]).toMatchObject({
@@ -802,6 +971,72 @@ test("startOrder queues follow-ups as sequential Codex SDK turns on the same thr
   expect(f.prompts).toEqual(["first", "second"]);
   expect(messages).toEqual(["ack:first", "ack:second"]);
   expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "ack:second" });
+});
+
+test("each writable Codex follow-up receives a newly prepared workspace profile", async () => {
+  const f = fakeCodexFactory({
+    turns: (input) => [
+      { type: "thread.started", thread_id: "codex-thread-1" },
+      { type: "item.completed", item: { id: crypto.randomUUID(), type: "agent_message", text: `ack:${input}` } },
+      { type: "turn.completed", usage: null },
+    ],
+  });
+  const prepared: string[] = [];
+  const run = startOrder(
+    order("first"),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    {
+      provider: "codex",
+      codexFactory: f.factory,
+      resume: "codex-prev",
+      codexWorkspaceFactory: async () => {
+        const turn = `turn-${prepared.length + 1}`;
+        prepared.push(turn);
+        return {
+          config: { default_permissions: turn, [`permissions.${turn}.extends`]: ":workspace" },
+          env: { NEO_CODEX_WORKSPACE_TURN: turn },
+        };
+      },
+    },
+  );
+  while (f.prompts.length < 1) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.followUp("second", "after-turn");
+  while (f.prompts.length < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.close();
+  await run.done;
+
+  expect(prepared).toEqual(["turn-1", "turn-2"]);
+  expect(f.resumes).toHaveLength(2);
+  expect(f.resumes.map((call) => (call.options as { sandboxMode?: string }).sandboxMode)).toEqual([undefined, undefined]);
+});
+
+test("Codex follow-ups get separate planner role files and resume the same thread", async () => {
+  const f = fakeCodexFactory({ turns: () => [
+    { type: "thread.started", thread_id: "planner-thread" },
+    { type: "turn.completed", usage: null },
+  ] });
+  const paths: string[] = [];
+  const run = startOrder(order("first"), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Plan." },
+    codexWorkspaceFactory: async () => ({ env: {} }),
+    codexFactory: async (options) => {
+      const path = (options.config as Record<string, string>)["agents.planner.config_file"]!;
+      expect(existsSync(path)).toBe(true);
+      if (paths.length) expect(existsSync(paths[0]!)).toBe(false);
+      paths.push(path);
+      return f.factory();
+    },
+  });
+  while (f.prompts.length < 1) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.followUp("second", "after-turn");
+  while (f.prompts.length < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.close();
+  await run.done;
+  expect(new Set(paths).size).toBe(2);
+  expect(paths.every((path) => !existsSync(path))).toBe(true);
+  expect(f.resumes[0]?.id).toBe("planner-thread");
+  expect(f.prompts.every((prompt) => prompt.includes("delegate planning"))).toBe(true);
 });
 
 test("surfaces a concise result preview for Bash but stays quiet for navigation tools", async () => {
@@ -1386,4 +1621,24 @@ test("a long-running worker session runs with the Telegram channel plugin off an
   expect(opts.settingSources).toEqual(["user", "project"]);
   run.close();
   await run.done;
+});
+
+test('Codex reports external MCP servers it cannot safely attach', async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } }] });
+  const messages: string[] = [];
+  await runOrder(order(), { onMessage: text => messages.push(text), onEscalation: async () => 'deny' }, { provider: 'codex', codexFactory: f.factory, mcpServers: { playwright: { type: 'stdio', command: 'playwright' } } });
+  expect(messages.join(' ')).toContain('playwright');
+  expect(messages.join(' ')).toContain('unavailable');
+});
+
+test('Codex uses a configured default model when no provider-native model was specified', async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } }] });
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => 'deny' }, { provider: 'codex', env: { NEO_CODEX_MODEL: 'test-codex-model' }, codexFactory: f.factory });
+  expect(f.starts[0]).toMatchObject({ model: 'test-codex-model' });
+});
+
+test('an explicit Codex model wins over the configured default', async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: 'turn.completed', usage: { input_tokens: 0, output_tokens: 0 } }] });
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => 'deny' }, { provider: 'codex', model: 'explicit-model', env: { NEO_CODEX_MODEL: 'fallback-model' }, codexFactory: f.factory });
+  expect(f.starts[0]).toMatchObject({ model: 'explicit-model' });
 });

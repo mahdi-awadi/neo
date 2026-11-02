@@ -217,7 +217,7 @@ that form too (for example, `/sdk@neo_bot codex`).
 | `/inbox` | Review queued customer messages (tap one to view & reply). |
 | `/recent` (`/history`) | Recent orders and their outcomes. |
 | `/usage` | Subscription token usage + rate-limit status. |
-| `/sdk [claude\|codex]` | Show or switch the worker SDK used for new own-work sessions. |
+| `/sdk [claude\|codex]` | Persistently switch the operator SDK; running sessions finish accepted work before reopening. |
 | `/reload` | Gracefully restart the engine (drains running sessions, resumes them after). |
 | `/help` | Show the command list. |
 
@@ -262,7 +262,7 @@ routing, `telegramAllowFrom`, …) are documented in **[docs/CONFIG.md](docs/CON
 
 - **Your own work → configured operator SDK**. Default is the Claude Agent SDK on your Claude
   subscription (`"subscription"`); use `/sdk codex`, the web console switch, or set
-  `providers.ownWork` to `"codex"` to use OpenAI Codex SDK for new sessions.
+  `providers.ownWork` to `"codex"` to use OpenAI Codex SDK. A saved console or `/sdk` selection takes precedence over the config default.
 - **Customer-direct work → Gemini.** `provider-router.ts` refuses, in code, to route
   `source: "customer"` onto the subscription. Neo never offers a customer a Claude login.
 - **Budget guard.** Background SDK work shares your subscription pool, so the meter reserves

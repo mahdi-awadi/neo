@@ -206,11 +206,28 @@ Neo wrapper behavior:
 - `providers.ownWork: "codex"` selects the Codex adapter at `runOrder` / `startOrder`.
 - Codex live sessions are implemented as sequential turns on one Codex thread: the first task starts
   a turn, `followUp()` queues later turns, `close()` resolves after the queue drains, and
-  `interrupt()` aborts the active turn via `AbortSignal`.
-- Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server
-  shape. Neo therefore maps read-only judge deny-lists to `sandboxMode: "read-only"` and records a
-  `worker_compat_warning` event for Claude-only `RunDeps` fields (`mcpServers`, `skills`, `agents`,
-  `maxTurns`, unsupported `disallowedTools`) on Codex runs.
+  `interrupt()` aborts the active turn via `AbortSignal`. The SDK launches a fresh CLI process for
+  each turn. Each process initializes a fresh MCP session, so Neo reconnects its scoped servers and
+  creates new bridge capabilities per turn, while resuming the same Codex thread. Reusing a single
+  stateful MCP transport made the tools disappear after the first turn (verified 2026-11-01). Within
+  a turn, the main worker and its native subagents each initialize their own server/transport behind
+  the same authenticated bridge, so one client's initialization cannot displace another.
+- Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server shape. Neo maps read-only judge deny-lists to `sandboxMode: "read-only"`. Registered Neo-owned servers are bridged via authenticated loopback; unrelated configured MCP servers are disabled for the run. Unsupported external servers and Claude-only controls are reported. This does not make the Codex sandbox equivalent to the Claude governor.
+- Codex read-only side lanes use a forced read-only sandbox, no network, no escalation, and no MCP,
+  plugins, hooks or subagents (ADR-0078). Other side-lane kinds stay in the main queue because their
+  command-level restrictions cannot be enforced by the Codex SDK.
+- With `NEO_CODEX_PLANNER_MODEL` in `workerEnv`, project, dispatch and loop turns register a native
+  Codex planner role in a daemon-private temporary role file. The configured planner effort defaults
+  to `high`; Neo deletes the file at the end of each turn. The main agent is instructed to invoke
+  the planner for substantial planning and review; delegation remains an SDK/model decision. A real
+  SDK 0.166.0 run verified a GPT-6.1 Sol worker spawning a GPT-6 Astra planner on this account.
+- Writable project turns with Git metadata or an opted-in Docker workflow use a generated native
+  Codex permission profile instead of `sandboxMode: "workspace-write"` (ADR-0074). Neo passes its
+  exact git-dir/common-git-dir through a short-lived wrapper as TOML tables: the SDK splits dotted
+  path keys incorrectly. The wrapper also adds `codex exec --ignore-user-config`, preventing an
+  ambient legacy sandbox setting from overriding the profile. An explicit Docker socket opt-in
+  enables direct networking on Linux, including other reachable sockets and network endpoints; the
+  Docker socket must also pass normal host UID/GID/mode checks.
 
 ## Resume ids are private to their SDK (verified 2026-07-31)
 
@@ -268,3 +285,9 @@ Run with a real streaming-input `query()` (haiku), a foreground Bash `bash -c 's
 - **A PreToolUse hook's `updatedInput` applies with NO permission decision,** even when a settings allow
   rule (`allowedTools: ["Bash"]`) skips `canUseTool`: `echo MARK=$NEO_TOOL_USE_ID` printed the
   hook-injected id. The governor hook is therefore the one place that adds the per-call marker.
+
+### Codex run-scoped MCP transport spike (2026-11-01)
+
+`@openai/codex-sdk` 0.145.0 successfully discovered and called a harmless tool served over loopback with MCP SDK 1.32.1 `WebStandardStreamableHTTPServerTransport`, using Codex `mcp_servers.<name>.url`, `bearer_token_env_var`, and a per-tool `approval_mode = "approve"`. The bearer was supplied through the SDK process environment, not argv. An unauthenticated HTTP request was rejected. With `approvalPolicy: "never"` and no per-tool approval setting the call was cancelled before reaching the server. This probe used `gpt-5.6-terra`; inherited `gpt-6.1-terra` and an attempted `gpt-5.4` were rejected by this account, so model compatibility is a separate possible failure. The probe does not prove Neo tool scope, governance, lifetime, customer isolation, or the actual UI failure.
+
+The 2026-11-01 disposable end-to-end smoke used the actual Neo runner and dispatch tool: a Codex company worker dispatched a Codex project worker, and the child returned the marker without modifying project files. The actual reported UI failure still needs verification against the running deployment.

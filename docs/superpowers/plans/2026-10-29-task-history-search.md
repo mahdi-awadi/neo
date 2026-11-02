@@ -14,6 +14,7 @@ and `bun test` green, then make one commit for the task. Start long test runs in
 them. After the verify step and the reviews, merge into `dev`, never into `master`. Do not restart the
 daemon. The restart is the operator's.
 
+
 **Why approval:**
 
 - a ledger migration (v17: a change feed with triggers on the source tables)
@@ -375,7 +376,6 @@ adds the commands for the verify step. Task 19 is the docs. Task 20 is the live 
   - Create: `docs/history.md` (the operator guide: search tips, the modes, forget, the model-change
     procedure, the down states).
   - Done when: each doc matches the code.
-
 - [ ] **20. Verify (live, before the merge)**
   - Status 2026-10-30: steps 1–6, 8 (keyword-only), 9 (embedder drills), 10 and the reviews are done; numbers in
     ADR-0067 "Measured". Open, waiting for ops to reissue Neo's shared-Qdrant key (note #547): the `--verify`

@@ -38,7 +38,7 @@ import { feedLine, reasonHtml, type LineTone } from "./feed-line";
 import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
 import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
-import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
+import { createWorkerSdkSelection, type WorkerSdkState } from "./sdk-choice";
 import type { Cause, ThreadChange, ThreadCloseResult } from "./trace";
 import { faults } from "./fault";
 import { applyPlanAction, planActions, planDepsFrom, planState, type PlanAction, type PlanActionResult, type PlanState } from "./plans";
@@ -489,7 +489,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       emit({ type: "loops", items: listLoops(opts.engine.ledger) });
     },
     setSdk(provider) {
-      const result = setWorkerSdk(opts.engine.cfg, provider);
+      const result = createWorkerSdkSelection(opts.engine.cfg, opts.engine.ledger, opts.engine.registry).set(provider);
       if (result.ok) emit({ type: "sdk", sdk: result.sdk });
       return result.ok ? { ok: true, sdk: result.sdk } : { ok: false, error: result.error, sdk: result.sdk };
     },

@@ -70,11 +70,20 @@ export function ingressToolDeps(deps: IngressDeps): DispatchDeps {
   };
 }
 
+export class TaintedIsolationUnavailable extends Error {
+  constructor() { super("Customer drafting is unavailable with the selected SDK because zero-tool isolation cannot be guaranteed. Switch to Claude to draft this reply."); }
+}
+
 export async function runCompanyBrief(
   brief: string,
   deps: IngressDeps,
   opts: { tainted?: boolean } = {},
 ): Promise<string> {
+  // Codex's read-only sandbox still permits tools. Customer-tainted text requires a true
+  // zero-tool worker, so do not run or silently fall back to the other operator SDK.
+  if (opts.tainted && (deps.cfg.providers?.ownWork ?? "subscription") !== "subscription") {
+    throw new TaintedIsolationUnavailable();
+  }
   const now = deps.now ?? (() => Date.now());
   const run = deps.run ?? runOrder;
   const company = deps.registry.getDefault();

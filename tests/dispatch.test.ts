@@ -72,6 +72,26 @@ test("dispatch returns immediately while the sub-run is still going", async () =
   expect(interrupted).toBe(false); // still running in the background — not awaited, not killed
 });
 
+test("a dispatch grants only the named project's configured Codex Docker socket", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  d.providers = { ownWork: "codex", customerWork: "gemini" };
+  d.projects = {
+    "eticket-v3": { codexDockerSocket: "/run/neo/eticket.sock" },
+    other: { codexDockerSocket: "/run/neo/other.sock" },
+  };
+  let socket: string | undefined;
+  const start = (_order: unknown, _handlers: unknown, runDeps?: import("../src/engine/session-runner").RunDeps) => {
+    socket = runDeps?.codexDockerSocket;
+    return { followUp() {}, queued: () => 0, interrupt: async () => {}, close() {}, done: Promise.resolve({ ok: true, sessionId: "s", summary: "", costUsd: 0 }) };
+  };
+
+  await dispatchToProject("eticket-v3", "use Docker", d, 1, { start: start as never, now: () => 0, root });
+
+  expect(socket).toBe("/run/neo/eticket.sock");
+});
+
 test("dispatch records dispatch_start then dispatch_end in the event log", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
@@ -1081,6 +1101,16 @@ test("ask_operator description forces self-challenge, one decision per call, and
   expect(desc).toContain("one decision");
   expect(desc).toContain("non-technical");
   expect(desc).toContain("operator's language");
+});
+
+test("Codex company tools describe the side lanes that can actually run", () => {
+  const { d } = makeDeps();
+  d.providers = { ownWork: "codex", customerWork: "gemini" };
+  const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/tmp" });
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { description: string }> } };
+  const description = neo.instance._registeredTools.dispatch!.description;
+  expect(description).toContain("Codex supports read-only side lanes");
+  expect(description).toContain("ops, test and code");
 });
 
 test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {
@@ -2287,4 +2317,81 @@ test("the preamble sends work for another project through project_notes", () => 
   const out = briefWithProjectDocs("");
   expect(out).toContain("`project_notes`");
   expect(out).not.toContain("goes back to Neo to dispatch");
+});
+
+test('a provider change during dispatch preparation never resumes the old SDK thread', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'neo-dispatch-switch-'));
+  const folder = join(root, 'project'); mkdirSync(folder);
+  const { d } = makeDeps();
+  const providers = { ownWork: 'subscription' as 'subscription' | 'codex', customerWork: 'gemini' as const };
+  d.providers = providers;
+  const previous: Order = { id: 'old', source: 'neo', folder, task: 'old', chatId: SUB_CHAT, createdAt: 1 };
+  d.ledger.recordOrder(previous); d.ledger.recordSession(previous.id, 'claude-only-id', 'subscription');
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  d.codebaseMemory = { ensureIndexed: async () => { enter(); await held; return {}; } } as never;
+  let seen: { provider?: string; resume?: string } | undefined;
+  await dispatchToProject('project', 'test switch', d, 1, { root, start: ((_order: unknown, _handlers: unknown, deps?: import("../src/engine/session-runner").RunDeps) => { seen = { provider: deps?.provider, resume: deps?.resume }; return { followUp() {}, interrupt: async () => {}, close() {}, queued: () => 0, done: Promise.resolve({ ok: true, sessionId: 'new', summary: 'done', costUsd: 0 }) }; }) as never });
+  await entered;
+  providers.ownWork = 'codex'; release();
+  for (let n = 0; n < 100 && !seen; n++) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(seen).toEqual({ provider: 'codex', resume: undefined });
+});
+
+test('Codex receives exactly the company or project Neo tool scope', async () => {
+  const { registeredCodexMcpTools } = await import('../src/engine/codex-mcp-bridge');
+  const { d } = makeDeps();
+  const company = neoMcpServers(d, 1, { dispatch: true, folder: '/tmp/company' });
+  const project = neoMcpServers(d, 1, { dispatch: false, folder: '/tmp/project' });
+  const companyTools = registeredCodexMcpTools(company.neo as never)!;
+  const projectTools = registeredCodexMcpTools(project.neo as never)!;
+  expect([...companyTools].sort()).toEqual([...neoToolNames(company)].sort());
+  expect([...projectTools].sort()).toEqual([...neoToolNames(project)].sort());
+  expect(companyTools).toContain('dispatch');
+  expect(projectTools).not.toContain('dispatch');
+});
+
+test('SDK switching waits for a dispatched worker retry to be delivered', async () => {
+  const { createWorkerSdkSelection } = await import('../src/engine/sdk-choice');
+  const root = mkdtempSync(join(tmpdir(), 'neo-disp-switch-retry-')); mkdirSync(join(root, 'project'));
+  const { d } = makeDeps();
+  const cfg = { providers: { ownWork: 'subscription' as 'subscription' | 'codex', customerWork: 'gemini' as const } };
+  d.providers = cfg.providers;
+  const { ctl, start } = drivenStart();
+  let wake!: () => void;
+  await dispatchToProject('project', 'work', d, 1, { start: start as never, root, sleep: () => new Promise<void>(resolve => { wake = resolve; }), rand: () => 0.5 });
+  await settle();
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: 's', summary: '', costUsd: 0, apiError: 'rate_limit' });
+  createWorkerSdkSelection(cfg, d.ledger, d.registry).set('codex');
+  expect(ctl.closes).toBe(0);
+  wake(); await settle();
+  expect(ctl.followUps).toHaveLength(1);
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: 's', summary: 'done', costUsd: 0 }); ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(1);
+});
+
+test('a switch while waiting for a context handoff never sends the old thread to the new SDK', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'neo-disp-switch-handoff-')); const folder = join(root, 'project'); mkdirSync(folder);
+  const { d } = makeDeps(); const providers = { ownWork: 'subscription' as 'subscription' | 'codex', customerWork: 'gemini' as const }; d.providers = providers; d.contextPolicy = TEST_CONTEXT_POLICY;
+  const previous: Order = { id: 'old-handoff', source: 'neo', folder, task: 'old', chatId: SUB_CHAT, createdAt: 1 };
+  d.ledger.recordOrder(previous); d.ledger.recordSession(previous.id, 'claude-only-id', 'subscription');
+  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; }); trackHandoff(folder, held, 10_000);
+  let mismatches = 0; let seen: { provider?: string; resume?: string } | undefined;
+  await dispatchToProject('project', 'work', d, 1, { root, signals: () => ({ occupancy: 0.7, turns: 1, ageMs: 0, idleMs: 0 }), handoff: async (target: any, _policy: any, opts: any) => { if (target.sdkSessionId === 'claude-only-id' && opts.runDeps?.provider === 'codex') mismatches++; }, start: ((_o: unknown, _h: unknown, deps?: import('../src/engine/session-runner').RunDeps) => { seen = { provider: deps?.provider, resume: deps?.resume }; return { followUp() {}, interrupt: async () => {}, close() {}, queued: () => 0, done: Promise.resolve({ ok: true, sessionId: 'new', summary: 'done', costUsd: 0 }) }; }) as never });
+  providers.ownWork = 'codex'; release();
+  for (let n = 0; n < 100 && !seen; n++) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(mismatches).toBe(0);
+  expect(seen).toEqual({ provider: 'codex', resume: undefined });
+});
+
+test('Codex dispatch is not instructed to use the unavailable codebase-memory server', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'neo-codex-index-')); mkdirSync(join(root, 'project'));
+  const { d } = makeDeps(); d.providers = { ownWork: 'codex', customerWork: 'gemini' };
+  d.codebaseMemory = { ensureIndexed: async () => ({ project: 'sample-index' }) } as never;
+  let task = '';
+  await dispatchToProject('project', 'work', d, 1, { root, start: ((order: Order) => { task = order.task; return { followUp() {}, interrupt: async () => {}, close() {}, queued: () => 0, done: Promise.resolve({ ok: true, sessionId: 'new', summary: 'done', costUsd: 0 }) }; }) as never });
+  for (let n = 0; n < 100 && !task; n++) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(task).toContain('read the files directly');
+  expect(task).not.toContain('REQUIRED — use the `codebase-memory` MCP FIRST');
 });

@@ -3,8 +3,9 @@
 // tracked, governed Neo sub-project (registry → dashboard, escalations → operator, metered),
 // then returns that project's result for the company to summarise. The company writes the brief
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
+import { registerCodexMcpTools } from "./codex-mcp-bridge";
 import { controlByProject, DEFAULT_TOOL_CONTROL_CFG, type ToolControlCfg } from "./tool-control";
-import { DEFAULT_LANES_CFG, LANE_GUIDE, LANE_KINDS, laneArgError, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
+import { CODEX_LANE_GUIDE, DEFAULT_LANES_CFG, LANE_GUIDE, LANE_KINDS, laneArgError, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
 import { createLaneWorktree, endLaneWorktree, type LaneWorktree, type LaneWorktreeEnd } from "./lane-worktree";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
@@ -663,7 +664,7 @@ export async function dispatchToProject(
   // value, so a config flip during this dispatch can never give a quick preamble with no guard.
   const ownWork = providerCfg.providers?.ownWork;
   /** Whose account this run spends: a usage limit is one provider's (ADR-0060). */
-  const runProvider: string = ownWork ?? "claude";
+  let runProvider: string = ownWork ?? "claude";
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.
   const teamAgents =
@@ -698,12 +699,13 @@ export async function dispatchToProject(
     return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
   }
 
-  // A side lane (ADR-0057) is enforced by the Claude governor hook; the Codex SDK has no such hook.
+  // Codex can enforce the read-only side lane with its OS sandbox. Other lane kinds need the
+  // Claude governor's per-command controls and must remain queued.
   const sideKind = opts.lane?.kind;
-  if (sideKind && ownWork === "codex") {
+  if (sideKind && sideKind !== "read-only" && ownWork === "codex") {
     event("dispatch_refused", { data: { project, workClass, reason: "lane_unsupported", kind: sideKind } });
     hooks.onRefused?.("lane_unsupported");
-    return `Side lanes need the Claude worker SDK (its governor hook enforces the lane); the worker SDK is Codex, so this brief was not run as a side lane. Queue it instead (lane "queue").`;
+    return `This side lane needs the Claude worker SDK's governor; Codex supports read-only side lanes. Queue this brief instead (lane "queue").`;
   }
   const orderId = crypto.randomUUID();
   // A `code` side lane works in its own temporary worktree on `side/<key>` — never in the main folder.
@@ -897,7 +899,7 @@ export async function dispatchToProject(
 
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
   // versa) is rejected outright, and before the ownership check that read as an API failure.
-  const worker = ownWork;
+  let worker = ownWork;
   const resume = sideKind
     ? undefined // a side lane always starts fresh — never the main session's context
     : (canResumeWith(existing?.sdkProvider, worker) ? existing?.sdkSessionId : undefined) ||
@@ -927,6 +929,28 @@ export async function dispatchToProject(
     // Never measure (or resume) a folder another gate is handing off — e.g. the previous dispatch's
     // end-of-run handoff. Its resume id is read again AFTER the wait: the handoff clears it.
     let gatedResume = resume;
+    // Index before resolving the provider and resume: this can await while the SDK is switched.
+    let indexingPrefix: string | undefined;
+    if (deps.codebaseMemory && !sideKind) {
+      let index: IndexResult = {};
+      try {
+        index = await deps.codebaseMemory.ensureIndexed(folder, () =>
+          say(`indexing ${name} into codebase-memory…`, undefined, { cause: liveCause() }),
+        );
+      } catch {
+        // Indexing remains best-effort.
+      }
+      indexingPrefix = codebaseMemoryLine(index);
+    }
+    const reconcileWorker = (): void => {
+      const selectedWorker = providerCfg.providers?.ownWork;
+      if (selectedWorker !== worker) {
+        worker = selectedWorker;
+        runProvider = worker ?? "claude";
+        gatedResume = undefined;
+      }
+    };
+    reconcileWorker();
     if (gatedResume && policy) {
       // A handoff that outlived its hold may still own the session: start fresh, touch nothing.
       const waited = await awaitHandoff(folder);
@@ -935,6 +959,7 @@ export async function dispatchToProject(
         deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
         undefined;
       gatedResume = waited === "timed-out" ? undefined : current;
+      reconcileWorker();
     }
     if (gatedResume && policy) {
       try {
@@ -969,6 +994,8 @@ export async function dispatchToProject(
         // context-policy is best-effort observer work — fail OPEN, keep the original resume id.
       }
     }
+
+    reconcileWorker();
 
     // Frozen memory snapshot: injected ONLY on a genuine fresh start — i.e. once the resume id
     // that will ACTUALLY be used for this run is settled (gatedResume === undefined), which covers
@@ -1059,22 +1086,9 @@ export async function dispatchToProject(
         : undefined;
     let lastSessionId = gatedResume ?? "";
 
-    // Guarantee the structural map the brief now REQUIRES: the worker can't self-index (the governor
-    // denies subagents the codebase-memory index tools), so the engine does it here before the worker
-    // starts. Best-effort — a failure never blocks the dispatch; the worker falls back to file reads.
-    // Placed before startedAt so a first-time index doesn't eat the dispatch stall budget.
-    // A side lane never (re)indexes: it uses the project's existing index read-only.
-    if (deps.codebaseMemory && !sideKind) {
-      let index: IndexResult = {};
-      try {
-        index = await deps.codebaseMemory.ensureIndexed(folder, () =>
-          say(`indexing ${name} into codebase-memory…`, undefined, { cause: liveCause() }),
-        );
-      } catch {
-        // ensureIndexed is itself best-effort; this guard belts-and-braces the dispatch path.
-      }
-      // The worker gets the exact project name, so it never lists, checks or indexes (ADR-0028).
-      order.task = `${codebaseMemoryLine(index)}\n\n${order.task}`;
+    if (indexingPrefix) {
+      const availableIndex = worker === "codex" ? codebaseMemoryLine({}) : indexingPrefix;
+      order.task = `${availableIndex}\n\n${order.task}`;
       faults.guard("dispatch.recordOrder", () => deps.ledger.recordOrder(order));
     }
 
@@ -1164,6 +1178,7 @@ export async function dispatchToProject(
     let retryingUntil = 0; // while set in the future, the sub-run is waiting out an API throttle
     let pausedMs = 0; // total backoff time — reported, never counted as the worker's silence
     let retryPending = false; // an API retry will re-send the brief into this run — keep it open
+    let sdkSwitchRequested = false;
     // What the dispatcher needs to follow (digests) or resume (stop point) this run.
     let lastNote: string | undefined; // the worker's latest prose line — never a tool line
     let lastActivity: string | undefined; // the worker's latest activity label
@@ -1389,6 +1404,7 @@ export async function dispatchToProject(
       },
       profileDeps(providerCfg, "dispatch", {
         resume: gatedResume,
+        codexDockerSocket: worker === "codex" && sideKind === "read-only" ? undefined : deps.projects?.[name]?.codexDockerSocket,
         // Attach the in-process "neo" MCP server so a dispatched sub-project worker gets the same
         // operator-facing tools a directly-opened project does: `send_file` and — when the frontend
         // wired `postDecision` — `ask_operator` (the ONE way it raises a blocking question). Without
@@ -1397,7 +1413,8 @@ export async function dispatchToProject(
         // stay gated by memoryGate (off unless the folder is in scope). The sub-worker inherits THIS
         // dispatch's work class, so a sub-dispatch would follow the same originating trigger (inert
         // while recursive dispatch stays off — the invariant holds by construction, not by memory).
-        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, sessionId: session.id, orderId: order.id, cause: liveCause }),
+        mcpServers: worker === "codex" && sideKind === "read-only" ? {} : neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, sessionId: session.id, orderId: order.id, cause: liveCause }),
+        ...(worker === "codex" && sideKind === "read-only" ? { codexSandboxMode: "read-only" as const, codexApprovalPolicy: "never" as const, codexNetworkAccessEnabled: false } : {}),
         ...(teamAgents ? { agents: teamAgents } : {}),
         // The governor denies what this side lane's kind may not do (ADR-0057).
         ...(sessionLane ? { lane: sessionLane } : {}),
@@ -1415,6 +1432,11 @@ export async function dispatchToProject(
         run.followUp(text, timing);
       },
       held: () => planWatch?.held(),
+      closed: () => sdkSwitchRequested || run.closed?.() === true,
+      switchProvider: () => {
+        sdkSwitchRequested = true;
+        if (!retryPending && !run.active?.() && (run.queued?.() ?? 0) === 0) run.close();
+      },
     };
     dispatchRuns.add(control);
     deps.registry.attachControl(session.id, control);
@@ -1968,6 +1990,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   const consult = opts.profile === "consult";
   // The consult set reads only the ConsultToolDeps fields (every other branch below is `!consult`).
   const deps = given as DispatchDeps;
+  const laneGuide = deps.providers?.ownWork === "codex" ? CODEX_LANE_GUIDE : LANE_GUIDE;
   /** Where new work is filed (ADR-0053): under the thread the dispatcher names, else the live cause,
    *  else its own new thread (origin `dispatcher`). A string is the refusal for an unknown ref. */
   const workCauseFor = (thread: string | undefined, title: string, project?: string): Cause | string | undefined => {
@@ -2287,9 +2310,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           "If the project is busy (mid-task), the brief is QUEUED in that project's todo queue and the reply says \"queued as #N for <project>, position P\": it starts by itself when the current task is done, so confirm the number and position to the operator and never re-send or forward it. " +
           "The run has NO time limit — it works until it is done, even for hours; only a worker that goes completely silent (hung) is stopped. While it runs you get a `[dispatch progress]` line every few minutes (FYI — no reply needed), and you ALWAYS get a `[dispatch result]` message when it ends — including when it was cut short, in which case the result says where it stopped (last commit / latest note) so you can dispatch a follow-up that resumes from there. " +
           "Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run. " +
-          LANE_GUIDE +
-          " " +
-          SIZE_GUIDE,
+          laneGuide + " " + SIZE_GUIDE,
         {
           project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
@@ -2353,7 +2374,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
             "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued or retry todos only), `retry` (`id`: re-run a failed todo, or a waiting retry now — the SAME todo; never dispatch a new brief to redo a failed one; on a RUNNING todo held in a usage-limit wait or an API retry wait — `list` and `sessions` show \"held: limit wait\" or \"held: API retry\" — it resumes that run NOW: the brief goes back into the same session, no second run. Never tell the operator to /kill a held todo: `retry` it), `pause` / `resume` (`project`). " +
             "A todo that stopped for a passing reason (stall, restart, API or account error) is kept as `retry` and re-runs by itself. " +
-            "For `add`, " + LANE_GUIDE + " `size`: as in `dispatch` (quick | standard | big; none = big). Returns text.",
+            "For `add`, " + laneGuide + " `size`: as in `dispatch` (quick | standard | big; none = big). Returns text.",
           {
             action: z.enum(["list", "add", "reorder", "cancel", "retry", "pause", "resume"]),
             project: z.string().optional().describe("project folder name, e.g. \"eticket-v3\""),
@@ -2499,7 +2520,9 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
     const mem = memoryTools(opts.folder, memCfg, windowTokens);
     tools.push(...(consult ? mem.filter((t) => t.name === "memory_search") : mem));
   }
-  const server = createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
+  const makeServer = () => createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
+  const server = makeServer();
+  registerCodexMcpTools(server, tools.map((t) => t.name), makeServer);
   const servers: Record<string, unknown> = { neo: server };
   // Operator-only: attach the Google Stitch HTTP MCP server when enabled and a key is configured.
   // (SDK McpHttpServerConfig shape: { type: "http", url, headers? }.) Never on the customer path.

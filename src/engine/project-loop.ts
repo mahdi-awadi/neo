@@ -33,6 +33,8 @@ export interface ProjectLoopOpts {
   shouldStop?: () => boolean;
   /** RunDeps overlay for every iteration (model/effort/skills via profileDeps(cfg, "loop")). */
   runDeps?: RunDeps;
+  /** Resolve again at each iteration so provider changes take effect. */
+  resolveRunDeps?: () => RunDeps;
   /** Never resume across iterations — each one starts a fresh session (judge/report loops). */
   freshSession?: boolean;
   /** Resume gate (context policy); wired by the caller so this module stays config-free. */
@@ -45,6 +47,7 @@ export async function runProjectLoop(
 ): Promise<LoopOutcome> {
   const run = deps.run ?? runOrder;
   const check = deps.check ?? makeGoalCheck(opts.goal, { cwd: opts.folder, run });
+  let lastProvider: RunDeps["provider"];
 
   return runLoop({
     maxIterations: opts.bounds.maxIterations,
@@ -63,14 +66,19 @@ export async function runProjectLoop(
         chatId: LOOP_CHAT_ID,
         createdAt: Date.now(),
       };
+      const current = { ...(opts.resolveRunDeps?.() ?? opts.runDeps) };
+      const provider = current.provider ?? "subscription";
+      delete current.resume;
+      const safeResume = lastProvider === provider ? resumeId : undefined;
       const result = await run(
         order,
         {
           onMessage: (t) => (opts.onMessage ?? opts.onProgress)?.(t),
           onEscalation: async () => "deny", // autonomous loop never does risky/irreversible ops
         },
-        { ...opts.runDeps, ...(resumeId ? { resume: resumeId } : {}) },
+        { ...current, ...(safeResume ? { resume: safeResume } : {}) },
       );
+      lastProvider = provider;
       return { sessionId: result.sessionId, summary: result.summary, costUsd: result.costUsd };
     },
   });

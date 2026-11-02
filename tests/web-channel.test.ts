@@ -255,6 +255,7 @@ test("state exposes the selected worker SDK and setSdk changes new-session routi
   expect(res.ok).toBe(true);
   expect(res.sdk.provider).toBe("codex");
   expect(eng.cfg.providers.ownWork).toBe("codex");
+  expect(eng.ledger.getMeta("worker_sdk_provider")?.value).toBe("codex");
   expect(ch.state().sdk.label).toContain("Codex");
   expect(events.some((e) => e.type === "sdk" && e.sdk.provider === "codex")).toBe(true);
 });
@@ -269,6 +270,7 @@ test("typed /sdk over the web mutates config and emits an sdk event", async () =
   await ch.send("/sdk codex");
 
   expect(eng.cfg.providers.ownWork).toBe("codex");
+  expect(eng.ledger.getMeta("worker_sdk_provider")?.value).toBe("codex");
   expect(events.some((e) => e.type === "sdk" && e.sdk.provider === "codex")).toBe(true);
 });
 
@@ -974,4 +976,16 @@ test("/forget in the console chat box shows the entry and points to the History 
   off.subscribe((e) => offEvents.push(e));
   await off.send("/find bus");
   expect(offEvents.some((e) => e.type === "message" && (e as { text: string }).text.includes("not available"))).toBe(true);
+});
+
+test('selecting Codex in the console routes the next direct project open to Codex', async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  let provider: unknown;
+  const eng = engine(((order: Order, handlers: RunHandlers, deps?: import('../src/engine/session-runner').RunDeps) => { provider = deps?.provider; return f.start(order, handlers); }) as typeof f.start);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  expect(ch.setSdk('codex').ok).toBe(true);
+  await ch.openProject(dir, 'read project');
+  expect(provider).toBe('codex');
+  f.finish({ ok: true, sessionId: 'codex-id', summary: 'done', costUsd: 0 });
 });

@@ -21,7 +21,7 @@ import { renderInboxList, type InboxListEntry } from "./inbox-actions";
 import { sessionContext, contextWindows, contextLabel, lastContextReset, resetLabel, type BandCfg, type ContextSignals } from "./context-policy";
 import { describeSession, stateOf } from "./session-status";
 import type { SessionState } from "./liveness";
-import { setWorkerSdk, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
+import { createWorkerSdkSelection, workerSdkLabel, workerSdkState, type WorkerSdkState } from "./sdk-choice";
 import type { TodoQueue } from "./todo-queue";
 import type { Updater } from "./updater";
 import { renderTrace, type Trace } from "./trace";
@@ -298,7 +298,7 @@ const COMMANDS: Command[] = [
     aliases: ["provider"],
     usage: "/sdk [claude|codex]",
     summary: "show or switch the worker SDK for new own-work sessions",
-    run: ({ deps, args }) => sdkCommand(args.trim(), deps.cfg),
+    run: ({ deps, args }) => sdkCommand(args.trim(), deps.cfg, deps.ledger, deps.registry),
   },
   {
     name: "reload",
@@ -637,22 +637,22 @@ function resolveTrustTarget(targetArg: string, chatId: number, registry: Registr
   return { name: targetArg.startsWith("/") ? basename(folder) : targetArg, folder };
 }
 
-function sdkCommand(arg: string, cfg: CommandDeps["cfg"]): CommandResult {
+function sdkCommand(arg: string, cfg: CommandDeps["cfg"], ledger: Ledger, registry: Registry): CommandResult {
   if (!cfg) return { text: "SDK switching unavailable on this channel." };
   if (!arg) {
     const current = workerSdkState(cfg.providers.ownWork);
     return {
-      text: `Worker SDK: ${current.label}\nUsage: /sdk claude · /sdk codex\nNew sessions use this setting; running sessions keep their current SDK.`,
+      text: `Worker SDK: ${current.label}\nUsage: /sdk claude · /sdk codex\nNew work uses this setting; running sessions finish accepted work before switching.`,
       sdk: current,
     };
   }
-  const result = setWorkerSdk(cfg, arg);
+  const result = createWorkerSdkSelection(cfg, ledger, registry).set(arg);
   if (!result.ok) {
-    return { text: `Unknown SDK: ${arg}\n${result.error}`, sdk: result.sdk };
+    return { text: result.error === "Use claude or codex." ? `Unknown SDK: ${arg}\n${result.error}` : result.error ?? "SDK switching failed.", sdk: result.sdk };
   }
   const changed = result.changed ? "set to" : "already set to";
   return {
-    text: `Worker SDK ${changed} ${workerSdkLabel(result.sdk.provider)}. New sessions use it; running sessions keep their current SDK.`,
+    text: `Worker SDK ${changed} ${workerSdkLabel(result.sdk.provider)}. New work uses it; running sessions finish accepted work before switching.`,
     sdk: result.sdk,
   };
 }

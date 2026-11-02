@@ -68,6 +68,14 @@
     "minFreeGb": 20
   },
 
+  "// telegramPlanEditRetryMs": "Backoff before one retry of an idempotent plan-card caption edit after Telegram 502/503/504. Invalid values use the dev-safe default of 250 ms.",
+  "telegramPlanEditRetryMs": 250,
+
+  "// projects.<name>.codexDockerSocket": "Optional, explicit Docker access for a Codex worker in that named project. It is disabled by default; an absolute socket path grants Docker-daemon authority and direct network access for that project.",
+  "projects": {
+    "example-project": { "codexDockerSocket": "/var/run/docker.sock" }
+  },
+
   "// workerEnv": "Claude Code env knobs apply only with providers.ownWork=\"subscription\". When ownWork=\"codex\", CLAUDE_*, ANTHROPIC_*, and MAX_MCP_OUTPUT_TOKENS are filtered before launch.",
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",

@@ -140,3 +140,18 @@ test("untainted brief keeps MCP servers and no disallowedTools (unchanged path)"
   expect(seenDeps?.disallowedTools).toBeUndefined();
   expect((seenDeps as { env?: Record<string, string> } | undefined)?.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
 });
+
+test('a tainted brief fails closed on Codex before any worker starts', async () => {
+  const registry = createRegistry(); const ledger = openLedger(':memory:'); registerDefaultProject(registry, ledger);
+  let started = false;
+  await expect(runCompanyBrief('untrusted content', { cfg: { workers: {}, workerEnv: {}, providers: { ownWork: 'codex', customerWork: 'gemini' } } as never, ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(':memory:'), reply: () => {}, askApproval: async () => 'deny', run: (async () => { started = true; return { ok: true, sessionId: '', summary: '', costUsd: 0 }; }) as never }, { tainted: true })).rejects.toThrow('zero-tool');
+  expect(started).toBe(false);
+  expect(registry.getDefault()?.status).toBe('idle');
+});
+
+test('tainted briefs never fall through to Claude for an unsupported own-work provider', async () => {
+  const registry = createRegistry(); const ledger = openLedger(':memory:'); registerDefaultProject(registry, ledger);
+  let started = false;
+  await expect(runCompanyBrief('untrusted content', { cfg: { workers: {}, workerEnv: {}, providers: { ownWork: 'gemini', customerWork: 'gemini' } } as never, ledger, registry, meter: createMeter({ windowBudgetUsd: 100, reservePct: 0.2 }), trust: openTrustStore(':memory:'), reply: () => {}, askApproval: async () => 'deny', run: (async () => { started = true; return { ok: true, sessionId: '', summary: '', costUsd: 0 }; }) as never }, { tainted: true })).rejects.toThrow('zero-tool');
+  expect(started).toBe(false);
+});

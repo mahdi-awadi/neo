@@ -245,3 +245,22 @@ test("sendInboxReply never re-sends an item already replied, with or without a d
   expect(await sendInboxReply(ib, item.id, "hi again", { url: "u", secret: "s" }, okFetch as any)).toBe("stale");
   expect(posts).toBe(1);
 });
+
+test('an unsafe Codex draft restores the inbox item status', async () => {
+  const inbox = openInbox(':memory:');
+  const item = inbox.record({ from: 'a@x.com', fromName: 'Ann', subject: 'Quote?', text: 'How much?' });
+  const h = briefHarness('unused');
+  const deps = { ...h.deps, cfg: { workers: {}, workerEnv: {}, providers: { ownWork: 'codex', customerWork: 'gemini' } } as never };
+  await expect(draftInboxReply(inbox, item.id, '', deps)).rejects.toThrow('zero-tool');
+  expect(inbox.get(item.id)?.status).toBe('new');
+});
+
+test('a failed draft does not overwrite an inbox status changed concurrently', async () => {
+  const inbox = openInbox(':memory:'); const item = inbox.record({ from: 'a@x.com', subject: 'Question', text: 'Hello' });
+  const h = briefHarness('unused');
+  const deps = { ...h.deps, cfg: { workers: {}, workerEnv: {}, providers: { ownWork: 'codex', customerWork: 'gemini' } } as never };
+  const pending = draftInboxReply(inbox, item.id, '', deps);
+  inbox.setStatus(item.id, 'replied');
+  await expect(pending).rejects.toThrow('zero-tool');
+  expect(inbox.get(item.id)?.status).toBe('replied');
+});

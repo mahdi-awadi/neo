@@ -469,6 +469,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
+      codexDockerSocket: deps.cfg.projects?.[session.name]?.codexDockerSocket,
       mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, sessionId: session.id, orderId: parsed.id, cause: turnCause(registry, session.id), workCause: () => registry.causeOf(session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
@@ -715,6 +716,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
+    codexDockerSocket: isCompany ? undefined : deps.cfg.projects?.[info?.name ?? ""]?.codexDockerSocket,
     mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, sessionId: id, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), workCause: () => registry.causeOf(id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
@@ -797,6 +799,7 @@ function startSession(
   let lastSessionId = runDeps.resume ?? "";
   // An API retry is waiting to push the brief back in: the session must not be closed under it.
   let retryPending = false;
+  let sdkSwitchRequested = false;
   // Set when the settle check closes the run for a handoff; consumed by the run.done handler.
   let pendingClose: PendingClose | undefined;
   // Every input this run is given goes through here, in order, so the registry's turn accounting
@@ -1003,12 +1006,21 @@ function startSession(
       run.followUp(text, timing);
     },
     held: () => planWatch?.held(),
+    closed: () => sdkSwitchRequested || run.closed(),
+    switchProvider: () => {
+      sdkSwitchRequested = true;
+      if (!retryPending && !run.active() && run.queued() === 0) run.close();
+    },
   };
   registry.attachControl(registryId, control);
 
   /** The settled boundary (ADR-0021): hand off now, while the cache is warm, if the session is above
    *  the sweet spot — or complete an armed checkpoint. Closes the run; run.done does the rest. */
   const settleCheck = (): void => {
+    if (sdkSwitchRequested) {
+      if (!retryPending && (run.queued?.() ?? 0) === 0) run.close();
+      return;
+    }
     if (pendingClose || retryPending || run.closed?.() === true || (run.queued?.() ?? 0) > 0) return;
     const armed = watch?.armed();
     let next: Omit<PendingClose, "release">;

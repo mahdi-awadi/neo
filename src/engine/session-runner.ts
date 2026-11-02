@@ -19,6 +19,10 @@
 //
 // Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
+import { codexBinaryPath, codexMcpDisableOverrides, discoverCodexMcpServers, registeredCodexMcpTools, startCodexMcpBridge } from "./codex-mcp-bridge";
+import { createCodexIgnoreUserConfigWrapper, prepareCodexWorkspace, type CodexWorkspace } from "./codex-workspace";
+import { createCodexPlannerRole } from "./codex-planner";
+import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { createToolCalls, markCommand } from "./tool-calls";
 import type { SessionLane } from "./lanes";
 import { basename } from "node:path";
@@ -245,6 +249,21 @@ export interface RunDeps {
   codexSkipGitRepoCheck?: boolean;
   codexNetworkAccessEnabled?: boolean;
   codexWebSearchMode?: CodexWebSearchMode;
+  /** Native Codex planner role for this project worker; absent on company and restricted paths. */
+  codexPlanner?: { model: string; effort: CodexReasoningEffort; instructions: string };
+  /** Native role overrides, created and removed with one Codex CLI process. */
+  codexPlannerConfig?: NonNullable<CodexOptions["config"]>;
+  /** The named project's explicit Docker socket opt-in. Launch paths select this from the project
+   * identity, never from a folder-prefix inference (ADR-0074). */
+  codexDockerSocket?: string;
+  /** Test seam around the turn-scoped Git/Docker capability (ADR-0074). */
+  codexWorkspaceFactory?: (folder: string, dockerSocket?: string) => Promise<CodexWorkspace>;
+  /** Internal native Codex permission-profile overlay for one CLI process. */
+  codexWorkspaceConfig?: NonNullable<CodexOptions["config"]>;
+  /** Suppresses `--sandbox workspace-write`: the native profile extends workspace permissions. */
+  codexWorkspaceProfile?: boolean;
+  /** Internal per-turn launcher that adds `codex exec --ignore-user-config`. */
+  codexPathOverride?: string;
 }
 
 /** Why an API call failed, as the SDK reports it (SDKAssistantMessageError). "rate_limit" and
@@ -760,18 +779,77 @@ function codexEffort(effort: EffortLevel | undefined): CodexReasoningEffort | un
 
 function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   const model = resolveModelSelection("codex", deps);
+  const sideReadOnly = deps.lane?.kind === "read-only";
   const c: CodexThreadOptions = {
     workingDirectory: order.folder,
-    sandboxMode: deps.codexSandboxMode ?? (readOnlySandboxRequested(deps.disallowedTools) ? "read-only" : "workspace-write"),
-    approvalPolicy: deps.codexApprovalPolicy ?? "on-request",
+    approvalPolicy: sideReadOnly ? "never" : deps.codexApprovalPolicy ?? "on-request",
     skipGitRepoCheck: deps.codexSkipGitRepoCheck ?? true,
   };
-  if (model.model) c.model = model.model;
-  const effort = codexEffort(model.effort);
+  if (sideReadOnly || !deps.codexWorkspaceProfile) c.sandboxMode = codexSandboxMode(deps);
+  const configuredModel = deps.env?.NEO_CODEX_MODEL ?? process.env.NEO_CODEX_MODEL;
+  const selectedModel = model.model || configuredModel?.trim();
+  if (selectedModel) c.model = selectedModel;
+  const configuredEffort = (deps.env?.NEO_CODEX_EFFORT ?? process.env.NEO_CODEX_EFFORT)?.trim();
+  const defaultEffort = configuredEffort && ["minimal", "low", "medium", "high", "xhigh"].includes(configuredEffort)
+    ? configuredEffort as CodexReasoningEffort : undefined;
+  const effort = codexEffort(model.effort) ?? defaultEffort;
   if (effort) c.modelReasoningEffort = effort;
-  if (deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
-  if (deps.codexWebSearchMode) c.webSearchMode = deps.codexWebSearchMode;
+  // A native permission profile owns network policy. The SDK's legacy workspace-write network
+  // setting serializes a competing sandbox policy and may replace the exact socket allowlist.
+  if (sideReadOnly) {
+    c.networkAccessEnabled = false;
+    c.webSearchMode = "disabled";
+  } else {
+    if (!deps.codexWorkspaceProfile && deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
+    if (deps.codexWebSearchMode) c.webSearchMode = deps.codexWebSearchMode;
+  }
   return c;
+}
+
+function codexSandboxMode(deps: RunDeps): CodexSandboxMode {
+  if (deps.lane?.kind === "read-only") return "read-only";
+  return deps.codexSandboxMode ?? (readOnlySandboxRequested(deps.disallowedTools) ? "read-only" : "workspace-write");
+}
+
+function assertCodexLane(deps: RunDeps): void {
+  if (deps.lane && deps.lane.kind !== "read-only") throw new Error("Codex only supports read-only side lanes");
+  if (deps.lane?.kind === "read-only" && Object.keys(deps.mcpServers ?? {}).length) {
+    // MCP handlers run outside the sandbox. Even memory_search can initialize an on-disk index.
+    throw new Error("Codex read-only side lanes cannot attach MCP tools");
+  }
+}
+
+/** Prepare the capabilities one Codex CLI process needs. Each live-session follow-up starts a new
+ * process, so this capability is intentionally not shared across turns. */
+async function prepareCodexTurn(order: Order, deps: RunDeps): Promise<{ deps: RunDeps; close(): Promise<void> }> {
+  if (deps.lane?.kind === "read-only") return {
+    deps: { ...deps, codexWorkspaceConfig: undefined, codexWorkspaceProfile: false, codexPathOverride: undefined, codexPlannerConfig: undefined },
+    close: async () => {},
+  };
+  if (codexSandboxMode(deps) !== "workspace-write") return { deps, close: async () => {} };
+  const prepare = deps.codexWorkspaceFactory ?? prepareCodexWorkspace;
+  const workspace = await prepare(order.folder, deps.codexDockerSocket);
+  const role = deps.codexPlanner ? createCodexPlannerRole(deps.codexPlanner) : undefined;
+  try {
+    const withWorkspaceEnv: RunDeps = {
+      ...deps,
+      env: { ...(deps.env ?? {}), ...workspace.env },
+      ...(role ? { codexPlannerConfig: role.config } : {}),
+    };
+    if (!workspace.config) return { deps: withWorkspaceEnv, close: async () => { await role?.close(); } };
+    if (deps.codexFactory) return {
+      deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true },
+      close: async () => { await role?.close(); },
+    };
+    const wrapper = createCodexIgnoreUserConfigWrapper(codexBinaryPath(), workspace.config);
+    return {
+      deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true, codexPathOverride: wrapper.path },
+      close: async () => { try { await wrapper.close(); } finally { await role?.close(); } },
+    };
+  } catch (error) {
+    await role?.close();
+    throw error;
+  }
 }
 
 /** Scrub options for every worker env (ADR-0050 §7). The daemon sets the default once; a
@@ -801,9 +879,79 @@ function codexClientOptions(deps: RunDeps): CodexOptions {
   return c;
 }
 
-async function makeCodexClient(deps: RunDeps): Promise<CodexClientLike> {
+async function makeCodexClient(deps: RunDeps, cwd: string, handlers: RunHandlers, bridges: Array<Awaited<ReturnType<typeof startCodexMcpBridge>>> = []): Promise<CodexClientLike> {
   const factory = deps.codexFactory ?? ((options: CodexOptions) => new Codex(options));
-  return factory(codexClientOptions(deps));
+  const options = codexClientOptions(deps);
+  const servers = Object.assign({}, ...bridges.map((bridge) => bridge.codexConfig.mcp_servers));
+  const env = { ...mergedSdkEnv("codex", deps.env ?? {}, deps.envScrub), ...Object.assign({}, ...bridges.map((bridge) => bridge.env)) };
+  let disabled: Record<string, string | boolean> = {};
+  if (!deps.codexFactory) {
+    const binary = deps.codexPathOverride ?? codexBinaryPath();
+    // A profile-backed turn starts with `--ignore-user-config`, so ambient MCP servers cannot load
+    // in the first place. Asking the one-purpose launcher to run `mcp list` would both fail and
+    // reintroduce the configuration layer we deliberately excluded.
+    if (!deps.codexWorkspaceProfile) {
+      const ambientNames = await discoverCodexMcpServers(binary, cwd, env);
+      disabled = codexMcpDisableOverrides(ambientNames, Object.keys(servers));
+      const unavailable = ambientNames.filter((server) => !Object.hasOwn(servers, server.name)).map((server) => server.name);
+      if (unavailable.length) {
+        handlers.onEvent?.("worker_mcp_unavailable", { provider: "codex", servers: unavailable });
+        observe(() => handlers.onMessage(`Codex: external tools unavailable: ${unavailable.join(", ")}.`, "tool"));
+      }
+    }
+    options.codexPathOverride = binary;
+  }
+  const workspaceConfig = deps.codexPathOverride
+    ? Object.fromEntries(Object.entries(deps.codexWorkspaceConfig ?? {}).filter(([key]) =>
+        !key.startsWith("permissions.neo-project.filesystem.") && !key.startsWith("permissions.neo-project.network.unix_sockets.")))
+    : deps.codexWorkspaceConfig ?? {};
+  const sideRestrictions: NonNullable<CodexOptions["config"]> = deps.lane?.kind === "read-only"
+    ? { "features.hooks": false, "features.plugins": false, "features.multi_agent": false }
+    : {};
+  options.config = { ...workspaceConfig, ...disabled, ...(deps.codexPlannerConfig ?? {}), ...sideRestrictions, ...(bridges.length ? { mcp_servers: servers } : {}) };
+  if (bridges.length || options.env) options.env = env;
+  return factory(options);
+}
+
+function codexUnsupportedFields(deps: RunDeps): string[] {
+  const unsupported = unsupportedRunFields("codex", deps);
+  const servers = Object.values(deps.mcpServers ?? {});
+  const allBridged = servers.every((value) => {
+    const server = value as McpSdkServerConfigWithInstance | undefined;
+    return !!server && server.type === "sdk" && !!registeredCodexMcpTools(server);
+  });
+  return allBridged ? unsupported.filter((name) => name !== "mcpServers") : unsupported;
+}
+
+function reportCodexExternalMcp(deps: RunDeps, handlers: RunHandlers): void {
+  const unavailable = Object.entries(deps.mcpServers ?? {})
+    .filter(([, config]) => !!config && typeof config === "object" && (config as { type?: string }).type !== "sdk")
+    .map(([name]) => name.replace(/[^a-zA-Z0-9_.-]/g, "?"));
+  if (unavailable.length) {
+    handlers.onEvent?.("worker_mcp_unavailable", { provider: "codex", servers: unavailable });
+    observe(() => handlers.onMessage(`Codex: external tools unavailable: ${unavailable.join(", ")}.`, "tool"));
+  }
+}
+
+async function codexMcpBridges(deps: RunDeps) {
+  const bridges: Array<Awaited<ReturnType<typeof startCodexMcpBridge>>> = [];
+  try {
+    const tokenNames = new Set<string>();
+    for (const [name, candidate] of Object.entries(deps.mcpServers ?? {})) {
+      const server = candidate as McpSdkServerConfigWithInstance | undefined;
+      if (!server || server.type !== "sdk") continue;
+      const tokenName = name.toUpperCase();
+      if (tokenNames.has(tokenName)) throw new Error("Codex MCP server names collide");
+      tokenNames.add(tokenName);
+      const names = registeredCodexMcpTools(server);
+      if (!names) throw new Error(`Codex MCP server ${name} is unavailable: its tool scope was not registered`);
+      bridges.push(await startCodexMcpBridge(server, names, name));
+    }
+    return bridges;
+  } catch (error) {
+    await Promise.all(bridges.map((bridge) => bridge.close()));
+    throw error;
+  }
 }
 
 function apiErrorFromCodexMessage(message: string): ApiErrorKind | undefined {
@@ -817,6 +965,9 @@ function apiErrorFromCodexMessage(message: string): ApiErrorKind | undefined {
 }
 
 function codexItemMilestone(item: { type?: string; [k: string]: unknown }): string | undefined {
+  if (item.type === "collab_tool_call" && typeof item.tool === "string") {
+    return `🔧 Agent: ${item.tool}`;
+  }
   if (item.type === "command_execution" && typeof item.command === "string") {
     return toolMilestone("Bash", { command: item.command });
   }
@@ -831,6 +982,7 @@ function codexItemMilestone(item: { type?: string; [k: string]: unknown }): stri
 }
 
 function codexItemActivity(item: { type?: string; [k: string]: unknown }): string | undefined {
+  if (item.type === "collab_tool_call" && typeof item.tool === "string") return `Agent: ${item.tool}`;
   if (item.type === "command_execution" && typeof item.command === "string") {
     return `Bash${item.command ? `: ${toolDetail({ command: item.command })}` : ""}`;
   }
@@ -844,6 +996,13 @@ function codexItemActivity(item: { type?: string; [k: string]: unknown }): strin
     return `${item.tool}${detail ? `: ${detail}` : ""}`;
   }
   return undefined;
+}
+
+/** A user-level request is required by Codex's multi-agent policy. The operator configured this
+ * role for project work; keep the original brief intact and respect a more specific instruction. */
+function codexTurnInput(input: string, deps: RunDeps): string {
+  if (!deps.codexPlannerConfig) return input;
+  return "For design, features, implementation, debugging, and architecture review, delegate planning to the planner agent and wait for its result; after implementation, delegate final review and wait. For simple status checks and small edits, work directly. Follow any more specific instruction in the request below.\n\n" + input;
 }
 
 async function consumeCodexTurn(
@@ -1027,14 +1186,26 @@ async function runCodexOrder(
   handlers: RunHandlers,
   deps: RunDeps = {},
 ): Promise<RunResult> {
+  assertCodexLane(deps);
   deps = resolvedRunDeps(deps, "codex", handlers);
   handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
-  const unsupported = unsupportedRunFields("codex", deps);
+  const unsupported = codexUnsupportedFields(deps);
   if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
-  const client = await makeCodexClient(deps);
-  const options = codexThreadOptions(order, deps);
-  const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
-  return consumeCodexTurn(thread, order.task, handlers, deps.abortController?.signal);
+  reportCodexExternalMcp(deps, handlers);
+  const turn = await prepareCodexTurn(order, deps);
+  try {
+    const bridges = await codexMcpBridges(turn.deps);
+    try {
+      const client = await makeCodexClient(turn.deps, order.folder, handlers, bridges);
+      const options = codexThreadOptions(order, turn.deps);
+      const thread = turn.deps.resume ? client.resumeThread(turn.deps.resume, options) : client.startThread(options);
+      return await consumeCodexTurn(thread, codexTurnInput(order.task, turn.deps), handlers, turn.deps.abortController?.signal);
+    } finally {
+      await Promise.all(bridges.map((bridge) => bridge.close()));
+    }
+  } finally {
+    await turn.close();
+  }
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
@@ -1209,6 +1380,7 @@ function startCodexOrder(
   handlers: RunHandlers,
   deps: RunDeps = {},
 ): SessionRun {
+  assertCodexLane(deps);
   deps = resolvedRunDeps(deps, "codex", handlers);
   const queue = createTextTurnQueue(order.task);
   let currentAbort: AbortController | undefined;
@@ -1222,25 +1394,42 @@ function startCodexOrder(
 
   const done = (async () => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
-    const unsupported = unsupportedRunFields("codex", deps);
+    const unsupported = codexUnsupportedFields(deps);
     if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
+    reportCodexExternalMcp(deps, handlers);
     let final: RunResult = { ok: false, sessionId: deps.resume ?? "", summary: "", costUsd: 0 };
+    let threadId = deps.resume;
     try {
-      const client = await makeCodexClient(deps);
-      const options = codexThreadOptions(order, deps);
-      const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
       for (;;) {
         const next = await queue.next();
         if (next === undefined) break;
-        currentAbort = new AbortController();
-        turnSince = Date.now();
-        turnActive = true;
-        observe(() => handlers.onTurnStart?.(1));
-        final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
-        turnActive = false;
-        observe(() => handlers.onTurnEnd?.());
-        currentAbort = undefined;
-        if (!final.ok) break;
+        // The Codex SDK starts a new CLI process for every turn. Each process initializes a new
+        // MCP session, so its run-scoped servers need a fresh transport and capability each time.
+        const turnDeps = await prepareCodexTurn(order, deps);
+        try {
+          const bridges = await codexMcpBridges(turnDeps.deps);
+          try {
+            const client = await makeCodexClient(turnDeps.deps, order.folder, handlers, bridges);
+            if (interruptRequested) break;
+            const options = codexThreadOptions(order, turnDeps.deps);
+            const thread = threadId ? client.resumeThread(threadId, options) : client.startThread(options);
+            currentAbort = new AbortController();
+            turnSince = Date.now();
+            turnActive = true;
+            observe(() => handlers.onTurnStart?.(1));
+            const turn = await consumeCodexTurn(thread, codexTurnInput(next, turnDeps.deps), handlers, currentAbort.signal);
+            final = { ...turn, sessionId: turn.sessionId || threadId || "" };
+            if (turn.sessionId) threadId = turn.sessionId;
+            turnActive = false;
+            observe(() => handlers.onTurnEnd?.());
+            currentAbort = undefined;
+            if (!final.ok) break;
+          } finally {
+            await Promise.all(bridges.map((bridge) => bridge.close()));
+          }
+        } finally {
+          await turnDeps.close();
+        }
       }
     } catch (err) {
       if (turnActive) observe(() => handlers.onTurnEnd?.());

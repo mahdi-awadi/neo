@@ -203,7 +203,11 @@ function renderSdk(): void {
   const sdk = S.sdk || { provider: "subscription", choices: [] };
   const codex = sdk.provider === "codex";
   $("sdk-label").textContent = tx(codex ? "sdk.codex" : "sdk.claude");
-  $("sdk-foot").textContent = tx(codex ? "sdk.codexFoot" : "sdk.claudeFoot");
+  const pending = Array.isArray(sdk.switching) ? sdk.switching : [];
+  $("sdk-foot").textContent = pending.length
+    ? tx("sdk.switching", { count: pending.length })
+    : tx(codex ? "sdk.codexFoot" : "sdk.claudeFoot");
+  $("sdk-foot").title = pending.map((entry: Any) => `${entry.name}: ${entry.blocked ? tx("sdk.switchBlocked") : tx("sdk.switchDraining")}`).join("\n");
   const box = $("sdkbox");
   box.innerHTML = "";
   const choices =
