@@ -8,13 +8,7 @@ approval: required
 > or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`)
 > syntax for tracking. Read `CLAUDE.md` first.
 
-**Status (2026-10-29):** only the Neo-local hardening P0.3–P0.5 is built (on `dev`, restart-gated):
-the guard treats SSH private keys as secrets, Neo's tools are trusted by provenance, and the machine
-bearers are compared in constant time with an optional own `/inbox` secret. Everything else (the
-spikes, the gateway, prod nodes, connectors, host hygiene, the firewall) waits for the operator's 11
-decisions (§12); "full permission for DEV work" does not cover prod access or deploys.
-
-**Original status:** PLAN ONLY (2026-10-27). Nothing is built. No code, config, server or loop was changed to
+**Status:** PLAN ONLY (2026-10-27). Nothing is built. No code, config, server or loop was changed to
 write it. It needs the operator's approval: it touches auth, production access and deploys.
 
 **Goal:** Neo reaches the operator's other servers and services the way ChatGPT Dots and Claude Duet
@@ -649,10 +643,10 @@ The "check every few hours" behaviour of Duet [S] is the `node` producer on its 
 
 **Files:** `tools/security/guard.ts`, `tests/security-guard.test.ts`.
 
-- [x] Failing tests: `isSecretName("/root/.ssh/prod_server_key")` is `true`; the same for
+- [ ] Failing tests: `isSecretName("/root/.ssh/prod_server_key")` is `true`; the same for
       `backup_server_key`, `migrate_key`, `contantme_deploy_ed25519`, any file in
       `data/reach/keys/`; `*.pub`, `known_hosts`, `config` and `authorized_keys` stay `false`.
-- [x] Implement: a path inside a `.ssh` folder or `data/reach/keys/` is a secret unless it is one of
+- [ ] Implement: a path inside a `.ssh` folder or `data/reach/keys/` is a secret unless it is one of
       the public files.
 - [ ] **[OPERATOR]** re-install the kit (`bun tools/security/install.ts`) so the live guard gets it.
 
@@ -661,18 +655,18 @@ The "check every few hours" behaviour of Duet [S] is the `node` producer on its 
 **Files:** `src/engine/governor.ts`, `src/engine/session-runner.ts`, `tests/governor.test.ts`,
 `tests/governor-hook.test.ts`.
 
-- [x] Failing tests: `mcp__neo__send_file` with `source: "project"` escalates; with `source: "sdk"`
+- [ ] Failing tests: `mcp__neo__send_file` with `source: "project"` escalates; with `source: "sdk"`
       it is allowed; a missing source (an older CLI) keeps today's behaviour and records an event.
-- [x] Implement: `GovernorCtx` gains `mcpSource`; `buildCanUseTool` passes `options.mcpServer`;
+- [ ] Implement: `GovernorCtx` gains `mcpSource`; `buildCanUseTool` passes `options.mcpServer`;
       the hook passes `input.mcp_server`.
 
 #### Task P0.5: Constant-time machine bearer, one secret per endpoint
 
 **Files:** `src/frontends/web.ts`, `src/config.ts`, `tests/web.test.ts`, `docs/CONFIG.md`.
 
-- [x] Failing tests: a wrong bearer of equal length is refused through a constant-time compare; a
+- [ ] Failing tests: a wrong bearer of equal length is refused through a constant-time compare; a
       separate `INBOX_INGEST_SECRET` (falls back to `AGENT_INGRESS_SECRET`) guards `/inbox`.
-- [x] Implement with `crypto.timingSafeEqual` on equal-length buffers.
+- [ ] Implement with `crypto.timingSafeEqual` on equal-length buffers.
 
 #### Task P0.6: Host hygiene (dispatches, no Neo code)
 
