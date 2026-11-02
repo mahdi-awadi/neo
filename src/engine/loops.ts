@@ -507,8 +507,9 @@ function dreamMcpServers(folder: string, cfg: NeoConfig): Record<string, unknown
       diary,
     },
   });
-  const server = createSdkMcpServer({ name: "memory", version: "1.0.0", tools });
-  registerCodexMcpTools(server, tools.map((t) => t.name));
+  const makeServer = () => createSdkMcpServer({ name: "memory", version: "1.0.0", tools });
+  const server = makeServer();
+  registerCodexMcpTools(server, tools.map((t) => t.name), makeServer);
   return { memory: server };
 }
 

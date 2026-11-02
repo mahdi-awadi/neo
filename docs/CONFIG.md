@@ -250,7 +250,7 @@ message/activity/event hooks. Compatibility is table-driven in `src/engine/model
 | `model` | A tier alias (`haiku`, `sonnet`, `opus`, `fable`) is expanded to its pinned id; a full model id is forwarded unchanged. No bare alias reaches the SDK. | Provider-native model IDs pass through. A Claude tier — alias **or** pinned id — maps to Codex default model plus effort (`haiku`→`low`, `sonnet`→`medium`, `fable`→`medium`, `opus`→`high`). |
 | `effort` | Forwarded to the Claude adapter. | Forwarded as Codex reasoning effort (`max` becomes Codex `xhigh`). |
 | `skills` / `maxTurns` | Forwarded to Claude Code. | Dropped from worker profiles and omitted from Codex launch config; direct `RunDeps` usage records `worker_compat_warning`. |
-| `agents` / dispatch team mode | Forwarded to Claude Code; team dispatch adds the lead-agent preamble. | Unsupported. Team dispatch falls back to a normal single-worker brief; direct `agents` usage records `worker_compat_warning`. |
+| `agents` / dispatch team mode | Forwarded to Claude Code; team dispatch adds the lead-agent preamble. | The native Codex planner role is available when configured below. Claude-style `agents` definitions and Neo's team-dispatch translation remain unsupported and are reported. |
 | `mcpServers` | In-process MCP servers attach to the Claude SDK. | Registered Neo-owned servers attach through an authenticated loopback bridge scoped to the run. Ambient and other external servers are disabled and reported unavailable. |
 | `disallowedTools` | Forwarded to Claude Code/governor. | The standard read-only deny-list (`Write`, `Edit`, `NotebookEdit`, `Bash`) becomes Codex `sandboxMode: "read-only"`. Other tool deny-lists record `worker_compat_warning`. |
 | `workerEnv` | Merged over `process.env` unchanged. | `CLAUDE_*`, `ANTHROPIC_*`, and `MAX_MCP_OUTPUT_TOKENS` are filtered before launch; other keys such as `CODEX_API_KEY` stay available. |
@@ -264,6 +264,17 @@ word in it is dropped with no effort set, because no effort can be inferred from
 `effort` in the worker profile wins over the tier-derived effort.
 
 Set `NEO_CODEX_MODEL` in the environment or `workerEnv` to a model supported by your Codex account when its configured default is unavailable. Explicit provider-native worker models take precedence. With no override, Codex uses its own configured default.
+
+For separate Codex planning and implementation models, set `workerEnv.NEO_CODEX_MODEL` to the
+worker model and `workerEnv.NEO_CODEX_PLANNER_MODEL` to the planner model. Optional
+`workerEnv.NEO_CODEX_PLANNER_EFFORT` accepts `minimal`, `low`, `medium`, `high` or `xhigh` (default
+`high`). `workerEnv.NEO_CODEX_EFFORT` sets a default worker effort using the same values; an explicit
+worker-profile effort wins. Project, dispatch and loop workers receive a native `planner` role on each turn; company,
+consult, judge and ingress paths do not. The worker is instructed to delegate substantial planning
+and final review, and the SDK decides when to invoke it. An unset planner model disables the role.
+Both models must be available to the signed-in Codex account. This is separate from Claude's
+`planner` setting. Codex's sandbox and Neo-owned MCP bridge remain in effect; it does not add
+Claude's per-tool governor or enable external MCP servers.
 
 Codex SDK auth is handled by Codex itself: use your local Codex login or provide `CODEX_API_KEY` in
 the process environment. Neo does not read or store that key directly.

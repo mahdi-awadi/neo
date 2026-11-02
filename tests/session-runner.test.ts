@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { runOrder, startOrder, runConfig, type RunResult } from "../src/engine/session-runner";
 import type { Order } from "../src/types";
+import { existsSync, readFileSync } from "node:fs";
 
 function order(task = "do it", folder = "/tmp"): Order {
   return { id: "o1", source: "neo", folder, task, chatId: 1, createdAt: 1 };
@@ -735,6 +736,87 @@ test("a writable Codex turn receives its prepared native permission profile", as
   expect((clientOptions?.env as Record<string, string>).DOCKER_HOST).toBe("unix:///var/run/docker.sock");
 });
 
+test("Codex planner role reaches the SDK with its own model and is removed after the turn", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let rolePath = "";
+  let roleContent = "";
+  let config: Record<string, unknown> = {};
+  const result = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Review the plan." },
+    codexWorkspaceFactory: async () => ({ env: {} }),
+    codexFactory: async (options) => {
+      config = options.config as Record<string, unknown>;
+      rolePath = config["agents.planner.config_file"] as string;
+      roleContent = readFileSync(rolePath, "utf8");
+      return f.factory();
+    },
+  });
+  expect(result.ok).toBe(true);
+  expect(config["features.multi_agent"]).toBe(true);
+  expect(config.developer_instructions).toContain("planner");
+  expect(roleContent).toContain('model = "gpt-6-astra"');
+  expect(roleContent).toContain('model_reasoning_effort = "high"');
+  expect(roleContent).toContain('developer_instructions = "Review the plan."');
+  expect(f.prompts[0]).toContain("delegate");
+  expect(f.prompts[0]).toContain("do it");
+  expect(existsSync(rolePath)).toBe(false);
+});
+
+test("Codex worker uses a configured default effort while explicit effort still wins", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  for (const effort of [undefined, "high"] as const) {
+    await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+      provider: "codex", codexFactory: f.factory, env: { NEO_CODEX_EFFORT: "medium" }, effort,
+    });
+  }
+  expect((f.starts[0] as { modelReasoningEffort: string }).modelReasoningEffort).toBe("medium");
+  expect((f.starts[1] as { modelReasoningEffort: string }).modelReasoningEffort).toBe("high");
+});
+
+test("Codex exposes native subagent activity while waiting for a planner", async () => {
+  const f = fakeCodexFactory({ turns: () => [
+    { type: "item.started", item: { type: "collab_tool_call", tool: "wait", status: "in_progress" } },
+    { type: "item.completed", item: { type: "collab_tool_call", tool: "wait", status: "completed" } },
+    { type: "turn.completed", usage: null },
+  ] });
+  const activity: string[] = [];
+  const messages: string[] = [];
+  await runOrder(order(), { onMessage: (text) => messages.push(text), onEscalation: async () => "deny", onActivity: (text) => activity.push(text) }, {
+    provider: "codex", codexFactory: f.factory,
+  });
+  expect(activity).toContain("Agent: wait");
+  expect(messages.some((text) => text.includes("Agent") && text.includes("wait"))).toBe(true);
+});
+
+test("Codex removes a planner role even when the SDK client fails to start", async () => {
+  let path = "";
+  await expect(runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Plan." },
+    codexWorkspaceFactory: async () => ({ env: {} }),
+    codexFactory: async (options) => {
+      path = (options.config as Record<string, string>)["agents.planner.config_file"]!;
+      throw new Error("client failed");
+    },
+  })).rejects.toThrow("client failed");
+  expect(path).not.toBe("");
+  expect(existsSync(path)).toBe(false);
+});
+
+test("Codex read-only runs never receive a planner role even if one was supplied", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let options: Record<string, unknown> = {};
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash"],
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Plan." },
+    codexFactory: async (cfg) => { options = cfg as Record<string, unknown>; return f.factory(); },
+  });
+  expect((options.config as Record<string, unknown>)["agents.planner.config_file"]).toBeUndefined();
+  expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only" });
+});
+
 test("a read-only Codex turn never creates a workspace capability", async () => {
   const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
   let prepared = false;
@@ -901,6 +983,35 @@ test("each writable Codex follow-up receives a newly prepared workspace profile"
   expect(prepared).toEqual(["turn-1", "turn-2"]);
   expect(f.resumes).toHaveLength(2);
   expect(f.resumes.map((call) => (call.options as { sandboxMode?: string }).sandboxMode)).toEqual([undefined, undefined]);
+});
+
+test("Codex follow-ups get separate planner role files and resume the same thread", async () => {
+  const f = fakeCodexFactory({ turns: () => [
+    { type: "thread.started", thread_id: "planner-thread" },
+    { type: "turn.completed", usage: null },
+  ] });
+  const paths: string[] = [];
+  const run = startOrder(order("first"), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexPlanner: { model: "gpt-6-astra", effort: "high", instructions: "Plan." },
+    codexWorkspaceFactory: async () => ({ env: {} }),
+    codexFactory: async (options) => {
+      const path = (options.config as Record<string, string>)["agents.planner.config_file"]!;
+      expect(existsSync(path)).toBe(true);
+      if (paths.length) expect(existsSync(paths[0]!)).toBe(false);
+      paths.push(path);
+      return f.factory();
+    },
+  });
+  while (f.prompts.length < 1) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.followUp("second", "after-turn");
+  while (f.prompts.length < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.close();
+  await run.done;
+  expect(new Set(paths).size).toBe(2);
+  expect(paths.every((path) => !existsSync(path))).toBe(true);
+  expect(f.resumes[0]?.id).toBe("planner-thread");
+  expect(f.prompts.every((prompt) => prompt.includes("delegate planning"))).toBe(true);
 });
 
 test("surfaces a concise result preview for Bash but stays quiet for navigation tools", async () => {

@@ -39,6 +39,32 @@ test('authenticated tools stay bound to one bridge and cannot be called with ano
   }
 });
 
+test('one Codex turn gives the main worker and its planner independent MCP sessions', async () => {
+  const { registerCodexMcpTools } = await import('../src/engine/codex-mcp-bridge');
+  let calls = 0;
+  const make = () => createSdkMcpServer({ name: 'neo', version: '1', tools: [tool('probe', 'probe', {}, async () => { calls++; return { content: [{ type: 'text', text: 'ok' }] }; })] });
+  const server = make();
+  registerCodexMcpTools(server, ['probe'], make);
+  const bridge = await startCodexMcpBridge(server, ['probe']);
+  try {
+    const cfg = bridge.codexConfig.mcp_servers.neo;
+    const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${bridge.env[cfg.bearer_token_env_var]}` };
+    const init = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+    const sessions = await Promise.all([1, 2].map(async () => {
+      const response = await fetch(cfg.url, { method: 'POST', headers, body: init });
+      expect(response.status).toBe(200);
+      return response.headers.get('mcp-session-id')!;
+    }));
+    expect(new Set(sessions).size).toBe(2);
+    const responses = await Promise.all(sessions.map((session) => fetch(cfg.url, {
+      method: 'POST', headers: { ...headers, 'mcp-session-id': session },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'probe', arguments: {} } }),
+    })));
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(calls).toBe(2);
+  } finally { await bridge.close(); }
+});
+
 test('Codex worker receives the scoped server and closes it after the turn', async () => {
   const { runOrder } = await import('../src/engine/session-runner');
   const bridge = await import('../src/engine/codex-mcp-bridge');

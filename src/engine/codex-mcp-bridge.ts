@@ -5,8 +5,10 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 
 
 const toolNames = new WeakMap<McpSdkServerConfigWithInstance, readonly string[]>();
-export function registerCodexMcpTools(server: McpSdkServerConfigWithInstance, names: readonly string[]): void {
+const serverFactories = new WeakMap<McpSdkServerConfigWithInstance, () => McpSdkServerConfigWithInstance>();
+export function registerCodexMcpTools(server: McpSdkServerConfigWithInstance, names: readonly string[], factory?: () => McpSdkServerConfigWithInstance): void {
   toolNames.set(server, [...names]);
+  if (factory) serverFactories.set(server, factory);
 }
 export function registeredCodexMcpTools(server: McpSdkServerConfigWithInstance): readonly string[] | undefined {
   return toolNames.get(server);
@@ -17,19 +19,58 @@ export async function startCodexMcpBridge(server: McpSdkServerConfigWithInstance
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name)) throw new Error("Invalid Codex MCP server name");
   const tokenEnv = `NEO_CODEX_MCP_CAPABILITY_${name.toUpperCase()}`;
   const token = randomBytes(32).toString('hex');
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: randomUUID, enableJsonResponse: true });
-  await server.instance.connect(transport);
+  // Every Codex subagent is a separate MCP client. Give it its own SDK server and transport so
+  // initialization and simultaneous JSON-RPC request IDs never collide with the parent.
+  const sessions = new Map<string, { server: McpSdkServerConfigWithInstance; transport: WebStandardStreamableHTTPServerTransport }>();
+  const factory = serverFactories.get(server);
+  let firstUsed = false;
+  let pending = 0;
+  let closed = false;
   let listener: ReturnType<typeof Bun.serve>;
   try {
     listener = Bun.serve({
       // Long-running tool calls and the MCP event stream must not be cut off while idle.
       hostname: '127.0.0.1', port: 0, idleTimeout: 0,
-      fetch(req) {
+      async fetch(req) {
         const presented = req.headers.get('authorization') ?? '';
         const expected = `Bearer ${token}`;
         const a = Buffer.from(presented), b = Buffer.from(expected);
         if (a.length !== b.length || !timingSafeEqual(a, b)) return new Response('Unauthorized', { status: 401 });
-        return transport.handleRequest(req);
+        const session = req.headers.get('mcp-session-id');
+        if (session) {
+          const entry = sessions.get(session);
+          if (!entry) return new Response('Unknown MCP session', { status: 404 });
+          const response = await entry.transport.handleRequest(req);
+          if (req.method === 'DELETE' && response.ok) {
+            sessions.delete(session);
+            await entry.server.instance.close();
+          }
+          return response;
+        }
+        let initialize = false;
+        if (req.method === 'POST') {
+          try { initialize = (await req.clone().json() as { method?: unknown }).method === 'initialize'; } catch { /* invalid request */ }
+        }
+        if (!initialize) return new Response('MCP session required', { status: 400 });
+        if (sessions.size + pending >= 64 || (firstUsed && !factory)) return new Response('MCP session unavailable', { status: 503 });
+        const instance = firstUsed ? factory!() : server;
+        firstUsed = true;
+        pending++;
+        const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: randomUUID, enableJsonResponse: true });
+        try {
+          await instance.instance.connect(transport);
+          const response = await transport.handleRequest(req);
+          if (closed) {
+            await instance.instance.close();
+            return new Response('MCP bridge closed', { status: 503 });
+          }
+          if (response.ok && transport.sessionId) sessions.set(transport.sessionId, { server: instance, transport });
+          else await instance.instance.close();
+          return response;
+        } catch (error) {
+          await instance.instance.close();
+          throw error;
+        } finally { pending--; }
       },
     });
   } catch (error) {
@@ -37,7 +78,6 @@ export async function startCodexMcpBridge(server: McpSdkServerConfigWithInstance
     throw error;
   }
   const tools = Object.fromEntries(toolNames.map(name => [name, { approval_mode: 'approve' }]));
-  let closed = false;
   return {
     codexConfig: { mcp_servers: { [name]: { url: `http://127.0.0.1:${listener.port}/mcp`, bearer_token_env_var: tokenEnv, tools } } },
     env: { [tokenEnv]: token } as Record<string, string>,
@@ -45,7 +85,9 @@ export async function startCodexMcpBridge(server: McpSdkServerConfigWithInstance
       if (closed) return;
       closed = true;
       listener.stop(true);
-      await server.instance.close();
+      await Promise.all([...sessions.values()].map((entry) => entry.server.instance.close()));
+      sessions.clear();
+      if (!firstUsed) await server.instance.close();
     },
   };
 }

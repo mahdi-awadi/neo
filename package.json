@@ -39,7 +39,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.310",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "@openai/codex-sdk": "0.145.0",
+    "@openai/codex-sdk": "0.166.0",
     "grammy": "latest",
     "highlight.js": "11.12.0",
     "i18next": "26.4.2",

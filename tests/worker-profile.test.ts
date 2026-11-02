@@ -54,6 +54,28 @@ test("profileDeps preserves the launch path's explicitly selected Codex Docker o
   expect(d.codexDockerSocket).toBe("/run/docker-engine.sock");
 });
 
+test("Codex planner is configured for project work and stays out of company and read-only paths", () => {
+  const codex = {
+    ...cfg,
+    providers: { ownWork: "codex" as const, customerWork: "gemini" as const },
+    workerEnv: { NEO_CODEX_PLANNER_MODEL: "gpt-6-astra", NEO_CODEX_PLANNER_EFFORT: "high" },
+  };
+  for (const path of ["project", "dispatch", "loop"] as const) {
+    expect(profileDeps(codex, path).codexPlanner).toMatchObject({ model: "gpt-6-astra", effort: "high" });
+  }
+  for (const path of ["company", "consult", "ingress", "judge"] as const) {
+    expect(profileDeps(codex, path).codexPlanner).toBeUndefined();
+  }
+  expect(profileDeps({ ...codex, providers: cfg.providers }, "project").codexPlanner).toBeUndefined();
+});
+
+test("Codex planner is disabled without a configured model and defaults invalid effort safely", () => {
+  const codex = { ...cfg, providers: { ownWork: "codex" as const, customerWork: "gemini" as const } };
+  expect(profileDeps(codex, "project").codexPlanner).toBeUndefined();
+  const configured = { ...codex, workerEnv: { NEO_CODEX_PLANNER_MODEL: "gpt-6-astra", NEO_CODEX_PLANNER_EFFORT: "bad" } };
+  expect(profileDeps(configured, "project").codexPlanner?.effort).toBe("high");
+});
+
 // A config that pins models (ADR-0005). `cfg` above deliberately has no `models` block, so the
 // tests above keep asserting the pre-pin behaviour.
 const pinned = {

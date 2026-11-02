@@ -209,8 +209,15 @@ Neo wrapper behavior:
   `interrupt()` aborts the active turn via `AbortSignal`. The SDK launches a fresh CLI process for
   each turn. Each process initializes a fresh MCP session, so Neo reconnects its scoped servers and
   creates new bridge capabilities per turn, while resuming the same Codex thread. Reusing a single
-  stateful MCP transport made the tools disappear after the first turn (verified 2026-11-01).
+  stateful MCP transport made the tools disappear after the first turn (verified 2026-11-01). Within
+  a turn, the main worker and its native subagents each initialize their own server/transport behind
+  the same authenticated bridge, so one client's initialization cannot displace another.
 - Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server shape. Neo maps read-only judge deny-lists to `sandboxMode: "read-only"`. Registered Neo-owned servers are bridged via authenticated loopback; unrelated configured MCP servers are disabled for the run. Unsupported external servers and Claude-only controls are reported. This does not make the Codex sandbox equivalent to the Claude governor.
+- With `NEO_CODEX_PLANNER_MODEL` in `workerEnv`, project, dispatch and loop turns register a native
+  Codex planner role in a daemon-private temporary role file. The configured planner effort defaults
+  to `high`; Neo deletes the file at the end of each turn. The main agent is instructed to invoke
+  the planner for substantial planning and review; delegation remains an SDK/model decision. A real
+  SDK 0.166.0 run verified a GPT-6.1 Sol worker spawning a GPT-6 Astra planner on this account.
 - Writable project turns with Git metadata or an opted-in Docker workflow use a generated native
   Codex permission profile instead of `sandboxMode: "workspace-write"` (ADR-0074). Neo passes its
   exact git-dir/common-git-dir through a short-lived wrapper as TOML tables: the SDK splits dotted

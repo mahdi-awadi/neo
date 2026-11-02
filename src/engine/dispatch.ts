@@ -2195,8 +2195,9 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
     const mem = memoryTools(opts.folder, memCfg, windowTokens);
     tools.push(...(consult ? mem.filter((t) => t.name === "memory_search") : mem));
   }
-  const server = createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
-  registerCodexMcpTools(server, tools.map((t) => t.name));
+  const makeServer = () => createSdkMcpServer({ name: "neo", version: "1.0.0", tools });
+  const server = makeServer();
+  registerCodexMcpTools(server, tools.map((t) => t.name), makeServer);
   const servers: Record<string, unknown> = { neo: server };
   // Operator-only: attach the Google Stitch HTTP MCP server when enabled and a key is configured.
   // (SDK McpHttpServerConfig shape: { type: "http", url, headers? }.) Never on the customer path.

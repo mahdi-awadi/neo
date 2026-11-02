@@ -21,6 +21,7 @@
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
 import { codexBinaryPath, codexMcpDisableOverrides, discoverCodexMcpServers, registeredCodexMcpTools, startCodexMcpBridge } from "./codex-mcp-bridge";
 import { createCodexIgnoreUserConfigWrapper, prepareCodexWorkspace, type CodexWorkspace } from "./codex-workspace";
+import { createCodexPlannerRole } from "./codex-planner";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { createToolCalls, markCommand } from "./tool-calls";
 import type { SessionLane } from "./lanes";
@@ -248,6 +249,10 @@ export interface RunDeps {
   codexSkipGitRepoCheck?: boolean;
   codexNetworkAccessEnabled?: boolean;
   codexWebSearchMode?: CodexWebSearchMode;
+  /** Native Codex planner role for this project worker; absent on company and restricted paths. */
+  codexPlanner?: { model: string; effort: CodexReasoningEffort; instructions: string };
+  /** Native role overrides, created and removed with one Codex CLI process. */
+  codexPlannerConfig?: NonNullable<CodexOptions["config"]>;
   /** The named project's explicit Docker socket opt-in. Launch paths select this from the project
    * identity, never from a folder-prefix inference (ADR-0074). */
   codexDockerSocket?: string;
@@ -783,7 +788,10 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   const configuredModel = deps.env?.NEO_CODEX_MODEL ?? process.env.NEO_CODEX_MODEL;
   const selectedModel = model.model || configuredModel?.trim();
   if (selectedModel) c.model = selectedModel;
-  const effort = codexEffort(model.effort);
+  const configuredEffort = (deps.env?.NEO_CODEX_EFFORT ?? process.env.NEO_CODEX_EFFORT)?.trim();
+  const defaultEffort = configuredEffort && ["minimal", "low", "medium", "high", "xhigh"].includes(configuredEffort)
+    ? configuredEffort as CodexReasoningEffort : undefined;
+  const effort = codexEffort(model.effort) ?? defaultEffort;
   if (effort) c.modelReasoningEffort = effort;
   // A native permission profile owns network policy. The SDK's legacy workspace-write network
   // setting serializes a competing sandbox policy and may replace the exact socket allowlist.
@@ -802,14 +810,27 @@ async function prepareCodexTurn(order: Order, deps: RunDeps): Promise<{ deps: Ru
   if (codexSandboxMode(deps) !== "workspace-write") return { deps, close: async () => {} };
   const prepare = deps.codexWorkspaceFactory ?? prepareCodexWorkspace;
   const workspace = await prepare(order.folder, deps.codexDockerSocket);
-  if (!workspace.config) return { deps, close: async () => {} };
-  const withWorkspaceEnv: RunDeps = { ...deps, env: { ...(deps.env ?? {}), ...workspace.env } };
-  if (deps.codexFactory) return { deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true }, close: async () => {} };
-  const wrapper = createCodexIgnoreUserConfigWrapper(codexBinaryPath(), workspace.config);
-  return {
-    deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true, codexPathOverride: wrapper.path },
-    close: wrapper.close,
-  };
+  const role = deps.codexPlanner ? createCodexPlannerRole(deps.codexPlanner) : undefined;
+  try {
+    const withWorkspaceEnv: RunDeps = {
+      ...deps,
+      env: { ...(deps.env ?? {}), ...workspace.env },
+      ...(role ? { codexPlannerConfig: role.config } : {}),
+    };
+    if (!workspace.config) return { deps: withWorkspaceEnv, close: async () => { await role?.close(); } };
+    if (deps.codexFactory) return {
+      deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true },
+      close: async () => { await role?.close(); },
+    };
+    const wrapper = createCodexIgnoreUserConfigWrapper(codexBinaryPath(), workspace.config);
+    return {
+      deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true, codexPathOverride: wrapper.path },
+      close: async () => { try { await wrapper.close(); } finally { await role?.close(); } },
+    };
+  } catch (error) {
+    await role?.close();
+    throw error;
+  }
 }
 
 /** Scrub options for every worker env (ADR-0050 §7). The daemon sets the default once; a
@@ -865,7 +886,7 @@ async function makeCodexClient(deps: RunDeps, cwd: string, handlers: RunHandlers
     ? Object.fromEntries(Object.entries(deps.codexWorkspaceConfig ?? {}).filter(([key]) =>
         !key.startsWith("permissions.neo-project.filesystem.") && !key.startsWith("permissions.neo-project.network.unix_sockets.")))
     : deps.codexWorkspaceConfig ?? {};
-  options.config = { ...workspaceConfig, ...disabled, ...(bridges.length ? { mcp_servers: servers } : {}) };
+  options.config = { ...workspaceConfig, ...disabled, ...(deps.codexPlannerConfig ?? {}), ...(bridges.length ? { mcp_servers: servers } : {}) };
   if (bridges.length || options.env) options.env = env;
   return factory(options);
 }
@@ -922,6 +943,9 @@ function apiErrorFromCodexMessage(message: string): ApiErrorKind | undefined {
 }
 
 function codexItemMilestone(item: { type?: string; [k: string]: unknown }): string | undefined {
+  if (item.type === "collab_tool_call" && typeof item.tool === "string") {
+    return `🔧 Agent: ${item.tool}`;
+  }
   if (item.type === "command_execution" && typeof item.command === "string") {
     return toolMilestone("Bash", { command: item.command });
   }
@@ -936,6 +960,7 @@ function codexItemMilestone(item: { type?: string; [k: string]: unknown }): stri
 }
 
 function codexItemActivity(item: { type?: string; [k: string]: unknown }): string | undefined {
+  if (item.type === "collab_tool_call" && typeof item.tool === "string") return `Agent: ${item.tool}`;
   if (item.type === "command_execution" && typeof item.command === "string") {
     return `Bash${item.command ? `: ${toolDetail({ command: item.command })}` : ""}`;
   }
@@ -949,6 +974,13 @@ function codexItemActivity(item: { type?: string; [k: string]: unknown }): strin
     return `${item.tool}${detail ? `: ${detail}` : ""}`;
   }
   return undefined;
+}
+
+/** A user-level request is required by Codex's multi-agent policy. The operator configured this
+ * role for project work; keep the original brief intact and respect a more specific instruction. */
+function codexTurnInput(input: string, deps: RunDeps): string {
+  if (!deps.codexPlannerConfig) return input;
+  return "For design, features, implementation, debugging, and architecture review, delegate planning to the planner agent and wait for its result; after implementation, delegate final review and wait. For simple status checks and small edits, work directly. Follow any more specific instruction in the request below.\n\n" + input;
 }
 
 async function consumeCodexTurn(
@@ -1144,7 +1176,7 @@ async function runCodexOrder(
       const client = await makeCodexClient(turn.deps, order.folder, handlers, bridges);
       const options = codexThreadOptions(order, turn.deps);
       const thread = turn.deps.resume ? client.resumeThread(turn.deps.resume, options) : client.startThread(options);
-      return await consumeCodexTurn(thread, order.task, handlers, turn.deps.abortController?.signal);
+      return await consumeCodexTurn(thread, codexTurnInput(order.task, turn.deps), handlers, turn.deps.abortController?.signal);
     } finally {
       await Promise.all(bridges.map((bridge) => bridge.close()));
     }
@@ -1361,7 +1393,7 @@ function startCodexOrder(
             turnSince = Date.now();
             turnActive = true;
             observe(() => handlers.onTurnStart?.(1));
-            const turn = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
+            const turn = await consumeCodexTurn(thread, codexTurnInput(next, turnDeps.deps), handlers, currentAbort.signal);
             final = { ...turn, sessionId: turn.sessionId || threadId || "" };
             if (turn.sessionId) threadId = turn.sessionId;
             turnActive = false;
