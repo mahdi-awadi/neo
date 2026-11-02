@@ -39,13 +39,25 @@ export interface MetricsSnapshot {
     approvals: number;
     perDispatch: number | null;
   };
+  /** The verdicts (plan W1.3): what the engine assigned, and how often it contradicted the claim. */
+  verdicts: {
+    /** Ends that carried a verdict at all (older rows have none). */
+    judged: number;
+    ready: number;
+    unreported: number;
+    /** Claim and verdict differed. */
+    disagree: number;
+    /** disagree ÷ ends with a claim; null when no end had a claim. */
+    claimVsVerdictRate: number | null;
+    /** The window's usage proxy ÷ ends with verdict `ready` (W1.12; tokens replace the proxy in W4.1). */
+    estUsageUnitsPerVerifiedTask: number | null;
+  };
   /** Lines a later phase fills in; each names the phase, so a reader knows why it is empty. */
   pending: Record<string, string>;
 }
 
 const PENDING: Record<string, string> = {
-  claimVsVerdictRate: "n/a until W1.3 (claim and verdict columns)",
-  tokensPerVerifiedTask: "n/a until W1.12 (verdicts) and W4.1 (token accounting)",
+  tokensPerVerifiedTask: "n/a until W4.1 (token accounting; the usage proxy per verified task is above)",
   reopenedIncidents: "n/a until W2.8 (incidents table)",
   mergedPrsPerWeek: "n/a until W3.6 (pr_links table)",
   windowShare: "n/a until W4.1 (rate-limit utilisation is in memory only today)",
@@ -60,6 +72,11 @@ export function metricsSnapshot(db: ReadOnlyDb, opts: { from: number; to: number
   let ok = 0;
   let failed = 0;
   let est = 0;
+  let judged = 0;
+  let ready = 0;
+  let unreported = 0;
+  let disagree = 0;
+  let withClaim = 0;
   const orderIds = new Set<string>();
   const sessionIds = new Set<string>();
   for (const e of ends) {
@@ -72,6 +89,13 @@ export function metricsSnapshot(db: ReadOnlyDb, opts: { from: number; to: number
     if (data.ok === true) ok++;
     else failed++;
     if (typeof data.costUsd === "number" && Number.isFinite(data.costUsd)) est += data.costUsd;
+    if (typeof data.verdict === "string") {
+      judged++;
+      if (data.verdict === "ready") ready++;
+      if (data.verdict === "unreported") unreported++;
+      if (data.claim) withClaim++;
+      if (data.disagree === true) disagree++;
+    }
     if (e.order_id) orderIds.add(e.order_id);
     if (e.session_id) sessionIds.add(e.session_id);
   }
@@ -91,6 +115,14 @@ export function metricsSnapshot(db: ReadOnlyDb, opts: { from: number; to: number
       estUsageUnitsPerDispatch: count ? round(est / count) : null,
     },
     interventions: { decisions, approvals, perDispatch: count ? round((decisions + approvals) / count) : null },
+    verdicts: {
+      judged,
+      ready,
+      unreported,
+      disagree,
+      claimVsVerdictRate: withClaim ? round(disagree / withClaim) : null,
+      estUsageUnitsPerVerifiedTask: ready ? round(est / ready) : null,
+    },
     pending: { ...PENDING },
   };
 }
@@ -126,6 +158,7 @@ export function renderSnapshot(s: MetricsSnapshot): string {
     `Metrics snapshot ${new Date(s.from).toISOString().slice(0, 10)} → ${new Date(s.to).toISOString().slice(0, 10)}`,
     `dispatches: ${d.count} (ok ${d.ok}, failed ${d.failed}) · est. usage units ${d.estUsageUnits} · per dispatch ${per(d.estUsageUnitsPerDispatch)}`,
     `interventions: decisions ${i.decisions}, approvals ${i.approvals} · per dispatch ${per(i.perDispatch)}`,
+    `verdicts: ${s.verdicts.judged} judged (ready ${s.verdicts.ready}, unreported ${s.verdicts.unreported}, disagree ${s.verdicts.disagree}) · claim≠verdict rate ${per(s.verdicts.claimVsVerdictRate)} · usage per verified task ${per(s.verdicts.estUsageUnitsPerVerifiedTask)}`,
     ...Object.entries(s.pending).map(([k, v]) => `${k}: ${v}`),
   ];
   return lines.join("\n");
