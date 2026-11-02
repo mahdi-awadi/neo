@@ -100,13 +100,15 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void; steersMidTurn?: b
   let providerSeen: unknown;
   const followUps: string[] = [];
   const timings: string[] = [];
-  const start = (_o: Order, h: RunHandlers, d?: { resume?: string; provider?: unknown }): SessionRun => {
+  let codexDockerSocket: string | undefined;
+  const start = (_o: Order, h: RunHandlers, d?: { resume?: string; provider?: unknown; codexDockerSocket?: string }): SessionRun => {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
+    codexDockerSocket = d?.codexDockerSocket;
     opts.onStart?.(h);
     return { followUp: (t, timing) => void (followUps.push(t), timings.push(timing)), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done, steersMidTurn: opts.steersMidTurn };
   };
-  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps, timings: () => timings };
+  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, codexDockerSocket: () => codexDockerSocket, followUps: () => followUps, timings: () => timings };
 }
 
 function harness(over: { meter?: Meter; start?: ReturnType<typeof fakeStart>["start"] } = {}) {
@@ -166,6 +168,23 @@ test("starts a new order with the configured worker SDK provider", async () => {
 
   expect(h.replies.some((r) => r.includes("(codex)"))).toBe(true);
   expect(f.providerSeen()).toBe("codex");
+  f.finish({ ok: true, sessionId: "codex-thread-1", summary: "done", costUsd: 0 });
+  await run!.done;
+});
+
+test("a direct Codex project run receives only its exact named Docker opt-in", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  h.base.cfg.providers.ownWork = "codex";
+  h.base.cfg.projects = {
+    [basename(dir)]: { codexDockerSocket: "/run/neo/project.sock" },
+    other: { codexDockerSocket: "/run/neo/other.sock" },
+  };
+
+  const run = await handleMessage(`/open ${dir} use the configured workflow`, 9, h.base);
+
+  expect(f.codexDockerSocket()).toBe("/run/neo/project.sock");
   f.finish({ ok: true, sessionId: "codex-thread-1", summary: "done", costUsd: 0 });
   await run!.done;
 });

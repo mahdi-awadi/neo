@@ -42,6 +42,18 @@ test("profileDeps threads the configured own-work SDK provider into every launch
   expect(d.provider).toBe("codex");
 });
 
+test("profileDeps preserves the launch path's explicitly selected Codex Docker opt-in", () => {
+  const d = profileDeps(
+    {
+      ...cfg,
+      providers: { ownWork: "codex" as const, customerWork: "gemini" as const },
+    },
+    "dispatch",
+    { codexDockerSocket: "/run/docker-engine.sock" },
+  );
+  expect(d.codexDockerSocket).toBe("/run/docker-engine.sock");
+});
+
 // A config that pins models (ADR-0005). `cfg` above deliberately has no `models` block, so the
 // tests above keep asserting the pre-pin behaviour.
 const pinned = {

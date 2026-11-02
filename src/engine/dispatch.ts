@@ -1178,6 +1178,7 @@ export async function dispatchToProject(
       },
       profileDeps(providerCfg, "dispatch", {
         resume: gatedResume,
+        codexDockerSocket: deps.projects?.[name]?.codexDockerSocket,
         // Attach the in-process "neo" MCP server so a dispatched sub-project worker gets the same
         // operator-facing tools a directly-opened project does: `send_file` and — when the frontend
         // wired `postDecision` — `ask_operator` (the ONE way it raises a blocking question). Without

@@ -300,6 +300,21 @@ test("startScheduledLoop wires loopRunExtras' runDeps + context-policy resume ga
   }
 });
 
+test("a named project loop receives only that project's explicit Codex Docker socket", async () => {
+  let socket: string | undefined;
+  await startScheduledLoop(remLoop("/home/eticket-v3"), {
+    chatId: 1,
+    reply: () => {},
+    cfg: loopCfg({ projects: { "eticket-v3": { codexDockerSocket: "/run/neo/eticket-docker.sock" } } }),
+    run: async (_order, _handlers, runDeps) => {
+      socket = runDeps?.codexDockerSocket;
+      return okRun();
+    },
+    check: async () => ({ met: false, detail: "run once" }),
+  });
+  expect(socket).toBe("/run/neo/eticket-docker.sock");
+});
+
 test("/loop <name> on enables a scheduled loop via the store", () => {
   const replies: string[] = [];
   const enabled = new Map<string, boolean>();

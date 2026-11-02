@@ -694,6 +694,67 @@ test("runOrder can execute through the Codex SDK adapter", async () => {
   expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "working through codex", costUsd: 0 });
 });
 
+test("a writable Codex turn receives its prepared native permission profile", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let clientOptions: Record<string, unknown> | undefined;
+
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    {
+      provider: "codex",
+      codexFactory: async (options) => {
+        clientOptions = options as Record<string, unknown>;
+        return f.factory();
+      },
+      codexWorkspaceFactory: async () => ({
+        config: {
+          default_permissions: "neo-project",
+          "permissions.neo-project.extends": ":workspace",
+          "permissions.neo-project.filesystem.\"/tmp/project/.git\"": "write",
+          "permissions.neo-project.network.enabled": true,
+          "permissions.neo-project.network.unix_sockets.\"/var/run/docker.sock\"": "allow",
+        },
+        env: { DOCKER_HOST: "unix:///var/run/docker.sock", DOCKER_CONTEXT: "" },
+      }),
+      codexNetworkAccessEnabled: true,
+    },
+  );
+
+  expect(f.starts[0]).toMatchObject({
+    workingDirectory: "/tmp",
+  });
+  expect(f.starts[0]).not.toHaveProperty("sandboxMode");
+  expect(f.starts[0]).not.toHaveProperty("networkAccessEnabled");
+  expect(clientOptions?.config).toMatchObject({
+    default_permissions: "neo-project",
+    "permissions.neo-project.filesystem.\"/tmp/project/.git\"": "write",
+    "permissions.neo-project.network.enabled": true,
+    "permissions.neo-project.network.unix_sockets.\"/var/run/docker.sock\"": "allow",
+  });
+  expect((clientOptions?.env as Record<string, string>).DOCKER_HOST).toBe("unix:///var/run/docker.sock");
+});
+
+test("a read-only Codex turn never creates a workspace capability", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let prepared = false;
+  await runOrder(
+    order(),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    {
+      provider: "codex",
+      codexFactory: f.factory,
+      disallowedTools: ["Write", "Edit", "NotebookEdit", "Bash"],
+      codexWorkspaceFactory: async () => {
+        prepared = true;
+        throw new Error("must not prepare read-only run");
+      },
+    },
+  );
+  expect(prepared).toBe(false);
+  expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only" });
+});
+
 test("Codex adapter translates Claude model aliases before opening a thread", async () => {
   const f = fakeCodexFactory({
     turns: () => [
@@ -706,7 +767,8 @@ test("Codex adapter translates Claude model aliases before opening a thread", as
   await runOrder(
     order(),
     { onMessage: () => {}, onEscalation: async () => "deny", onEvent: (kind, data) => events.push({ kind, data }) },
-    { provider: "codex", codexFactory: f.factory, model: "claude-3-5-sonnet-latest" },
+    // Keep the alias assertion hermetic when the daemon host selects a Codex model globally.
+    { provider: "codex", codexFactory: f.factory, model: "claude-3-5-sonnet-latest", env: { NEO_CODEX_MODEL: "" } },
   );
 
   expect(f.starts[0]).toMatchObject({
@@ -802,6 +864,43 @@ test("startOrder queues follow-ups as sequential Codex SDK turns on the same thr
   expect(f.prompts).toEqual(["first", "second"]);
   expect(messages).toEqual(["ack:first", "ack:second"]);
   expect(result).toMatchObject({ ok: true, sessionId: "codex-thread-1", summary: "ack:second" });
+});
+
+test("each writable Codex follow-up receives a newly prepared workspace profile", async () => {
+  const f = fakeCodexFactory({
+    turns: (input) => [
+      { type: "thread.started", thread_id: "codex-thread-1" },
+      { type: "item.completed", item: { id: crypto.randomUUID(), type: "agent_message", text: `ack:${input}` } },
+      { type: "turn.completed", usage: null },
+    ],
+  });
+  const prepared: string[] = [];
+  const run = startOrder(
+    order("first"),
+    { onMessage: () => {}, onEscalation: async () => "deny" },
+    {
+      provider: "codex",
+      codexFactory: f.factory,
+      resume: "codex-prev",
+      codexWorkspaceFactory: async () => {
+        const turn = `turn-${prepared.length + 1}`;
+        prepared.push(turn);
+        return {
+          config: { default_permissions: turn, [`permissions.${turn}.extends`]: ":workspace" },
+          env: { NEO_CODEX_WORKSPACE_TURN: turn },
+        };
+      },
+    },
+  );
+  while (f.prompts.length < 1) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.followUp("second", "after-turn");
+  while (f.prompts.length < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+  run.close();
+  await run.done;
+
+  expect(prepared).toEqual(["turn-1", "turn-2"]);
+  expect(f.resumes).toHaveLength(2);
+  expect(f.resumes.map((call) => (call.options as { sandboxMode?: string }).sandboxMode)).toEqual([undefined, undefined]);
 });
 
 test("surfaces a concise result preview for Bash but stays quiet for navigation tools", async () => {

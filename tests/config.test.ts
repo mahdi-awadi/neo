@@ -418,10 +418,10 @@ test("ADR-0054: restart.integrationBranch and maxUndeployedDays read from config
 test("github scan defaults and per-project settings from config.json (bad fields drop)", () => {
   expect(loadConfig(dir()).github).toEqual({ scanEveryMs: 1_800_000, callTimeoutMs: 20_000 });
   const d = dir();
-  writeFileSync(join(d, "config.json"), JSON.stringify({ github: { scanEveryMs: 600_000 }, projects: { gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], issueLabel: 7, ignoreKinds: ["dirty"] } } }));
+  writeFileSync(join(d, "config.json"), JSON.stringify({ github: { scanEveryMs: 600_000 }, projects: { gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], issueLabel: 7, ignoreKinds: ["dirty"], codexDockerSocket: "/run/docker.sock" }, bad: { codexDockerSocket: "relative.sock" } } }));
   const c = loadConfig(d);
   expect(c.github).toEqual({ scanEveryMs: 600_000, callTimeoutMs: 20_000 });
-  expect(c.projects).toEqual({ gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], ignoreKinds: ["dirty"] } });
+  expect(c.projects).toEqual({ gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], ignoreKinds: ["dirty"], codexDockerSocket: "/run/docker.sock" }, bad: {} });
 });
 
 test("AC6: commitFinish defaults on with the handoff notes ignored; config.json can turn it off; bad values fail closed", () => {

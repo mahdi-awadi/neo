@@ -533,7 +533,10 @@ function loopRunExtras(
   // The secretary digest runs on its own worker profile (the latest model, `workers.secretary`);
   // every other loop uses the shared `loop` profile.
   const resolveRunDeps = cfg ? () => {
-    const runDeps = profileDeps(cfg, loop.secretary ? "secretary" : "loop");
+    // The project name is the configured identity (as everywhere else in Neo), never a path-prefix
+    // authorization. It selects only this loop's explicit Docker opt-in.
+    const codexDockerSocket = cfg.projects?.[basename(loop.folder)]?.codexDockerSocket;
+    const runDeps = profileDeps(cfg, loop.secretary ? "secretary" : "loop", codexDockerSocket ? { codexDockerSocket } : {});
     if (loop.dreamMemory) runDeps.mcpServers = dreamMcpServers(loop.folder, cfg);
     return runDeps;
   } : undefined;

@@ -72,6 +72,26 @@ test("dispatch returns immediately while the sub-run is still going", async () =
   expect(interrupted).toBe(false); // still running in the background — not awaited, not killed
 });
 
+test("a dispatch grants only the named project's configured Codex Docker socket", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  d.providers = { ownWork: "codex", customerWork: "gemini" };
+  d.projects = {
+    "eticket-v3": { codexDockerSocket: "/run/neo/eticket.sock" },
+    other: { codexDockerSocket: "/run/neo/other.sock" },
+  };
+  let socket: string | undefined;
+  const start = (_order: unknown, _handlers: unknown, runDeps?: import("../src/engine/session-runner").RunDeps) => {
+    socket = runDeps?.codexDockerSocket;
+    return { followUp() {}, queued: () => 0, interrupt: async () => {}, close() {}, done: Promise.resolve({ ok: true, sessionId: "s", summary: "", costUsd: 0 }) };
+  };
+
+  await dispatchToProject("eticket-v3", "use Docker", d, 1, { start: start as never, now: () => 0, root });
+
+  expect(socket).toBe("/run/neo/eticket.sock");
+});
+
 test("dispatch records dispatch_start then dispatch_end in the event log", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));

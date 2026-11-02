@@ -458,6 +458,7 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
+      codexDockerSocket: deps.cfg.projects?.[session.name]?.codexDockerSocket,
       mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, sessionId: session.id, orderId: parsed.id, cause: turnCause(registry, session.id), workCause: () => registry.causeOf(session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
@@ -702,6 +703,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
+    codexDockerSocket: isCompany ? undefined : deps.cfg.projects?.[info?.name ?? ""]?.codexDockerSocket,
     mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, sessionId: id, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), workCause: () => registry.causeOf(id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);

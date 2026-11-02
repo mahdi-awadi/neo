@@ -20,6 +20,7 @@
 // Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
 import { codexBinaryPath, codexMcpDisableOverrides, discoverCodexMcpServers, registeredCodexMcpTools, startCodexMcpBridge } from "./codex-mcp-bridge";
+import { createCodexIgnoreUserConfigWrapper, prepareCodexWorkspace, type CodexWorkspace } from "./codex-workspace";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { createToolCalls, markCommand } from "./tool-calls";
 import type { SessionLane } from "./lanes";
@@ -247,6 +248,17 @@ export interface RunDeps {
   codexSkipGitRepoCheck?: boolean;
   codexNetworkAccessEnabled?: boolean;
   codexWebSearchMode?: CodexWebSearchMode;
+  /** The named project's explicit Docker socket opt-in. Launch paths select this from the project
+   * identity, never from a folder-prefix inference (ADR-0074). */
+  codexDockerSocket?: string;
+  /** Test seam around the turn-scoped Git/Docker capability (ADR-0074). */
+  codexWorkspaceFactory?: (folder: string, dockerSocket?: string) => Promise<CodexWorkspace>;
+  /** Internal native Codex permission-profile overlay for one CLI process. */
+  codexWorkspaceConfig?: NonNullable<CodexOptions["config"]>;
+  /** Suppresses `--sandbox workspace-write`: the native profile extends workspace permissions. */
+  codexWorkspaceProfile?: boolean;
+  /** Internal per-turn launcher that adds `codex exec --ignore-user-config`. */
+  codexPathOverride?: string;
 }
 
 /** Why an API call failed, as the SDK reports it (SDKAssistantMessageError). "rate_limit" and
@@ -764,18 +776,40 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   const model = resolveModelSelection("codex", deps);
   const c: CodexThreadOptions = {
     workingDirectory: order.folder,
-    sandboxMode: deps.codexSandboxMode ?? (readOnlySandboxRequested(deps.disallowedTools) ? "read-only" : "workspace-write"),
     approvalPolicy: deps.codexApprovalPolicy ?? "on-request",
     skipGitRepoCheck: deps.codexSkipGitRepoCheck ?? true,
   };
+  if (!deps.codexWorkspaceProfile) c.sandboxMode = codexSandboxMode(deps);
   const configuredModel = deps.env?.NEO_CODEX_MODEL ?? process.env.NEO_CODEX_MODEL;
   const selectedModel = model.model || configuredModel?.trim();
   if (selectedModel) c.model = selectedModel;
   const effort = codexEffort(model.effort);
   if (effort) c.modelReasoningEffort = effort;
-  if (deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
+  // A native permission profile owns network policy. The SDK's legacy workspace-write network
+  // setting serializes a competing sandbox policy and may replace the exact socket allowlist.
+  if (!deps.codexWorkspaceProfile && deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
   if (deps.codexWebSearchMode) c.webSearchMode = deps.codexWebSearchMode;
   return c;
+}
+
+function codexSandboxMode(deps: RunDeps): CodexSandboxMode {
+  return deps.codexSandboxMode ?? (readOnlySandboxRequested(deps.disallowedTools) ? "read-only" : "workspace-write");
+}
+
+/** Prepare the capabilities one Codex CLI process needs. Each live-session follow-up starts a new
+ * process, so this capability is intentionally not shared across turns. */
+async function prepareCodexTurn(order: Order, deps: RunDeps): Promise<{ deps: RunDeps; close(): Promise<void> }> {
+  if (codexSandboxMode(deps) !== "workspace-write") return { deps, close: async () => {} };
+  const prepare = deps.codexWorkspaceFactory ?? prepareCodexWorkspace;
+  const workspace = await prepare(order.folder, deps.codexDockerSocket);
+  if (!workspace.config) return { deps, close: async () => {} };
+  const withWorkspaceEnv: RunDeps = { ...deps, env: { ...(deps.env ?? {}), ...workspace.env } };
+  if (deps.codexFactory) return { deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true }, close: async () => {} };
+  const wrapper = createCodexIgnoreUserConfigWrapper(codexBinaryPath(), workspace.config);
+  return {
+    deps: { ...withWorkspaceEnv, codexWorkspaceConfig: workspace.config, codexWorkspaceProfile: true, codexPathOverride: wrapper.path },
+    close: wrapper.close,
+  };
 }
 
 /** Scrub options for every worker env (ADR-0050 §7). The daemon sets the default once; a
@@ -812,17 +846,26 @@ async function makeCodexClient(deps: RunDeps, cwd: string, handlers: RunHandlers
   const env = { ...mergedSdkEnv("codex", deps.env ?? {}, deps.envScrub), ...Object.assign({}, ...bridges.map((bridge) => bridge.env)) };
   let disabled: Record<string, string | boolean> = {};
   if (!deps.codexFactory) {
-    const binary = codexBinaryPath();
-    const ambientNames = await discoverCodexMcpServers(binary, cwd, env);
-    disabled = codexMcpDisableOverrides(ambientNames, Object.keys(servers));
-    const unavailable = ambientNames.filter((server) => !Object.hasOwn(servers, server.name)).map((server) => server.name);
-    if (unavailable.length) {
-      handlers.onEvent?.("worker_mcp_unavailable", { provider: "codex", servers: unavailable });
-      observe(() => handlers.onMessage(`Codex: external tools unavailable: ${unavailable.join(", ")}.`, "tool"));
+    const binary = deps.codexPathOverride ?? codexBinaryPath();
+    // A profile-backed turn starts with `--ignore-user-config`, so ambient MCP servers cannot load
+    // in the first place. Asking the one-purpose launcher to run `mcp list` would both fail and
+    // reintroduce the configuration layer we deliberately excluded.
+    if (!deps.codexWorkspaceProfile) {
+      const ambientNames = await discoverCodexMcpServers(binary, cwd, env);
+      disabled = codexMcpDisableOverrides(ambientNames, Object.keys(servers));
+      const unavailable = ambientNames.filter((server) => !Object.hasOwn(servers, server.name)).map((server) => server.name);
+      if (unavailable.length) {
+        handlers.onEvent?.("worker_mcp_unavailable", { provider: "codex", servers: unavailable });
+        observe(() => handlers.onMessage(`Codex: external tools unavailable: ${unavailable.join(", ")}.`, "tool"));
+      }
     }
     options.codexPathOverride = binary;
   }
-  options.config = { ...disabled, ...(bridges.length ? { mcp_servers: servers } : {}) };
+  const workspaceConfig = deps.codexPathOverride
+    ? Object.fromEntries(Object.entries(deps.codexWorkspaceConfig ?? {}).filter(([key]) =>
+        !key.startsWith("permissions.neo-project.filesystem.") && !key.startsWith("permissions.neo-project.network.unix_sockets.")))
+    : deps.codexWorkspaceConfig ?? {};
+  options.config = { ...workspaceConfig, ...disabled, ...(bridges.length ? { mcp_servers: servers } : {}) };
   if (bridges.length || options.env) options.env = env;
   return factory(options);
 }
@@ -1094,14 +1137,19 @@ async function runCodexOrder(
   const unsupported = codexUnsupportedFields(deps);
   if (unsupported.length) handlers.onEvent?.("worker_compat_warning", { provider: "codex", unsupported });
   reportCodexExternalMcp(deps, handlers);
-  const bridges = await codexMcpBridges(deps);
+  const turn = await prepareCodexTurn(order, deps);
   try {
-    const client = await makeCodexClient(deps, order.folder, handlers, bridges);
-    const options = codexThreadOptions(order, deps);
-    const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
-    return await consumeCodexTurn(thread, order.task, handlers, deps.abortController?.signal);
+    const bridges = await codexMcpBridges(turn.deps);
+    try {
+      const client = await makeCodexClient(turn.deps, order.folder, handlers, bridges);
+      const options = codexThreadOptions(order, turn.deps);
+      const thread = turn.deps.resume ? client.resumeThread(turn.deps.resume, options) : client.startThread(options);
+      return await consumeCodexTurn(thread, order.task, handlers, turn.deps.abortController?.signal);
+    } finally {
+      await Promise.all(bridges.map((bridge) => bridge.close()));
+    }
   } finally {
-    await Promise.all(bridges.map((bridge) => bridge.close()));
+    await turn.close();
   }
 }
 
@@ -1301,25 +1349,30 @@ function startCodexOrder(
         if (next === undefined) break;
         // The Codex SDK starts a new CLI process for every turn. Each process initializes a new
         // MCP session, so its run-scoped servers need a fresh transport and capability each time.
-        const bridges = await codexMcpBridges(deps);
+        const turnDeps = await prepareCodexTurn(order, deps);
         try {
-          const client = await makeCodexClient(deps, order.folder, handlers, bridges);
-          if (interruptRequested) break;
-          const options = codexThreadOptions(order, deps);
-          const thread = threadId ? client.resumeThread(threadId, options) : client.startThread(options);
-          currentAbort = new AbortController();
-          turnSince = Date.now();
-          turnActive = true;
-          observe(() => handlers.onTurnStart?.(1));
-          const turn = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
-          final = { ...turn, sessionId: turn.sessionId || threadId || "" };
-          if (turn.sessionId) threadId = turn.sessionId;
-          turnActive = false;
-          observe(() => handlers.onTurnEnd?.());
-          currentAbort = undefined;
-          if (!final.ok) break;
+          const bridges = await codexMcpBridges(turnDeps.deps);
+          try {
+            const client = await makeCodexClient(turnDeps.deps, order.folder, handlers, bridges);
+            if (interruptRequested) break;
+            const options = codexThreadOptions(order, turnDeps.deps);
+            const thread = threadId ? client.resumeThread(threadId, options) : client.startThread(options);
+            currentAbort = new AbortController();
+            turnSince = Date.now();
+            turnActive = true;
+            observe(() => handlers.onTurnStart?.(1));
+            const turn = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
+            final = { ...turn, sessionId: turn.sessionId || threadId || "" };
+            if (turn.sessionId) threadId = turn.sessionId;
+            turnActive = false;
+            observe(() => handlers.onTurnEnd?.());
+            currentAbort = undefined;
+            if (!final.ok) break;
+          } finally {
+            await Promise.all(bridges.map((bridge) => bridge.close()));
+          }
         } finally {
-          await Promise.all(bridges.map((bridge) => bridge.close()));
+          await turnDeps.close();
         }
       }
     } catch (err) {

@@ -28,6 +28,9 @@ export interface ProjectCfg {
   deployBranch?: string;
   /** Probed for the dashboard's health: its last probe failing makes the project "down". */
   healthUrl?: string;
+  /** Explicit Docker workflow opt-in for Codex workers. It becomes one exact native sandbox
+   * socket rule; absent means a Codex worker gets no Docker access (ADR-0074). */
+  codexDockerSocket?: string;
 }
 
 export interface GitScanInput {
@@ -190,6 +193,7 @@ export function readProjectsCfg(raw: unknown): Record<string, ProjectCfg> {
       ...(str(r.deployedVersionPath) ? { deployedVersionPath: str(r.deployedVersionPath) } : {}),
       ...(str(r.deployBranch) ? { deployBranch: str(r.deployBranch) } : {}),
       ...(str(r.healthUrl) ? { healthUrl: str(r.healthUrl) } : {}),
+      ...(typeof r.codexDockerSocket === "string" && r.codexDockerSocket.startsWith("/") ? { codexDockerSocket: r.codexDockerSocket } : {}),
     };
   }
   return out;
