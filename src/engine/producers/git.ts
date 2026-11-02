@@ -87,14 +87,14 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
       return { branch: branch!, upstream: upstream ?? "", ahead: aheadOf(track ?? ""), gone: (track ?? "").includes("gone"), at: Number(at) * 1000 };
     });
     for (const r of refs) {
-      if (r.upstream && r.ahead > 0) draft({ kind: "unpushed", key: r.branch, title: `${r.branch} is ${r.ahead} commit(s) ahead of ${r.upstream}` });
+      if (r.upstream && r.ahead > 0) draft({ kind: "unpushed", key: r.branch, title: `${r.branch} is ${r.ahead} commit(s) ahead of ${r.upstream}`, facts: { branch: r.branch, ahead: r.ahead, upstream: r.upstream } });
     }
     // A repo with no remote at all has nothing to push to: no_upstream would only be noise.
     const remotes = await read.git(i.folder, ["remote"]);
     if (!remotes.ok) fail("no_upstream");
     for (const b of remotes.ok && remotes.out.trim() ? tracked : []) {
       const r = refs.find((x) => x.branch === b);
-      if (r && (!r.upstream || r.gone)) draft({ kind: "no_upstream", key: b, title: r.gone ? `${b}: its upstream is gone` : `${b} has no upstream (never pushed)` });
+      if (r && (!r.upstream || r.gone)) draft({ kind: "no_upstream", key: b, title: r.gone ? `${b}: its upstream is gone` : `${b} has no upstream (never pushed)`, facts: { branch: b, gone: r.gone ? 1 : 0 } });
     }
   }
 
@@ -109,7 +109,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
     else {
       for (const r of refs) {
         if (merged.has(r.branch) || tracked.includes(r.branch) || i.now - r.at <= i.staleBranchDays * DAY) continue;
-        draft({ kind: "stale_branch", key: r.branch, title: `${r.branch}: no commit for ${Math.floor((i.now - r.at) / DAY)} days, not merged into ${base}` });
+        draft({ kind: "stale_branch", key: r.branch, title: `${r.branch}: no commit for ${Math.floor((i.now - r.at) / DAY)} days, not merged into ${base}`, facts: { branch: r.branch, days: Math.floor((i.now - r.at) / DAY), base } });
       }
     }
   }
@@ -124,7 +124,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
       const n = uncommittedFrom(status.out, prefix.out.trim()).length; // the one rule (HANDOFF.md is not work)
       if (n > 0) {
         const keep = i.dirtyHigh ? i.dirtyKeep : undefined;
-        draft({ kind: "dirty", key: i.folder, severity: i.dirtyHigh ? "high" : "normal", title: keep?.title ?? `${n} uncommitted file(s), no session working on them`, ...(keep?.detail ? { detail: keep.detail } : {}) });
+        draft({ kind: "dirty", key: i.folder, severity: i.dirtyHigh ? "high" : "normal", title: keep?.title ?? `${n} uncommitted file(s), no session working on them`, ...(keep?.detail ? { detail: keep.detail } : {}), facts: { files: n } });
       }
     }
   }
@@ -141,7 +141,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
       continue;
     }
     const n = Number(c.out.trim());
-    if (n > 0) draft({ kind: "drift", key: `${a}..${b}`, title: `${a} is ${n} commit(s) ahead of ${b}` });
+    if (n > 0) draft({ kind: "drift", key: `${a}..${b}`, title: `${a} is ${n} commit(s) ahead of ${b}`, facts: { branch: a, base: b, ahead: n } });
   }
 
   const wl = await read.git(i.folder, ["worktree", "list", "--porcelain"]);
@@ -163,7 +163,7 @@ export async function gitDrafts(read: GitRead, i: GitScanInput): Promise<{ draft
         merged: branch && merged ? merged.has(branch) : null,
         pushed: ref ? !!ref.upstream && ref.ahead === 0 && !ref.gone : null,
       };
-      draft({ kind: "worktree", key: path, title: `worktree ${path}${branch ? ` (${branch})` : ""} idle ${Math.floor((i.now - last) / HOUR)}h`, detail: JSON.stringify(facts) });
+      draft({ kind: "worktree", key: path, title: `worktree ${path}${branch ? ` (${branch})` : ""} idle ${Math.floor((i.now - last) / HOUR)}h`, detail: JSON.stringify(facts), facts: { path, ...(branch ? { branch } : {}), hours: Math.floor((i.now - last) / HOUR) } });
     }
   }
 

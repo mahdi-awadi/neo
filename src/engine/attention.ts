@@ -4,6 +4,7 @@
  *  the same row reopens. Plain code over the ledger — no AI. */
 import type { AttentionDraft, AttentionRow, AttentionSource, Ledger } from "./ledger";
 import { faults } from "./fault";
+import { resolveSuperseded } from "./supersede";
 
 export type { AttentionDraft, AttentionRow, AttentionSeverity, AttentionSource } from "./ledger";
 
@@ -19,7 +20,8 @@ export function reconcile(
 ): { opened: number[]; resolved: number[] } {
   const opened: number[] = [];
   const resolved: number[] = [];
-  if (drafts === "error") return { opened, resolved };
+  // A project note (ADR-0043) is never seen by a scan, so no scan may resolve it.
+  if (drafts === "error" || source === "note") return { opened, resolved };
   ledger.transaction(() => {
     const rows = new Map(ledger.attentionRows(project, source).map((r) => [`${r.kind}\0${r.key}`, r]));
     const seen = new Set<string>();
@@ -37,6 +39,8 @@ export function reconcile(
         resolved.push(row.id);
       } else if (row.dismissed) ledger.updateAttention(row.id, { dismissed: false }); // gone: its next return reopens it
     }
+    // ADR-0065: an older version of an item that is open in a newer one closes, with the reason.
+    resolved.push(...resolveSuperseded(ledger, project, source, now));
   });
   return { opened, resolved };
 }
@@ -45,12 +49,14 @@ export function reconcile(
  *  dismissed by the operator → stays closed while it is still there. */
 function upsert(ledger: Ledger, row: AttentionRow | undefined, d: AttentionDraft, now: number): { id: number; opened: boolean } {
   if (!row) return { id: ledger.insertAttention(d, now), opened: true };
-  const fields = { folder: d.folder, title: d.title, detail: d.detail ?? null, url: d.url ?? null, severity: d.severity, lastSeen: now };
+  // Facts (ADR-0059) refresh with the rest: a scan-driven item gets them back within one scan of a migration.
+  const fields = { folder: d.folder, title: d.title, detail: d.detail ?? null, url: d.url ?? null, severity: d.severity, lastSeen: now, facts: d.facts ? JSON.stringify(d.facts) : null };
   if (row.resolvedAt === undefined) ledger.updateAttention(row.id, fields);
   else if (row.dismissed) ledger.updateAttention(row.id, { lastSeen: now });
   else {
     // Back after it resolved: a new occurrence — its old snooze and old todo are not this one's.
-    ledger.updateAttention(row.id, { ...fields, resolvedAt: null, snoozedUntil: null, todoId: null });
+    ledger.updateAttention(row.id, { ...fields, resolvedAt: null, snoozedUntil: null, todoId: null, resolution: null, ackedAt: null, answer: null, deliveredAt: null });
+    ledger.setPin(`att:${row.id}`, null, now); // nor its old pin or hide (ADR-0065)
     return { id: row.id, opened: true };
   }
   return { id: row.id, opened: false };
@@ -79,7 +85,7 @@ export function reconcileAll(
 ): { opened: number[]; resolved: number[] } {
   const opened: number[] = [];
   const resolved: number[] = [];
-  if (drafts === "error") return { opened, resolved };
+  if (drafts === "error" || source === "note") return { opened, resolved };
   const byProject = new Map<string, AttentionDraft[]>();
   for (const p of ledger.attentionProjects(source)) byProject.set(p, []);
   for (const d of drafts) byProject.set(d.project, [...(byProject.get(d.project) ?? []), d]);
@@ -106,7 +112,7 @@ export function liveDrafts(ledger: Ledger, source: AttentionSource, kinds: Reado
   for (const p of project !== undefined ? [project] : ledger.attentionProjects(source)) {
     for (const r of ledger.attentionRows(p, source)) {
       if (!kinds.has(r.kind) || (r.resolvedAt !== undefined && !r.dismissed)) continue;
-      out.push({ project: r.project, folder: r.folder, source, kind: r.kind, key: r.key, title: r.title, detail: r.detail, url: r.url, severity: r.severity });
+      out.push({ project: r.project, folder: r.folder, source, kind: r.kind, key: r.key, title: r.title, detail: r.detail, url: r.url, severity: r.severity, ...(r.facts ? { facts: r.facts } : {}) });
     }
   }
   return out;

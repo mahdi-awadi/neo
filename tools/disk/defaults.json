@@ -1,0 +1,144 @@
+{
+  "mount": "/",
+  "alertPct": 80,
+  "alertStepsPct": [
+    80,
+    90,
+    95
+  ],
+  "alertRepeatMinutes": 120,
+  "pressureFreePct": 10,
+  "pressureCooldownMinutes": 30,
+  "sampleKeepHours": 6,
+  "alertHysteresisPct": 2,
+  "pendingTimeoutMinutes": 120,
+  "dailyHour": 4,
+  "cooldownHours": 6,
+  "nothingLeftBytes": 1000000000,
+  "minAgeDays": 7,
+  "imageMinAgeDays": 2,
+  "buildCacheMaxUsedSpace": "10gb",
+  "journalMaxSize": "500M",
+  "protect": [
+    "prod",
+    "^/home/neo/data(/|$)",
+    "^/home/neo/company(/|$)",
+    "^/home/neo/node_modules(/|$)",
+    "^/var/backups/neo(/|$)",
+    "^neo-embedder-models$",
+    "^/var/backups/shared-infra(/|$)"
+  ],
+  "keepImagesFrom": [
+    "~/.claude/security/images.env"
+  ],
+  "logRoots": [
+    "/var/log"
+  ],
+  "logSkipDirs": [
+    "/var/log/journal"
+  ],
+  "tmpRoots": [
+    "/tmp"
+  ],
+  "tmpSkip": [
+    "^systemd-private-",
+    "^\\.(X11|ICE|font|XIM|Test)-unix$",
+    "^tmux-"
+  ],
+  "packageCaches": [
+    {
+      "name": "bun",
+      "argv": [
+        "bun",
+        "pm",
+        "cache",
+        "rm"
+      ],
+      "cwd": "."
+    },
+    {
+      "name": "npm",
+      "argv": [
+        "npm",
+        "cache",
+        "clean",
+        "--force"
+      ]
+    },
+    {
+      "name": "go-build",
+      "argv": [
+        "go",
+        "clean",
+        "-cache"
+      ]
+    },
+    {
+      "name": "go-mod",
+      "argv": [
+        "go",
+        "clean",
+        "-modcache"
+      ]
+    },
+    {
+      "name": "pip",
+      "argv": [
+        "pip3",
+        "cache",
+        "purge"
+      ]
+    }
+  ],
+  "dumpRoots": [
+    "/home",
+    "/root",
+    "/var/backups",
+    "/srv",
+    "/tmp"
+  ],
+  "dumpPattern": "\\.(sql|dump|pgdump|backup|archive)(\\.(gz|xz|zst|bz2))?$|\\.bak([-.][\\w.-]*)?$|backup[^/]*\\.(tar|tgz|zip|gz|zst)$",
+  "dumpMinBytes": 100000000,
+  "projectsRoot": "/home",
+  "buildOutputNames": [
+    "node_modules",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".turbo",
+    ".expo",
+    ".dart_tool",
+    ".gradle",
+    "dist",
+    "build",
+    "out",
+    "bin",
+    "obj",
+    "Pods",
+    "DerivedData"
+  ],
+  "artifactNames": [
+    "coverage",
+    ".nyc_output",
+    "test-results",
+    "playwright-report",
+    "blob-report"
+  ],
+  "buildOutputMaxDepth": 7,
+  "volumeMinBytes": 50000000,
+  "rebuildableVolumePattern": "(^|[_-])([a-z0-9]*cache|go_?mod(cache)?|go_?build(_cache)?|gobuild|node_modules|(pgbr)?tests?[0-9]*)([_-]|$)|^buildx_buildkit_.*_state$",
+  "cacheVolumePattern": "(^|[_-])([a-z0-9]*cache|go_?mod(cache)?|go_?build(_cache)?|gobuild)([_-]|$)",
+  "cacheVolumeMaxBytes": 5000000000,
+  "wipeSkipContainers": [
+    "^buildx_buildkit_",
+    "^netdata$"
+  ],
+  "wipeKeep": [
+    "bin"
+  ],
+  "containerLogMaxBytes": 100000000,
+  "coredumpDir": "/var/lib/systemd/coredump",
+  "coredumpMaxAgeHours": 24,
+  "dbImagePattern": "postgres|postgis|clickhouse|mongo|mysql|mariadb|redis|meili|qdrant|elasticsearch|opensearch",
+  "reportTop": 25
+}

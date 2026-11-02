@@ -3,3 +3,4 @@
 # also sweeps agent/desks/** workspace checkouts (template tests with missing deps) and pollutes
 # the CI signal with failures that are not Neo's.
 root = "tests"
+preload = ["./tests/preload.ts"]

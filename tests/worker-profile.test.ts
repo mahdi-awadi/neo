@@ -7,7 +7,7 @@ const cfg = {
     company: { effort: "low" as const }, project: {}, dispatch: {},
     loop: { model: "sonnet", skills: [] as string[] },
     judge: { model: "haiku", effort: "low" as const },
-    ingress: { effort: "low" as const }, handoff: { model: "haiku", effort: "low" as const }, secretary: {},
+    ingress: { effort: "low" as const }, handoff: { model: "haiku", effort: "low" as const }, secretary: {}, consult: {},
   },
   workerEnv: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "70" },
 };
@@ -27,8 +27,11 @@ test("call-site base wins over the profile and keeps unrelated fields", () => {
   expect(d.disallowedTools).toEqual(["Write"]);
 });
 
-test("empty profile + empty env adds nothing (inherit = today's behavior)", () => {
-  expect(profileDeps({ workers: cfg.workers, workerEnv: {} }, "dispatch")).toEqual({});
+test("empty profile + empty env adds only the planner subagent (ADR-0063); a path without one adds nothing", () => {
+  const d = profileDeps({ workers: cfg.workers, workerEnv: {} }, "dispatch");
+  expect(Object.keys(d)).toEqual(["agents"]);
+  expect((d.agents as Record<string, { model?: string; effort?: string }>).planner).toMatchObject({ model: "opus", effort: "max" });
+  expect(profileDeps({ workers: cfg.workers, workerEnv: {} }, "judge").agents).toBeUndefined();
 });
 
 test("profileDeps threads the configured own-work SDK provider into every launch path", () => {

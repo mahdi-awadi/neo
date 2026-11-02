@@ -73,3 +73,13 @@ test("rejects an interval below the daemon's own tick floor (MIN_INTERVAL_MS)", 
   const atFloor = validateLoopInput(base({ triggerKind: "interval", intervalMinutes: 1, cronExpr: undefined }), opts);
   expect("def" in atFloor && atFloor.def.trigger).toEqual({ kind: "interval", everyMs: 60_000 });
 });
+
+test("report: goal is kept, worker/absent leave it unset, anything else is refused (ADR-0045)", () => {
+  const goal = validateLoopInput(base({ report: "goal" }), opts);
+  expect("def" in goal && goal.def.report).toBe("goal");
+  const worker = validateLoopInput(base({ report: "worker" }), opts);
+  expect("def" in worker && worker.def.report).toBeUndefined();
+  expect("def" in validateLoopInput(base(), opts) && (validateLoopInput(base(), opts) as { def: { report?: string } }).def.report).toBeUndefined();
+  const bad = validateLoopInput(base({ report: "loud" as LoopInput["report"] }), opts);
+  expect(bad).toEqual({ error: "report must be worker or goal" });
+});

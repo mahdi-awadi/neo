@@ -83,6 +83,11 @@ test("drift (configured pair) and stale_branch (idle, unmerged)", async () => {
   const keys = r.drafts.map((d) => `${d.kind}:${d.key}`).sort();
   expect(keys).toEqual(["drift:dev..main", "stale_branch:fix/old"]);
   expect(r.drafts.find((d) => d.kind === "drift")!.title).toBe("dev is 1 commit(s) ahead of main");
+  // ADR-0059: structured facts for the console's description.
+  expect(r.drafts.find((d) => d.kind === "drift")!.facts).toEqual({ branch: "dev", base: "main", ahead: 1 });
+  const stale = r.drafts.find((d) => d.kind === "stale_branch")!.facts!;
+  expect(stale).toMatchObject({ branch: "fix/old", base: "main" });
+  expect(stale.days as number).toBeGreaterThan(200);
 });
 
 test("a linked worktree with no session for worktreeIdleHours, with its clean/dirty and pushed/merged facts", async () => {

@@ -87,6 +87,10 @@ test("thread_waiting: a thread waiting longer than waitingHours; a recent one is
   thread(ledger, { project: "gold", folder: "/home/gold", state: "waiting", at: T0 });
   expect(kinds(deps, T0 + 11 * H)).toEqual([]);
   expect(kinds(deps, T0 + 13 * H)).toEqual(["thread_waiting"]);
+  // ADR-0059: the thread, its title and since when — the console says "waiting 13h for an answer".
+  const d = engineDrafts(deps, T0 + 13 * H).find((x) => x.kind === "thread_waiting")!;
+  expect(d.facts).toMatchObject({ since: T0 });
+  expect(typeof d.facts!.threadTitle).toBe("string");
 });
 
 test("decision_stale: an open decision older than decisionStaleHours; no project → the company", () => {
@@ -184,7 +188,7 @@ test("a new ctx_window_suspect item also records one event naming the model and 
 });
 
 test("every kind the producer emits is listed in ENGINE_KINDS", () => {
-  expect([...ENGINE_KINDS].sort()).toEqual(["approval_stuck", "ctx_window_suspect", "decision_stale", "dispatch_spinning", "queue_paused", "thread_failed", "thread_waiting"]);
+  expect([...ENGINE_KINDS].sort()).toEqual(["approval_stuck", "backup_failed", "ctx_window_suspect", "decision_stale", "dispatch_spinning", "history_degraded", "history_off", "queue_paused", "thread_failed", "thread_waiting"]);
 });
 
 test("readAttentionCfg: defaults, and only well-typed positive numbers are kept", () => {

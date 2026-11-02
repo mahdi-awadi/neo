@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { runProjectLoop } from "../src/engine/project-loop";
+import { loopBrief } from "../src/engine/standing-rules";
 import type { RunResult } from "../src/engine/session-runner";
 
 const ok = (sessionId: string, costUsd = 0): RunResult => ({ ok: true, sessionId, summary: "", costUsd });
@@ -83,4 +84,14 @@ test("runProjectLoop stops over-budget using worker cost", async () => {
     { run: async (_o, _h) => ok("s", 1), check: async () => ({ met: false, detail: "" }) },
   );
   expect(out.reason).toBe("over-budget");
+});
+
+test("ADR-0063: each loop iteration's brief is the standing rules, then the loop's own prompt unchanged", async () => {
+  const tasks: string[] = [];
+  await runProjectLoop(
+    { folder: "/p/gold", prompt: "make tests pass", goal: { kind: "command", command: ["true"] }, bounds: { maxIterations: 1 } },
+    { run: async (o) => (tasks.push(o.task), ok("s1")), check: async () => ({ met: tasks.length > 0, detail: "c" }) },
+  );
+  expect(tasks).toEqual([loopBrief("make tests pass")]);
+  expect(tasks[0]!.startsWith("Standing rules (Neo):")).toBe(true);
 });

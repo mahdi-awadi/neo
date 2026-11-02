@@ -2,12 +2,19 @@
 // it translates Telegram updates into handleOrder() calls and renders escalations as
 // Allow/Deny inline buttons. All the logic lives in engine/pipeline.ts (tested); this
 // file is I/O wiring, verified at the daemon e2e step.
+import { controlTool, DEFAULT_TOOL_CONTROL_CFG, parseToolCallback, type ToolNotices } from "../engine/tool-control";
+import type { ProjectNotes } from "../engine/project-notes";
+import type { Catalogue } from "../engine/tools-catalogue";
+import type { TaskHistory } from "../engine/history/index";
+import { forgetReply } from "../engine/history/operator";
+import { randomBytes } from "node:crypto";
 import { applyAttentionAction, isAttentionAction, attentionLabel, type AttentionAction } from "../engine/attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "../engine/producers/engine";
 import { Api, Bot, GrammyError, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ApiClientOptions } from "grammy";
 import type { MessageEntity, UserFromGetMe } from "grammy/types";
-import { saveInbound } from "../engine/files";
+import { basename } from "node:path";
+import { saveInbound, withAttachments } from "../engine/files";
 import { DEFAULT_TRACE, type NeoConfig } from "../config";
 import type { Ledger, DecisionRow } from "../engine/ledger";
 import type { Registry } from "../engine/registry";
@@ -21,7 +28,7 @@ import { createRegistry } from "../engine/registry";
 import { createMeter } from "../engine/budget";
 import { openTrustStore } from "../engine/trust";
 import { handleMessage, dispatchDepsFrom } from "../engine/pipeline";
-import { sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
+import { ledgerIndexStore, sharedCodebaseMemoryIndexer } from "../engine/codebase-memory";
 import { createMessageRoutes } from "../engine/message-routes";
 import { routeReply, answerDecision } from "../engine/reply-routing";
 import { handleCommand, selectProject, killProject, telegramCommands, type CommandDeps, type CommandResult, type SelectableProject, type TelegramCommand } from "../engine/commands";
@@ -30,6 +37,7 @@ import { renderInboxItem, draftInboxReply, sendInboxReply, type InboxListEntry, 
 import type { IngressDeps } from "../engine/ingress";
 import { deliverChunked, projectHashtag } from "../engine/format";
 import { createFloodGate, isToolStepLine, type FloodGate } from "./telegram-flood";
+import { handleToolCardTap } from "./telegram-tool-cards";
 import { knownIds, type LineIds, type OperatorBus, type OperatorSink } from "../engine/operator-bus";
 import { refSuffix, type Cause, type Trace } from "../engine/trace";
 import type { ReplyMeta } from "../engine/pipeline";
@@ -38,8 +46,10 @@ import { openEscalationDecision, patientApproval, resolveEscalationDecision } fr
 import { DEFAULT_GOVERNOR_CFG } from "../engine/governor";
 import type { ApiCooldown } from "../engine/api-retry";
 import { faults } from "../engine/fault";
-import { applyPlanAction, isPlanAction, planActions, planDepsFrom, PLAN_LABELS, type PostPlan } from "../engine/plans";
+import { applyPlanAction, isPlanAction, planDepsFrom, PLAN_LABELS, type EditPlanCard, type PlanAction, type PostPlan } from "../engine/plans";
 import type { PlanStatus } from "../engine/ledger";
+import { answerable } from "../engine/decision-settle";
+import type { ApiWaits } from "../engine/api-wait";
 import {
   keyboardRows,
   parseDecisionCallback,
@@ -48,6 +58,7 @@ import {
   isComplete,
   needsSubmit,
   answerText,
+  decisionBody,
   type StructuredAsk,
   type Selection,
   type DecisionTap,
@@ -55,6 +66,8 @@ import {
 
 /** Telegram's limit for the toast that answers a button tap (answerCallbackQuery text). */
 const TAP_TOAST_MAX = 200;
+/** Forget buttons (ADR-0067) waiting for their tap; the oldest goes when there are more. */
+const FORGET_PENDING_MAX = 50;
 
 /** Prefix for every project-attributed outbound line: a clickable Telegram hashtag
  *  (#waselni, #eticket_v3, ...) so tapping it filters the chat to that project. Kept as plain
@@ -63,18 +76,31 @@ export function projectTagPrefix(project?: string): string {
   return project ? `${projectHashtag(project)} ` : "";
 }
 
-/** The Decisions-group card (plain text): badge, #project tag, the question, then — when the decision
- *  has a thread and refs are on — its thread's ref (spec §4.3) as a code entity (tap to copy). Offsets
- *  are UTF-16 units, as Telegram counts them. Pure. */
+/** Telegram's hard cap on one message's text. */
+const TELEGRAM_TEXT_MAX = 4096;
+
+/** The Decisions-group card (plain text): badge, #project tag, the decision — the whole body
+ *  (`decisionBody`: context, numbered options with their explanations, the recommendation) when the
+ *  decision carries a spec (ADR-0049), else the bare question — then, when the decision has a thread
+ *  and refs are on, its thread's ref (spec §4.3) as a code entity (tap to copy). Kept within
+ *  Telegram's 4096-character limit. Offsets are UTF-16 units, as Telegram counts them. Pure. */
 export function decisionCard(
   rec: { project?: string; ref?: string },
   question: string,
   mode: "auto" | "off",
+  spec?: StructuredAsk,
 ): { text: string; entities?: MessageEntity[] } {
-  const body = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${question}`;
-  if (!rec.ref || !refSuffix("decision", false, rec.ref, mode)) return { text: body };
-  const text = `${body} · ${rec.ref}`;
-  return { text, entities: [{ type: "code", offset: text.length - rec.ref.length, length: rec.ref.length }] };
+  const showRef = !!rec.ref && !!refSuffix("decision", false, rec.ref, mode);
+  const suffix = showRef ? ` · ${rec.ref}` : "";
+  const full = `${priorityBadge("decision")} ${projectTagPrefix(rec.project)}${spec ? decisionBody(spec) : question}`;
+  const room = TELEGRAM_TEXT_MAX - suffix.length;
+  // Cut on a code-point boundary: a lone high surrogate (half an emoji) renders as a broken character.
+  let cut = room - 1;
+  if (full.length > room && /[\uD800-\uDBFF]/.test(full[cut - 1] ?? "")) cut--;
+  const body = full.length > room ? `${full.slice(0, cut)}…` : full;
+  if (!showRef) return { text: body };
+  const text = body + suffix;
+  return { text, entities: [{ type: "code", offset: text.length - rec.ref!.length, length: rec.ref!.length }] };
 }
 
 /** The full first-chunk prefix for an outbound line: the priority's single colored accent (🟢/🔴/…
@@ -231,7 +257,7 @@ export function createTelegramBot(
   /** Engine-control hooks (daemon-injected): the reload drain gate, the /reload trigger, and the
    *  shared API-throttle gate that holds background work while Anthropic is rate-limiting us. */
   /** `postPlan`: the daemon's one plan poster (ADR-0019) — every run this bot starts sends its plans through it. */
-  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; trace?: Trace; postPlan?: PostPlan; neoFolder?: string; gitRead?: CommandDeps["gitRead"] },
+  reload?: { lifecycle?: { draining(): boolean }; requestReload?: () => void; cooldown?: ApiCooldown; apiWaits?: ApiWaits; todo?: TodoQueue; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; trace?: Trace; postPlan?: PostPlan; editPlan?: EditPlanCard; neoFolder?: string; gitRead?: CommandDeps["gitRead"]; notes?: ProjectNotes; tools?: Catalogue; toolNotices?: ToolNotices; history?: TaskHistory },
   /** Operator-channel broadcast bus — mirror this surface to the web console and vice-versa. */
   bus?: OperatorBus,
   opts: { botInfo?: UserFromGetMe; client?: ApiClientOptions } = {},
@@ -273,7 +299,7 @@ export function createTelegramBot(
   // The cause seam (ADR-0015), shared with every other surface. Absent → nothing is traced.
   const trace = reload?.trace;
   // The plan registry (ADR-0019): plan taps, and the loops this bot starts (only where a card can be posted).
-  const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, trace, todo: reload?.todo }, cfg.plans);
+  const planDeps = () => planDepsFrom({ ledger, postPlan: reload?.postPlan, editPlan: reload?.editPlan, trace, todo: reload?.todo, registry }, cfg.plans);
   const loopPlans = reload?.postPlan ? planDeps() : undefined;
   const attentionDeps = () => ({ ledger, registry, todo: reload?.todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 });
   /** Trace an operator line (spec §4.1). Contained (ADR-0010): a trace fault costs the thread, never
@@ -333,7 +359,7 @@ export function createTelegramBot(
   ): Promise<{ chatId: number; messageId: number } | undefined> {
     const target = cfg.decisionsChatId ?? admin.adminId();
     if (target === undefined) return undefined; // no operator claimed yet — the queue still holds it
-    const card = decisionCard(rec, question, (cfg.trace ?? DEFAULT_TRACE).showRefs);
+    const card = decisionCard(rec, question, (cfg.trace ?? DEFAULT_TRACE).showRefs, spec);
     // A structured ask (multi-select / multi-question) renders the richer keyboard; a flat single
     // choice keeps the legacy one-tap keyboard so its UX is unchanged.
     const keyboard = spec ? structuredKeyboard(rec.id, spec) : decisionKeyboard(rec.id, options);
@@ -364,6 +390,9 @@ export function createTelegramBot(
   );
   // Inbox items awaiting an operator-typed edit, keyed by chat id -> inbox item id (Slice 3).
   const pendingInboxEdit = new Map<number, string>();
+  // A /forget card's button (ADR-0067): token → the chat it was sent to, the ref and the reason. The tap acts
+  // only in that chat, and only once.
+  const pendingForget = new Map<string, { chatId: number; ref: string; reason: string }>();
   // Inbox items whose send is waiting on its Allow/Deny press — one send per item at a time.
   const sendingInbox = new Set<string>();
   // Decisions awaiting a typed "Other / type an answer", keyed by chat id -> decision id: the
@@ -381,7 +410,13 @@ export function createTelegramBot(
   // `msg`: the operator's typed answer message (a reply or an "Other" answer), bound to its row; a tap has none.
   async function answerAndResume(dec: DecisionRow, answer: string, chatId: number, msg?: TracedMessage): Promise<void> {
     pendingStructuredSelection.delete(dec.id); // drop any in-progress selection — this decision is done
-    const resumed = answerDecision({ registry, ledger, routes, worker: cfg.providers.ownWork }, dec, answer, chatId);
+    const todoQueue = reload?.todo;
+    const resumed = answerDecision(
+      { registry, ledger, worker: cfg.providers.ownWork, ...(todoQueue ? { parked: (d, a) => !!todoQueue.decisionAnswered(d.id, d.question, a) } : {}) },
+      dec,
+      answer,
+      chatId,
+    );
     // The acknowledgement stays in the chat the operator answered in (the group, when tapped there),
     // so they see confirmation where they acted. But the RESUME runs on the decision's ORIGINAL chat
     // (the DM) so the reopened session's progress flows to the muted firehose, never floods the group.
@@ -398,7 +433,7 @@ export function createTelegramBot(
   async function handleDecisionTap(ctx: Context, tap: DecisionTap): Promise<void> {
     const chatId = ctx.chat?.id ?? 0;
     const dec = ledger.decisionById(tap.id);
-    if (!dec || dec.status !== "open") {
+    if (!dec || !answerable(dec)) {
       await ackCallback(ctx, "already answered");
       try {
         await ctx.editMessageReplyMarkup();
@@ -489,7 +524,8 @@ export function createTelegramBot(
     trust,
     lifecycle: reload?.lifecycle,
     cooldown: reload?.cooldown,
-    codebaseMemory: sharedCodebaseMemoryIndexer(cfg),
+    apiWaits: reload?.apiWaits,
+    codebaseMemory: sharedCodebaseMemoryIndexer(cfg, ledgerIndexStore(ledger)),
     todo: reload?.todo,
     trace,
     reply: (cid, text, project, priority, meta?: ReplyMeta) => {
@@ -499,6 +535,10 @@ export function createTelegramBot(
     },
     postDecision, // lets the ask_operator tool post a tappable decision to the Decisions channel
     postPlan: reload?.postPlan, // plans the run writes reach the operator as cards (ADR-0019)
+    editPlan: reload?.editPlan, // and their cards follow the plan's state (ADR-0036)
+    notes: reload?.notes, // the project_notes tool (ADR-0043): operator surfaces only
+    tools: reload?.tools, // the tool_api relay (ADR-0044): operator surfaces only
+    history: reload?.history, // history_search + remember (ADR-0067): operator surfaces only
     askApproval: (cid, reason, signal) =>
       new Promise<"allow" | "deny">((resolve) => {
         const token = crypto.randomUUID();
@@ -586,7 +626,8 @@ export function createTelegramBot(
     const file = await ctx.getFile();
     const bytes = await downloadTelegramFile(cfg.telegramToken, file.file_path!);
     const path = saveInbound(target.order.folder, name, bytes);
-    const text = `📎 operator attached \`${name}\` at \`${path}\`\n${routing.deliver}`;
+    // The caption and its file are one message, in the one format both surfaces use (ADR-0026).
+    const text = withAttachments(routing.deliver, [{ name: basename(path), path }]);
     await handleMessage(text, chatId, pipelineDeps(), "neo", inbound(chatId, text, ctx.message));
   }
 
@@ -594,6 +635,7 @@ export function createTelegramBot(
   const commandDeps = (replyTo?: { chatId: number; channelMsgId: number }): CommandDeps => ({
     registry,
     ledger,
+    ...(cfg.toolControl ? { toolControl: cfg.toolControl } : {}),
     usage,
     trust,
     inbox,
@@ -604,9 +646,11 @@ export function createTelegramBot(
     todo: reload?.todo,
     updates: reload?.updates,
     gated: reload?.gated,
+    deployGap: reload?.deployGap,
     trace,
     neoFolder: reload?.neoFolder,
     gitRead: reload?.gitRead,
+    history: reload?.history, // /find, /remember, /forget (ADR-0067)
     ...(replyTo ? { replyTo } : {}),
   });
   // One command answer with the buttons its result carries. An async command (/project) is sent when
@@ -624,6 +668,11 @@ export function createTelegramBot(
       say(chatId, command.text, { reply_markup: inboxKeyboard(command.inbox) });
     } else if (command.attention?.length) {
       say(chatId, command.text, { reply_markup: attentionKeyboard(command.attention, (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours) });
+    } else if (command.forget) {
+      const token = randomBytes(8).toString("hex");
+      pendingForget.set(token, { chatId, ...command.forget });
+      while (pendingForget.size > FORGET_PENDING_MAX) pendingForget.delete(pendingForget.keys().next().value!);
+      say(chatId, command.text, { reply_markup: new InlineKeyboard().text("🗑 Forget", `hf:${token}`) });
     } else if (command.project) {
       const kb = projectDashKeyboard(command.project);
       say(chatId, command.text, kb.inline_keyboard.flat().length ? { reply_markup: kb } : undefined);
@@ -658,7 +707,7 @@ export function createTelegramBot(
     if (answerDecId !== undefined) {
       pendingDecisionAnswer.delete(chatId);
       const dec = ledger.decisionById(answerDecId);
-      if (dec && dec.status === "open") await answerAndResume(dec, ctx.message.text, chatId, ctx.message);
+      if (dec && answerable(dec)) await answerAndResume(dec, ctx.message.text, chatId, ctx.message);
       else say(chatId, "That decision is no longer open.");
       return;
     }
@@ -702,7 +751,7 @@ export function createTelegramBot(
     const replyToId = ctx.message.reply_to_message?.message_id;
     if (replyToId !== undefined) {
       const dec = ledger.decisionByMessage(chatId, replyToId);
-      if (dec && dec.status === "open" && dec.kind === "decision") {
+      if (dec && answerable(dec) && dec.kind === "decision") {
         await answerAndResume(dec, ctx.message.text, chatId, ctx.message);
         return;
       }
@@ -752,8 +801,31 @@ export function createTelegramBot(
       return;
     }
 
-    // Tap a project to make it active (use:) or kill it (kill:) — shared engine functions.
     const cb = ctx.callbackQuery.data;
+    // ADR-0058: Stop (a second tap confirms) or Background ONE long-running tool call from its notice.
+    const tcb = parseToolCallback(cb);
+    const tcMessage = ctx.callbackQuery.message;
+    if (tcb && !tcMessage) return ackCallback(ctx); // the card is not reachable any more
+    if (tcb && tcMessage) {
+      const tc = cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG;
+      // Without the notice store (a frontend started without it), every card is stale.
+      const notices = reload?.toolNotices ?? { resolve: () => undefined, retire: () => undefined, requeue: () => false };
+      await handleToolCardTap(tcb, {
+        notices,
+        api: ctx.api,
+        card: { chatId: tcMessage.chat.id, messageId: tcMessage.message_id },
+        cfg: tc,
+        now: Date.now,
+        control: (target, action) => controlTool({ registry, ledger, cfg: tc }, { ...target, action, by: { kind: "operator", surface: "telegram" } }),
+        ack: (text) => ackCallback(ctx, text),
+        reply: (text) => ctx.reply(text),
+        confirmStop: async () => {
+          await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [[{ text: "⏹ Confirm stop", callback_data: `tc:S:${tcb.key}` }, { text: "⏩ Background", callback_data: `tc:b:${tcb.key}` }]] } });
+        },
+      });
+      return;
+    }
+    // Tap a project to make it active (use:) or kill it (kill:) — shared engine functions.
     if (cb.startsWith("use:") || cb.startsWith("kill:")) {
       const id = cb.slice(cb.indexOf(":") + 1);
       const chatId = ctx.chat?.id ?? 0;
@@ -928,6 +1000,30 @@ export function createTelegramBot(
       return;
     }
 
+    // Tap on a /forget card's button (ADR-0067): only in the chat the card went to, only once.
+    const hfTap = /^hf:([0-9a-f]{16})$/.exec(cb);
+    if (hfTap) {
+      const entry = pendingForget.get(hfTap[1]!);
+      if (!entry) {
+        await ackCallback(ctx, "this Forget button has expired: send /forget again");
+        return;
+      }
+      if (ctx.chat?.id !== entry.chatId) {
+        await ackCallback(ctx); // another chat: ignored, the card's own chat can still tap it
+        return;
+      }
+      pendingForget.delete(hfTap[1]!);
+      const history = reload?.history;
+      const text = history ? forgetReply(entry.ref, await history.forget(entry.ref, entry.reason, Date.now())) : "Task history is not available.";
+      await ackCallback(ctx, text.length > TAP_TOAST_MAX ? `${text.slice(0, TAP_TOAST_MAX - 1)}…` : text);
+      try {
+        await ctx.editMessageText(text);
+      } catch {
+        // "message is not modified" — ignore
+      }
+      return;
+    }
+
     // Tap on a /project button (P6): `a` sends what `/attention <name>` sends, `t` the project's threads.
     const pjTap = /^pj:([at]):(.+)$/.exec(cb);
     if (pjTap) {
@@ -999,15 +1095,19 @@ export function createTelegramBot(
         await bot.api.sendMessage(chatId, "✏️ Send your changes as your next message — I'll deliver them to the worker that wrote the plan.");
         return;
       }
-      const r = await applyPlanAction(planDeps(), planId, action, version);
+      // The engine redraws the card itself (ADR-0036): caption and buttons follow the plan's state.
+      const r = await applyPlanAction(planDeps(), planId, action, version, { canResume: true });
       await ackCallback(ctx, r.text.slice(0, 200));
-      const after = ledger.planById(planId);
-      if (after) {
-        try {
-          await ctx.editMessageReplyMarkup({ reply_markup: planKeyboard(planId, after.status, version) });
-        } catch {
-          // "not modified" — ignore
-        }
+      // Approve & build on a plan a worker is held on: answer its decision — the same path as any
+      // decision answer — so that worker resumes and builds.
+      const dec = r.resume ? ledger.decisionById(r.resume.decisionId) : undefined;
+      if (r.resume && dec) {
+        await answerAndResume(dec, r.resume.answer, chatId);
+      } else if (action === "approve" || action === "execute" || action === "anyway") {
+        // A build's verdict (ADR-0034) is a message, not only a toast: the operator sees why nothing
+        // new started, or where it runs. A done plan offers Run anyway.
+        const kb = r.offer ? new InlineKeyboard().text(PLAN_LABELS[r.offer], `plan:${planId}:${version}:${r.offer}`) : undefined;
+        await bot.api.sendMessage(chatId, r.text, kb ? { reply_markup: kb } : {}).catch((e) => faults.report("telegram.planReply", e, { planId }));
       }
       bus?.mirror("telegram", { kind: "notice", text: `plan #${planId}: ${r.text}` });
       return;
@@ -1157,12 +1257,28 @@ export function projectDashKeyboard(p: { name: string; attention: number; consol
   return kb;
 }
 
-/** A plan card's buttons (ADR-0019): the actions its status offers, each a `plan:<id>:<version>:<action>`
- *  tap — the version keeps an older card from acting on newer content. */
-export function planKeyboard(planId: number, status: PlanStatus, version: number): InlineKeyboard {
+/** A plan card's buttons (ADR-0019, ADR-0036): the actions the engine names for the plan's state
+ *  (`planActions`), each a `plan:<id>:<version>:<action>` tap — the version keeps an older card from
+ *  acting on newer content. */
+export function planKeyboard(planId: number, version: number, actions: PlanAction[]): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const a of planActions(status)) kb.text(PLAN_LABELS[a], `plan:${planId}:${version}:${a}`);
+  for (const a of actions) kb.text(PLAN_LABELS[a], `plan:${planId}:${version}:${a}`);
   return kb;
+}
+
+/** The one plan card editor (ADR-0036): a state change redraws the posted card — caption and buttons
+ *  — in place. "message is not modified" counts as done; any other failure is reported. */
+export function createPlanEditor(api: Api): EditPlanCard {
+  return async (at, card) => {
+    try {
+      await api.editMessageCaption(at.chatId, at.messageId, { caption: card.caption.slice(0, 1024), reply_markup: planKeyboard(card.planId, card.version, card.actions) });
+      return true;
+    } catch (e) {
+      if (e instanceof GrammyError && /message is not modified/.test(e.description)) return true;
+      faults.report("telegram.planEdit", e, { planId: card.planId, chatId: at.chatId });
+      return false;
+    }
+  };
 }
 
 /** The one plan poster (ADR-0019): the plan file as a document with its caption and buttons, in the
@@ -1175,7 +1291,7 @@ export function createPlanPoster(api: Api, target: () => number | undefined): Po
     if (chatId === undefined) return undefined;
     try {
       // Telegram caps a document caption at 1024 characters.
-      const m = await api.sendDocument(chatId, new InputFile(path), { caption: caption.slice(0, 1024), reply_markup: planKeyboard(rec.planId, rec.status, rec.version) });
+      const m = await api.sendDocument(chatId, new InputFile(path), { caption: caption.slice(0, 1024), reply_markup: planKeyboard(rec.planId, rec.version, rec.actions) });
       return { chatId, messageId: m.message_id };
     } catch (e) {
       faults.report("telegram.plan", e, { project: rec.project, chatId });

@@ -70,6 +70,35 @@ the last section maps it onto Neo.
 > repo — one row per requirement × target, so the FILE is the memory, not the session. Definition:
 > `docs/loops/waselni-store-readiness.json` + `.prompt.md`.
 >
+> **`security-sweep` (2026-10-08, defined, not yet created on the live ledger).** Nightly `0 3 * * *`,
+> `/home/neo`, command goal `sweep.ts check --root /home` (every repo with `.security/config.json`
+> has a nightly report under 20 hours old), 3 iterations, $3 per fire, `freshSession: true`. It runs
+> `scan.sh full` per repo and reports new high/critical findings; it changes nothing in the swept
+> repos (ADR-0024). Create it with `tools/create-loop.ts docs/loops/security-sweep.json` after the
+> kit is installed (`bun tools/security/install.ts`). Definition: `docs/loops/security-sweep.json`
+> + `.prompt.md`.
+>
+> **`disk-cleanup` (2026-10-17, live).** Tier A no longer depends on this loop: the **disk guard** in the
+> daemon's heartbeat (ADR-0068) runs it under disk pressure and in the daily hour, and alerts before the
+> disk is full — the loop's folder, `/home/neo`, is almost always busy, and on 2026-10-30 the scheduler
+> skipped it for 19 hours while the disk filled. The loop stays: when it does fire it still runs Tier A
+> (the kit's lock keeps it from running beside the guard's run) and reports the Tier B list.
+> Every 60 minutes (interval: a busy folder delays a fire, never
+> loses it), `/home/neo`, command goal
+> `cleanup.ts check`, 2 iterations, $1 per fire, `freshSession: true`. The goal fails once a day in
+> the daily hour (04:00) whatever the disk use, and outside it when the disk is at 80% or more,
+> unless a clean in the last 6 h freed under 1 GB. The worker only
+> runs the deterministic kit `tools/disk/` (installed to `~/.local/share/neo/disk/` by
+> `bun tools/disk/install.ts`) and relays its report. Tier A, everything that can be rebuilt
+> (images, build cache, cache and test volumes, mounted caches over 5 GB, big container logs, core
+> dumps, build outputs of projects with no live dev server, old test artifacts, finished
+> worktrees), is removed by code (ADR-0041). Tier B, which cannot be undone (possible DB data,
+> backups, worktrees with work in them), is listed with stable ids and deleted only by
+> `cleanup.ts delete --ids …` after the operator approves those exact ids (ADR-0040). Values:
+> `tools/disk/defaults.json`; a host overrides them in `config.json` next to the installed kit.
+> Definition: `docs/loops/disk-cleanup.json` + `.prompt.md`. Loop workers have no `ask_operator`
+> yet, so the reply carries the Tier B list and Neo raises the decision.
+>
 > **Scheduled-loop output → operator — live (2026-07-10).** A scheduled fire now streams **only** the
 > worker's real text to the operator's Telegram chat (the admin id, resolved at fire time so a late
 > TOFU admin still works), tagged with the loop's `#project` — the same streaming style as dispatch.
@@ -111,6 +140,9 @@ To actually remove the human, prefer **scheduled** or **action** triggers over m
 - **Verifiable** — a deterministic check. Best kind, least brittle. e.g. "100% test coverage",
   "every page < 50ms", "no unaddressed errors in logs", "`bun test` + `tsc` green".
 - **LLM-as-judge** — the model decides it's done. Flexible but brittle (taste left to the model).
+  The judge run's cost counts toward the loop's `budgetUsd`, and the goal's `timeoutMs` aborts a
+  judge run that takes longer (not met). A timed-out Claude judge run reports no cost: the SDK sends
+  the cost only with its final result (2026-10-27).
   e.g. "refactor until satisfied", "docs are complete". Mitigate by giving explicit criteria
   ("be strict about simplicity", "every line DRY", a scoring rubric).
 
@@ -128,6 +160,35 @@ To actually remove the human, prefer **scheduled** or **action** triggers over m
 
 Common shape: **define success criteria up front → act → re-measure under identical conditions →
 repeat until the goal holds**, tracking progress in a markdown file as it loops.
+
+### `waiting-sweep` (hourly, ADR-0045)
+
+Checked in as `docs/loops/waiting-sweep.json`. Load it with `bun tools/create-loop.ts
+docs/loops/waiting-sweep.json` (after the restart that brings ADR-0045 live).
+- **Goal first:** `bun tools/threads/sweep.ts check` re-derives every WAITING thread. If no decision
+  has new evidence to judge, the goal is met and **no worker runs**.
+- **Worker:** otherwise a worker judges only the decisions whose repository moved. It runs
+  `sweep.ts list`, reads the evidence read-only, then runs `close <id> --commit|--file … --reason`
+  (the engine checks the evidence) or `keep <id> --ask "…"`.
+- **Report:** `report: "goal"`. The operator gets only the goal's output: one reminder of the threads
+  that still need them. It is sent only when that list is not empty and changed. Worker text is
+  never sent.
+
+### `tools-enrich` (weekly, off by default, ADR-0044)
+
+Checked in as `docs/loops/tools-enrich.json` (Mondays 05:00, `enabledByDefault: false`). Load it with
+`bun tools/create-loop.ts docs/loops/tools-enrich.json` after the restart that brings ADR-0044 Phase 3–4
+live, then enable it when you want it.
+- **Goal first:** `bun tools/catalogue/misses.ts check` is met when no tool search missed since the last
+  mark, so a quiet week runs **no worker**. (The goal is not the catalogue test: `runLoop` checks the goal
+  before each iteration, and a test that is almost always green would never let a worker run.)
+- **Worker:** reads `misses.ts list` (search terms only, never a brief), adds tags and examples to cards on
+  a `chore/tools-enrich-<date>` branch in a `/tmp` worktree, may add `candidate` cards, runs the catalogue
+  test, commits, then `misses.ts mark --through <at> --branch <b>` (the engine checks the branch has
+  commits beyond `dev` that change only `docs/tools/`) or `mark --through <at> --none "<why>"`. It never makes a card `active`: that stays the operator's decision.
+
+A loop with `report: "goal"` sends the goal command's whole output once, when the goal is met, and
+never the worker's text. Without it, a scheduled loop sends the worker's text, as before.
 
 ## Caveats
 

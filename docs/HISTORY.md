@@ -867,3 +867,579 @@ Task 6.3 added two optional probes to the repo scan (`producers/probe.ts`). With
 repo, and counts the commits on the deploy branch after it: the console DEPLOY line and `/project`
 show "N commits not deployed (branch @ sha live)", or the probe's error. Each call is bounded in
 time and size, only http(s), no redirects; old rows are ignored. Without config there is no call.
+
+### Console on phones and installable (2026-10-07, ADR-0022)
+
+The existing console now works from 360 px phones to tablets: below 1024 px the sidebar is a drawer
+(from the inline-start edge, so from the right in Arabic), below 768 px the top bar has two rows
+(the tabs get their own scroller) and Threads/Projects show the list or the detail with a back
+button that stays in step with the browser's back. Buttons are at least 44 px on touch, the app
+height follows the on-screen keyboard and the safe areas, and a light theme follows the system
+setting. The project kill button now needs two taps. The console is a PWA: a localized manifest,
+icons, an offline page, and a service worker (`sw.ts` → `/sw.js`) that caches only that public
+shell; `/`, `/app.js`, the API, the live feed, login and uploads are never cached or intercepted.
+An **Install app** chip appears when the browser offers it (on iPhone it shows the Add to Home
+Screen hint). Verified in Chromium at 360/390/412/820 px, EN+AR, light+dark. Going live needs a
+daemon restart (operator-gated).
+
+### Console: worker output as formatted content (ADR-0025, 2026-10-07)
+
+Worker output in the Activity feed and in thread history now renders as formatted content. Tables
+are bordered, with zebra rows, a sideways scroll on phones, and right-aligned number columns.
+Headings, lists, task lists, links and inline code render as HTML. Code blocks keep their whitespace
+and get syntax colours (highlight.js, coloured only when they scroll into view) and a copy button.
+The engine's step lines show their payload as code: a shell command (the auto-approval note, a
+`🔧 Bash` milestone) is a bash block, and tool output is an output block (a diff gets diff colours).
+A heredoc's `# comment` is no longer a heading. Each row has a colour tone (tool, output, error,
+warning, done, approval). Code and tables stay LTR in the Arabic UI, and an English line keeps its
+own direction. One renderer: `mdToHtml` parses with marked's GFM lexer and walks the tokens itself
+for the web and Telegram targets, so raw HTML in worker text is always shown as text. Verified in
+Chromium at 360/390/412 px, EN+AR, light+dark. Going live needs a daemon restart (operator-gated).
+
+Follow-up (todo #70): a tool result keeps its first line's indentation, so a ClickHouse box table
+stays aligned (the result preview used to trim it). JSON output gets JSON colours. A code block over
+16 lines starts folded, with a "show all lines (N)" toggle. Verified in Chromium at 360/390 px, EN+AR,
+light+dark, against the real ledger rows behind the operator's two screenshots.
+
+### Console: attachments travel with their message (ADR-0026, 2026-10-08)
+
+A file attached in the web console used to go to the worker at once, as its own `📎 operator
+attached` message. The typed text came as a second message, so the worker could not tell which
+message the file belonged to. Now attaching (📎 or paste) only stages the file: it is saved to the
+inbox and shows as a chip with its name, size, upload progress and ×. Send posts the text and the
+staged files together. The worker gets ONE message, the text and then an `Attached files:` list of
+inbox paths, with one ledger row, one trace id, and the same thread routing as any message. The
+thread composer has the same flow, and its files go to the thread's project. Telegram's caption +
+file uses the same `withAttachments` format. Send waits for every upload. A send whose staged files
+the server no longer has (reload, 6 h TTL), or a slash command with files, is refused (409). The
+composer then keeps the text and the chips and shows the reason in EN or AR. Verified in Chromium at
+390/360 px, EN+AR, light+dark: one row per send, thread replies filed under the thread. Going live
+needs a daemon restart (operator-gated).
+
+### Shift-left security checks (ADR-0024, 2026-10-08)
+
+One kit in `tools/security/` scans every project at four layers: each file a worker edits (a Claude
+Code hook), pre-commit, pre-push, and a nightly sweep loop. Every scanner (semgrep, gitleaks,
+osv-scanner, trivy, gosec, hadolint, ZAP, testssl, syft) runs from a digest-pinned Docker image.
+Only new high or critical findings block; a project's existing findings are its baseline. A guard
+hook keeps workers away from secret files, and workers now run with `NEO_WORKER=1` so it can tell
+them from the operator. The write-time scan was too slow at first (36.7 s for one file); merged
+per-language rule files, osemgrep and warm, network-less containers cut its CPU time to 5.9 s.
+`install.ts` sets it up for every session, `init.ts` turns it on per repo (chaining existing git
+hooks), `/security-scan` runs it on a branch, and the dispatch preamble tells workers to fix what
+it blocks. Not installed on the host yet: install, `init` per repo and the nightly loop are
+operator steps. Reference: `docs/security-checks.md`.
+
+### Todo failures are retried and never dropped (ADR-0027, 2026-10-08)
+
+On 2026-10-07 a Claude account error (`oauth_org_not_allowed`) failed five todos in one minute.
+Nothing re-ran them, and the work was later re-dispatched as new todos, so the old rows stayed red.
+Now dispatch tells the queue why a run ended (`stall`, `reload`, `checkpoint`, `launch`,
+`api:<kind>`; boot recovery adds `restart`). A passing reason keeps the todo as `retry` with a
+backoff (`todoRetryBackoffMs`, default 15m→1h→4h→12h). It then goes back to the head of its queue
+and runs with a preamble that says "continue from what is done". When the ladder is used up, or the
+end was a task failure, the todo is `failed`. A failed todo is never pruned and can be re-run with
+`/todo retry <id>`, the company's `todo` tool, or a Retry button in the Queue tab. A todo that
+finishes in the same thread and folder closes the earlier failed or retry todos there as done.
+Migration 9 adds `attempts`, `retry_at` and `failure`.
+
+### The project index is checked on every dispatch and named in the brief (ADR-0028, 2026-10-09)
+
+Workers kept finding no codebase-memory index for their project. The binary (0.8.1) writes a new
+DB file on any change and crashes now and then (11 SIGABRT dumps since 2026-10-05), so index DBs
+went missing. The engine checked each folder only once per daemon lifetime, so a lost DB stayed
+lost until a restart, and the preamble told workers to list projects and match the path themselves.
+Now `ensureIndexed` checks on every dispatch, indexes a missing folder, refreshes one whose HEAD
+moved since the last index (kept in the ledger `meta`), and returns the exact project name. Dispatch
+puts that name in a short line at the top of the brief and tells the worker not to list, check or
+index. Worktrees use the same index.
+
+### A handoff always says what happens next; Neo's note is outside the repo (ADR-0029, 2026-10-09)
+
+A handoff after a finished task ("task done", above the 40% sweet spot) used to only reset the
+session and say "the next session starts from HANDOFF.md", and then nothing ran. Now the engine
+decides from facts. If the run raised a decision that is still open, the continuation is parked as a
+`waiting` todo and queued when the decision is answered. If the note's next steps list work, the
+continuation is queued at the head ("continuing as #n"). Otherwise it says "done, idle". The
+continuation sticks to approved work and asks before anything else. Neo's note now lives in
+`handoffNotesDir` (default `data/handoffs`), so Neo never overwrites a project's own `HANDOFF.md`.
+Migration 10 adds `waiting_on`.
+
+### Guard reads, project fence, shared browser (ADR-0030/0031/0032, 2026-10-10)
+
+The secret guard now judges reads, not text: code, search patterns, commit messages and name listings
+are not reads, and a bare key-file name counts only when the file exists (it had blocked `e.key` and
+a git listing). Dispatched and loop workers, helpers included, get a project fence: a write, branch or
+commit in another project under `/home` escalates (a mirshad worker's subagents had branched in
+eticket-v3); the preamble says to send such work back to Neo. And workers share one browser:
+`tools/browser` runs a digest-pinned browserless Chromium on 127.0.0.1:9222, capped at 3 GB with 4
+concurrent browsers; `install.ts --wire-mcp` points the Playwright/Chrome MCPs at it.
+
+The console composer is a multi-line compose box (ADR-0033). One shared, delegated component
+(`web/compose-box.ts`) handles every field that takes a message or a brief:
+- On a desktop, Enter sends and Shift+Enter adds a new line.
+- On a phone, Enter adds a new line.
+- The box grows to a max height, then scrolls. Pasted lines are kept.
+
+Each line of a message now takes its own direction (`dir="auto"`): the operator's own text, the
+Telegram echo, and the paragraphs, lines and list items of worker Markdown. An Arabic message reads
+right-to-left with its bullets on the right, and numbers stay LTR.
+
+Execute no longer starts duplicate work (ADR-0034). Before a todo is queued, `judgeExecute` reads
+these facts:
+- the plan file itself, not the ledger row's last count;
+- every worktree of the repository (by git common dir);
+- active todos;
+- live sessions.
+
+A finished plan (only operator-gated boxes left) is reported as done, with a Run anyway button.
+A plan already queued or running anywhere in the repository is reported with where it is. Execute
+from a worktree runs in the main checkout when the plan is there. A spec and its plans are one
+unit, so a spec resolves to its open plan. The reply is a real Telegram message, not only a toast.
+
+A plan the registry first sees finished is no longer sent (ADR-0035). eticket-v3's finished
+sub-users plan and spec reached the operator as new cards with Approve and Execute, and two todos
+re-checked done work. Now such a plan is recorded done with ADR-0034's judge (a spec with its
+plans), with an event and a log line, and no card or file. It is sent normally if it gets an open
+step again.
+
+Big plans now wait for the operator (ADR-0036). gold's wallet-bars plan reached the operator with
+Approve and Execute after the worker had built and committed it. Now:
+- A plan is big by config: task count, step count, risky words (migrations, auth, money, deploy,
+  deletes), or `approval: required`.
+- A big plan that a worker writes stops that worker through the governor hook until the operator
+  taps **Approve & build**. That tap resumes the same worker. A small plan's card is information
+  only, with a Stop button.
+- Each button has one meaning, set in one place, and Telegram and the console use the same labels
+  (AR+EN).
+- Every state change edits the card in place: building, done · commit, dropped, or superseded.
+
+A run that ends with uncommitted work is asked once to commit (ADR-0037). On gold, nine runs
+ended on their `/security-review` step with the build uncommitted, and the next todo started on top
+of the files; the chief of staff committed each one by hand. Now, when a dispatch run settles with
+its own changes uncommitted (not files that were already dirty and untouched, not the handoff
+notes), the engine sends one fixed follow-up into the same session: commit, or say why not. The
+todo stays running, and queued todos for any worktree of the repository wait. The result keeps the
+worker's first end and adds one line: committed by resume, cleaned, or still uncommitted (an alert).
+Config `commitFinish`.
+
+A thread waits only on a live question (ADR-0038). The console's Threads tab showed 19 threads as
+waiting, though their work had finished: their decisions stayed open after the operator answered in
+chat, after the worker asked the same question again, or after the plan was executed. The engine
+now supersedes such decisions, with the reason kept in the answer, before it derives the thread
+state. The operator can close any thread: **Close thread** in the console (AR+EN) or `/close <ref>`
+on Telegram. Close dismisses the thread's open decisions and cancels the todos parked on them. A
+new message reopens the thread. An approval counts only while its session is running. Config
+`decisionSettle`.
+
+A failed web bind no longer stops Neo (2026-10-17). The hosting side powered the server off and on.
+Docker was not enabled at boot, so the `WEB_HOST` bridge IP did not exist. `Bun.serve` threw,
+the daemon exited, and Telegram went silent too. Now:
+- Docker and containerd are enabled at boot (host change, not in the repo).
+- `startWeb` builds the app once and retries only the bind (`keepBinding`). Each failure is a
+  `web.bind` engine fault. The retry interval is `webBindRetryMs` (default 15s).
+
+Projects tell each other through Neo (ADR-0043, 2026-10-22). prod-ops found D13–D19 for eticket-v3
+and could only write "for Neo to send"; the chief of staff had to notice and dispatch each by hand,
+and a prod-ops note still listed D16 as open after eticket-v3 had fixed it. Now a worker sends a
+**project note** with the `project_notes` tool (`finding`, `fyi` or `request`; the sender comes
+from the session). The note is an attention item on the target project, so it shows on the
+dashboard, in `/attention`, the digest and the console, with → todo, snooze and dismiss. A request
+or a high finding is also told to the operator at once. No note starts work: only → todo does, and
+that todo joins the thread the note came from, so `/trace` shows the finding, the note, the todo and
+its run. A fresh session starts with its open notes and the state of the notes it sent (titles
+only, capped; information, not orders). A note closes from facts: `resolve … fixed` with a commit
+the engine finds on a branch of the target, `not_needed`/`duplicate` with a reason, a todo made
+from it that ends done, the sender's `withdraw`, or the operator's dismiss. Secrets are refused by
+pattern; sizes and per-sender caps are config (`notes`). The customer/ingress path never gets the
+tool. The preamble and the fence's reason now point at `project_notes`. Loop workers and Codex
+workers have no Neo tools yet, so they cannot send notes (they still see the notes block on a fresh
+start where it applies). Restart-gated.
+
+Finished threads no longer stay WAITING (2026-10-22, ADR-0045). The console listed 20 WAITING
+threads that looked finished. Every one held a real `ask_operator` question or plan card. A
+decision closes only through its own card, but the operator answered elsewhere: a new message
+(which starts a new thread), a re-asked question under a new id, or chat that the worker then acted
+on. Nothing closed the original question. ADR-0038 (on `dev`, not live) would have settled 1 of the
+20. Fix:
+- A decision can be closed on evidence that the engine checks: a commit or a tracked file in its
+  repository that is newer than the question. The decision is superseded with the reason, and the
+  todos parked on it are cancelled.
+- A new hourly loop, `waiting-sweep`, runs a worker only when a decision's repository moved.
+- The operator gets one reminder of what still needs them, sent only when the list changed.
+- Loops gained `report: "goal"`, and a command goal keeps its whole output.
+- A one-off closed the 14 decisions a person had checked as done. 9 threads went to `done`. 10
+  threads still need the operator, and 1 is unclear. The evidence is in
+  `docs/investigations/2026-10-22-waiting-threads.md`.
+
+Restart-gated.
+
+Markdown file links in the console (2026-10-22, ADR-0046). A worker's reply often names a `.md`
+file it wrote. The console now shows an absolute `.md` path (inline code or plain text) as a
+download link.
+
+- `GET /md-file?path=…` serves the file to the admin session only. `src/engine/md-file.ts` checks
+  the path as written and its real path: absolute, `.md`, no hidden, `..` or secret-named segment,
+  inside a readable root (`mdFiles.roots`, default `[workRoot]`), at most `mdFiles.maxBytes`.
+- Each request with a session writes the ledger event `md_file` (path, real path, status, user,
+  session hash).
+- `src/frontends/web/md-links.ts` finds the paths in the browser and links them, LTR in RTL text.
+
+Restart-gated.
+
+A running todo shows its limit wait (2026-10-23, ADR-0047). While a dispatch waits out a usage or
+session limit, its todo stays `running`, but the queue now says why it is quiet.
+
+- `limitWait(ledger, orderId, now)` in `src/engine/api-retry.ts` reads the order's newest
+  `api_retry` event. A `rate_limit` wait still ahead gives `resumesAt = at + delayMs`.
+- `todo list` and Telegram `/todo` show `⏳ #id waiting for limit reset · resumes HH:MM UTC`. The
+  date comes first when the resume is not today.
+- The console Queue tab shows `queue.limitWait` (AR+EN), with the time as an LTR isolate.
+
+Restart-gated.
+
+Desks are not blamed for the parent repo's changes (2026-10-23, ADR-0048). The ops and research
+desks raised "1 uncommitted file … HANDOFF.md". The file was `/home/neo`'s own root note.
+
+- `uncommittedFrom` counts only paths under the folder's prefix.
+- `uncommittedIn` returns undefined for a folder its repo ignores (a desk under `/home/neo/agent/`).
+
+Restart-gated.
+
+Decision cards explain themselves (2026-10-23, ADR-0049). The operator could not understand two
+eticket-v3 cards: they showed only a jargon title and bare buttons.
+
+- Root cause: the Telegram card rendered the title alone. `decisionBody()` existed, but nothing called
+  it. The schema also accepted blank text and jargon, and the native `AskUserQuestion` made bare cards.
+- `ask_operator` now takes `title`, `context`, `options[{label, explanation}]` and
+  `recommended {option, reason}`. `checkDecision()` rejects a blank part, a label over 40 characters,
+  a wrong recommended option, or unexplained jargon, and the tool returns every problem as an error.
+- The Telegram card, the decision's thread line and the console (thread and project views) show the
+  context, the numbered options with their explanations, and the recommendation.
+- The native `AskUserQuestion` is redirected to `ask_operator`. The preamble and the governor's
+  plain-text steer (loops) ask for the same parts, for a non-technical reader.
+
+Restart-gated.
+
+Agents ask each other through project notes (2026-10-25, ADR-0050 rev. 2, with ADR-0044 P1-P2).
+On 2026-10-24 eticket-v3 needed the ScaleDown key and tool. The main agent knew; the worker could not ask.
+
+- `project_notes ask` stores a note of kind `question` (need: `info`, `resource` or `help`). The target
+  is a project or `main` (the company folder only). A read-only consult run answers it: it forks an idle
+  known-Claude session of the target, or starts fresh. It has no codebase-memory server, because the
+  governor escalates that server's reads and a consult denies every escalation. Its cost goes on the meter.
+- The asker waits up to `notes.questions.answerWaitMs`. A late answer is held and reaches the asker at its
+  next step. Notes from `main` (`fyi`, `request`) reach a running worker live the same way.
+- Follow-ups carry a timing, `followUp(text, "steer" | "after-turn")` (port of `c12c46f`).
+- Tools catalogue: cards in `docs/tools/`, `tools_for`, the dispatch hint, BM25 search, and a fail-closed
+  API relay (`tools.relayEnabled`, default false). The worker env drops relay keys and reports the engine's
+  key names (`worker_env_report`); `strip` exists and is not enabled.
+- The rev. 1 design (own table and tools) was dropped before it was built. A test guards against its return.
+- The console shows note kind `question` and state `answered` (i18n keys `notes.kind.*`, `notes.state.*`).
+  `/trace` shows a question and its answer as one line. The preamble names `project_notes ask` and `tools_for`.
+- The push scan found two HIGH advisories in transitive deps (body-parser 2.3.0, zod 4.4.3). They were
+  already on `dev` and master. `package.json` `overrides` now set body-parser `^2.4.0` and zod `^4.6.6`.
+
+Operator steps still open: the tool skills are not installed (`bun tools/catalogue/install.ts` is an
+operator step), the relay is off (`tools.relayEnabled` is false), `workerEnv.engineSecrets: "strip"` is not
+enabled, and ScaleDown is still a candidate card, not active.
+
+Migration v13. Restart-gated.
+
+Security kit: semgrep in parts, incomplete baselines, fail-closed chained hook (2026-10-25, ADR-0051).
+Found while turning the kit on in eticket-v3: its baseline's single 30-minute semgrep run timed out twice
+and the baseline was written without semgrep findings, silently. A missing `.githooks/pre-commit.pre-neo`
+made the kit's hook exit 0.
+
+- Semgrep runs in parts (`semgrepChunkFiles`, default 200), each under `semgrepTimeoutSec` (default
+  1800), both per repo in `.security/config.json`.
+- A part with no result is a missing part: `baseline.json` and reports list it under `incomplete`, and
+  later layers warn against an incomplete baseline.
+- A recorded chained hook that is missing or not executable exits 1. A `.git/hooks` chain is found
+  through the common git dir, so it also runs from a linked worktree.
+
+Not live until the operator re-installs the kit (`install.ts`) and re-runs `init.ts` on each repo.
+
+A session held at a big plan takes no brief (2026-10-26, ADR-0052).
+contantme todos #659/#660/#665/#666/#680 were marked `done` ("delivered into the operator's open
+session") but did nothing: the session was held at its master plan, so every delivered turn met STOP.
+Each delivery also cleared the hold's registry block, so `sessions` showed the session idle.
+
+- `SessionControl.held()` (from the plan watch) names the plan a live session is held at.
+- Dispatch refuses a brief for a held session (`plan_held`); `projectBusy` counts it busy, so the todo
+  waits `queued` and starts once the hold lifts. A delivery no longer clears a plan hold's block.
+
+Restart-gated.
+
+A decision lands on the thread of its work, and closes when its question is gone (2026-10-26, ADR-0053).
+The console showed 23 WAITING threads; the ledger had 110 open decisions back to 2026-09-03.
+- New work (dispatch, todo add, ask_operator) takes only a live cause, never an ended turn's
+  (`workCause`); the dispatcher names a thread with `thread`; else a `dispatcher` thread root.
+- Every decision close re-derives its thread (`ledger.onDecisionClosed`). An older plan card is
+  superseded with its reason, and a parked todo moves to the new card.
+- Settle rules: replaced cards; a settled plan closes its card even when a todo is parked on it;
+  `expired` for a question whose work moved on (keep patterns protect prod/irreversible ones; an
+  expired card still takes a late answer). The company `plan` tool records a chat Approve/Drop.
+- One-time cleanup `tools/threads/settle-decisions.ts` (dry run by default; `--apply` only after
+  the restart). Dry run on 2026-10-26: 26 closable, 84 kept, 8 threads leave waiting, #611 released.
+  `--keep <id>,<id>` (2026-10-27) keeps the cards the operator picks open (the 8-character #ids of
+  the dry-run list).
+
+Restart-gated.
+
+Waiting work has an owner, and a fix is done only when it runs (2026-10-27, ADR-0054).
+This was the third report (`docs/investigations/2026-10-27-waiting-threads-third-report.md`).
+- 23 of the 30 open decisions on waiting threads were done or moot in their repos.
+- None of the earlier fixes (ADR-0038/0045/0052/0053) ran: the daemon was on master and they sat
+  on `dev`.
+- The restart producer could not see `dev`.
+
+The changes:
+- The "answered in chat" guess is gone, and the dispatcher records chat answers with `decision`.
+- Orders silent across a restart end as `interrupted`.
+- A plan done by any path closes its card: the plan settles, the sweep has evidence, or the checked cleanup runs.
+- The sweep judges every open decision.
+- `waitingWork()` gives every item an owner and a next action, in Threads and Queue.
+- Orphaned parked todos are released at boot.
+- Overdue questions come first in the reminder.
+- `integrationGap()` says "dev +N not running" in the restart item, in `/list`, in the console
+  header and in the handoff facts.
+
+Restart-gated (one release).
+
+Long checks run in the background and never block the worker (2026-10-28, ADR-0055).
+
+- Operator order: an eticket-v3 worker ran `go vet` over 7 modules in a foreground loop with
+  `timeout` wrappers, and the session waited for all of it.
+- The preamble's one "stay alive" rule is rewritten, not doubled. Long checks (vet/test/lint loops,
+  builds, image pulls, CI waits) start in the background (background Bash or a subagent), with one
+  log per module. The worker keeps working and reads each result when it is ready. It polls in
+  foreground steps under 90 s only when nothing else is left. It never ends its turn while a check
+  runs or its result is unread, and it never wraps a real test in `timeout`.
+- The stall detector is unchanged. Test: the preamble assertion in `tests/dispatch.test.ts`.
+
+Restart-gated.
+
+Neo's logo is "Core", and the console shows the running build under it (2026-10-28, ADR-0056).
+
+- Operator order: adopt logo concept #3 "Core", and show a small version label under it in the
+  web console.
+- The console header and the login page show the Core wordmark (inline SVG copied from
+  `agent/desks/dev/neo-logos.html`). Its ink follows the theme; the engine dot is orange
+  (`BRAND.logoAccent`). The favicon (`/icons/favicon.svg`) and the PWA PNG icons are the o mark.
+  The shell cache is `neo-shell-v2`, so installed PWAs update by themselves. Assets and how the PNGs
+  were made: `docs/brand/README.md`.
+- The build label under the logo shows `v<package version> · <short boot commit>` (10px, muted, LTR in
+  both languages, AR+EN hover text). It comes from the boot record: `runningBuild()` beside
+  `bootFacts()` in `producers/restart.ts`, with the `package.json` version read at the same boot. It
+  goes to the console in the state snapshot (`build`, beside `deploy`). It names the running build,
+  never `dev`. Tests: `tests/console-build-label.test.ts`, `tests/console-pwa.test.ts`.
+
+Restart-gated.
+
+Side lanes: small, independent todos run beside a project's main task (2026-10-28, ADR-0057).
+
+- Operator order: small side jobs ("create a dev super-admin", "run a test", "check docker") waited
+  hours in eticket-v3's queue behind long builds.
+- The chief of staff picks the lane while it writes the brief: `dispatch` / `todo add` take `lane:
+  "side" | "queue"` and a `kind` (`ops`, `test`, `read-only`, `code`). A brief with no lane queues as
+  before. CLAUDE.md now says AI decides and code enforces.
+- The governor enforces the kind (`laneVerdict`, shared shell reader `bash-walk.ts`) and denies, never
+  escalates. Shared-folder kinds never write the project's files, run git writes or restart
+  containers. `code` works in a temporary worktree on `side/<todo>`. The engine removes it at the end
+  (kept if dirty) and queues a main-lane todo to merge the branch.
+- The todo queue starts a side todo at once when the project is busy and a side slot is free
+  (`lanes.maxSidePerProject`, `lanes.maxDispatchesHost`, the reserve). Otherwise the todo waits for a
+  slot, not for the main queue. A free project runs it in the main lane. The Codex SDK, or
+  `lanes.enabled: false`, sends side briefs to the queue.
+- A side lane is its own fresh session (registry `lane`, skipped by `findByFolder`). It has no resume,
+  context handoff, notes block, indexing or commit-finish nudge.
+- `/list`, `/todo` and the console Queue tab show side lanes in their own group (AR+EN). The ledger
+  migrates to v14 (`project_todos.lane`, `lane_kind`).
+
+Restart-gated.
+
+The Core logo animates as the console's splash, and the PWA icons sit on the console ink (2026-10-28,
+ADR-0056 amendment).
+
+- The splash draws the wordmark in and pops the core (~1.2 s, CSS/SVG, `--splash-ms`). It fades once
+  the first state load settles and the intro has played. It is static under reduced motion, and an inline
+  fallback removes it if the app never starts. It works the same in a browser tab and as an installed
+  PWA.
+- The icon tile is `#080b10` = the manifest background, so the native launch screen has no seam.
+  `tools/brand/render-icons.ts` re-renders the PNGs from the SVG. Shell cache `neo-shell-v3`.
+
+Restart-gated.
+
+Stop, or send to the background, ONE running tool call (2026-10-29, ADR-0058).
+
+- Operator order: a worker's `git push` pre-push scan and foreground poll loops held eticket-v3. The
+  only ways out were `/kill` (losing the session) or killing PIDs by hand.
+- Native SDK controls (spiked on 0.3.310): Background = `backgroundTasks(toolUseId)`; Stop = background
+  + `stopTask`, then the engine kills that call's leftover host processes by the per-call
+  `NEO_TOOL_USE_ID` marker (the governor hook adds it), and its `docker exec` children inside
+  containers (Docker API, exact command match; ambiguous → none). The worker is steered not to retry.
+- Surfaces: the console "Running now" strip (AR+EN), a Telegram notice with buttons for calls past
+  `toolControl.noticeAfterMs`, `/stop` and `/bg <project> [n]`, `/list`, and the company's
+  `tool_control` tool (instead of ps/kill). Codex: stop ends the turn; no background.
+- Also: reach-plan hardening P0.3–P0.5. SSH private keys are secrets to the guard (re-install the kit
+  to make it live). `mcp__neo__*` is trusted by `mcpServer.source`. Machine bearers are compared in
+  constant time, and `INBOX_INGEST_SECRET` can be set.
+
+Restart-gated.
+
+The gateway's Traefik host comes from `NEO_API_HOST` (2026-10-29, traefik note #455).
+
+- The public-release scrub (5ee1f22) left `neo-api.example.com` in the gateway's Traefik labels. Let's
+  Encrypt refused it (400) on every retry: 266 errors in a day. The real route,
+  `neo-api.tech-gate.online`, no longer matched.
+- The labels now take the host from `NEO_API_HOST` (gateway `.env`, documented in `.env.example`).
+  Unset means `traefik.enable` is empty: no router and no certificate request (Traefik runs with
+  `exposedbydefault=false`; verified with a throwaway container).
+- Live: only `neo-gateway` was recreated (from the `dev` compose file). It serves the existing
+  `*.tech-gate.online` certificate, `/healthz` returns 200 through Traefik, and there were 0
+  example.com errors after the recreate.
+
+The tools catalogue learns from use (2026-10-29, ADR-0044 Phase 3–5, Amendment 2).
+
+- Ranking: a card's usage count is the `done` orders of the last 30 days that used it (its `usage` globs,
+  or a load of its generated skill). Denied calls, failed and unfinished orders do not count. The relay
+  p50 comes from completed `tool_api` events. The daemon wires `ledgerUsageSource`, not `nullUsage`.
+- A Skill call's activity label names the skill (`Skill: neo-recipe-x`); before, all 339 recorded Skill
+  calls read just `Skill`.
+- Four recipes: `deploy-check`, `e2e-test`, `prod-readonly-query` (eticket-v3), `store-build` (waselni).
+- Skillify: once a day, a task the operator gave one project on 3 different days in 30, with no tool that
+  fits, becomes one low attention item (source `skillify`). Plan steps, continuations, cancelled todos and
+  todos from an attention item never count; a same-day re-queue counts once. On the live ledger it raises
+  nothing today.
+- `tools-enrich` loop (checked in, off): weekly, `misses.ts check` is the goal, so a quiet week runs no
+  worker; the worker improves tags and examples on a branch, then `misses.ts mark --through <at>`.
+- An independent review found, and this fixed: a regex glob match that backtracked (10 stars hung),
+  a 1.3 s usage refresh (now about 0.5 s, every 10 minutes at most), skillify noise from re-queues, a
+  `mark` that any branch passed, and a mark that could swallow a miss that came after `list`.
+- The preamble names `neo-tool-*` skills and `tool_api` next to `tools_for`.
+
+Restart-gated. `bun tools/catalogue/install.ts` (skills) and loading the loop are operator steps.
+
+A limit-held todo resumes with `todo retry` (2026-10-29, ADR-0060).
+
+- Bug: the main agent told the operator four held projects could only be resumed with `/kill`. The wait
+  was a bare sleep, `todo retry` refused a running todo, and the `todo` tool said to `/kill` it. The
+  operator's own "Resume" message went on at once, and the old timer would then have re-sent the brief again.
+- `api-wait.ts` gives every held API wait a handle: `todo retry` wakes it (the same run, brief re-sent once),
+  a turn that goes through on it sends its re-send at once (not days later), and one on the same provider
+  wakes the other limit holds early (`apiLimitWakeEarly`, jitter `apiLimitWakeJitterMs`).
+- `/todo`, the Queue tab (a "resume now" button, AR + EN) and `sessions` show "held: limit wait · resumes
+  HH:MM · retry resumes now". `cancel` on a held todo points at `retry`.
+
+Restart-gated.
+
+The chief of staff speaks to a project's session (2026-10-29, ADR-0061).
+
+- `project_message(project, text)` delivers a short message into a project's open session through the
+  operator's own path (`deliverToSession`, extracted from `handleMessage`): a working session sees it at its
+  next step, an idle one wakes, one held in a limit wait starts a turn now.
+- Refused in code: a customer session, empty or long text, no open session, the company, more than 6 an hour
+  per project. The ingress never has the tool. Each message is a `project_message` event (no text) and a
+  "chief of staff → <project>" line in Telegram and the console thread (AR + EN label).
+MCP secrets reach workers through the env, never argv (2026-10-29, ADR-0062, ops note #478).
+
+- The SDK writes external MCP configs into the worker's `--mcp-config` argv; the Stitch header held the
+  Google key there, readable by any process on the host. Now the header is `${STITCH_API_KEY}` (the CLI
+  expands it from the worker env, checked on the real binary) and the scrub keeps the names a run's MCP
+  configs reference. A test spawns the SDK against a fake executable and reads the real argv.
+- Operator step: rotate that Google API key.
+
+Restart-gated.
+
+Every worker plans fully, finishes non-stop, designs on the planner model (2026-10-29, ADR-0063).
+
+- Operator order (very important): five standing rules in every brief — plan fully then finish non-stop,
+  rich plans, the strongest model at the highest effort for planning and review, production-grade code,
+  the best technology with an ADR. One text (`standing-rules.ts`) in the dispatch preamble (merged into its
+  sections, under the 5000-char ceiling), loop briefs and consult runs.
+- A `planner` SDK subagent on every dispatch, project and loop run: config `planner`, default the pinned
+  Opus id at effort `max`.
+
+Restart-gated.
+
+Attention items and todos explain themselves (2026-10-29, ADR-0059, ledger v15).
+
+- Each item shows a kind badge, its project, a plain title ("expo-localization 57.0.1 → 58.0.5", not
+  "PR #31: chore(deps)(deps): bump …"), why it is there, its links, what → todo will do and the exact brief —
+  in EN and AR from `att.*` keys, values isolated LTR. Telegram shows `[badge] plain title`.
+- → todo now works for every GitHub and git kind (it answered "no brief template" before).
+- Todos are named by a summary: deterministic at once (a continuation shows its task), an accepted haiku line
+  after (`todoSummary`). The Queue tab opens the brief on tap.
+
+Restart-gated.
+
+## Status list moved from CLAUDE.md (2026-10-25)
+
+Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
+customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
+rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
+down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), the toolchain auto-updater
+(ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011), pre-approved out-of-folder writes + approval
+reminders/timeout (ADR-0012),
+the Telegram flood gate, the trace spine (message ids, threads, causes, `/trace`; ADR-0015/0016; restart-gated), the plan
+registry (every plan sent once with Approve/Changes/Execute, `/plans`; ADR-0019; restart-gated), the context sweet spot (boundary handoffs + safe checkpoints, ADR-0021), and context-efficiency Phase 1
+(per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
+memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
+default off — `memory.scopes`), and project notes (one project tells another through the
+`project_notes` tool; only → todo starts work; ADR-0043), with questions answered by read-only consult
+runs, live notes from main and the tools catalogue (ADR-0050, ADR-0044; restart-gated). Full phase-by-phase narrative: `docs/HISTORY.md`.
+
+Workers never run the Telegram channel plugin (2026-10-29, ADR-0064).
+
+- The daemon's Telegram poller kept failing with 409 Conflict: each worker loaded the operator's user
+  plugins, including the Telegram channel plugin, which long-polled the same bot. `sdkOptions` now sends
+  `settings.enabledPlugins` with that plugin set to false (flag layer, outranks user settings), for every
+  run path; all other user plugins and skills stay on. Checked on the real CLI.
+
+Restart-gated.
+
+Needs you vs housekeeping, pins, superseded items, tappable todos (2026-10-29, ADR-0065, ledger v16).
+
+- Root cause of "every project reads ATTENTION": the badge counted any open item a producer marked high
+  (notes between projects, files left uncommitted after a todo, CI failures), while plans and decision cards
+  never counted. Now one table classes each kind as needs-you or housekeeping (an unknown kind: needs-you),
+  and `needsYou()` joins open decisions, failed todos, needs-you items and pins. The badge, the project list,
+  `/attention` and the digest (Decisions group only when something needs you) read it.
+- A "Pinned — needs you" strip on every tab with one-tap Approve / Answer / Retry / Open; pins live in the
+  ledger (`pins`, v16). Older versions of a branch-named item or a dependency PR close, dismissed, with the
+  reason in `resolution` (the agent-sdk bump series keeps only the newest).
+- Todo rows open a detail sheet (`GET /api/todo/:id`); every console button is busy while it runs and shows a
+  toast with the reply. AR + EN keys; screenshots `agent/needs-you-*-2026-10-29.png`.
+
+Restart-gated.
+
+Task history with hybrid search, and a snapshot backup of `history.db` (2026-10-30, ADR-0067, ledger v17).
+
+- Neo keeps a searchable archive of past work (todos, orders, results, digests, your messages, plans,
+  notes, GitHub/git items, decisions, remembered facts) in `data/history.db`. Search fuses exact ids,
+  meaning (a local bge-m3 embedder, vectors in the shared Qdrant `neo_history`), words (FTS5 with Arabic
+  normalization and stems) and the ledger's worker lines. Each hit cites its source.
+- A ledger change feed (migration v17) keeps the history in step. Entries that the ledger's retention
+  deletes stay as archived entries. The firewall excludes chat `-3` (customer work and consult runs) and
+  ingress threads. Secret-shaped chunks are never stored.
+- Surfaces: the console History tab, Telegram `/find`, `/remember` and `/forget`, and the worker tools
+  `history_search` and `remember`. When the embedder or Qdrant is down, search is keyword-only and says
+  why. The `history_off`, `history_degraded` and `backup_failed` attention items name the step.
+- `tools/history/install.ts` runs the embedder (loopback, capped). `admin.ts` and `eval.ts` serve the
+  operator and the verify step. A nightly snapshot of `history.db` goes to `/var/backups/neo`, with a weekly
+  restore drill (`docs/backup.md`). Operator guide: `docs/history.md`.
+
+Restart-gated.
+
+A disk guard in the heartbeat (2026-10-30, ADR-0068, note #555).
+
+- On 2026-10-30 the dev disk reached 100 %. Root cause: Tier A ran only through the `disk-cleanup` loop,
+  whose folder (`/home/neo`) is almost always busy, so the scheduler skipped it for 19 hours while the disk
+  went from about 58 % to 100 % (about 3.3 GB per hour). The 10 GB build-cache cap was already in Tier A.
+- The daemon's heartbeat now runs the kit's Tier A at once below 10 % free and once in the daily hour,
+  and alerts at 80, 90 and 95 % with the hours until full; it reports what each run freed. Thresholds in
+  `tools/disk/defaults.json`; on/off and the kit folder in config `diskGuard`.
+- Run by hand the same day: Tier A freed 95.4 GB (95.3 % → 73.1 %).
+
+Restart-gated.

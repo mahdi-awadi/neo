@@ -1,8 +1,11 @@
+import { HISTORY_DEFAULTS } from "../src/engine/history/defaults";
+import { BACKUP_DEFAULTS } from "../src/engine/backup/cfg";
 import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../src/config";
+import { DEFAULT_DECISION_SETTLE } from "../src/engine/decision-settle";
 
 const dir = () => mkdtempSync(join(tmpdir(), "neo-cfg-"));
 
@@ -246,7 +249,7 @@ test("worker profiles: QUALITY INVARIANT — absent config changes no worker's m
   // (ADR-0005) — a path names a model only to DIFFER from the pinned default.
   expect(cfg.workers).toEqual({
     company: { effort: "low" }, project: {}, dispatch: {}, loop: {},
-    judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {},
+    judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {}, consult: {},
   });
   expect(cfg.workerEnv).toEqual({});
 });
@@ -399,10 +402,19 @@ test("spin guards default (3 digests, policy alert, tool loop 8); a bad value ke
 });
 
 test("restart.branchPrefixes defaults to fix/ feat/ chore/; a bad list keeps the default", () => {
-  expect(loadConfig(dir()).restart).toEqual({ branchPrefixes: ["fix/", "feat/", "chore/"] });
+  expect(loadConfig(dir()).restart).toEqual({ branchPrefixes: ["fix/", "feat/", "chore/"], integrationBranch: "dev", maxUndeployedDays: 2 });
   const d = dir();
   writeFileSync(join(d, "config.json"), JSON.stringify({ restart: { branchPrefixes: [""] } }));
   expect(loadConfig(d).restart?.branchPrefixes).toEqual(["fix/", "feat/", "chore/"]);
+});
+
+test("ADR-0054: restart.integrationBranch and maxUndeployedDays read from config; an option-like branch keeps the default", () => {
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ restart: { integrationBranch: "staging", maxUndeployedDays: 5 } }));
+  expect(loadConfig(d).restart).toMatchObject({ integrationBranch: "staging", maxUndeployedDays: 5 });
+  const e = dir();
+  writeFileSync(join(e, "config.json"), JSON.stringify({ restart: { integrationBranch: "--output=x", maxUndeployedDays: -1 } }));
+  expect(loadConfig(e).restart).toMatchObject({ integrationBranch: "dev", maxUndeployedDays: 2 });
 });
 
 test("github scan defaults and per-project settings from config.json (bad fields drop)", () => {
@@ -412,4 +424,106 @@ test("github scan defaults and per-project settings from config.json (bad fields
   const c = loadConfig(d);
   expect(c.github).toEqual({ scanEveryMs: 600_000, callTimeoutMs: 20_000 });
   expect(c.projects).toEqual({ gold: { trackedBranches: ["main", "dev"], driftPairs: [["dev", "main"]], ignoreKinds: ["dirty"] } });
+});
+
+test("AC6: commitFinish defaults on with the handoff notes ignored; config.json can turn it off; bad values fail closed", () => {
+  expect(loadConfig(dir()).commitFinish).toEqual({ enabled: true, ignore: ["HANDOFF.md", "**/HANDOFF.md", "data/handoffs/**"], holdMaxMs: 1_800_000 });
+  const off = dir();
+  writeFileSync(join(off, "config.json"), JSON.stringify({ commitFinish: { enabled: false, ignore: ["dist/**"], holdMaxMs: 60_000 } }));
+  expect(loadConfig(off).commitFinish).toEqual({ enabled: false, ignore: ["dist/**"], holdMaxMs: 60_000 });
+  const bad = dir();
+  writeFileSync(join(bad, "config.json"), JSON.stringify({ commitFinish: { enabled: "no", ignore: 5, holdMaxMs: -1 } }));
+  expect(loadConfig(bad).commitFinish).toEqual(loadConfig(dir()).commitFinish);
+});
+
+test("ADR-0038: decisionSettle defaults on; config.json can turn it off; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).decisionSettle).toEqual(DEFAULT_DECISION_SETTLE);
+  const off = dir();
+  writeFileSync(join(off, "config.json"), JSON.stringify({ decisionSettle: { enabled: false } }));
+  expect(loadConfig(off).decisionSettle).toEqual({ ...DEFAULT_DECISION_SETTLE, enabled: false });
+  const bad = dir();
+  writeFileSync(join(bad, "config.json"), JSON.stringify({ decisionSettle: { enabled: "no", expireAfterDays: -1, keepPatterns: ["(unclosed"] } }));
+  expect(loadConfig(bad).decisionSettle).toEqual(DEFAULT_DECISION_SETTLE);
+});
+
+test("ADR-0053: decisionSettle.expireAfterDays and keepPatterns come from config.json", () => {
+  const set = dir();
+  writeFileSync(join(set, "config.json"), JSON.stringify({ decisionSettle: { expireAfterDays: 0, keepPatterns: ["\\bprod\\b"] } }));
+  expect(loadConfig(set).decisionSettle).toEqual({ enabled: true, expireAfterDays: 0, keepPatterns: ["\\bprod\\b"] });
+});
+
+test("project notes limits default, config.json overrides them, a bad value keeps the default (ADR-0043)", () => {
+  expect(loadConfig(dir()).notes).toEqual({
+    maxTitleChars: 120, maxBodyChars: 4000, maxRefs: 10, maxRefChars: 200, maxReasonChars: 500,
+    maxPerSenderPerDay: 30, maxOpenPerPair: 50, blockMax: 8, blockMaxChars: 1500, sentLookbackDays: 14,
+    listMax: 30, keepResolvedDays: 180, gitTimeoutMs: 10000,
+    questions: {
+      enabled: true, answerWaitMs: 240000, consultMaxTurns: 12, forkMaxOccupancyPct: 60, maxOpenPerPair: 1,
+      maxPerOrderPerHour: 6, backgroundMaxPerOrder: 2, maxConcurrentConsults: 2, questionMaxChars: 1500, answerMaxChars: 4000,
+    },
+    live: { deliverMaxChars: 6000, holdMaxMs: 86400000 },
+  });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ notes: { maxBodyChars: 2000, blockMax: -1, listMax: "x" } }));
+  expect(loadConfig(d).notes).toMatchObject({ maxBodyChars: 2000, blockMax: 8, listMax: 30 });
+});
+
+test("ADR-0060: early limit wake defaults on with a 30 s jitter; config sets both; bad values keep the defaults", () => {
+  const c = loadConfig(dir());
+  expect(c.apiLimitWakeEarly).toBe(true);
+  expect(c.apiLimitWakeJitterMs).toBe(30_000);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ apiLimitWakeEarly: false, apiLimitWakeJitterMs: 0 }));
+  expect(loadConfig(d)).toMatchObject({ apiLimitWakeEarly: false, apiLimitWakeJitterMs: 0 });
+  const e = dir();
+  writeFileSync(join(e, "config.json"), JSON.stringify({ apiLimitWakeEarly: "no", apiLimitWakeJitterMs: -5 }));
+  expect(loadConfig(e)).toMatchObject({ apiLimitWakeEarly: true, apiLimitWakeJitterMs: 30_000 });
+});
+
+test("ADR-0063: planner defaults to opus at max effort; config sets it; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).planner).toEqual({ model: "opus", effort: "max" });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ planner: { model: "fable", effort: "xhigh" } }));
+  expect(loadConfig(d).planner).toEqual({ model: "fable", effort: "xhigh" });
+  const e = dir();
+  writeFileSync(join(e, "config.json"), JSON.stringify({ planner: { model: " ", effort: "ultra" } }));
+  expect(loadConfig(e).planner).toEqual({ model: "opus", effort: "max" });
+});
+
+test("ADR-0059: todoSummary defaults on, haiku at low effort, 30 s; bad values keep the defaults", () => {
+  expect(loadConfig(dir()).todoSummary).toEqual({ ai: true, model: "haiku", effort: "low", timeoutMs: 30_000 });
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ todoSummary: { ai: false, model: "sonnet", effort: "nope", timeoutMs: -1 } }));
+  expect(loadConfig(d).todoSummary).toEqual({ ai: false, model: "sonnet", effort: "low", timeoutMs: 30_000 });
+});
+
+test("ADR-0067: history defaults on; config.json sets it through readHistoryCfg; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).history).toEqual(HISTORY_DEFAULTS);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ history: { enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["shared"] } } }));
+  expect(loadConfig(d).history).toMatchObject({ enabled: false, feedKeep: 1000, vectors: { allowedCollections: ["neo_history"] } });
+});
+
+test("ADR-0067 Decision 8: backup defaults (history.db only); config.json sets it through readBackupCfg; a bad value keeps the default", () => {
+  expect(loadConfig(dir()).backup).toEqual(BACKUP_DEFAULTS);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ backup: { keepRecent: 3, dir: "relative", databases: [{ path: "data/history.db", cron: "0 */6 * * *" }] } }));
+  expect(loadConfig(d).backup).toMatchObject({ keepRecent: 3, dir: "/var/backups/neo", databases: [{ path: "data/history.db", cron: "0 */6 * * *" }] });
+});
+
+// ADR-0068: the disk guard is on by default and points at the installed disk kit.
+test("diskGuard: on by default with the installed kit folder; NEO_DISK_GUARD=0 turns it off", () => {
+  const { loadConfig: load } = require("../src/config") as typeof import("../src/config");
+  const dir = require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "neo-cfg-dg-"));
+  const prev = process.env.NEO_DISK_GUARD;
+  try {
+    delete process.env.NEO_DISK_GUARD;
+    const c = load(dir);
+    expect(c.diskGuard).toEqual({ enabled: true, kitDir: require("node:path").join(require("node:os").homedir(), ".local/share/neo/disk") });
+    process.env.NEO_DISK_GUARD = "0";
+    expect(load(dir).diskGuard?.enabled).toBe(false);
+  } finally {
+    if (prev === undefined) delete process.env.NEO_DISK_GUARD;
+    else process.env.NEO_DISK_GUARD = prev;
+  }
 });

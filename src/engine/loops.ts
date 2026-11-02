@@ -48,6 +48,9 @@ export interface LoopDef extends SchedulableLoop {
   bounds: Bounds; // maxIterations + optional budgetUsd
   enabledByDefault?: boolean; // for scheduled loops
   freshSession?: boolean; // never resume across iterations (judge/report loops)
+  /** A scheduled run sends only the goal's output, once, when it is not empty; the worker's text is
+   *  recorded in the loop's thread but never sent (ADR-0045). Unset: the worker's text is sent. */
+  report?: "goal";
   /** Marks the memory-dream consolidation loop (additive, optional — every other loop leaves this
    *  unset and is untouched). The static `folder`/`prompt` above are placeholders: the fire path
    *  (resolveDreamLoop) rewrites `folder` to `cfg.companyFolder` and interpolates `prompt`'s
@@ -604,6 +607,10 @@ export async function startLoop(loopIn: LoopDef, chatId: number, deps: LoopDeps)
   ).finally(() => loopPlans(deps.plans, loop, chatId, planStart, cause));
   const outcome = `🔁 ${loop.name}: ${out.met ? "✅ goal met" : `⚠️ ${out.reason}`} after ${out.iterations} iteration(s) — ${out.lastDetail}`;
   await deps.reply(chatId, outcome + line(outcome, "result"));
+  // A goal-report loop's goal output is its message (ADR-0045) — a manual run sends it too, or the
+  // reminder its goal just recorded as sent would never reach the operator.
+  const report = loop.report === "goal" && out.met ? (out.lastOutput ?? "").trim() : "";
+  if (report) await deps.reply(chatId, report);
   return out;
 }
 
@@ -666,13 +673,20 @@ export async function startScheduledLoop(loopIn: LoopDef, deps: ScheduledLoopDep
       // worker text only — no engine chrome
       onMessage: (t) => {
         line(t, "text");
-        void deps.reply(deps.chatId, t, project);
+        if (loop.report !== "goal") void deps.reply(deps.chatId, t, project);
       },
       shouldStop: deps.shouldStop,
       ...extras,
     },
     { run: deps.run, check },
   ).finally(() => loopPlans(deps.plans, loop, deps.chatId, planStart, cause));
+  // A goal-report loop's one message is its goal's output (deterministic), sent once, and only when
+  // the goal was met — a failing goal's output is not a report.
+  const report = out.met ? (out.lastOutput ?? "").trim() : "";
+  if (loop.report === "goal" && report) {
+    line(report, "text");
+    await deps.reply(deps.chatId, report, project);
+  }
   return out;
 }
 

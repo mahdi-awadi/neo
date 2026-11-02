@@ -58,11 +58,28 @@ function toCitationPath(folder: string, absolutePath: string): string {
  * produce a syntax error: each whitespace-separated token is quoted individually (doubling any
  * embedded quote, SQLite's own escape for a literal `"` inside a quoted string) and the quoted
  * tokens are joined with spaces, which FTS5 treats as an implicit AND over literal-string matches.
- * An empty/whitespace-only query becomes an empty quoted string, matching nothing. */
-export function safeFtsQuery(query: string): string {
-  const tokens = query.trim().split(/\s+/).filter(Boolean);
+ * An empty/whitespace-only query becomes an empty quoted string, matching nothing.
+ * `mode: "any"` joins with OR (tool search, ADR-0044); `stopWords` and `maxTerms` apply to both modes. */
+export function safeFtsQuery(
+  query: string,
+  opts: { mode?: "all" | "any"; stopWords?: ReadonlySet<string>; maxTerms?: number } = {},
+): string {
+  let tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (opts.stopWords) tokens = tokens.filter((t) => !opts.stopWords!.has(t.toLowerCase()));
+  const max = opts.maxTerms;
+  if (max !== undefined && max >= 1 && tokens.length > max) {
+    // Keep the longest terms (stable: ties keep the earlier one), then restore query order.
+    const keep = new Set(
+      tokens
+        .map((t, i) => ({ t, i }))
+        .sort((x, y) => y.t.length - x.t.length || x.i - y.i)
+        .slice(0, max)
+        .map((x) => x.i),
+    );
+    tokens = tokens.filter((_, i) => keep.has(i));
+  }
   if (tokens.length === 0) return '""';
-  return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
+  return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(opts.mode === "any" ? " OR " : " ");
 }
 
 /** Opens (or reuses) the FTS5 recall index for a memory folder, creating `index.sqlite` and its

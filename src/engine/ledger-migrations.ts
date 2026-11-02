@@ -368,6 +368,141 @@ function meta(db: Database): void {
   db.run(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`);
 }
 
+/** Version 9 — todo retries (ADR-0027): a todo that ended for a passing reason waits as `retry` until
+ *  `retry_at`; `attempts` counts its automatic retries; `failure` is the last end's reason. */
+function todoRetries(db: Database): void {
+  db.run(`ALTER TABLE project_todos ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN retry_at INTEGER`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN failure TEXT`);
+  db.run(`CREATE INDEX idx_project_todos_retry ON project_todos (status, retry_at)`);
+}
+
+/** Version 10 — a continuation parked on a decision (ADR-0029): status `waiting`, `waiting_on` = the
+ *  decision id it resumes on. */
+function todoWaiting(db: Database): void {
+  db.run(`ALTER TABLE project_todos ADD COLUMN waiting_on TEXT`);
+  db.run(`CREATE INDEX idx_project_todos_waiting ON project_todos (waiting_on)`);
+}
+
+/** Version 11 — the plan approval gate (ADR-0036): the gate a version got (`approval` | `info`), when a
+ *  worker was held on it, the commit a finished plan was seen done at, and the card's message (edited
+ *  on every state change). */
+function planGate(db: Database): void {
+  db.run(`ALTER TABLE plans ADD COLUMN gate TEXT`);
+  db.run(`ALTER TABLE plans ADD COLUMN card_chat_id INTEGER`);
+  db.run(`ALTER TABLE plans ADD COLUMN card_message_id INTEGER`);
+  db.run(`ALTER TABLE plans ADD COLUMN held_at INTEGER`);
+  db.run(`ALTER TABLE plans ADD COLUMN done_sha TEXT`);
+  // Cards posted before this version: their message is the one their review decision was posted as.
+  db.run(
+    `UPDATE plans SET
+       card_chat_id = (SELECT d.decision_chat_id FROM decisions d WHERE d.id = plans.decision_id),
+       card_message_id = (SELECT d.decision_message_id FROM decisions d WHERE d.id = plans.decision_id)
+     WHERE decision_id IS NOT NULL`,
+  );
+}
+
+/** Version 12 — project notes (ADR-0043): a note is an attention item (source `note`) that also knows
+ *  its sender project, the operator message it traces to, how it was resolved (JSON) and when its
+ *  target acknowledged it. The index serves the sender's view of the notes it sent. */
+function projectNotes(db: Database): void {
+  db.run(`ALTER TABLE attention_items ADD COLUMN from_project TEXT`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN cause_msg_id INTEGER`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN resolution TEXT`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN acked_at INTEGER`);
+  db.run(`CREATE INDEX idx_attention_from ON attention_items (from_project, source)`);
+}
+
+/** Version 13 — questions and live notes (ADR-0050 rev. 2): a question's answer, when a live note or a
+ *  held answer reached a worker (empty = still held), and the asking session (who takes the answer).
+ *  The index serves the live-delivery read (held rows of source `note`). */
+function noteQuestions(db: Database): void {
+  db.run(`ALTER TABLE attention_items ADD COLUMN answer TEXT`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN delivered_at INTEGER`);
+  db.run(`ALTER TABLE attention_items ADD COLUMN from_session TEXT`);
+  db.run(`CREATE INDEX idx_attention_delivery ON attention_items (source, delivered_at)`);
+}
+
+/** v14 (ADR-0057): a todo's lane and, for a side lane, its kind. Old rows are the main lane. */
+function todoLanes(db: Database): void {
+  db.run(`ALTER TABLE project_todos ADD COLUMN lane TEXT NOT NULL DEFAULT 'main'`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN lane_kind TEXT`);
+}
+
+/** Version 15 — self-explaining attention items and todos (ADR-0059): an item's structured facts (JSON,
+ *  written by its producer, refreshed on every scan) and a todo's short human summary. Both nullable: an
+ *  older row derives them when it is read. Frozen once shipped. */
+function explainColumns(db: Database): void {
+  db.run(`ALTER TABLE attention_items ADD COLUMN facts TEXT`);
+  db.run(`ALTER TABLE project_todos ADD COLUMN summary TEXT`);
+}
+
+/** Version 16 — pins (ADR-0065): the operator's server-side marks on the "Pinned — needs you" strip. `ref` is
+ *  `att:<id>`, `dec:<id>` or `todo:<id>`; `state` is `pinned` (keep it on the strip) or `unpinned` (keep a
+ *  needs-you item off it). Frozen once shipped. */
+function pins(db: Database): void {
+  db.run(`CREATE TABLE pins (ref TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('pinned', 'unpinned')), at INTEGER NOT NULL)`);
+}
+
+/** Version 17 — the task history's change feed (ADR-0067 Decision 4): one row for each insert, update and
+ *  delete of a history source row, read in id order by the history indexer from its own cursor (it never
+ *  writes here). Each trigger body is one INSERT; every condition is in its WHEN clause, so a write that is
+ *  not a source (a worker's streamed line, an engine attention item, a `last_seen` or `position` bump, an
+ *  unchanged rewrite) runs no statement. The feed has no constraint a valid write can break: the text keys
+ *  are guarded `IS NOT NULL` in WHEN. The table starts empty (the history backfill reads the existing rows).
+ *  Frozen once shipped. */
+function historyFeed(db: Database): void {
+  db.run(
+    `CREATE TABLE history_feed (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       tbl TEXT NOT NULL, key TEXT NOT NULL,
+       op TEXT NOT NULL,
+       at INTEGER NOT NULL
+     )`,
+  );
+  const now = `CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER)`;
+  /** `cond(row)` is the source condition on `new` or `old`; `changed` the watched columns of an update. */
+  const feed = (spec: {
+    name: string; table: string; key: string; update: string[];
+    del?: boolean; cond?: (row: "new" | "old") => string; textKey?: boolean;
+  }): void => {
+    const when = (row: "new" | "old", extra?: string): string => {
+      const parts = [
+        ...(spec.cond ? [spec.cond(row)] : []),
+        ...(spec.textKey ? [`${row}.${spec.key} IS NOT NULL`] : []),
+        ...(extra ? [extra] : []),
+      ];
+      if (parts.length === 0) return "";
+      return `WHEN ${parts.length === 1 ? parts[0] : parts.map((p) => `(${p})`).join(" AND ")}`;
+    };
+    const insert = (row: "new" | "old", op: "u" | "d"): string =>
+      `INSERT INTO history_feed (tbl, key, op, at) VALUES ('${spec.table}', ${row}.${spec.key}, '${op}', ${now});`;
+    db.run(`CREATE TRIGGER history_feed_${spec.name}_ai AFTER INSERT ON ${spec.table} ${when("new")} BEGIN ${insert("new", "u")} END`);
+    const changed = spec.update.map((c) => `old.${c} IS NOT new.${c}`).join(" OR ");
+    db.run(
+      `CREATE TRIGGER history_feed_${spec.name}_au AFTER UPDATE OF ${spec.update.join(", ")} ON ${spec.table}
+       ${when("new", changed)} BEGIN ${insert("new", "u")} END`,
+    );
+    if (spec.del) db.run(`CREATE TRIGGER history_feed_${spec.name}_ad AFTER DELETE ON ${spec.table} ${when("old")} BEGIN ${insert("old", "d")} END`);
+  };
+  feed({ name: "orders", table: "orders", key: "id", textKey: true, update: ["task", "folder", "chat_id", "source", "thread_id", "parent_order_id"] });
+  // `INSERT OR REPLACE` deletes and inserts: its INSERT trigger fires (DELETE triggers do not, without recursive triggers).
+  feed({ name: "outcomes", table: "outcomes", key: "order_id", textKey: true, update: ["summary", "status"] });
+  feed({ name: "todos", table: "project_todos", key: "id", del: true, update: ["brief", "summary", "result", "status", "order_id", "thread_id", "project"] });
+  feed({ name: "plans", table: "plans", key: "id", update: ["title", "sha256", "status", "path", "thread_id", "order_id"] });
+  feed({
+    name: "attention", table: "attention_items", key: "id", del: true,
+    update: ["title", "detail", "facts", "resolution", "answer", "resolved_at", "dismissed"],
+    cond: (row) => `${row}.source IN ('note', 'github', 'git')`,
+  });
+  feed({ name: "decisions", table: "decisions", key: "id", textKey: true, del: true, update: ["question", "spec", "options", "answer", "status", "thread_id", "order_id"] });
+  // The busiest table: only operator lines and digests feed. A worker's text or progress line fails WHEN.
+  feed({
+    name: "messages", table: "messages", key: "id", update: ["thread_id"],
+    cond: (row) => `(${row}.role = 'user' AND coalesce(${row}.surface, '') <> 'engine') OR ${row}.kind = 'digest'`,
+  });
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "baseline", up: baseline },
   { version: 2, name: "message ids and threads", up: messageIdsAndThreads },
@@ -377,15 +512,25 @@ export const MIGRATIONS: Migration[] = [
   { version: 6, name: "console indexes", up: consoleIndexes },
   { version: 7, name: "attention items and engine boots", up: attention },
   { version: 8, name: "meta", up: meta },
+  { version: 9, name: "todo retries", up: todoRetries },
+  { version: 10, name: "todo waiting on a decision", up: todoWaiting },
+  { version: 11, name: "plan approval gate", up: planGate },
+  { version: 12, name: "project notes", up: projectNotes },
+  { version: 13, name: "note questions and live delivery", up: noteQuestions },
+  { version: 14, name: "todo lanes", up: todoLanes },
+  { version: 15, name: "attention facts and todo summaries", up: explainColumns },
+  { version: 16, name: "pins", up: pins },
+  { version: 17, name: "history change feed", up: historyFeed },
 ];
 
 /** Bring `db` up to the newest version. Each migration runs in its own transaction, so earlier good
  *  ones stay applied when a later one throws. Before the first pending migration a file db that
  *  already has tables is copied to `<path>.bak-v<from>` (once). A failure throws out: the daemon
- *  treats an unmigratable ledger as unrecoverable, and the message names the backup. */
+ *  treats an unmigratable ledger as unrecoverable, and the message names the backup. Another store with its
+ *  own list (the task history, ADR-0067) passes its `label` for the message. */
 export function migrate(
   db: Database,
-  opts: { path: string; migrations?: Migration[] },
+  opts: { path: string; migrations?: Migration[]; label?: string },
 ): { from: number; to: number; backup?: string } {
   const list = opts.migrations ?? MIGRATIONS;
   const from = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -405,7 +550,7 @@ export function migrate(
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `ledger migration ${m.version} (${m.name}) failed: ${why}${backup ? ` — backup at ${backup}` : ""}`,
+        `${opts.label ?? "ledger"} migration ${m.version} (${m.name}) failed: ${why}${backup ? ` — backup at ${backup}` : ""}`,
         { cause: err },
       );
     }

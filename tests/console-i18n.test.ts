@@ -23,6 +23,7 @@ const WEB = join(import.meta.dir, "../src/frontends/web");
 const APP = readFileSync(join(WEB, "app.ts"), "utf8");
 const SHELL = readFileSync(join(WEB, "index.html"), "utf8");
 const LOGIN = readFileSync(join(WEB, "login.html"), "utf8");
+const OFFLINE = readFileSync(join(WEB, "offline.html"), "utf8");
 
 /** Every leaf key of a catalogue as a dotted path, with its text. */
 function leaves(o: Record<string, unknown>, prefix = ""): Map<string, string> {
@@ -50,7 +51,7 @@ test("catalogue parity: every key in en is in ar and the reverse, none empty, sa
 test("every key the module and the page shell use exists in the catalogue", () => {
   const used = new Set<string>();
   for (const m of APP.matchAll(/\btx?\("([a-zA-Z0-9.-]+)"/g)) used.add(m[1]!);
-  for (const m of SHELL.matchAll(/data-i18n(?:-placeholder|-title)?="([a-zA-Z0-9.-]+)"/g)) used.add(m[1]!);
+  for (const m of SHELL.matchAll(/data-i18n(?:-placeholder|-title|-aria)?="([a-zA-Z0-9.-]+)"/g)) used.add(m[1]!);
   expect(used.size).toBeGreaterThan(60);
   for (const k of used) expect(EN.has(k), k).toBe(true);
   // Keys built from data (`threads.state.${...}`) are covered by their families existing in full.
@@ -93,18 +94,19 @@ function literalText(src: string): string[] {
   return offenders;
 }
 
-test("no literal user-facing strings in the client module: text nodes and dialog/label text come from t()", () => {
+test("no literal user-facing strings in the client modules: text nodes and dialog/label text come from t()", () => {
   expect(literalText(APP)).toEqual([]);
+  expect(literalText(readFileSync(join(WEB, "history.ts"), "utf8"))).toEqual([]); // the History tab (ADR-0067)
   // The check itself catches each kind (and ignores comments, regexes and code-only strings).
   const bad = `// it's fine\nconst r = /[&<>"]/g;\nel.textContent = "Hello there";\nalert("Send failed.");\nh += '<div class="x">Nothing yet</div>';\nh += \`<b>\${t("k")}</b>\`;\nb.className = "chip ok";`;
   expect(literalText(bad)).toEqual(["Hello there", "Send failed.", '<div class="x">Nothing yet</div>']);
 });
 
 test("no literal user-facing text in the page shells, apart from the brand", () => {
-  for (const html of [SHELL, LOGIN]) {
+  for (const html of [SHELL, LOGIN, OFFLINE]) {
     const body = html.replace(/<style>[\s\S]*?<\/style>/g, "").replace(/<script[\s\S]*?<\/script>/g, "");
     const text = [...body.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((s) => LETTER.test(s) && !/^%[A-Z_]+%$/.test(s));
-    expect(text).toEqual(["NEO"]);
+    expect(text).toEqual(["neo"]); // the Core wordmark's accessible name (ADR-0056)
     expect(/\splaceholder="[^"%]/.test(body)).toBe(false);
   }
 });
@@ -118,7 +120,7 @@ test("Arabic pages are right-to-left; English pages left-to-right", () => {
 
 test("refs, paths, ids and times render as isolated LTR runs (<bdi dir=\"ltr\">)", () => {
   expect(APP).toMatch(/function ltr\(s: unknown\): string \{\n\s+return `<bdi dir="ltr" class="ref">\$\{esc\(s\)\}<\/bdi>`;/);
-  for (const use of ["ltr(r.ref)", "ltr(th.ref)", "ltr(p.folder)", "ltr(clock(m.at))", 'ltr("#" + x.id)']) expect(APP).toContain(use);
+  for (const use of ["ltr(r.ref)", "ltr(th.ref)", "ltr(p.folder)", "ltr(clock(m.at))", 'ltr("#" + x.id)', "ltr(resumeAt(x.limitResumesAt))"]) expect(APP).toContain(use);
   // Dates and times keep Latin digits, like every other number on the page.
   expect(APP).toContain("-u-nu-latn");
 });
@@ -158,4 +160,74 @@ test("a missing key (an enum value the catalogue lacks) comes back HTML-escaped,
   const i = createConsoleI18n("en");
   expect(i.t("threads.state.<img src=x onerror=alert(1)>")).toBe("threads.state.&lt;img src=x onerror=alert(1)&gt;");
   expect(i.t("threads.state.open")).toBe("open");
+});
+
+test("decision cards render context, numbered options and the recommendation in both views, numbers LTR (ADR-0049)", () => {
+  expect(APP).toContain("function decisionCardHtml(spec: Any): string");
+  expect(APP).toContain('${d.status === "open" ? decisionCardHtml(d.spec) : ""}'); // thread view
+  expect(APP).toContain('${d.ref ? ltr(d.ref) : ""}${decisionCardHtml(d.spec)}'); // project view
+  expect(APP).toContain('ltr(i + 1 + ".")');
+  expect(APP).toContain('t("decision.recommended")');
+});
+
+test("notes: kind `question` and state `answered` are catalogue keys in EN and AR, and the project pane renders them (ADR-0050)", () => {
+  for (const key of ["notes.kind.question", "notes.state.answered"]) {
+    expect(EN.get(key)).toBeTruthy();
+    expect(AR.get(key)).toBeTruthy();
+  }
+  // Every note kind and state the pane can show has a label in both languages.
+  for (const kind of ["finding", "fyi", "request", "question"]) expect(AR.get(`notes.kind.${kind}`)).toBeTruthy();
+  for (const state of ["acknowledged", "answered"]) expect(AR.get(`notes.state.${state}`)).toBeTruthy();
+  expect(APP).toContain('tx(`notes.kind.${it.noteKind}`)');
+  expect(APP).toContain('tx(`notes.state.${it.noteState}`)');
+  // The note id stays an LTR run inside the Arabic row.
+  expect(APP).toContain('ltr("#" + it.id)');
+});
+
+// ADR-0057: the Queue tab's side-lane strings exist in both languages, one per kind.
+test("side-lane queue strings are in the AR and EN catalogues, for every kind", async () => {
+  const { LANE_KINDS } = await import("../src/engine/lanes");
+  for (const lang of ["en", "ar"] as const) {
+    const i18n = createConsoleI18n(lang);
+    for (const key of ["queue.sideLanes", "queue.sideRunning", "queue.sideWaiting"]) expect(i18n.exists(key), `${lang}:${key}`).toBe(true);
+    for (const k of LANE_KINDS) expect(i18n.exists(`queue.kind.${k}`), `${lang}:${k}`).toBe(true);
+  }
+});
+
+// ADR-0058: the "Running now" strip's strings in both languages.
+test("tool-control strip strings are in the AR and EN catalogues", () => {
+  for (const lang of ["en", "ar"] as const) {
+    const i18n = createConsoleI18n(lang);
+    for (const k of ["tools.running", "tools.stop", "tools.background", "tools.confirmStop", "tools.stopTitle", "tools.backgroundTitle"]) expect(i18n.exists(k), `${lang}:${k}`).toBe(true);
+  }
+});
+
+test("ADR-0061: a chief-of-staff message in a thread is labelled from the catalogues, EN and AR", () => {
+  expect(APP).toContain('m.kind === "agent_message" ? tx("threads.agentTo", { project: iso(');
+  for (const lang of ["en", "ar"]) {
+    const cat = JSON.parse(readFileSync(join(WEB, "locales", lang, "console.json"), "utf8")) as { threads: Record<string, string> };
+    expect(cat.threads.agentTo).toContain("{{project}}");
+  }
+});
+
+test("ADR-0059: an attention item renders from att.* keys, every badge named in EN and AR", () => {
+  for (const k of ['tx(`att.kind.${badge}`)', 'tx(`att.why.${badge}`, vars)', 'tx(`att.next.${badge}`)', 'tx("att.showBrief")', "ATT_REFS.has(k) ? ltr(`#${v}`)"]) expect(APP).toContain(k);
+  const cat = (l: string) => JSON.parse(readFileSync(join(WEB, "locales", l, "console.json"), "utf8")) as { att: { kind: Record<string, string>; why: Record<string, string>; next: Record<string, string> } };
+  const [en, ar] = [cat("en"), cat("ar")];
+  for (const part of ["kind", "why", "next"] as const) {
+    expect(Object.keys(ar.att[part]).sort()).toEqual(Object.keys(en.att[part]).sort());
+    expect(Object.keys(en.att[part]).sort()).toEqual(Object.keys(en.att.kind).sort()); // a name, a reason and a next step per badge
+  }
+});
+
+test("review: reason templates hold no bare # or %: the value carries them, isolated LTR (#31, not 31#)", () => {
+  for (const l of ["en", "ar"]) {
+    const why = (JSON.parse(readFileSync(join(WEB, "locales", l, "console.json"), "utf8")) as { att: { why: Record<string, string> } }).att.why;
+    for (const v of Object.values(why)) {
+      expect(v).not.toContain("#{{");
+      expect(v).not.toContain("}}%");
+    }
+  }
+  expect(APP).toContain('ATT_REFS.has(k) ? ltr(`#${v}`) : k === "pct" ? ltr(`${v}%`)');
+  expect(APP).toContain('it.reasonOk === false ? esc(it.title)');
 });

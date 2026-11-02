@@ -1,0 +1,3016 @@
+{
+  "created": "2026-10-08T14:53:50.377Z",
+  "fingerprints": [
+    "01d715662159ac45",
+    "023ab053bdf8aeeb",
+    "03f89324b2e26bdd",
+    "041324ab94915678",
+    "0479a235124b7480",
+    "04a2209adea59755",
+    "064a100633cd79bb",
+    "064a30360fdc1e96",
+    "067640baff87381e",
+    "0808cfd38b8bbc8a",
+    "083cfa01cfca106f",
+    "091acea01c35315d",
+    "0a3c86b9482abb1a",
+    "0ad3ce80643bd5ce",
+    "0aff04dd3470e492",
+    "0c226fc0638e7b02",
+    "0c426bfa221d3a06",
+    "0d8155fcb6ef6405",
+    "1036954a2d94f712",
+    "108d0a6987f48ba8",
+    "10d5b3872b6c4ff2",
+    "10ea8f223465c222",
+    "12af85baa6a099a5",
+    "12d427ae308c40e9",
+    "1428aecfb01e51a4",
+    "164e56179920d957",
+    "167847652665f683",
+    "16e0b41bd3ac5e06",
+    "177b5f70b2920c27",
+    "1895d175d5b69f43",
+    "18f3b734bac38aaf",
+    "1bdbc6130991b1f3",
+    "1d5920e8eedf3e7e",
+    "1dc019d9f0990bad",
+    "1e032f8a702e5b5a",
+    "1f1f2a47dbe3cf7b",
+    "1fb3c903f236f608",
+    "1fb5277dde991416",
+    "218ff9023acd78e0",
+    "219b7b337a74276b",
+    "226afe9f09755205",
+    "23e605d8f35cd704",
+    "247054100e0df69c",
+    "25423bc06de0ada6",
+    "2611768cc4918e91",
+    "26300fb5347e560d",
+    "26516f90720e5865",
+    "26bbdf3dd7a3b1c0",
+    "27fbaf81472ccd72",
+    "28157ffbeb4b1a19",
+    "28cd555ece816c85",
+    "290aaf0afb778887",
+    "2943f8fee21ddb46",
+    "29b47cbd3c9fad84",
+    "2a006cd5d836d496",
+    "2b9c761029e0d88d",
+    "2be5553eabf84231",
+    "308bd1ca6e53c79d",
+    "30e9b4e8b5685bda",
+    "31a4010512067aaa",
+    "31ea10f8cb8161cf",
+    "32fd4f401e895b34",
+    "33fef120080616cf",
+    "344d94421a1f4384",
+    "34632f47531f42ef",
+    "35e8d7300424a50a",
+    "36da6f39cfc771a3",
+    "373bc667279e419c",
+    "379419c2f88ba420",
+    "37bd28b269264bfa",
+    "3979c9fbee1e0ba0",
+    "3a2b73a6ddc298cf",
+    "3a7c962ca0df452b",
+    "3ac0d9fd73df1049",
+    "3adbd1930d7e37b3",
+    "3b6e84dc94804f3b",
+    "3bfd90bd9030bcbf",
+    "3cdc8edc1acfec52",
+    "3e63eb4ec2ab3e57",
+    "409df89ff12a96de",
+    "40cd4cf0384fbfad",
+    "40fa9435531d5435",
+    "4585f7621d8f66d9",
+    "45f09845ea8a626b",
+    "46eae67c49ff9415",
+    "487fea27b26acf8f",
+    "4901fa8c8b2bc0fe",
+    "498aebc4f7e479a3",
+    "49aa8970778eadcf",
+    "4aad35d0bed1b0ce",
+    "4c82b6331359b0a7",
+    "4d5287c9788e46a1",
+    "4e2bda7b789900c3",
+    "4f347943dedabb4e",
+    "4f538290fa6933ce",
+    "4f8e3a206f8cb489",
+    "5075a4b650b51b56",
+    "51a2a5b164f80ac2",
+    "52b3a1c6ba9b314b",
+    "52eed9f529293b8b",
+    "54d810785c348534",
+    "54e50ffd8a889bc3",
+    "5516fe3924c47c1e",
+    "56ccc510ed6ae70b",
+    "577d80fc35149d5d",
+    "58f5d12946313bce",
+    "5967a0c268fbecb6",
+    "5999e807a77e5dcc",
+    "5aa677e30a5d8304",
+    "5ac883b599d1e4f4",
+    "5d3cffea40129d20",
+    "5d7cae05820cb178",
+    "5da26c9dbaf9cd4d",
+    "5df0201d11f8710e",
+    "5efad0715f150ca3",
+    "5f735073f36093e2",
+    "61b357754c9860fc",
+    "62aac3ed45f91503",
+    "6369074df681a0aa",
+    "64e95494e731b2cd",
+    "65a32fad4b9a1c45",
+    "6669b4bdff948e6e",
+    "6751c3ae8842a55e",
+    "678ef1383a129eef",
+    "69db55a2aa6b190b",
+    "6a5d59d9df8846a3",
+    "6ad8617c0267b512",
+    "6b4c3c62ee47002a",
+    "6bbef8f1237b5faf",
+    "6c0f7ed8cd73a0ab",
+    "6e22182e4d309375",
+    "6e52e6174de3c0eb",
+    "6eae631f0647fd40",
+    "6ee7fd0a9aacaf7e",
+    "6eed6f0fb95de512",
+    "703a6a05c2c4ed8a",
+    "71640574e70c0caa",
+    "71d6f15bd8d2453c",
+    "73de2f520fce3614",
+    "75b628be8d56fd21",
+    "7723cf971eed0944",
+    "77287471554f11ee",
+    "7931fa444a2feb9c",
+    "796535921b89ad14",
+    "79e0d3706c5fe303",
+    "79f147f4f452ea5e",
+    "7b348252cc2261ca",
+    "7b720829220d2e1a",
+    "7bb01a86e1070f85",
+    "7be186504b1b8542",
+    "7ded3ad6e8c028f6",
+    "7df4ee1b3d491e94",
+    "7e4d03fc859b87f2",
+    "7e708645772a23f7",
+    "7e9f98eabd5a0180",
+    "7f2d26335d28b88d",
+    "7fd73564c5d89703",
+    "7ff87810c28db804",
+    "811421c86bad60de",
+    "821e107edfa81670",
+    "82a75a61b3318483",
+    "839ebd05c66e3737",
+    "843b919f4690f00b",
+    "8512818d70edbd2a",
+    "851ebfedc50d732a",
+    "86a3cd1c1448d48a",
+    "877a4bd00fab5cae",
+    "89fbf0dab70d298f",
+    "8b3df6d8863a8431",
+    "8f8f006065722cc2",
+    "8fca204d0bca9803",
+    "8fcc12f868d8619a",
+    "8fd0e1b2575caa08",
+    "90635f366d12681b",
+    "907c7cd0b66a8b8b",
+    "919de5afb7ecada0",
+    "91d182274a94bcce",
+    "92d6578de67e35ed",
+    "92eefa8d0c0dcca3",
+    "935093bbd8d34150",
+    "93cb6bb9c4cfff80",
+    "9439ec3f69a666a9",
+    "94880b1f3d582c9d",
+    "94d6c29b19053720",
+    "952b24d80d58c36e",
+    "953e0215720f6b63",
+    "975ef0403f996dd9",
+    "9b2777a649ce42f7",
+    "9c488c56b0baf329",
+    "a00f54c64c516abb",
+    "a08d43b103e3816a",
+    "a105e1308a62edae",
+    "a1ca0d4a25b5f38e",
+    "a1f8d4df9660020b",
+    "a264a2d2eb464eb3",
+    "a377529fe918c0ac",
+    "a3a22e6ac0416005",
+    "a436056ec7d345ce",
+    "a477610070b82e07",
+    "a4822f966c9a07ee",
+    "a4d486f005fa012d",
+    "a529af494a6c8aa3",
+    "a6c14b4da5a3e67a",
+    "a88dd1e35f16adf3",
+    "a9326d3f275a8ca8",
+    "ab71de62ef80ffd1",
+    "acd72c9910ed79c4",
+    "ad2fe39a91afdb99",
+    "ad30ceff6b584110",
+    "afa91794706b1c8d",
+    "b41df8d1654e3914",
+    "b451a62c8185868e",
+    "b62d4ffac73693df",
+    "b64e00ada0b172d1",
+    "b6aec9ad7d343c99",
+    "b73a25cb1b06e420",
+    "b748e2b843a0840b",
+    "b7dea526f7f38c45",
+    "b81ebdca28341112",
+    "b856c70e54117746",
+    "b9684fb44c7066de",
+    "b9987c3d617c00a1",
+    "baa44a18591ec752",
+    "bae703d048e2ba21",
+    "bb84246e618582b2",
+    "bdcfe523131c53ce",
+    "be693cd0c2d8282f",
+    "bf030f98bc6e5f45",
+    "c0d98ac7af7dc827",
+    "c1b8666091fd7797",
+    "c290163708964ac2",
+    "c2c56b33b864ad57",
+    "c34d77cc2e3cf70e",
+    "c3729f34dbb8302a",
+    "c3e357c47c87180d",
+    "c404ea5ce5f6e950",
+    "c482040ba2c3264d",
+    "c80b997d7f364e3b",
+    "c9ba3a41b7081c72",
+    "cb03fcf372cafa80",
+    "cb23cc86a7a98c39",
+    "cbc307c0dd44e640",
+    "ccb7d8edabd79255",
+    "cd24a7e075e58d46",
+    "cd830539097cff7a",
+    "cd917f75e0371a1e",
+    "ce7a1435e059e9f4",
+    "d035b3f0b7667860",
+    "d0f57c8f2a287945",
+    "d1f32adf1adfe67f",
+    "d2914ea5e41ded71",
+    "d52edf981e2014e2",
+    "d71902062d92678d",
+    "d753806ac3904efa",
+    "d7b220af63927ca3",
+    "d7e74cb3e0a73c5e",
+    "d85d70d16a8f5cfa",
+    "d8d3ff9fc942965e",
+    "daf7c1b5d2a4416d",
+    "dd69fe1855c2187d",
+    "de0f1db5cf0d4158",
+    "de8e8e2fd05fadc2",
+    "ded93daa47eb4995",
+    "def06a2dfb951aed",
+    "e280fcbff0218667",
+    "e3b2123c765c8c51",
+    "e3deba3e2a1e9289",
+    "e42965999c2374fa",
+    "e4414bcfec033624",
+    "e551d50eaab84022",
+    "e564e2987d61b813",
+    "e75bfa8b9a71076d",
+    "e88e010573ea5a9e",
+    "e8e4357574dfbccf",
+    "e92ab4e0be46a04c",
+    "e94478ee9372856c",
+    "e9e726a6ee0af9b8",
+    "ea802619e41f5ec4",
+    "ecd1e84deb4f1939",
+    "ecedbb2f88a26ea6",
+    "ecf2222c8fbb2bed",
+    "edbcc6c612c77e40",
+    "efd1844ee6ee34cb",
+    "f03064732687a548",
+    "f067c491a479c322",
+    "f3b46f3a0c529ef0",
+    "f3d7ecb5777465fb",
+    "f43ad6eea5b1d5da",
+    "f4e30c774c99a3ab",
+    "f62fdaa5cc1dca6f",
+    "f716c715baa093eb",
+    "f922f0018b921b73",
+    "f97ed97db7ea00b4",
+    "fbf82766a528217d",
+    "fc7679d0d053bcc0",
+    "fd477b8bb1827137",
+    "fec174cd4f351d48",
+    "ff5ca02868fe1883",
+    "ffae194be7fb9968",
+    "fffade044cc170e1"
+  ],
+  "findings": [
+    {
+      "tool": "semgrep",
+      "rule": "dockerfile.security.missing-user-entrypoint.missing-user-entrypoint",
+      "severity": "high",
+      "file": "gateway/Dockerfile",
+      "line": 8,
+      "message": "By not specifying a USER, a program in the container may run as 'root'. This is a security hazard. If an attacker can control a process running as root, they may have control over the container. Ensure that the last USER in a Dockerfile is a USER other than 'root'.",
+      "fingerprint": "28cd555ece816c85"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "go.lang.security.audit.net.use-tls.use-tls",
+      "severity": "medium",
+      "file": "gateway/main.go",
+      "line": 64,
+      "message": "Found an HTTP server without TLS. Use 'http.ListenAndServeTLS' instead. See https://golang.org/pkg/net/http/#ListenAndServeTLS for more information.",
+      "fingerprint": "4f347943dedabb4e"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "javascript.express.security.audit.express-res-sendfile.express-res-sendfile",
+      "severity": "medium",
+      "file": "src/engine/dispatch.ts",
+      "line": 1305,
+      "message": "The application processes user-input, this is passed to res.sendFile which can allow an attacker to arbitrarily read files on the system through path traversal. It is recommended to perform input validation in addition to canonicalizing the path. This allows you to validate the path against the inte",
+      "fingerprint": "75b628be8d56fd21"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.dos.regex_dos.regex_dos",
+      "severity": "medium",
+      "file": "src/engine/format.ts",
+      "line": 255,
+      "message": "Ensure that the regex used to compare with user supplied input is safe from regular expression denial of service.",
+      "fingerprint": "c482040ba2c3264d"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.dos.regex_dos.regex_dos",
+      "severity": "medium",
+      "file": "src/engine/producers/github.ts",
+      "line": 62,
+      "message": "Ensure that the regex used to compare with user supplied input is safe from regular expression denial of service.",
+      "fingerprint": "e42965999c2374fa"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.dos.regex_dos.regex_dos",
+      "severity": "medium",
+      "file": "src/frontends/telegram-flood.ts",
+      "line": 46,
+      "message": "Ensure that the regex used to compare with user supplied input is safe from regular expression denial of service.",
+      "fingerprint": "64e95494e731b2cd"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 203,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "796535921b89ad14"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 213,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "c3729f34dbb8302a"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 222,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "ad2fe39a91afdb99"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 235,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "ad2fe39a91afdb99"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 280,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "79e0d3706c5fe303"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 297,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "58f5d12946313bce"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 308,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "919de5afb7ecada0"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 362,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "b9987c3d617c00a1"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 384,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "33fef120080616cf"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 409,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "953e0215720f6b63"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 438,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "6a5d59d9df8846a3"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 470,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "091acea01c35315d"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 509,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "d7e74cb3e0a73c5e"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 534,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "4aad35d0bed1b0ce"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 667,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "4585f7621d8f66d9"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 712,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "3adbd1930d7e37b3"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 753,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "12af85baa6a099a5"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 764,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "f62fdaa5cc1dca6f"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 939,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "487fea27b26acf8f"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 956,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "7e4d03fc859b87f2"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 973,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "29b47cbd3c9fad84"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 974,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "952b24d80d58c36e"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 976,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "baa44a18591ec752"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 992,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "5967a0c268fbecb6"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1016,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "1d5920e8eedf3e7e"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1056,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "0ad3ce80643bd5ce"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1070,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "ffae194be7fb9968"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "typescript.react.security.audit.react-unsanitized-method.react-unsanitized-method",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1070,
+      "message": "Detection of insertAdjacentHTML from non-constant definition. This can inadvertently expose users to cross-site scripting (XSS) attacks if this comes from user-provided input. If you have to use insertAdjacentHTML, consider using a sanitization library such as DOMPurify to sanitize your HTML.",
+      "fingerprint": "4f538290fa6933ce"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1080,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "b7dea526f7f38c45"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1169,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "379419c2f88ba420"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1170,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "a377529fe918c0ac"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "typescript.react.security.audit.react-unsanitized-method.react-unsanitized-method",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1170,
+      "message": "Detection of insertAdjacentHTML from non-constant definition. This can inadvertently expose users to cross-site scripting (XSS) attacks if this comes from user-provided input. If you have to use insertAdjacentHTML, consider using a sanitization library such as DOMPurify to sanitize your HTML.",
+      "fingerprint": "90635f366d12681b"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1172,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "7e9f98eabd5a0180"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1177,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "2b9c761029e0d88d"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1182,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "ab71de62ef80ffd1"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1185,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "975ef0403f996dd9"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1262,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "54d810785c348534"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1264,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "8f8f006065722cc2"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1269,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "f97ed97db7ea00b4"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1473,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "218ff9023acd78e0"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/app.ts",
+      "line": 1496,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "083cfa01cfca106f"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.xss.xss_dom.dom_xss",
+      "severity": "high",
+      "file": "src/frontends/web/code-blocks.ts",
+      "line": 79,
+      "message": "DOM-derived text is written back to the page as HTML. The value read from the DOM (or the URL) reaches an HTML interpretation sink such as innerHTML, outerHTML, insertAdjacentHTML or document.write, which results in DOM Cross Site Scripting. Sanitize the value with DOMPurify.sanitize() before writin",
+      "fingerprint": "93cb6bb9c4cfff80"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-raw-html",
+      "severity": "medium",
+      "file": "src/frontends/web/code-blocks.ts",
+      "line": 79,
+      "message": "Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.",
+      "fingerprint": "f3b46f3a0c529ef0"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.dos.regex_dos.regex_dos",
+      "severity": "medium",
+      "file": "src/frontends/web/pwa.ts",
+      "line": 18,
+      "message": "Ensure that the regex used to compare with user supplied input is safe from regular expression denial of service.",
+      "fingerprint": "35e8d7300424a50a"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.dos.regex_dos.regex_dos",
+      "severity": "medium",
+      "file": "src/frontends/web/pwa.ts",
+      "line": 18,
+      "message": "Ensure that the regex used to compare with user supplied input is safe from regular expression denial of service.",
+      "fingerprint": "cbc307c0dd44e640"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.generic.hardcoded_secrets.node_api_key",
+      "severity": "high",
+      "file": "tests/config.test.ts",
+      "line": 35,
+      "message": "A hardcoded API Key is identified. Store it properly in an environment variable.",
+      "fingerprint": "0aff04dd3470e492"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "neo-js-llm-output-to-sink",
+      "severity": "high",
+      "file": "tests/console-pwa.test.ts",
+      "line": 79,
+      "message": "Model output reaches code execution, a shell, a query or a file path without validation (prompt injection → RCE/SQLi, OWASP LLM01/LLM02). Parse it with a schema and allowlist actions first.",
+      "fingerprint": "03f89324b2e26bdd"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.eval.eval_node.eval_nodejs",
+      "severity": "high",
+      "file": "tests/console-pwa.test.ts",
+      "line": 124,
+      "message": "User controlled data in eval() or similar functions may result in Server Side Injection or Remote Code Injection",
+      "fingerprint": "7e708645772a23f7"
+    },
+    {
+      "tool": "semgrep",
+      "rule": "ajinabraham.njsscan.dos.regex_dos.regex_dos",
+      "severity": "medium",
+      "file": "tests/updater.test.ts",
+      "line": 49,
+      "message": "Ensure that the regex used to compare with user supplied input is safe from regular expression denial of service.",
+      "fingerprint": "65a32fad4b9a1c45"
+    },
+    {
+      "tool": "gitleaks",
+      "rule": "generic-api-key",
+      "severity": "critical",
+      "file": "tests/memory-bootstrap.test.ts",
+      "line": 95,
+      "message": "secret (generic-api-key) in commit 8d18f7ab",
+      "fingerprint": "6751c3ae8842a55e"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-frvp-7c67-39w9",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "@hono/node-server@1.19.14 (npm) GHSA-frvp-7c67-39w9",
+      "fingerprint": "e75bfa8b9a71076d"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-6qxp-vccf-f47h",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "@modelcontextprotocol/sdk@1.29.0 (npm) CVE-2026-104850 GHSA-6qxp-vccf-f47h",
+      "fingerprint": "6b4c3c62ee47002a"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-4c8g-83qw-93j6",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-13676 GHSA-4c8g-83qw-93j6",
+      "fingerprint": "5aa677e30a5d8304"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-7p8r-x3mc-p8w7",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-18446 GHSA-7p8r-x3mc-p8w7",
+      "fingerprint": "3ac0d9fd73df1049"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-f65p-4m7j-42xc",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-75975 GHSA-f65p-4m7j-42xc",
+      "fingerprint": "26bbdf3dd7a3b1c0"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-fph4-wmhf-6fwf",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-75899 GHSA-fph4-wmhf-6fwf",
+      "fingerprint": "4c82b6331359b0a7"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-hrr3-gc8f-f4qj",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-86472 GHSA-hrr3-gc8f-f4qj",
+      "fingerprint": "b6aec9ad7d343c99"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-jqff-g426-hqxp",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-76172 GHSA-jqff-g426-hqxp",
+      "fingerprint": "219b7b337a74276b"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-qw65-cvwx-89v3",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-84292 GHSA-qw65-cvwx-89v3",
+      "fingerprint": "79f147f4f452ea5e"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-v2hh-gcrm-f6hx",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.2 (npm) CVE-2026-16221 GHSA-v2hh-gcrm-f6hx",
+      "fingerprint": "04a2209adea59755"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-54fx-42gc-7vw4",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-71848 GHSA-54fx-42gc-7vw4",
+      "fingerprint": "843b919f4690f00b"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-79qm-7rj5-m7r9",
+      "severity": "low",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-71849 GHSA-79qm-7rj5-m7r9",
+      "fingerprint": "a4d486f005fa012d"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-8j4g-w8fx-2239",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-69207 GHSA-8j4g-w8fx-2239",
+      "fingerprint": "edbcc6c612c77e40"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-crvj-82cr-hjcx",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-84363 GHSA-crvj-82cr-hjcx",
+      "fingerprint": "40fa9435531d5435"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-f23p-vx2j-j53r",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-71850 GHSA-f23p-vx2j-j53r",
+      "fingerprint": "247054100e0df69c"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-g6gw-c38x-mqfc",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-84364 GHSA-g6gw-c38x-mqfc",
+      "fingerprint": "177b5f70b2920c27"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-gqvv-2mrq-wpjv",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-84365 GHSA-gqvv-2mrq-wpjv",
+      "fingerprint": "5d3cffea40129d20"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-hvrm-45r6-mjfj",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-59896 GHSA-hvrm-45r6-mjfj",
+      "fingerprint": "811421c86bad60de"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-hxh3-vqpv-xpqv",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-93981 GHSA-hxh3-vqpv-xpqv",
+      "fingerprint": "e551d50eaab84022"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-w62v-xxxg-mg59",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-59895 GHSA-w62v-xxxg-mg59",
+      "fingerprint": "1428aecfb01e51a4"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-xgm2-5f3f-mvvc",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "hono@4.12.26 (npm) CVE-2026-59897 GHSA-xgm2-5f3f-mvvc",
+      "fingerprint": "3a2b73a6ddc298cf"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-22jq-vg5j-6vgg",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "ip-address@10.2.0 (npm) CVE-2026-54272 GHSA-22jq-vg5j-6vgg",
+      "fingerprint": "1036954a2d94f712"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-2vr4-cq9g-pvrc",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "ip-address@10.2.0 (npm) CVE-2026-101910 GHSA-2vr4-cq9g-pvrc",
+      "fingerprint": "82a75a61b3318483"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-4xrf-jv44-h6hh",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "ip-address@10.2.0 (npm) CVE-2026-69198 GHSA-4xrf-jv44-h6hh",
+      "fingerprint": "3a7c962ca0df452b"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-h3mg-xc3c-68pw",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "ip-address@10.2.0 (npm) CVE-2026-101911 GHSA-h3mg-xc3c-68pw",
+      "fingerprint": "b9684fb44c7066de"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-j6r3-76f7-8jcv",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "ip-address@10.2.0 (npm) CVE-2026-101912 GHSA-j6r3-76f7-8jcv",
+      "fingerprint": "10ea8f223465c222"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-mwp4-54f8-5fhr",
+      "severity": "high",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "ip-address@10.2.0 (npm) CVE-2026-69192 GHSA-mwp4-54f8-5fhr",
+      "fingerprint": "e88e010573ea5a9e"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-rpw4-54j3-4h4q",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "ip-address@10.2.0 (npm) CVE-2026-101913 GHSA-rpw4-54j3-4h4q",
+      "fingerprint": "7fd73564c5d89703"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-jqcg-44mw-7w3h",
+      "severity": "critical",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "proxy-addr@2.0.7 (npm) CVE-2026-90711 GHSA-jqcg-44mw-7w3h",
+      "fingerprint": "23e605d8f35cd704"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-4mjr-xmp4-gh2g",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "qs@6.15.2 (npm) CVE-2026-82417 GHSA-4mjr-xmp4-gh2g",
+      "fingerprint": "a529af494a6c8aa3"
+    },
+    {
+      "tool": "osv",
+      "rule": "GHSA-x5fp-wj9c-mxmx",
+      "severity": "medium",
+      "file": "bun.lock",
+      "line": 0,
+      "message": "qs@6.15.2 (npm) CVE-2026-82562 GHSA-x5fp-wj9c-mxmx",
+      "fingerprint": "0479a235124b7480"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-39406",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "@hono/node-server@1.19.12: @hono/node-server: Middleware bypass via repeated slashes in serveStatic",
+      "fingerprint": "31ea10f8cb8161cf"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-frvp-7c67-39w9",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "@hono/node-server@1.19.12: Node.js Adapter for Hono: Path traversal in `serve-static` on Windows via encoded backslash (`%5C`)",
+      "fingerprint": "49aa8970778eadcf"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-104850",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "@modelcontextprotocol/sdk@1.29.0: MCP TypeScript SDK: OAuth client could send credentials to an authorization server chosen by the MCP server",
+      "fingerprint": "907c7cd0b66a8b8b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-13676",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: Security policy bypass due to improper Unicode hostname canonicalization",
+      "fingerprint": "e92ab4e0be46a04c"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-16221",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: Fast-uri: Security policy bypass due to URL parsing inconsistency",
+      "fingerprint": "d71902062d92678d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-18446",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: Host confusion vulnerability via backslash in URI authority",
+      "fingerprint": "b81ebdca28341112"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-6321",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: Path traversal vulnerability allows bypass of security policies",
+      "fingerprint": "69db55a2aa6b190b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-6322",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: URI authority bypass due to improper delimiter handling",
+      "fingerprint": "45f09845ea8a626b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-75975",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: Server-side request forgery via malformed IPv6 normalization",
+      "fingerprint": "373bc667279e419c"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-76172",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: URI parsing flaw enables server-side request forgery and redirects",
+      "fingerprint": "dd69fe1855c2187d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84292",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: Authority Injection via Unvalidated Port Serialization",
+      "fingerprint": "064a30360fdc1e96"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-86472",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "fast-uri@3.1.0: fast-uri: fast-uri: Security bypass due to inconsistent host case normalization",
+      "fingerprint": "a88dd1e35f16adf3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-54290",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: CORS Middleware reflects any Origin with credentials when `origin` defaults to the wildcard",
+      "fingerprint": "7f2d26335d28b88d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-39407",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Middleware bypass via repeated slashes in serveStatic",
+      "fingerprint": "b748e2b843a0840b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-39408",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Path traversal in toSSG() allows writing files outside the output directory",
+      "fingerprint": "25423bc06de0ada6"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-39409",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono has incorrect IP matching in ipRestriction() for IPv4-mapped IPv6 addresses",
+      "fingerprint": "30e9b4e8b5685bda"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-39410",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Non-breaking space prefix bypass in cookie name handling in getCookie()",
+      "fingerprint": "bb84246e618582b2"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-44455",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono/jsx has Unvalidated JSX Tag Names that May Allow HTML Injection",
+      "fingerprint": "71d6f15bd8d2453c"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-44456",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: bodyLimit() can be bypassed for chunked / unknown-length requests",
+      "fingerprint": "e4414bcfec033624"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-44457",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono's Cache Middleware ignores Vary: Authorization / Vary: Cookie leading to cross-user cache leakage",
+      "fingerprint": "5ac883b599d1e4f4"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-44458",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono has CSS Declaration Injection via Style Object Values in JSX SSR",
+      "fingerprint": "cd917f75e0371a1e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-47673",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: JWT middleware accepts any Authorization scheme, not only Bearer",
+      "fingerprint": "16e0b41bd3ac5e06"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-47674",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: IP Restriction bypasses static deny rules for non-canonical IPv6",
+      "fingerprint": "e3deba3e2a1e9289"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-47675",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Cookie helper does not sanitize sameSite and priority, allowing Set-Cookie injection",
+      "fingerprint": "e94478ee9372856c"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-47676",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: app.mount() strips mount prefix using undecoded path, causing incorrect routing for percent-encoded paths",
+      "fingerprint": "fd477b8bb1827137"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-54286",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: Path traversal in `serve-static` on Windows via encoded backslash (`%5C`)",
+      "fingerprint": "26516f90720e5865"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-54287",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: AWS Lambda adapter merges multiple `Set-Cookie` headers into one value, dropping cookies on ALB single-header and Lattice",
+      "fingerprint": "7df4ee1b3d491e94"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-54288",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: Body Limit Middleware can be bypassed on AWS Lambda by understating `Content-Length`",
+      "fingerprint": "3bfd90bd9030bcbf"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-54289",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: Lambda@Edge adapter keeps only the last value of a repeated request header, dropping the rest",
+      "fingerprint": "8fcc12f868d8619a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-56761",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono Improperly Handles JSX Attribute Names Allows HTML Injection in hono/jsx SSR",
+      "fingerprint": "821e107edfa81670"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-56762",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono missing validation of cookie name on write path in setCookie()",
+      "fingerprint": "34632f47531f42ef"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59895",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: Hono: Arbitrary markup injection via improper handling of class names in server-side rendering.",
+      "fingerprint": "4901fa8c8b2bc0fe"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59896",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: Hono: Information disclosure due to improper context isolation in server-side rendering",
+      "fingerprint": "d52edf981e2014e2"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59897",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: Hono: Information disclosure due to incorrect header de-duplication in AWS API Gateway v1 adapter",
+      "fingerprint": "e564e2987d61b813"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-69207",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: ReDoS in CORS middleware via Access-Control-Request-Headers",
+      "fingerprint": "cb03fcf372cafa80"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-71848",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Algorithmic Complexity DoS in Language Middleware",
+      "fingerprint": "a1f8d4df9660020b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-71850",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: `memo()` retains SSR output across requests, leading to cross-user data disclosure",
+      "fingerprint": "c290163708964ac2"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84363",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Query parser reads parameters after the URL fragment, causing cache-key and proxy interpretation differentials",
+      "fingerprint": "6e52e6174de3c0eb"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84364",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Unbounded dot-notation nesting in `parseBody()` can cause memory exhaustion",
+      "fingerprint": "164e56179920d957"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84365",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: Hono: Incomplete fix for CVE-2026-39408: `toSSG()` still writes files outside the output directory",
+      "fingerprint": "73de2f520fce3614"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-93981",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "hono@4.12.10: hono: hono/jsx: Cross-Site Scripting via Unescaped Strings",
+      "fingerprint": "f03064732687a548"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-69192",
+      "severity": "high",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "ip-address@10.1.0: ip-address: ip-address: Inconsistent IP address parsing leads to Server-Side Request Forgery (SSRF) and trust-boundary bypass",
+      "fingerprint": "409df89ff12a96de"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-101911",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "ip-address@10.1.0: ip-address: ip-address: Denial of Service via unbounded IPv6 address parsing",
+      "fingerprint": "cb23cc86a7a98c39"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-101912",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "ip-address@10.1.0: ip-address: ip-address: Access control bypass via cross-family subnet comparison",
+      "fingerprint": "b41df8d1654e3914"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-101913",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "ip-address@10.1.0: ip-address: ip-address: Security bypass via incomplete IPv6 link-local address validation",
+      "fingerprint": "86a3cd1c1448d48a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-42338",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "ip-address@10.1.0: ip-address: ip-address: Cross-site scripting via improper HTML escaping of untrusted input",
+      "fingerprint": "f43ad6eea5b1d5da"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-90711",
+      "severity": "critical",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "proxy-addr@2.0.7: proxy-addr is a Node.js module that determines a request's client addr ...",
+      "fingerprint": "023ab053bdf8aeeb"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-82417",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "qs@6.15.0: qs: qs: Denial of Service via improper validation in stringify function",
+      "fingerprint": "94d6c29b19053720"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-82562",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "qs@6.15.0: qs: qs: Denial of Service via array limit bypass in query string parsing",
+      "fingerprint": "935093bbd8d34150"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-8723",
+      "severity": "medium",
+      "file": "agent/desks/.worktrees/operant-working-indicator/bun.lock",
+      "line": 0,
+      "message": "qs@6.15.0: qs: qs: Denial of Service due to improper handling of null/undefined array elements",
+      "fingerprint": "6669b4bdff948e6e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-frvp-7c67-39w9",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@hono/node-server@1.19.14: Node.js Adapter for Hono: Path traversal in `serve-static` on Windows via encoded backslash (`%5C`)",
+      "fingerprint": "a264a2d2eb464eb3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-104850",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@modelcontextprotocol/sdk@1.29.0: MCP TypeScript SDK: OAuth client could send credentials to an authorization server chosen by the MCP server",
+      "fingerprint": "c0d98ac7af7dc827"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-j95f-988m-3j2f",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@tiptap/core@3.27.1: Tiptap: Quadratic ReDoS in block and inline Markdown attribute parsing",
+      "fingerprint": "7ded3ad6e8c028f6"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-cp6q-959q-f8rh",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@tiptap/core@3.27.1: Tiptap: mergeAttributes() turns an own __proto__ key into inherited executable DOM attributes",
+      "fingerprint": "daf7c1b5d2a4416d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84373",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@vitest/mocker@4.1.9: vitest: Vitest: Arbitrary File Read via Path Traversal in HMR WebSocket",
+      "fingerprint": "acd72c9910ed79c4"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83605",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: @xmldom/xmldom: xmldom: Attribute injection allows client-side script execution",
+      "fingerprint": "0c226fc0638e7b02"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83607",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: xmldom: Cross-site scripting via unvalidated element name injection",
+      "fingerprint": "ce7a1435e059e9f4"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83608",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: @xmldom/xmldom: xmldom: XML Markup Injection via DocType Name Bypass",
+      "fingerprint": "fbf82766a528217d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83613",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: @xmldom/xmldom: xmldom: Denial of Service due to quadratic-time attribute processing",
+      "fingerprint": "ecf2222c8fbb2bed"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83614",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: @xmldom/xmldom: xmldom: Denial of Service via quadratic-time XML parsing",
+      "fingerprint": "4f8e3a206f8cb489"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83615",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: @xmldom/xmldom: xmldom: Denial of Service via quadratic memory consumption",
+      "fingerprint": "f922f0018b921b73"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83616",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: xmldom: XML Structure Injection via Unvalidated Processing Instruction Targets",
+      "fingerprint": "3979c9fbee1e0ba0"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83619",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: @xmldom/xmldom: xmldom: Denial of Service via crafted XML input",
+      "fingerprint": "10d5b3872b6c4ff2"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83610",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: @xmldom/xmldom: xmldom: XML fragment injection via invalid EntityReference serialization",
+      "fingerprint": "8512818d70edbd2a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83611",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.8.13: xmldom: xmldom: Malformed XML end tag parsing leads to content discard and security bypass",
+      "fingerprint": "e8e4357574dfbccf"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83605",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: Attribute injection allows client-side script execution",
+      "fingerprint": "839ebd05c66e3737"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83606",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: Denial of Service via regular expression backtracking in processing instructions",
+      "fingerprint": "d753806ac3904efa"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83607",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: xmldom: Cross-site scripting via unvalidated element name injection",
+      "fingerprint": "01d715662159ac45"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83608",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: XML Markup Injection via DocType Name Bypass",
+      "fingerprint": "ded93daa47eb4995"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83609",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: @xmldom/xmldom: xmldom: Markup injection via embedded line terminators in XML names",
+      "fingerprint": "5df0201d11f8710e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83612",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: xmldom: Denial of Service via crafted HTML with mixed-case tags",
+      "fingerprint": "308bd1ca6e53c79d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83613",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: Denial of Service due to quadratic-time attribute processing",
+      "fingerprint": "108d0a6987f48ba8"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83614",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: Denial of Service via quadratic-time XML parsing",
+      "fingerprint": "7b348252cc2261ca"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83615",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: Denial of Service via quadratic memory consumption",
+      "fingerprint": "bf030f98bc6e5f45"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83616",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: xmldom: XML Structure Injection via Unvalidated Processing Instruction Targets",
+      "fingerprint": "9439ec3f69a666a9"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83618",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: DocumentType injection bypass via embedded line terminators",
+      "fingerprint": "afa91794706b1c8d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83610",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: @xmldom/xmldom: xmldom: XML fragment injection via invalid EntityReference serialization",
+      "fingerprint": "ff5ca02868fe1883"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-83611",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "@xmldom/xmldom@0.9.10: xmldom: xmldom: Malformed XML end tag parsing leads to content discard and security bypass",
+      "fingerprint": "92d6578de67e35ed"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-45819",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "baseline-browser-mapping@2.10.38: baseline-browser-mapping: baseline-browser-mapping: Denial of Service via improper input handling",
+      "fingerprint": "6ad8617c0267b512"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-qq9h-g4jm-xgf3",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "better-auth@1.6.16: Better Auth: Account takeover via pre-account hijacking on magic-link and email-OTP sign-in",
+      "fingerprint": "7931fa444a2feb9c"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-102276",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "brace-expansion@5.0.6: brace-expansion: brace-expansion: Denial of Service via stack exhaustion from crafted brace patterns",
+      "fingerprint": "18f3b734bac38aaf"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-102278",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "brace-expansion@5.0.6: brace-expansion: brace-expansion: Denial of Service via uncontrolled recursion in nested brace patterns",
+      "fingerprint": "344d94421a1f4384"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-13149",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "brace-expansion@5.0.6: brace-expansion: Brace-expansion: Denial of Service due to exponential-time complexity",
+      "fingerprint": "bdcfe523131c53ce"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-14257",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "brace-expansion@5.0.6: brace-expansion: Brace-expansion: Denial of Service via memory exhaustion in expand() function",
+      "fingerprint": "52eed9f529293b8b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-69152",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "brace-expansion@5.0.6: brace-expansion: DoS via unbounded intermediate arrays, bypassing the CVE-2026-14257 mitigation",
+      "fingerprint": "27fbaf81472ccd72"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-102277",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "brace-expansion@5.0.6: brace-expansion: brace-expansion: Denial of Service via crafted brace patterns",
+      "fingerprint": "a00f54c64c516abb"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-93687",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "braces@3.0.3: braces: braces: Denial of Service via Stack Overflow from Deeply Nested Patterns",
+      "fingerprint": "31a4010512067aaa"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-73088",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "browserslist@4.28.4: browserslist: Browserslist: Prototype pollution leading to denial of service",
+      "fingerprint": "2611768cc4918e91"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-73089",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "browserslist@4.28.4: browserslist: Browserslist: Denial of Service via unbounded memory growth from distinct query results",
+      "fingerprint": "94880b1f3d582c9d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-87776",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "compression@1.8.1: compression: compression: Denial of Service via memory leak on premature response close",
+      "fingerprint": "77287471554f11ee"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-45822",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "decode-uri-component@0.2.2: decode-uri-component: decode-uri-component: Denial of Service via crafted input",
+      "fingerprint": "877a4bd00fab5cae"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-55q2-fjhq-7xh7",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "dompurify@3.4.11: DOMPurify: IN_PLACE hook removal leaves a detached subtree executable, causing XSS",
+      "fingerprint": "c3e357c47c87180d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-67mh-4wv8-2f99",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "esbuild@0.18.20: esbuild enables any website to send any requests to the development server and read the response",
+      "fingerprint": "5d7cae05820cb178"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-13676",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: fast-uri: Security policy bypass due to improper Unicode hostname canonicalization",
+      "fingerprint": "62aac3ed45f91503"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-16221",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: Fast-uri: Security policy bypass due to URL parsing inconsistency",
+      "fingerprint": "d85d70d16a8f5cfa"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-18446",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: fast-uri: Host confusion vulnerability via backslash in URI authority",
+      "fingerprint": "b62d4ffac73693df"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-75899",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: fast-uri: Server-Side Request Forgery via repeated hostname percent-decoding",
+      "fingerprint": "de8e8e2fd05fadc2"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-75975",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: fast-uri: Server-side request forgery via malformed IPv6 normalization",
+      "fingerprint": "52b3a1c6ba9b314b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-76172",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: fast-uri: URI parsing flaw enables server-side request forgery and redirects",
+      "fingerprint": "de0f1db5cf0d4158"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84292",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: fast-uri: Authority Injection via Unvalidated Port Serialization",
+      "fingerprint": "6bbef8f1237b5faf"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-86472",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-uri@3.1.2: fast-uri: fast-uri: Security bypass due to inconsistent host case normalization",
+      "fingerprint": "37bd28b269264bfa"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-73569",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "fast-xml-parser@5.9.3: fast-xml-parser: fast-xml-parser: Denial of Service via repeated DOCTYPE declarations",
+      "fingerprint": "89fbf0dab70d298f"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-69207",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "hono@4.12.27: Hono: ReDoS in CORS middleware via Access-Control-Request-Headers",
+      "fingerprint": "0808cfd38b8bbc8a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-71848",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "hono@4.12.27: Hono: Algorithmic Complexity DoS in Language Middleware",
+      "fingerprint": "9c488c56b0baf329"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-71850",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "hono@4.12.27: Hono: `memo()` retains SSR output across requests, leading to cross-user data disclosure",
+      "fingerprint": "56ccc510ed6ae70b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84363",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "hono@4.12.27: Hono: Query parser reads parameters after the URL fragment, causing cache-key and proxy interpretation differentials",
+      "fingerprint": "7bb01a86e1070f85"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84364",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "hono@4.12.27: Hono: Unbounded dot-notation nesting in `parseBody()` can cause memory exhaustion",
+      "fingerprint": "def06a2dfb951aed"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84365",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "hono@4.12.27: Hono: Incomplete fix for CVE-2026-39408: `toSSG()` still writes files outside the output directory",
+      "fingerprint": "c9ba3a41b7081c72"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-93981",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "hono@4.12.27: hono: hono/jsx: Cross-Site Scripting via Unescaped Strings",
+      "fingerprint": "f4e30c774c99a3ab"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2025-71329",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "image-size@1.2.1: image-size: image-size: Denial of Service via crafted image buffer with zero-valued size field",
+      "fingerprint": "5da26c9dbaf9cd4d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2025-71330",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "image-size@1.2.1: image-size: image-size: Denial of Service via crafted ICNS image buffer",
+      "fingerprint": "d0f57c8f2a287945"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59879",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "immutable@4.3.8: immutable-js: Immutable.js: Denial of Service due to mishandling of large index values in List operations",
+      "fingerprint": "1dc019d9f0990bad"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59880",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "immutable@4.3.8: Immutable.js provides many Persistent Immutable data structures. Prior ...",
+      "fingerprint": "1fb5277dde991416"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-69192",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ip-address@10.2.0: ip-address: ip-address: Inconsistent IP address parsing leads to Server-Side Request Forgery (SSRF) and trust-boundary bypass",
+      "fingerprint": "36da6f39cfc771a3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-101910",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ip-address@10.2.0: ip-address: ip-address: Security boundary bypass via unclassified NAT64 local-use address range",
+      "fingerprint": "92eefa8d0c0dcca3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-101911",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ip-address@10.2.0: ip-address: ip-address: Denial of Service via unbounded IPv6 address parsing",
+      "fingerprint": "f716c715baa093eb"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-101912",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ip-address@10.2.0: ip-address: ip-address: Access control bypass via cross-family subnet comparison",
+      "fingerprint": "1e032f8a702e5b5a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-101913",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ip-address@10.2.0: ip-address: ip-address: Security bypass via incomplete IPv6 link-local address validation",
+      "fingerprint": "7b720829220d2e1a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-54272",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ip-address@10.2.0: ip-address: ip-address: Server-Side Request Forgery via IPv4-mapped/NAT64 IPv6 address misclassification",
+      "fingerprint": "5f735073f36093e2"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-69198",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ip-address@10.2.0: ip-address: ip-address: Server-Side Request Forgery (SSRF) and trust-boundary bypass",
+      "fingerprint": "5075a4b650b51b56"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59869",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@3.14.2: js-yaml: js-yaml: Denial of Service via crafted YAML documents",
+      "fingerprint": "678ef1383a129eef"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84375",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@3.14.2: js-yaml: js-yaml: Denial of Service vulnerability in YAML parsing",
+      "fingerprint": "5efad0715f150ca3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-5p4m-2wfm-xmqj",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@3.14.2: JS-YAML: Quadratic CPU consumption in !!omap resolution (3.x and 4.x) — CVE-2026-59870 fix not backported",
+      "fingerprint": "1fb3c903f236f608"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-53550",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@3.14.2: js-yaml: js-yaml: Denial of Service via crafted YAML merge keys",
+      "fingerprint": "f067c491a479c322"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59869",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@4.1.1: js-yaml: js-yaml: Denial of Service via crafted YAML documents",
+      "fingerprint": "064a100633cd79bb"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84375",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@4.1.1: js-yaml: js-yaml: Denial of Service vulnerability in YAML parsing",
+      "fingerprint": "a477610070b82e07"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-5p4m-2wfm-xmqj",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@4.1.1: JS-YAML: Quadratic CPU consumption in !!omap resolution (3.x and 4.x) — CVE-2026-59870 fix not backported",
+      "fingerprint": "46eae67c49ff9415"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-53550",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "js-yaml@4.1.1: js-yaml: js-yaml: Denial of Service via crafted YAML merge keys",
+      "fingerprint": "b451a62c8185868e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59887",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "linkify-it@5.0.1: linkify-it: linkify-it: Denial of Service via crafted mailto: links",
+      "fingerprint": "4e2bda7b789900c3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-4800",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "lodash-es@4.17.21: lodash: lodash: Arbitrary code execution via untrusted input in template imports",
+      "fingerprint": "167847652665f683"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2025-13465",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "lodash-es@4.17.21: lodash: prototype pollution in _.unset and _.omit functions",
+      "fingerprint": "e9e726a6ee0af9b8"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-2950",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "lodash-es@4.17.21: lodash: Lodash: Prototype pollution allows deletion of built-in prototype properties via array path bypass",
+      "fingerprint": "4d5287c9788e46a1"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-253c-mchw-3w2r",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "markdown-it@14.2.0: markdown-it linkify: true has two quadratic paths, so a few hundred KB of markdown blocks the event loop for tens of seconds",
+      "fingerprint": "d035b3f0b7667860"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-50159",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "mermaid@11.15.0: mermaid: Mermaid: CSS injection allows altering page elements via diagram input",
+      "fingerprint": "fc7679d0d053bcc0"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-71436",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "mermaid@11.15.0: mermaid: Mermaid XY Charts: Denial of Service via invalid X-Axis parameters",
+      "fingerprint": "1f1f2a47dbe3cf7b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-71437",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "mermaid@11.15.0: mermaid: Mermaid: Prototype pollution vulnerability allows potential arbitrary code execution",
+      "fingerprint": "ad30ceff6b584110"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-71439",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "mermaid@11.15.0: mermaid: Mermaid: Denial of Service via Radar Diagrams 'ticks' parameter",
+      "fingerprint": "ecedbb2f88a26ea6"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-67213",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@3.3.12: nanoid: nanoid: Denial of Service via infinite loop in random ID generation",
+      "fingerprint": "6e22182e4d309375"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-67214",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@3.3.12: nanoid: nanoid: Denial of Service via negative size input in non-secure module functions",
+      "fingerprint": "1bdbc6130991b1f3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-67213",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@3.3.3: nanoid: nanoid: Denial of Service via infinite loop in random ID generation",
+      "fingerprint": "8fca204d0bca9803"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-67214",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@3.3.3: nanoid: nanoid: Denial of Service via negative size input in non-secure module functions",
+      "fingerprint": "6ee7fd0a9aacaf7e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-73086",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@3.3.3: nanoid: nanoid: Predictable ID generation due to integer overflow",
+      "fingerprint": "51a2a5b164f80ac2"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2024-55565",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@3.3.3: nanoid: nanoid mishandles non-integer values",
+      "fingerprint": "d1f32adf1adfe67f"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-67213",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@4.0.2: nanoid: nanoid: Denial of Service via infinite loop in random ID generation",
+      "fingerprint": "26300fb5347e560d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-67214",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@4.0.2: nanoid: nanoid: Denial of Service via negative size input in non-secure module functions",
+      "fingerprint": "8b3df6d8863a8431"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-73086",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@4.0.2: nanoid: nanoid: Predictable ID generation due to integer overflow",
+      "fingerprint": "c2c56b33b864ad57"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2024-55565",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@4.0.2: nanoid: nanoid mishandles non-integer values",
+      "fingerprint": "1895d175d5b69f43"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-67214",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nanoid@5.1.15: nanoid: nanoid: Denial of Service via negative size input in non-secure module functions",
+      "fingerprint": "c80b997d7f364e3b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-44372",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nitro@3.0.260415-beta: Nitro has an Open Redirect via Protocol-Relative URL Bypass in Wildcard Route Rules",
+      "fingerprint": "577d80fc35149d5d"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-44373",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "nitro@3.0.260415-beta: Nitro has a proxy scope bypass via percent-encoded path traversal in `routeRules`",
+      "fingerprint": "b73a25cb1b06e420"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-85393",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "node-forge@1.4.0: node-forge: node-forge: Signature forgery vulnerability in RSA PKCS#1 v1.5 verification",
+      "fingerprint": "71640574e70c0caa"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-73646",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "postcss@8.5.15: postcss: PostCSS: Information disclosure via path traversal in source map auto-loading",
+      "fingerprint": "f3d7ecb5777465fb"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-69153",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "postcss@8.5.15: postcss: PostCSS: Information disclosure via crafted sourceMappingURL",
+      "fingerprint": "d2914ea5e41ded71"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-104847",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "prosemirror-view@1.41.9: ProseMirror has a XSS vulnerability in prosemirror-view's paste handling",
+      "fingerprint": "ecd1e84deb4f1939"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59877",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "protobufjs@7.6.4: protobufjs: protobufjs: Denial of Service via crafted .proto schema",
+      "fingerprint": "226afe9f09755205"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-90711",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "proxy-addr@2.0.7: proxy-addr is a Node.js module that determines a request's client addr ...",
+      "fingerprint": "9b2777a649ce42f7"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-82417",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "qs@6.15.2: qs: qs: Denial of Service via improper validation in stringify function",
+      "fingerprint": "5516fe3924c47c1e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-82562",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "qs@6.15.2: qs: qs: Denial of Service via array limit bypass in query string parsing",
+      "fingerprint": "290aaf0afb778887"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-qwww-vcr4-c8h2",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "react-router@8.0.1: React Router: RSC Mode CSRF Bypass Allows Action Execution Before 400 Response",
+      "fingerprint": "c34d77cc2e3cf70e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-104846",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "seroval@1.5.4: Seroval: `fromJSON()` Promise thenable assimilation invokes plugin-produced callables (bypass of GHSA-mv8w-475r-vwqw)",
+      "fingerprint": "61b357754c9860fc"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-104845",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "seroval@1.5.4: seroval: seroval: Denial of Service via unbounded memory allocation during deserialization",
+      "fingerprint": "c1b8666091fd7797"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-f88m-g3jw-g9cj",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "sharp@0.34.5: sharp inherited vulnerabilities in libvips: CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591",
+      "fingerprint": "a105e1308a62edae"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-rgj7-g3m4-5g8c",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "sharp@0.34.5: sharp: Vulnerabilities in libheif: GHSA-g89c-p67h-r497 and GHSA-2jg2-4ch7-h545",
+      "fingerprint": "067640baff87381e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-wq5f-xc86-pv6w",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "sharp@0.34.5: sharp : Vulnerability in librsvg dependency CVE-2026-96889",
+      "fingerprint": "a4822f966c9a07ee"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-9277",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "shell-quote@1.8.3: shell-quote: shell-quote: Arbitrary code execution via command injection due to unescaped line terminators",
+      "fingerprint": "a436056ec7d345ce"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-13311",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "shell-quote@1.8.3: shell-quote: shell-quote/parse: shell-quote: Denial of Service due to inefficient input parsing",
+      "fingerprint": "6eed6f0fb95de512"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-93749",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "source-map-js@1.2.1: source-map-js: source-map-js: Denial of Service via malformed indexed source maps",
+      "fingerprint": "2be5553eabf84231"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-97058",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "sprintf-js@1.0.3: sprintf-js: sprintf-js: Denial of Service via unbounded precision specifiers",
+      "fingerprint": "703a6a05c2c4ed8a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-13697",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Information disclosure and Denial of Service via malformed Cache-Control directives",
+      "fingerprint": "2943f8fee21ddb46"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-19534",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Denial of Service via unrequested WebSocket subprotocol",
+      "fingerprint": "6eae631f0647fd40"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84961",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: TLS certificate validation bypass in BalancedPool via dropped connect options",
+      "fingerprint": "8fd0e1b2575caa08"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-14643",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Cross-user information disclosure due to improper Cache-Control directive parsing",
+      "fingerprint": "3e63eb4ec2ab3e57"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-15157",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: HTTP header injection via unvalidated blob-like body type property",
+      "fingerprint": "e280fcbff0218667"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-16728",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Response desynchronization via retry interceptor with mismatched Content-Length",
+      "fingerprint": "e3b2123c765c8c51"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-16729",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: Undici: Cookie attribute injection allows bypassing security protections",
+      "fingerprint": "be693cd0c2d8282f"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-18149",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Denial of Service due to orphaned response body in retry handler",
+      "fingerprint": "ccb7d8edabd79255"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84890",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Denial of Service via unbounded decompression of compressed responses",
+      "fingerprint": "b64e00ada0b172d1"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84933",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Cross-user cookie disclosure via Set-Cookie caching",
+      "fingerprint": "0c426bfa221d3a06"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-85014",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Denial of Service via WebSocketStream unclean close",
+      "fingerprint": "91d182274a94bcce"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-85024",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "undici@7.28.0: undici: undici: Denial of Service via unhandled error in WebSocket permessage-deflate decompression",
+      "fingerprint": "041324ab94915678"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-41907",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "uuid@7.0.3: uuid: uuid: Out-of-bounds write vulnerability impacts data integrity and confidentiality",
+      "fingerprint": "7723cf971eed0944"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-59952",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "valibot@1.4.1: Valibot: record() issue paths can make flatten() throw for inherited Object property names",
+      "fingerprint": "fffade044cc170e1"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-84373",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "vitest@4.1.9: vitest: Vitest: Arbitrary File Read via Path Traversal in HMR WebSocket",
+      "fingerprint": "40cd4cf0384fbfad"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-48779",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ws@8.18.0: ws: ws: Denial of Service via memory exhaustion from small WebSocket fragments",
+      "fingerprint": "ea802619e41f5ec4"
+    },
+    {
+      "tool": "trivy",
+      "rule": "CVE-2026-45736",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/pnpm-lock.yaml",
+      "line": 0,
+      "message": "ws@8.18.0: ws: ws: Uninitialized memory disclosure via `websocket.close()` with `TypedArray`",
+      "fingerprint": "efd1844ee6ee34cb"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-wrw7-89jp-8q8g",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/templates/clips/desktop/src-tauri/Cargo.lock",
+      "line": 0,
+      "message": "glib@0.18.5: Unsoundness in `Iterator` and `DoubleEndedIterator` impls for `glib::VariantStrIter`",
+      "fingerprint": "b856c70e54117746"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-4w2j-m93h-cj5j",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/templates/clips/desktop/src-tauri/Cargo.lock",
+      "line": 0,
+      "message": "quinn-proto@0.11.14: Quinn: Remote memory exhaustion in quinn-proto from unbounded out-of-order stream reassembly",
+      "fingerprint": "a1ca0d4a25b5f38e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-2mjx-qc3c-rqvc",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/templates/clips/desktop/src-tauri/Cargo.lock",
+      "line": 0,
+      "message": "rustls@0.23.38: Rustls: TLS 1.3 handshake messages incorrectly accepted across encryption level boundaries",
+      "fingerprint": "cd830539097cff7a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-82j2-j2ch-gfr8",
+      "severity": "high",
+      "file": "agent/desks/dev/agent-native/templates/clips/desktop/src-tauri/Cargo.lock",
+      "line": 0,
+      "message": "rustls-webpki@0.103.12: rustls-webpki: Denial of service via panic on malformed CRL BIT STRING",
+      "fingerprint": "7ff87810c28db804"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-7gcf-g7xr-8hxj",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/templates/clips/desktop/src-tauri/Cargo.lock",
+      "line": 0,
+      "message": "serde_with@3.18.0: serde_with: KeyValueMap serialization panics on empty sequence or map entries",
+      "fingerprint": "cd24a7e075e58d46"
+    },
+    {
+      "tool": "trivy",
+      "rule": "GHSA-3pv8-6f4r-ffg2",
+      "severity": "medium",
+      "file": "agent/desks/dev/agent-native/templates/clips/desktop/src-tauri/Cargo.lock",
+      "line": 0,
+      "message": "tar@0.4.45: tar has a PAX header desynchronization issue",
+      "fingerprint": "a3a22e6ac0416005"
+    },
+    {
+      "tool": "trivy",
+      "rule": "DS-0001",
+      "severity": "medium",
+      "file": "agent/desks/dev/quality-wall/kit/tests/fixtures/docker/Dockerfile.bad",
+      "line": 1,
+      "message": "':latest' tag used",
+      "fingerprint": "28157ffbeb4b1a19"
+    },
+    {
+      "tool": "trivy",
+      "rule": "DS-0002",
+      "severity": "high",
+      "file": "agent/desks/dev/quality-wall/kit/tests/fixtures/docker/Dockerfile.bad",
+      "line": 0,
+      "message": "Image user should not be 'root'",
+      "fingerprint": "54e50ffd8a889bc3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "DS-0029",
+      "severity": "high",
+      "file": "agent/desks/dev/quality-wall/kit/tests/fixtures/docker/Dockerfile.bad",
+      "line": 2,
+      "message": "'apt-get' missing '--no-install-recommends'",
+      "fingerprint": "32fd4f401e895b34"
+    },
+    {
+      "tool": "trivy",
+      "rule": "DS-0001",
+      "severity": "medium",
+      "file": "gateway/Dockerfile",
+      "line": 5,
+      "message": "':latest' tag used",
+      "fingerprint": "0a3c86b9482abb1a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "DS-0002",
+      "severity": "high",
+      "file": "gateway/Dockerfile",
+      "line": 0,
+      "message": "Image user should not be 'root'",
+      "fingerprint": "2a006cd5d836d496"
+    },
+    {
+      "tool": "trivy",
+      "rule": "stripe-secret-token",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/packages/core/src/cli/add.ts",
+      "line": 196,
+      "message": "secret: Stripe Secret Key",
+      "fingerprint": "bae703d048e2ba21"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/packages/core/src/demo/redact.spec.ts",
+      "line": 17,
+      "message": "secret: JWT token",
+      "fingerprint": "3b6e84dc94804f3b"
+    },
+    {
+      "tool": "trivy",
+      "rule": "gcp-service-account",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/templates/analytics/app/lib/data-sources.ts",
+      "line": 127,
+      "message": "secret: Google (GCP) Service-account",
+      "fingerprint": "498aebc4f7e479a3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "gcp-service-account",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/templates/analytics/app/lib/data-sources.ts",
+      "line": 181,
+      "message": "secret: Google (GCP) Service-account",
+      "fingerprint": "fec174cd4f351d48"
+    },
+    {
+      "tool": "trivy",
+      "rule": "gcp-service-account",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/templates/analytics/app/lib/data-sources.ts",
+      "line": 712,
+      "message": "secret: Google (GCP) Service-account",
+      "fingerprint": "6c0f7ed8cd73a0ab"
+    },
+    {
+      "tool": "trivy",
+      "rule": "gcp-service-account",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/templates/analytics/server/lib/gcloud.ts",
+      "line": 66,
+      "message": "secret: Google (GCP) Service-account",
+      "fingerprint": "d8d3ff9fc942965e"
+    },
+    {
+      "tool": "trivy",
+      "rule": "gcp-service-account",
+      "severity": "critical",
+      "file": "agent/desks/dev/agent-native/templates/analytics/server/routes/api/credentials.post.ts",
+      "line": 51,
+      "message": "secret: Google (GCP) Service-account",
+      "fingerprint": "12d427ae308c40e9"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/inbox/202609050541144615-db3c9efe-113b-46fc-b6e8-c55d970974a7.txt",
+      "line": 3,
+      "message": "secret: JWT token",
+      "fingerprint": "d7b220af63927ca3"
+    },
+    {
+      "tool": "trivy",
+      "rule": "private-key",
+      "severity": "critical",
+      "file": "agent/inbox/2_5388699688796988165.txt",
+      "line": 2,
+      "message": "secret: Asymmetric Private Key",
+      "fingerprint": "851ebfedc50d732a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "gcp-service-account",
+      "severity": "critical",
+      "file": "agent/inbox/amad-medad-5ef248be73a2.json",
+      "line": 2,
+      "message": "secret: Google (GCP) Service-account",
+      "fingerprint": "6369074df681a0aa"
+    },
+    {
+      "tool": "trivy",
+      "rule": "private-key",
+      "severity": "critical",
+      "file": "agent/inbox/amad-medad-5ef248be73a2.json",
+      "line": 5,
+      "message": "secret: Asymmetric Private Key",
+      "fingerprint": "7be186504b1b8542"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/inbox/export-statement-repro.sh",
+      "line": 8,
+      "message": "secret: JWT token",
+      "fingerprint": "a9326d3f275a8ca8"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/inbox/provider_logs_897183/202608051039473532-d0992e8b-64f2-48fe-911e-17bdacc4ebb8.txt",
+      "line": 3,
+      "message": "secret: JWT token",
+      "fingerprint": "a6c14b4da5a3e67a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/inbox/provider_logs_897183/202608051040027445-55a9336c-a5c6-4695-b19e-e44c91449490.txt",
+      "line": 3,
+      "message": "secret: JWT token",
+      "fingerprint": "a08d43b103e3816a"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/inbox/provider_logs_897183/202608051041030820-aa79485d-6155-4cf4-b13a-533fa3b4f2cc.txt",
+      "line": 3,
+      "message": "secret: JWT token",
+      "fingerprint": "0d8155fcb6ef6405"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/inbox/provider_logs_897183/202608051043077518-b6a30952-9f77-4f42-8aa3-10705bdc3669.txt",
+      "line": 3,
+      "message": "secret: JWT token",
+      "fingerprint": "5999e807a77e5dcc"
+    },
+    {
+      "tool": "trivy",
+      "rule": "jwt-token",
+      "severity": "critical",
+      "file": "agent/inbox/provider_logs_897183/202608051043233801-414a090c-7deb-48b3-a556-c03324ac5382.txt",
+      "line": 3,
+      "message": "secret: JWT token",
+      "fingerprint": "3cdc8edc1acfec52"
+    },
+    {
+      "tool": "hadolint",
+      "rule": "DL3006",
+      "severity": "medium",
+      "file": "gateway/Dockerfile",
+      "line": 5,
+      "message": "Always tag the version of an image explicitly",
+      "fingerprint": "c404ea5ce5f6e950"
+    }
+  ]
+}

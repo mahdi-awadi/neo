@@ -22,6 +22,9 @@ export interface LoopInput {
   enabledByDefault?: boolean;
   /** Never resume across iterations — each one starts fresh (default false). */
   freshSession?: boolean;
+  /** What a scheduled run sends the operator: the worker's text (default) or only the goal's output,
+   *  once, when it is not empty (ADR-0045). */
+  report?: "worker" | "goal";
 }
 
 const slug = (s: string) =>
@@ -91,6 +94,8 @@ export function validateLoopInput(
     return { error: "budgetUsd must be ≥ 0" };
   }
 
+  if (input.report !== undefined && input.report !== "worker" && input.report !== "goal") return { error: "report must be worker or goal" };
+
   const def: LoopDef = {
     name,
     usage: `/loop ${name}`,
@@ -105,6 +110,7 @@ export function validateLoopInput(
     },
     ...(input.enabledByDefault !== undefined ? { enabledByDefault: input.enabledByDefault } : {}),
     ...(input.freshSession !== undefined ? { freshSession: input.freshSession } : {}),
+    ...(input.report === "goal" ? { report: "goal" as const } : {}),
   };
   return { def };
 }

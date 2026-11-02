@@ -1,7 +1,9 @@
 // P3 Tasks 3.1 + 3.2 (ADR-0017, spec §6): paged thread and message reads, and FTS5 search, from the
 // ledger — never by replaying the live feed.
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { DEFAULT_PLANS_CFG, onRunEndPlans } from "../src/engine/plans";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHmac, createHash } from "node:crypto";
@@ -178,5 +180,58 @@ test("GET /api/thread-projects and a thread's plans with the actions their statu
   const get = async (u: string) => (await a.instance.fetch(new Request(`http://neo.test${u}`, { headers: { cookie } }))).json() as Promise<any>;
   expect(await get("/api/thread-projects")).toEqual({ rows: [{ project: "gold", threads: 1 }] });
   const view = await get(`/api/threads/${t1}`);
-  expect(view.plans).toEqual([expect.objectContaining({ title: "A", status: "approved", actions: ["execute", "drop"] })]);
+  expect(view.plans).toEqual([expect.objectContaining({ title: "A", status: "approved", state: "approved", actions: ["approve", "drop"] })]);
+});
+
+// ADR-0035: a plan the registry first saw finished shows in the console as done, with no buttons.
+test("a thread's plan first seen finished: status done, no actions", async () => {
+  const a = app();
+  const t1 = thread(a.ledger, { project: "gold", at: 100 });
+  const dir = mkdtempSync(join(tmpdir(), "neo-console-plan-"));
+  spawnSync("git", ["init", "-q"], { cwd: dir });
+  mkdirSync(join(dir, "docs/superpowers/plans"), { recursive: true });
+  writeFileSync(join(dir, "docs/superpowers/plans/sub-users.md"), "# Sub-users\n- [x] one\n- [x] two\n");
+  const posts: unknown[] = [];
+  const deps = { ledger: a.ledger, cfg: DEFAULT_PLANS_CFG, postPlan: async () => (posts.push(1), { chatId: 1, messageId: 1 }) };
+  await onRunEndPlans(deps, { project: "gold", folder: dir, cause: { msgId: t1, threadId: t1 }, chatId: 1 });
+  expect(posts).toEqual([]);
+  const cookie = (await a.instance.fetch(new Request(loginUrl(555)))).headers.get("set-cookie")!.split(";")[0]!;
+  const view = (await (await a.instance.fetch(new Request(`http://neo.test/api/threads/${t1}`, { headers: { cookie } }))).json()) as any;
+  expect(view.plans).toEqual([expect.objectContaining({ title: "Sub-users", status: "done", stepsDone: 2, stepsTotal: 2, actions: [] })]);
+});
+
+// ADR-0025: thread history renders like the live feed — an assistant row carries its HTML and tone;
+// the operator's own messages stay plain text (escaped in the browser).
+test("GET /api/threads/:id: assistant rows carry rendered html + tone, operator rows do not", async () => {
+  const a = app();
+  const t1 = thread(a.ledger, { project: "gold", at: 100, text: "show me **the** table" });
+  a.ledger.insertMessage({ chatId: 1, role: "assistant", content: "🔧 Bash: git log --oneline -3", at: 150, threadId: t1, project: "gold" });
+  const cookie = (await a.instance.fetch(new Request(loginUrl(555)))).headers.get("set-cookie")!.split(";")[0]!;
+  const view = (await (await a.instance.fetch(new Request(`http://neo.test/api/threads/${t1}`, { headers: { cookie } }))).json()) as any;
+  const tool = view.messages.find((m: any) => m.role === "assistant");
+  expect(tool.tone).toBe("tool");
+  expect(tool.html).toContain('<pre class="code" data-lang="bash"><code>git log --oneline -3</code></pre>');
+  const mine = view.messages.find((m: any) => m.role === "user");
+  expect(mine.html).toBeUndefined();
+  expect(mine.content).toBe("show me **the** table");
+});
+
+// ADR-0038: the thread view offers Close (behind a confirm) while the thread is not closed, and shows
+// why a superseded or dismissed decision closed.
+test("the thread view has a Close thread action wired to POST /api/thread/close, and labels superseded decisions", async () => {
+  const { readFileSync } = await import("node:fs");
+  const app = readFileSync(join(import.meta.dir, "../src/frontends/web/app.ts"), "utf8");
+  const en = JSON.parse(readFileSync(join(import.meta.dir, "../src/frontends/web/locales/en/console.json"), "utf8"));
+  const ar = JSON.parse(readFileSync(join(import.meta.dir, "../src/frontends/web/locales/ar/console.json"), "utf8"));
+  expect(app).toContain('data-act="thread-close"');
+  expect(app).toContain('case "thread-close":');
+  expect(app).toContain('act(btn, "/api/thread/close"');
+  expect(app).toContain('confirm(tx("threads.confirmClose"');
+  expect(app).toContain("!th.closedByOperator");
+  for (const cat of [en, ar]) {
+    expect(typeof cat.threads.close).toBe("string");
+    expect(typeof cat.threads.confirmClose).toBe("string");
+    expect(typeof cat.threads.closedNote).toBe("string");
+    expect(typeof cat.threads.decisionStatus.superseded).toBe("string");
+  }
 });

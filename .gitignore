@@ -26,3 +26,15 @@ AGENTS.local.md
 .claude/settings.local.json
 .gitnexus/
 .claude/skills/gitnexus/
+.security/reports/
+.security/sbom/
+# The security kit's per-repo scan config is tracked (docs/security-checks.md), despite `config.json` above
+!.security/config.json
+
+# Neo shared browser: machine-local overrides (ADR-0032)
+tools/browser/browser.local.env
+# Neo embedder: machine-local overrides (ADR-0067)
+tools/history/embedder.local.env
+
+# The disk kit writes its run state next to itself when run from the repo copy (ADR-0040): machine-local.
+/tools/disk/state/

@@ -1,0 +1,244 @@
+# Neo custom rules — JS/TS. Cover what the registry packs miss: access control, business logic,
+# LLM output, session/cookie config. Test fixtures: rules/tests/neo-js.ts (semgrep --test).
+rules:
+  - id: neo-js-mass-assignment
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Request body passed straight into a model write (mass assignment, OWASP A01). Pick allowed
+      fields explicitly or parse with a schema (zod) first.
+    metadata: { category: security, owasp: "A01:2021", impact: HIGH, confidence: MEDIUM }
+    patterns:
+      - pattern-either:
+          - pattern: $M.create($REQ.body)
+          - pattern: $M.update(..., $REQ.body, ...)
+          - pattern: '$M.create({data: $REQ.body, ...})'
+          - pattern: '$M.update({..., data: $REQ.body, ...})'
+          - pattern: $M.insert($REQ.body)
+          - pattern: Object.assign($X, $REQ.body)
+          - pattern: "{...$REQ.body}"
+      - metavariable-regex:
+          metavariable: '$REQ'
+          regex: '^(req|request|ctx\.request)$'
+
+  - id: neo-js-client-trusted-price
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Price/amount/balance read from the client (OWASP A04). Compute money server-side from the
+      database; never trust client-sent prices, totals, discounts or balances.
+    metadata: { category: security, owasp: "A04:2021", impact: HIGH, confidence: MEDIUM }
+    patterns:
+      - pattern-either:
+          - pattern: $REQ.body.$F
+          - pattern: $REQ.query.$F
+      - metavariable-regex:
+          metavariable: '$REQ'
+          regex: '^(req|request)$'
+      - metavariable-regex:
+          metavariable: '$F'
+          regex: '(?i)^(price|amount|total|subtotal|balance|discount|fee|fees|cost|commission|unitprice|unit_price)$'
+
+  - id: neo-js-insecure-random-secret
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Math.random() used for a token/OTP/secret (OWASP A02). Use crypto.randomInt / crypto.randomBytes / crypto.randomUUID.
+    metadata: { category: security, owasp: "A02:2021", impact: HIGH, confidence: HIGH }
+    patterns:
+      - pattern-either:
+          - pattern: const $V = <... Math.random() ...>;
+          - pattern: let $V = <... Math.random() ...>;
+          - pattern: $V = <... Math.random() ...>
+      - metavariable-regex:
+          metavariable: '$V'
+          regex: '(?i).*(token|otp|code|secret|password|passwd|salt|nonce|key|session|reset|pin).*'
+
+  - id: neo-js-cors-wildcard-credentials
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: CORS allows any origin together with credentials (OWASP A05). Use an explicit origin allowlist from config.
+    metadata: { category: security, owasp: "A05:2021", impact: HIGH, confidence: HIGH }
+    pattern-either:
+      - pattern: '$F({..., origin: "*", ..., credentials: true, ...})'
+      - pattern: '$F({..., credentials: true, ..., origin: "*", ...})'
+      - pattern: '$F({..., origin: true, ..., credentials: true, ...})'
+      - pattern: '$F({..., credentials: true, ..., origin: true, ...})'
+
+  - id: neo-js-cookie-missing-flags
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Cookie set without httpOnly + sameSite (OWASP A07). Pass httpOnly, secure and sameSite explicitly.
+    metadata: { category: security, owasp: "A07:2021", impact: HIGH, confidence: MEDIUM }
+    patterns:
+      - pattern-either:
+          - pattern: $RES.cookie($N, $V, ...)
+          - pattern: setCookie($C, $N, $V, ...)
+      - pattern-not: '$RES.cookie($N, $V, {..., httpOnly: true, ..., sameSite: $SS, ...})'
+      - pattern-not: '$RES.cookie($N, $V, {..., sameSite: $SS, ..., httpOnly: true, ...})'
+      - pattern-not: 'setCookie($C, $N, $V, {..., httpOnly: true, ..., sameSite: $SS, ...})'
+      - pattern-not: 'setCookie($C, $N, $V, {..., sameSite: $SS, ..., httpOnly: true, ...})'
+
+  - id: neo-js-secret-in-log
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: A secret/credential/OTP value is logged (OWASP A09). Never log tokens, passwords, OTPs or keys.
+    metadata: { category: security, owasp: "A09:2021", impact: HIGH, confidence: MEDIUM }
+    patterns:
+      - pattern-either:
+          - pattern: console.$L(..., $V, ...)
+          - pattern: $LOG.$L(..., $V, ...)
+          - pattern: console.$L(..., <... $O.$V ...>, ...)
+          - pattern: $LOG.$L(..., <... $O.$V ...>, ...)
+      - metavariable-regex:
+          metavariable: '$L'
+          regex: '^(log|info|warn|error|debug|trace|fatal)$'
+      - metavariable-regex:
+          metavariable: '$V'
+          regex: '(?i)^(password|passwd|pwd|secret|token|accesstoken|access_token|refreshtoken|refresh_token|apikey|api_key|otp|otpcode|otp_code|privatekey|private_key|authorization|cookie)$'
+
+  - id: neo-js-llm-output-to-sink
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Model output reaches code execution, a shell, a query or a file path without validation
+      (prompt injection → RCE/SQLi, OWASP LLM01/LLM02). Parse it with a schema and allowlist actions first.
+    metadata: { category: security, owasp: "A03:2021", impact: HIGH, confidence: MEDIUM }
+    mode: taint
+    pattern-sources:
+      - pattern: $R.choices[$I].message.content
+      - pattern: $R.output_text
+      - pattern: $R.content[$I].text
+      - pattern: $R.response.text()
+      - pattern: $R.text()
+    pattern-sanitizers:
+      - pattern: $S.parse(...)
+      - pattern: $S.safeParse(...)
+    pattern-sinks:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+      - pattern: exec(...)
+      - pattern: execSync(...)
+      - pattern: spawn(...)
+      - pattern: $CP.exec(...)
+      - pattern: $CP.execSync(...)
+      - pattern: Bun.spawn(...)
+      - pattern: $DB.query(...)
+      - pattern: $DB.$queryRawUnsafe(...)
+      - pattern: $DB.$executeRawUnsafe(...)
+      - pattern: $DB.raw(...)
+      - pattern: $FS.writeFile(...)
+      - pattern: $FS.writeFileSync(...)
+
+  - id: neo-js-ssrf-user-url
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Outbound request to a URL taken from the request (SSRF, OWASP A10). Validate against an allowlist of hosts from config.
+    metadata: { category: security, owasp: "A10:2021", impact: HIGH, confidence: MEDIUM }
+    mode: taint
+    pattern-sources:
+      - pattern: $REQ.body
+      # `db.query(...)` is a method call, not the request's query string
+      - patterns:
+          - pattern: $REQ.query
+          - pattern-not-inside: $REQ.query(...)
+      - pattern: $REQ.params
+      - pattern: $C.req.query(...)
+      - pattern: $C.req.param(...)
+      - pattern: await $C.req.json()
+      - pattern: new URL($REQ.url).searchParams
+    pattern-sanitizers:
+      - pattern: $ALLOW.has(...)
+      - pattern: $ALLOW.includes(...)
+      - pattern: assertAllowedUrl(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: fetch($U, ...)
+              - pattern: axios($U, ...)
+              - pattern: axios.$M($U, ...)
+              - pattern: got($U, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: $HTTP.request($U, ...)
+                      - pattern: $HTTP.get($U, ...)
+                  # an HTTP client, not any .get() (a SQLite statement, a Map)
+                  - metavariable-regex:
+                      metavariable: $HTTP
+                      regex: ^(http|https|axios|got|ky|superagent|needle|undici|request|httpClient|client)$
+          - focus-metavariable: $U
+
+  - id: neo-js-path-traversal
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: File path built from request input (path traversal, OWASP A01). Resolve, then check it stays inside the allowed root.
+    metadata: { category: security, owasp: "A01:2021", impact: HIGH, confidence: MEDIUM }
+    mode: taint
+    pattern-sources:
+      - pattern: $REQ.body
+      # `db.query(...)` is a method call, not the request's query string
+      - patterns:
+          - pattern: $REQ.query
+          - pattern-not-inside: $REQ.query(...)
+      - pattern: $REQ.params
+      - pattern: $C.req.query(...)
+      - pattern: $C.req.param(...)
+    pattern-sanitizers:
+      - pattern: path.basename(...)
+      - pattern: basename(...)
+      - pattern: assertInsideRoot(...)
+    pattern-sinks:
+      - pattern: $FS.readFile(...)
+      - pattern: $FS.readFileSync(...)
+      - pattern: $FS.createReadStream(...)
+      - pattern: $FS.writeFile(...)
+      - pattern: $FS.writeFileSync(...)
+      - pattern: $FS.unlink(...)
+      - pattern: $RES.sendFile(...)
+      - pattern: $RES.download(...)
+      - pattern: Bun.file(...)
+
+  - id: neo-js-error-detail-to-client
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Error stack/internal detail sent to the client (OWASP A05/A09). Log it server-side; return a generic message + request id.
+    metadata: { category: security, owasp: "A05:2021", impact: MEDIUM, confidence: MEDIUM }
+    pattern-either:
+      - pattern: $RES.send(<... $E.stack ...>)
+      - pattern: $RES.json(<... $E.stack ...>)
+      - pattern: $RES.status($S).send(<... $E.stack ...>)
+      - pattern: $RES.status($S).json(<... $E.stack ...>)
+      - pattern: $C.json(<... $E.stack ...>, ...)
+      - pattern: 'new Response(<... $E.stack ...>, ...)'
+      - pattern: 'Response.json(<... $E.stack ...>, ...)'
+
+  - id: neo-js-jwt-unverified
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: JWT decoded without verifying, or verified without pinning algorithms (OWASP A07). Use jwt.verify with an explicit algorithms list.
+    metadata: { category: security, owasp: "A07:2021", impact: HIGH, confidence: HIGH }
+    pattern-either:
+      - pattern: jwt.decode(...)
+      - pattern: jsonwebtoken.decode(...)
+      - patterns:
+          - pattern: jwt.verify($T, $K)
+      - patterns:
+          - pattern: jwt.verify($T, $K, $O, ...)
+          - pattern-not: 'jwt.verify($T, $K, {..., algorithms: $A, ...}, ...)'
+
+  - id: neo-js-raw-html
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Raw HTML rendering (XSS, OWASP A03). Render text, or sanitize with DOMPurify before injecting.
+    metadata: { category: security, owasp: "A03:2021", impact: HIGH, confidence: LOW }
+    patterns:
+      - pattern-either:
+          - pattern: '<$E dangerouslySetInnerHTML={{__html: $X}} />'
+          - pattern: '<$E dangerouslySetInnerHTML={{__html: $X}}>...</$E>'
+          - pattern: $EL.innerHTML = $X
+          - pattern: $EL.outerHTML = $X
+          - pattern: $EL.insertAdjacentHTML($P, $X)
+      - pattern-not: '<$E dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(...)}} />'
+      - pattern-not: $EL.innerHTML = DOMPurify.sanitize(...)
+      - pattern-not: $EL.innerHTML = "..."
+      - pattern-not: $EL.innerHTML = escapeHtml(...)
+      - pattern-not: $EL.innerHTML = esc(...)

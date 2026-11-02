@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { createRegistry } from "../src/engine/registry";
 import { createMeter } from "../src/engine/budget";
 import { openTrustStore } from "../src/engine/trust";
 import { createApiCooldown } from "../src/engine/api-retry";
+import { createApiWaits } from "../src/engine/api-wait";
 import type { DispatchDeps } from "../src/engine/dispatch";
 import type { RunHandlers, RunResult } from "../src/engine/session-runner";
 import { continuationBrief } from "../src/engine/context-policy";
@@ -27,7 +29,7 @@ function fakeRuns() {
   return { runs, start };
 }
 
-function setup(opts: { onFailure?: "continue" | "pause"; uncommitted?: (folder: string) => string[] | undefined } = {}) {
+function setup(opts: { onFailure?: "continue" | "pause"; uncommitted?: (folder: string) => string[] | undefined; onDone?: (t: { id: number; status: string }) => void } = {}) {
   const root = mkdtempSync(join(tmpdir(), "neo-todo-"));
   mkdirSync(join(root, "eticket-v3"));
   mkdirSync(join(root, "waselni"));
@@ -50,6 +52,7 @@ function setup(opts: { onFailure?: "continue" | "pause"; uncommitted?: (folder: 
     onFailure: () => opts.onFailure ?? "continue",
     dispatchOpts: { start: start as never, now: () => 1_000 },
     ...(opts.uncommitted ? { uncommitted: opts.uncommitted } : {}),
+    ...(opts.onDone ? { onDone: opts.onDone } : {}),
   });
   queue.setLauncher(() => ({ deps, replyChat: 1 }));
   return { root, replies, ledger, registry, deps, queue, runs };
@@ -230,7 +233,8 @@ test("failure policy pause: a failed todo pauses the queue and the next one wait
 
 // --- AC4: restart -------------------------------------------------------------------------------
 
-test("boot recovery: a running todo is failed with where it stopped; queued ones resume in order", async () => {
+// ADR-0027 amends ADR-0008: a todo cut short by a restart is kept as `retry`, not failed.
+test("boot recovery: a running todo is kept to retry with where it stopped; queued ones resume in order", async () => {
   const { queue, ledger, runs } = setup();
   const folder = join(queue.launcher()!.deps.workRoot!, "eticket-v3");
   const a = ledger.addTodo({ project: "eticket-v3", folder, brief: "was running", workClass: "interactive", createdBy: "operator" }, 1);
@@ -239,7 +243,7 @@ test("boot recovery: a running todo is failed with where it stopped; queued ones
   ledger.addTodo({ project: "eticket-v3", folder, brief: "after that", workClass: "interactive", createdBy: "operator" }, 4);
 
   expect(queue.recover({ now: 100, lastCommit: () => "abc123 wip (1 min ago)" })).toBe(1);
-  expect(ledger.todoById(a.id)?.status).toBe("failed");
+  expect(ledger.todoById(a.id)?.status).toBe("retry");
   expect(ledger.todoById(a.id)?.result).toContain("engine restart");
   expect(ledger.todoById(a.id)?.result).toContain("abc123");
 
@@ -288,6 +292,28 @@ test("an operator-opened session mid-turn is busy; once between turns the queue 
   expect(pushed).toHaveLength(1);
   expect(ledger.todoById(1)?.status).toBe("done");
   expect(ledger.todoById(1)?.result).toContain("operator");
+});
+
+test("a session held at a big plan is busy: the todo waits queued (never `done`) and runs once the hold lifts", async () => {
+  const { queue, ledger, registry, deps } = setup();
+  const folder = join(deps.workRoot!, "eticket-v3");
+  const s = registry.add({ id: "op", source: "neo", folder, task: "op work", chatId: 1, createdAt: 0 }, 0);
+  registry.setStatus(s.id, "running");
+  let held: string | undefined = "docs/superpowers/plans/master.md";
+  const pushed: string[] = [];
+  registry.attachControl(s.id, { followUp: (t: string) => void pushed.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, closed: () => false, held: () => held });
+  expect(projectBusy(registry, folder)).toBe(true);
+
+  const out = await queue.submit({ project: "eticket-v3", brief: "build the mocks", workClass: "interactive" }, deps, 1);
+  expect(out).toContain("queued as #1");
+  expect(out).toContain("held at its big plan docs/superpowers/plans/master.md"); // the operator must act, not wait
+  await queue.pump();
+  expect(pushed).toHaveLength(0);
+  expect(ledger.todoById(1)?.status).toBe("queued");
+
+  held = undefined; // Approve & build or Drop: the plan is no longer awaiting
+  await queue.pump();
+  expect(pushed).toHaveLength(1);
 });
 
 // --- AC5: control --------------------------------------------------------------------------------
@@ -415,7 +441,7 @@ test("config todoOnFailure defaults to continue, accepts pause, and fails closed
 
 // --- code-review pass (2026-10-04) --------------------------------------------------------------
 
-test("a run that throws while starting fails its todo, frees the project and starts the next", async () => {
+test("a run that throws while starting keeps its todo to retry, frees the project and starts the next", async () => {
   const { queue, ledger, deps, registry } = setup();
   let calls = 0;
   const started: string[] = [];
@@ -438,7 +464,7 @@ test("a run that throws while starting fails its todo, frees the project and sta
   await q2.submit({ project: "eticket-v3", brief: "first", workClass: "interactive" }, deps, 1);
   await q2.submit({ project: "eticket-v3", brief: "second", workClass: "interactive" }, deps, 1);
   await settle();
-  expect(ledger.todoById(1)).toMatchObject({ status: "failed" });
+  expect(ledger.todoById(1)).toMatchObject({ status: "retry", failure: "launch" }); // ADR-0027: a launch failure is transient
   expect(ledger.todoById(1)?.result).toContain("worker failed to launch");
   expect(ledger.todoById(2)?.status).toBe("running");
   expect(started).toHaveLength(1);
@@ -531,7 +557,10 @@ test("a checkpoint continuation becomes the next todo at the head of the queue a
   await queue.submit({ project: "eticket-v3", brief: "build all phases", workClass: "interactive" }, deps, 1);
   await queue.submit({ project: "eticket-v3", brief: "later work", workClass: "interactive" }, deps, 1);
   await settle();
-  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
+  // A project note made into todo #1 (ADR-0043): its link must follow the continuation.
+  const item = ledger.insertAttention({ project: "eticket-v3", folder, source: "note", kind: "note_finding", key: "p:D16", title: "t", severity: "normal", fromProject: "p" }, 1);
+  ledger.updateAttention(item, { todoId: 1 });
+  writeFileSync(neoNotePath(folder), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
   runs[0].finish({ ok: true, sessionId: "s1", summary: "note written", costUsd: 0 });
   await settle();
   const all = ledger.listTodos({ folder });
@@ -543,4 +572,122 @@ test("a checkpoint continuation becomes the next todo at the head of the queue a
   expect(runs).toHaveLength(2);
   expect(runs[1].task).toContain("phase 3"); // the continuation starts from the note, inline
   expect(replies.some((r) => r.includes(`continuing as #${cont.id}`))).toBe(true);
+  expect(ledger.attentionById(item)!.todoId).toBe(cont.id); // ADR-0043: the note follows the work
+});
+
+// --- ADR-0037: a commit finish holds every worktree of its repository --------------------------
+
+test("AC5: a todo for a sibling worktree waits while a commit finish runs, and starts when it ends", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { writeFileSync } = await import("node:fs");
+  const { createCommitFinish, DEFAULT_COMMIT_FINISH_CFG } = await import("../src/engine/commit-finish");
+  const s = setup();
+  const sh = (cwd: string, ...args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" });
+  const main = join(s.root, "proj");
+  mkdirSync(main);
+  sh(main, "init", "-q", "-b", "main");
+  sh(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  sh(main, "worktree", "add", "-q", join(s.root, "proj-wt"), "-b", "side");
+  const cf = createCommitFinish(main, DEFAULT_COMMIT_FINISH_CFG);
+  writeFileSync(join(main, "b.ts"), "built\n");
+  expect(cf.atSettle()).toBeDefined(); // the main worktree's run is finishing its commit
+
+  const out = await s.queue.submit({ project: "proj-wt", brief: "next job", workClass: "interactive" }, s.deps, 1);
+  expect(out).toContain("queued as #");
+  expect(s.runs).toHaveLength(0);
+  await s.queue.pump(); // the tick does not start it either
+  expect(s.runs).toHaveLength(0);
+  expect(s.queue.list("proj-wt")).toContain("1. #");
+
+  cf.end();
+  await settle();
+  expect(s.runs).toHaveLength(1); // released as soon as the commit finish ended
+  expect(s.runs[0]!.task).toContain("next job");
+});
+
+// ADR-0043: onDone fires once for a todo that ended done (a note made into it resolves); never for a
+// failed end; a throwing hook never breaks the queue.
+test("onDone fires for a done todo only, and a throwing hook does not stop the next release", async () => {
+  const seen: Array<[number, string]> = [];
+  const { queue, runs, ledger } = setup({ onDone: (t) => { seen.push([t.id, t.status]); throw new Error("hook boom"); } });
+  const { deps } = queue.launcher()!;
+  await queue.submit({ project: "eticket-v3", brief: "first", workClass: "interactive" }, deps, 1);
+  await queue.submit({ project: "eticket-v3", brief: "second", workClass: "interactive" }, deps, 1);
+  runs[0].finish(ok());
+  await settle();
+  expect(seen).toEqual([[1, "done"]]);
+  expect(ledger.todoById(2)?.status).toBe("running");
+  runs[1].finish(bad());
+  await settle();
+  expect(seen).toEqual([[1, "done"]]);
+});
+
+// --- limit wait display (ADR-0047) ---------------------------------------------------------------
+
+test("list: a running todo waiting for a limit reset says so, with its resume time, and stays running", () => {
+  const { ledger, queue, root } = setup();
+  const folder = join(root, "eticket-v3");
+  const a = ledger.addTodo({ project: "eticket-v3", folder, brief: "fix the fare cache", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(a.id, { status: "running", orderId: "o-wait", startedAt: 0 });
+  const b = ledger.addTodo({ project: "waselni", folder: join(root, "waselni"), brief: "ship the build", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(b.id, { status: "running", orderId: "o-work", startedAt: 0 });
+  // clock is 1_000; the re-send is due at 500 + 10m = 600_500 → 00:10 UTC.
+  ledger.recordEvent("api_retry", { orderId: "o-wait", at: 500, data: { kind: "rate_limit", delayMs: 600_000 } });
+  const text = queue.list();
+  expect(text).toContain(`⏳ #${a.id} held: limit wait · resumes 00:10 UTC · /todo retry ${a.id} resumes now — fix the fare cache`);
+  expect(text).toContain(`▶ #${b.id} running 0m — ship the build`);
+  expect(ledger.todoById(a.id)?.status).toBe("running");
+});
+
+test("list: a limit wait that resumes on another day names the date too (a weekly limit)", () => {
+  const { ledger, queue, root } = setup();
+  const a = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "weekly wait", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(a.id, { status: "running", orderId: "o-week", startedAt: 0 });
+  ledger.recordEvent("api_retry", { orderId: "o-week", at: 0, data: { kind: "rate_limit", delayMs: 2 * 86_400_000 + 3_600_000 } });
+  expect(queue.list()).toContain(`⏳ #${a.id} held: limit wait · resumes 1970-01-03 01:00 UTC · /todo retry ${a.id} resumes now — weekly wait`);
+});
+
+// ADR-0060: `todo retry` on a running todo that is held in an API wait ends the wait now — the brief is
+// re-sent once into the same run, never a second run. A running todo that is really working is refused.
+test("retry on a running todo in a limit wait resumes it now, once; on a working todo it is refused", () => {
+  const ledger = openLedger(":memory:");
+  const registry = createRegistry();
+  const apiWaits = createApiWaits({ ledger });
+  const queue = createTodoQueue({ ledger, registry, onFailure: () => "continue", apiWaits });
+  const held = ledger.addTodo({ project: "waselni", folder: "/w", brief: "finish the trips screen", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(held.id, { status: "running", orderId: "o-held", startedAt: 1 });
+  const working = ledger.addTodo({ project: "gold", folder: "/g", brief: "build the cart", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(working.id, { status: "running", orderId: "o-work", startedAt: 1 });
+  const sent: string[] = [];
+  apiWaits.hold({ orderId: "o-held", kind: "rate_limit", provider: "claude", until: Date.now() + 3_600_000 }, new Promise(() => {}), () => sent.push("o-held"));
+
+  // cancel on a held todo points at retry (the run is live: it is never cleared as stale)
+  const c = queue.cancel(held.id);
+  expect(c).toContain(`todo retry ${held.id}`);
+  expect(ledger.todoById(held.id)!.status).toBe("running");
+
+  const out = queue.retry(held.id);
+  expect(out).toContain(`#${held.id}`);
+  expect(out.toLowerCase()).toContain("resumed");
+  expect(sent).toEqual(["o-held"]);
+  expect(ledger.todoById(held.id)!.status).toBe("running"); // the same run goes on — no new run
+  expect(queue.retry(held.id).toLowerCase()).toContain("working"); // the wait is gone: a second retry is refused
+  expect(sent).toEqual(["o-held"]);
+
+  const refused = queue.retry(working.id);
+  expect(refused.toLowerCase()).toContain("working");
+  expect(refused).not.toContain("/kill");
+  expect(ledger.listEvents({ kind: "todo_retried" }).map((e) => e.data?.from)).toEqual(["held"]);
+});
+
+// ADR-0065 review: a failed todo is a "needs you" item; the operator may give up on it (cancel), not only retry.
+test("cancel gives up on a failed todo; a done one stays done", () => {
+  const { ledger, queue, root } = setup();
+  const t = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "b", workClass: "interactive", createdBy: "operator" }, 1);
+  ledger.updateTodo(t.id, { status: "failed", endedAt: 2 });
+  expect(queue.cancel(t.id)).toContain(`cancelled #${t.id}`);
+  expect(ledger.todoById(t.id)?.status).toBe("cancelled");
+  const d = ledger.addTodo({ project: "eticket-v3", folder: join(root, "eticket-v3"), brief: "b", workClass: "interactive", createdBy: "operator" }, 3);
+  ledger.updateTodo(d.id, { status: "done", endedAt: 4 });
+  expect(queue.cancel(d.id)).toContain("already done");
 });

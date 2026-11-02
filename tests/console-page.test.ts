@@ -22,8 +22,9 @@ test("the console bundle builds and parses as JavaScript", async () => {
 });
 
 test("the page shell loads the bundle and embeds the configured feed window", () => {
-  const html = consolePage({ feedWindow: 37 });
-  expect(html).toContain('<script type="module" src="/app.js"></script>');
+  const html = consolePage({ feedWindow: 37, appJs: "/app.js?v=abc123" });
+  expect(html).toContain('<script type="module" src="/app.js?v=abc123"></script>');
+  expect(consolePage()).toContain('<script type="module" src="/app.js"></script>');
   expect(html).toContain('data-feed-window="37"');
   expect(APP).toContain("root.dataset.feedWindow");
 });
@@ -47,9 +48,12 @@ test("the Queue tab renders the todo queues, posts its actions to /api/todo, and
   expect(html).toContain('id="vtodos"');
   expect(APP).toContain("function renderTodos");
   expect(APP).toContain("/api/todo");
+  // ADR-0027: a failed or waiting-retry todo shows and offers Retry.
+  expect(APP).toContain('todoAct("retry"');
+  expect(APP).toContain('x.status === "failed"');
   // Every view a tab names is one the tab switch toggles (the Queue view used to be missing).
   const views = [...html.matchAll(/class="tab[^"]*" data-v="([a-z]+)"/g)].map((m) => m[1]);
-  expect(views.length).toBe(8);
+  expect(views.length).toBe(9); // + History (ADR-0067)
   for (const v of views) expect(APP).toMatch(new RegExp(`const VIEWS = \\[[^\\]]*"${v}"`));
 });
 
@@ -93,5 +97,14 @@ test("the Threads view: rail, filters, list and pane, paged from the history end
   expect(APP).toContain("/api/thread-projects");
   expect(fn("olderMessages")).toContain("before=");
   // The composer inside a thread posts into it (spec §4.1 rule 2).
-  expect(APP).toContain('post("/msg", { text, threadId: TH.open })');
+  // The thread composer names the open thread in its /msg body (with any staged files, ADR-0026).
+  expect(APP).toContain('attach: "tattach", threadId: () => TH.open');
+  expect(APP).toContain("void threadComposer.send(typed)");
+});
+
+test("a refused send keeps the composer: /msg 409 → a translated note, the text and chips stay (ADR-0026)", () => {
+  const html = readFileSync(new URL("../src/frontends/web/index.html", import.meta.url), "utf8");
+  for (const id of ["ffnote", "tformnote"]) expect(html).toMatch(new RegExp(`id="${id}" role="alert"`));
+  expect(APP).toContain('{ expired: "feed.attExpired", command: "feed.attCommand", "no active project": "feed.attNoProject" }');
+  expect(APP).toContain("if (!sent) return; // refused: the text and the chips stay");
 });

@@ -8,6 +8,8 @@
 // chat until retry_after passes: later sends to it are held (not sent, so the ban is not extended),
 // the block is logged once, and when it lifts `onRecovered` reports how many messages were lost.
 // Every other failed send is logged. Non-send methods (getUpdates, getMe, …) are never gated.
+// Message deletes (tool-call cards, ADR-0058) are gated too, but a held delete is not "lost": its
+// owner retries it.
 
 /** The Bot API response shape the gate reads (grammY's ApiResponse, minus the result payload). */
 export interface ApiResult {
@@ -31,7 +33,9 @@ export interface FloodGate {
   run<R extends ApiResult>(method: string, chatId: number | string | undefined, call: () => Promise<R>): Promise<R>;
 }
 
-const GATED_METHOD = /^(send|edit|copy|forward)/;
+const GATED_METHOD = /^(send|edit|copy|forward|deleteMessages?$)/;
+/** A held message delete is retried by its owner (the tool-card sweep), so it is never "not delivered". */
+const RETRIED_BY_CALLER = /^deleteMessages?$/;
 
 export function createFloodGate(opts: FloodGateOpts): FloodGate {
   const now = opts.now ?? Date.now;
@@ -45,10 +49,11 @@ export function createFloodGate(opts: FloodGateOpts): FloodGate {
     async run(method, chatId, call) {
       if (!GATED_METHOD.test(method)) return call();
       const key = String(chatId ?? "global");
+      const lost = RETRIED_BY_CALLER.test(method) ? 0 : 1;
 
       const block = blocks.get(key);
       if (block && now() < block.until) {
-        block.dropped++;
+        block.dropped += lost;
         const held: ApiResult = {
           ok: false,
           error_code: 429,
@@ -60,7 +65,7 @@ export function createFloodGate(opts: FloodGateOpts): FloodGate {
       if (block) {
         blocks.delete(key);
         log(`[telegram] rate limit on chat ${key} lifted — ${block.dropped} message(s) were not delivered`);
-        opts.onRecovered?.(chatId ?? key, block.dropped);
+        if (block.dropped > 0) opts.onRecovered?.(chatId ?? key, block.dropped);
       }
 
       let result = await call();
@@ -73,7 +78,7 @@ export function createFloodGate(opts: FloodGateOpts): FloodGate {
 
       if (result.error_code === 429) {
         const ms = Math.max(retryMs(result), 1000);
-        blocks.set(key, { until: now() + ms, dropped: 1 });
+        blocks.set(key, { until: now() + ms, dropped: lost });
         log(
           `[telegram] ${method} to chat ${key}: 429 rate limited, retry_after ${result.parameters?.retry_after ?? "?"}s — ` +
             `holding sends to this chat until ${new Date(now() + ms).toISOString()}`,

@@ -1,0 +1,15 @@
+{
+  "name": "disk-cleanup",
+  "summary": "Frees disk space on this host daily: removes everything rebuildable (Tier A) itself, lists irreversible Tier B items for the operator (ADR-0040, ADR-0041)",
+  "folder": "/home/neo",
+  "promptFile": "disk-cleanup.prompt.md",
+  "goalKind": "command",
+  "goalCommand": "bun \"$HOME/.local/share/neo/disk/cleanup.ts\" check",
+  "goalTimeoutMs": 30000,
+  "triggerKind": "interval",
+  "intervalMinutes": 60,
+  "maxIterations": 2,
+  "budgetUsd": 1,
+  "enabledByDefault": true,
+  "freshSession": true
+}

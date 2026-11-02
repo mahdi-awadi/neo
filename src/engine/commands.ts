@@ -4,6 +4,8 @@
 // caller falls through to the order pipeline. `select` is the set of tappable projects for
 // /list; BOTH frontends render it as buttons and call selectProject() on a tap (one engine,
 // two thin renderers). Operator command shape inspired by operant, trimmed to the SDK model.
+import { callLine, controlByProject, DEFAULT_TOOL_CONTROL_CFG, type ToolAction, type ToolControlCfg } from "./tool-control";
+import { gapLine, type IntegrationGap } from "./producers/restart";
 import { attentionActions, renderAttention, type AttentionAction } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
 import type { AttentionRow } from "./ledger";
@@ -29,10 +31,16 @@ import { faults } from "./fault";
 import type { GitRead } from "./git-read";
 import { todoTitle } from "./todo-title";
 import { projectDeps, projectSummary, projectSummaries, projectUrl, projectView, recentThreads, renderProject, summaryLine } from "./project-view";
+import { FORGETTABLE, type TaskHistory } from "./history/index";
+import { HISTORY_DEFAULTS } from "./history/defaults";
+import { bidiLines, checkQuery, findReply, parseFindArgs, TELEGRAM_MAX } from "./history/operator";
+import { hitText, rememberTool } from "./history/tool-text";
 
 export interface CommandDeps {
   registry: Registry;
   ledger: Ledger;
+  /** Stop/background one running tool call (ADR-0058). Absent = DEFAULT_TOOL_CONTROL_CFG. */
+  toolControl?: ToolControlCfg;
   /** Measured subscription usage (for /usage). Optional so tests/glue can omit it. */
   usage?: UsageMeter;
   /** Injectable clock (session ages). Defaults to Date.now. */
@@ -58,13 +66,15 @@ export interface CommandDeps {
   requestReload?: () => void;
   /** Live config object; `/sdk` mutates providers.ownWork for new worker starts. `publicUrl` is the
    *  console base the /trace link points at. */
-  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention" | "github" | "projects">>;
+  cfg?: Pick<NeoConfig, "providers"> & Partial<Pick<NeoConfig, "publicUrl" | "attention" | "github" | "projects" | "history">>;
   /** The per-project todo queues (for /todo, ADR-0008). Absent → /todo says it is unavailable. */
   todo?: TodoQueue;
   /** The toolchain updater (for /updates, ADR-0009). Absent → /updates says it is unavailable. */
   updates?: Pick<Updater, "status" | "run" | "rollback" | "running">;
   /** The restart-gated list (spec §8.4, `/gated`): what is built but not running. Absent → unavailable. */
   gated?: () => string;
+  /** Finished work that does not run (ADR-0054): `/list` starts with it. Absent or undefined → none. */
+  deployGap?: () => IntegrationGap | undefined;
   /** The cause seam (for /trace, ADR-0015). Absent → /trace says it is unavailable. */
   trace?: Trace;
   /** The Telegram message this command replied to: a bare `/trace` traces that message's thread. */
@@ -73,6 +83,11 @@ export interface CommandDeps {
   neoFolder?: string;
   /** The git reader `/project` uses. Absent → the bounded default (`github.callTimeoutMs`). */
   gitRead?: GitRead;
+  /** The task history (ADR-0067) for /find, /remember and /forget. Absent → they say it is unavailable. */
+  history?: TaskHistory;
+  /** The surface that typed the history command: its `/remember` rate-limit session and its default
+   *  `/forget` reason (default Telegram; the console's chat box shares the History tab's `console`). */
+  historySurface?: "telegram" | "console";
 }
 
 /** A tappable project in a /list result — frontends render these as buttons/rows. */
@@ -100,6 +115,9 @@ export interface CommandResult {
   /** One project's dashboard (`/project <name>`) — frontends add its buttons: attention (N), threads,
    *  open console. */
   project?: { name: string; attention: number; consoleUrl?: string };
+  /** One task-history entry to forget (`/forget`, ADR-0067): frontends add a Forget button whose tap calls
+   *  `history.forget(ref, reason)`. */
+  forget?: { ref: string; reason: string };
 }
 
 interface CommandContext {
@@ -154,6 +172,18 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: "stop",
+    usage: "/stop <project> [n]",
+    summary: "stop the project's running command (only that command; the session goes on)",
+    run: ({ deps, args, now }) => toolCommand("stop", args, deps, now),
+  },
+  {
+    name: "bg",
+    usage: "/bg <project> [n]",
+    summary: "move the project's running command to the background (it keeps running; the worker goes on)",
+    run: ({ deps, args, now }) => toolCommand("background", args, deps, now),
+  },
+  {
     name: "kill",
     usage: "/kill <name>",
     summary: "stop a project",
@@ -168,8 +198,8 @@ const COMMANDS: Command[] = [
   {
     name: "todo",
     aliases: ["todos", "queue"],
-    usage: "/todo [<project>] · /todo cancel|up <id> · /todo pause|resume <project>",
-    summary: "per-project todo queues: list, cancel, move up, pause, resume",
+    usage: "/todo [<project>] · /todo cancel|up|retry <id> · /todo pause|resume <project>",
+    summary: "per-project todo queues: list, cancel, move up, retry a failed todo, pause, resume",
     run: ({ deps, args }) => ({ text: todoCommand(args.trim(), deps.todo) }),
   },
   {
@@ -177,6 +207,12 @@ const COMMANDS: Command[] = [
     usage: "/trace <ref> (or reply /trace to a Neo message)",
     summary: "show everything a message caused",
     run: ({ deps, args }) => ({ text: traceCommand(args.trim(), deps) }),
+  },
+  {
+    name: "close",
+    usage: "/close <thread ref> (or reply /close to a Neo message)",
+    summary: "close a thread: it stops waiting, its open decisions are dismissed",
+    run: ({ deps, args }) => ({ text: closeCommand(args.trim(), deps) }),
   },
   {
     name: "plans",
@@ -226,6 +262,24 @@ const COMMANDS: Command[] = [
     usage: "/recent",
     summary: "recent orders + outcomes",
     run: ({ deps }) => ({ text: renderRecent(deps.ledger) }),
+  },
+  {
+    name: "find",
+    usage: "/find <words or id> [p:<project>] [k:<kind>,…] [since:YYYY-MM-DD] [until:YYYY-MM-DD]",
+    summary: "search past work (todos, orders, results, plans, notes, decisions, remembered facts) by meaning, words or id",
+    run: ({ deps, args }) => findCommand(args, deps),
+  },
+  {
+    name: "remember",
+    usage: "/remember <fact> [p:<project>]",
+    summary: "save one fact to the task history, so /find and workers find it later",
+    run: ({ deps, args }) => ({ text: rememberCommand(args, deps) }),
+  },
+  {
+    name: "forget",
+    usage: "/forget <ref> [reason]",
+    summary: "remove one entry from the task history everywhere (shows it first, with a Forget button)",
+    run: ({ deps, args }) => forgetCommand(args, deps),
   },
   {
     name: "events",
@@ -346,7 +400,7 @@ export function killProject(id: string, chatId: number, deps: CommandDeps): Comm
   return renderList(deps, now, chatId);
 }
 
-const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo pause <project> · /todo resume <project>";
+const TODO_USAGE = "Usage: /todo · /todo <project> · /todo cancel <id> · /todo up <id> · /todo retry <id> · /todo pause <project> · /todo resume <project>";
 
 /** /todo — read and steer the per-project todo queues. Thin: the queue owns every rule. */
 function todoCommand(args: string, todo: TodoQueue | undefined): string {
@@ -361,8 +415,9 @@ function todoCommand(args: string, todo: TodoQueue | undefined): string {
       return todo.list();
     case "cancel":
     case "up":
+    case "retry":
       if (!(id > 0)) return TODO_USAGE;
-      return verb === "cancel" ? todo.cancel(id) : todo.up(id);
+      return verb === "cancel" ? todo.cancel(id) : verb === "up" ? todo.up(id) : todo.retry(id);
     case "pause":
     case "resume":
       if (!arg) return TODO_USAGE;
@@ -404,7 +459,93 @@ async function projectCommand(args: string, deps: CommandDeps, now: number): Pro
   }
 }
 
+const FIND_USAGE = "Usage: /find <words or id> [p:<project>] [k:<kind>,…] [since:YYYY-MM-DD] [until:YYYY-MM-DD]";
+const HISTORY_UNAVAILABLE = "Task history is not available on this channel (it is off, or history.db could not be opened).";
+
+/** /find — the task history's hybrid search (ADR-0067). The filters are checked here; the answer comes
+ *  `later` (the search awaits the embedder and the shared index), at most 4,096 characters. */
+function findCommand(args: string, deps: CommandDeps): CommandResult {
+  const raw = parseFindArgs(args);
+  if (!raw.query) return { text: FIND_USAGE };
+  const history = deps.history;
+  if (!history) return { text: HISTORY_UNAVAILABLE };
+  const cfg = deps.cfg?.history ?? HISTORY_DEFAULTS;
+  const checked = checkQuery(raw, cfg.search);
+  if (!checked.ok) return { text: `Search refused: ${checked.error}.` };
+  const q = { ...checked.q, limit: cfg.telegram.findLimit };
+  const consoleUrl = deps.cfg?.publicUrl || undefined;
+  return {
+    text: "",
+    later: history.search(q).then(
+      (r) => ({ text: findReply(r, { query: q.query, limit: q.limit, ...(consoleUrl ? { consoleUrl } : {}) }) }),
+      (e) => ({ text: `Search failed: ${e instanceof Error ? e.message : String(e)}` }),
+    ),
+  };
+}
+
+/** /remember — save one fact for the operator; a trailing `p:<project>` names its project. */
+function rememberCommand(args: string, deps: CommandDeps): string {
+  const words = args.trim().split(/\s+/).filter(Boolean);
+  const last = words.at(-1);
+  const project = last && /^p:./i.test(last) ? last.slice(2) : undefined;
+  const text = (project ? words.slice(0, -1) : words).join(" ");
+  if (!text) return "Usage: /remember <fact> [p:<project>]";
+  if (!deps.history) return HISTORY_UNAVAILABLE;
+  return rememberTool(deps.history, { text, ...(project ? { project } : {}) }, { by: "operator", session: deps.historySurface ?? "telegram" }).content[0]!.text;
+}
+
+const FORGET_USAGE = "Usage: /forget <ref> [reason] — a ref from /find, e.g. todo:884, plan:12, mem:3.";
+const FORGET_DEFAULT_REASON = (surface: CommandDeps["historySurface"]): string => `forgotten by the operator in ${surface === "console" ? "the console" : "Telegram"}`;
+
+/** /forget — show the entry and offer the Forget button; nothing is removed until the tap. */
+function forgetCommand(args: string, deps: CommandDeps): CommandResult {
+  const [first = "", ...rest] = args.trim().split(/\s+/);
+  const ref = first.toLowerCase();
+  if (ref.startsWith("line:")) return { text: `${ref} is a worker line: worker lines are not stored in the history, so there is nothing to forget.` };
+  if (!FORGETTABLE.test(ref)) return { text: FORGET_USAGE };
+  const history = deps.history;
+  if (!history) return { text: HISTORY_UNAVAILABLE };
+  const reason = rest.join(" ").trim() || FORGET_DEFAULT_REASON(deps.historySurface);
+  return {
+    text: "",
+    later: history.search({ query: ref, limit: 10 }).then(
+      (r): CommandResult => {
+        const hit = r.ok ? r.hits.find((h) => h.ref === ref) : undefined;
+        if (!hit) return { text: r.ok ? `No history entry ${ref}.` : `Search failed: ${r.error ?? "unknown"}.` };
+        const text = ["Forget this history entry everywhere? It does not come back.", hitText(hit, 1), `Reason: ${reason}`].join("\n");
+        return { text: bidiLines(text).slice(0, TELEGRAM_MAX), forget: { ref, reason } };
+      },
+      (e) => ({ text: `Search failed: ${e instanceof Error ? e.message : String(e)}` }),
+    ),
+  };
+}
+
 /** /trace — a message's thread and everything it produced (spec §4.4). Thin: the trace owns the tree. */
+/** /close — the operator closes a thread (ADR-0038). Any message ref of the thread names it. */
+function closeCommand(arg: string, deps: CommandDeps): string {
+  const { trace, ledger } = deps;
+  if (!trace) return "Tracing is unavailable on this channel.";
+  let msgId: number | undefined;
+  if (arg) {
+    msgId = trace.parseRef(arg);
+    if (msgId === undefined || !ledger.messageById(msgId)) return `No message ${msgId === undefined ? arg : trace.ref(msgId)} — check the ref`;
+  } else if (deps.replyTo) {
+    const { chatId, channelMsgId } = deps.replyTo;
+    msgId = ledger.messageByChannel(chatId, channelMsgId)?.id ?? ledger.routeCause(chatId, channelMsgId)?.msgId;
+  }
+  if (msgId === undefined) return "Usage: /close <thread ref> — or reply /close to a Neo message.";
+  const threadId = ledger.messageById(msgId)?.threadId;
+  if (threadId === undefined) return `Message ${trace.ref(msgId)} has no thread (it is older than tracing).`;
+  const ref = trace.ref(threadId);
+  const r = trace.close(threadId);
+  if (r.missing) return `Thread ${ref} was pruned — nothing to close.`;
+  if (!r.closed) return `thread ${ref} is already closed`;
+  const parts = [`${r.decisions} open decision${r.decisions === 1 ? "" : "s"} dismissed`];
+  if (r.todosCancelled.length) parts.push(`cancelled parked ${r.todosCancelled.map((id) => `#${id}`).join(", ")}`);
+  if (r.stillActive.length) parts.push(`still running or queued: ${r.stillActive.map((id) => `#${id}`).join(", ")}`);
+  return `✓ closed thread ${ref} — ${parts.join(" · ")}`;
+}
+
 function traceCommand(arg: string, deps: CommandDeps): string {
   const { trace, ledger } = deps;
   if (!trace) return "Tracing is unavailable on this channel.";
@@ -527,7 +668,9 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
   const { registry, trust, signals, ledger } = deps;
   const windowTokensByModel = contextWindows(ledger, deps.windowTokensByModel);
   const sessions = registry.list();
-  if (sessions.length === 0) return { text: "No open projects." };
+  // A fix is done only when it runs (ADR-0054): say so first, every time the operator asks.
+  const gap = gapLine(deps.deployGap?.());
+  if (sessions.length === 0) return { text: gap ? `${gap}\nNo open projects.` : "No open projects." };
   // The chat's focused project (if any) is the one messages currently address; mark it ▶ (one-shot,
   // reverts after the next message) or 📌 (pinned). With none focused, the company is the target.
   const focus = registry.getFocus(chatId);
@@ -539,8 +682,8 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
     folder: s.order.folder,
     status: s.status,
   }));
-  const text = sessions
-    .map((s) => {
+  // Main sessions first; side lanes (ADR-0057) in their own group after them, with their kind.
+  const line = (s: (typeof sessions)[number]): string => {
       const star = s.id === activeId ? (focus!.mode === "pinned" ? "📌 " : "▶ ") : "";
       const lock = trust.isTrusted(s.order.folder) ? "🔓 " : "";
       const task = s.order.task.length > 40 ? `${s.order.task.slice(0, 40)}…` : s.order.task;
@@ -566,10 +709,16 @@ function renderList(deps: CommandDeps, now: number, chatId: number): CommandResu
       } catch {
         // skip on error
       }
-      return `${star}${stateIcon(state)} ${lock}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"`;
-    })
-    .join("\n");
-  return { text, select };
+      const lane = s.lane ? `▷ side·${s.lane.kind}${s.lane.todoId !== undefined ? ` #${s.lane.todoId}` : ""} · ` : "";
+      // The newest running tool call (ADR-0058): what /stop and /bg would act on.
+      const call = [...(registry.getControl(s.id)?.tools?.running() ?? [])].sort((a, b) => b.since - a.since)[0];
+      const running = call ? `\n    ⏵ ${callLine(call, now)}` : "";
+      return `${star}${stateIcon(state)} ${lock}${lane}${s.name} · ${s.order.folder} · ${live}${ctx}${reset} · "${task}"${running}`;
+  };
+  const main = sessions.filter((s) => !s.lane).map(line);
+  const side = sessions.filter((s) => s.lane).map(line);
+  const text = [...main, ...(side.length ? ["Side lanes:", ...side] : [])].join("\n");
+  return { text: gap ? `${gap}\n${text}` : text, select };
 }
 
 function focusSession(name: string, chatId: number, registry: Registry, mode: "once" | "pinned"): string {
@@ -691,4 +840,19 @@ function renderHelp(): string {
     "/loop [<project> <goal>] — run a verifiable loop (e.g. /loop green)",
   ];
   return lines.join("\n");
+}
+
+/** `/stop <project> [n]` and `/bg <project> [n]` (ADR-0058): the answer comes `later` (the SDK call). */
+function toolCommand(action: ToolAction, args: string, deps: CommandDeps, now: number): CommandResult {
+  const [project, n] = args.trim().split(/\s+/);
+  const verb = action === "stop" ? "stop" : "bg";
+  if (!project) return { text: `Usage: /${verb} <project> [n] — ${action === "stop" ? "stops" : "backgrounds"} that project's running command, not the session.` };
+  const pick = n && /^\d+$/.test(n) ? Number(n) : undefined;
+  return {
+    text: "",
+    later: controlByProject(
+      { registry: deps.registry, ledger: deps.ledger, cfg: deps.toolControl ?? DEFAULT_TOOL_CONTROL_CFG, now: () => now },
+      { project, ...(pick !== undefined ? { pick } : {}), action, by: { kind: "operator", surface: "command" } },
+    ).then((r) => ({ text: r.text }), (e) => ({ text: `Could not ${verb}: ${e instanceof Error ? e.message : String(e)}` })),
+  };
 }

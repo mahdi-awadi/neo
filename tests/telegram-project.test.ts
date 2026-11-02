@@ -26,7 +26,8 @@ function rig(publicUrl = "https://neo.example", gitRead?: import("../src/engine/
   mkdirSync(neo);
   const ledger = openLedger(":memory:");
   ledger.recordOrder({ id: crypto.randomUUID(), source: "neo", folder: gold, task: "t", chatId: 0, createdAt: 1 });
-  reconcile(ledger, "git", "gold", [{ project: "gold", folder: gold, source: "git", kind: "dirty", key: "k", title: "3 files uncommitted", severity: "high" }], Date.now());
+  // A needs-you kind raises the badge (ADR-0065); a high housekeeping item would not.
+  reconcile(ledger, "engine", "gold", [{ project: "gold", folder: gold, source: "engine", kind: "thread_failed", key: "k", title: "run failed", severity: "high" }], Date.now());
   const admin = openAdminStore(":memory:");
   admin.claimAdmin(ADMIN);
   const cfg = { ...loadConfig(mkdtempSync(join(tmpdir(), "neo-tg-pj-cfg-"))), telegramToken: "123456:TESTTOKEN", telegramAllowFrom: [], decisionsChatId: undefined, publicUrl };

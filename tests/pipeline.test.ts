@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
+import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { handleMessage, deliverToCompany } from "../src/engine/pipeline";
 import { applyMemoryOp } from "../src/engine/memory";
@@ -23,6 +24,7 @@ function cfg(): NeoConfig {
     botUsername: "",
     webHost: "127.0.0.1",
     webPort: 3003,
+    webBindRetryMs: 15_000,
     publicUrl: "",
     companyFolder: "/tmp/agent",
     gatewaySendUrl: "",
@@ -44,6 +46,8 @@ function cfg(): NeoConfig {
     dispatchProgressMs: 600_000,
     dispatchRecoverWindowMs: 86_400_000,
     todoOnFailure: "continue",
+    todoRetryBackoffMs: [],
+    handoffNotesDir: "data/handoffs",
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -77,7 +81,7 @@ function cfg(): NeoConfig {
     faults: DEFAULT_FAULTS,
     health: DEFAULT_HEALTH,
     sqliteBusyTimeoutMs: 5_000,
-    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {}, consult: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
     telegramToolSteps: false,
@@ -87,7 +91,7 @@ function cfg(): NeoConfig {
 const scratch = () => mkdtempSync(join(tmpdir(), "neo-pipe-"));
 
 // A controllable fake live session: completes only when finish() is called.
-function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
+function fakeStart(opts: { onStart?: (h: RunHandlers) => void; steersMidTurn?: boolean } = {}) {
   let resolveDone!: (r: RunResult) => void;
   const done = new Promise<RunResult>((res) => {
     resolveDone = res;
@@ -95,13 +99,14 @@ function fakeStart(opts: { onStart?: (h: RunHandlers) => void } = {}) {
   let resumeSeen: string | undefined;
   let providerSeen: unknown;
   const followUps: string[] = [];
+  const timings: string[] = [];
   const start = (_o: Order, h: RunHandlers, d?: { resume?: string; provider?: unknown }): SessionRun => {
     resumeSeen = d?.resume;
     providerSeen = d?.provider;
     opts.onStart?.(h);
-    return { followUp: (t) => void followUps.push(t), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done };
+    return { followUp: (t, timing) => void (followUps.push(t), timings.push(timing)), interrupt: async () => {}, queued: () => 0, active: () => false, close: () => {}, closed: () => false, done, steersMidTurn: opts.steersMidTurn };
   };
-  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps };
+  return { start, finish: (r: RunResult) => resolveDone(r), resumeSeen: () => resumeSeen, providerSeen: () => providerSeen, followUps: () => followUps, timings: () => timings };
 }
 
 function harness(over: { meter?: Meter; start?: ReturnType<typeof fakeStart>["start"] } = {}) {
@@ -1307,7 +1312,7 @@ test("a message sent while a session closes for its handoff reaches the fresh se
 
 test("a fresh start after a handoff gets the note inline and measures its orientation", async () => {
   const dir = gitScratch();
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship the cart\n");
+  writeFileSync(neoNotePath(dir), "## Goal\nship the cart\n");
   const { f, h, base } = sweetHarness(0.1);
   const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1, { reason: "above-sweet-spot", boundary: "settled" });
   await handleMessage(`/open ${dir} carry on`, 9, base);
@@ -1331,8 +1336,8 @@ test("a safe checkpoint in the heavy band steers the worker to its note, then a 
   run.onToolUse?.("c1", "Bash", { command: "git commit -m 'phase 2'" });
   run.onToolResult?.("c1", false);
   expect(run.contextSteer?.("Edit", { file_path: join(dir, "a.txt") })).toContain("Neo context checkpoint");
-  expect(run.contextSteer?.("Write", { file_path: join(dir, "HANDOFF.md") })).toBeUndefined();
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nfive phases\n## Next steps\n1. phase 3\n"); // the worker obeys
+  expect(run.contextSteer?.("Write", { file_path: neoNotePath(dir) })).toBeUndefined();
+  writeFileSync(neoNotePath(dir), "## Goal\nfive phases\n## Next steps\n1. phase 3\n"); // the worker obeys
   run.onTurnComplete?.(ok("s1"));
   run.onSettled?.();
   expect(f.runs[0].closed).toBe(true);
@@ -1391,7 +1396,7 @@ test("the resume gate defers a handoff over uncommitted work, and an emergency c
 
 test("a resumed session that ends before any edit records how far it got, with no success verdict", async () => {
   const dir = gitScratch();
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nx\n");
+  writeFileSync(neoNotePath(dir), "## Goal\nx\n");
   const { f, h, base } = sweetHarness(0.1);
   const handoffId = h.ledger.recordContextEvent(dir, "handoff", 0.7, 1);
   await handleMessage(`/open ${dir} just a question`, 9, base);
@@ -1498,4 +1503,68 @@ test("a resume gate whose wait ended on the bound starts fresh and never hands o
   });
   expect(handedOff).toBe(false);
   expect(f.resumeSeen()).toBeUndefined(); // fresh
+});
+
+// ADR-0043 (AC6): a fresh operator session in a project with open notes starts with the notes block.
+test("notes: a fresh operator session gets the notes block for its project", async () => {
+  const { createProjectNotes, DEFAULT_NOTES_CFG } = await import("../src/engine/project-notes");
+  const dir = scratch();
+  const root = dirname(dir);
+  const sender = join(root, `sender-${Date.now()}`);
+  mkdirSync(sender);
+  let seenTask = "";
+  const start = (o: Order): SessionRun => {
+    seenTask = o.task;
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+  };
+  const h = harness({ start });
+  const notes = createProjectNotes({ ledger: h.base.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
+  const r = notes.send({ project: basename(sender), folder: sender, chatId: 1 }, { to: basename(dir), kind: "fyi", severity: "low", ref: "n", title: "heads up", body: "b" }, 1);
+  expect(r.ok).toBe(true);
+  await handleMessage(`/open ${dir} continue the work`, 9, { ...h.base, notes });
+  expect(seenTask).toContain("[PROJECT NOTES");
+  expect(seenTask).toContain("heads up");
+});
+
+// ADR-0044 (spec A4): an operator session gets the tools hint only when its path is in `hintPaths`.
+test("tools hint: an operator path gets it only when listed in hintPaths", async () => {
+  const { DEFAULT_TOOLS_CFG } = await import("../src/engine/tools-catalogue");
+  const run = async (hintPaths: string[]): Promise<string> => {
+    const dir = scratch();
+    let seenTask = "";
+    const start = (o: Order): SessionRun => {
+      seenTask = o.task;
+      return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, done: new Promise<never>(() => {}) } as unknown as SessionRun;
+    };
+    const h = harness({ start });
+    const tools = { cfg: { ...DEFAULT_TOOLS_CFG, hintPaths }, hint: () => "Tools that may help:\n- x (cli): y\nAsk tools_for for more.\n\n" } as never;
+    await handleMessage(`/open ${dir} take a screenshot`, 9, { ...h.base, tools });
+    return seenTask;
+  };
+  expect(await run(["project"])).toContain("Ask tools_for for more.");
+  expect(await run(["dispatch"])).not.toContain("Ask tools_for");
+});
+
+test("an operator follow-up to a worker that steers mid-turn is sent as steer and says it lands at the next step", async () => {
+  const dir = scratch();
+  const f = fakeStart({ steersMidTurn: true });
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("it'll see this at its next step");
+  expect(f.followUps()).toContain("also write a README");
+  expect(f.timings().at(-1)).toBe("steer");
+});
+
+test("a follow-up to a worker that can't steer (Codex) says honestly it runs after the current turn", async () => {
+  const dir = scratch();
+  const f = fakeStart();
+  const h = harness({ start: f.start });
+  await handleMessage(`/open ${dir} start`, 5, h.base);
+  h.registry.setFocus(5, h.registry.list()[0].id, "pinned");
+  await handleMessage("also write a README", 5, h.base);
+  const line = h.replies.find((r) => r.startsWith("↩︎"))!;
+  expect(line).toContain("runs after its current turn");
 });

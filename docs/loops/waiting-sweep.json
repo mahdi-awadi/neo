@@ -1,0 +1,16 @@
+{
+  "name": "waiting-sweep",
+  "summary": "Hourly: closes WAITING threads whose decisions are done (on checked evidence) and reminds the operator once about what still needs them (ADR-0045)",
+  "folder": "/home/neo",
+  "promptFile": "waiting-sweep.prompt.md",
+  "goalKind": "command",
+  "goalCommand": "bun tools/threads/sweep.ts check",
+  "goalTimeoutMs": 60000,
+  "triggerKind": "cron",
+  "cronExpr": "0 * * * *",
+  "maxIterations": 1,
+  "budgetUsd": 2,
+  "enabledByDefault": true,
+  "freshSession": true,
+  "report": "goal"
+}

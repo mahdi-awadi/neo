@@ -260,6 +260,13 @@ export function memorySnapshot(folder: string, cfg: MemoryCfg): string {
   return out;
 }
 
+/** The prompt-injection shapes of the memory scan below, on their own: the task history (ADR-0067) makes
+ *  these harmless in stored text instead of refusing the text. */
+export const MEMORY_INJECTION_PATTERNS: { pattern: RegExp; reason: string }[] = [
+  { pattern: /ignore (all )?previous instructions/i, reason: "looks like a prompt-injection phrase" },
+  { pattern: /<system-reminder/i, reason: "looks like an injected system-reminder tag" },
+];
+
 /** Deterministic write-time scan for memory entries — a blast-radius reducer, not a guarantee.
  * These patterns catch the cheapest, most common poisoning/leak shapes that could end up in a
  * memory file and get read back into every future session's context: credential-looking
@@ -272,8 +279,7 @@ export const MEMORY_SCAN_PATTERNS: { pattern: RegExp; reason: string }[] = [
   { pattern: /ghp_[A-Za-z0-9]{30,}/, reason: "looks like a GitHub token" },
   { pattern: /sk-[A-Za-z0-9]{20,}/, reason: "looks like an API secret key" },
   { pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/, reason: "looks like a private key" },
-  { pattern: /ignore (all )?previous instructions/i, reason: "looks like a prompt-injection phrase" },
-  { pattern: /<system-reminder/i, reason: "looks like an injected system-reminder tag" },
+  ...MEMORY_INJECTION_PATTERNS,
   { pattern: /[\u200b-\u200f\u2028\u2029\ufeff]/, reason: "contains invisible unicode" },
 ];
 

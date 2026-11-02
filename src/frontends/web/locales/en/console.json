@@ -9,7 +9,10 @@
   "brand": {
     "sub": "operator deck",
     "langSwitch": "العربية",
-    "langSwitchTitle": "Switch the console to Arabic"
+    "langSwitchTitle": "Switch the console to Arabic",
+    "version": "v{{version}} · {{sha}}",
+    "versionTitle": "Running build: version {{version}}, commit {{sha}} on {{branch}}",
+    "versionTitleNoVersion": "Running build: commit {{sha}} on {{branch}}"
   },
   "newProject": {
     "section": "New project",
@@ -35,7 +38,8 @@
     "noneActive": "no active project",
     "active": "active · {{name}}",
     "openNoneActive": "{{count}} open · none active",
-    "kill": "kill"
+    "kill": "kill",
+    "killConfirm": "kill?"
   },
   "ctx": {
     "chip": "ctx {{pct}}%",
@@ -54,6 +58,7 @@
     "activity": "Activity",
     "threads": "Threads",
     "projects": "Projects",
+    "history": "History",
     "queue": "Queue",
     "loops": "Loops",
     "usage": "Usage",
@@ -66,9 +71,18 @@
     "showing": "Showing",
     "showAll": "show all activity",
     "compose": "message the active project — a follow-up for the AI…",
+    "composeHint": "Enter sends · Shift+Enter adds a new line (on a phone, Enter adds a new line) · Ctrl+Enter sends",
     "send": "Send",
     "attach": "attach a file",
-    "uploadFailed": "upload failed ({{status}})",
+    "attList": "attached files",
+    "attRemove": "remove {{name}}",
+    "attRetry": "Retry",
+    "attUploading": "uploading {{pct}}%",
+    "attFailed": "upload failed",
+    "attExpired": "These files are no longer on the server. Tap Retry to upload them again.",
+    "attCommand": "A command can't carry files. Remove the files, or send the command alone.",
+    "attNoProject": "No active project to receive the file. Open a project first.",
+    "attNotSent": "Not sent. Check the connection and try again.",
     "allow": "allow",
     "deny": "deny"
   },
@@ -124,9 +138,25 @@
     "resume": "Resume",
     "pause": "Pause",
     "running": "▶ running {{age}}",
+    "limitWait": "⏳ held: limit wait · resumes {{time}} · tap resume to go on now",
+    "apiWait": "⏳ held: API retry · resumes {{time}} · tap resume to go on now",
+    "resumeNow": "resume now",
     "moveUp": "move up",
     "cancel": "Cancel",
-    "confirmCancel": "Cancel #{{id}}?"
+    "confirmCancel": "Cancel #{{id}}?",
+    "retry": "Retry",
+    "retryWait": "↻ retry {{n}} · in {{age}}",
+    "failed": "✗ failed",
+    "waiting": "⏸ waiting on decision #{{id}}",
+    "sideLanes": "Side lanes",
+    "sideRunning": "▷ side · {{kind}} · running {{age}}",
+    "sideWaiting": "▷ side · {{kind}} · waits for a side slot",
+    "kind": {
+      "read-only": "read-only",
+      "ops": "ops",
+      "test": "test",
+      "code": "code"
+    }
   },
   "recent": {
     "title": "Recent orders",
@@ -144,7 +174,8 @@
       "deferred": "deferred",
       "resumed": "resumed",
       "fresh": "fresh start"
-    }
+    },
+    "interrupted": "cut off by an engine restart"
   },
   "inbox": {
     "titleEmpty": "Inbox — customer messages",
@@ -189,7 +220,8 @@
       "loop": "loop",
       "attention": "attention",
       "ingress": "ingress",
-      "legacy": "legacy"
+      "legacy": "legacy",
+      "dispatcher": "dispatcher"
     },
     "since": {
       "all": "any time",
@@ -204,6 +236,7 @@
     "untitled": "(untitled)",
     "you": "you",
     "neo": "neo",
+    "agentTo": "chief of staff → {{project}}",
     "olderMessages": "older messages",
     "decisions": "Decisions",
     "todos": "Todos",
@@ -213,14 +246,21 @@
     "planLine": "{{status}} · {{done}}/{{total}} · v{{version}}",
     "changesHint": "To ask for changes, reply to the plan card on Telegram.",
     "loadFailed": "Could not load — try again.",
+    "close": "Close thread",
+    "confirmClose": "Close this thread? Its open decisions are dismissed and it stops waiting. A new message reopens it.",
+    "closedNote": "Thread closed — {{decisions}} open decisions dismissed.",
     "decisionStatus": {
       "open": "open",
       "answered": "answered",
-      "dismissed": "dismissed"
+      "dismissed": "dismissed",
+      "superseded": "superseded",
+      "expired": "expired"
     },
     "todoStatus": {
       "queued": "queued",
       "running": "running",
+      "retry": "retry waiting",
+      "waiting": "waiting on a decision",
       "done": "done",
       "failed": "failed",
       "cancelled": "cancelled"
@@ -234,10 +274,22 @@
       "abandoned": "dropped"
     },
     "planAction": {
-      "approve": "Approve",
+      "approve": "Approve & build",
+      "changes": "Changes",
       "execute": "Execute",
+      "anyway": "Run anyway",
+      "stop": "Stop",
       "done": "Done",
       "drop": "Drop"
+    },
+    "planState": {
+      "draft": "draft",
+      "awaiting": "waiting for your approval",
+      "info": "small change — being built",
+      "approved": "approved",
+      "building": "building",
+      "done": "done",
+      "dropped": "dropped"
     }
   },
   "age": {
@@ -262,6 +314,7 @@
     "unknown": "No project named {{name}}.",
     "noSession": "no session open",
     "queueCount": "queue {{n}}",
+    "noteFrom": "from {{project}}",
     "noAttention": "nothing needs you",
     "none": "nothing here",
     "ago": "{{age}} ago",
@@ -297,7 +350,9 @@
       "plans": "Plans",
       "attention": "Attention ({{n}})",
       "threads": "Threads",
-      "restart": "Restart-gated"
+      "restart": "Restart-gated",
+      "needsYou": "Needs you ({{n}})",
+      "housekeeping": "Housekeeping ({{n}})"
     },
     "git": {
       "unpushed": "{{n}} unpushed",
@@ -314,6 +369,375 @@
       "scanned": "last good scan {{age}} ago",
       "never": "not scanned yet",
       "error": "the last scan failed:"
+    },
+    "needs": "{{n}} need you",
+    "housekeeping": "{{n}} housekeeping"
+  },
+  "pwa": {
+    "name": "Neo — operator console",
+    "shortName": "Neo",
+    "description": "Command your projects from anywhere: live activity, threads, approvals and queues.",
+    "install": "Install app",
+    "installTitle": "Install Neo as an app on this device",
+    "iosHint": "To install: tap Share, then Add to Home Screen.",
+    "dismiss": "Dismiss"
+  },
+  "offline": {
+    "title": "You are offline",
+    "body": "Neo needs a connection to show live work. Check your network, then try again.",
+    "retry": "Try again"
+  },
+  "nav": {
+    "menu": "Menu",
+    "close": "Close menu",
+    "back": "Back",
+    "views": "Views"
+  },
+  "code": {
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "expand": "Show all lines ({{count}})",
+    "collapse": "Show less"
+  },
+  "files": {
+    "download": "Download file"
+  },
+  "decision": {
+    "recommended": "Recommended"
+  },
+  "notes": {
+    "kind": {
+      "finding": "finding",
+      "fyi": "for your information",
+      "request": "request",
+      "question": "question"
+    },
+    "state": {
+      "acknowledged": "acknowledged",
+      "answered": "answered"
+    }
+  },
+  "waiting": {
+    "title": "Waiting on someone",
+    "owner": {
+      "operator": "you",
+      "sweep": "sweep",
+      "engine": "engine"
+    },
+    "next": {
+      "answer": "answer: {{ask}}",
+      "acknowledge": "acknowledge: {{ask}}",
+      "approve": "approve & build or drop: {{ask}}",
+      "judge": "the sweep checks the repo: {{ask}}",
+      "resumes": "resumes when {{on}} is answered"
+    },
+    "keep": "prod / irreversible",
+    "more": "+{{n}} more",
+    "since": "waiting {{age}}"
+  },
+  "deploy": {
+    "gap": "{{integration}} {{n}} not running · {{days}}d",
+    "title": "running {{running}} on {{branch}} — {{n}} commits on {{integration}} are not live (oldest {{days}} days)"
+  },
+  "tools": {
+    "running": "Running now",
+    "stop": "Stop",
+    "background": "Background",
+    "confirmStop": "Stop “{{cmd}}” in {{project}}? Only this command stops; the session goes on.",
+    "stopTitle": "Stop only this command (its processes, inside containers too)",
+    "backgroundTitle": "Keep it running in the background, with its output in a log; the worker goes on"
+  },
+  "att": {
+    "kind": {
+      "approval_stuck": "Stuck approval",
+      "dispatch_spinning": "Repeating run",
+      "queue_paused": "Paused queue",
+      "thread_failed": "Failed thread",
+      "thread_waiting": "Waiting thread",
+      "decision_stale": "Old decision",
+      "ctx_window_suspect": "Context check",
+      "dirty": "Uncommitted work",
+      "note_finding": "Finding",
+      "note_request": "Request",
+      "note_fyi": "Note",
+      "note_question": "Question",
+      "skillify_repeat": "Repeated task",
+      "restart_gated": "Needs restart",
+      "pr_open": "Open PR",
+      "dep_update_pr": "Dependency update PR",
+      "pr_review_requested": "Review requested",
+      "ci_failed": "CI failed",
+      "issue_open": "Open issue",
+      "dependabot": "Security alert",
+      "code_scanning": "Code scanning alert",
+      "secret_scanning": "Leaked secret",
+      "unpushed": "Unpushed commits",
+      "no_upstream": "Branch not on remote",
+      "stale_branch": "Stale branch",
+      "drift": "Branches out of step",
+      "worktree": "Idle worktree",
+      "other": "Item",
+      "history_off": "History search off",
+      "history_degraded": "History search degraded",
+      "backup_failed": "Backup failed"
+    },
+    "why": {
+      "approval_stuck": "A tool call has waited {{age}} for an approval: {{label}}.",
+      "dispatch_spinning": "A run has repeated itself for {{age}} with no new commit or note: {{label}}.",
+      "queue_paused": "This project's todo queue has been paused for {{age}}: {{reason}}.",
+      "thread_failed": "A thread of work in this project ended with a failure.",
+      "thread_waiting": "This thread has waited {{age}} for an answer or an approval.",
+      "decision_stale": "Decision {{decision}} has been open for {{age}}.",
+      "ctx_window_suspect": "The engine measured {{pct}} context for model {{model}}, which is impossible.",
+      "dirty": "{{files}} files are changed but not committed.",
+      "note_finding": "Another project found something this project owns.",
+      "note_request": "Another project asks this project to do work.",
+      "note_fyi": "Another project sent information for this project.",
+      "note_question": "Another project asked this project a question.",
+      "skillify_repeat": "The same kind of task came back on {{days}} days in the last 30.",
+      "restart_gated": "It is built on dev but does not run until Neo restarts.",
+      "pr_open": "Pull request {{pr}} is open and not merged.",
+      "dep_update_pr": "Dependabot wants to update {{dep}} from {{from}} to {{to}} (PR {{pr}}).",
+      "pr_review_requested": "Pull request {{pr}} waits for your review.",
+      "ci_failed": "The {{workflow}} check failed on branch {{branch}}.",
+      "issue_open": "Issue {{issue}} is open for this project.",
+      "dependabot": "Dependabot alert {{alert}} ({{severity}}) on a dependency.",
+      "code_scanning": "Code scanning alert {{alert}} in this repository.",
+      "secret_scanning": "GitHub found a leaked secret ({{secretType}}).",
+      "unpushed": "{{ahead}} commits on branch {{branch}} are not on {{upstream}} yet.",
+      "no_upstream": "Branch {{branch}} is not on the remote.",
+      "stale_branch": "No commit for {{days}} days, and not merged into {{base}}.",
+      "drift": "{{branch}} is {{ahead}} commits ahead of {{base}}.",
+      "worktree": "This worktree has been idle for {{hours}}h.",
+      "other": "Raised by a scan of this project.",
+      "history_off": "Meaning search over the task history is off: {{reason}}. Only word and id matches work.",
+      "history_degraded": "Meaning search over the task history has been down for {{age}}: {{reason}}.",
+      "backup_failed": "The snapshot backup of {{path}} failed: {{reason}}."
+    },
+    "next": {
+      "approval_stuck": "A worker finds what the run was doing and finishes it another way, or says why it needs that approval.",
+      "dispatch_spinning": "A worker finds why the run loops, fixes the cause and finishes the step.",
+      "queue_paused": "A worker fixes why the queue paused and resumes it.",
+      "thread_failed": "A worker reads what failed, fixes it and finishes the thread's work.",
+      "thread_waiting": "A worker finishes the thread, or states the one question you must answer.",
+      "decision_stale": "A worker collects the options, cost, risk and a recommendation in one short message.",
+      "ctx_window_suspect": "A worker checks which context window the engine used for this model.",
+      "dirty": "A worker commits what is finished and green, and explains what is left.",
+      "note_finding": "A worker checks the finding against the code and fixes it if it holds.",
+      "note_request": "A worker does the requested work, or says why not.",
+      "note_fyi": "A worker updates what the note affects.",
+      "note_question": "A worker answers the question with facts from this project.",
+      "skillify_repeat": "A worker writes the steps down once, as a skill or a recipe.",
+      "restart_gated": "A worker lists what a restart turns on. It never restarts Neo.",
+      "pr_open": "A worker reviews the PR, then merges it or comments with what must change.",
+      "dep_update_pr": "A worker merges the update if CI is green and the app builds, else closes it with the reason.",
+      "pr_review_requested": "A worker reads the diff, runs its tests and posts a review.",
+      "ci_failed": "A worker reads the failing log, fixes the cause and commits the fix.",
+      "issue_open": "A worker reproduces the issue and fixes it with a test, or explains why to close it.",
+      "dependabot": "A worker updates the dependency to a fixed version, or shows the alert does not apply.",
+      "code_scanning": "A worker fixes the finding with a test, or shows it is a false positive.",
+      "secret_scanning": "A worker removes the secret from the code and tells you to rotate it.",
+      "unpushed": "A worker checks the commits are green, then pushes them.",
+      "no_upstream": "A worker pushes the branch if its work is wanted, or deletes it if not.",
+      "stale_branch": "A worker merges, finishes or deletes the branch, and says why.",
+      "drift": "A worker checks the commits and merges, or says what blocks it.",
+      "worktree": "A worker removes the worktree if its work is merged, or commits what is left.",
+      "other": "No worker task fits this item. Snooze or dismiss it.",
+      "history_off": "A worker follows the step the item names (the embedder install or the key), then checks that meaning search is on.",
+      "history_degraded": "A worker finds why the embedder or the shared index does not answer and brings it back.",
+      "backup_failed": "A worker reads why the backup failed, fixes the cause and runs the backup again."
+    },
+    "noBrief": "→ todo cannot help with this item. Snooze or dismiss it.",
+    "showBrief": "what the worker gets",
+    "nextLabel": "→ todo:",
+    "unknown": "?",
+    "openLink": "open link"
+  },
+  "toast": {
+    "done": "Done",
+    "failed": "That did not work. Try again."
+  },
+  "pins": {
+    "title": "Pinned — needs you",
+    "toggle": "Show or hide the pinned list",
+    "more": "Show all ({{n}})",
+    "less": "Show fewer",
+    "hide": "Take it off this list",
+    "unpin": "Unpin",
+    "pin": "Pin",
+    "noProject": "Neo",
+    "kind": {
+      "plan": "Plan",
+      "decision": "Decision",
+      "alert": "Alert",
+      "todo": "Todo",
+      "attention": "Item"
+    },
+    "action": {
+      "review": "Review",
+      "answer": "Answer",
+      "acknowledge": "Acknowledge",
+      "retry": "Retry",
+      "open": "Open"
+    },
+    "pinned": "Pinned to the top",
+    "unpinned": "Unpinned",
+    "hidden": "Taken off the list"
+  },
+  "todoDetail": {
+    "close": "Close",
+    "open": "Open todo #{{id}}",
+    "loading": "Opening…",
+    "notFound": "That todo is gone.",
+    "title": "Todo",
+    "project": "Project",
+    "lane": "Lane",
+    "laneMain": "main queue",
+    "laneSide": "side lane · {{kind}}",
+    "state": "State",
+    "position": "place {{pos}} in the queue",
+    "created": "Created",
+    "started": "Started",
+    "ended": "Ended",
+    "attempts": "Attempts",
+    "failure": "Why it stopped",
+    "result": "Result",
+    "brief": "Full brief",
+    "thread": "Thread",
+    "openThread": "Open the thread",
+    "items": "Made from",
+    "ago": "{{age}} ago",
+    "status": {
+      "queued": "queued",
+      "running": "running",
+      "retry": "waiting to retry",
+      "waiting": "waiting on a decision",
+      "failed": "failed",
+      "done": "done",
+      "cancelled": "cancelled"
+    }
+  },
+  "history": {
+    "placeholder": "Search past work: words, meaning, or an id like #884",
+    "search": "Search",
+    "filters": "Filters",
+    "project": "Project",
+    "projectAny": "Any project",
+    "since": "From",
+    "until": "To",
+    "kinds": "Kinds",
+    "clear": "Clear filters",
+    "idle": "Search the todos, orders, results, plans, notes, decisions and remembered facts of every project, in Arabic or English.",
+    "loading": "Searching…",
+    "none": "Nothing in the history matches.",
+    "count": "{{n}} results",
+    "mode": {
+      "partial": "Meaning search covers {{pct}} of the history so far; word and id matches cover all of it.",
+      "off": "Meaning search is off ({{reason}}): these are word and id matches only.",
+      "skipped": "The search is only ids: exact matches, no meaning search."
+    },
+    "reason": {
+      "not_configured": "the embedder key is not set",
+      "config_refused": "the settings were refused",
+      "embedder_down": "the embedder does not answer",
+      "embedder_slow": "the embedder is too slow",
+      "embedder_refused": "the embedder refused the key",
+      "embedder_wrong_model": "the embedder runs another model",
+      "vectors_down": "the shared index does not answer",
+      "vectors_slow": "the shared index is too slow",
+      "vectors_refused": "the shared index refused the key",
+      "vectors_key_rejected": "Neo's key was rejected — ask ops to reissue it; the daemon must reload to read it",
+      "collection_missing": "the shared index has no collection for Neo",
+      "embedder_busy": "the indexer is busy embedding; ask again in a moment"
+    },
+    "kind": {
+      "todo": "Todo",
+      "order": "Order",
+      "result": "Result",
+      "digest": "Digest",
+      "message": "Message",
+      "plan": "Plan",
+      "note": "Note",
+      "attention": "Attention",
+      "decision": "Decision",
+      "remembered": "Remembered",
+      "line": "Worker line"
+    },
+    "via": {
+      "exact": "id",
+      "meaning": "meaning",
+      "words": "words",
+      "lines": "lines"
+    },
+    "error": {
+      "query_empty": "Type something to search for.",
+      "query_too_long": "The search is too long (at most 500 characters).",
+      "query_stopwords": "Add a word that says what you look for.",
+      "unknown_kind": "One of the kinds is not known.",
+      "bad_range": "The start date is after the end date.",
+      "bad_date": "A date is not a real date.",
+      "bad_limit": "The number of results is not a whole number.",
+      "bad_project": "The project name is not valid.",
+      "history_off": "Task history is off on this engine.",
+      "history_unreadable": "The history store cannot be read right now.",
+      "text_required": "Write the fact to remember.",
+      "empty": "Write the fact to remember.",
+      "too_short": "The fact is too short to find later.",
+      "too_long": "The fact is too long (at most 4,000 characters).",
+      "secret": "Not saved: it looks like a secret.",
+      "rate_limited": "Too many saves this hour. Try again later.",
+      "bad_ref": "That entry reference is not valid.",
+      "reason_required": "Write why you forget it.",
+      "reason_too_long": "The reason is too long.",
+      "unknown_ref": "That entry is not in the history.",
+      "not_forgettable": "Worker lines are not stored in the history.",
+      "network": "The engine did not answer. Try again.",
+      "other": "That did not work: {{code}}"
+    },
+    "archived": "archived",
+    "commits": "Commits",
+    "plan": "Plan file",
+    "alsoIn": "Also in",
+    "openTodo": "Open todo",
+    "openThread": "Open thread",
+    "forget": "Forget",
+    "forgetTitle": "Forget this entry?",
+    "forgetBody": "It goes from every search (words, meaning and the shared index) and does not come back. The ledger keeps its own record.",
+    "forgetReason": "Reason",
+    "forgetReasonPlaceholder": "Why forget it?",
+    "forgetConfirm": "Forget it",
+    "cancel": "Cancel",
+    "forgotten": "Forgotten: {{chunks}} text parts and {{points}} vectors removed.",
+    "forgetPending": "{{n}} vectors wait for the shared index.",
+    "forgetInTab": "To forget it, open it in the History tab and press Forget there:",
+    "remember": {
+      "title": "Remember a fact",
+      "text": "A decision and its reason, a gotcha, where something lives…",
+      "project": "Project (optional)",
+      "save": "Save",
+      "saved": "Saved as {{ref}}",
+      "duplicate": "Already saved as {{ref}}"
+    }
+  },
+  "item": {
+    "notFound": "This item is gone — it was answered or closed.",
+    "question": "The question",
+    "about": "The decision it is about",
+    "answered": "Answered — the work goes on",
+    "closed": "Already answered: {{answer}}",
+    "submit": "Submit answer",
+    "approvalHint": "This is an approval request. Answer it with Allow or Deny on its Telegram card: that releases the command that waits for it.",
+    "reply": {
+      "label": "Your answer",
+      "placeholder": "Type your answer…",
+      "send": "Send answer"
+    },
+    "plan": {
+      "download": "Download .md",
+      "loading": "Loading the plan…",
+      "missing": "The plan cannot be shown here ({{reason}}). You can still decide.",
+      "confirmDrop": "Drop this plan? The work it describes will not be built."
     }
   }
 }

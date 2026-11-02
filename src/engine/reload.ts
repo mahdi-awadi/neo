@@ -87,7 +87,7 @@ export async function drainAndPersist(opts: {
   const running = registry.list().filter((s) => s.status === "running");
   for (const s of running) {
     const memoryFlush = memoryEnabledFor(opts.memory, s.order.folder, opts.companyFolder);
-    registry.getControl(s.id)?.followUp(wrapUpFollowUp(opts.drainMs, memoryFlush));
+    registry.getControl(s.id)?.followUp(wrapUpFollowUp(opts.drainMs, memoryFlush), "after-turn");
   }
 
   // Bounded drain: wait for turns to finish (their done-handlers mark the sessions idle).
@@ -101,9 +101,10 @@ export async function drainAndPersist(opts: {
   for (const s of stuck) await registry.getControl(s.id)?.interrupt();
 
   // Snapshot every open session — folder + resume id — so boot can re-register them.
+  // A side lane (ADR-0057) is never restored: it is single-brief, and its todo re-runs from the queue.
   const rows: OpenSessionRow[] = registry
     .list()
-    .filter(OPEN)
+    .filter((s) => OPEN(s) && !s.lane)
     .map((s) => ({
       id: s.id,
       name: s.name,

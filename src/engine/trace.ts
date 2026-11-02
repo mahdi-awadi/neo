@@ -8,12 +8,13 @@ import type { Priority } from "./priority";
 import type { Registry } from "./registry";
 import { faults } from "./fault";
 import { deriveThreadState } from "./thread-state";
-import { todoTitle } from "./todo-title";
+import { applyStale, staleDecisions, type DecisionSettleCfg } from "./decision-settle";
+import { todoLabel, todoTitle } from "./todo-title";
 
 export type { Cause };
 
 /** The system chat that owns engine-started roots (no operator chat exists for them). A reserved id of
- *  its own: 0 is the web console, -1 the default, -2 SUB_CHAT, -3 CUSTOMER_CHAT. */
+ *  its own: 0 is the web console, -1 the default, -2 SUB_CHAT, -3 CUSTOMER_CHAT, -5 SIDE_CHAT (ADR-0057). */
 export const ENGINE_CHAT_ID = -4;
 
 const TREE_LIMIT = 200;
@@ -28,6 +29,12 @@ export interface TraceTree extends ThreadArtifacts {
   messages: Array<ReturnType<Ledger["messagesInThread"]>[number]>;
   truncated: boolean;
 }
+
+/** The reason a closed thread's open decisions keep (ADR-0038). */
+export const THREAD_CLOSE_REASON = "thread closed by the operator";
+
+/** What closing a thread did (ledger.closeThread). */
+export type ThreadCloseResult = ReturnType<Ledger["closeThread"]>;
 
 export interface Trace {
   /** An operator line arrives. Picks its thread (§4.1), writes the row, returns its cause. */
@@ -56,6 +63,8 @@ export interface Trace {
   tree(msgId: number, opts?: { limit?: number }): TraceTree;
   /** Re-derive and store a thread's state from its linked facts. Idempotent; a no-op for a pruned thread. */
   refreshThread(threadId: number): void;
+  /** The operator closes a thread (ADR-0038): the ledger's close, an event, then a re-derive. */
+  close(threadId: number): ThreadCloseResult;
   /** Hear every thread whose state changed or that a new line joined (the console moves its row live, ADR-0017). Returns the
    *  unsubscribe. A listener that throws is reported; the refresh is never affected. */
   onThreadChange(listener: (c: ThreadChange) => void): () => void;
@@ -84,6 +93,10 @@ const RENDER_ALL_MAX = 40;
 const RENDER_HEAD = 10;
 const RENDER_TAIL = 25;
 
+/** The two ledger lines project-notes writes for a question: its send and its answer (ADR-0050). */
+const SENT_NOTE_LINE = /^note #(\d+) → /;
+const ANSWERED_LINE = /^↩ .+ answered note #(\d+) in (\d+)s$/;
+
 /** Where the console serves a thread's full tree (GET /api/trace/:ref), under the configured base URL. */
 export function traceUrl(consoleUrl: string, ref: string): string {
   return `${consoleUrl.replace(/\/+$/, "")}/api/trace/${ref}`;
@@ -97,12 +110,33 @@ export function traceUrl(consoleUrl: string, ref: string): string {
  */
 export function renderTrace(tree: TraceTree, ref: (id: number) => string, opts: { consoleUrl?: string } = {}): string {
   const rootId = tree.thread?.id;
+  // A question and its answer are two lines in the ledger ("note #N → x: title", "↩ x answered note #N in 42s");
+  // /trace shows them as one: "note #N question → answered 42s" (ADR-0050).
+  const answered = new Map<number, string>();
+  const sentIds = new Set<number>();
+  for (const m of tree.messages) {
+    const sent = SENT_NOTE_LINE.exec(m.content);
+    if (sent) sentIds.add(Number(sent[1]));
+  }
+  for (const m of tree.messages) {
+    const a = ANSWERED_LINE.exec(m.content);
+    if (a && sentIds.has(Number(a[1]))) answered.set(Number(a[1]), a[2]!);
+  }
   const children: Array<{ at: number; line: string }> = [
     ...tree.messages
-      .filter((m) => m.id !== rootId)
-      .map((m) => ({ at: m.at, line: `${ref(m.id)} · ${m.kind} · ${m.role === "user" ? "you: " : ""}${todoTitle(m.content)}` })),
+      .filter((m) => {
+        if (m.id === rootId) return false;
+        const a = ANSWERED_LINE.exec(m.content);
+        return !(a && answered.has(Number(a[1]))); // folded into its send line; an orphan answer stays
+      })
+      .map((m) => {
+        const sent = SENT_NOTE_LINE.exec(m.content);
+        const secs = sent ? answered.get(Number(sent[1])) : undefined;
+        const text = sent && secs !== undefined ? `note #${sent[1]} question → answered ${secs}s` : todoTitle(m.content);
+        return { at: m.at, line: `${ref(m.id)} · ${m.kind} · ${m.role === "user" ? "you: " : ""}${text}` };
+      }),
     ...tree.orders.map((o) => ({ at: o.createdAt, line: `${o.id.slice(0, 8)} · order · ${o.status ?? "running"} · ${o.folder}` })),
-    ...tree.todos.map((t) => ({ at: t.createdAt, line: `#${t.id} · todo · ${t.status} · ${todoTitle(t.brief)}` })),
+    ...tree.todos.map((t) => ({ at: t.createdAt, line: `#${t.id} · todo · ${t.status} · ${todoLabel(t)}` })),
     ...tree.decisions.map((d) => ({ at: d.createdAt, line: `${d.id.slice(0, 8)} · ${d.kind} · ${d.status} · ${todoTitle(d.question)}` })),
   ].sort((a, b) => a.at - b.at); // stable: equal times keep their kind order
 
@@ -134,21 +168,44 @@ export function createTrace(deps: {
   now?: () => number;
   /** The company's folder: its own lines never name a thread's project (spec §3.2). */
   companyFolder?: string;
+  /** Config `decisionSettle.enabled` (ADR-0038), read live: supersede a thread's stale decisions
+   *  before deriving its state. Default on. */
+  settleDecisions?: boolean | (() => boolean);
+  /** Config `decisionSettle` (ADR-0053), read live: expiry days and the keep patterns. Absent → no
+   *  expiry (the ADR-0038 rules only). */
+  settleCfg?: () => DecisionSettleCfg | undefined;
 }): Trace {
   const { ledger, registry } = deps;
   const now = deps.now ?? Date.now;
+  /** Threads being re-derived now: a decision the settle closes must not re-enter its own refresh. */
+  const refreshing = new Set<number>();
 
   /** `touchedAt`: a line just joined the thread — tell the listeners even when the state holds, so
    *  the console moves the row to the top. */
   function refreshThread(threadId: number, touchedAt?: number): void {
+    if (refreshing.has(threadId)) return; // the outer refresh derives after its settle
+    refreshing.add(threadId);
+    try {
+      derive(threadId, touchedAt);
+    } finally {
+      refreshing.delete(threadId);
+    }
+  }
+  // Every decision that closes, by any path, re-derives its thread (ADR-0053).
+  ledger.onDecisionClosed((e) => {
+    if (e.threadId !== undefined) refreshThread(e.threadId);
+  });
+  function derive(threadId: number, touchedAt?: number): void {
     const thread = ledger.threadById(threadId);
     if (!thread) return; // pruned: artifacts keep the ids, nothing to update
+    if (settleOn()) settle(threadId);
     const facts = ledger.threadFacts(threadId);
     // A session works this thread while a cause of the thread is delivered to it and not yet answered.
     const inThread = registry.list().filter((s) => registry.pendingCauses(s.id).some((c) => c.threadId === threadId));
     const state = deriveThreadState({
       openDecisions: facts.openDecisions,
-      pendingApprovals: inThread.filter((s) => s.blockedOn?.kind === "approval").length,
+      // Only a running session can be waiting on an approval (ADR-0038).
+      pendingApprovals: inThread.filter((s) => s.status === "running" && s.blockedOn?.kind === "approval").length,
       activeWork: facts.activeTodos + inThread.length,
       lastEnd: facts.lastEnd,
       closedByOperator: facts.closedByOperator,
@@ -163,6 +220,23 @@ export function createTrace(deps: {
     for (const l of threadListeners) faults.guard("trace.threadListener", () => l(change), { threadId });
   }
   const threadListeners = new Set<(c: ThreadChange) => void>();
+  const settleOn = (): boolean => {
+    const v = deps.settleDecisions;
+    return typeof v === "function" ? v() : v !== false;
+  };
+  /** Close the thread's decisions that no longer need an answer (ADR-0038, ADR-0053). Best-effort: a
+   *  fault costs the settle, never the state derive. */
+  function settle(threadId: number): void {
+    faults.guard("trace.settleDecisions", () => {
+      const f = ledger.decisionSettleFacts(threadId);
+      if (f.open.length === 0) return;
+      const cfg = deps.settleCfg?.();
+      const at = now();
+      const stale = staleDecisions(f, cfg ? { now: at, expireAfterDays: cfg.expireAfterDays, keepPatterns: cfg.keepPatterns } : {});
+      applyStale(ledger, stale, at);
+      if (stale.length) ledger.recordEvent("decisions_superseded", { data: { threadId, decisions: stale } });
+    }, { threadId });
+  }
 
   function newThread(rootMsgId: number, origin: ThreadOrigin, title: string, at: number, project?: string, folder?: string): void {
     ledger.setMessageThread(rootMsgId, rootMsgId);
@@ -199,7 +273,10 @@ export function createTrace(deps: {
           chatId: p.chatId, role: "user", content: p.text, at, surface: p.surface, channelMsgId: p.channelMsgId, kind: "text",
           threadId: joined?.threadId, causeId: joined && "msgId" in joined ? joined.msgId : undefined,
         });
-        if (joined) return { msgId, threadId: joined.threadId };
+        if (joined) {
+          ledger.reopenThread(joined.threadId); // the operator wrote again: a closed thread is open again (ADR-0038)
+          return { msgId, threadId: joined.threadId };
+        }
         newThread(msgId, "operator", todoTitle(p.text), at);
         return { msgId, threadId: msgId };
       });
@@ -259,6 +336,14 @@ export function createTrace(deps: {
       };
     },
     refreshThread: (threadId) => refreshThread(threadId),
+    close(threadId) {
+      const r = ledger.closeThread(threadId, THREAD_CLOSE_REASON, now());
+      if (r.closed) {
+        ledger.recordEvent("thread_closed", { data: { threadId, decisions: r.decisions, todosCancelled: r.todosCancelled, stillActive: r.stillActive } });
+        refreshThread(threadId);
+      }
+      return r;
+    },
     onThreadChange(listener) {
       threadListeners.add(listener);
       return () => void threadListeners.delete(listener);

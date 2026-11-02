@@ -1,8 +1,9 @@
 import { test, expect } from "bun:test";
+import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveProject, dispatchToProject, briefWithProjectDocs, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, type DispatchDeps } from "../src/engine/dispatch";
+import { resolveProject, dispatchToProject, briefWithProjectDocs, codebaseMemoryLine, sendProjectFile, neoMcpServers, STITCH_MCP_URL, SUB_CHAT, CUSTOMER_CHAT, type DispatchDeps } from "../src/engine/dispatch";
 import { createRegistry } from "../src/engine/registry";
 import { openLedger } from "../src/engine/ledger";
 import { createMeter } from "../src/engine/budget";
@@ -12,6 +13,7 @@ import type { StructuredAsk } from "../src/engine/structured-question";
 import { startOrder, type RunHandlers, type RunResult } from "../src/engine/session-runner";
 import { trackHandoff, continuationBrief, type ContextPolicyCfg, type ContextSignals } from "../src/engine/context-policy";
 import { DEFAULT_MODELS } from "../src/config";
+import { createApiWaits } from "../src/engine/api-wait";
 
 const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
   sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
@@ -318,9 +320,10 @@ test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) in
   );
   d.registry.setStatus(first.id, "running");
   const followUps: string[] = [];
+  const timings: string[] = [];
   // A live worker mid-turn (active) means dispatch must queue behind its turn, not refuse.
   d.registry.attachControl(first.id, {
-    followUp: (t: string) => void followUps.push(t),
+    followUp: (t: string, timing: string) => void (followUps.push(t), timings.push(timing)),
     queued: () => 1,
     active: () => true,
     interrupt: async () => {},
@@ -334,6 +337,7 @@ test("dispatch to a folder mid-turn QUEUES the brief (like an operator reply) in
   });
   expect(followUps.length).toBe(1); // the brief was queued into the live session
   expect(followUps[0]).toContain("run docker ps and report");
+  expect(timings[0]).toBe("after-turn"); // an engine brief must not steer the operator's in-flight turn
   expect(out.toLowerCase()).toContain("queued");
 });
 
@@ -651,7 +655,7 @@ test("neoMcpServers attaches the Stitch HTTP server only when enabled AND a key 
   expect(stitch.type).toBe("http"); // SDK McpHttpServerConfig shape
   expect(stitch.url).toBe(STITCH_MCP_URL);
   expect(stitch.url).toBe("https://stitch.googleapis.com/mcp");
-  expect(stitch.headers["X-Goog-Api-Key"]).toBe("k-123");
+  expect(stitch.headers["X-Goog-Api-Key"]).toBe("${STITCH_API_KEY}"); // a reference, never the key (ADR-0062)
 });
 
 test("neoMcpServers OMITS Stitch on the customer path (stitch:false) and when no key is configured", () => {
@@ -736,9 +740,19 @@ test("preamble tells workers where plans go and that the engine sends them", () 
   const brief = briefWithProjectDocs("X");
   expect(brief).toContain("docs/superpowers/plans/");
   expect(brief).toContain("docs/superpowers/specs/");
-  expect(brief).toContain("sends it to the operator");
-  expect(brief).toContain("send_file");
+  expect(brief).toContain("sends it to the operator"); // the engine sees the write itself (ADR-0036): no send_file needed
   expect(brief.endsWith("\n\nX")).toBe(true); // the task still comes last
+});
+
+// ADR-0024: the security checks block new high/critical findings; a worker fixes them, never hides them.
+test("preamble tells workers how to treat the security checks", () => {
+  const brief = briefWithProjectDocs("X");
+  expect(brief).toContain("security");
+  expect(brief).toContain("high or critical");
+  expect(brief).toContain("--no-verify"); // named, as the thing never to do
+  expect(brief).toContain(".security/baseline.json");
+  expect(brief).toContain("/security-review");
+  expect(brief.indexOf("engineering baseline")).toBeLessThan(brief.indexOf("--no-verify"));
 });
 
 test("preamble wires the two-phase design→build flow: domain-modeling (CONTEXT.md/ADR) before superpowers TDD", () => {
@@ -911,8 +925,8 @@ function neoToolNames(servers: Record<string, unknown>): string[] {
 function neoToolHandler(
   servers: Record<string, unknown>,
   toolName: string,
-): ((args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }>) | undefined {
-  const neo = servers.neo as { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>, extra: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> }> } };
+): ((args: Record<string, unknown>, extra: unknown) => Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }>) | undefined {
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>, extra: unknown) => Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }> }> } };
   return neo.instance._registeredTools[toolName]?.handler;
 }
 
@@ -964,22 +978,21 @@ test("ask_operator attaches on operator paths ONLY when postDecision is wired (f
   expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: true, folder: "/home/acme" }))).toContain("ask_operator");
 });
 
-// A fully-matured decision the worker raises: one title, the problem/root cause, options that each
-// explain what they mean + their trade-off, and a recommendation. This is the shape the operator
-// asked for (no more bundled, contextless, bare-label "patch menus").
-const MATURED_ARGS = {
-  title: "Fix the log-ingestion consumer",
+// A decision card the worker raises (ADR-0049): plain title, the situation, options that each say what
+// happens if picked, and the recommended option with a reason.
+const CARD_ARGS = {
+  title: "How should we fix the missing server logs?",
   context:
-    "Vector is deployed but not consuming: the JetStream consumer was never created, so logs queue and drop after retention. Root cause is missing consumer wiring, not Vector.",
+    "The log collector is running but nothing reaches it, because the queue it reads from was never set up. Logs pile up and are deleted after a few days.",
   options: [
-    { label: "Redeploy Vector", detail: "quickest; but does not create the missing consumer, so ingestion still fails" },
-    { label: "JetStream + consumer", detail: "create the durable consumer Vector reads from; fixes the root cause with existing infra", recommended: true },
-    { label: "Dedicated Go consumer", detail: "most control; a new service to own and deploy" },
+    { label: "Restart the collector", explanation: "Quickest, but the queue is still missing, so logs still get lost." },
+    { label: "Set up the queue", explanation: "Creates the missing queue with the tools we already run. Fixes the cause; about an hour of work." },
+    { label: "Build a new service", explanation: "Most control, but one more service to run and look after." },
   ],
-  recommendation: "JetStream + consumer — fixes the root cause with infra we already run, no new service to maintain.",
+  recommended: { option: "Set up the queue", reason: "It fixes the cause with what we already run." },
 };
 
-test("ask_operator matures the question: ONE tracked decision carrying title/context/options+details/recommendation", async () => {
+function cardDeps() {
   const { d } = makeDeps();
   const posted: Array<{ id: string; question: string; options?: string[]; spec?: StructuredAsk }> = [];
   const deps: DispatchDeps = {
@@ -989,77 +1002,85 @@ test("ask_operator matures the question: ONE tracked decision carrying title/con
       return { chatId: 222, messageId: 900 };
     },
   };
-  const servers = neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme", orderId: "ord-1" });
-  const handler = neoToolHandler(servers, "ask_operator")!;
-  const res = await handler(MATURED_ARGS, {});
+  const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme", orderId: "ord-1" }), "ask_operator")!;
+  return { d, posted, handler };
+}
 
-  // One open decision, carrying the project/folder/order; the crisp title is the row's `question`,
-  // the rich content (context, per-option details, recommendation) rides on the structured spec.
+test("ask_operator raises ONE tracked decision carrying the checked card", async () => {
+  const { d, posted, handler } = cardDeps();
+  const res = await handler(CARD_ARGS, {});
   const open = d.ledger.listOpenDecisions();
   expect(open).toHaveLength(1);
   expect(open[0]).toMatchObject({ kind: "decision", project: "acme", folder: "/home/acme", orderId: "ord-1" });
-  expect(open[0]!.question).toBe(MATURED_ARGS.title);
+  expect(open[0]!.question).toBe(CARD_ARGS.title);
   const spec = open[0]!.spec!;
-  expect(spec.title).toBe(MATURED_ARGS.title);
-  expect(spec.context).toBe(MATURED_ARGS.context);
-  expect(spec.recommendation).toBe(MATURED_ARGS.recommendation);
-  expect(spec.questions[0]!.options).toEqual(["Redeploy Vector", "JetStream + consumer", "Dedicated Go consumer"]);
-  expect(spec.questions[0]!.optionDetails?.[1]).toContain("durable consumer");
+  expect(spec.context).toBe(CARD_ARGS.context);
+  expect(spec.recommendation).toBe(CARD_ARGS.recommended.reason);
+  expect(spec.questions[0]!.options).toEqual(["Restart the collector", "Set up the queue", "Build a new service"]);
+  expect(spec.questions[0]!.optionDetails?.[1]).toContain("missing queue");
   expect(spec.questions[0]!.recommended).toBe(1);
-  // Posted to the Decisions channel WITH the spec (not the flat options); message id captured back.
   expect(posted).toHaveLength(1);
   expect(posted[0]!.spec).toEqual(spec);
   expect(d.ledger.decisionByMessage(222, 900)?.id).toBe(open[0]!.id);
-  expect(d.ledger.listEvents({ kind: "decision_raised" })).toHaveLength(1);
-  // The worker is told to checkpoint + stop (single-shot; the answer resumes it as a follow-up).
+  expect(res.isError).toBeFalsy();
   expect(res.content[0]?.text?.toLowerCase()).toContain("stop");
 });
 
-test("ask_operator honours multiSelect and a distinct crisp question", async () => {
-  const { d } = makeDeps();
-  const deps: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 5, messageId: 6 }) };
-  const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme" }), "ask_operator")!;
-  await handler({ ...MATURED_ARGS, question: "How should we fix ingestion?", multiSelect: true }, {});
-  const spec = d.ledger.listOpenDecisions()[0]!.spec!;
-  expect(spec.questions[0]!.question).toBe("How should we fix ingestion?");
-  expect(spec.questions[0]!.multiSelect).toBe(true);
+test("ask_operator honours multiSelect", async () => {
+  const { d, handler } = cardDeps();
+  await handler({ ...CARD_ARGS, multiSelect: true }, {});
+  expect(d.ledger.listOpenDecisions()[0]!.spec!.questions[0]!.multiSelect).toBe(true);
 });
 
-// The HARD guarantee: the schema makes a shapeless question impossible to raise. Invalid inputs are
-// rejected at the tool boundary (Zod .parse), so a worker cannot bundle decisions or drop the
-// context/options/recommendation — it is forced to re-ask in the matured shape.
-test("ask_operator SCHEMA enforces the matured shape (shapeless questions rejected at the boundary)", () => {
+test("ask_operator bounces a card that is not self-explanatory: an error result, every problem named, nothing raised", async () => {
+  const { d, posted, handler } = cardDeps();
+  const res = await handler(
+    {
+      title: "Redis cut-over (ADR-0188 rollout): which first?",
+      context: "",
+      options: [
+        { label: "Fix WalletDetailPage", explanation: "" },
+        { label: "None for now", explanation: "Leave it." },
+      ],
+      recommended: { option: "Outbox in same tx", reason: "" },
+    },
+    {},
+  );
+  expect(res.isError).toBe(true);
+  const text = res.content[0]!.text!;
+  for (const part of ["ADR-0188", "context", "WalletDetailPage", "option 1 explanation", "recommended.option", "recommended.reason", "non-technical"]) expect(text).toContain(part);
+  expect(d.ledger.listOpenDecisions()).toHaveLength(0);
+  expect(posted).toHaveLength(0);
+});
+
+test("ask_operator SCHEMA types the card shape (the old bare and flat shapes no longer parse)", () => {
   const { d } = makeDeps();
   const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
   const servers = neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" });
   const neo = servers.neo as { instance: { _registeredTools: Record<string, { inputSchema: { parse: (v: unknown) => unknown } }> } };
   const schema = neo.instance._registeredTools["ask_operator"]!.inputSchema;
-  expect(() => schema.parse(MATURED_ARGS)).not.toThrow(); // a full matured decision validates
-  expect(() => schema.parse({ question: "Which DB — Postgres or Mongo?" })).toThrow(); // old bare question
-  expect(() => schema.parse({ question: "?", options: ["Postgres", "Mongo"] })).toThrow(); // flat string options
-  expect(() => schema.parse({ ...MATURED_ARGS, options: [MATURED_ARGS.options[0]] })).toThrow(); // <2 options
-  const { context: _c, ...noContext } = MATURED_ARGS;
-  expect(() => schema.parse(noContext)).toThrow(); // root cause is required
-  const { recommendation: _r, ...noRec } = MATURED_ARGS;
-  expect(() => schema.parse(noRec)).toThrow(); // recommendation is required
-  const bareOptions = { ...MATURED_ARGS, options: [{ label: "A" }, { label: "B" }] };
-  expect(() => schema.parse(bareOptions)).toThrow(); // each option needs a detail (trade-off)
+  expect(() => schema.parse(CARD_ARGS)).not.toThrow();
+  expect(() => schema.parse({ question: "Which DB — Postgres or Mongo?" })).toThrow();
+  expect(() => schema.parse({ ...CARD_ARGS, options: ["Postgres", "Mongo"] })).toThrow();
+  const { recommended: _r, ...noRec } = CARD_ARGS;
+  expect(() => schema.parse(noRec)).toThrow();
 });
 
-// The operator's rule (2026-09-03): questions raised via ask_operator were "shallow, patch-shaped,
-// not standard." The tool DESCRIPTION must force the worker to challenge itself first — root-cause,
-// standard fix (not a patch), self-critique — escalate only a genuine operator decision, ONE per call.
-test("ask_operator description forces self-challenge + one-decision-per-call", () => {
+// The operator's rules (2026-09-03, 2026-10-23): challenge yourself first, one decision per call, and
+// write the card for a non-technical reader.
+test("ask_operator description forces self-challenge, one decision per call, and a non-technical reader", () => {
   const { d } = makeDeps();
   const withPost = { ...d, postDecision: async () => ({ chatId: 7, messageId: 8 }) };
   const servers = neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" });
   const neo = servers.neo as { instance: { _registeredTools: Record<string, { description: string }> } };
   const desc = neo.instance._registeredTools["ask_operator"]!.description.toLowerCase();
-  expect(desc).toContain("root cause"); // trace the real cause first
-  expect(desc).toContain("industry-standard"); // the correct standard fix...
-  expect(desc).toContain("patch"); // ...not the quickest patch
-  expect(desc).toContain("do it and report"); // one right fix exists → don't ask
-  expect(desc).toContain("one decision"); // one decision per call — never bundle several
+  expect(desc).toContain("root cause");
+  expect(desc).toContain("industry-standard");
+  expect(desc).toContain("patch");
+  expect(desc).toContain("do it and report");
+  expect(desc).toContain("one decision");
+  expect(desc).toContain("non-technical");
+  expect(desc).toContain("operator's language");
 });
 
 test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {
@@ -1249,13 +1270,17 @@ test("dispatch prepends a read-the-project-docs preamble to the brief", async ()
 // codebase-memory MCP for a structural map before cold-reading files, and to use the superpowers
 // skills — so the operator never has to add it by hand and it can't be omitted. ---
 
-test("briefWithProjectDocs preamble requires codebase-memory + superpowers, states the engine indexed it, then the task verbatim", () => {
+test("briefWithProjectDocs preamble requires superpowers and the rest, then the task verbatim; the codebase-memory line names the index", () => {
   const out = briefWithProjectDocs("DO THE WORK");
   expect(out.toLowerCase()).toContain("agents.md"); // read project docs (existing)
   expect(out).toContain("REQUIRED"); // MANDATORY, not optional
-  expect(out.toLowerCase()).toContain("codebase-memory"); // structural map FIRST
-  expect(out.toLowerCase()).toContain("already indexed"); // engine guarantees the map is ready
-  expect(out.toLowerCase()).toContain("list_projects"); // look up the EXACT project name, don't guess it
+  // ADR-0028: the codebase-memory instruction is its own line, built once the engine indexed the
+  // folder — REQUIRED, the map FIRST, the EXACT name handed over (no list_projects, no guessing).
+  const cm = codebaseMemoryLine({ project: "home-p" });
+  expect(cm).toContain("REQUIRED");
+  expect(cm.toLowerCase()).toContain("codebase-memory");
+  expect(cm).toContain("indexed this project as `home-p`");
+  expect(out.toLowerCase()).not.toContain("list_projects"); // the old "list, then guess" step is gone
   expect(out.toLowerCase()).toContain("superpowers"); // use the skills
   // Challenge-yourself-first mandate (2026-09-03): no shallow patch-menu decisions — the worker
   // must root-cause + reach for the standard fix + self-critique BEFORE raising anything.
@@ -1266,9 +1291,19 @@ test("briefWithProjectDocs preamble requires codebase-memory + superpowers, stat
   // Liveness contract (2026-09-13 engine-bug fix): the stall detector sees only streamed activity, so
   // a worker that parks on a background wait/Monitor (or one long silent step) is killed though not
   // hung. The preamble must forbid background waits and require short foreground polling.
-  expect(low).toContain("background wait"); // never park on a background wait...
-  expect(low).toContain("monitor"); // ...or a Monitor
-  expect(low).toContain("poll"); // poll instead
+  // Operator order 2026-10-28: a long check must not block the work. It starts in the background
+  // (a background Bash command or a subagent), one log per module; the worker keeps going and reads
+  // the result when it is ready, and never ends its turn while a check runs unread.
+  expect(low).not.toContain("never park on a background wait"); // the old rule forbade exactly this
+  expect(low).toContain("in the background"); // long checks start in the background...
+  expect(low).toContain("subagent"); // ...as a background Bash command or a subagent
+  expect(low).toContain("vet/test/lint"); // what counts as long: module loops, builds, pulls, CI
+  expect(low).toContain("own log"); // each module its own log
+  expect(low).toContain("keep working"); // the worker does not sit and wait
+  expect(low).toContain("never end your turn while a check"); // ...but reads every result first
+  expect(out).toContain("`timeout`"); // the ban on timeout wrappers around real tests stays
+  expect(low).toContain("monitor"); // never a Monitor or one long silent wait
+  expect(low).toContain("poll"); // with nothing else to do: poll...
   expect(low).toContain("foreground"); // ...in short FOREGROUND steps
   expect(low).toContain("single-shot"); // finish within this run — not re-invoked later
   expect(out.endsWith("DO THE WORK")).toBe(true); // the brief is appended verbatim, last
@@ -1292,10 +1327,49 @@ test("briefWithProjectDocs carries the engineering baseline: i18n · env/dev · 
   expect(low).toContain("second implementation"); // ...never a parallel one
 });
 
+// ADR-0036: workers know a big plan waits for Approve & build, and that a STOP denial means end the turn.
+test("briefWithProjectDocs states the plan approval rule", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("BIG plan");
+  expect(out).toContain("`approval: required`");
+  expect(out).toContain("STOP, end your turn — Approve & build resumes you");
+});
+
+test("the dispatch preamble tells every worker to write decisions for a non-technical reader (ADR-0049)", () => {
+  const out = briefWithProjectDocs("");
+  for (const part of ["non-technical", "operator's language", "One decision per card", "no jargon"]) expect(out).toContain(part);
+});
+
 test("the dispatch preamble stays terse — every worker pays for it on every run", () => {
   // A ceiling, not a target: the preamble is engine-owned context charged to the operator on each
   // dispatch, so a new rule must be phrased tightly rather than appended as prose.
-  expect(briefWithProjectDocs("").length).toBeLessThan(5000);
+  expect(briefWithProjectDocs("").length).toBeLessThan(5200); // 5000 + the operator's push rule (ADR-0069)
+  // ...including the codebase-memory line the engine adds once the index is known (a long name)
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5200);
+});
+
+test("the preamble keeps the operator's standing wording: the planner on the highest effort, long checks in background Bash", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("`planner` subagent (strongest model, highest effort)");
+  expect(out).toContain("in the background (background Bash or a subagent)");
+});
+
+test("the preamble names project_notes ask and tools_for for a missing fact, tool or key (ADR-0050)", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("project_notes ask");
+  expect(out).toContain("tools_for");
+  expect(out).toContain("never wait silently");
+  expect(out).toContain("never paste keys");
+});
+
+test("the codebase-memory line names the exact project and forbids listing, checking or indexing", () => {
+  const line = codebaseMemoryLine({ project: "home-eticket-v3" });
+  expect(line).toContain("`home-eticket-v3`");
+  expect(line).toContain("Do NOT call `list_projects`, `index_status` or `index_repository`");
+  expect(line.toLowerCase()).toContain("worktree");
+  const none = codebaseMemoryLine({});
+  expect(none).toContain("no index");
+  expect(none).not.toContain("list_projects");
 });
 
 test("dispatch injects the codebase-memory + superpowers instruction into every brief automatically", async () => {
@@ -1307,10 +1381,13 @@ test("dispatch injects the codebase-memory + superpowers instruction into every 
     seenTask = o.task;
     return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
   };
-  await dispatchToProject("eticket-v3", "fix the partner leak", d, 1, { start: fakeStart as never, root });
+  const codebaseMemory = { ensureIndexed: async () => ({ project: "home-eticket-v3" }) };
+  await dispatchToProject("eticket-v3", "fix the partner leak", { ...d, codebaseMemory }, 1, { start: fakeStart as never, root });
   await new Promise((r) => setTimeout(r, 0));
   expect(seenTask).toContain("fix the partner leak"); // the original brief survives verbatim
   expect(seenTask.toLowerCase()).toContain("codebase-memory"); // map before cold-reading files
+  expect(seenTask).toContain("indexed this project as `home-eticket-v3`"); // the exact name: no list, no guess
+  expect(seenTask).not.toContain("Call `list_projects` FIRST");
   expect(seenTask.toLowerCase()).toContain("superpowers"); // use the skills
 });
 
@@ -1323,6 +1400,7 @@ test("dispatch indexes the folder (and emits the operator line) BEFORE starting 
     ensureIndexed: async (folder: string, onFirstIndex?: () => void | Promise<void>) => {
       events.push("index:" + folder);
       if (onFirstIndex) await onFirstIndex();
+      return { project: "home-eticket-v3" };
     },
   };
   const fakeStart = () => {
@@ -1366,7 +1444,7 @@ test("dispatch with team:'frontend-backend' attaches the agents map to the run A
   // agents attached to the run
   const agents = seenDeps?.agents as Record<string, unknown> | undefined;
   expect(agents).toBeDefined();
-  expect(Object.keys(agents!).sort()).toEqual(["backend", "frontend"]);
+  expect(Object.keys(agents!).sort()).toEqual(["backend", "frontend", "planner"]); // + the planner subagent (ADR-0063)
   // brief wrapped with the team-lead preamble (names both agents), original task still present
   expect(seenTask).toContain("backend");
   expect(seenTask).toContain("frontend");
@@ -1388,7 +1466,7 @@ test("dispatch WITHOUT team attaches no agents and leaves the brief byte-for-byt
   await dispatchToProject("eticket-v3", "build a dashboard", d, 1, { start: fakeStart as never, now: () => 0, root });
   await new Promise((r) => setTimeout(r, 0));
   expect(seenDeps).toBeDefined();
-  expect(seenDeps!).not.toHaveProperty("agents"); // no team → no agents key at all
+  expect(Object.keys((seenDeps as { agents?: Record<string, unknown> }).agents ?? {})).toEqual(["planner"]); // no team → only the planner (ADR-0063)
   expect(seenTask).toBe(briefWithProjectDocs("build a dashboard")); // identical to today
 });
 
@@ -1560,6 +1638,100 @@ test("a pending API retry keeps the channel open across a settle", async () => {
   expect(ctl.closes).toBe(1);
 });
 
+// ADR-0060: a held API wait has a handle. The re-send happens once — on the timer, on a wake
+// (`todo retry`), or never when the run went on by itself (the operator's own "Resume").
+async function heldRun() {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const apiWaits = createApiWaits({ ledger: d.ledger });
+  d.apiWaits = apiWaits;
+  d.apiLimitWakeEarly = false;
+  const { ctl, start } = drivenStart();
+  let wake!: () => void;
+  const sleep = () => new Promise<void>((r) => (wake = r));
+  await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root, sleep, rand: () => 0.5 });
+  await settle();
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+  const orderId = d.ledger.listEvents({ kind: "api_retry" })[0]!.orderId!;
+  return { d, ctl, apiWaits, orderId, timer: () => wake() };
+}
+
+test("ADR-0060: waking a held run re-sends the brief at once, and the timer later sends nothing", async () => {
+  const { ctl, apiWaits, orderId, timer } = await heldRun();
+  expect(apiWaits.held(orderId)).toMatchObject({ kind: "rate_limit", provider: "claude" });
+  expect(apiWaits.wake(orderId, "retry")).toBe(true);
+  expect(ctl.followUps.length).toBe(1);
+  timer();
+  await settle();
+  expect(ctl.followUps.length).toBe(1); // no second re-send
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "done", costUsd: 0 });
+  ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(1);
+});
+
+test("ADR-0060: a turn that goes through on a held run (the operator's Resume) re-sends once at once, never days later", async () => {
+  const { ctl, apiWaits, orderId, timer } = await heldRun();
+  ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "went on", costUsd: 0 });
+  expect(apiWaits.held(orderId)).toBeUndefined();
+  expect(ctl.followUps.length).toBe(1); // the retry follow-up, after this turn — the brief is never lost
+  timer();
+  await settle();
+  expect(ctl.followUps.length).toBe(1); // the old timer sends nothing
+});
+
+test("ADR-0060: an early wake that hits the limit again does not use up one of the run's API retries", async () => {
+  const { d, ctl, apiWaits, orderId } = await heldRun();
+  apiWaits.wake(orderId, "retry");
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: "s", summary: "", costUsd: 0, apiError: "rate_limit" });
+  const attempts = d.ledger.listEvents({ kind: "api_retry", orderId }).map((e) => e.data?.attempt);
+  expect(attempts).toEqual([1, 1]); // newest first: the second wait is attempt 1 again
+});
+
+test("ADR-0060: an interrupted or capped turn (ok:false, no API error) is not proof — the hold stays", async () => {
+  const { ctl, apiWaits, orderId } = await heldRun();
+  ctl.h!.onTurnComplete!({ ok: false, sessionId: "s", summary: "interrupted", costUsd: 0 });
+  expect(apiWaits.held(orderId)).toBeDefined();
+  expect(ctl.followUps.length).toBe(0);
+});
+
+test("ADR-0060: the run ends → its hold is dropped, nothing re-sends into it later", async () => {
+  const { ctl, apiWaits, orderId, timer } = await heldRun();
+  ctl.h!.onSettled!();
+  expect(ctl.closes).toBe(0); // still waiting to re-send
+  ctl.resolve!({ ok: false, sessionId: "s", summary: "killed", costUsd: 0 });
+  await settle(30);
+  expect(apiWaits.held(orderId)).toBeUndefined();
+  timer();
+  await settle();
+  expect(ctl.followUps.length).toBe(0);
+});
+
+test("ADR-0060: a turn that goes through wakes the other limit holds of the same provider", async () => {
+  const a = await heldRun();
+  const waits = a.apiWaits;
+  const sent: string[] = [];
+  waits.hold({ orderId: "other", kind: "rate_limit", provider: "claude", until: Date.now() + 3_600_000 }, new Promise(() => {}), () => sent.push("other"));
+  a.d.apiLimitWakeEarly = true;
+  a.d.apiLimitWakeJitterMs = 1;
+  a.ctl.h!.onTurnComplete!({ ok: true, sessionId: "s", summary: "ok", costUsd: 0 });
+  await settle(20);
+  expect(sent).toEqual(["other"]);
+});
+
+test("ADR-0061: a dispatch made for a customer-driven run marks its session; an operator dispatch does not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  mkdirSync(join(root, "gold"));
+  const { d } = makeDeps();
+  const { start } = drivenStart();
+  await dispatchToProject("eticket-v3", "t", d, CUSTOMER_CHAT, { start: start as never, root });
+  await dispatchToProject("gold", "t", d, 1, { start: start as never, root });
+  await settle();
+  expect(d.registry.findByFolder(join(root, "eticket-v3"))?.customerDriven).toBe(true);
+  expect(d.registry.findByFolder(join(root, "gold"))?.customerDriven).toBeUndefined();
+});
+
 test("a brief for a session that is closing is refused out loud, never pushed into the dead channel", async () => {
   const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
   mkdirSync(join(root, "eticket-v3"));
@@ -1572,6 +1744,35 @@ test("a brief for a session that is closing is refused out loud, never pushed in
   expect(pushed).toHaveLength(0);
   expect(out.toLowerCase()).toContain("retry");
   expect(d.ledger.listEvents({ kind: "dispatch_refused" })[0]?.data).toMatchObject({ reason: "closing" });
+});
+
+test("a brief for a session held at a big plan is refused, never delivered into a worker that can only say STOP", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const pushed: string[] = [];
+  const launched: string[] = [];
+  const s = d.registry.add({ id: "o1", source: "neo", folder: join(root, "eticket-v3"), task: "x", chatId: 1, createdAt: 0 }, 0);
+  d.registry.setStatus(s.id, "running");
+  d.registry.noteBlocked(s.id, { kind: "decision", label: "plan approval: Master plan", since: 0 });
+  d.registry.attachControl(s.id, {
+    followUp: (t) => void pushed.push(t),
+    interrupt: async () => {},
+    active: () => false,
+    closed: () => false,
+    held: () => "docs/superpowers/plans/master.md",
+  });
+  const out = await dispatchToProject("eticket-v3", "build the mocks", d, 1, {
+    root,
+    now: () => 0,
+    hooks: { onLaunched: (_o, mode) => void launched.push(mode), onRefused: (r) => void launched.push(`refused:${r}`) },
+  });
+  expect(pushed).toHaveLength(0);
+  expect(launched).toEqual(["refused:plan_held"]);
+  expect(out).toContain("docs/superpowers/plans/master.md");
+  expect(d.ledger.listEvents({ kind: "dispatch_refused" })[0]?.data).toMatchObject({ reason: "plan_held" });
+  // The hold's block stays: `sessions` keeps saying the operator owes an answer.
+  expect(d.registry.get(s.id)?.blockedOn?.kind).toBe("decision");
 });
 
 test("a progress digest reaches the operator and the live company while the worker is active", async () => {
@@ -1977,7 +2178,7 @@ test("a todo dispatch armed at a safe checkpoint ends as a continuation, with no
   });
   await tick();
   expect(steer?.("Edit", { file_path: join(folder, "a.txt") })).toContain("Neo context checkpoint");
-  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
+  writeFileSync(neoNotePath(folder), "## Goal\nall phases\n## Next steps\n1. phase 3\n");
   finish(finished("s1"));
   await tick();
   expect(handedOff).toBe(false);
@@ -2004,7 +2205,7 @@ test("a dispatch with no continuation path (not from the todo queue) is never st
 test("a fresh dispatch after a handoff starts from the note, inline", async () => {
   const { root, folder } = gitProject();
   const { d } = makeDeps();
-  writeFileSync(join(folder, "HANDOFF.md"), "## Goal\nthe cart\n");
+  writeFileSync(neoNotePath(folder), "## Goal\nthe cart\n");
   const handoffId = d.ledger.recordContextEvent(folder, "handoff", 0.7, 1, { reason: "above-sweet-spot" });
   let task = "";
   const fakeStart = (o: Order) => {
@@ -2045,4 +2246,45 @@ test("a todo dispatch armed at a checkpoint that cannot complete ends as failed 
   expect(end?.summary).toContain("could not complete");
   const recorded = d.ledger.listRecent(5).find((o) => o.task.includes("build all phases"))!;
   expect(d.ledger.getOutcome(recorded.id)?.status).toBe("error"); // the record agrees with the report
+});
+
+// ADR-0043 (AC6, AC19): a fresh dispatch starts with the target's open notes; a resume, or a run
+// without deps.notes (ingress strips it), does not.
+test("notes: a fresh dispatch gets the notes block; a kept resume and a run without notes do not", async () => {
+  const { createProjectNotes, DEFAULT_NOTES_CFG } = await import("../src/engine/project-notes");
+  const root = mkdtempSync(join(tmpdir(), "neo-disp-"));
+  mkdirSync(join(root, "eticket-v3"));
+  mkdirSync(join(root, "prod-ops"));
+  const { d } = makeDeps();
+  const notes = createProjectNotes({ ledger: d.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
+  const id = notes.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "finding", severity: "high", ref: "D16", title: "stale pnr", body: "b" }, 1).id!;
+  const tasks: string[] = [];
+  const fakeStart = (o: Order) => {
+    tasks.push(o.task);
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, done: new Promise<RunResult>(() => {}) };
+  };
+  await dispatchToProject("eticket-v3", "BRIEF", { ...d, notes }, 99, { start: fakeStart as never, now: () => 1, root });
+  expect(tasks[0]).toContain("[PROJECT NOTES");
+  expect(tasks[0]).toContain(`#${id} [finding/high] from prod-ops: stale pnr`);
+
+  const { d: d2 } = makeDeps();
+  await dispatchToProject("eticket-v3", "BRIEF", { ...d2 }, 99, { start: fakeStart as never, now: () => 1, root });
+  expect(tasks[1]).not.toContain("[PROJECT NOTES");
+
+  const { d: d3 } = makeDeps();
+  const notes3 = createProjectNotes({ ledger: d3.ledger, cfg: DEFAULT_NOTES_CFG, workRoot: root, desksDir: join(root, "none"), companyFolder: join(root, "agent") });
+  notes3.send({ project: "prod-ops", folder: join(root, "prod-ops"), chatId: 1 }, { to: "eticket-v3", kind: "fyi", severity: "low", ref: "x", title: "t", body: "b" }, 1);
+  const prior: Order = { id: "prior", source: "neo", folder: join(root, "eticket-v3"), task: "prior", chatId: SUB_CHAT, createdAt: 0 };
+  const existing = d3.registry.add(prior, 0);
+  d3.registry.setSdkSessionId(existing.id, "sdk-existing");
+  d3.registry.setStatus(existing.id, "idle");
+  await dispatchToProject("eticket-v3", "BRIEF", { ...d3, notes: notes3 }, 99, { start: fakeStart as never, now: () => 1, root });
+  expect(tasks.at(-1)).not.toContain("[PROJECT NOTES"); // a kept resume: the session already knows
+});
+
+// ADR-0043: work for another project goes there as a project note, not "back to Neo to dispatch".
+test("the preamble sends work for another project through project_notes", () => {
+  const out = briefWithProjectDocs("");
+  expect(out).toContain("`project_notes`");
+  expect(out).not.toContain("goes back to Neo to dispatch");
 });

@@ -85,12 +85,14 @@ Worker    (Claude Agent SDK by default, or Codex    ← does the actual project 
   unmuted (`decisionsChatId`), while routine progress and interactive-turn `done` replies stay in
   the muted firehose. The `result`/`done` split is by call site (a walked-away background job vs. a
   reply in a live DM), never by reading prose, so the group stays high-signal. A worker raises ONE
-  **matured decision** with the `ask_operator` tool — a schema enforces the shape, so every decision
-  carries a crisp title, the problem + root cause, 2–5 options that each state their own trade-off, and
-  a recommendation (tappable buttons with the recommended one ⭐, optional `multiSelect`, always an
-  implicit free-form "Other"); a shapeless or bundled question is rejected at the tool boundary. The
-  SDK's native structured-question tool is serviced the same way; it's tracked in a durable queue that
-  survives a restart. **Answering** — a tapped button (or several,
+  **decision card** with the `ask_operator` tool, written for a non-technical reader: a plain title,
+  the context, 2–5 options each with a short label and an explanation of what it does, and the
+  recommended option with a reason (ADR-0049). The engine rejects a card with a blank part, an
+  over-long label or unexplained jargon (an ADR number, a code name), and tells the worker what to
+  rewrite. The card shows all of it: numbered options, the recommended one ⭐, tappable buttons,
+  optional `multiSelect`, always an implicit free-form "Other". The SDK's native structured-question
+  tool is redirected to `ask_operator`. A decision is tracked in a durable queue that survives a
+  restart. **Answering** — a tapped button (or several,
   then Submit), a typed answer, or a plain reply to the decision message — resolves it and **resumes
   the raising project**. An opt-in **secretary** loop (latest model) digests the open queue to the
   Decisions channel on a cadence and escalates stale items; silent when the queue is empty.
@@ -161,6 +163,11 @@ else. To reset admin, delete `data/admin.db`. You can pre-restrict who may claim
   register your `PUBLIC_URL` domain in @BotFather (`/setdomain`), open it, and "Log in with
   Telegram". The console binds localhost by default and is meant to sit behind your proxy — don't
   expose the raw port publicly.
+- **On a phone:** the same console works at phone and tablet widths (a drawer for the sidebar, one
+  pane at a time for Threads and Projects, 44 px buttons, light or dark from your system setting).
+  Install it from the browser (the console's **Install app** button, or on iPhone: Share → Add to
+  Home Screen). The installed app keeps only its public shell (icons, manifest, offline page) on the
+  device; everything else, including login, comes live from the server (ADR-0022).
 
 ### Talking to projects — one-shot focus
 

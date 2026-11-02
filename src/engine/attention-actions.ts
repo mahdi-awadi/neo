@@ -7,12 +7,14 @@ import type { TodoQueue } from "./todo-queue";
 import { ENGINE_CHAT_ID, type Trace } from "./trace";
 import { isDue } from "./trigger";
 import { dismiss, listOpen, snooze } from "./attention";
-import { attentionBrief } from "./attention-briefs";
+import { attentionBrief, ATTENTION_BRIEFS } from "./attention-briefs";
+import { badgeLabel, explainAttention, whyEn } from "./attention-explain";
 import { todoTitle } from "./todo-title";
 import { faults } from "./fault";
 import { exec } from "./update-sys";
 import type { ExecResult } from "./updater";
 import type { Registry } from "./registry";
+import { attentionClass } from "./needs-you";
 
 /** Bound on the worktree status read and remove. */
 const REMOVE_TIMEOUT_MS = 30_000;
@@ -52,7 +54,9 @@ const worktreeFacts = (row: Pick<AttentionRow, "kind" | "detail">): WorktreeFact
 export function attentionActions(row: Pick<AttentionRow, "kind" | "detail">): AttentionAction[] {
   const f = worktreeFacts(row);
   const removable = !!f && f.dirty === false && (f.merged === true || f.pushed === true);
-  return removable ? ["remove", "todo", "snooze", "dismiss"] : ["todo", "snooze", "dismiss"];
+  // No brief template, no → todo (ADR-0059): the tap could only be refused, on every surface.
+  const todo: AttentionAction[] = ATTENTION_BRIEFS[row.kind] ? ["todo"] : [];
+  return [...(removable ? (["remove"] as AttentionAction[]) : []), ...todo, "snooze", "dismiss"];
 }
 
 export interface AttentionActionDeps {
@@ -149,12 +153,31 @@ async function removeWorktree(deps: AttentionActionDeps, row: AttentionRow, now:
   return { ok: true, text: `removed worktree ${f.path}` };
 }
 
+/** The cause of a project note: its operator message and that message's thread, when both are known. */
+function noteCause(ledger: Ledger, row: AttentionRow): { msgId: number; threadId: number } | undefined {
+  if (row.source !== "note" || row.causeMsgId === undefined) return undefined;
+  const threadId = ledger.messageById(row.causeMsgId)?.threadId;
+  return threadId !== undefined ? { msgId: row.causeMsgId, threadId } : undefined;
+}
+
+/** An item's title as its lines show it: a project note also names its sender (ADR-0043). */
+/** One bounded Telegram line for an item (ADR-0059): its kind badge (the console's EN catalogue name) and its
+ *  plain title, then who sent it when it is a project note. */
+export const attentionTitle = (r: AttentionRow, now: number = Date.now()): string => {
+  const e = explainAttention(r);
+  // A note's sender says why it is there; for the rest, the English reason carries its facts (ages, PR numbers).
+  const why = r.fromProject ? "" : whyEn(e, now);
+  return `[${badgeLabel(e.badge)}] ${todoTitle(e.plain)}${why ? ` — ${why}` : ""}${r.fromProject ? ` — from ${r.fromProject}` : ""}`;
+};
+
 async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<AttentionActionResult> {
   const { ledger } = deps;
   // The linked todo is THE todo unless it failed or was cancelled — even "done": a brief delivered into
   // an open session is done at once while the item is still open. A returning item has no link (reopen).
   const existing = row.todoId !== undefined ? ledger.todoById(row.todoId) : undefined;
   if (existing && existing.status !== "failed" && existing.status !== "cancelled") return { ok: true, text: `already todo #${existing.id} (${existing.status})` };
+  // A failed linked todo is re-run as the SAME row, never copied (ADR-0027).
+  if (existing?.status === "failed" && deps.todo) return { ok: true, text: deps.todo.retry(existing.id) };
   const launcher = deps.todo?.launcher();
   if (!deps.todo || !launcher || !deps.trace) return { ok: false, text: "the todo queue is unavailable — → todo needs it" };
   const brief = attentionBrief(row);
@@ -162,10 +185,15 @@ async function toTodo(deps: AttentionActionDeps, row: AttentionRow): Promise<Att
   if (queueing.has(row.id)) return { ok: false, text: `#${row.id} is being queued` };
   queueing.add(row.id);
   try {
-    // Its own thread (origin attention), so /trace and the console show what the tap started.
-    const cause = deps.trace.root({ origin: "attention", title: row.title, project: row.project, folder: row.folder });
+    // A project note joins the thread of the operator message it traces to (ADR-0043), so /trace shows
+    // the chain from the finding to the fix; anything else gets its own thread (origin attention).
+    const cause = noteCause(ledger, row) ?? deps.trace.root({ origin: "attention", title: row.title, project: row.project, folder: row.folder });
+    // The todo THIS tap made: a project note joins a thread that may already hold todos (ADR-0043), so
+    // never "the thread's first todo" — the one in this folder that was not there before the submit.
+    const before = ledger.newestTodoInThread(cause.threadId, row.folder)?.id ?? 0;
     const text = await deps.todo.submit({ project: row.folder, brief, workClass: "interactive", cause }, launcher.deps, launcher.replyChat);
-    const todo = ledger.threadArtifacts(cause.threadId, 5).todos[0];
+    const made = ledger.newestTodoInThread(cause.threadId, row.folder);
+    const todo = made && made.id > before ? made : undefined;
     if (!todo || todo.status === "cancelled") return { ok: false, text }; // refused or held: nothing runs
     ledger.updateAttention(row.id, { todoId: todo.id });
     return { ok: true, text: `queued as todo #${todo.id}` };
@@ -186,7 +214,9 @@ export function renderAttention(
   const rows = listOpen(ledger, { project: o.project, now: o.now });
   if (!rows.length) return { text: o.project ? `✓ nothing needs attention in ${o.project}` : "✓ nothing needs attention", buttons: [] };
   const byProject = new Map<string, AttentionRow[]>();
-  for (const r of rows) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]); // rows come severity first
+  // Needs-you items first (ADR-0065), each class in listOpen's order (severity, then newest).
+  const ranked = [...rows].sort((a, b) => Number(attentionClass(a.kind) !== "needs_you") - Number(attentionClass(b.kind) !== "needs_you"));
+  for (const r of ranked) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]);
   const lines = [`⚠ attention: ${rows.length} open${o.project ? ` in ${o.project}` : ""}`];
   const buttons: AttentionRow[] = [];
   let shown = 0;
@@ -196,7 +226,7 @@ export function renderAttention(
     for (const r of items) {
       if (lines.length >= o.maxLines) break;
       // One bounded line per item: a title may hold a long, multi-line question (the brief keeps it all).
-      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${todoTitle(r.title)}${r.todoId !== undefined ? ` → todo #${r.todoId}` : ""}`);
+      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${attentionTitle(r)}${r.todoId !== undefined ? ` → todo #${r.todoId}` : ""}`);
       shown++;
       if (buttons.length < o.maxButtons) buttons.push(r);
     }
@@ -218,22 +248,25 @@ export function renderDigest(
   const ids = rows.map((r) => r.id);
   const prev = new Set(o.prevIds);
   const fresh = rows.filter((r) => !prev.has(r.id)).length;
-  const high = rows.filter((r) => r.severity === "high").length;
+  // ADR-0065: what needs the operator is classed by kind, never by the producer's severity.
+  const needs = (r: AttentionRow): boolean => attentionClass(r.kind) === "needs_you";
+  const high = rows.filter(needs).length;
   const priority = high > 0 ? "result" : "progress";
-  if (!fresh && !high) return { text: `☀ attention today: ${rows.length} open, nothing new, nothing high — /attention`, priority, buttons: [], ids };
-  const lines = [`☀ attention today: ${rows.length} open, ${high} high, ${fresh} new since the last digest`];
+  if (!fresh && !high) return { text: `☀ attention today: ${rows.length} open, nothing new, nothing needs you — /attention`, priority, buttons: [], ids };
+  const lines = [`☀ attention today: ${rows.length} open, ${high} need you, ${fresh} new since the last digest`];
   const buttons: Array<AttentionRow & { actions: AttentionAction[] }> = [];
   const byProject = new Map<string, AttentionRow[]>();
   for (const r of rows) byProject.set(r.project, [...(byProject.get(r.project) ?? []), r]); // severity first
   let shownProjects = 0;
   for (const [project, items] of byProject) {
-    const top = items.filter((x) => x.severity === "high").slice(0, TOP_HIGH);
+    const top = items.filter(needs).slice(0, TOP_HIGH);
     if (lines.length + 1 + top.length > o.maxLines) break; // one bounded message (Telegram: 4096)
-    const count = (sev: AttentionRow["severity"]) => items.filter((r) => r.severity === sev).length;
-    lines.push(`${project}: ${(["high", "normal", "low"] as const).filter((s) => count(s)).map((s) => `${count(s)} ${s}`).join(" · ")}`);
+    const n = top.length ? items.filter(needs).length : 0;
+    const house = items.length - items.filter(needs).length;
+    lines.push(`${project}: ${[...(n ? [`${n} need you`] : []), ...(house ? [`${house} housekeeping`] : [])].join(" · ")}`);
     for (const r of top) {
-      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${todoTitle(r.title)}`);
-      buttons.push({ ...r, actions: ["todo"] });
+      lines.push(`  ${SEVERITY_ICON[r.severity]} #${r.id} ${attentionTitle(r)}`);
+      buttons.push({ ...r, actions: attentionActions(r).filter((a) => a === "todo") });
     }
     shownProjects++;
   }
@@ -242,7 +275,7 @@ export function renderDigest(
   return { text: lines.join("\n"), priority, buttons, ids };
 }
 
-/** High items shown per project in the digest. */
+/** Needs-you items shown per project in the digest. */
 const TOP_HIGH = 3;
 
 export interface DigestDeps {

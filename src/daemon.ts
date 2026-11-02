@@ -1,17 +1,29 @@
 // Neo engine — entry point. Loads config, opens the ledger, owns the shared live-session
 // registry + budget meter + idle watchdog + admin store, and starts the operator frontends:
 // the Telegram bot and the web console (both drive the same source:"neo" SDK pipeline).
+import { inboxSecretOf } from "./engine/bearer";
+import { createToolNotices, DEFAULT_TOOL_CONTROL_CFG } from "./engine/tool-control";
+import { clearToolCards, postToolNotices, sweepToolCards } from "./frontends/telegram-tool-cards";
+import { DEFAULT_LANES_CFG } from "./engine/lanes";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { loadConfig } from "./config";
+import { isAbsolute, join } from "node:path";
+import { DEFAULT_TOOLS_CFG, ledgerUsageSource, openCatalogue, relayKeyNames } from "./engine/tools-catalogue";
+import { fsSkillSource } from "./engine/tool-skills";
+import { loadConfig, loadedDotEnvKeys } from "./config";
+import { reportableEngineKeys, type EnvScrubOptions } from "./engine/worker-env";
+import { runOrder, setDefaultEnvScrub } from "./engine/session-runner";
 import { contextPolicyWarnings, contextWindows, sessionContext } from "./engine/context-policy";
 import { DEFAULT_ATTENTION_CFG, runEngineProducer, type EngineProducerDeps } from "./engine/producers/engine";
-import { bootFacts, DEFAULT_RESTART_CFG, gatedText, restartDrafts, type RestartDeps } from "./engine/producers/restart";
+import { bootFacts, DEFAULT_RESTART_CFG, gatedText, integrationGap, restartDrafts, runningBuild, type IntegrationGap, type RestartDeps } from "./engine/producers/restart";
 import { reconcileAll } from "./engine/attention";
+import { skillifyTick } from "./engine/producers/skillify";
 import { runScan } from "./engine/producers/scan";
-import { runDigest, type AttentionAction } from "./engine/attention-actions";
+import { attentionActions, runDigest, type AttentionAction } from "./engine/attention-actions";
+import { createProjectNotes, DEFAULT_NOTES_CFG, noteNowText, notesWiring } from "./engine/project-notes";
+import { createConsultRunner } from "./engine/consult";
+import { SUB_CHAT } from "./engine/dispatch";
 import { DEFAULT_GITHUB_CFG } from "./engine/producers/github";
 import { createGitRead } from "./engine/git-read";
 import { restartNeededSince } from "./engine/updater";
@@ -20,7 +32,7 @@ import { openLedger, LEDGER_PATH } from "./engine/ledger";
 import { openAdminStore } from "./engine/admin";
 import { createRegistry } from "./engine/registry";
 import { DEFAULT_GOVERNOR_CFG } from "./engine/governor";
-import { createMeter } from "./engine/budget";
+import { createMeter, type Meter } from "./engine/budget";
 import { createUsageMeter } from "./engine/usage";
 import { openTrustStore } from "./engine/trust";
 import { openInbox } from "./engine/inbox";
@@ -28,15 +40,22 @@ import { createSessionStore } from "./engine/web-session";
 import { sweepIdle } from "./engine/idle";
 import { createLifecycle, drainAndPersist, restoreSessions, shutdownFailsafeMs, stopFrontends } from "./engine/reload";
 import { flushDispatcherInbox, liveCompanyLink, recoverInterruptedDispatches } from "./engine/dispatch-report";
-import { createApiCooldown } from "./engine/api-retry";
+import { nextRetry } from "./engine/todo-retry";
+import { setDeployFacts, setNeoNotesDir } from "./engine/context-policy";
+import { createApiCooldown, type ApiCooldown } from "./engine/api-retry";
+import { createApiWaits } from "./engine/api-wait";
+import { createTodoSummarizer } from "./engine/todo-summary";
+import { DEFAULT_TODO_SUMMARY_CFG } from "./engine/todo-summary-cfg";
+import { pinnedModel } from "./engine/worker-profile";
 import { sweepStuck } from "./engine/watchdog";
 import { effectiveLoops, startScheduledLoop, resolveDreamLoop, resolveSecretaryLoop, secretaryGateOutcome, type LoopDef } from "./engine/loops";
 import { tickScheduler, folderBusy } from "./engine/scheduler";
+import { createDiskGuardStep } from "./engine/disk-guard-runtime";
 import { CRON_RESOLUTION_MS, heartbeatMs, nextTickDelayMs, runHeartbeatTick, type HeartbeatLoop } from "./engine/heartbeat";
 import { configureFaults, createFaultReporter, faults, installSafetyNet } from "./engine/fault";
 import { createHealthMonitor, startHealthTimer } from "./engine/health";
-import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster, attentionKeyboard } from "./frontends/telegram";
-import { startWeb } from "./frontends/web";
+import { startTelegram, sendOperatorLine, projectTagPrefix, createOperatorApi, createPlanPoster, createPlanEditor, attentionKeyboard } from "./frontends/telegram";
+import { startWeb, type WebAppDeps } from "./frontends/web";
 import { registerDefaultProject } from "./engine/default-project";
 import { createOperatorBus } from "./engine/operator-bus";
 import { makeLoopReply } from "./engine/loop-mirror";
@@ -44,6 +63,10 @@ import { createTodoQueue } from "./engine/todo-queue";
 import { createTrace } from "./engine/trace";
 import { planDepsFrom } from "./engine/plans";
 import { createEngineUpdater, registryBusy } from "./engine/update-engine";
+import { HISTORY_DEFAULTS } from "./engine/history/defaults";
+import { servicesOf, startTaskHistory, type HistoryRuntime } from "./engine/history/runtime";
+import { BACKUP_DEFAULTS } from "./engine/backup/cfg";
+import { createBackupSchedule } from "./engine/backup/schedule";
 
 // Resolve the bot's @username (needed by the web Login Widget). An explicit BOT_USERNAME (cfg)
 // wins so login never depends on a network call; otherwise ask getMe (read-only, no polling).
@@ -73,19 +96,53 @@ async function main(): Promise<void> {
   // company with where it stopped. Runs FIRST — before any frontend or the scheduler can start a
   // new dispatch that would look unfinished. Queued in the dispatcher inbox, NOT delivered now: the
   // company is not woken at boot; the operator's next message to it carries them (ADR-0007).
-  const interrupted = recoverInterruptedDispatches(ledger, { now: Date.now(), windowMs: cfg.dispatchRecoverWindowMs });
+  const bootAt = Date.now();
+  // A todo run among them is kept and re-run by the queue (todo.recover below, ADR-0027): its report
+  // says so instead of asking the company to resume it — or the same work would run twice.
+  const todoNote = (orderId: string): string | undefined => {
+    const t = ledger.todoByOrder(orderId);
+    return t?.status === "running" && nextRetry(t.attempts, cfg.todoRetryBackoffMs, bootAt)
+      ? `[todo] #${t.id} is kept and re-runs by itself after a backoff (it continues from what is done) — do NOT dispatch it again.`
+      : undefined;
+  };
+  const interrupted = recoverInterruptedDispatches(ledger, { now: bootAt, windowMs: cfg.dispatchRecoverWindowMs, todoNote });
   console.log(`  dispatch  -> ${interrupted} interrupted dispatch(es) queued for the company; no wall-clock limit, digest every ${cfg.dispatchProgressMs / 60_000}m`);
   const admin = openAdminStore("data/admin.db", { busyTimeoutMs });
   const registry = createRegistry();
   // The cause seam (ADR-0015): ONE trace per daemon, shared by Telegram, the web console, the todo
   // queue (through the frontends' dispatch deps), scheduled loops and ingress — so every surface
   // files its lines in the same threads.
-  const trace = createTrace({ ledger, registry, companyFolder: cfg.companyFolder });
+  const trace = createTrace({ ledger, registry, companyFolder: cfg.companyFolder, settleDecisions: () => cfg.decisionSettle?.enabled ?? true, settleCfg: () => cfg.decisionSettle });
   // The per-project todo queues (ADR-0008). A todo still "running" was cut short with the dispatch
-  // above: fail it with its stop point (failure policy applies). Queued todos stay queued; the
+  // above: keep it as `retry` with its stop point, or fail it once its retries are used up (ADR-0027). Queued todos stay queued; the
   // heartbeat tick releases them in order once the operator channel registers its launcher.
-  const todo = createTodoQueue({ ledger, registry, onFailure: () => cfg.todoOnFailure });
-  const cutTodos = todo.recover({ now: Date.now() });
+  // Neo's handoff notes live outside every project repo (ADR-0029).
+  setNeoNotesDir(cfg.handoffNotesDir);
+  // A done todo made from a project note resolves the note (ADR-0043); `notes` is built below and only
+  // read when a todo ends.
+  const todoSummaryCfg = cfg.todoSummary ?? DEFAULT_TODO_SUMMARY_CFG;
+  /** The meter and the API cooldown, set once they exist (they are built after the queue). */
+  const summaryGate: { meter?: Meter; cooldown?: ApiCooldown } = {};
+  // Held API waits (ADR-0060): one registry for dispatch and the queue, so `todo retry` ends a limit wait now.
+  const apiWaits = createApiWaits({ ledger });
+  const todo = createTodoQueue({
+    ledger, registry, onFailure: () => cfg.todoOnFailure, retryBackoffMs: () => cfg.todoRetryBackoffMs, apiWaits,
+    // A short human summary for each new todo (ADR-0059): AI proposes, the engine accepts or keeps its own.
+    // Claude only (a Codex own-work setup has no Claude model to ask); it waits while the reserve is held or the
+    // API is throttled, and its cost goes on the meter (both built below, read when a todo is made).
+    ...(cfg.providers?.ownWork === "codex"
+      ? {}
+      : { summarize: createTodoSummarizer({
+          cfg: todoSummaryCfg, model: pinnedModel(cfg.models, todoSummaryCfg.model) ?? todoSummaryCfg.model,
+          mayRun: () => !summaryGate.meter?.shouldThrottleBackground() && !summaryGate.cooldown?.activeAt(Date.now()),
+          noteCost: (costUsd) => summaryGate.meter?.note({ costUsd }),
+        }) }),
+    lanes: () => cfg.lanes ?? DEFAULT_LANES_CFG,
+    onDone: (t) => void notes.onTodoEnd(t, Date.now()).catch((e) => faults.report("notes.onTodoEnd", e, { todo: t.id })),
+  });
+  const cutTodos = todo.recover({ now: bootAt });
+  // A todo parked on a decision that already closed is never left waiting (ADR-0054).
+  faults.guard("boot.releaseOrphans", () => todo.releaseOrphans());
   const engineProducerDeps: EngineProducerDeps = {
     ledger,
     registry,
@@ -95,7 +152,17 @@ async function main(): Promise<void> {
    *  SDK-reported windows (ADR-0013), read once per tick. */
   const attentionEngineTick = (): void => {
     const windowTokensByModel = contextWindows(ledger, cfg.contextPolicy.windowTokensByModel);
-    runEngineProducer({ ...engineProducerDeps, measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }) }, Date.now());
+    runEngineProducer(
+      {
+        ...engineProducerDeps,
+        measure: (s) => sessionContext(s.order.folder, s.sdkSessionId, { windowTokensByModel }),
+        // ADR-0067: Neo's own items — the task history's service states (newest pass) and the backup state.
+        neoFolder,
+        ...(historyRuntime.available ? { history: { cfg: historyCfg, services: () => servicesOf(historyRuntime.latest()) } } : {}),
+        backups: () => backups.state(),
+      },
+      Date.now(),
+    );
   };
   // The running build (spec §8.4): recorded once at boot, so the restart producer and /gated can say
   // what is built but not running. The Neo repo is the daemon's working folder.
@@ -107,6 +174,8 @@ async function main(): Promise<void> {
       return undefined; // no config.json: nothing to compare
     }
   };
+  // The previous daemon life's start, read before this boot is recorded (ADR-0054, below).
+  const prevBoot = faults.guard("boot.previous", () => ledger.lastBoot());
   const thisBoot = faults.guard("boot.record", () => {
     const facts = bootFacts(neoFolder);
     if (!facts) return undefined;
@@ -120,14 +189,49 @@ async function main(): Promise<void> {
     ledger.recordBoot(boot);
     return boot;
   });
+  // Every order ends (ADR-0054): one silent through the whole previous daemon life was cut off. Its own
+  // guard: a failure here never costs the boot record.
+  if (prevBoot) {
+    faults.guard("boot.interruptedOrders", () => {
+      const n = ledger.endInterruptedOrders(prevBoot.at);
+      if (n) ledger.recordEvent("orders_interrupted", { data: { count: n, since: prevBoot.at } });
+    });
+  }
   const restartDeps = (): RestartDeps => ({
     folder: neoFolder,
     boot: thisBoot,
     branchPrefixes: (cfg.restart ?? DEFAULT_RESTART_CFG).branchPrefixes,
+    // Finished work that does not run is one loud item (ADR-0054).
+    integrationBranch: (cfg.restart ?? DEFAULT_RESTART_CFG).integrationBranch,
+    maxUndeployedDays: (cfg.restart ?? DEFAULT_RESTART_CFG).maxUndeployedDays,
     updates: thisBoot ? restartNeededSince(ledger, thisBoot.at) : [],
     configHash: configHashNow(),
   });
   const gated = (): string => gatedText(restartDeps());
+  // The deploy gap for /list and the console header (ADR-0054). It reads git, and the console polls
+  // every 15 s, so one read serves a minute.
+  let gapMemo: { at: number; gap: IntegrationGap | undefined } | undefined;
+  const deployGap = (): IntegrationGap | undefined => {
+    const now = Date.now();
+    if (!gapMemo || now - gapMemo.at > 60_000) {
+      const g = faults.guard("restart.integrationGap", () => integrationGap(restartDeps()));
+      gapMemo = { at: now, gap: g && g !== "error" ? g : undefined };
+    }
+    return gapMemo.gap;
+  };
+  // The build label under the console logo (ADR-0056): this boot's commit and the package version read
+  // now, at the same moment, so it names what runs even after a later checkout or pull.
+  const build = faults.guard("boot.build", () => {
+    let pkgVersion: string | undefined;
+    try {
+      pkgVersion = (JSON.parse(readFileSync(join(neoFolder, "package.json"), "utf8")) as { version?: string }).version;
+    } catch {
+      // no readable package.json: the label shows the commit only
+    }
+    return runningBuild(thisBoot, pkgVersion);
+  });
+  // A handoff of the Neo repo says which finished work does not run (ADR-0054).
+  setDeployFacts({ neoFolder, gap: deployGap });
   // The daily attention digest (AC5.5): a high item → the Decisions group, else the operator's DM.
   const sendDigest = async (text: string, priority: "result" | "progress", buttons: Array<{ id: number; actions: AttentionAction[] }>): Promise<{ chatId: number; messageId: number } | void> => {
     const target = priority === "result" ? (cfg.decisionsChatId ?? admin.adminId()) : admin.adminId();
@@ -136,6 +240,44 @@ async function main(): Promise<void> {
     const m = await operatorApi.sendMessage(target, text, buttons.length ? { reply_markup: attentionKeyboard(buttons, hours) } : {});
     return { chatId: target, messageId: m.message_id };
   };
+  // The tools catalogue (ADR-0044): its cards and the API relay behind `tool_api`. A load error is
+  // recorded and the daemon goes on without the relay — it never crashes on a bad card.
+  const relayKeys = new Set<string>();
+  const toolsCfg = cfg.tools ?? DEFAULT_TOOLS_CFG;
+  const toolsDir = isAbsolute(toolsCfg.catalogueDir) ? toolsCfg.catalogueDir : join(neoFolder, toolsCfg.catalogueDir);
+  // Every card file's relay key stays in the engine whatever its status — also a card that fails to
+  // load, so a broken card never leaks its key to a worker (ADR-0050 §7).
+  faults.guard("tools.relayKeys", () => { for (const k of relayKeyNames(toolsDir)) relayKeys.add(k); }, {});
+  const tools = faults.guard("tools.catalogue", () => {
+    const catalogue = openCatalogue({
+      dir: toolsDir,
+      cfg: toolsCfg, skills: fsSkillSource(), ledger,
+      // Ranking learns from what worked (ADR-0044 Phase 3): done orders that used a card, last 30 days.
+      usage: (cards) => ledgerUsageSource({ ledger, cards, cfg: toolsCfg }),
+    });
+    const { cards, errors } = catalogue;
+    for (const c of cards) if (c.relay?.envKey) relayKeys.add(c.relay.envKey);
+    if (errors.length) {
+      ledger.recordEvent("tools_catalogue_errors", { data: { count: errors.length, first: errors.slice(0, 5) } });
+      console.error(`[tools] ${errors.length} card error(s); relay off: ${errors[0]}`);
+      return undefined;
+    }
+    return catalogue;
+  }, {});
+  // A task the operator keeps giving a project, with no tool that fits, becomes one attention item, once a
+  // day (ADR-0044 skillify). No catalogue (a card error): no suggestions.
+  const skillify = tools
+    ? skillifyTick({ ledger, catalogue: tools, cfg: toolsCfg, keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })
+    : undefined;
+  // Scrub the worker env (ADR-0050 §7): relay keys never reach a worker; the engine's own file keys
+  // are listed by name in `report` mode (the default) and removed only in `strip` mode.
+  {
+    const wcfg = (cfg.tools ?? DEFAULT_TOOLS_CFG).workerEnv;
+    const scrub: EnvScrubOptions = { engineKeys: new Set(loadedDotEnvKeys()), relayKeys, inherit: new Set(wcfg.inherit), mode: wcfg.engineSecrets };
+    setDefaultEnvScrub(scrub);
+    const names = scrub.mode === "report" ? reportableEngineKeys(scrub) : [];
+    if (names.length) ledger.recordEvent("worker_env_report", { data: { names } });
+  }
   // The repo scan (spec §7): git + GitHub for every tracked repo, every github.scanEveryMs, one at a
   // time, in the background — a tick only starts it (single-flight).
   let scanning = false;
@@ -154,7 +296,7 @@ async function main(): Promise<void> {
   };
   console.log(`  boot      -> ${thisBoot ? `${thisBoot.headSha.slice(0, 7)} on ${thisBoot.branch}` : "not recorded (git unreadable)"} (/gated)`);
   console.log(`  updates   -> ${cfg.updates.enabled ? `every ${cfg.updates.everyMs / 3_600_000}h` : "OFF"} · hold breaking: ${cfg.updates.holdBreaking ? "on" : "off"} (/updates)`);
-  console.log(`  todo      -> ${cutTodos} cut-short todo(s) failed with their stop point; on failure: ${cfg.todoOnFailure}`);
+  console.log(`  todo      -> ${cutTodos} cut-short todo(s) kept to retry (or failed) with their stop point; on failure: ${cfg.todoOnFailure}`);
   // The operator-channel broadcast bus: Telegram + the web console each register a sink, so one
   // operator conversation mirrors across both surfaces (engine/operator-bus.ts).
   const bus = createOperatorBus();
@@ -171,6 +313,81 @@ async function main(): Promise<void> {
     reservePct: cfg.subscriptionInteractiveReservePct,
     windowMs: cfg.budgetWindowMs,
   });
+  summaryGate.meter = meter;
+  // Post an ALERT-priority engine line (watchdog stalls, loop-failure) straight to the operator over
+  // the raw Bot API — these fire from the daemon tick, outside the pipeline/sink. Routes to the
+  // unmuted Decisions chat when configured (so a stall/crash is never lost in the muted DM), else
+  // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
+  // Every engine-side Bot API call goes through the same flood gate as the bot (installFloodGate).
+  const operatorApi = cfg.telegramToken ? createOperatorApi(cfg.telegramToken) : undefined;
+  const alertOperator = (text: string): void => {
+    const target = cfg.decisionsChatId ?? admin.adminId();
+    if (!operatorApi || target === undefined) return;
+    // A failed alert is logged (the API logs a refused call; this logs a network error) — never a
+    // fault of its own, because the fault reporter alerts through here.
+    operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
+  };
+  // The disk guard's heartbeat step (ADR-0068); off with NEO_DISK_GUARD=0 or config diskGuard.enabled.
+  const diskGuardStep = cfg.diskGuard?.enabled ? createDiskGuardStep({ kitDir: cfg.diskGuard.kitDir, ledger, alert: alertOperator }) : undefined;
+  // The task history (ADR-0067): off → no store and no worker tool; a history.db that cannot be opened is
+  // moved aside (when corrupt) with one alert, and the engine runs on with history "not available". The Qdrant
+  // URL and the keys come from the env the loader filled (`loadConfig`), named in the config, never logged.
+  const historyCfg = cfg.history ?? HISTORY_DEFAULTS;
+  const historyRuntime: HistoryRuntime = startTaskHistory({
+    cfg: historyCfg,
+    ledger,
+    workRoot: cfg.workRoot,
+    env: process.env,
+    events: (kind, data) => ledger.recordEvent(kind, { data }),
+    alert: alertOperator,
+    report: (component, err) => faults.report(component, err),
+  });
+  const history = historyRuntime.history;
+  console.log(`  history   -> ${!historyCfg.enabled ? "OFF" : historyRuntime.available ? `${historyCfg.dbPath} (search + worker tools)` : "NOT available (history.db could not be opened; see the alert)"}`);
+  // Snapshot backups (ADR-0067 Decision 8): each listed SQLite file on its own cron, in a child process (the
+  // event loop never waits on the copy), plus the weekly restore drill. One alert per failure streak; the
+  // attention producer reads `backups.state()` for the `backup_failed` item.
+  const backupCfg = cfg.backup ?? BACKUP_DEFAULTS;
+  const backups = createBackupSchedule({
+    cfg: backupCfg,
+    baseDir: process.cwd(),
+    bun: process.execPath,
+    events: (kind, data) => ledger.recordEvent(kind, { data }),
+    alert: alertOperator,
+  });
+  console.log(`  backup    -> ${backups.jobs.length ? `${backupCfg.dir} (${backupCfg.databases.map((d) => `${d.path} @ ${d.cron}`).join(", ")}; drill @ ${backupCfg.drillCron})` : "OFF (no database listed)"}`);
+
+  // Project notes (ADR-0043): one project tells another. A request or a high finding is told to the
+  // operator at once (through the flood gate, like the digest); the rest wait for the digest.
+  // Questions (ADR-0050): a read-only consult run answers them; notes from main and late answers reach
+  // a worker of the folder at its next step (notesWiring: steered into a live turn, never into an idle
+  // session — the pipeline and dispatch prepend them to its next follow-up or resume).
+  const ownWork = cfg.providers?.ownWork;
+  const notes = createProjectNotes({
+    ledger,
+    cfg: cfg.notes ?? DEFAULT_NOTES_CFG,
+    workRoot: cfg.workRoot,
+    companyFolder: cfg.companyFolder,
+    trace,
+    notifyNow: (row) => {
+      faults.contain("notes.notifyNow", () => void sendDigest(noteNowText(row), "result", [{ id: row.id, actions: attentionActions(row) }]).catch((e) => faults.report("notes.notifyNow", e, { id: row.id })));
+    },
+    consult: createConsultRunner({ runOrder, cfg, catalogue: tools, ledger, meter, history }),
+    catalogue: tools,
+    meter,
+    ...notesWiring({
+      registry,
+      notes: () => notes,
+      worker: ownWork,
+      lastSessionFor: (folder) => ledger.lastSessionRow(folder, SUB_CHAT),
+      occupancyPct: (folder, sid) => {
+        const sig = sessionContext(folder, sid, { windowTokensByModel: contextWindows(ledger, cfg.contextPolicy.windowTokensByModel) });
+        return sig.turns > 0 ? Math.round(sig.occupancy * 100) : undefined; // nothing measured → never forked
+      },
+    }),
+  });
+  // Questions a reload cut off get their "no answer: reload" now; held answers past the hold expire.
+  faults.guard("notes.sweepQuestions", () => notes.sweepQuestions(Date.now()));
   // Measured subscription usage from Claude Code's own transcripts (for /usage).
   const usage = createUsageMeter({
     projectsDir: join(homedir(), ".claude", "projects"),
@@ -185,12 +402,15 @@ async function main(): Promise<void> {
   // arms it, and NEW background work (dispatches, loop fires) waits it out instead of earning
   // another 429. The operator's own interactive messages are never held — that's the headroom.
   const cooldown = createApiCooldown({ cooldownMs: cfg.apiCooldownMs });
+  summaryGate.cooldown = cooldown;
   // Frontend stop hooks, run FIRST on shutdown. Telegram long polling only confirms an update on
   // the *next* getUpdates (grammy does it in bot.stop()), so exiting straight after the /reload
   // handler left that update unconfirmed — Telegram redelivered it on boot and the daemon reloaded
   // again, forever. Stopping the poller up front also means the offset is already committed if
   // systemd SIGKILLs us mid-drain, and messages sent during the drain simply wait for the restart.
   const stopHooks: Array<() => Promise<unknown>> = [];
+  // Set once the operator Bot API and the notice store exist (below); a no-op before that.
+  let clearCards: () => Promise<void> = async () => {};
   let drainStarted = false;
   const shutdown = (why: string): void => {
     if (drainStarted) return;
@@ -205,28 +425,50 @@ async function main(): Promise<void> {
       .then(() => drainAndPersist({ registry, ledger, lifecycle, drainMs: cfg.drainWindowMs, memory: cfg.memory, companyFolder: cfg.companyFolder }))
       .then((r) => console.log(`[reload] drained ${r.drained.length} · interrupted ${r.interrupted.length} · persisted ${r.persisted} — exiting for restart`))
       .catch((e) => console.log(`[reload] drain error: ${e instanceof Error ? e.message : e}`))
-      .finally(() => process.exit(0));
+      // Tool-call cards: the next boot cannot act on them, so they leave the chat now (bounded wait).
+      .then(() => Promise.race([clearCards().catch(() => {}), new Promise((r) => setTimeout(r, (cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG).cardSweepMs))]))
+      .finally(() => {
+        faults.guard("history.close", () => historyRuntime.close());
+        process.exit(0);
+      });
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
   const requestReload = (): void => shutdown("/reload");
 
-  // Post an ALERT-priority engine line (watchdog stalls, loop-failure) straight to the operator over
-  // the raw Bot API — these fire from the daemon tick, outside the pipeline/sink. Routes to the
-  // unmuted Decisions chat when configured (so a stall/crash is never lost in the muted DM), else
-  // the admin DM. A dropped line never throws (best-effort, must not crash the daemon).
-  // Every engine-side Bot API call goes through the same flood gate as the bot (installFloodGate).
-  const operatorApi = cfg.telegramToken ? createOperatorApi(cfg.telegramToken) : undefined;
-  const alertOperator = (text: string): void => {
-    const target = cfg.decisionsChatId ?? admin.adminId();
+  const toolNotices = createToolNotices();
+  const toolCfg = cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG;
+  // A card leaves the chat when its call ends — by itself, by Stop or by Background, from any surface
+  // (ADR-0058 amendment). An in-memory check; Telegram is called only for a card to remove.
+  // One card job at a time: the heartbeat's post+sweep and the sweep timer never overlap.
+  let cardsBusy = false;
+  const oneCardJob = async (job: () => Promise<void>): Promise<void> => {
+    if (cardsBusy) return;
+    cardsBusy = true;
+    try {
+      await job();
+    } finally {
+      cardsBusy = false;
+    }
+  };
+  if (operatorApi) {
+    const api = operatorApi;
+    setInterval(() => void oneCardJob(() => sweepToolCards({ notices: toolNotices, registry, api, cfg: toolCfg, now: Date.now })).catch((e: unknown) => faults.report("toolNotices.sweep", e)), toolCfg.cardSweepMs).unref();
+    clearCards = () => clearToolCards({ notices: toolNotices, api });
+  }
+  const postNotices = async (): Promise<void> => {
+    const target = admin.adminId();
     if (!operatorApi || target === undefined) return;
-    // A failed alert is logged (the API logs a refused call; this logs a network error) — never a
-    // fault of its own, because the fault reporter alerts through here.
-    operatorApi.sendMessage(target, text).catch((e) => console.error(`[alert] not delivered: ${e instanceof Error ? e.message : String(e)}`));
+    const api = operatorApi;
+    await oneCardJob(() =>
+      postToolNotices({ notices: toolNotices, registry, api, target, cfg: toolCfg, now: Date.now, report: (e, session) => faults.report("toolNotices.send", e, { session }) }),
+    );
   };
   // The one plan poster (ADR-0019): every plan a run writes — from Telegram, the web console, a
   // dispatch or a loop — reaches the operator as the same card, in the Decisions chat (else the DM).
   const postPlan = operatorApi ? createPlanPoster(operatorApi, () => cfg.decisionsChatId ?? admin.adminId()) : undefined;
+  // ...and the one editor that redraws a card when its plan changes state (ADR-0036).
+  const editPlan = operatorApi ? createPlanEditor(operatorApi) : undefined;
 
   // The engine-wide fault reporter (ADR-0010): log with the stack, an `engine_fault` event, a
   // deduplicated + capped operator alert, and a note queued for the company to investigate.
@@ -341,7 +583,7 @@ async function main(): Promise<void> {
           cfg,
           store: ledger, // feeds the LEARNED cache-TTL resume gate (Ledger satisfies LoopStore)
           trace,
-          plans: postPlan ? planDepsFrom({ ledger, postPlan, trace, todo }, cfg.plans) : undefined,
+          plans: postPlan ? planDepsFrom({ ledger, postPlan, editPlan, trace, todo }, cfg.plans) : undefined,
         });
       },
       // A loop crashing (e.g. its folder was deleted → Bun.spawn ENOENT) must never crash the
@@ -373,6 +615,9 @@ async function main(): Promise<void> {
           // Release todo queues a hold, a resume or the restart left waiting (ADR-0008). Completions
           // release their own project at once; this tick is the backstop.
           ["todo", () => todo.pump()],
+          // A tool call running past toolControl.noticeAfterMs gets ONE Telegram notice with Stop /
+          // Background buttons (ADR-0058) — the operator never has to /kill a session for one command.
+          ["toolNotices", postNotices],
           // The daily toolchain check (and the retry of items a busy session deferred).
           ["updates", runScheduledUpdate],
           [
@@ -401,7 +646,20 @@ async function main(): Promise<void> {
           ["attention.scan", attentionScanTick],
           ["attention.digest", () => runDigest({ ledger, trace, digestAt: (cfg.attention ?? DEFAULT_ATTENTION_CFG).digestAt, maxLines: (cfg.attention ?? DEFAULT_ATTENTION_CFG).listLines, consoleUrl: cfg.publicUrl || undefined, send: sendDigest }, Date.now())],
           // What is built but not running (spec §8.4): git + the boot record + the updater.
+          ["notes.prune", () => notes.prune(Date.now())],
+          ["notes.sweepQuestions", () => notes.sweepQuestions(Date.now())],
           ["attention.restart", () => reconcileAll(ledger, "restart", restartDrafts(restartDeps()), Date.now(), { keepResolvedMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).keepResolvedDays * 86_400_000 })],
+          ["attention.skillify", () => skillify?.(Date.now())],
+          // The task history (ADR-0067): one indexer pass (it starts its own follow-ups while a backlog
+          // drains), and the change-feed prune, which runs also while history is off.
+          ["history", () => historyRuntime.tick()],
+          ["history.feedPrune", () => historyRuntime.feedPrune()],
+          // Snapshot backups (ADR-0067 Decision 8): starts a due child and returns at once; the child's
+          // promise is held by the fault boundary, so a tick never waits on a copy.
+          ["backup", () => backups.tick()],
+          // ADR-0068: Tier A under disk pressure and in its daily hour, and alerts before the disk is full —
+          // in plain code, so it never waits for a free loop session (the loop skips a busy folder).
+          ["disk.guard", () => diskGuardStep?.()],
           ["scheduler", () => cfg.loopSchedulerEnabled && tickLoops()],
         ],
         scheduleHeartbeat, // re-derive next tick's interval from the loops enabled right now — always re-armed
@@ -426,7 +684,7 @@ async function main(): Promise<void> {
 
   const gatewaySendUrl = cfg.gatewaySendUrl;
   if (cfg.telegramToken) {
-    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, todo, updates: updater, gated, trace, postPlan, neoFolder }, bus);
+    const bot = startTelegram(cfg, ledger, admin, registry, meter, trust, usage, inbox, gatewaySendUrl, { lifecycle, requestReload, cooldown, apiWaits, todo, updates: updater, gated, deployGap, trace, postPlan, editPlan, neoFolder, notes, tools, toolNotices, history }, bus);
     // bot.stop() confirms the last handled update's offset with Telegram — without it a /reload
     // update is redelivered after the restart and reloads again (an endless restart loop).
     stopHooks.push(() => bot.stop());
@@ -437,13 +695,22 @@ async function main(): Promise<void> {
       secret: createHash("sha256").update(`${cfg.telegramToken}:web-session`).digest("hex"),
     });
     const botUsername = await resolveBotUsername(cfg.telegramToken, cfg.botUsername);
-    startWeb(
-      { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, todo, trace, postPlan }, requestReload, updates: updater, gated, usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inbox, gatewaySendUrl, bus, neoFolder },
-      cfg.webPort,
-      cfg.webHost,
-    );
+    const webDeps: WebAppDeps = { engine: { cfg, ledger, registry, meter, trust, lifecycle, cooldown, apiWaits, todo, trace, postPlan, editPlan, notes, tools, history }, requestReload, updates: updater, gated, deployGap, ...(build ? { build } : {}), usage, botToken: cfg.telegramToken, botUsername, sessions, admin, ingressSecret: cfg.agentIngressSecret, inboxSecret: inboxSecretOf(cfg), inbox, gatewaySendUrl, bus, neoFolder };
     const publicHint = cfg.publicUrl ? ` · ${cfg.publicUrl}` : "";
-    console.log(`  web       -> http://${cfg.webHost}:${cfg.webPort} (sign in as @${botUsername})${publicHint}`);
+    const webAt = `http://${cfg.webHost}:${cfg.webPort}`;
+    // A failed bind (e.g. the WEB_HOST bridge IP missing until Docker is up) must not take the daemon
+    // down: report it, keep Telegram running, and retry until the address exists.
+    let webFailed = false;
+    const web = startWeb(webDeps, cfg.webPort, cfg.webHost, {
+      retryMs: cfg.webBindRetryMs,
+      onFail: (e) => {
+        if (!webFailed) console.log(`  web       -> ${webAt} NOT bound yet; retrying every ${cfg.webBindRetryMs / 1000}s`);
+        webFailed = true;
+        faults.report("web.bind", e, { webHost: cfg.webHost, webPort: cfg.webPort });
+      },
+      onBound: () => console.log(`  web       -> ${webAt} (sign in as @${botUsername})${publicHint}${webFailed ? " — bound after retry" : ""}`),
+    });
+    stopHooks.push(async () => web.stop());
   } else {
     console.log("  telegram  -> NOT configured (set TELEGRAM_TOKEN in .env). Web console disabled (needs the bot for login).");
   }

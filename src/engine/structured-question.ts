@@ -56,52 +56,97 @@ export function singleQuestionAsk(question: string, options: string[], multiSele
   return normalizeAsk({ questions: [{ question, options, multiSelect }] })!;
 }
 
-/** One option of a matured decision: a short button `label`, a `detail` (what it means + its
- *  trade-off/consequence), and an optional `recommended` flag on the one Neo advises. */
-export interface MaturedOption {
+/** One option of a decision card: a short button `label` and an `explanation` — what happens if the
+ *  operator picks it: its effect, and its risk or cost (ADR-0049). */
+export interface DecisionOption {
   label: string;
-  detail: string;
-  recommended?: boolean;
+  explanation: string;
 }
 
-/** The `ask_operator` matured-decision input: ONE decision, fully formed. The Zod schema at the tool
- *  boundary enforces this shape (required fields + 2..MAX_OPTIONS options) so a shapeless question
- *  cannot be raised; `maturedAsk` normalizes it into a StructuredAsk. */
-export interface MaturedDecisionInput {
+/** The `ask_operator` input: ONE decision card, written for a non-technical reader (ADR-0049).
+ *  `checkDecision` is the gate — the tool's Zod schema only types it. */
+export interface DecisionInput {
   title: string;
   context: string;
-  options: MaturedOption[];
-  recommendation: string;
+  options: DecisionOption[];
+  /** The option Neo advises (one of the labels) and one line of why. */
+  recommended: { option: string; reason: string };
   multiSelect?: boolean;
-  /** Optional crisp restatement of the question; defaults to `title`. */
-  question?: string;
 }
 
-/** Build the single-question StructuredAsk behind a matured `ask_operator` decision: the title
- *  doubles as the question (unless a crisp one is given), each option carries its detail, the
- *  recommended flag becomes the recommended index, and title/context/recommendation ride on the ask.
- *  Returns undefined for a degenerate decision (no title, or fewer than 2 real options) — a
- *  belt-and-suspenders check behind the tool's Zod schema. */
-export function maturedAsk(input: MaturedDecisionInput): StructuredAsk | undefined {
-  const title = str(input?.title);
-  const rawOpts = Array.isArray(input?.options) ? input.options : [];
-  const recommendedFlag = rawOpts.findIndex((o) => !!o?.recommended);
+/** Card limits (ADR-0049). A label must fit a Telegram button; the rest keeps the whole card far
+ *  below Telegram's 4096-character message limit (title + context + 5 options + reason ≈ 2.6k). */
+export const DECISION_LIMITS = { title: 140, context: 800, label: 40, explanation: 240, reason: 200 } as const;
+
+/** Internal jargon a non-technical reader cannot decode: ADR numbers, code spans, file paths and code
+ *  identifiers. Ordinary names (WhatsApp, PostgreSQL, iPhone, eticket-v3) do not match. */
+const JARGON: readonly RegExp[] = [
+  /\bADR-?\d+\b/gi,
+  /`[^`\n]+`/g,
+  /(?:[\w.-]+\/)+[\w.-]*[A-Za-z_][\w-]*\.[a-z]+\b|\b[a-z][\w-]*\.(?:ts|tsx|js|jsx|go|py|cs|java|rb|rs|json|sql|ya?ml|md|sh)\b/g,
+  /\b[a-z][a-z0-9]*_[a-z0-9_]+\b/g, // snake_case
+  /\b[a-z]{2,}(?:[A-Z][a-z0-9]+)+\b/g, // camelCase
+  /\b(?:[A-Z][a-z0-9]+){3,}\b/g, // compound PascalCase (WalletDetailPage)
+];
+
+/** The jargon tokens in `text`. `allowExplained`: a token followed by "(…)" is explained, so it passes. */
+/** Links and email addresses are what they look like to a reader — never scanned as jargon. */
+const NOT_JARGON = /\bhttps?:\/\/\S+|\S+@\S+\.\w+/g;
+
+function jargonIn(raw: string, allowExplained: boolean): string[] {
+  const text = raw.replace(NOT_JARGON, (m) => " ".repeat(m.length));
+  const found: string[] = [];
+  for (const re of JARGON) {
+    for (const m of text.matchAll(new RegExp(re.source, re.flags))) {
+      if (allowExplained && /^\s*\(/.test(text.slice(m.index! + m[0].length))) continue;
+      if (!found.includes(m[0])) found.push(m[0]);
+    }
+  }
+  return found;
+}
+
+/** The one gate for a decision card (ADR-0049): either the stored StructuredAsk, or every problem —
+ *  each naming the field to rewrite — so the worker fixes all of them in one more call. Pure. */
+export function checkDecision(input: DecisionInput): { ok: true; ask: StructuredAsk } | { ok: false; problems: string[] } {
+  const problems: string[] = [];
+  const L = DECISION_LIMITS;
+  const text = (field: string, value: unknown, max: number, plain: "explained" | "strict"): string => {
+    const v = str(value);
+    if (!v) problems.push(`${field} is missing or blank — write it in plain words.`);
+    else if (v.length > max) problems.push(`${field} is ${v.length} characters — keep it to ${max}.`);
+    for (const t of jargonIn(v, plain === "explained")) {
+      problems.push(
+        plain === "strict"
+          ? `${field}: "${t}" is internal jargon — a label must be plain words the operator understands.`
+          : `${field}: "${t}" is internal jargon — say it in plain words, or follow it with a plain explanation in brackets.`,
+      );
+    }
+    return v;
+  };
+  const title = text("title", input?.title, L.title, "explained");
+  const context = text("context", input?.context, L.context, "explained");
+  const raw = Array.isArray(input?.options) ? input.options : [];
+  if (raw.length < 2 || raw.length > MAX_OPTIONS) problems.push(`options: give 2 to ${MAX_OPTIONS} options (got ${raw.length}).`);
+  const labels: string[] = [];
+  const explanations: string[] = [];
+  raw.slice(0, MAX_OPTIONS).forEach((o, i) => {
+    const label = text(`option ${i + 1} label`, o?.label, L.label, "strict");
+    if (label && labels.includes(label)) problems.push(`option ${i + 1} label "${label}" is used twice — each option needs its own label.`);
+    labels.push(label);
+    explanations.push(text(`option ${i + 1} explanation`, o?.explanation, L.explanation, "explained"));
+  });
+  const pick = str(input?.recommended?.option);
+  const recommended = labels.indexOf(pick);
+  if (!pick || recommended < 0) problems.push(`recommended.option must be exactly one of the option labels (got "${pick}").`);
+  const reason = text("recommended.reason", input?.recommended?.reason, L.reason, "explained");
+  if (problems.length) return { ok: false, problems };
   const ask = normalizeAsk({
     title,
-    context: str(input?.context),
-    recommendation: str(input?.recommendation),
-    questions: [
-      {
-        question: str(input?.question) || title,
-        options: rawOpts.map((o) => str(o?.label)),
-        optionDetails: rawOpts.map((o) => str(o?.detail)),
-        recommended: recommendedFlag >= 0 ? recommendedFlag : undefined,
-        multiSelect: !!input?.multiSelect,
-      },
-    ],
+    context,
+    recommendation: reason,
+    questions: [{ question: title, options: labels, optionDetails: explanations, recommended, multiSelect: !!input.multiSelect }],
   });
-  if (!ask || !title || (ask.questions[0]?.options.length ?? 0) < 2) return undefined;
-  return ask;
+  return ask ? { ok: true, ask } : { ok: false, problems: ["the decision could not be built — re-raise it as one complete card."] };
 }
 
 /** Clamp + trim a raw ask into a valid StructuredAsk, or `undefined` when nothing usable is left
@@ -147,27 +192,6 @@ export function normalizeAsk(raw: unknown): StructuredAsk | undefined {
     context: str((raw as { context?: unknown })?.context) || undefined,
     recommendation: str((raw as { recommendation?: unknown })?.recommendation) || undefined,
   };
-}
-
-/** Map the SDK's native `AskUserQuestion` tool input ({ questions:[{ question, header, multiSelect,
- *  options:[{label,description}] }] }) into a StructuredAsk, or undefined if unparseable. */
-export function fromAskUserQuestionInput(input: unknown): StructuredAsk | undefined {
-  const rawQuestions = (input as { questions?: unknown })?.questions;
-  if (!Array.isArray(rawQuestions)) return undefined;
-  const questions = rawQuestions.map((q) => {
-    const rawOpts = (q as { options?: unknown })?.options;
-    const opts = Array.isArray(rawOpts) ? rawOpts : [];
-    return {
-      question: str((q as { question?: unknown })?.question),
-      header: str((q as { header?: unknown })?.header),
-      multiSelect: !!(q as { multiSelect?: unknown })?.multiSelect,
-      options: opts.map((o) => str((o as { label?: unknown })?.label)),
-      // Native AskUserQuestion options carry a `description` — keep it as the option's detail so a
-      // serviced native question renders as richly as a matured ask_operator one (no longer dropped).
-      optionDetails: opts.map((o) => str((o as { description?: unknown })?.description)),
-    };
-  });
-  return normalizeAsk({ questions });
 }
 
 // --- Telegram callback data (must stay < 64 bytes; ids are UUIDs with no colons) ---
@@ -261,23 +285,14 @@ export function answerText(ask: StructuredAsk, sel: Selection): string {
   return ask.questions.map((q, i) => `${q.header || `Q${i + 1}`}: ${perQuestion[i]}`).join(" | ");
 }
 
-/** The message body shown above the buttons: the single question's text, or a numbered list of
- *  questions (with headers) when there are several — so nothing is hidden on a multi-question ask. */
-export function questionSummary(ask: StructuredAsk): string {
-  if (ask.questions.length === 1) return ask.questions[0]!.question;
-  return ask.questions
-    .map((q, i) => `${i + 1}. ${q.header ? `${q.header}: ` : ""}${q.question}${q.multiSelect ? " (pick any)" : ""}`)
-    .join("\n");
-}
-
-/** One `• label — detail ⭐` line per option (⭐ on the recommended one). Details go in the BODY, not
- *  on the buttons — so the operator reads what each choice means without a long button label. */
+/** One numbered `N. label ⭐ — explanation` line per option (⭐ on the recommended one). Explanations
+ *  go in the BODY, not on the buttons — the operator reads what each choice does; buttons stay short. */
 function optionLines(q: StructuredQuestion): string {
   return q.options
     .map((label, i) => {
       const detail = q.optionDetails?.[i];
       const star = q.recommended === i ? " ⭐" : "";
-      return `• ${label}${detail ? ` — ${detail}` : ""}${star}`;
+      return `${i + 1}. ${label}${star}${detail ? ` — ${detail}` : ""}`;
     })
     .join("\n");
 }
@@ -301,7 +316,9 @@ export function decisionBody(ask: StructuredAsk): string {
       parts.push(`${head}\n${optionLines(q)}`);
     });
   }
-  if (ask.recommendation) parts.push(`Recommendation: ${ask.recommendation}`);
+  const q0 = ask.questions.length === 1 ? ask.questions[0]! : undefined;
+  const pick = q0 && q0.recommended !== undefined ? `${q0.recommended + 1}. ${q0.options[q0.recommended]}` : undefined;
+  if (ask.recommendation || pick) parts.push(`⭐ Recommended: ${[pick, ask.recommendation].filter(Boolean).join(" — ")}`);
   return parts.filter((p) => p.length > 0).join("\n\n");
 }
 

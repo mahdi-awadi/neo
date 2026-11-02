@@ -14,6 +14,7 @@
 //      operator's own interactive messages are never held: that is the reserved headroom.
 import type { ApiErrorKind } from "./session-runner";
 import type { RateLimitInfo } from "./usage";
+import type { Ledger } from "./ledger";
 
 /** Server-side conditions that clear on their own — the only ones worth waiting out. An auth,
  *  billing or invalid-request failure repeats identically however long we wait. */
@@ -175,6 +176,28 @@ export function apiExhaustionWarning(rateLimits: RateLimitInfo[] | undefined, no
     `⚠ Anthropic is rate-limiting the subscription until ${new Date(at).toUTCString()} ` +
     `(in ${humanDelay(at - now)}) — starting your turn anyway; it may fail until then.`
   );
+}
+
+/** A run's API wait (ADR-0047, ADR-0060): its order's newest `api_retry` whose re-send is still ahead and
+ *  that was not ended early (`api_wait_ended` after it: `todo retry`, the run going on by itself, or the
+ *  limit clearing). `resumesAt` is that re-send (`at + delayMs`); `limit` marks a usage limit
+ *  (`rate_limit`) against a shorter error backoff. Derived from the ledger, so every view reads one fact. */
+export function apiWait(ledger: Pick<Ledger, "listEvents">, orderId: string | undefined, now: number): { resumesAt: number; limit: boolean } | undefined {
+  if (!orderId) return undefined;
+  const last = ledger.listEvents({ kind: "api_retry", orderId, limit: 1 })[0];
+  const delayMs = last?.data?.delayMs;
+  if (!last || typeof delayMs !== "number") return undefined;
+  const resumesAt = last.at + delayMs;
+  if (resumesAt <= now) return undefined;
+  const ended = ledger.listEvents({ kind: "api_wait_ended", orderId, limit: 1 })[0];
+  if (ended && ended.at >= last.at) return undefined;
+  return { resumesAt, limit: last.data?.kind === "rate_limit" };
+}
+
+/** A run's limit wait (ADR-0047): its API wait, when it is a usage limit. */
+export function limitWait(ledger: Pick<Ledger, "listEvents">, orderId: string | undefined, now: number): { resumesAt: number } | undefined {
+  const w = apiWait(ledger, orderId, now);
+  return w?.limit ? { resumesAt: w.resumesAt } : undefined;
 }
 
 /** What a held dispatch/loop fire reports back. */

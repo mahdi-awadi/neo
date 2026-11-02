@@ -1,0 +1,26 @@
+# Neo's shared browser for workers (ADR-0032): ONE memory-capped Chromium service instead of a browser
+# per worker. Each CDP connection gets its own browser process inside the container, so workers stay
+# isolated; past NEO_BROWSER_CONCURRENT they queue. Loopback only — the host is public.
+#   bun tools/browser/install.ts            (up + health check)   · docs/browser.md
+# Values live in browser.env (tracked) and browser.local.env (machine-local, untracked).
+services:
+  neo-browser:
+    image: ${NEO_BROWSER_IMAGE:?set NEO_BROWSER_IMAGE in browser.env}
+    container_name: neo-browser
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NEO_BROWSER_PORT}:3000"
+    mem_limit: ${NEO_BROWSER_MEM}
+    memswap_limit: ${NEO_BROWSER_MEM}
+    shm_size: 1g
+    environment:
+      # The URL it advertises in /json/version — the loopback address clients actually reach.
+      EXTERNAL: http://127.0.0.1:${NEO_BROWSER_PORT}
+      CONCURRENT: ${NEO_BROWSER_CONCURRENT}
+      QUEUED: ${NEO_BROWSER_QUEUED}
+      TIMEOUT: ${NEO_BROWSER_TIMEOUT_MS}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:3000/json/version >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

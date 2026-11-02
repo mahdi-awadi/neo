@@ -5,9 +5,9 @@ the project as a headless coding-agent worker (Claude Agent SDK by default, Open
 optionally), governs the work deterministically, and streams progress back over a channel (Telegram
 first). No `cd`, no terminal, no tmux.
 
-**Core principle:** AI *decides*; the engine *acts and governs*. The engine itself contains **no
-AI** — it routes, governs, meters, and records. AI lives only inside SDK workers (Claude, on your
-subscription) and customer-message reading (Gemini).
+**Core principle:** AI *decides*, anywhere it helps (operator, 2026-10-28): a worker, the chief of staff
+picking a lane, a judge (Claude, Jev or ScaleDown; provider in config). The engine *acts, governs and
+enforces* every decision deterministically, failing closed. Customer-tainted input never reaches Claude.
 
 Neo is the clean successor to **operant** (at `/home/operant`). Same goals, rebuilt on the Agent
 SDK so the old tmux/socket/scraper spine is gone.
@@ -50,27 +50,21 @@ prompt:
 
 ## Current status
 
-Phases 1-3 (skeleton → live sessions → operator web console) are done. Also live: the loop runtime,
-customer inbox, governor hardening, context policy + session liveness, graceful daemon reload, API
-rate-limit recovery, data-driven loop CRUD, loop-failure isolation (one crashing loop can't take
-down the daemon), one-shot session focus, the per-project todo queue (ADR-0008), the toolchain auto-updater
-(ADR-0009), engine error containment (ADR-0010), trust that never lifts the write fence (ADR-0011), pre-approved out-of-folder writes + approval
-reminders/timeout (ADR-0012),
-the Telegram flood gate, the trace spine (message ids, threads, causes, `/trace`; ADR-0015/0016; restart-gated), the plan
-registry (every plan sent once with Approve/Changes/Execute, `/plans`; ADR-0019; restart-gated), the context sweet spot (boundary handoffs + safe checkpoints, ADR-0021), and context-efficiency Phase 1
-(per-path worker profiles, learned cache TTL, derived heartbeat, per-model context window), and
-memory Phase 2 (capped curated memory + frozen snapshot injection + FTS recall + dream loop;
-default off — `memory.scopes`). Full phase-by-phase narrative: `docs/HISTORY.md`.
+Phases 1-3 are done and many engine features are live or restart-gated (project notes with
+questions and live notes, the tools catalogue, loops, plans, context policy, memory Phase 2). The
+feature-by-feature list is in `docs/HISTORY.md` ("Status list moved from CLAUDE.md").
 
-Next: harden the Codex SDK adapter beyond the current wrapper (Codex uses sandbox/approval policy,
-not Claude's `canUseTool` hook), later context-efficiency phases per the 2026-07-23 design spec,
-then **Phase 3b** (deferred Gemini customer path), then Phase 4 (finance/board). Keep building
-**phase by phase, TDD**, per `MVP-PLAN.md`.
+Next: harden the Codex SDK adapter (Codex uses sandbox/approval policy, not `canUseTool`), later
+context-efficiency phases (2026-07-23 spec), then **Phase 3b** (deferred Gemini customer path), then
+Phase 4 (finance/board). Keep building **phase by phase, TDD**, per `MVP-PLAN.md`.
 
 ## How to work here
 
 - **Stack:** Bun + TypeScript. `bun install` · `bun test` · `bunx tsc --noEmit` · `bun run
   src/daemon.ts`.
+- **Done means live (ADR-0054).** A fix on `dev` is "built on dev, not live" until the running build
+  contains it (`git merge-base --is-ancestor <commit> <boot head>`). `/list`, `/gated` and the
+  console header show how far `dev` is ahead. Never report it as fixed before then.
 - **Follow `MVP-PLAN.md`** in order. Write the failing test first, then the minimal code (TDD).
   `bunx tsc --noEmit` + `bun test` must be green before any task is "done." Commit per logical piece.
 - **Port the proven code from `/home/operant`** — don't rebuild it: `store.ts` → `ledger.ts`,
@@ -99,10 +93,25 @@ Code that is not industry-standard is a **failure / no-go**, even when it works:
 3. **Everything runs in Docker.**
 4. **No hardcoding** — values live in env/DB/config.
 5. **Read the existing code first and REUSE it** — extend what exists; never a second implementation.
+6. **Production-grade, tested code; the best technology** (not the quickest hack), the choice in an ADR. Plus:
+   plan fully (rich plans, `planner` subagent) and finish non-stop — ADR-0063, `src/engine/standing-rules.ts`.
 
 Every dispatched worker gets this automatically: the dispatch preamble (`briefWithProjectDocs` in
 `src/engine/dispatch.ts`) carries it, because a worker sent into another folder loads *that*
 project's CLAUDE.md, never this one. Don't re-type it into briefs.
+
+## Security checks (ADR-0024)
+
+The kit in `tools/security/` scans at four layers: each edited file (Claude Code hook), pre-commit,
+pre-push, and a nightly sweep (`docs/loops/security-sweep.json`). Only NEW high or critical findings
+block; a project's existing findings are its baseline (`.security/baseline.json`). Every scanner
+runs in a digest-pinned Docker image; a missing Docker only warns.
+
+- The host is a dev server but public, so the bar is a public server's, not a laptop's.
+- Install for all sessions: `bun tools/security/install.ts`. Turn on for a repo:
+  `bun ~/.claude/security/init.ts <repo>`. Full reference: `docs/security-checks.md`.
+- The rules for every session live in `~/.claude/CLAUDE.md` and, for workers, in the dispatch
+  preamble. Don't re-type them into briefs.
 
 ## Conventions
 
@@ -113,7 +122,8 @@ project's CLAUDE.md, never this one. Don't re-type it into briefs.
   `config.json` (e.g. `companyFolder`), personal agent notes in `CLAUDE.local.md` (auto-loaded by
   Claude Code, gitignored). Tools that inject into tracked files must be told not to — keep any
   tool-generated instruction blocks in `CLAUDE.local.md`, never in tracked docs.
-- **No AI in the engine.** Determinism by default; AI only inside SDK workers + Gemini reads.
+- **AI decides, code enforces.** An AI decision (worker, chief of staff, judge) is always checked and
+  enforced by deterministic engine code, with a fail-closed fallback (operator, 2026-10-28).
 - Operator is addressed as **Neo** (not "Mahdi" — that's only the repo-author handle).
 - End commit messages with: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
   **Name the model that actually wrote the commit** — if you are a different one, say so instead of
@@ -140,8 +150,7 @@ Greptile) are noted but not adopted; these principles are:
 - **Quality flywheel: tests + docs + logs, always green.** TDD covers tests. Also keep docs synced to
   the code (don't let them drift) and log enough that an agent can diagnose any failure from logs
   alone. Cheap, compounding.
-- **Be concise.** Short, plain-English summaries of what changed — never essays. Applies to how Neo
-  reports progress, too.
+- **Be concise.** Short, plain-English summaries of what changed — never essays (Neo's progress too).
 - **Parallelism needs isolation.** Many agents on one repo conflict → git worktrees per agent (Neo's
   concurrent sessions already isolate by folder). Agent-scale merge/deploy is genuinely unsolved —
   batch and be patient. **Worktree folders are temporary** (operator, 2026-10-05): make one only when
@@ -178,3 +187,14 @@ Greptile) are noted but not adopted; these principles are:
   `loop_defs` by hand. Checked-in definitions live in `docs/loops/`.
 - `docs/HISTORY.md` — the phase-by-phase build narrative (moved out of this file to stay lean).
 - `docs/CONFIG.md` — full config reference (env vars + `config.json` knobs).
+- `tools/security/` + `docs/security-checks.md` — the shift-left security kit (ADR-0024): scan layers,
+  install/init, the nightly `security-sweep` loop.
+- `tools/browser/` + `docs/browser.md` — the shared, memory-capped browser workers attach to (ADR-0032).
+- `src/engine/project-notes.ts` — project notes (ADR-0043): send/list/show/ack/resolve/withdraw, the
+  notes block a fresh session starts with, resolution from facts; the `project_notes` worker tool.
+  Questions + consult runs: `src/engine/consult.ts` (ADR-0050); tool cards + recipes: `docs/tools/`, `tools_for`,
+  usage ranking, skillify items, `tools/catalogue/misses.ts` for the `tools-enrich` loop (ADR-0044).
+- `tools/threads/sweep.ts` + `src/engine/waiting-sweep.ts` — the hourly waiting sweep (ADR-0045): closes
+  decisions only on checked evidence and reminds the operator once per change (loop `waiting-sweep`).
+- `tools/disk/` — the disk-cleanup kit the `disk-cleanup` loop runs: Tier A automatic, Tier B only on
+  approved ids (ADR-0040, ADR-0041, `docs/loops.md`).

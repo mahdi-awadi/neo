@@ -97,10 +97,10 @@ export async function githubDrafts(read: GitRead, i: GithubScanInput): Promise<G
   type Item = { number: number; title: string; url: string };
 
   for (const p of (await json<Item & { isDraft?: boolean }>(["pr_open"], ["pr", "list", "--state", "open", "--limit", LIST_LIMIT, "--json", "number,title,url,isDraft"], LIMIT)) ?? []) {
-    draft({ kind: "pr_open", key: String(p.number), title: `PR #${p.number}${p.isDraft ? " (draft)" : ""}: ${p.title}`, url: p.url });
+    draft({ kind: "pr_open", key: String(p.number), title: `PR #${p.number}${p.isDraft ? " (draft)" : ""}: ${p.title}`, url: p.url, facts: { pr: p.number, prTitle: p.title, draft: p.isDraft ? 1 : 0 } });
   }
   for (const p of (await json<Item>(["pr_review_requested"], ["pr", "list", "--state", "open", "--search", "review-requested:@me", "--limit", LIST_LIMIT, "--json", "number,title,url"], LIMIT)) ?? []) {
-    draft({ kind: "pr_review_requested", key: String(p.number), title: `PR #${p.number} waits for your review: ${p.title}`, url: p.url });
+    draft({ kind: "pr_review_requested", key: String(p.number), title: `PR #${p.number} waits for your review: ${p.title}`, url: p.url, facts: { pr: p.number, prTitle: p.title } });
   }
 
   // CI: per tracked branch (a busy repo's other branches never push its runs off the list), the
@@ -116,7 +116,7 @@ export async function githubDrafts(read: GitRead, i: GithubScanInput): Promise<G
     for (const r of runs ?? []) {
       if (r.status !== "completed" || seen.has(r.workflowName)) continue;
       seen.add(r.workflowName);
-      if (CI_FAILED.has(r.conclusion)) draft({ kind: "ci_failed", key: `${branch}:${r.workflowName}`, severity: "high", title: `${r.workflowName} failed on ${branch}`, url: r.url });
+      if (CI_FAILED.has(r.conclusion)) draft({ kind: "ci_failed", key: `${branch}:${r.workflowName}`, severity: "high", title: `${r.workflowName} failed on ${branch}`, url: r.url, facts: { workflow: r.workflowName, branch } });
     }
   }
 
@@ -125,20 +125,20 @@ export async function githubDrafts(read: GitRead, i: GithubScanInput): Promise<G
   const labelled = await json<Item>(["issue_open"], ["issue", "list", "--state", "open", "--label", label, "--limit", LIST_LIMIT, "--json", "number,title,url"], LIMIT);
   if (assigned && labelled) {
     const byNumber = new Map([...assigned, ...labelled].map((x) => [x.number, x]));
-    for (const x of byNumber.values()) draft({ kind: "issue_open", key: String(x.number), title: `issue #${x.number}: ${x.title}`, url: x.url });
+    for (const x of byNumber.values()) draft({ kind: "issue_open", key: String(x.number), title: `issue #${x.number}: ${x.title}`, url: x.url, facts: { issue: x.number, issueTitle: x.title } });
   }
 
   const ALERTS_PAGE = 100;
   const alerts = (path: string) => ["api", `repos/{owner}/{repo}/${path}?state=open&per_page=${ALERTS_PAGE}`];
   const highSev = (s?: string) => s === "critical" || s === "high";
   for (const a of (await json<{ number: number; html_url: string; security_advisory?: { severity?: string; summary?: string } }>(["dependabot"], alerts("dependabot/alerts"), ALERTS_PAGE, true)) ?? []) {
-    draft({ kind: "dependabot", key: String(a.number), severity: highSev(a.security_advisory?.severity) ? "high" : "normal", title: `dependabot #${a.number} (${a.security_advisory?.severity ?? "?"}): ${a.security_advisory?.summary ?? ""}`, url: a.html_url });
+    draft({ kind: "dependabot", key: String(a.number), severity: highSev(a.security_advisory?.severity) ? "high" : "normal", title: `dependabot #${a.number} (${a.security_advisory?.severity ?? "?"}): ${a.security_advisory?.summary ?? ""}`, url: a.html_url, facts: { alert: a.number, severity: a.security_advisory?.severity ?? "?", summary: a.security_advisory?.summary ?? "" } });
   }
   for (const a of (await json<{ number: number; html_url: string; rule?: { description?: string; security_severity_level?: string } }>(["code_scanning"], alerts("code-scanning/alerts"), ALERTS_PAGE, true)) ?? []) {
-    draft({ kind: "code_scanning", key: String(a.number), severity: highSev(a.rule?.security_severity_level) ? "high" : "normal", title: `code scanning #${a.number}: ${a.rule?.description ?? ""}`, url: a.html_url });
+    draft({ kind: "code_scanning", key: String(a.number), severity: highSev(a.rule?.security_severity_level) ? "high" : "normal", title: `code scanning #${a.number}: ${a.rule?.description ?? ""}`, url: a.html_url, facts: { alert: a.number, severity: a.rule?.security_severity_level ?? "?", summary: a.rule?.description ?? "" } });
   }
   for (const a of (await json<{ number: number; html_url: string; secret_type_display_name?: string }>(["secret_scanning"], alerts("secret-scanning/alerts"), ALERTS_PAGE, true)) ?? []) {
-    draft({ kind: "secret_scanning", key: String(a.number), severity: "high", title: `secret leaked #${a.number}: ${a.secret_type_display_name ?? "secret"}`, url: a.html_url });
+    draft({ kind: "secret_scanning", key: String(a.number), severity: "high", title: `secret leaked #${a.number}: ${a.secret_type_display_name ?? "secret"}`, url: a.html_url, facts: { alert: a.number, secretType: a.secret_type_display_name ?? "secret" } });
   }
 
   const ignore = new Set(i.cfg.ignoreKinds ?? []);

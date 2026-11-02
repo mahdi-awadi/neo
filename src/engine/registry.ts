@@ -6,6 +6,7 @@
 import { basename } from "node:path";
 import type { Cause } from "./ledger";
 import type { BlockedOn, Order, Provider, SessionControl, SessionInfo } from "../types";
+import type { SessionLane } from "./lanes";
 
 /** Statuses for a session that is still live (followable / killable). */
 const OPEN: ReadonlySet<SessionInfo["status"]> = new Set(["running", "idle"]);
@@ -16,8 +17,9 @@ const OPEN: ReadonlySet<SessionInfo["status"]> = new Set(["running", "idle"]);
 export type FocusMode = "once" | "pinned";
 
 export interface Registry {
-  /** Register a freshly-started session. Returns the created entry (name may be uniquified). */
-  add(order: Order, now?: number): SessionInfo;
+  /** Register a freshly-started session. Returns the created entry (name may be uniquified). A side
+   *  lane (ADR-0057) is named `<project>-side-<kind>` and never counts as the folder's main session. */
+  add(order: Order, now?: number, opts?: { lane?: SessionLane }): SessionInfo;
   get(id: string): SessionInfo | undefined;
   list(): SessionInfo[];
   remove(id: string): void;
@@ -32,8 +34,11 @@ export interface Registry {
   /** A chat's current focus (session + mode) while the focused session is still OPEN, else undefined. */
   getFocus(chatId: number): { session: SessionInfo; mode: FocusMode } | undefined;
   findByName(name: string): SessionInfo | undefined;
-  /** The most-recently-active OPEN session for a folder (so dispatch reuses it, not a duplicate). */
+  /** The most-recently-active OPEN main-lane session for a folder (so dispatch reuses it, not a
+   *  duplicate). Side lanes (ADR-0057) are never returned: reuse, focus, busy and replies are main-lane. */
   findByFolder(folder: string): SessionInfo | undefined;
+  /** The OPEN side-lane sessions of a project (all projects when no folder). */
+  sideLanes(projectFolder?: string): SessionInfo[];
   setStatus(id: string, status: SessionInfo["status"]): void;
   /** Record the live SDK session id and (when known) WHICH SDK minted it, so a later resume never
    *  hands a Codex thread id to Claude or vice versa. */
@@ -49,6 +54,8 @@ export interface Registry {
   /** Record (or clear, with `undefined`) what the operator owes this session. While set, the
    *  session is awaiting-operator: never wedged, never stall-aborted. */
   noteBlocked(id: string, blocked: BlockedOn | undefined): void;
+  /** Mark a session a customer-driven run used (ADR-0061); never cleared. */
+  markCustomerDriven(id: string): void;
   /** Mark (or clear) a session that repeats itself with nothing changing (spec §8.1). */
   noteSpinning(id: string, mark: { label: string; since: number } | undefined): void;
   /** Attach the live control handle so follow-up / kill / idle-close can reach it. */
@@ -122,10 +129,12 @@ export function createRegistry(): Registry {
   }
 
   return {
-    add(order, now = Date.now()) {
+    add(order, now = Date.now(), opts) {
+      const lane = opts?.lane;
       const session: SessionInfo = {
         id: order.id,
-        name: uniqueName(basename(order.folder)),
+        name: uniqueName(lane ? `${basename(lane.projectFolder)}-side-${lane.kind}` : basename(order.folder)),
+        ...(lane ? { lane } : {}),
         sdkSessionId: "",
         order,
         status: "running",
@@ -192,11 +201,15 @@ export function createRegistry(): Registry {
     findByName: (name) => [...sessions.values()].find((s) => s.name === name),
     findByFolder: (folder) =>
       [...sessions.values()]
-        .filter((s) => s.order.folder === folder && OPEN.has(s.status))
+        .filter((s) => s.order.folder === folder && !s.lane && OPEN.has(s.status))
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0],
+    sideLanes: (projectFolder) => [...sessions.values()].filter((s) => s.lane && OPEN.has(s.status) && (!projectFolder || s.lane.projectFolder === projectFolder)),
     setStatus(id, status) {
       const s = sessions.get(id);
-      if (s) s.status = status;
+      if (!s) return;
+      s.status = status;
+      // Only a running session can wait on an approval; a decision block outlives the run (ADR-0038).
+      if (status !== "running" && s.blockedOn?.kind === "approval") s.blockedOn = undefined;
     },
     setSdkSessionId(id, sdkSessionId, provider) {
       const s = sessions.get(id);
@@ -219,6 +232,10 @@ export function createRegistry(): Registry {
       if (!s) return;
       s.lastOutputAt = now;
       s.lastActivityAt = now;
+    },
+    markCustomerDriven(id) {
+      const s = sessions.get(id);
+      if (s) s.customerDriven = true;
     },
     noteBlocked(id, blockedOn) {
       const s = sessions.get(id);

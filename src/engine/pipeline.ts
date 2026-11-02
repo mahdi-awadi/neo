@@ -6,7 +6,7 @@
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { DEFAULT_TRACE, type NeoConfig } from "../config";
-import type { Order, OrderSource, SessionInfo } from "../types";
+import type { FollowUpTiming, Order, OrderSource, SessionInfo } from "../types";
 import type { Cause, Ledger, MessageKind } from "./ledger";
 import type { Registry } from "./registry";
 import type { Meter } from "./budget";
@@ -15,10 +15,9 @@ import { noteProjectStart, type TrustStore } from "./trust";
 import { parseOrder } from "./orders";
 import { route } from "./provider-router";
 import { startOrder, type RunHandlers, type SessionRun, type RunDeps } from "./session-runner";
-import { neoMcpServers, raiseOperatorDecision, type DispatchDeps, type ReplyMeta } from "./dispatch";
+import { neoMcpServers, withLiveNotes, type DispatchDeps, type ReplyMeta } from "./dispatch";
 import type { TodoQueue } from "./todo-queue";
 import { flushDispatcherInbox, liveCompanyLink, takeDispatcherInbox, type DispatcherLink } from "./dispatch-report";
-import { questionSummary } from "./structured-question";
 import type { CodebaseMemoryIndexer } from "./codebase-memory";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import {
@@ -40,6 +39,7 @@ import {
   continuationBrief,
   describeContextReset,
   noteStamp,
+  neoNotePath,
   type ContextDecision,
 } from "./context-policy";
 import { createCheckpointWatch, createResumeProbe, type CheckpointWatch, type ResumeProbe } from "./context-checkpoint";
@@ -51,7 +51,10 @@ import { patientApproval } from "./escalation";
 import { DEFAULT_GOVERNOR_CFG } from "./governor";
 import { refSuffix, type Trace } from "./trace";
 import { faults } from "./fault";
-import { headSha, onRunEndPlans, planDepsFrom, type PostPlan } from "./plans";
+import { createPlanWatch } from "./plan-watch";
+import { DEFAULT_PLANS_CFG, headSha, onRunEndPlans, planDepsFrom, type EditPlanCard, type PostPlan } from "./plans";
+import type { ApiWaits } from "./api-wait";
+import { sendProjectMessage } from "./project-message";
 import {
   apiExhaustionWarning,
   apiFailureNotice,
@@ -110,6 +113,8 @@ export interface PipelineDeps {
   /** Post a plan card (ADR-0019): the one Telegram poster the daemon builds, shared by every
    *  operator surface. Absent (no bot token, the customer path) → no plan detection at all. */
   postPlan?: PostPlan;
+  /** Redraw a posted plan card when its plan changes state (ADR-0036). */
+  editPlan?: EditPlanCard;
   /** Per-project trust — when a folder is trusted, risky tools auto-approve. */
   trust: TrustStore;
   /** Send a line to the channel. `project` (a session's short name) tags worker output so a
@@ -124,6 +129,12 @@ export interface PipelineDeps {
    *  inline keyboard). Threaded into neoMcpServers so the `ask_operator` tool can post — and its
    *  presence gates that tool (operator surfaces only; never the customer/ingress path). */
   postDecision?: DispatchDeps["postDecision"];
+  /** Project notes (ADR-0043): gates the `project_notes` tool. Operator surfaces only. */
+  notes?: DispatchDeps["notes"];
+  /** The tools catalogue (ADR-0044): gates the `tool_api` relay tool. Operator surfaces only. */
+  tools?: DispatchDeps["tools"];
+  /** The task history (ADR-0067): gates `history_search` and `remember`. Operator surfaces only. */
+  history?: DispatchDeps["history"];
   start?: StartFn;
   /** Injectable clock (registry touch + budget window). Defaults to Date.now. */
   now?: () => number;
@@ -138,6 +149,8 @@ export interface PipelineDeps {
   /** Shared API-throttle gate: a session throttled here arms it, and background work reads it
    *  (see engine/api-retry.ts). Absent → retries still happen, they just don't hold sibling work. */
   cooldown?: ApiCooldown;
+  /** Held API waits (ADR-0060), shared with the todo queue: `todo retry` ends one now. */
+  apiWaits?: ApiWaits;
   /** Injectable wait for the retry backoff (tests pass a no-op). Defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>;
   /** Injectable jitter source for the retry backoff. Defaults to Math.random. */
@@ -363,48 +376,40 @@ export async function handleMessage(
   const addressed = focus?.session ?? registry.getDefault();
   if (addressed && !text.trim().startsWith("/")) {
     const oneShot = focus?.mode === "once"; // consumed once we actually deliver this message
-    if (registry.getControl(addressed.id)?.closed?.() === true) {
-      const why = handoffInFlight(addressed.order.folder) ? "is handing off its context" : "is closing";
-      await deps.reply(chatId, `⏳ ${addressed.name} ${why} — your message will follow`);
-    }
-    const live = await pastClose(registry, addressed, handoffHoldMs(deps.cfg.contextPolicy));
-    if (!live) {
+    const out = await deliverToSession(addressed, text, chatId, deps, cause, {
+      now,
+      start,
+      deliver,
+      // A message to the company carries any dispatch results still waiting in the dispatcher inbox
+      // (e.g. runs cut short by a reload), so the dispatcher sees them before it acts (ADR-0007).
+      // Taken only on the two delivering paths, never when the message is turned away.
+      body: (live, control) => {
+        if (live.id !== registry.getDefault()?.id || control?.closed?.() === true) return text.trim();
+        const pending = takeDispatcherInbox(ledger, now());
+        return pending ? `${pending}\n\n${text.trim()}` : text.trim();
+      },
+      closingNotice: (name, why) => deps.reply(chatId, `⏳ ${name} ${why} — your message will follow`),
+      onResume: async (live) => {
+        if (oneShot) registry.clearFocus(chatId);
+        await deps.reply(chatId, `↩︎ resuming ${live.name}…`, undefined, undefined, { kind: "ack" });
+      },
+    });
+    if (out.kind === "closing") {
       await deps.reply(chatId, `⏳ ${addressed.name} is still closing — send that again in a moment`);
       return null;
     }
-    const control = registry.getControl(live.id);
-    // A message to the company carries any dispatch results still waiting in the dispatcher inbox
-    // (e.g. runs cut short by a reload), so the dispatcher sees them before it acts (ADR-0007).
-    // Taken only on the two delivering paths below, never when the message is turned away.
-    const body = (): string => {
-      if (live.id !== registry.getDefault()?.id || control?.closed?.() === true) return text.trim();
-      const pending = takeDispatcherInbox(ledger, now());
-      return pending ? `${pending}\n\n${text.trim()}` : text.trim();
-    };
-    if (control && live.status === "running") {
-      // Live worker — the follow-up queues behind the in-flight turn. Report the REAL status, not a
-      // bare "busy": what it's doing, for how long, and how deep the queue is.
-      control.followUp(body(), cause);
-      deliver(live.id);
-      registry.touch(live.id, now());
-      // The operator's message answers (or replaces) a raised DECISION. A pending approval is
-      // left alone — it is still suspending the worker mid-tool and clears on their verdict.
-      clearDecisionBlock(registry, live.id);
-      if (oneShot) registry.clearFocus(chatId);
-      await deps.reply(chatId, `↩︎ queued for ${live.name} — ${describeSession(registry, live, now(), deps.cfg.liveness)}`, undefined, undefined, { kind: "ack" });
+    // Focus intentionally NOT consumed here — the re-send should still reach this project.
+    if (out.kind === "reopening") {
+      await deps.reply(chatId, `⏳ ${out.live.name} is reopening — send that again in a moment`);
       return null;
     }
-    // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
-    if (resuming.has(live.id)) {
-      // Focus intentionally NOT consumed here — the re-send should still reach this project.
-      await deps.reply(chatId, `⏳ ${live.name} is reopening — send that again in a moment`);
+    if (out.kind === "steered") {
+      if (oneShot) registry.clearFocus(chatId);
+      const when = out.midTurn ? "it'll see this at its next step" : "runs after its current turn";
+      await deps.reply(chatId, `↩︎ queued for ${out.live.name} (${when}) — ${describeSession(registry, out.live, now(), deps.cfg.liveness)}`, undefined, undefined, { kind: "ack" });
       return null;
     }
-    deliver(live.id);
-    return resumeSession(live, body(), chatId, deps, now, start, async () => {
-      if (oneShot) registry.clearFocus(chatId);
-      await deps.reply(chatId, `↩︎ resuming ${live.name}…`, undefined, undefined, { kind: "ack" });
-    }, cause);
+    return out.run;
   }
 
   // 2. Parse a new order.
@@ -455,12 +460,72 @@ export async function handleMessage(
     start,
     profileDeps(deps.cfg, "project", {
       resume: resume || undefined,
-      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, orderId: parsed.id, cause: turnCause(registry, session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+      mcpServers: neoMcpServers(dispatchDepsFrom(deps), chatId, { dispatch: false, workClass: "interactive", folder: parsed.folder, projectName: session.name, sessionId: session.id, orderId: parsed.id, cause: turnCause(registry, session.id), workCause: () => registry.causeOf(session.id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
     }),
     gate.idleMs,
     gate.preLines,
     cause,
   );
+}
+
+/** What delivering a message into an open session did (ADR-0061): steered into a live run (`midTurn`: seen at
+ *  its next step; else after its in-flight turn), resumed an idle one, or turned away (still closing, or
+ *  already reopening). */
+export type DeliverOutcome =
+  | { kind: "steered"; live: SessionInfo; midTurn: boolean }
+  | { kind: "resumed"; live: SessionInfo; run: Promise<SessionRun> }
+  | { kind: "closing" }
+  | { kind: "reopening"; live: SessionInfo };
+
+/** Deliver one message into an open session exactly as the operator's own message is (ADR-0061): the one
+ *  path for `handleMessage` and the chief of staff's `project_message`. A live worker gets it as a steer
+ *  follow-up (with any live notes, ADR-0050) and any raised decision block is cleared; an idle one is
+ *  resumed with its SDK session; a closing one is waited for briefly, then turned away. */
+export async function deliverToSession(
+  addressed: SessionInfo,
+  text: string,
+  chatId: number,
+  deps: PipelineDeps,
+  cause: Cause | undefined,
+  hooks: {
+    now: () => number;
+    start: StartFn;
+    /** The session the message went to, once known (its lines are filed under the turn's cause). */
+    deliver?: (id: string) => void;
+    /** The text to deliver (default: the trimmed message). */
+    body?: (live: SessionInfo, control: ReturnType<Registry["getControl"]>) => string;
+    /** Said while waiting for a closing session. */
+    closingNotice?: (name: string, why: string) => unknown;
+    /** Runs once a resume is under way (e.g. the operator's "resuming…" line). */
+    onResume?: (live: SessionInfo) => Promise<void>;
+  },
+): Promise<DeliverOutcome> {
+  const { registry } = deps;
+  const now = hooks.now;
+  if (registry.getControl(addressed.id)?.closed?.() === true) {
+    const why = handoffInFlight(addressed.order.folder) ? "is handing off its context" : "is closing";
+    await hooks.closingNotice?.(addressed.name, why);
+  }
+  const live = await pastClose(registry, addressed, handoffHoldMs(deps.cfg.contextPolicy));
+  if (!live) return { kind: "closing" };
+  const control = registry.getControl(live.id);
+  const body = (): string => hooks.body?.(live, control) ?? text.trim();
+  if (control && live.status === "running") {
+    // Live worker. The words steer: a Claude worker sees them at its next step mid-turn; one that can't
+    // steer (Codex) runs them after the in-flight turn.
+    control.followUp(withLiveNotes(deps, live.id, live.order.folder, body(), now()), "steer", cause);
+    hooks.deliver?.(live.id);
+    registry.touch(live.id, now());
+    // The message answers (or replaces) a raised DECISION. A pending approval is left alone — it is still
+    // suspending the worker mid-tool and clears on its verdict.
+    clearDecisionBlock(registry, live.id);
+    return { kind: "steered", live, midTurn: control.steersMidTurn === true };
+  }
+  // Idle/ended project — resume the SAME registry entry, carrying its sdk session id.
+  if (resuming.has(live.id)) return { kind: "reopening", live };
+  hooks.deliver?.(live.id);
+  const run = resumeSession(live, body(), chatId, deps, now, hooks.start, () => hooks.onResume?.(live) ?? Promise.resolve(), cause);
+  return { kind: "resumed", live, run };
 }
 
 /** The entry as it is once any CLOSE in progress is over. A run whose channel is already closed (a
@@ -551,8 +616,10 @@ export async function deliverToCompany(
   if (control) {
     if (control.closed?.() === true) return false;
     // A dispatch result carries its thread: the company's turn that reads it is filed there.
-    if (opts.cause) control.followUp(text, opts.cause);
-    else control.followUp(text);
+    // A dispatch report is an engine brief for the company: it waits for the turn, never steers it.
+    const brief = withLiveNotes(deps, company.id, company.order.folder, text, now());
+    if (opts.cause) control.followUp(brief, "after-turn", opts.cause);
+    else control.followUp(brief, "after-turn");
     registry.touch(company.id, now());
     return true;
   }
@@ -572,8 +639,11 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
   // With a trace, dispatch lines (digests, results, a released todo's whole run) are filed in their
   // thread through the one recording wrapper — added here when the caller passed raw frontend deps.
   if (deps.trace && !deps.recordsLines) deps = recorded(deps, undefined, () => undefined);
+  const pipeline = deps;
   return {
     ...deps,
+    // ADR-0061: the company's `project_message` — the operator's own delivery path, with these deps.
+    projectMessage: (a) => sendProjectMessage(pipeline, a),
     workRoot: deps.cfg.workRoot,
     projects: deps.cfg.projects,
     github: deps.cfg.github,
@@ -586,6 +656,8 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     toolLoopExempt: deps.cfg.toolLoopExempt,
     apiRetryLadderMs: deps.cfg.apiRetryLadderMs,
     apiRetryJitterFrac: deps.cfg.apiRetryJitterFrac,
+    apiLimitWakeEarly: deps.cfg.apiLimitWakeEarly,
+    apiLimitWakeJitterMs: deps.cfg.apiLimitWakeJitterMs,
     contextPolicy: deps.cfg.contextPolicy,
     workers: deps.cfg.workers,
     models: deps.cfg.models,
@@ -595,11 +667,16 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     memory: deps.cfg.memory,
     companyFolder: deps.cfg.companyFolder,
     plans: deps.cfg.plans,
+    commitFinish: deps.cfg.commitFinish,
+    lanes: deps.cfg.lanes,
+    toolControl: deps.cfg.toolControl,
     ...(chatId !== undefined ? { dispatcher: companyLink(deps, chatId) } : {}),
   };
 }
 
-/** The cause a session's tool call is filed under (ADR-0015): its current turn's, read at call time. */
+/** The cause a session's tool LINE is filed under (ADR-0015): its current turn's, read at call time,
+ *  else the last ended turn's. New work uses `registry.causeOf` alone (`workCause`, ADR-0053): an
+ *  ended turn is not the thread of work started after it. */
 function turnCause(registry: Registry, id: string): () => Cause | undefined {
   return () => registry.causeOf(id) ?? registry.lastCauseOf(id);
 }
@@ -627,7 +704,7 @@ function runConfigFor(
   const isCompany = registry.getDefault()?.id === id;
   const base: RunDeps = {
     resume: sdkSessionId || undefined,
-    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
+    mcpServers: neoMcpServers(dispatchDepsFrom(deps, chatId), chatId, { dispatch: isCompany, workClass: "interactive", folder, projectName: info?.name, sessionId: id, orderId: orderId ?? info?.order.id, cause: turnCause(registry, id), workCause: () => registry.causeOf(id), stitch: true, stitchKey: deps.cfg.stitchApiKey, codebaseMemoryBin: deps.cfg.codebaseMemoryBin, playwright: true }),
   };
   return profileDeps(deps.cfg, isCompany ? "company" : "project", base);
 }
@@ -684,6 +761,9 @@ function startSession(
       probe = createResumeProbe((r) =>
         faults.contain("pipeline.resumeProbe", () => ledger.updateContextEventDetail(pre.eventId, { ...r, success: r.steps <= policy.handoffOrientationMaxSteps }), ctx),
       );
+    } else if (existsSync(neoNotePath(folder))) {
+      // Neo's note (ADR-0029) — outside the repo; the project's own HANDOFF.md stays the project's.
+      order = { ...order, task: `Read ${neoNotePath(folder)} first — it is Neo's state-of-work note from the previous session.\n\n${order.task}` };
     } else if (existsSync(join(folder, "HANDOFF.md"))) {
       order = { ...order, task: `Read HANDOFF.md first — it is the previous session's state-of-work note.\n\n${order.task}` };
     }
@@ -729,14 +809,44 @@ function startSession(
   const sendPlans = (cause: Cause | undefined): void => {
     if (!deps.postPlan) return;
     const run = { project: project ?? basename(folder), folder, startSha: planStart, cause, orderId: order.id, chatId };
-    faults.contain("pipeline.plans", () => onRunEndPlans(planDepsFrom(deps, deps.cfg.plans), run), ctx);
+    // After the cards this run already started posting (ADR-0036), so a turn end never races them.
+    faults.contain("pipeline.plans", async () => {
+      await planWatch?.settled();
+      await onRunEndPlans(planDepsFrom(deps, deps.cfg.plans), run);
+    }, ctx);
   };
+  // The plan gate (ADR-0036): a big plan this worker writes holds it until Approve & build. Claude
+  // only — Codex has no PreToolUse hook to steer through.
+  const planWatch =
+    deps.postPlan && (deps.cfg.plans ?? DEFAULT_PLANS_CFG).send && runDeps.provider !== "codex"
+      ? createPlanWatch(planDepsFrom(deps, deps.cfg.plans), () => ({ project: project ?? basename(folder), folder, startSha: planStart, cause: runCause(), orderId: order.id, chatId }), {
+          onHold: (p) => registry.noteBlocked(registryId, { kind: "decision", label: `plan approval: ${p.title}`, since: now() }),
+        })
+      : undefined;
   // Frozen memory snapshot: computed ONCE here, at worker start, gated the same way as the
   // HANDOFF.md note above (`!runDeps.resume` = an actual fresh SDK start, never a queued
   // follow-up into a live worker). Default `scopes: []` → memoryEnabledFor is always false.
   if (!runDeps.resume && memoryEnabledFor(deps.cfg.memory, order.folder, deps.cfg.companyFolder)) {
     const snap = memorySnapshot(order.folder, deps.cfg.memory);
     if (snap) order = { ...order, task: `${snap}\n\n${order.task}` };
+  }
+  // The notes block (ADR-0043): same fresh-start gate as the snapshot; only where the operator surface
+  // wired deps.notes. The company folder reads as `main` there (block maps it by folder).
+  if (!runDeps.resume && deps.notes) {
+    const notesName = project ?? basename(order.folder);
+    const block = faults.guard("pipeline.notesBlock", () => deps.notes!.block(notesName, now(), order.folder), { project: notesName });
+    if (block) order = { ...order, task: block + order.task };
+  }
+  // A resume is a delivery point too (ADR-0050 §4): notes from main and answers held while the session
+  // sat idle go in front of the resumed task.
+  if (runDeps.resume) order = { ...order, task: withLiveNotes(deps, registryId, order.folder, order.task, now()) };
+  // The tools hint (ADR-0044): fresh start only, and only where `hintPaths` lists this operator path. It
+  // matches the operator's raw order text and goes in front of the notes block, like the dispatch path.
+  const hintPath = registry.getDefault()?.id === registryId ? "company" : "project";
+  if (!runDeps.resume && deps.tools && deps.tools.cfg.hintPaths.includes(hintPath)) {
+    const hintName = project ?? basename(order.folder);
+    const hint = faults.guard("pipeline.toolsHint", () => deps.tools!.hint(order.task, { project: hintName, folder: order.folder }), { project: hintName });
+    if (hint) order = { ...order, task: hint + order.task };
   }
   const run = start(
     order,
@@ -789,19 +899,8 @@ function startSession(
           if (c) refreshThread(deps, c.threadId); // no longer waiting on the operator
         }
       },
-      // Service the worker's native AskUserQuestion by raising a tracked structured decision. Gated on
-      // postDecision (the operator surface wired it) — the same firewall gate as ask_operator.
-      onStructuredQuestion: deps.postDecision
-        ? async (ask) => {
-            // Passing the registry is what marks this session awaiting-operator (the worker
-            // check-points and STOPS after raising) — raiseOperatorDecision owns that, as the one
-            // path behind every blocking ask.
-            await raiseOperatorDecision(
-              { ledger, postDecision: deps.postDecision, registry, trace: deps.trace },
-              { project, folder: order.folder, orderId: order.id, chatId, question: questionSummary(ask), spec: ask, now, cause: runCause() },
-            );
-          }
-        : undefined,
+      // ask_operator is attached exactly when postDecision is wired; the native ask is redirected to it (ADR-0049).
+      askOperator: !!deps.postDecision,
       onRateLimit: (info) => deps.usage?.noteRateLimit(info),
       onEvent: (kind, data) => ledger.recordEvent(kind, { orderId: order.id, folder: order.folder, data }),
       onContextWindow: (model, tokens) => ledger.recordModelWindow(model, tokens),
@@ -830,10 +929,15 @@ function startSession(
       },
       onToolUse: (id, name, input) => {
         watch?.onToolUse(id, name, input);
+        planWatch?.onToolUse(id, name, input);
         probe?.onToolUse(id, name, input);
       },
-      onToolResult: (id, isError) => watch?.onToolResult(id, isError),
-      contextSteer: watch ? (tool, input) => watch.steer(tool, input) : undefined,
+      onToolResult: (id, isError) => {
+        watch?.onToolResult(id, isError);
+        planWatch?.onToolResult(id, isError);
+      },
+      // A held plan speaks first (ADR-0036), then an armed context checkpoint (ADR-0021).
+      contextSteer: watch || planWatch ? (tool, input) => planWatch?.steer(tool, input) ?? watch?.steer(tool, input) : undefined,
       // A task just finished and the session is at rest, its cache warm: the `settled` boundary.
       onSettled: () => faults.contain("pipeline.contextSettle", () => settleCheck(), ctx),
       onTurnComplete: (result) => {
@@ -869,7 +973,7 @@ function startSession(
             retryPending = false;
             registry.touch(registryId, now());
             deliverInput(registry.lastCauseOf(registryId)); // the retried brief answers the failed turn's cause
-            runRef?.followUp(apiRetryFollowUp(order.task));
+            runRef?.followUp(apiRetryFollowUp(order.task), "after-turn");
           }),
           { project, orderId: order.id, folder: order.folder },
         );
@@ -882,11 +986,12 @@ function startSession(
   // next settle decides afresh (with a full handoff turn if still needed).
   const control: SessionRun = {
     ...run,
-    followUp: (text: string, cause?: Cause) => {
+    followUp: (text: string, timing: FollowUpTiming, cause?: Cause) => {
       watch?.disarm();
       deliverInput(cause);
-      run.followUp(text);
+      run.followUp(text, timing);
     },
+    held: () => planWatch?.held(),
   };
   registry.attachControl(registryId, control);
 

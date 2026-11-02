@@ -199,3 +199,35 @@ test("an occupancy over 1 is no percentage: ctxSuspect instead of ctxPct", () =>
   expect(row.ctxPct).toBeUndefined();
   expect(row.ctxSuspect).toBe(true);
 });
+
+test("dashboardSnapshot: a shorter API backoff carries apiResumesAt; an ended wait shows nothing (ADR-0060)", () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const a = ledger.addTodo({ project: "alpha", folder: "/p/alpha", brief: "overloaded", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(a.id, { status: "running", orderId: "o-api", startedAt: 0 });
+  const b = ledger.addTodo({ project: "beta", folder: "/p/beta", brief: "woken", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(b.id, { status: "running", orderId: "o-woken", startedAt: 0 });
+  ledger.recordEvent("api_retry", { orderId: "o-api", at: 1_000, data: { kind: "overloaded", delayMs: 60_000 } });
+  ledger.recordEvent("api_retry", { orderId: "o-woken", at: 1_000, data: { kind: "rate_limit", delayMs: 60_000 } });
+  ledger.recordEvent("api_wait_ended", { orderId: "o-woken", at: 2_000, data: { reason: "retry" } });
+  const s = dashboardSnapshot({ registry, ledger, chatId: 0, now: 5_000, reposRoot: "/nonexistent" });
+  const ta = s.todos.find((t) => t.id === a.id)!;
+  expect(ta).toMatchObject({ apiResumesAt: 61_000 });
+  expect(ta.limitResumesAt).toBeUndefined();
+  const tb = s.todos.find((t) => t.id === b.id)!;
+  expect(tb.limitResumesAt).toBeUndefined();
+  expect(tb.apiResumesAt).toBeUndefined();
+});
+
+test("dashboardSnapshot: a running todo in a limit wait carries limitResumesAt; others do not (ADR-0047)", () => {
+  const registry = createRegistry();
+  const ledger = openLedger(":memory:");
+  const a = ledger.addTodo({ project: "alpha", folder: "/p/alpha", brief: "wait it out", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(a.id, { status: "running", orderId: "o-wait", startedAt: 0 });
+  const b = ledger.addTodo({ project: "beta", folder: "/p/beta", brief: "working", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(b.id, { status: "running", orderId: "o-work", startedAt: 0 });
+  ledger.recordEvent("api_retry", { orderId: "o-wait", at: 1_000, data: { kind: "rate_limit", delayMs: 60_000 } });
+  const s = dashboardSnapshot({ registry, ledger, chatId: 0, now: 5_000, reposRoot: "/nonexistent" });
+  expect(s.todos.find((t) => t.id === a.id)).toMatchObject({ status: "running", limitResumesAt: 61_000 });
+  expect(s.todos.find((t) => t.id === b.id)?.limitResumesAt).toBeUndefined();
+});

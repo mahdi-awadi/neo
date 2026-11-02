@@ -19,6 +19,8 @@
 //
 // Auth: Claude draws from your Claude subscription; Codex uses Codex SDK/CLI auth (e.g.
 // CODEX_API_KEY or saved local auth). See README + docs/CONFIG.md.
+import { createToolCalls, markCommand } from "./tool-calls";
+import type { SessionLane } from "./lanes";
 import { basename } from "node:path";
 import { query as realQuery, type AgentDefinition, type HookInput } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -33,8 +35,8 @@ import {
 } from "@openai/codex-sdk";
 import type { Order, OrderSource, Provider, SessionControl } from "../types";
 import type { RateLimitInfo } from "./usage";
-import { decide, type OutOfFolderWrites } from "./governor";
-import { fromAskUserQuestionInput, type StructuredAsk } from "./structured-question";
+import { decide, type OutOfFolderWrites, ProjectFence } from "./governor";
+import { mcpEnvRefs, scrubWorkerEnv, type EnvScrubOptions } from "./worker-env";
 import {
   filterSdkEnv,
   readOnlySandboxRequested,
@@ -60,7 +62,7 @@ const RESULT_SILENT_TOOLS = new Set([...QUIET_TOOLS, "Write", "Edit", "MultiEdit
 const RESULT_PREVIEW_MAX = 600;
 
 /** A concise, operator-facing preview of a tool_result payload (string, or the SDK's content-block
- *  array), trimmed and truncated. Empty string => nothing worth surfacing. */
+ *  array), without surrounding blank lines, truncated. Empty string => nothing worth surfacing. */
 function toolResultPreview(content: unknown): string {
   let text = "";
   if (typeof content === "string") text = content;
@@ -70,8 +72,10 @@ function toolResultPreview(content: unknown): string {
       .map((b) => b.text as string)
       .join("\n");
   }
-  text = text.trim();
-  if (!text) return "";
+  // Drop blank lines around the output, never the first line's indentation: aligned output (a
+  // ClickHouse box table, `column -t`, YAML) would lose its first column's alignment.
+  text = text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd();
+  if (!text.trim()) return "";
   return text.length > RESULT_PREVIEW_MAX ? `${text.slice(0, RESULT_PREVIEW_MAX - 1)}…` : text;
 }
 
@@ -87,6 +91,7 @@ function toolDetail(input: unknown): string {
   if (str(i.pattern)) return trunc(str(i.pattern));
   if (str(i.url)) return trunc(str(i.url));
   if (str(i.project)) return str(i.project);
+  if (str(i.skill)) return trunc(str(i.skill)); // the Skill tool: which skill (the tools catalogue counts it, ADR-0044)
   if (str(i.description)) return trunc(str(i.description));
   return "";
 }
@@ -166,18 +171,19 @@ export interface RunHandlers {
    *  usage, each tool call, and each tool result. Observers only — never change the run. */
   onUsage?: (model: string | undefined, usage: Record<string, number>) => void;
   onToolUse?: (id: string | undefined, name: string, input: unknown) => void;
-  onToolResult?: (id: string | undefined, isError: boolean) => void;
+  onToolResult?: (id: string | undefined, isError: boolean, text?: string) => void;
+  /** An SDK `task_*` system message (ADR-0058): the task the CLI runs a tool call as. */
+  onTask?: (m: Record<string, unknown>) => void;
   /** Consulted by the governor hook BEFORE the governor: a returned reason DENIES the tool call with
    *  that reason (an armed context checkpoint, ADR-0021); undefined = no opinion. Claude only. */
   contextSteer?: (toolName: string, input: unknown) => string | undefined;
   /** Structured diagnostic events (session lifecycle). The engine wires this to ledger.recordEvent;
    *  a bare worker leaves it unset. NEVER carries message bodies — kinds + small metadata only. */
   onEvent?: (kind: string, data?: Record<string, unknown>) => void;
-  /** Service the SDK's native AskUserQuestion tool by raising a tracked structured decision (tappable
-   *  buttons on the Decisions channel). Wired only on operator surfaces (its presence = the same
-   *  firewall gate as ask_operator: the customer/ingress path leaves it unset, so its AskUserQuestion
-   *  still gets the plain steer). Absent → the tool is denied with the plain "ask in plain text" note. */
-  onStructuredQuestion?: (ask: StructuredAsk) => void | Promise<void>;
+  /** True when this run has the `ask_operator` tool (an operator surface — the same firewall gate:
+   *  the customer/ingress path leaves it unset). Then the native AskUserQuestion is redirected to
+   *  ask_operator (ADR-0049); absent → the governor's plain-text steer. */
+  askOperator?: boolean;
 }
 
 /** Reasoning effort: "low" = minimal thinking / fastest responses … "max" = deepest. */
@@ -192,6 +198,9 @@ export interface RunDeps {
   codexFactory?: CodexFactory;
   /** Resume a prior SDK session id (idle-close → resume). */
   resume?: string;
+  /** With `resume`: fork that session — the run answers from its history under a NEW session id and
+   *  the parent never sees it (SDK `forkSession`; docs/sdk-notes.md). Consult runs only (ADR-0050). */
+  forkSession?: boolean;
   /** Reasoning effort for this session (the chief-of-staff runs "low" for fast routing). */
   effort?: EffortLevel;
   /** Extra in-process MCP servers/tools (e.g. the default project's `dispatch` tool). Claude-only;
@@ -208,6 +217,9 @@ export interface RunDeps {
   skills?: "all" | string[];
   /** Claude SDK cap on agentic turns for one run. Unset = uncapped. */
   maxTurns?: number;
+  /** Which settings the run loads (default `["user", "project"]`). `[]` for an inert one-shot (ADR-0059: the
+   *  todo summary) — no user-scope MCP servers, plugins or project config are started for it. */
+  settingSources?: Array<"user" | "project" | "local">;
   /** Named Claude subagents for an opt-in, lead-orchestrated team run (SDK `agents`). Each is a
    *  governed subagent whose tool calls re-enter this session's `canUseTool`, so the path-fence
    *  still holds for their writes (verified — spike/agent-team-spike-findings.md). Unset = a normal
@@ -215,9 +227,18 @@ export interface RunDeps {
   agents?: Record<string, AgentDefinition>;
   /** Extra env for the spawned worker, merged over process.env after SDK-specific filtering. */
   env?: Record<string, string>;
+  /** Removes engine-held keys from the worker env (ADR-0050 §7). Absent = the daemon's default. */
+  envScrub?: EnvScrubOptions;
   /** `governor.outOfFolderWrites` for this run (ADR-0012). Engine-side only — never sent to the
    *  SDK. Absent = "ask"; a customer-sourced order is always "ask". */
   outOfFolderWrites?: OutOfFolderWrites;
+  /** The project fence (ADR-0031): set by profileDeps for dispatch and loop workers. Engine-side only. */
+  projectFence?: ProjectFence;
+  /** A side-lane run (ADR-0057): the governor denies what its kind may not do. Engine-side only. */
+  lane?: SessionLane;
+  /** Ends a single-shot run from outside (`runOrder` only): the Claude SDK's `abortController`
+   *  option, the Codex turn's `signal`. Engine-side; consult runs abort on stall (ADR-0050). */
+  abortController?: AbortController;
   /** Codex SDK controls. These are ignored by the Claude adapter. */
   codexSandboxMode?: CodexSandboxMode;
   codexApprovalPolicy?: CodexApprovalMode;
@@ -234,6 +255,10 @@ export type ApiErrorKind =
   | "overloaded"
   | "server_error"
   | "authentication_failed"
+  | "oauth_org_not_allowed"
+  | "account_on_hold"
+  | "verification_required"
+  | "cloud_credential_error"
   | "billing_error"
   | "invalid_request"
   | "model_not_found"
@@ -310,6 +335,13 @@ export interface SessionRun extends SessionControl {
 /** Env switch that makes the CLI emit `session_state_changed` (it is off by default). Its `idle` is
  *  the SDK's documented "authoritative turn-over signal" — see RunHandlers.onSettled. */
 export const SESSION_STATE_EVENTS_ENV = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS";
+/** Set in every worker's environment (resolvedRunDeps). */
+export const WORKER_ENV = { NEO_WORKER: "1" } as const;
+/** Settings every worker runs with, at the SDK's flag layer (it outranks user and project settings).
+ *  The operator's user plugins include the Telegram channel plugin, which long-polls the same bot as
+ *  the daemon: two pollers make the bot answer 409 Conflict. Only that plugin goes off; every other
+ *  user plugin and skill stays on (ADR-0064). */
+export const WORKER_SETTINGS = { enabledPlugins: { "telegram@claude-plugins-official": false } } as const;
 
 // Loosely-typed view of the SDK so the runner is testable with an injected fake.
 type SdkMessage = { type: string; [k: string]: unknown };
@@ -318,8 +350,16 @@ type SdkUserMessage = {
   type: "user";
   message: { role: "user"; content: string };
   parent_tool_use_id: string | null;
+  /** CLI command-queue priority. "next" = attach at the next tool boundary of the running turn
+   *  (steer mid-turn); "later" = wait for the turn to end (docs/sdk-notes.md, mid-turn priority). */
+  priority?: "next" | "later";
 };
-type QueryObject = AsyncIterable<SdkMessage> & { interrupt?: () => Promise<void> };
+type QueryObject = AsyncIterable<SdkMessage> & {
+  interrupt?: () => Promise<void>;
+  /** ADR-0058: the SDK's Ctrl+B for one call, and stop of a background task (docs/sdk-notes.md). */
+  backgroundTasks?: (toolUseId?: string) => Promise<boolean>;
+  stopTask?: (taskId: string) => Promise<void>;
+};
 type QueryFn = (args: {
   prompt: string | AsyncIterable<SdkUserMessage>;
   options: Record<string, unknown>;
@@ -335,15 +375,15 @@ type CodexClientLike = {
 };
 export type CodexFactory = (options: CodexOptions) => CodexClientLike | Promise<CodexClientLike>;
 
-function userMessage(text: string): SdkUserMessage {
-  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+function userMessage(text: string, priority?: SdkUserMessage["priority"]): SdkUserMessage {
+  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, ...(priority ? { priority } : {}) };
 }
 
-/** What the worker is told after its native AskUserQuestion was serviced into a tracked decision —
- *  the same fire-and-suspend steer ask_operator returns. Must mention STOP (the worker check-points
- *  and waits for the operator's tap/reply to resume it). */
-export const STRUCTURED_QUESTION_RAISED =
-  "Raised with the operator as a tracked decision with tappable options. Check-point your work (commit green work / write a WIP note) and STOP — the operator's answer will resume this session as a follow-up. Do not assume a default.";
+/** What the worker is told when it calls the native AskUserQuestion on an operator surface (ADR-0049):
+ *  that tool cannot carry the context and recommendation a decision card needs, so the worker must
+ *  raise it through ask_operator. Nothing is raised by the native call. */
+export const NATIVE_ASK_STEER =
+  "Not sent: AskUserQuestion cannot carry what the operator needs to decide. Raise this decision with the ask_operator tool instead, written for a non-technical reader: a plain title, a context (what is happening and why a choice is needed), 2–5 options each with a short label and an explanation of what happens if it is picked, and the recommended option with a one-line reason. One decision per call; then check-point and STOP.";
 
 // The governance hook: governor decides; risky tools escalate to the human. The allow
 // decision MUST echo updatedInput (docs/sdk-notes.md) — a bare allow is a ZodError.
@@ -353,10 +393,12 @@ export function buildCanUseTool(
   folder: string,
   source: OrderSource,
   outOfFolderWrites: OutOfFolderWrites = "ask",
+  projectFence?: ProjectFence,
+  lane?: SessionLane,
 ) {
   // Customer work never gets the operator's standing write approval (ADR-0012).
   const writes: OutOfFolderWrites = source === "customer" ? "ask" : outOfFolderWrites;
-  return async (tool: string, input: Record<string, unknown>, sdk?: { signal?: AbortSignal }) => {
+  return async (tool: string, input: Record<string, unknown>, sdk?: { signal?: AbortSignal; mcpServer?: { name?: string; source?: string } }) => {
     // An observer: a throwing handler must never change the decision.
     const report = (verdict: "allow" | "auto" | "escalate" | "deny"): void => {
       try {
@@ -376,20 +418,14 @@ export function buildCanUseTool(
     // calls, so the moment the channel is healthy again the next tool call escalates normally
     // (self-heal — a transient break can't permanently wedge tool approvals).
     try {
-      // Feature 1: service the SDK's native structured-question tool through the decisions machinery
-      // instead of hard-denying it — but ONLY when the engine wired the hook (operator surfaces;
-      // absent on the customer/ingress path = firewall). Raise the tracked ask, then deny the tool
-      // with the same check-point + STOP steer ask_operator returns: the SDK can't render buttons
-      // headlessly, so the worker suspends and the operator's tap/reply resumes it as a follow-up.
-      if (tool === "AskUserQuestion" && handlers.onStructuredQuestion) {
-        const ask = fromAskUserQuestionInput(input);
-        if (ask) {
-          await handlers.onStructuredQuestion(ask);
-          return { behavior: "deny", message: STRUCTURED_QUESTION_RAISED };
-        }
-        // unparseable / empty → fall through to the plain steer below (never raise an empty ask)
+      // ADR-0049: the native structured-question tool cannot carry a decision card's context and
+      // recommendation. Where ask_operator is attached, steer the worker to it; nothing is raised here.
+      if (tool === "AskUserQuestion" && handlers.askOperator) {
+        report("deny");
+        return { behavior: "deny", message: NATIVE_ASK_STEER };
       }
-      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes });
+      const mcpSource = sdk?.mcpServer?.source;
+      const verdict = decide(tool, input, { folder, outOfFolderWrites: writes, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}), ...(mcpSource ? { mcpSource } : {}) });
       if ("allow" in verdict) {
         report("allow");
         return { behavior: "allow", updatedInput: verdict.updatedInput ?? input };
@@ -428,8 +464,16 @@ export function buildCanUseTool(
 /** The SDK hook result: no opinion, force the call into the permission flow (= canUseTool), or deny
  *  it outright (an armed context checkpoint only). */
 type GovernorHookOutput = Record<string, never> | {
-  hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision: "ask" | "deny"; permissionDecisionReason: string };
+  hookSpecificOutput: { hookEventName: "PreToolUse"; permissionDecision?: "ask" | "deny"; permissionDecisionReason?: string; updatedInput?: Record<string, unknown> };
 };
+
+/** The hook output that marks a Bash call with its tool-use id (ADR-0058), else undefined. */
+function markedBash(tool: string, input: unknown, toolUseId: string | undefined): { hookSpecificOutput: { hookEventName: "PreToolUse"; updatedInput: Record<string, unknown> } } | undefined {
+  const i = input as Record<string, unknown> | undefined;
+  if (tool !== "Bash" || !toolUseId || typeof i?.command !== "string") return undefined;
+  const command = markCommand(toolUseId, i.command);
+  return command === i.command ? undefined : { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...i, command } } };
+}
 
 // The governor as an SDK PreToolUse hook. A settings allow rule (e.g. `Bash(git:*)` in a trusted
 // project's .claude/settings.json) approves a tool BEFORE canUseTool runs, so canUseTool alone let
@@ -443,8 +487,8 @@ type GovernorHookOutput = Record<string, never> | {
 //
 // An armed context checkpoint (ADR-0021) speaks first, through `steer`: its reason DENIES the call,
 // telling the worker to write its handoff note and end the turn. A throwing steer has no opinion.
-export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolderWrites = "ask", steer?: RunHandlers["contextSteer"]) {
-  return async (input: HookInput, _toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
+export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolderWrites = "ask", steer?: RunHandlers["contextSteer"], projectFence?: ProjectFence, lane?: SessionLane) {
+  return async (input: HookInput, toolUseId: string | undefined, _opts: { signal: AbortSignal }): Promise<GovernorHookOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
     let steered: string | undefined;
     try {
@@ -455,13 +499,17 @@ export function buildGovernorHook(folder: string, outOfFolderWrites: OutOfFolder
     if (steered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: steered } };
     let reason: string;
     try {
-      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites });
-      if ("allow" in verdict) return {};
+      const mcpSource = (input as { mcp_server?: { source?: string } }).mcp_server?.source;
+      const verdict = decide(input.tool_name, input.tool_input as Record<string, unknown>, { folder, outOfFolderWrites, ...(projectFence ? { projectFence } : {}), ...(lane ? { lane } : {}), ...(mcpSource ? { mcpSource } : {}) });
+      // ADR-0058: every host process of a Bash call carries its tool-use id, so /stop can find exactly that
+      // call's processes. The hook's updatedInput applies even when a settings rule skips canUseTool.
+      if ("allow" in verdict) return markedBash(input.tool_name, input.tool_input, toolUseId) ?? {};
       reason = "deny" in verdict ? verdict.deny : verdict.escalate;
     } catch (err) {
       reason = `governor error: ${err instanceof Error ? err.message : String(err)}`;
     }
-    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: reason } };
+    const marked = markedBash(input.tool_name, input.tool_input, toolUseId)?.hookSpecificOutput.updatedInput;
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: reason, ...(marked ? { updatedInput: marked } : {}) } };
   };
 }
 
@@ -470,6 +518,8 @@ function sdkOptions(
   handlers: RunHandlers,
   extra: Record<string, unknown> = {},
   outOfFolderWrites: OutOfFolderWrites = "ask",
+  projectFence?: ProjectFence,
+  lane?: SessionLane,
 ): Record<string, unknown> {
   // The hook and canUseTool must judge alike, so the customer rule is applied once, here too.
   const writes: OutOfFolderWrites = order.source === "customer" ? "ask" : outOfFolderWrites;
@@ -490,9 +540,12 @@ function sdkOptions(
     // Governance goes LAST so no per-run field can replace it. permissionMode is explicit: from SDK
     // 0.3.286 an unset mode can start the session in auto mode, which skips canUseTool.
     permissionMode: "default",
-    canUseTool: buildCanUseTool(handlers, order.folder, order.source, writes),
-    // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls.
-    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, writes, handlers.contextSteer)] }] },
+    // A worker never starts a second Telegram poller on the daemon's bot (ADR-0064).
+    settings: WORKER_SETTINGS,
+    canUseTool: buildCanUseTool(handlers, order.folder, order.source, writes, projectFence, lane),
+    // No matcher: the hook sees every tool, including subagent (team) and MCP tool calls — so the
+    // project fence (ADR-0031) holds for a worker's helper agents too.
+    hooks: { PreToolUse: [{ hooks: [buildGovernorHook(order.folder, writes, handlers.contextSteer, projectFence, lane)] }] },
   };
 }
 
@@ -555,13 +608,15 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         if (Array.isArray(content)) {
           for (const b of content as Array<{ type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
             if (b?.type !== "tool_result") continue;
-            observe(() => handlers.onToolResult?.(b.tool_use_id, b.is_error === true));
+            observe(() => handlers.onToolResult?.(b.tool_use_id, b.is_error === true, typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "")));
             const short = b.tool_use_id ? toolShortById.get(b.tool_use_id) : undefined;
             if (!short || RESULT_SILENT_TOOLS.has(short)) continue; // unknown or low-signal → stay quiet
             const preview = toolResultPreview(b.content);
             if (preview) handlers.onMessage(`${b.is_error ? "⚠️ ↳" : "↳"} ${preview}`, "tool");
           }
         }
+      } else if (msg.type === "system" && (msg.subtype === "task_started" || msg.subtype === "task_notification")) {
+        observe(() => handlers.onTask?.(msg));
       } else if (msg.type === "system" && msg.subtype === "api_retry") {
         // The SDK is retrying a retryable API failure itself (its own backoff). Not a failure yet —
         // surface it as activity so the watchdog counts it as liveness and /status shows the wait.
@@ -587,8 +642,12 @@ async function consumeStream(queryObj: QueryObject, handlers: RunHandlers): Prom
         // A rejected resume id is a local precondition failure, not an API failure: nothing was
         // sent, so blaming the API ("the API failed (unknown)") is both wrong and unactionable.
         if (failed && RESUME_MISSING_RE.test(summary)) resumeMissing = true;
+        // An API failure is a `success` result marked is_error, or one that carries an HTTP status or an
+        // assistant error field. error_max_turns / error_during_execution (a turn cap, an interrupt) are
+        // the run ending, not the API failing — they get no API kind (ADR-0027: no false "transient").
+        const apiShaped = msg.subtype === "success" || apiError !== undefined || typeof msg.api_error_status === "number";
         const turnError =
-          failed && !resumeMissing
+          failed && !resumeMissing && apiShaped
             ? (apiError ?? apiErrorFromStatus(msg.api_error_status as number | null) ?? apiErrorFromMessage(summary) ?? "unknown")
             : undefined;
         costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : 0;
@@ -715,17 +774,30 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   return c;
 }
 
-function mergedSdkEnv(provider: Provider, env: Record<string, string>): Record<string, string> {
+/** Scrub options for every worker env (ADR-0050 §7). The daemon sets the default once; a
+ *  RunDeps value overrides it. Absent = no scrub. */
+let defaultEnvScrub: EnvScrubOptions | undefined;
+export function setDefaultEnvScrub(o: EnvScrubOptions | undefined): void { defaultEnvScrub = o; }
+
+export function mergedSdkEnv(
+  provider: Provider,
+  env: Record<string, string>,
+  scrub: EnvScrubOptions | undefined = defaultEnvScrub,
+  /** Names the run's MCP server configs reference (ADR-0062): kept through the scrub, never relay keys. */
+  keep: readonly string[] = [],
+): Record<string, string> {
   const merged: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) merged[key] = value;
   }
-  return filterSdkEnv(provider, { ...merged, ...env });
+  const filtered = filterSdkEnv(provider, { ...merged, ...env });
+  if (!scrub) return filtered;
+  return scrubWorkerEnv(filtered, keep.length ? { ...scrub, inherit: new Set([...scrub.inherit, ...keep]) } : scrub).env;
 }
 
 function codexClientOptions(deps: RunDeps): CodexOptions {
   const c: CodexOptions = {};
-  if (deps.env) c.env = mergedSdkEnv("codex", deps.env);
+  if (deps.env) c.env = mergedSdkEnv("codex", deps.env, deps.envScrub);
   return c;
 }
 
@@ -881,7 +953,9 @@ function resolvedRunDeps(deps: RunDeps, provider: WorkerModelProvider, handlers?
       reason: model.reason,
     });
   }
-  return { ...deps, model: model.model, effort: model.effort };
+  // Every worker is marked, so a Claude Code hook can tell it from the operator's own session: the
+  // security guard blocks a worker from secret files but only warns the operator (ADR-0024).
+  return { ...deps, model: model.model, effort: model.effort, env: { ...(deps.env ?? {}), ...WORKER_ENV } };
 }
 
 // Only-defined keys survive into the SDK options (so absent fields aren't sent as undefined).
@@ -897,7 +971,11 @@ export function runConfig(deps: RunDeps, provider: Provider = deps.provider ?? "
     skills: deps.skills,
     maxTurns: deps.maxTurns || undefined,
     agents: deps.agents,
-    env: deps.env ? mergedSdkEnv(provider, deps.env) : undefined,
+    // The keys this run's MCP server configs reference by `${NAME}` stay in the env (ADR-0062).
+    env: deps.env ? mergedSdkEnv(provider, deps.env, deps.envScrub, mcpEnvRefs(deps.mcpServers)) : undefined,
+    // A fork needs a session to fork from: never sent without `resume`.
+    forkSession: deps.forkSession && deps.resume ? true : undefined,
+    settingSources: deps.settingSources,
   };
   for (const field of supportedRunConfigFields(provider)) {
     const value = values[field];
@@ -925,7 +1003,9 @@ async function runClaudeOrder(
   const query: QueryFn = deps.query ?? (realQuery as unknown as QueryFn);
   const run = (d: RunDeps) => {
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
-    return consumeStream(query({ prompt: order.task, options: sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites) }), handlers);
+    const options = sdkOptions(order, handlers, runConfig(d), d.outOfFolderWrites, d.projectFence, d.lane);
+    if (d.abortController) options.abortController = d.abortController;
+    return consumeStream(query({ prompt: order.task, options }), handlers);
   };
   const first = await run(deps);
   if (!first.resumeMissing || !deps.resume) return first;
@@ -954,7 +1034,7 @@ async function runCodexOrder(
   const client = await makeCodexClient(deps);
   const options = codexThreadOptions(order, deps);
   const thread = deps.resume ? client.resumeThread(deps.resume, options) : client.startThread(options);
-  return consumeCodexTurn(thread, order.task, handlers);
+  return consumeCodexTurn(thread, order.task, handlers, deps.abortController?.signal);
 }
 
 /** Live session: open `order.folder` and keep it warm for streamed follow-ups. */
@@ -994,8 +1074,22 @@ function startClaudeOrder(
   let stateEvents = false;
   const onDeliver = () => void (inTurn = true);
   // Wraps (never replaces) the caller's own handlers.
+  // The running tool calls and their SDK tasks (ADR-0058): /stop, /bg and the console strip act on them.
+  const toolCalls = createToolCalls();
   const tracked: RunHandlers = {
     ...handlers,
+    onToolUse: (id, name, input) => {
+      toolCalls.onToolUse(id, name, input);
+      handlers.onToolUse?.(id, name, input);
+    },
+    onToolResult: (id, isError, text) => {
+      toolCalls.onToolResult(id, text);
+      handlers.onToolResult?.(id, isError, text);
+    },
+    onTask: (m) => {
+      toolCalls.onTask(m);
+      handlers.onTask?.(m);
+    },
     onTurnComplete: (result) => {
       if (!stateEvents) inTurn = false;
       handlers.onTurnComplete?.(result);
@@ -1026,7 +1120,7 @@ function startClaudeOrder(
     handlers.onEvent?.("session_start", { folder: order.folder, resume: !!d.resume });
     // Long-running sessions need the CLI's settled signal (see tracked.onSessionState above).
     const withState: RunDeps = { ...d, env: { ...(d.env ?? {}), [SESSION_STATE_EVENTS_ENV]: "1" } };
-    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState), withState.outOfFolderWrites) });
+    queryObj = query({ prompt: channel.iterator, options: sdkOptions(order, tracked, runConfig(withState), withState.outOfFolderWrites, withState.projectFence, withState.lane) });
     return consumeStream(queryObj, tracked);
   };
 
@@ -1053,7 +1147,11 @@ function startClaudeOrder(
   });
 
   return {
-    followUp: (text) => channel.push(userMessage(text)),
+    // The SDK drains this channel eagerly, so a follow-up reaches the CLI as soon as it is pushed.
+    // "steer" → priority "next" (attached at the running turn's next tool boundary); "after-turn" →
+    // "later". The replay path above re-pushes these same messages, priority included.
+    followUp: (text, timing) => channel.push(userMessage(text, timing === "steer" ? "next" : "later")),
+    steersMidTurn: true,
     interrupt: async () => {
       closeRequested = true;
       channel.close();
@@ -1070,6 +1168,38 @@ function startClaudeOrder(
       channel.close();
     },
     closed: () => closeRequested,
+    tools: {
+      provider: "claude",
+      running: () => toolCalls.running(),
+      background: async (toolUseId) => {
+        if (!toolCalls.running().some((c) => c.toolUseId === toolUseId)) return { ok: false, reason: "not_running" };
+        try {
+          const ok = (await queryObj?.backgroundTasks?.(toolUseId)) === true;
+          return ok ? { ok, taskId: toolCalls.taskOf(toolUseId) } : { ok, reason: "not_running" };
+        } catch (e) {
+          return { ok: false, reason: `background tasks are off for this session: ${e instanceof Error ? e.message : String(e)}` };
+        }
+      },
+      // Stop = background the call, then stop its task (the tested SDK path). The task's grandchildren
+      // survive stopTask; tool-control.ts sweeps them by the call's marker.
+      stop: async (toolUseId) => {
+        const wasRunning = toolCalls.running().some((c) => c.toolUseId === toolUseId);
+        if (wasRunning) await queryObj?.backgroundTasks?.(toolUseId).catch(() => false);
+        let taskId = toolCalls.taskOf(toolUseId);
+        for (let i = 0; i < 20 && !taskId; i++) {
+          await new Promise((r) => setTimeout(r, 100)); // task_started trails the tool_use briefly
+          taskId = toolCalls.taskOf(toolUseId);
+        }
+        if (!taskId) return { ok: false, reason: wasRunning ? "no SDK task for this call" : "not_running" };
+        try {
+          await queryObj?.stopTask?.(taskId);
+          return { ok: true, taskId };
+        } catch (e) {
+          return { ok: false, taskId, reason: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      logOf: (toolUseId) => toolCalls.logOf(toolUseId),
+    },
     done,
   };
 }
@@ -1082,6 +1212,7 @@ function startCodexOrder(
   deps = resolvedRunDeps(deps, "codex", handlers);
   const queue = createTextTurnQueue(order.task);
   let currentAbort: AbortController | undefined;
+  let turnSince = 0;
   let interruptRequested = false;
   let closeRequested = false;
   // A turn is in flight only while consumeCodexTurn runs (Codex processes one turn at a time); idle
@@ -1102,6 +1233,7 @@ function startCodexOrder(
         const next = await queue.next();
         if (next === undefined) break;
         currentAbort = new AbortController();
+        turnSince = Date.now();
         turnActive = true;
         observe(() => handlers.onTurnStart?.(1));
         final = await consumeCodexTurn(thread, next, handlers, currentAbort.signal);
@@ -1124,7 +1256,7 @@ function startCodexOrder(
   })();
 
   return {
-    followUp: (text) => queue.push(text),
+    followUp: (text) => queue.push(text), // Codex runs one turn per input: the timing does not apply
     interrupt: async () => {
       interruptRequested = true;
       closeRequested = true;
@@ -1138,6 +1270,21 @@ function startCodexOrder(
       queue.close();
     },
     closed: () => closeRequested,
+    // ADR-0058: Codex has no per-command control. Its one "running call" is the current turn; stop ends
+    // that turn (the session stays and takes the next input); background is refused.
+    tools: {
+      provider: "codex",
+      running: () => (turnActive ? [{ toolUseId: CODEX_TURN, tool: "turn", summary: "the current Codex turn", since: turnSince }] : []),
+      background: async () => ({ ok: false, reason: "Codex workers cannot move a command to the background" }),
+      stop: async (toolUseId) => {
+        if (toolUseId !== CODEX_TURN || !turnActive || !currentAbort) return { ok: false, reason: "not_running" };
+        currentAbort.abort();
+        return { ok: true };
+      },
+    },
     done,
   };
 }
+
+/** The pseudo tool-use id of a Codex session's current turn (ADR-0058). */
+export const CODEX_TURN = "codex-turn";

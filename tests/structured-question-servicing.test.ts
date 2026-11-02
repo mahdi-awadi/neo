@@ -1,10 +1,10 @@
-// Feature 1: the SDK's native AskUserQuestion tool must be SERVICED (not hard-denied) when the
-// engine wires the onStructuredQuestion hook — it raises a tracked decision (tappable buttons on the
-// Decisions channel) and steers the worker to check-point + STOP, exactly like ask_operator. Without
-// the hook (bare worker / customer path) it falls back to today's plain "ask in plain text" steer.
+// ADR-0049: the SDK's native AskUserQuestion cannot carry a context or a recommendation, so it can never
+// make a self-explanatory decision card. Where ask_operator is attached (an operator surface), the native
+// ask is denied with a steer to ask_operator and its fields — nothing is raised. Without ask_operator (a
+// loop, the customer path) it falls back to the governor's plain-text steer.
 import { test, expect } from "bun:test";
-import { buildCanUseTool, type RunHandlers } from "../src/engine/session-runner";
-import type { StructuredAsk } from "../src/engine/structured-question";
+import { buildCanUseTool, NATIVE_ASK_STEER, type RunHandlers } from "../src/engine/session-runner";
+import { decide } from "../src/engine/governor";
 
 function handlers(over: Partial<RunHandlers> = {}): RunHandlers {
   return { onMessage: () => {}, onEscalation: async () => "deny", ...over };
@@ -24,40 +24,20 @@ const NATIVE_INPUT = {
   ],
 };
 
-test("AskUserQuestion is serviced when the hook is wired: raises the ask + denies with a STOP steer", async () => {
-  let raised: StructuredAsk | undefined;
-  const canUse = buildCanUseTool(handlers({ onStructuredQuestion: (ask) => void (raised = ask) }), "/tmp", "neo");
-  const verdict = await canUse("AskUserQuestion", NATIVE_INPUT);
-
-  // The worker gets a deny that steers it to check-point + STOP (the fire-and-suspend contract).
-  expect(verdict.behavior).toBe("deny");
-  expect(verdict.message?.toLowerCase()).toContain("stop");
-  // The hook received the parsed structured ask (routed into the decisions machinery).
-  expect(raised?.questions[0]).toMatchObject({ question: "Which database?", options: ["Postgres", "Mongo"] });
-});
-
-test("without the hook, AskUserQuestion falls back to the plain 'ask in plain text' steer", async () => {
-  const canUse = buildCanUseTool(handlers(), "/tmp", "neo"); // no onStructuredQuestion
+test("with ask_operator attached, the native AskUserQuestion is denied with a steer to ask_operator and its fields", async () => {
+  const canUse = buildCanUseTool(handlers({ askOperator: true }), "/tmp", "neo");
   const verdict = await canUse("AskUserQuestion", NATIVE_INPUT);
   expect(verdict.behavior).toBe("deny");
-  expect(verdict.message?.toLowerCase()).toContain("plain text");
+  expect(verdict.message).toBe(NATIVE_ASK_STEER);
+  for (const part of ["ask_operator", "context", "explanation", "recommended", "non-technical"]) expect(NATIVE_ASK_STEER).toContain(part);
 });
 
-test("an unparseable AskUserQuestion input with the hook still fails safe to the plain steer", async () => {
-  let called = false;
-  const canUse = buildCanUseTool(handlers({ onStructuredQuestion: () => void (called = true) }), "/tmp", "neo");
-  const verdict = await canUse("AskUserQuestion", { questions: [] }); // nothing to raise
-  expect(verdict.behavior).toBe("deny");
-  expect(called).toBe(false); // never raised an empty ask
-  expect(verdict.message?.toLowerCase()).toContain("plain text");
-});
-
-test("a throwing onStructuredQuestion hook never wedges the callback (fails safe to the plain steer)", async () => {
-  const canUse = buildCanUseTool(
-    handlers({ onStructuredQuestion: () => { throw new Error("channel down"); } }),
-    "/tmp",
-    "neo",
-  );
+test("without ask_operator, AskUserQuestion gets the plain-text steer, which asks for the same parts", async () => {
+  const canUse = buildCanUseTool(handlers(), "/tmp", "neo");
   const verdict = await canUse("AskUserQuestion", NATIVE_INPUT);
-  expect(verdict.behavior).toBe("deny"); // still a governed deny, never a thrown/hung callback
+  expect(verdict.behavior).toBe("deny");
+  const msg = verdict.message?.toLowerCase() ?? "";
+  expect(msg).toContain("plain text");
+  for (const part of ["non-technical", "what is happening", "numbered", "recommend"]) expect(msg).toContain(part);
+  expect(decide("AskUserQuestion", {}, { folder: "/tmp" })).toEqual({ deny: verdict.message! });
 });

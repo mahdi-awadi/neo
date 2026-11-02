@@ -145,3 +145,77 @@ test("a daemon booted on a detached HEAD: merges are judged against the running 
   const drafts = restartDrafts(deps(dir, boot)) as Exclude<ReturnType<typeof restartDrafts>, "error">;
   expect(drafts.map((d) => d.key)).toEqual(["merge:fix/z"]);
 });
+
+// --- ADR-0054 D1: a fix is done only when it runs ------------------------------------------------
+const DAY = 86_400_000;
+const lastCommitAt = (dir: string, ref: string) => Number(sh(dir, "log", "-1", "--format=%ct", ref)) * 1000;
+
+test("ADR-0054 D1: dev ahead of the running build gives ONE integration item naming its ADRs", () => {
+  const dir = repo();
+  const boot = bootOf(dir);
+  sh(dir, "checkout", "-q", "-b", "dev");
+  commit(dir, "b.txt", "fix(threads): every decision close re-derives its thread (ADR-0053)");
+  commit(dir, "c.txt", "docs: notes");
+  sh(dir, "checkout", "-q", "master");
+  const now = lastCommitAt(dir, "dev");
+  const items = restartDrafts(deps(dir, boot, { integrationBranch: "dev", maxUndeployedDays: 2, now })) as Array<{ key: string; title: string; detail?: string; severity: string }>;
+  const dev = items.filter((x) => x.key === "integration");
+  expect(dev).toHaveLength(1);
+  expect(dev[0]).toMatchObject({ title: "2 commits on dev are not running (oldest 0 days)", severity: "normal" });
+  expect(dev[0]!.detail).toContain("ADR-0053");
+  expect(items.some((x) => x.key === "merge:dev")).toBe(false);
+});
+
+test("ADR-0054 D1: severity is high once the oldest unrun commit is older than maxUndeployedDays", () => {
+  const dir = repo();
+  const boot = bootOf(dir);
+  sh(dir, "checkout", "-q", "-b", "dev");
+  commit(dir, "b.txt", "fix: x");
+  sh(dir, "checkout", "-q", "master");
+  const now = lastCommitAt(dir, "dev") + 3 * DAY;
+  const dev = (restartDrafts(deps(dir, boot, { integrationBranch: "dev", maxUndeployedDays: 2, now })) as Array<{ key: string; title: string; severity: string }>).find((x) => x.key === "integration");
+  expect(dev).toMatchObject({ title: "1 commit on dev is not running (oldest 3 days)", severity: "high" });
+});
+
+test("ADR-0054 D1: a feature branch already merged into dev gives no merge item; an unmerged one still does", () => {
+  const dir = repo();
+  const boot = bootOf(dir);
+  sh(dir, "checkout", "-q", "-b", "fix/merged");
+  commit(dir, "m.txt", "fix: merged one");
+  sh(dir, "checkout", "-q", "-b", "dev", "master");
+  sh(dir, "merge", "-q", "--no-ff", "-m", "merge fix/merged", "fix/merged");
+  sh(dir, "checkout", "-q", "-b", "fix/open", "master");
+  commit(dir, "o.txt", "fix: still open");
+  sh(dir, "checkout", "-q", "master");
+  const keys = (restartDrafts(deps(dir, boot, { integrationBranch: "dev", now: Date.now() })) as Array<{ key: string }>).map((x) => x.key);
+  expect(keys).not.toContain("merge:fix/merged");
+  expect(keys).toContain("merge:fix/open");
+  expect(keys).toContain("integration");
+});
+
+test("ADR-0054 D1: running ON the integration branch gives no integration item", () => {
+  const dir = repo();
+  sh(dir, "checkout", "-q", "-b", "dev");
+  const boot = bootOf(dir);
+  expect((restartDrafts(deps(dir, boot, { integrationBranch: "dev", now: Date.now() })) as Array<{ key: string }>).map((x) => x.key)).not.toContain("integration");
+});
+
+test("ADR-0054 D2: integrationGap is the one computation — the item, /list and the console read it", async () => {
+  const { integrationGap } = await import("../src/engine/producers/restart");
+  const dir = repo();
+  const boot = bootOf(dir);
+  expect(integrationGap(deps(dir, boot, { integrationBranch: "dev", now: Date.now() }))).toBeUndefined(); // no dev branch
+  sh(dir, "checkout", "-q", "-b", "dev");
+  commit(dir, "b.txt", "fix: a (ADR-0054)");
+  sh(dir, "checkout", "-q", "master");
+  const now = lastCommitAt(dir, "dev") + 3 * DAY;
+  expect(integrationGap(deps(dir, boot, { integrationBranch: "dev", maxUndeployedDays: 2, now }))).toMatchObject({
+    running: boot.headSha.slice(0, 7),
+    branch: "master",
+    integration: "dev",
+    commits: 1,
+    days: 3,
+    high: true,
+    adrs: ["ADR-0054"],
+  });
+});

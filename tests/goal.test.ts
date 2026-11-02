@@ -91,3 +91,61 @@ test("makeGoalCheck dispatches to the judge for kind:judge", async () => {
   );
   expect((await check()).met).toBe(true);
 });
+
+test("commandGoal keeps the whole stdout as output, capped (ADR-0045)", async () => {
+  const g = commandGoal({ command: ["sh", "-c", "printf 'line one\\nline two\\n'; exit 0"], cwd: process.cwd() });
+  const r = await g();
+  expect(r).toEqual({ met: true, detail: "exit 0: line two", output: "line one\nline two" });
+  const big = await commandGoal({ command: ["sh", "-c", "head -c 9000 /dev/zero | tr '\\0' x"], cwd: process.cwd() })();
+  expect(big.output?.length).toBe(4000);
+});
+
+test("judgeGoal reports the judge run's cost, so a loop's budget counts it", async () => {
+  const check = judgeGoal({
+    criteria: "x",
+    cwd: "/p",
+    run: async (_o, h) => {
+      h.onMessage("VERDICT: CONTINUE — not yet");
+      return { ok: true, sessionId: "s", summary: "", costUsd: 0.42 };
+    },
+  });
+  expect((await check()).costUsd).toBe(0.42);
+});
+
+test("judgeGoal honours timeoutMs: it aborts the judge run and is not met", async () => {
+  let aborted = false;
+  const check = judgeGoal({
+    criteria: "x",
+    cwd: "/p",
+    timeoutMs: 20,
+    run: (_o, _h, deps) =>
+      new Promise((resolve) => {
+        deps?.abortController?.signal.addEventListener("abort", () => {
+          aborted = true;
+          resolve({ ok: false, sessionId: "s", summary: "aborted", costUsd: 0.1 });
+        });
+      }),
+  });
+  const r = await check();
+  expect(aborted).toBe(true);
+  expect(r.met).toBe(false);
+  expect(r.detail).toContain("timed out after 20ms");
+  expect(r.costUsd).toBe(0.1);
+});
+
+test("judgeGoal keeps the caller's runDeps and adds only the abort", async () => {
+  let seen: unknown;
+  const check = judgeGoal({
+    criteria: "x",
+    cwd: "/p",
+    timeoutMs: 1000,
+    runDeps: { disallowedTools: ["Write"] },
+    run: async (_o, h, deps) => {
+      seen = deps?.disallowedTools;
+      h.onMessage("VERDICT: DONE — ok");
+      return okRun("");
+    },
+  });
+  expect((await check()).met).toBe(true);
+  expect(seen).toEqual(["Write"]);
+});

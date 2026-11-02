@@ -43,6 +43,11 @@ test("createGitRead against a real repo", async () => {
 });
 
 test("uncommittedFrom: porcelain paths, renames to their new name, the folder's own HANDOFF.md left out", () => {
-  const out = " M src/a.ts\n?? notes/HANDOFF.md\nR  old.ts -> new.ts\n?? sub/HANDOFF.md\n";
-  expect(uncommittedFrom(out, "sub/")).toEqual(["src/a.ts", "notes/HANDOFF.md", "new.ts"]);
+  const out = " M src/a.ts\n?? notes/HANDOFF.md\nR  old.ts -> new.ts\n?? HANDOFF.md\n";
+  expect(uncommittedFrom(out, "")).toEqual(["src/a.ts", "notes/HANDOFF.md", "new.ts"]);
+});
+
+test("uncommittedFrom: a sub-folder counts only the changes under it (ADR-0048)", () => {
+  const out = " M HANDOFF.md\n M src/a.ts\n?? sub/x.ts\n?? sub/HANDOFF.md\nR  sub/old.ts -> sub/new.ts\n?? subway/y.ts\n";
+  expect(uncommittedFrom(out, "sub/")).toEqual(["sub/x.ts", "sub/new.ts"]);
 });

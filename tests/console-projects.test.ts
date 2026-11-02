@@ -30,15 +30,15 @@ test("the shell has a Projects tab and its view; the module loads the list and o
 });
 
 test("attention buttons: one shared helper — the feed's /attention list and the project pane both use it", () => {
-  expect(APP.match(/post\("\/api\/attention"/g)!.length).toBe(1);
-  expect(fn("attentionButtons")).toContain("x.drop");
+  expect(APP.match(/act\(b, "\/api\/attention"/g)!.length).toBe(1);
+  expect(fn("attentionButtons")).toContain(".drop");
   expect(fn("renderAttention")).toContain("attentionButtons(");
   expect(fn("renderProjectPane")).toContain("attentionButtons(");
 });
 
 test("the pane: every section of the sketch, threads open in the Threads tab, refs and shas as LTR runs", () => {
   const pane = fn("renderProjectPane");
-  for (const s of ["now", "queue", "git", "github", "decide", "plans", "attention", "threads", "restart"]) expect(pane).toContain(`pj.sect.${s}`);
+  for (const s of ["now", "queue", "git", "github", "decide", "plans", "needsYou", "housekeeping", "threads", "restart"]) expect(pane).toContain(`pj.sect.${s}`);
   for (const k of ["noUpstream", "undeployed", "error", "fileMissing", "scanned", "never"]) expect(pane).toContain(k);
   expect(pane).toContain("threadChip(");
   expect(fn("threadChip")).toContain('data-act="project-thread"');
@@ -76,7 +76,7 @@ test("review fixes: a bad #project= hash is ignored; Latin values are bidi-isola
   expect(hash).toContain("decodeURIComponent");
   expect(APP).toContain('tx("pj.unknown", { name: iso(name) })');
   expect(APP).toContain("steps: ltr(p.steps)");
-  expect(fn("renderProjectPane")).toContain('$("pjatth").textContent');
+  expect(fn("renderProjectPane")).toContain('$("pjatth").innerHTML');
   expect(String((ar as any).pj.sect.github)).toBe("GitHub");
   expect(JSON.stringify(ar)).not.toContain("\u200c"); // no zero-width non-joiner
 });

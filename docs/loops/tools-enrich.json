@@ -1,0 +1,15 @@
+{
+  "name": "tools-enrich",
+  "summary": "Weekly: when tool searches missed, a worker improves the tool cards' tags and examples on a branch (ADR-0044); never makes a card active",
+  "folder": "/home/neo",
+  "promptFile": "tools-enrich.prompt.md",
+  "goalKind": "command",
+  "goalCommand": "bun tools/catalogue/misses.ts check",
+  "goalTimeoutMs": 60000,
+  "triggerKind": "cron",
+  "cronExpr": "0 5 * * 1",
+  "maxIterations": 2,
+  "budgetUsd": 3,
+  "enabledByDefault": false,
+  "freshSession": true
+}

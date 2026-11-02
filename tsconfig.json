@@ -12,5 +12,7 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": false
   },
-  "include": ["src", "tests", "tools"]
+  "include": ["src", "tests", "tools"],
+  // Deliberately vulnerable snippets the semgrep rules are tested against; not project code.
+  "exclude": ["tools/security/rules/tests"]
 }

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createWebChannel, type WebEvent } from "../src/engine/web-channel";
@@ -15,6 +15,7 @@ import type { Order } from "../src/types";
 import { DEFAULT_GOVERNOR_CFG } from "../src/engine/governor";
 import { createTrace } from "../src/engine/trace";
 import { reconcile, listOpen } from "../src/engine/attention";
+import { withAttachments } from "../src/engine/files";
 
 function cfg(): NeoConfig {
   return {
@@ -24,6 +25,7 @@ function cfg(): NeoConfig {
     botUsername: "",
     webHost: "127.0.0.1",
     webPort: 3003,
+    webBindRetryMs: 15_000,
     publicUrl: "",
     companyFolder: "/tmp/agent",
     gatewaySendUrl: "",
@@ -45,6 +47,8 @@ function cfg(): NeoConfig {
     dispatchProgressMs: 600_000,
     dispatchRecoverWindowMs: 86_400_000,
     todoOnFailure: "continue",
+    todoRetryBackoffMs: [],
+    handoffNotesDir: "data/handoffs",
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -69,7 +73,7 @@ function cfg(): NeoConfig {
     faults: DEFAULT_FAULTS,
     health: DEFAULT_HEALTH,
     sqliteBusyTimeoutMs: 5_000,
-    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {} },
+    workers: { company: { effort: "low" }, project: {}, dispatch: {}, loop: {}, judge: {}, ingress: { effort: "low" }, handoff: {}, secretary: {}, consult: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
     telegramToolSteps: false,
@@ -372,6 +376,27 @@ test("an inbound conversational message mirrors an echo to the bus, but a slash-
 
   await ch.send("/help"); // a synchronous command — its own reply, not an echo
   expect(tg.lines.filter((l) => l.kind === "echo").length).toBe(1); // unchanged
+});
+
+test("a multi-line message keeps every line break: the worker brief and the Telegram echo", async () => {
+  const dir = scratch();
+  const bus = createOperatorBus();
+  const tg = recorder("telegram");
+  bus.register(tg);
+  const tasks: string[] = [];
+  const start = (o: Order, _h: RunHandlers): SessionRun => {
+    tasks.push(o.task);
+    return { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => true, close: () => {}, closed: () => false, done: new Promise(() => {}) };
+  };
+  const ch = createWebChannel({ engine: engine(start), chatId: 0, bus });
+
+  const brief = "first line\n\nالاستمارات:\n* سطر أول.\n* second";
+  await ch.send(`/open ${dir} ${brief}`);
+  expect(tasks).toEqual([brief]);
+
+  // A follow-up reaches the worker as text.trim() (pipeline.ts): only the ends are trimmed.
+  await ch.send("follow\nup");
+  expect(tg.lines.filter((l) => l.kind === "echo").map((l) => (l as { text: string }).text)).toContain("follow\nup");
 });
 
 test("a web-raised escalation mirrors a pending notice to the bus, and its resolution mirrors too", async () => {
@@ -700,4 +725,253 @@ test("/attention emits an attention event; attentionAction applies the shared ru
   expect(ev?.items.map((i) => i.id)).toEqual([1]);
   expect(await ch.attentionAction(1, "dismiss")).toMatchObject({ ok: true });
   expect(listOpen(eng.ledger, { now: Date.now() })).toEqual([]);
+});
+
+// ADR-0025: the server renders each feed line once — Markdown or a step line as code — with its tone.
+test("a worker line is emitted as rendered HTML with a tone; a step line's command is a code block", async () => {
+  const dir = scratch();
+  const f = fakeStart((h) => {
+    h.onMessage("| a | n |\n|---|---|\n| x | 1 |");
+    h.onMessage("🔧 Bash: ls -la", "tool");
+    h.onMessage("⚠️ ↳ Exit code 2", "tool");
+  });
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send(`/open ${dir} do it`);
+  const msgs = events.filter((e) => e.type === "message") as Array<{ text: string; tone?: string }>;
+  expect(msgs.find((m) => m.text.includes('<div class="tbl">'))?.tone).toBe("");
+  expect(msgs.find((m) => m.text.includes('data-lang="bash"'))?.tone).toBe("tool");
+  expect(msgs.find((m) => m.text.includes("Exit code"))?.tone).toBe("error");
+});
+
+test("an escalation event carries the reason as safe HTML, the shell command as code", async () => {
+  const dir = scratch();
+  let captured!: RunHandlers;
+  const f = fakeStart((h) => void (captured = h));
+  const ch = createWebChannel({ engine: engine(f.start), chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send(`/open ${dir} go`);
+  void captured.onEscalation("risky shell command: rm -rf <build>");
+  const esc = events.find((e) => e.type === "escalation") as { reason: string; html?: string } | undefined;
+  expect(esc?.reason).toBe("risky shell command: rm -rf <build>");
+  expect(esc?.html).toBe('risky shell command<pre class="code" data-lang="bash"><code>rm -rf &lt;build&gt;</code></pre>');
+});
+
+// ── staged attachments travel with their message (ADR-0026) ─────────────────────────────────
+
+/** A traced channel with one running, pinned project; `got` records what reaches its worker. */
+async function withProject() {
+  const got: string[] = [];
+  const t = traced(((o: Order, h: RunHandlers) => {
+    const run = fakeStart().start(o, h);
+    return { ...run, followUp: (x: string) => void got.push(x) };
+  }) as ReturnType<typeof fakeStart>["start"]);
+  const dir = scratch();
+  await t.ch.send(`/open ${dir} start`);
+  const s = t.eng.registry.list()[0]!;
+  t.eng.registry.setStatus(s.id, "running");
+  t.eng.registry.setFocus(0, s.id, "pinned");
+  return { ...t, got, dir };
+}
+const staged = (r: unknown) => {
+  if (!r || typeof r !== "object" || !("token" in r)) throw new Error(`not staged: ${JSON.stringify(r)}`);
+  return r as { token: string; name: string; size: number };
+};
+const userRows = (t: { eng: { ledger: ReturnType<typeof openLedger> } }) => t.eng.ledger.conversation(0, 50).filter((m) => m.role === "user").map((m) => m.content);
+
+test("staging saves the file to the project's inbox and sends nothing", async () => {
+  const t = await withProject();
+  const before = t.got.length;
+  const a = staged(t.ch.stage({ name: "shot.png", bytes: new Uint8Array([1, 2, 3]) }));
+  expect(a).toMatchObject({ name: "shot.png", size: 3 });
+  expect(existsSync(join(t.dir, "inbox", "shot.png"))).toBe(true);
+  expect(t.got.length).toBe(before);
+});
+
+test("text + staged files → ONE message: one ledger row, one prompt, the text then every path", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "shot.png", bytes: new Uint8Array([1]) }));
+  const b = staged(t.ch.stage({ name: "spec.pdf", bytes: new Uint8Array([2]) }));
+  await t.ch.send("use these", { attachments: [a.token, b.token] });
+  const want = withAttachments("use these", [
+    { name: "shot.png", path: join(t.dir, "inbox", "shot.png") },
+    { name: "spec.pdf", path: join(t.dir, "inbox", "spec.pdf") },
+  ]);
+  expect(t.got.at(-1)).toBe(want);
+  expect(userRows(t).filter((c) => c.includes("shot.png"))).toEqual([want]);
+});
+
+test("files with no text are one message with just the list", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "notes.txt", bytes: new Uint8Array([1]) }));
+  await t.ch.send("", { attachments: [a.token] });
+  expect(t.got.at(-1)).toBe(withAttachments("", [{ name: "notes.txt", path: join(t.dir, "inbox", "notes.txt") }]));
+});
+
+test("a token is one-shot; a send naming a used or unknown token is refused whole; a discarded file is deleted", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "a.txt", bytes: new Uint8Array([1]) }));
+  await t.ch.send("first", { attachments: [a.token] });
+  const sent = t.got.length;
+  const rows = userRows(t).length;
+  // A reload or the TTL forgot the file: the words must not go out without it (nor an empty prompt).
+  expect(t.ch.check("again", { attachments: [a.token, "nope"] })).toEqual({ error: "expired" });
+  expect(t.ch.check("", { attachments: ["nope"] })).toEqual({ error: "expired" });
+  await t.ch.send("again", { attachments: [a.token, "nope"] });
+  await t.ch.send("", { attachments: ["nope"] });
+  expect(t.got.length).toBe(sent);
+  expect(userRows(t).length).toBe(rows);
+  const b = staged(t.ch.stage({ name: "b.txt", bytes: new Uint8Array([1]) }));
+  const path = join(t.dir, "inbox", "b.txt");
+  expect(t.ch.discard(b.token)).toBe(true);
+  expect(existsSync(path)).toBe(false);
+  expect(t.ch.discard(b.token)).toBe(false);
+  expect(t.ch.check("after discard", { attachments: [b.token] })).toEqual({ error: "expired" });
+});
+
+test("check passes plain text and known tokens, and never takes them", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "a.txt", bytes: new Uint8Array([1]) }));
+  expect(t.ch.check("hello")).toEqual({ ok: true });
+  expect(t.ch.check("use it", { attachments: [a.token] })).toEqual({ ok: true });
+  expect(t.ch.check("use it", { attachments: [a.token] })).toEqual({ ok: true });
+  await t.ch.send("use it", { attachments: [a.token] });
+  expect(t.got.at(-1)).toBe(withAttachments("use it", [{ name: "a.txt", path: join(t.dir, "inbox", "a.txt") }]));
+});
+
+test("inside a thread: the file lands in the thread's project inbox and the message joins the thread", async () => {
+  const got: string[] = [];
+  const t = traced(((o: Order, h: RunHandlers) => {
+    const run = fakeStart().start(o, h);
+    return { ...run, followUp: (x: string) => void got.push(`${o.folder}:${x}`) };
+  }) as ReturnType<typeof fakeStart>["start"]);
+  const gold = scratch();
+  const acme = scratch();
+  await t.ch.send(`/open ${gold} start`);
+  await t.ch.send(`/open ${acme} start`);
+  const [g, a] = t.eng.registry.list();
+  for (const s of [g!, a!]) t.eng.registry.setStatus(s.id, "running");
+  t.eng.registry.setFocus(0, a!.id, "pinned");
+  const cause = t.trace.inbound({ chatId: 0, text: "gold work", surface: "web" });
+  t.trace.outbound({ chatId: 0, text: "on it", cause, project: g!.name, folder: gold });
+  const f = staged(t.ch.stage({ name: "diagram.png", bytes: new Uint8Array([9]) }, { threadId: cause.threadId }));
+  const path = join(gold, "inbox", "diagram.png");
+  expect(existsSync(path)).toBe(true);
+  await t.ch.send("see the diagram", { threadId: cause.threadId, attachments: [f.token] });
+  expect(got.at(-1)).toBe(`${gold}:${withAttachments("see the diagram", [{ name: "diagram.png", path }])}`);
+  const inThread = t.eng.ledger.messagesInThread(cause.threadId!, { limit: 10 }).filter((m) => m.role === "user");
+  expect(inThread[0]!.content).toContain(path);
+});
+
+test("a slash line with files is refused unless it is an order; the files stay staged", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "x.txt", bytes: new Uint8Array([1]) }));
+  const rows = userRows(t).length;
+  // A console command cannot carry files, and the pipeline would answer "not an order" and lose them.
+  expect(t.ch.check("/list", { attachments: [a.token] })).toEqual({ error: "command" });
+  await t.ch.send("/list", { attachments: [a.token] });
+  expect(userRows(t).length).toBe(rows);
+  // An order carries its files: the list becomes part of the task.
+  const dir = scratch();
+  expect(t.ch.check(`/open ${dir} read the spec`, { attachments: [a.token] })).toEqual({ ok: true });
+  await t.ch.send(`/open ${dir} read the spec`, { attachments: [a.token] });
+  expect(userRows(t)).toContain(withAttachments(`/open ${dir} read the spec`, [{ name: "x.txt", path: join(t.dir, "inbox", "x.txt") }]));
+});
+
+test("a thread send that asks to clarify keeps its files staged", async () => {
+  const t = await withProject();
+  const a = staged(t.ch.stage({ name: "x.txt", bytes: new Uint8Array([1]) }));
+  await t.ch.send("for the old thread", { threadId: 9_999, attachments: [a.token] });
+  expect(t.ch.check("again", { attachments: [a.token] })).toEqual({ ok: true });
+});
+
+test("staging with no project to receive it is refused", () => {
+  const t = traced();
+  expect(t.ch.stage({ name: "a.txt", bytes: new Uint8Array([1]) })).toEqual({ error: "no active project" });
+});
+
+test("ADR-0054 C1: a WAITING thread row carries its waiting items — owner and next action", () => {
+  const eng = engine(fakeStart(() => {}).start);
+  const root = eng.ledger.insertMessage({ chatId: 42, role: "user", content: "fix the wallet", at: 1_000, surface: "web", kind: "text" });
+  eng.ledger.insertThread({ id: root, origin: "operator", title: "fix the wallet", state: "waiting", createdAt: 1_000 });
+  eng.ledger.setMessageThread(root, root);
+  const d = eng.ledger.openDecision({ kind: "decision", question: "Run the prod migration?", folder: "/home/p", project: "p", cause: { msgId: root, threadId: root } }, 1_000);
+  const ch = createWebChannel({ engine: eng, chatId: 42 });
+  const row = ch.threads({ state: "waiting" }, { limit: 10 }).rows.find((r) => r.id === root) as unknown as { waiting?: Array<{ id: string; owner: string; next: string }> };
+  expect(row?.waiting).toEqual([expect.objectContaining({ id: d, owner: "operator", next: "answer" })]);
+  // The Queue view reads the same list.
+  expect((ch.state() as unknown as { waiting: Array<{ id: string }> }).waiting.map((i) => i.id)).toContain(d);
+});
+
+test("ADR-0054 D2: the console state carries the deploy gap for the header", () => {
+  const gap = { running: "4452b94", branch: "master", integration: "dev", commits: 87, days: 11, high: true, adrs: [] };
+  const ch = createWebChannel({ engine: engine(fakeStart(() => {}).start), chatId: 42, deployGap: () => gap });
+  expect((ch.state() as unknown as { deploy?: unknown }).deploy).toEqual(gap);
+  const none = createWebChannel({ engine: engine(fakeStart(() => {}).start), chatId: 42 });
+  expect((none.state() as unknown as { deploy?: unknown }).deploy).toBeUndefined();
+});
+
+// ── ADR-0067: /find, /remember and /forget typed in the console's own chat box ─────────────────────
+import type { HistoryQuery, RememberInput, TaskHistory } from "../src/engine/history/index";
+
+function webHistory() {
+  const calls = { queries: [] as HistoryQuery[], saved: [] as RememberInput[], forgot: 0 };
+  const h: TaskHistory = {
+    async search(q) {
+      calls.queries.push(q);
+      return { ok: true, mode: { meaning: "on" }, hits: [{ ref: "todo:884", kind: "todo", project: "gold", at: Date.UTC(2026, 9, 20), title: "bus seats not freeing up", snippet: "the seats stay taken", todo: 884, commits: [], archived: false, via: ["words"] }] };
+    },
+    remember(e) {
+      calls.saved.push(e);
+      return { ok: true, ref: "mem:7", duplicate: false };
+    },
+    indexTick: async () => ({}) as never,
+    async forget() {
+      calls.forgot++;
+      return { ok: true, chunks: 1, points: 1, pendingPoints: 0 };
+    },
+    status: () => ({}) as never,
+    close() {},
+  };
+  return { h, calls };
+}
+
+test("the console chat box answers /find and /remember from the task history, not 'unavailable'", async () => {
+  const { h, calls } = webHistory();
+  const ch = createWebChannel({ engine: { ...engine(fakeStart().start), history: h }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send("/find bus seats p:gold");
+  await ch.send("/remember gold fees live in config p:gold");
+  const texts = events.filter((e) => e.type === "message").map((e) => (e as { text: string }).text);
+  expect(calls.queries[0]).toMatchObject({ query: "bus seats", project: "gold" });
+  expect(texts.some((t) => t.includes("bus seats not freeing up"))).toBe(true);
+  expect(texts.some((t) => t.includes("not available"))).toBe(false);
+  // The console's own rate-limit session, the same one the History tab uses.
+  expect(calls.saved).toEqual([{ text: "gold fees live in config", project: "gold", by: "operator", session: "console" }]);
+  expect(texts.some((t) => t.includes("Saved as mem:7"))).toBe(true);
+});
+
+test("/forget in the console chat box shows the entry and points to the History tab; nothing is removed", async () => {
+  const { h, calls } = webHistory();
+  const ch = createWebChannel({ engine: { ...engine(fakeStart().start), history: h }, chatId: 42 });
+  const events: WebEvent[] = [];
+  ch.subscribe((e) => events.push(e));
+  await ch.send("/forget todo:884 wrong project");
+  const ev = events.find((e) => e.type === "history_forget") as { text: string; ref: string } | undefined;
+  expect(ev?.ref).toBe("todo:884");
+  expect(ev?.text).toContain("bus seats not freeing up");
+  expect(calls.forgot).toBe(0);
+  // The console renders the pointer from its catalogues, translated (not copied) in Arabic.
+  const { createConsoleI18n } = await import("../src/frontends/web/i18n");
+  expect(createConsoleI18n("ar").t("history.forgetInTab")).not.toBe(createConsoleI18n("en").t("history.forgetInTab"));
+  expect(createConsoleI18n("en").exists("history.forgetInTab")).toBe(true);
+  // Without a history the chat box says so.
+  const off = createWebChannel({ engine: engine(fakeStart().start), chatId: 42 });
+  const offEvents: WebEvent[] = [];
+  off.subscribe((e) => offEvents.push(e));
+  await off.send("/find bus");
+  expect(offEvents.some((e) => e.type === "message" && (e as { text: string }).text.includes("not available"))).toBe(true);
 });

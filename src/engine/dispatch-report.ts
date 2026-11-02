@@ -43,10 +43,13 @@ export function lastCommitIn(folder: string): string | undefined {
 /** One bounded, read-only git query (git-read.ts is the process boundary). */
 export { git } from "./git-read";
 
-/** Paths with uncommitted changes (modified, staged or untracked), relative to the repo root, minus
- *  this folder's own `HANDOFF.md` (the folder may be a sub-folder of its repo). `[]` = clean;
- *  undefined = not a git repo or git failed. */
+/** Paths with uncommitted changes (modified, staged or untracked) under this folder, relative to the
+ *  repo root, minus its own `HANDOFF.md` (the folder may be a sub-folder of its repo). `[]` = clean;
+ *  undefined = not under version control: not a repo, a folder its repo ignores (a desk under the
+ *  gitignored /home/neo/agent, ADR-0048), or git failed. */
 export function uncommittedIn(folder: string): string[] | undefined {
+  // check-ignore exits 0 (git returns "") when the folder is ignored; 1 (undefined) when it is not.
+  if (git(folder, ["check-ignore", "-q", "."]) !== undefined) return undefined;
   const out = git(folder, ["status", "--porcelain", "--untracked-files=all"]);
   if (out === undefined) return undefined;
   return uncommittedFrom(out, git(folder, ["rev-parse", "--show-prefix"])?.trim() ?? "");
@@ -117,8 +120,9 @@ export function liveCompanyLink(registry: Registry, lifecycle?: { draining(): bo
       const company = registry.getDefault();
       const control = company ? registry.getControl(company.id) : undefined;
       if (!control || control.closed?.() === true) return false;
-      if (opts.cause) control.followUp(text, opts.cause);
-      else control.followUp(text);
+      // A dispatch result is an engine brief for the company: it waits for the turn, never steers it.
+      if (opts.cause) control.followUp(text, "after-turn", opts.cause);
+      else control.followUp(text, "after-turn");
       return true;
     },
   };
@@ -160,7 +164,14 @@ export function takeDispatcherInbox(ledger: Ledger, now: number): string | undef
  *  point, so the dispatcher learns it was cut short and where. Idempotent. Returns how many. */
 export function recoverInterruptedDispatches(
   ledger: Ledger,
-  opts: { now: number; windowMs: number; lastCommit?: (folder: string) => string | undefined },
+  opts: {
+    now: number;
+    windowMs: number;
+    lastCommit?: (folder: string) => string | undefined;
+    /** A note for a run whose todo the queue keeps and re-runs by itself (ADR-0027) — it replaces the
+     *  "resume it" advice, so the dispatcher never re-dispatches work the queue will retry. */
+    todoNote?: (orderId: string) => string | undefined;
+  },
 ): number {
   const readCommit = opts.lastCommit ?? lastCommitIn;
   const runs = ledger.unfinishedDispatches(opts.now - opts.windowMs);
@@ -175,12 +186,13 @@ export function recoverInterruptedDispatches(
     });
     // Read at boot, so it is the folder's HEAD NOW — a later run may have moved it past this one.
     const head = run.folder ? readCommit(run.folder) : undefined;
+    const kept = opts.todoNote?.(run.orderId);
     const text =
       dispatchResultText({
         project,
         ok: false,
-        summary: "interrupted by an engine restart before it finished — resume it from where it stopped",
-      }) + (head ? `\nstopped at — folder HEAD now: ${head}` : "");
+        summary: kept ? "interrupted by an engine restart before it finished" : "interrupted by an engine restart before it finished — resume it from where it stopped",
+      }) + (head ? `\nstopped at — folder HEAD now: ${head}` : "") + (kept ? `\n${kept}` : "");
     ledger.queueDispatcherReport(project, text, opts.now, run.cause);
   }
   return runs.length;

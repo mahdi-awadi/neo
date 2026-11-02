@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<!-- Neo "Core" favicon: the o of the wordmark (agent/desks/dev/neo-logos.html, symbol m3f), copied as it is. ADR-0056. -->
+<style>:root{--accent:#f2552c;color:#18181b}@media (prefers-color-scheme:dark){:root{color:#f1f1ef}}</style>
+<circle cx="32" cy="32" r="19" fill="none" stroke="currentColor" stroke-width="9"/>
+<circle cx="32" cy="32" r="7" style="fill:var(--accent)"/>
+</svg>

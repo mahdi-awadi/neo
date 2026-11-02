@@ -36,7 +36,7 @@ function world() {
   return { root, dir, neo, ledger, registry, deps: { ledger, registry, projects: {}, neoFolder: neo } };
 }
 
-const high = (project: string, folder: string, key: string) => ({ project, folder, source: "git" as const, kind: "dirty", key, title: `dirty ${key}`, severity: "high" as const });
+const high = (project: string, folder: string, key: string) => ({ project, folder, source: "git" as const, kind: "brand_new_kind", key, title: `new ${key}`, severity: "high" as const });
 
 test("knownProjects: Neo, open sessions, order folders still on disk and active todo folders — once each", () => {
   const w = world();
@@ -62,11 +62,11 @@ test("projectSummaries: health first (down, attention, ok, unknown), then name; 
   expect(page.total).toBe(4);
 });
 
-test("summaryLine: name, health, state, queue and open attention by severity", () => {
-  expect(summaryLine({ name: "gold", folder: "/g", state: "working", line: "x", queue: 2, attention: { high: 1, normal: 2, low: 0 }, health: "attention" })).toBe(
-    "gold · 🟠 attention · working · queue 2 · attention 1 high, 2 normal",
+test("summaryLine: name, health, state, queue, what needs you and housekeeping (ADR-0065)", () => {
+  expect(summaryLine({ name: "gold", folder: "/g", state: "working", line: "x", queue: 2, attention: { high: 1, normal: 2, low: 0 }, needs: 1, housekeeping: 2, health: "attention" })).toBe(
+    "gold · 🟠 attention · working · queue 2 · 1 needs you · 2 housekeeping",
   );
-  expect(summaryLine({ name: "tin", folder: "/t", queue: 0, attention: { high: 0, normal: 0, low: 0 }, health: "unknown" })).toBe("tin · ⚪ unknown · no session · queue 0 · no attention");
+  expect(summaryLine({ name: "tin", folder: "/t", queue: 0, attention: { high: 0, normal: 0, low: 0 }, needs: 0, housekeeping: 0, health: "unknown" })).toBe("tin · ⚪ unknown · no session · queue 0 · nothing needs you");
 });
 
 function view(over: Partial<ProjectView> = {}): ProjectView {
@@ -75,15 +75,16 @@ function view(over: Partial<ProjectView> = {}): ProjectView {
     folder: "/home/gold",
     now: { state: "working", line: "working · Bash: bun test · up 12m", thread: { id: 9, ref: "m4g2", title: "fare list port", state: "waiting", updatedAt: NOW } },
     queue: [
-      { id: 31, project: "gold", status: "running", position: 0, title: "fare list", createdAt: 1 },
-      { id: 32, project: "gold", status: "queued", position: 1, title: "admin fees", createdAt: 1 },
-      { id: 33, project: "gold", status: "queued", position: 2, title: "x", createdAt: 1 },
+      { id: 31, project: "gold", status: "running", position: 0, title: "fare list", brief: "b", createdAt: 1 },
+      { id: 32, project: "gold", status: "queued", position: 1, title: "admin fees", brief: "b", createdAt: 1 },
+      { id: 33, project: "gold", status: "queued", position: 2, title: "x", brief: "b", createdAt: 1 },
     ],
     git: { branch: "dev", lastCommit: "a1b2c3 fix fees", lastCommitAt: NOW - 2 * 3_600_000, unpushed: 3, dirty: 0, drift: { from: "dev", to: "main", ahead: 14 }, worktrees: 1 },
     github: { prs: 2, ciFailed: 1, issues: 4, alerts: 1, scannedAt: NOW - 60_000 },
     decisions: [{ id: "d1", question: "ship fee change to prod?", ageMs: 3 * 3_600_000, ref: "m4g7" }],
     plans: [{ id: 1, title: "Fare list port", status: "executing", steps: "7/12", ref: "m4g2", line: "Fare list port — executing 7/12" }],
-    attention: [{ id: 5, source: "git", kind: "dirty", severity: "high", title: "CI failed on dev", ageMs: 1000, actions: ["todo", "snooze", "dismiss"] }],
+    attention: [{ id: 5, source: "git", kind: "dirty", severity: "high", title: "CI failed on dev", ageMs: 1000, actions: ["todo", "snooze", "dismiss"], badge: "dirty", project: "gold", plain: "CI failed on dev", facts: {}, links: [], reasonOk: false, cls: "housekeeping", pinned: false }],
+    needsYou: [],
     threads: [{ id: 9, ref: "m4g2", title: "fix the fare list", state: "waiting", updatedAt: NOW }],
     health: "attention",
     ...over,
@@ -100,7 +101,7 @@ test("renderProject: the Telegram sketch — health, now, queue, git, github, de
   expect(text).toContain("github: 2 PRs · CI ❌ 1 · 4 issues · 1 alert");
   expect(text).toContain("decide: ship fee change to prod? (3h) · m4g7");
   expect(text).toContain("plans: Fare list port — executing 7/12 · m4g2");
-  expect(text).toContain("attention: 1 open — 1 high");
+  expect(text).toContain("attention: 1 open — 1 housekeeping");
   expect(text).not.toContain("deploy:"); // AC6.2: no deployedVersionUrl → no undeployed line
   expect(text).not.toContain("restart-gated");
 });
@@ -177,7 +178,7 @@ test("/project with no name lists every project's one-line summary; an unknown n
   const w = world();
   w.ledger.recordOrder(order(w.dir("gold")));
   const list = await handleCommand("/project", 1, cmdDeps(w))!.later!;
-  expect(list.text).toContain("gold · ⚪ unknown · no session · queue 0 · no attention");
+  expect(list.text).toContain("gold · ⚪ unknown · no session · queue 0 · nothing needs you");
   expect(list.text).toContain("neo ·");
   expect(list.project).toBeUndefined();
   const ghost = await handleCommand("/project ghost", 1, cmdDeps(w))!.later!;
@@ -206,7 +207,7 @@ test("sessionsReport: the project block follows the session lines; the existing 
   const reg = createRegistry();
   const a = reg.add(order("/p/alpha"), 1);
   reg.attachControl(a.id, { followUp: () => {}, interrupt: async () => {}, queued: () => 0, active: () => false });
-  const lines = ["alpha · 🟢 ok · idle · queue 0 · no attention", "gold · 🟠 attention · no session · queue 1 · attention 1 high"];
+  const lines = ["alpha · 🟢 ok · idle · queue 0 · nothing needs you", "gold · 🟠 attention · no session · queue 1 · attention 1 high"];
   const report = sessionsReport(reg, 1, undefined, { lines, total: 3 });
   expect(report).toContain("alpha · /p/alpha — ");
   expect(report).toContain("idle = healthy");
@@ -236,7 +237,7 @@ test("the company's sessions tool carries the project block (no new tool); the c
   const text = (await neo.instance._registeredTools.sessions!.handler({}, {})).content[0]!.text;
   expect(text).toContain("No projects are open right now"); // the existing output stays
   expect(text).toContain("Projects (health · session · queue · open attention):");
-  expect(text).toContain("gold · 🟠 attention · no session · queue 0 · attention 1 high");
+  expect(text).toContain("gold · 🟠 attention · no session · queue 0 · 1 needs you");
   expect(text).not.toMatch(/^agent ·/m);
 });
 

@@ -158,7 +158,7 @@ test("runOrder lets the human approve an escalated tool (allow, with updatedInpu
 test("startOrder delivers the initial task and a follow-up as user messages", async () => {
   const f = fakeStreaming();
   const run = startOrder(order("do it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: f.q });
-  run.followUp("more please");
+  run.followUp("more please", "steer");
   await run.interrupt();
   await run.done;
   expect(f.received).toEqual(["do it", "more please"]);
@@ -282,7 +282,7 @@ test("startOrder reports streamed cost via onCost", async () => {
 });
 
 test("trust auto-approves a risky tool: allows, records via onAutoApprove, skips onEscalation", async () => {
-  const { q, decisions } = fakeQuery([{ tool: "Bash", input: { command: "git push" } }]);
+  const { q, decisions } = fakeQuery([{ tool: "Bash", input: { command: "rm -rf build" } }]);
   const auto: string[] = [];
   let escalated = false;
   await runOrder(
@@ -296,8 +296,8 @@ test("trust auto-approves a risky tool: allows, records via onAutoApprove, skips
     { query: q },
   );
   expect(decisions[0].behavior).toBe("allow");
-  expect(decisions[0].updatedInput).toEqual({ command: "git push" });
-  expect(auto[0]).toContain("git push");
+  expect(decisions[0].updatedInput).toEqual({ command: "rm -rf build" });
+  expect(auto[0]).toContain("rm -rf build");
   expect(escalated).toBe(false);
 });
 
@@ -387,8 +387,8 @@ test("onActivity reports every tool_use and text block; queued() counts waiting 
     { onMessage: () => {}, onEscalation: async () => "deny", onActivity: (l) => void labels.push(l) },
     { query: fakeQuery as never },
   );
-  run.followUp("extra 1");
-  run.followUp("extra 2");
+  run.followUp("extra 1", "steer");
+  run.followUp("extra 2", "steer");
   expect(run.queued()).toBeGreaterThanOrEqual(0); // channel drains as the fake iterates; the method exists and returns a number
   await run.done;
   expect(labels).toContain("Bash: bun test");
@@ -424,7 +424,7 @@ test("startOrder.active() tracks turn-in-flight, and a follow-up queued mid-turn
   expect(received).toEqual(["first brief"]);
 
   // A brief arriving mid-turn must QUEUE behind the in-flight turn, not be dropped or run concurrently.
-  run.followUp("second brief");
+  run.followUp("second brief", "steer");
   await tick();
   expect(received).toEqual(["first brief"]); // still queued behind the live turn
 
@@ -793,7 +793,7 @@ test("startOrder queues follow-ups as sequential Codex SDK turns on the same thr
     { provider: "codex", codexFactory: f.factory, resume: "codex-prev" },
   );
   while (turns.length === 0) await new Promise((r) => setTimeout(r, 1));
-  run.followUp("second");
+  run.followUp("second", "steer");
   while (turns.length < 2) await new Promise((r) => setTimeout(r, 1));
   run.close();
   const result = await run.done;
@@ -832,6 +832,20 @@ test("surfaces a concise result preview for Bash but stays quiet for navigation 
   expect(msgs.some((m) => m.includes("🔧 Bash"))).toBe(true); // command milestone
   expect(msgs.some((m) => m.startsWith("↳") && m.includes("hello world output"))).toBe(true); // its result
   expect(msgs.some((m) => m.includes("file body that should stay quiet"))).toBe(false); // Read result stays quiet
+});
+
+test("a result preview keeps the first line's indentation, so aligned output stays aligned", async () => {
+  // ClickHouse PrettyCompact with row numbers indents its header to sit over the "1." column.
+  const box = "\n   ┌─action─┬─n─┐\n1. │ book   │ 1 │\n   └────────┴───┘\n\n";
+  const q = () =>
+    (async function* () {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ch" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: box }] } };
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  const msgs: string[] = [];
+  await runOrder(order(), { onMessage: (t) => msgs.push(t), onEscalation: async () => "deny" }, { query: q as never });
+  expect(msgs).toContain("↳    ┌─action─┬─n─┐\n1. │ book   │ 1 │\n   └────────┴───┘");
 });
 
 test("truncates a long tool result and flags an errored one", async () => {
@@ -1141,7 +1155,7 @@ test("onTurnEnd: a live Codex session ends a turn after each one", async () => {
   let ends = 0;
   const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny", onTurnEnd: () => void ends++ }, { provider: "codex", codexFactory: f.factory });
   while (ends === 0) await new Promise((r) => setTimeout(r, 1));
-  run.followUp("y");
+  run.followUp("y", "steer");
   while (ends < 2) await new Promise((r) => setTimeout(r, 1));
   run.close();
   await run.done;
@@ -1162,7 +1176,7 @@ test("onTurnStart: a live Codex session reports one consumed input per turn; Cla
     { provider: "codex", codexFactory: f.factory },
   );
   while (seen.length < 2) await new Promise((r) => setTimeout(r, 1));
-  run.followUp("y");
+  run.followUp("y", "steer");
   while (seen.length < 4) await new Promise((r) => setTimeout(r, 1));
   run.close();
   await run.done;
@@ -1174,4 +1188,202 @@ test("onTurnStart: a live Codex session reports one consumed input per turn; Cla
   claude.close();
   await claude.done;
   expect(starts).toBe(0); // the SDK pulls input eagerly: the pipeline falls back to "all delivered"
+});
+
+// The security guard hook blocks a worker from secret files but only warns the operator's own
+// sessions; it tells them apart by NEO_WORKER (ADR-0024).
+test("every Claude worker runs with NEO_WORKER=1, one-shot and long-running", async () => {
+  const seen: Array<{ env?: Record<string, string> }> = [];
+  const oneShot = (args: { options: unknown }) => {
+    seen.push(args.options as { env?: Record<string, string> });
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s1" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: oneShot as never });
+  expect(seen[0]?.env?.NEO_WORKER).toBe("1");
+  expect(seen[0]?.env?.PATH).toBeDefined();
+
+  const { q, seenOptions } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  while (seenOptions.length === 0) await new Promise((r) => setTimeout(r, 1));
+  expect((seenOptions[0] as { env?: Record<string, string> }).env?.NEO_WORKER).toBe("1");
+  run.close();
+  await run.done;
+});
+
+// ADR-0027: a turn cap or an interrupt is the run ending, not the API failing — no API kind, so the
+// todo queue never mistakes it for a passing (retryable) failure.
+test("error_max_turns and error_during_execution results carry no api error kind", async () => {
+  for (const subtype of ["error_max_turns", "error_during_execution"]) {
+    const q = () =>
+      (async function* () {
+        yield { type: "result", subtype, is_error: true, errors: ["stopped"], total_cost_usd: 0, session_id: "s" };
+      })();
+    const res = await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+    expect(res.ok).toBe(false);
+    expect(res.apiError).toBeUndefined();
+  }
+});
+
+// --- follow-up timing (ADR-0050 §5, port of c12c46f): a follow-up reaches the worker MID-turn ----
+
+// Models the real SDK: Query.streamInput drains the prompt iterable eagerly while the turn runs; the
+// CLI attaches queued "next"-priority user messages between tool calls instead of at the turn end.
+function fakeEagerSdk() {
+  const received: Array<{ content: string; priority?: string; duringTurn: boolean }> = [];
+  let turnOpen = false;
+  let finishTurn!: () => void;
+  const turnGate = new Promise<void>((r) => (finishTurn = r));
+  const q = (args: { prompt: any; options: any }) => {
+    void (async () => {
+      for await (const m of args.prompt as AsyncIterable<any>) {
+        received.push({ content: m.message.content, priority: m.priority, duringTurn: turnOpen });
+      }
+    })();
+    return (async function* () {
+      yield { type: "system", subtype: "init", session_id: "sess-1" };
+      turnOpen = true;
+      yield { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "make" } }] } };
+      await turnGate; // a long tool run
+      turnOpen = false;
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "sess-1" };
+    })();
+  };
+  return { q, received, finishTurn };
+}
+
+test("a steer follow-up pushed during a running turn reaches the SDK mid-turn with priority 'next'", async () => {
+  const sdk = fakeEagerSdk();
+  const run = startOrder(order("build it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: sdk.q as any });
+  await new Promise((r) => setTimeout(r, 5));
+  run.followUp("also update the README", "steer");
+  await new Promise((r) => setTimeout(r, 5));
+  const fu = sdk.received.find((m) => m.content === "also update the README");
+  expect(fu).toBeDefined();
+  expect(fu!.duringTurn).toBe(true);
+  expect(fu!.priority).toBe("next");
+  expect(run.steersMidTurn).toBe(true);
+  sdk.finishTurn();
+  run.close();
+  await run.done;
+});
+
+test("an after-turn follow-up is sent with priority 'later' so it can't steer the running turn", async () => {
+  const sdk = fakeEagerSdk();
+  const run = startOrder(order("build it"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: sdk.q as any });
+  await new Promise((r) => setTimeout(r, 5));
+  run.followUp("company brief", "after-turn");
+  await new Promise((r) => setTimeout(r, 5));
+  expect(sdk.received.find((m) => m.content === "company brief")!.priority).toBe("later");
+  sdk.finishTurn();
+  run.close();
+  await run.done;
+});
+
+test("the resume-replay path keeps each message's priority when a dead resume id forces a cold restart", async () => {
+  const seen: Array<Array<{ content: string; priority?: string }>> = [];
+  let call = 0;
+  const q = (args: { prompt: any; options: any }) => {
+    const mine: Array<{ content: string; priority?: string }> = [];
+    seen.push(mine);
+    const n = call++;
+    void (async () => {
+      for await (const m of args.prompt as AsyncIterable<any>) mine.push({ content: m.message.content, priority: m.priority });
+    })();
+    return (async function* () {
+      if (n === 0) throw new Error("No conversation found with session ID: dead");
+      yield { type: "system", subtype: "init", session_id: "fresh" };
+      yield { type: "result", subtype: "success", result: "ok", total_cost_usd: 0, session_id: "fresh" };
+    })();
+  };
+  const run = startOrder(order("first"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as any, resume: "dead" });
+  run.followUp("second", "steer");
+  await new Promise((r) => setTimeout(r, 20));
+  run.close();
+  await run.done;
+  const replayed = seen[1] ?? [];
+  expect(replayed.map((m) => m.content)).toContain("second");
+  expect(replayed.find((m) => m.content === "second")?.priority).toBe("next");
+});
+
+test("Codex cannot steer: steersMidTurn is not set and the timing is ignored", async () => {
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex",
+    codexFactory: () => ({ startThread: () => ({ id: "t", runStreamed: async () => ({ events: (async function* () {})() }) }) }) as never,
+  } as never);
+  expect(run.steersMidTurn).toBeFalsy();
+  run.close();
+  await run.done.catch(() => {});
+});
+
+test("final review (T8): runOrder hands deps.abortController to the Claude SDK options", async () => {
+  let seen: Record<string, unknown> = {};
+  const q = (args: { prompt: unknown; options: Record<string, unknown> }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  const ac = new AbortController();
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never, abortController: ac });
+  expect(seen.abortController).toBe(ac);
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect("abortController" in seen).toBe(false);
+});
+
+test("final review (T8): runOrder hands deps.abortController's signal to a Codex turn", async () => {
+  const signals: Array<AbortSignal | undefined> = [];
+  const thread = {
+    id: null,
+    async runStreamed(_input: string, turnOptions?: { signal?: AbortSignal }) {
+      signals.push(turnOptions?.signal);
+      return { events: (async function* () { yield { type: "turn.completed", usage: {} }; })() };
+    },
+  };
+  const client = { startThread: () => thread, resumeThread: () => thread };
+  const ac = new AbortController();
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { provider: "codex", codexFactory: async () => client as never, abortController: ac });
+  expect(signals[0]).toBe(ac.signal);
+});
+
+test("ADR-0059: a run's own settingSources and skills override the defaults (the inert summary run)", async () => {
+  let seen: { skills?: unknown; settingSources?: unknown } = {};
+  const q = (args: { prompt: unknown; options: { skills?: unknown; settingSources?: unknown } }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never, settingSources: [], skills: [] });
+  expect(seen.settingSources).toEqual([]);
+  expect(seen.skills).toEqual([]);
+});
+
+// A worker loads the operator's user plugins, which include the Telegram channel plugin. That plugin
+// long-polls the same bot as the daemon, and the bot answers both with 409 Conflict. Workers keep every
+// other user plugin and skill; only the channel plugin is switched off, at the flag-settings layer.
+test("a single-shot worker runs with the Telegram channel plugin off and its user plugins on", async () => {
+  let seen: { settings?: unknown; settingSources?: unknown; skills?: unknown } = {};
+  const q = (args: { prompt: unknown; options: typeof seen }) => {
+    seen = args.options;
+    return (async function* () {
+      yield { type: "result", subtype: "success", result: "done", total_cost_usd: 0, session_id: "s" };
+    })();
+  };
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  expect(seen.settings).toEqual({ enabledPlugins: { "telegram@claude-plugins-official": false } });
+  expect(seen.settingSources).toEqual(["user", "project"]);
+  expect(seen.skills).toBe("all");
+});
+
+test("a long-running worker session runs with the Telegram channel plugin off and its user plugins on", async () => {
+  const { q, seenOptions } = scriptedQuery([{ type: "result", subtype: "success", result: "done", total_cost_usd: 0 }], Promise.resolve());
+  const run = startOrder(order("x"), { onMessage: () => {}, onEscalation: async () => "deny" }, { query: q as never });
+  while (seenOptions.length === 0) await new Promise((r) => setTimeout(r, 1));
+  const opts = seenOptions[0] as { settings?: unknown; settingSources?: unknown };
+  expect(opts.settings).toEqual({ enabledPlugins: { "telegram@claude-plugins-official": false } });
+  expect(opts.settingSources).toEqual(["user", "project"]);
+  run.close();
+  await run.done;
 });

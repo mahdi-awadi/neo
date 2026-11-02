@@ -51,6 +51,9 @@ terminal, no TTY, no tmux**. Confirmed headless.
   defaults (fragile across hosts); `"all"` enables every discovered skill, so superpowers + workflow skills
   are always ready for the worker in any folder. Discovery still comes from `settingSources: ["user"]` →
   `~/.claude` `enabledPlugins`, so the superpowers plugin must stay enabled there.
+- `settings: { enabledPlugins: { "<id>": false } }` — the flag layer outranks user/project settings, so it
+  turns ONE user plugin off for a run and leaves the rest on. Verified 2026-10-29 (SDK 0.3.310): workers
+  use it to drop the Telegram channel plugin, whose poller fought the daemon's (409; ADR-0064).
 - `systemPrompt: { type: "preset", preset: "claude_code" }` — full Claude Code behavior.
 - `permissionMode: "default"` — sends non-pre-approved tools through `canUseTool`. `AskUserQuestion` is
   **denied** here (the governor) with guidance to ask in plain text — its structured options can't reach the
@@ -229,3 +232,39 @@ Two traps this sets, both hit in production:
 - The failure is **not an API failure**: 0 turns, $0, nothing sent. Waiting/retrying cannot fix it;
   only starting fresh can. Neo detects it (`RESUME_MISSING_RE`), restarts cold once, and tags every
   minted id with its provider so the mismatch is prevented next time (`canResumeWith`).
+
+## Mid-turn priority and forking an idle session (verified 2026-10-25, SDK 0.3.292)
+
+Probe: `spike/notes-live-probe.ts` (ADR-0050 P0), run in an empty temp folder.
+
+- **`priority: "next"` steers a running turn.** A streaming-input run read six files, one Read call
+  each. After its first tool call we pushed a user message with `priority: "next"` that carried a
+  code. The run stayed **one turn**, and its final line included the code. So a message pushed with
+  `"next"` reaches the model at the running turn's next tool boundary. `"later"` waits for the turn
+  to end (the CLI command-queue priority; ported from `c12c46f`).
+- **`resume` + `forkSession: true` on an idle session** answered from the parent's history (the
+  files it read and the code it was given) under a **new session id**. Resuming the parent afterwards
+  showed that it never saw the fork's question. So a fork is a side copy and leaves the parent intact.
+- Not probed: forking while the parent is mid-tool-call. Neo forks only idle targets (ADR-0050).
+- As root, `bypassPermissions` is refused ("cannot be used with root"). Probes use `allowedTools`
+  with an allow-all `canUseTool`.
+
+## Background and stop of one tool call (ADR-0058 Task 0 spike, SDK 0.3.310, 2026-10-29)
+
+Run with a real streaming-input `query()` (haiku), a foreground Bash `bash -c 'sleep 300; …'`:
+
+- **`task_started` arrives for a FOREGROUND Bash call too** (`is_backgrounded: false`,
+  `task_type: "local_bash"`), with `tool_use_id` and `task_id`, right as the command starts. So the
+  engine knows every running call's task id before anyone presses a button.
+- **`query.backgroundTasks(toolUseId)` → `true`.** It emits `task_updated {is_backgrounded: true}`, and the
+  worker's tool result is: "Command was manually backgrounded by user with ID: <task_id>. Output is
+  being written to: <path>/tasks/<task_id>.output. If it is still running after 30m in the background,
+  it will be stopped and you will be notified." The turn goes on.
+- **`query.stopTask(taskId)`** → `task_updated {status: "killed"}` and `task_notification
+  {status: "stopped", tool_use_id, output_file}`.
+- **`stopTask` kills the task's outer shell but NOT its grandchildren:** the inner `bash -c 'sleep 300'`
+  survived. Stopping a call therefore needs the engine's own sweep of that call's process tree
+  (ADR-0058's per-call `NEO_TOOL_USE_ID` marker), not only `stopTask`.
+- **A PreToolUse hook's `updatedInput` applies with NO permission decision,** even when a settings allow
+  rule (`allowedTools: ["Bash"]`) skips `canUseTool`: `echo MARK=$NEO_TOOL_USE_ID` printed the
+  hook-injected id. The governor hook is therefore the one place that adds the per-call marker.

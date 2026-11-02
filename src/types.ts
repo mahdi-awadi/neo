@@ -1,4 +1,5 @@
 // Shared types for the Neo engine.
+import type { SessionLane } from "./engine/lanes";
 import type { BlockedOn } from "./engine/liveness";
 import type { Cause } from "./engine/ledger";
 
@@ -48,7 +49,8 @@ export interface RouteTarget {
  */
 export type Verdict =
   | { allow: true; updatedInput?: Record<string, unknown> }
-  /** `fenced`: a fence escalation — only the operator may approve it, never trust (ADR-0011). */
+  /** `fenced`: a fence escalation — only the operator may approve it, never trust (ADR-0011): a write
+   *  outside the fence, into another project (ADR-0031), or a `git push` (ADR-0069). */
   | { escalate: string; fenced?: true }
   | { deny: string };
 
@@ -57,10 +59,18 @@ export type Verdict =
  * follow-up routing, `/kill`, and idle-close can all reach the same handle.
  * `SessionRun` (session-runner) is the concrete implementation.
  */
+/** When a follow-up reaches a busy worker: "steer" = at its next step mid-turn (the operator's own
+ *  words), "after-turn" = only once the in-flight turn ends (engine briefs and nudges that must not
+ *  hijack it). REQUIRED on every `followUp` so no caller picks one by accident (ADR-0050 §5). */
+export type FollowUpTiming = "steer" | "after-turn";
+
 export interface SessionControl {
-  /** Push a brief behind the running turn. `cause`: the operator message it carries (ADR-0015) —
-   *  the pipeline's control files it in turn order; a control that does not trace ignores it. */
-  followUp(text: string, cause?: Cause): void;
+  /** Push a brief to the worker with an explicit `timing`. `cause`: the operator message it carries
+   *  (ADR-0015) — the pipeline's control files it in turn order; a control that does not trace ignores it. */
+  followUp(text: string, timing: FollowUpTiming, cause?: Cause): void;
+  /** True when a "steer" follow-up reaches the worker at its next step mid-turn (Claude); absent/false
+   *  when it waits for the current turn to finish (Codex runs one turn per input). */
+  steersMidTurn?: boolean;
   interrupt(): Promise<void>;
   /** Follow-ups waiting behind the in-flight turn (observability; optional for old fakes). */
   queued?(): number;
@@ -73,10 +83,32 @@ export interface SessionControl {
   /** True once the input channel was closed (graceful close or interrupt): a follow-up pushed now
    *  is dropped, so a caller must refuse to deliver instead. Optional for old fakes (absent → open). */
   closed?(): boolean;
+  /** The path of the big plan the worker is held at (ADR-0036), else undefined. A held worker denies
+   *  every tool but reads, so a brief delivered now could only be answered with STOP: a caller must
+   *  not deliver one (ADR-0052). Optional for old fakes (absent → not held). */
+  held?(): string | undefined;
+  /** The running tool calls and their controls (ADR-0058). Absent on fakes and old handles. */
+  tools?: ToolCalls;
+}
+
+/** One session's running tool calls and the SDK controls over them (ADR-0058). Claude: the SDK's
+ *  backgroundTasks/stopTask. Codex: no per-call control — `stop` ends the current turn. */
+export interface ToolCalls {
+  provider: "claude" | "codex";
+  running(): Array<{ toolUseId: string; tool: string; summary: string; since: number; taskId?: string }>;
+  background(toolUseId: string): Promise<{ ok: boolean; taskId?: string; reason?: string }>;
+  stop(toolUseId: string): Promise<{ ok: boolean; taskId?: string; reason?: string }>;
+  /** The log file of a backgrounded call, once the SDK named it. */
+  logOf?(toolUseId: string): string | undefined;
 }
 
 /** A live worker session the engine is driving (an in-process SDK handle). */
 export interface SessionInfo {
+  /** A side-lane session (ADR-0057): never the folder's main session. Absent = the main lane. */
+  lane?: SessionLane;
+  /** A customer-driven run (an ingress brief's dispatch) used this session (ADR-0061): it stays fenced,
+   *  and the chief of staff's `project_message` never speaks into it. */
+  customerDriven?: true;
   /** Stable engine key — the order id, known from registration (before the SDK id exists). */
   id: string;
   /** Short, unique, human-facing name (folder basename) for `/status` and `/kill`. */

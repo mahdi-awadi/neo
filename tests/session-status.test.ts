@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { createRegistry } from "../src/engine/registry";
 import { describeSession, humanAge, sessionStatuses, sessionsReport } from "../src/engine/session-status";
 import type { Order } from "../src/types";
+import { openLedger } from "../src/engine/ledger";
+import { heldLine } from "../src/engine/api-wait";
 
 const order = (o: Partial<Order> = {}): Order => ({
   id: crypto.randomUUID(),
@@ -143,4 +145,24 @@ test("sessionsReport says so when no projects are open", () => {
   const company = reg.add(order({ folder: "/home/neo/agent", chatId: -1 }), 0);
   reg.setDefault(company.id);
   expect(sessionsReport(reg, 1).toLowerCase()).toContain("no projects");
+});
+
+// ADR-0060: a session whose run is held in an API wait says so, with when it resumes and how to resume it now.
+test("sessionsReport appends what a held run waits for, from the held lookup", () => {
+  const reg = createRegistry();
+  const a = reg.add(order({ folder: "/p/alpha", chatId: 5 }), 1);
+  reg.add(order({ folder: "/p/beta", chatId: 5 }), 2);
+  const text = sessionsReport(reg, 2, undefined, undefined, (orderId) => (orderId === a.order.id ? "held: limit wait · resumes 10:00 UTC · todo retry #7 resumes now" : undefined));
+  const alpha = text.split("\n").find((l) => l.startsWith("alpha"))!;
+  expect(alpha).toEndWith("· held: limit wait · resumes 10:00 UTC · todo retry #7 resumes now");
+  expect(text.split("\n").find((l) => l.startsWith("beta"))).not.toContain("held");
+});
+
+test("heldLine: a limit-held todo's order names the hold, its resume time and the retry that ends it", () => {
+  const ledger = openLedger(":memory:");
+  const t = ledger.addTodo({ project: "waselni", folder: "/w", brief: "b", workClass: "interactive", createdBy: "operator" }, 0);
+  ledger.updateTodo(t.id, { status: "running", orderId: "o1", startedAt: 0 });
+  ledger.recordEvent("api_retry", { orderId: "o1", at: 0, data: { kind: "rate_limit", delayMs: 36_000_000 } });
+  expect(heldLine(ledger, "o1", 1_000)).toBe(`held: limit wait · resumes 10:00 UTC · todo retry #${t.id} resumes now`);
+  expect(heldLine(ledger, "o-none", 1_000)).toBeUndefined();
 });

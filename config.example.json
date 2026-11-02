@@ -49,6 +49,25 @@
 
   "memory": { "scopes": ["company"] },
 
+  "// history": "ADR-0067 task history (docs/CONFIG.md, 'Task history'). Secrets stay in .env: the keys and the Qdrant URL are named here by their env variables, never written. With no key or URL set, search runs keyword-only. 'revision' is the pinned bge-m3 commit from tools/history/embedder.env.",
+  "history": {
+    "enabled": true,
+    "dbPath": "data/history.db",
+    "embedder": { "url": "http://127.0.0.1:8088", "keyEnv": "HISTORY_EMBEDDER_KEY", "model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dims": 1024 },
+    "vectors": { "urlEnv": "SHARED_QDRANT_URL", "keyEnv": "SHARED_QDRANT_API_KEY", "collection": "neo_history", "allowedCollections": ["neo_history"] },
+    "indexer": { "busyPauseMs": 200 },
+    "feedKeep": 200000
+  },
+
+  "// backup": "ADR-0067 Decision 8 snapshot backups (docs/CONFIG.md 'Snapshot backup', runbook docs/backup.md). history.db only by default; the ledger joins only by the operator's decision. Never point dir inside the repo.",
+  "backup": {
+    "dir": "/var/backups/neo",
+    "databases": [{ "path": "data/history.db", "cron": "41 3 * * *" }],
+    "keepRecent": 8, "keepDaily": 7, "keepWeekly": 4,
+    "drillCron": "23 5 * * 0",
+    "minFreeGb": 20
+  },
+
   "// workerEnv": "Claude Code env knobs apply only with providers.ownWork=\"subscription\". When ownWork=\"codex\", CLAUDE_*, ANTHROPIC_*, and MAX_MCP_OUTPUT_TOKENS are filtered before launch.",
   "workerEnv": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",

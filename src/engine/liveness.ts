@@ -32,8 +32,10 @@ export type SessionState =
 /** Why the operator owes this session an answer. Set by the engine when it raises the ask. */
 export interface BlockedOn {
   /** `approval` = a governor permission escalation (the worker's tool call is suspended mid-turn);
-   *  `decision` = a tracked decision raised via ask_operator / AskUserQuestion. */
-  kind: "approval" | "decision";
+   *  `decision` = a tracked decision raised via ask_operator / AskUserQuestion;
+   *  `agent` = a `project_notes ask` waiting for its consult run's answer (ADR-0050), bounded by
+   *  `notes.questions.answerWaitMs`. */
+  kind: "approval" | "decision" | "agent";
   /** Short human text — the tool/reason or the decision title. */
   label: string;
   since: number;

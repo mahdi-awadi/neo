@@ -66,10 +66,34 @@ test("repeated calls on a trusted folder auto-allow cleanly and never degrade (n
     "neo",
   );
   for (let i = 0; i < 300; i++) {
-    const v = await canUse("Bash", { command: `git push origin main # attempt ${i}` }); // RISKY_BASH → escalates unless trusted
+    const v = await canUse("Bash", { command: `rm -rf build # attempt ${i}` }); // RISKY_BASH → escalates unless trusted
     expect(v.behavior).toBe("allow"); // trusted short-circuit holds on every one of 300 calls
   }
   expect(escalations).toHaveLength(0); // trusted path never hits the escalation channel at all
+});
+
+// ADR-0069: a push starts paid CI/CD runs, so it is the operator's call even in a trusted project.
+test("a trusted project never auto-approves a git push: it reaches the operator", async () => {
+  const escalations: string[] = [];
+  const auto: string[] = [];
+  const canUse = buildCanUseTool(
+    handlers({
+      autoApprove: () => true,
+      onAutoApprove: (r) => void auto.push(r),
+      onEscalation: async (r) => (escalations.push(r), "deny"),
+    }),
+    "/home/waselni",
+    "neo",
+  );
+  for (const command of ["git push origin dev", "git -C /home/waselni push", "cd sub && git push --force-with-lease", "sh -c 'git push origin main'"]) {
+    const v = await canUse("Bash", { command });
+    expect(v.behavior).toBe("deny"); // the operator said no here
+  }
+  expect(escalations).toHaveLength(4);
+  expect(auto).toEqual([]);
+  expect(escalations[0]).toContain("operator");
+  // Other risky commands keep the trusted auto-approve.
+  expect((await canUse("Bash", { command: "curl https://example.com" })).behavior).toBe("allow");
 });
 
 test("the approval bridge self-heals — the next call escalates normally once the channel recovers", async () => {

@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { neoNotePath } from "../src/engine/context-policy";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -10,7 +11,7 @@ import {
   windowTokensFor,
   contextWindows,
   runHandoff,
-  HANDOFF_PROMPT,
+  handoffPrompt,
   MEMORY_FLUSH_SENTENCE,
   HANDOFF_SECTIONS,
   checkpointSteer,
@@ -91,11 +92,11 @@ test("idleStateNote captures the folder, opening brief, last activity, and an id
   expect(note.toLowerCase()).toContain("idle-closed");
 });
 
-test("writeIdleStateNote writes the note to HANDOFF.md in the project folder", () => {
+test("writeIdleStateNote writes Neo's note outside the project (ADR-0029)", () => {
   const writes: Array<{ path: string; content: string }> = [];
   writeIdleStateNote(sessionOn("/home/acme"), { now: () => 0, write: (path, content) => void writes.push({ path, content }) });
   expect(writes).toHaveLength(1);
-  expect(writes[0].path).toBe("/home/acme/HANDOFF.md");
+  expect(writes[0].path).toBe(neoNotePath("/home/acme"));
   expect(writes[0].content.toLowerCase()).toContain("idle-closed");
 });
 
@@ -328,7 +329,7 @@ test("runHandoff runs the handoff turn against the persisted session, then clear
   };
   await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never, now: () => 9 });
   expect(sawResume).toBe("fat-session");
-  expect(sawTask).toContain("HANDOFF.md");
+  expect(sawTask).toContain(neoNotePath("/p/gold"));
   expect(registry.get(s.id)?.sdkSessionId).toBe(""); // cleared
   expect(ledger.lastSessionFor("/p/gold", 1)).toBeUndefined(); // cleared
   expect(ledger.listContextEvents()[0]?.verdict).toBe("handoff");
@@ -353,7 +354,7 @@ test("runHandoff clears even when the handoff turn times out, AND interrupts the
   expect(interrupted).toBe(true); // the timed-out worker is interrupted, not abandoned
 });
 
-test("runHandoff prepends the memory flush sentence before HANDOFF_PROMPT when memoryFlush is true", async () => {
+test("runHandoff prepends the memory flush sentence before the handoff prompt when memoryFlush is true", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
   const s = registry.add({ id: "h5", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
@@ -365,10 +366,10 @@ test("runHandoff prepends the memory flush sentence before HANDOFF_PROMPT when m
   };
   await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never, memoryFlush: true });
   expect(sawTask?.startsWith(MEMORY_FLUSH_SENTENCE)).toBe(true);
-  expect(sawTask).toContain(HANDOFF_PROMPT);
+  expect(sawTask).toContain(handoffPrompt("/p/gold"));
 });
 
-test("runHandoff's task is exactly HANDOFF_PROMPT when memoryFlush is absent", async () => {
+test("runHandoff's task is exactly the handoff prompt when memoryFlush is absent", async () => {
   const registry = createRegistry();
   const ledger = openLedger(":memory:");
   const s = registry.add({ id: "h6", source: "neo", folder: "/p/gold", task: "t", chatId: 1, createdAt: 0 }, 0);
@@ -379,7 +380,7 @@ test("runHandoff's task is exactly HANDOFF_PROMPT when memoryFlush is absent", a
     return { ok: true, sessionId: "fat-6", summary: "written", costUsd: 0 };
   };
   await runHandoff(s, { ...CFG }, { registry, ledger, run: fakeRun as never });
-  expect(sawTask).toBe(HANDOFF_PROMPT);
+  expect(sawTask).toBe(handoffPrompt("/p/gold"));
 });
 
 // ADR-0013 — the live bug: transcripts report `claude-opus-5-5` (the SDK strips `[1m]`), the code
@@ -439,14 +440,14 @@ test("sessionContext says whether the window was reported or guessed", () => {
 // ---- ADR-0021: the handoff note, its engine facts, the continuation, one handoff per folder ----
 
 const NOTE = HANDOFF_SECTIONS.map((h) => `## ${h}\nx`).join("\n\n");
-const again0 = (dir: string) => readFileSync(join(dir, "HANDOFF.md"), "utf8") + "\nmore";
+const again0 = (dir: string) => readFileSync(neoNotePath(dir), "utf8") + "\nmore";
 
-test("HANDOFF_PROMPT and the checkpoint steer both ask for every required section", () => {
+test("the handoff prompt and the checkpoint steer both ask for every required section", () => {
   for (const h of HANDOFF_SECTIONS) {
-    expect(HANDOFF_PROMPT).toContain(`## ${h}`);
-    expect(checkpointSteer(0.63)).toContain(`## ${h}`);
+    expect(handoffPrompt("/p/gold")).toContain(`## ${h}`);
+    expect(checkpointSteer(0.63, "/p/gold")).toContain(`## ${h}`);
   }
-  expect(checkpointSteer(0.63)).toContain("63%");
+  expect(checkpointSteer(0.63, "/p/gold")).toContain("63%");
 });
 
 test("missingSections names the required sections a note lacks", () => {
@@ -463,10 +464,10 @@ test("continuationBrief carries the original brief once, however often a task is
 
 test("finalizeHandoffNote appends git facts to a fresh note and reports missing sections", () => {
   const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nship it\n");
+  writeFileSync(neoNotePath(dir), "## Goal\nship it\n");
   const r = finalizeHandoffNote(dir, { branch: "feat/x", head: "abc1234 add cart", uncommitted: [], occupancy: 0.52, at: 0, boundary: "settled", reason: "above-sweet-spot" }, { before: undefined, fallback: () => "unused" });
-  expect(r).toEqual({ written: true, missing: ["Done", "Next steps", "Branch / commit", "Open decisions", "Gotchas"] });
-  const note = readFileSync(join(dir, "HANDOFF.md"), "utf8");
+  expect(r).toMatchObject({ written: true, missing: ["Done", "Next steps", "Branch / commit", "Open decisions", "Gotchas"] });
+  const note = readFileSync(neoNotePath(dir), "utf8");
   expect(note.startsWith("## Goal\nship it")).toBe(true);
   expect(note).toContain("## Engine facts");
   expect(note).toContain("feat/x");
@@ -474,10 +475,10 @@ test("finalizeHandoffNote appends git facts to a fresh note and reports missing 
   expect(note).toContain("52%");
   // run twice (a second handoff on the same note): ONE facts block, the newest
   const stamp = noteStamp(dir);
-  writeFileSync(join(dir, "HANDOFF.md"), again0(dir)); // the second handoff's worker rewrites the note
+  writeFileSync(neoNotePath(dir), again0(dir)); // the second handoff's worker rewrites the note
   expect(noteStamp(dir)).not.toBe(stamp);
   finalizeHandoffNote(dir, { branch: "feat/y", occupancy: 0.6, at: 0, boundary: "settled" }, { before: stamp, fallback: () => "unused" });
-  const again = readFileSync(join(dir, "HANDOFF.md"), "utf8");
+  const again = readFileSync(neoNotePath(dir), "utf8");
   expect(again.split("## Engine facts").length).toBe(2);
   expect(again).toContain("feat/y");
 });
@@ -486,8 +487,8 @@ test("finalizeHandoffNote writes the fallback when the turn left no fresh note",
   const dir = mkdtempSync(join(tmpdir(), "neo-note-"));
   const r = finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { before: undefined, fallback: () => "# fallback" });
   expect(r.written).toBe(false);
-  expect(readFileSync(join(dir, "HANDOFF.md"), "utf8")).toStartWith("# fallback");
-  writeFileSync(join(dir, "HANDOFF.md"), "old note");
+  expect(readFileSync(neoNotePath(dir), "utf8")).toStartWith("# fallback");
+  writeFileSync(neoNotePath(dir), "old note");
   // the note the turn found and did not touch is stale, however recent its mtime
   expect(finalizeHandoffNote(dir, { occupancy: 0.5, at: 0, boundary: "settled" }, { before: noteStamp(dir), fallback: () => "# fallback" }).written).toBe(false);
 });
@@ -495,9 +496,9 @@ test("finalizeHandoffNote writes the fallback when the turn left no fresh note",
 test("noteStamp is undefined without a note and changes when the note is rewritten", () => {
   const dir = mkdtempSync(join(tmpdir(), "neo-stamp-"));
   expect(noteStamp(dir)).toBeUndefined();
-  writeFileSync(join(dir, "HANDOFF.md"), "a");
+  writeFileSync(neoNotePath(dir), "a");
   const a = noteStamp(dir);
-  writeFileSync(join(dir, "HANDOFF.md"), "bb");
+  writeFileSync(neoNotePath(dir), "bb");
   expect(noteStamp(dir)).not.toBe(a);
 });
 
@@ -505,7 +506,7 @@ test("handoffPreamble inlines a pending handoff's note once, capped, and records
   const dir = mkdtempSync(join(tmpdir(), "neo-pre-"));
   const ledger = openLedger(":memory:");
   expect(handoffPreamble(dir, ledger, CFG, 5)).toBeUndefined(); // nothing pending
-  writeFileSync(join(dir, "HANDOFF.md"), "N".repeat(30_000));
+  writeFileSync(neoNotePath(dir), "N".repeat(30_000));
   const h = ledger.recordContextEvent(dir, "handoff", 0.52, 1, { reason: "above-sweet-spot", boundary: "settled" });
   const pre = handoffPreamble(dir, ledger, CFG, 5)!;
   expect(pre.text).toContain("N".repeat(20_000));
@@ -538,7 +539,7 @@ test("runHandoff records reason and boundary, appends facts, and tells the opera
   registry.setSdkSessionId(s.id, "fat-9");
   const notes: Array<[string, string | undefined]> = [];
   const fakeRun = async () => {
-    writeFileSync(join(dir, "HANDOFF.md"), NOTE);
+    writeFileSync(neoNotePath(dir), NOTE);
     return { ok: true, sessionId: "fat-9", summary: "written", costUsd: 0 };
   };
   await runHandoff(s, { ...CFG }, {
@@ -552,7 +553,7 @@ test("runHandoff records reason and boundary, appends facts, and tells the opera
   const ev = ledger.listContextEvents()[0];
   expect(ev).toMatchObject({ verdict: "handoff", reason: "above-sweet-spot", boundary: "settled", sessionId: "fat-9" });
   expect(ev.detail).toMatchObject({ written: true, missing: [] });
-  expect(readFileSync(join(dir, "HANDOFF.md"), "utf8")).toContain("## Engine facts");
+  expect(readFileSync(neoNotePath(dir), "utf8")).toContain("## Engine facts");
   expect(notes).toHaveLength(1);
   expect(notes[0][1]).toBeUndefined(); // an ordinary handoff is a muted progress line
   expect(notes[0][0]).toContain("sweet spot");
@@ -587,7 +588,7 @@ test("a tracked handoff that never settles holds its folder only up to its bound
 test("handoffPreamble records the resumed row with the handoff's reason and the resume boundary", () => {
   const dir = mkdtempSync(join(tmpdir(), "neo-pre-"));
   const ledger = openLedger(":memory:");
-  writeFileSync(join(dir, "HANDOFF.md"), "## Goal\nx");
+  writeFileSync(neoNotePath(dir), "## Goal\nx");
   ledger.recordContextEvent(dir, "handoff", 0.52, 1, { reason: "above-sweet-spot", boundary: "settled" });
   handoffPreamble(dir, ledger, CFG, 5);
   expect(ledger.listContextEvents()[0]).toMatchObject({ verdict: "resumed", reason: "above-sweet-spot", boundary: "resume" });
@@ -611,4 +612,20 @@ test("awaitHandoff says when its wait ended on the bound rather than on the hand
 test("contextLabel: an occupancy over 1 reads `ctx ?%` (impossible — spec §8.5), never a number", () => {
   expect(contextLabel(2.35)).toBe("ctx ?%");
   expect(contextLabel(0.42)).toBe("ctx 42%");
+});
+
+// --- ADR-0054 D3: "done" means live ----------------------------------------------------------------
+test("ADR-0054 D3: the engine facts say when finished work on the Neo repo is not running", async () => {
+  const { engineFactsBlock, setDeployFacts, deployFactFor } = await import("../src/engine/context-policy");
+  const base = { branch: "dev", head: "6b8c06a docs", uncommitted: [], occupancy: 0.4, at: 0, boundary: "resume" as const };
+  expect(engineFactsBlock(base)).not.toContain("Not live");
+  const gap = { running: "4452b94", branch: "master", integration: "dev", commits: 87, days: 11, high: true, adrs: [] };
+  setDeployFacts({ neoFolder: "/home/neo", gap: () => gap });
+  expect(deployFactFor("/home/neo")).toBe("87 commits on dev are not running (oldest 11 days); the running build is 4452b94 on master");
+  expect(deployFactFor("/home/eticket-v3")).toBeUndefined(); // only the engine's own repo
+  expect(engineFactsBlock({ ...base, notRunning: deployFactFor("/home/neo") })).toContain(
+    "- Not live: 87 commits on dev are not running (oldest 11 days); the running build is 4452b94 on master",
+  );
+  setDeployFacts({ neoFolder: "/home/neo", gap: () => undefined });
+  expect(deployFactFor("/home/neo")).toBeUndefined();
 });

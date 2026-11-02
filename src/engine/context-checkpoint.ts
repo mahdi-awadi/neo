@@ -6,7 +6,7 @@
 //     it ARMS: the governor hook denies every tool except what writing + committing the note needs.
 //   • did a session started from a handoff note get going quickly? (CONTEXT.md "Orientation")
 import { resolve, join } from "node:path";
-import { decideContext, checkpointSteer, type ContextDecision, type ContextPolicyCfg } from "./context-policy";
+import { decideContext, checkpointSteer, neoNotePath, type ContextDecision, type ContextPolicyCfg } from "./context-policy";
 import { uncommittedIn } from "./dispatch-report";
 
 export interface Armed {
@@ -53,13 +53,14 @@ const commandOf = (input: unknown): string => {
 
 const isCommit = (name: string, input: unknown): boolean => name === "Bash" && COMMIT_RE.test(commandOf(input));
 
-/** True for the tools a worker needs to write and commit its handoff note: reading, `Write`/`Edit` of
- *  the folder's own `HANDOFF.md`, and a `Bash` made only of read/add/commit git commands. */
+/** True for the tools a worker needs to write its handoff note: reading, `Write`/`Edit` of Neo's note
+ *  for the folder (outside the repo, ADR-0029 — never the project's own HANDOFF.md), and a `Bash` made
+ *  only of read/add/commit git commands. */
 export function steerAllows(folder: string, toolName: string, input: unknown): boolean {
   if (NOTE_SAFE_TOOLS.has(toolName)) return true;
   if (NOTE_WRITE_TOOLS.has(toolName)) {
     const fp = (input as { file_path?: unknown } | undefined)?.file_path;
-    return typeof fp === "string" && resolve(folder, fp) === join(folder, "HANDOFF.md");
+    return typeof fp === "string" && resolve(folder, fp) === neoNotePath(folder);
   }
   if (toolName !== "Bash") return false;
   const cmd = commandOf(input);
@@ -126,7 +127,7 @@ export function createCheckpointWatch(o: CheckpointWatchOpts): CheckpointWatch {
     },
     steer(toolName, input) {
       if (!armedState || steerAllows(o.folder, toolName, input)) return undefined;
-      return checkpointSteer(armedState.occupancy);
+      return checkpointSteer(armedState.occupancy, o.folder);
     },
     armed: () => armedState,
     disarm() {

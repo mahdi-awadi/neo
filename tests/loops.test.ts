@@ -120,6 +120,46 @@ test("startScheduledLoop stays silent when the worker produces no text (silent s
   expect(replies).toEqual([]); // nothing forwarded → no per-iteration spam
 });
 
+// ADR-0045: a `report: "goal"` loop sends only its goal's output, once, never the worker's text.
+test("startScheduledLoop with report goal sends the goal detail once and no worker text", async () => {
+  const replies: Array<{ text: string; project?: string }> = [];
+  let checks = 0;
+  const out = await startScheduledLoop({ ...remLoop(), report: "goal", bounds: { maxIterations: 2 } }, {
+    chatId: 7,
+    reply: (_c, text, project) => void replies.push({ text, project }),
+    run: async (_o, h) => {
+      h.onMessage("Let me look at the threads first.");
+      return okRun();
+    },
+    check: async () => (++checks === 1 ? { met: false, detail: "exit 1", output: "not yet" } : { met: true, detail: "exit 0: • m1 acme — approve?", output: "⏳ Waiting on you (1):\n• m1 acme — approve?" }),
+  });
+  expect(out.met).toBe(true);
+  expect(replies).toEqual([{ text: "⏳ Waiting on you (1):\n• m1 acme — approve?", project: "acme" }]);
+});
+
+test("startScheduledLoop with report goal sends nothing when the goal prints nothing (no worker run when met first)", async () => {
+  const replies: string[] = [];
+  let ran = 0;
+  await startScheduledLoop({ ...remLoop(), report: "goal" }, {
+    chatId: 7,
+    reply: (_c, t) => void replies.push(t),
+    run: async () => (ran++, okRun()),
+    check: async () => ({ met: true, detail: "exit 0", output: "   " }),
+  });
+  expect(ran).toBe(0);
+  expect(replies).toEqual([]);
+});
+
+test("a manual run of a report-goal loop also sends the goal output (the fingerprint is spent either way)", async () => {
+  const replies: string[] = [];
+  await startLoop({ ...remLoop(), report: "goal" }, 7, {
+    reply: (_c, t) => void replies.push(t),
+    run: async () => okRun(),
+    check: async () => ({ met: true, detail: "exit 0: • m1 acme — approve?", output: "⏳ Waiting on you (1):\n• m1 acme — approve?" }),
+  });
+  expect(replies).toContain("⏳ Waiting on you (1):\n• m1 acme — approve?");
+});
+
 // Full NeoConfig fixture (2026-07-23 review finding #7): loopRunExtras derives BOTH the per-path
 // worker profile (profileDeps(cfg, "loop")) and the context-policy resume gate from `cfg` — this
 // proves a real `cfg` actually reaches runProjectLoop's iterate() call, not just that the plumbing
@@ -132,6 +172,7 @@ function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
     botUsername: "",
     webHost: "127.0.0.1",
     webPort: 3003,
+    webBindRetryMs: 15_000,
     publicUrl: "",
     providers: { ownWork: "subscription", customerWork: "gemini" },
     subscriptionInteractiveReservePct: 0.2,
@@ -153,6 +194,8 @@ function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
     dispatchProgressMs: 600_000,
     dispatchRecoverWindowMs: 86_400_000,
     todoOnFailure: "continue",
+    todoRetryBackoffMs: [],
+    handoffNotesDir: "data/handoffs",
     apiRetryLadderMs: [30_000, 120_000, 480_000],
     apiRetryJitterFrac: 0.2,
     apiCooldownMs: 60_000,
@@ -186,7 +229,7 @@ function loopCfg(over: Partial<NeoConfig> = {}): NeoConfig {
     faults: DEFAULT_FAULTS,
     health: DEFAULT_HEALTH,
     sqliteBusyTimeoutMs: 5_000,
-    workers: { company: {}, project: {}, dispatch: {}, loop: { model: "loop-test-model" }, judge: {}, ingress: {}, handoff: {}, secretary: {} },
+    workers: { company: {}, project: {}, dispatch: {}, loop: { model: "loop-test-model" }, judge: {}, ingress: {}, handoff: {}, secretary: {}, consult: {} },
     workerEnv: {},
     memory: { scopes: [], snapshotMaxPct: 0.004, userMaxPct: 0.0025, dreamMaxMutations: 3, dreamMaxAdds: 1, dreamMaxNetChars: 250, dreamLookbackDays: 14 },
     telegramToolSteps: false,

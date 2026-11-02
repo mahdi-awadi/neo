@@ -4,6 +4,7 @@
  *  tool all read it. Git facts are read LIVE through git-read (bounded, never throws); everything else
  *  comes from the ledger and the registry. Each part is its own unit (ADR-0010): a part that fails is
  *  reported and left empty — projectView never throws. Plain code, no AI. */
+import type { StructuredAsk } from "./structured-question";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { Ledger, PlanStatus, ThreadState, AttentionSeverity, AttentionSource } from "./ledger";
@@ -20,10 +21,15 @@ import { listOpen } from "./attention";
 import { attentionActions, type AttentionAction } from "./attention-actions";
 import { msgRef } from "./trace";
 import { faults } from "./fault";
+import { noteKindOf, noteState } from "./project-notes";
 import { createGitRead } from "./git-read";
 import { DEFAULT_GITHUB_CFG, type GithubCfg } from "./producers/github";
 import { humanAge } from "./liveness";
 import { todoTitle } from "./todo-title";
+import { explainAttention, type AttentionLink } from "./attention-explain";
+import type { AttentionFacts, AttentionRow } from "./ledger";
+import { attentionClass, needsYou, type AttentionClass, type NeedsYouItem } from "./needs-you";
+import { DEFAULT_KEEP_PATTERNS } from "./decision-settle";
 
 /** Recent threads a project view lists (spec §9). */
 const THREADS_SHOWN = 10;
@@ -48,6 +54,34 @@ export interface ThreadSummary {
   updatedAt: number;
 }
 
+/** One attention item as the console shows it (the project page and an opened pin, ADR-0071). */
+export function attentionView(r: AttentionRow, now: number, pinned: boolean): AttentionItemView {
+  const e = explainAttention(r);
+  return {
+    id: r.id,
+    source: r.source,
+    kind: r.kind,
+    severity: r.severity,
+    title: r.title,
+    ...(r.detail !== undefined ? { detail: r.detail } : {}),
+    ...(r.url !== undefined ? { url: r.url } : {}),
+    ...(r.fromProject !== undefined ? { fromProject: r.fromProject } : {}),
+    ...(r.source === "note" ? { noteKind: noteKindOf(r), noteState: noteState(r) } : {}),
+    ageMs: now - r.firstSeen,
+    ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
+    actions: attentionActions(r),
+    badge: e.badge,
+    project: e.project,
+    plain: e.plain,
+    facts: e.facts,
+    links: e.links,
+    reasonOk: e.reasonOk,
+    ...(e.brief ? { brief: e.brief } : {}),
+    cls: attentionClass(r.kind),
+    pinned,
+  };
+}
+
 export interface AttentionItemView {
   id: number;
   source: AttentionSource;
@@ -56,10 +90,28 @@ export interface AttentionItemView {
   title: string;
   detail?: string;
   url?: string;
+  /** A project note (ADR-0043): the project that sent it. */
+  fromProject?: string;
+  /** A project note's kind (`finding`, `fyi`, `request`, `question`) and state (ADR-0050). */
+  noteKind?: string;
+  noteState?: string;
   /** Since the item was first seen. */
   ageMs: number;
   todoId?: number;
   actions: AttentionAction[];
+  /** ADR-0059: what the item is — the kind badge (`att.kind.<badge>`), the project, a plain title, the facts
+   *  the description (`att.why.<badge>`) is built from, its links, and exactly what → todo sends. */
+  badge: string;
+  project: string;
+  plain: string;
+  facts: AttentionFacts;
+  links: AttentionLink[];
+  brief?: string;
+  /** ADR-0065: needs the operator, or housekeeping (collapsed, never raises the badge); pinned by hand. */
+  cls: AttentionClass;
+  pinned: boolean;
+  /** False: a fact the reason names is missing (an older row) — the console shows the item's title instead. */
+  reasonOk: boolean;
 }
 
 export interface RestartGatedItem {
@@ -124,9 +176,12 @@ export interface ProjectView {
   queue: DashTodo[];
   git: ProjectGit;
   github: ProjectGithub;
-  decisions: Array<{ id: string; question: string; ageMs: number; ref?: string }>;
+  /** `spec`: a decision card's context, explained options and recommendation (ADR-0049). */
+  decisions: Array<{ id: string; question: string; ageMs: number; ref?: string; spec?: StructuredAsk }>;
   plans: ProjectPlan[];
   attention: AttentionItemView[];
+  /** ADR-0065: what in this project needs the operator — the badge's count and the project's part of the strip. */
+  needsYou: NeedsYouItem[];
   threads: ThreadSummary[];
   restartGated?: RestartGatedItem[];
   health: ProjectHealth;
@@ -140,6 +195,9 @@ export interface ProjectSummary {
   line?: string;
   queue: number;
   attention: Record<AttentionSeverity, number>;
+  /** ADR-0065: what needs the operator (the badge's count) and the housekeeping items. */
+  needs: number;
+  housekeeping: number;
   health: ProjectHealth;
 }
 
@@ -155,6 +213,8 @@ export interface ProjectViewDeps {
   /** A probe/deploy row older than this is ignored (default: PROBE_STALE_SCANS × the default
    *  `github.scanEveryMs`; projectDeps derives it from the configured one). */
   probeStaleMs?: number;
+  /** cfg.decisionSettle.keepPatterns — who owns a waiting decision (default DEFAULT_KEEP_PATTERNS). */
+  keepPatterns?: readonly string[];
 }
 
 /** A probe row is current for this many scan intervals; older, it says nothing (the scan stopped). */
@@ -163,11 +223,11 @@ const defaultStaleMs = (): number => PROBE_STALE_SCANS * DEFAULT_GITHUB_CFG.scan
 /** A probe row written within `staleMs` of now. */
 const fresh = (at: unknown, now: number, staleMs: number): boolean => typeof at === "number" && now - at <= staleMs;
 
-/** The health rule (spec §9): `down` when a configured healthUrl's last probe failed; `attention`
- *  when a high item is open; `unknown` with no data at all; else `ok`. */
-export function projectHealth(i: { healthUrl?: string; probe?: ProbeMeta; high: number; hasData: boolean }): ProjectHealth {
+/** The health rule (spec §9, ADR-0065): `down` when a configured healthUrl's last probe failed;
+ *  `attention` when something needs the operator; `unknown` with no data at all; else `ok`. */
+export function projectHealth(i: { healthUrl?: string; probe?: ProbeMeta; needs: number; hasData: boolean }): ProjectHealth {
   if (i.healthUrl && i.probe?.ok === false) return "down";
-  if (i.high > 0) return "attention";
+  if (i.needs > 0) return "attention";
   if (!i.hasData) return "unknown";
   return "ok";
 }
@@ -197,12 +257,25 @@ export function recentThreads(ledger: Ledger, name: string): ThreadSummary[] {
   return ledger.listThreads({ project: name }, { limit: THREADS_SHOWN }).rows.map(threadSummary);
 }
 
-/** The facts both forms share. */
-function common(d: Omit<ProjectViewDeps, "read">, name: string, folder: string, now: number) {
+/** Every needs-you item (ADR-0065). */
+function allNeedsYou(d: Omit<ProjectViewDeps, "read">, now: number): NeedsYouItem[] {
+  return needsYou({ ledger: d.ledger, keepPatterns: d.keepPatterns ?? DEFAULT_KEEP_PATTERNS }, now);
+}
+
+/** A project's share of the needs-you list; an item with no project belongs to Neo itself. */
+function projectNeeds(d: Omit<ProjectViewDeps, "read">, name: string, all: NeedsYouItem[]): NeedsYouItem[] {
+  const neo = basename(d.neoFolder);
+  return all.filter((i) => (i.project ?? neo) === name);
+}
+
+/** The facts both forms share. `all`: the needs-you list when the caller read it once for many projects. */
+function common(d: Omit<ProjectViewDeps, "read">, name: string, folder: string, now: number, all?: NeedsYouItem[]) {
   const session = part("session", name, () => d.registry.findByFolder(folder), undefined);
   const queue = part("queue", name, () => activeTodos(d.ledger, folder), []);
   const open = part("attention", name, () => listOpen(d.ledger, { project: name, now }), []);
   const threads = part("threads", name, () => recentThreads(d.ledger, name), []);
+  // Fail closed: a read that throws leaves the needs-you list unknown, and the badge says attention.
+  const needs = part("needsYou", name, () => projectNeeds(d, name, all ?? allNeedsYou(d, now)), undefined);
   const scan = part("scanMeta", name, () => d.ledger.getMeta(`gh:${name}`)?.value as ScanMeta | undefined, undefined);
   const health = part(
     "health",
@@ -212,26 +285,28 @@ function common(d: Omit<ProjectViewDeps, "read">, name: string, folder: string, 
       const probe = raw && typeof raw.ok === "boolean" && fresh(raw.at, now, d.probeStaleMs ?? defaultStaleMs()) ? raw : undefined;
       const anyTodo = queue.length > 0 || d.ledger.listTodos({ folder, limit: 1 }).length > 0;
       const hasData = !!session || anyTodo || open.length > 0 || !!scan || !!probe || threads.length > 0;
-      return projectHealth({ healthUrl: d.projects[name]?.healthUrl, probe, high: open.filter((r) => r.severity === "high").length, hasData });
+      return projectHealth({ healthUrl: d.projects[name]?.healthUrl, probe, needs: needs ? needs.length : 1, hasData });
     },
     "unknown" as ProjectHealth,
   );
-  return { session, queue, open, threads, scan, health };
+  return { session, queue, open, threads, scan, health, needs: needs ?? [] };
 }
 
 /** The list form: no git reads, sync. Undefined for a project the engine does not know. */
-export function projectSummary(d: Omit<ProjectViewDeps, "read">, name: string, now: number): ProjectSummary | undefined {
+export function projectSummary(d: Omit<ProjectViewDeps, "read">, name: string, now: number, all?: NeedsYouItem[]): ProjectSummary | undefined {
   const folder = part("folder", name, () => projectFolder(d, name), undefined);
   if (!folder) return undefined;
-  const c = common(d, name, folder, now);
+  const c = common(d, name, folder, now, all);
   const attention: Record<AttentionSeverity, number> = { high: 0, normal: 0, low: 0 };
   for (const r of c.open) attention[r.severity]++;
   return {
     name,
     folder,
     ...(c.session ? sessionNow(d.registry, c.session, now, name) : {}),
-    queue: c.queue.length,
+    queue: c.queue.filter((q) => q.status === "running" || q.status === "queued").length,
     attention,
+    needs: c.needs.length,
+    housekeeping: c.open.filter((r) => attentionClass(r.kind) === "housekeeping").length,
     health: c.health,
   };
 }
@@ -286,7 +361,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     () =>
       d.ledger
         .openDecisionsFor(name, folder, DECISIONS_SHOWN)
-        .map((x) => ({ id: x.id, question: x.question, ageMs: now - x.createdAt, ...(x.cause ? { ref: msgRef(x.cause.threadId) } : {}) })),
+        .map((x) => ({ id: x.id, question: x.question, ageMs: now - x.createdAt, ...(x.cause ? { ref: msgRef(x.cause.threadId) } : {}), ...(x.spec ? { spec: x.spec } : {}) })),
     [],
   );
 
@@ -312,24 +387,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     [],
   );
 
-  const attention = part(
-    "attentionView",
-    name,
-    () =>
-      c.open.map((r): AttentionItemView => ({
-        id: r.id,
-        source: r.source,
-        kind: r.kind,
-        severity: r.severity,
-        title: r.title,
-        ...(r.detail !== undefined ? { detail: r.detail } : {}),
-        ...(r.url !== undefined ? { url: r.url } : {}),
-        ageMs: now - r.firstSeen,
-        ...(r.todoId !== undefined ? { todoId: r.todoId } : {}),
-        actions: attentionActions(r),
-      })),
-    [],
-  );
+  const attention = part("attentionView", name, () => c.open.map((r) => attentionView(r, now, c.needs.some((i) => i.ref === `att:${r.id}` && i.pinned))), []);
 
   const isNeo = resolve(folder) === resolve(d.neoFolder);
   const restartGated = isNeo
@@ -351,6 +409,7 @@ export async function projectView(d: ProjectViewDeps, name: string, now: number)
     decisions,
     plans,
     attention,
+    needsYou: c.needs,
     threads: c.threads,
     ...(restartGated ? { restartGated } : {}),
     health: c.health,
@@ -452,10 +511,12 @@ export async function gitFacts(read: GitRead, folder: string, cfg: ProjectCfg): 
 export function projectDeps(o: {
   ledger: Ledger;
   registry: Registry;
-  cfg: { github?: GithubCfg; projects?: Record<string, ProjectCfg> };
+  cfg: { github?: GithubCfg; projects?: Record<string, ProjectCfg>; decisionSettle?: { keepPatterns: readonly string[] } };
   neoFolder?: string;
   /** A git reader to use instead of the bounded default (tests). */
   read?: GitRead;
+  /** cfg.decisionSettle.keepPatterns. */
+  keepPatterns?: readonly string[];
 }): ProjectViewDeps {
   return {
     ledger: o.ledger,
@@ -464,6 +525,7 @@ export function projectDeps(o: {
     projects: o.cfg.projects ?? {},
     neoFolder: o.neoFolder ?? process.cwd(),
     probeStaleMs: PROBE_STALE_SCANS * (o.cfg.github ?? DEFAULT_GITHUB_CFG).scanEveryMs,
+    ...(o.keepPatterns ?? o.cfg.decisionSettle?.keepPatterns ? { keepPatterns: o.keepPatterns ?? o.cfg.decisionSettle!.keepPatterns } : {}),
   };
 }
 
@@ -475,7 +537,7 @@ export function knownProjects(d: Pick<ProjectViewDeps, "ledger" | "registry" | "
       const out = new Set<string>([basename(d.neoFolder)]);
       for (const s of d.registry.list()) out.add(basename(s.order.folder));
       for (const f of d.ledger.folders()) if (existsSync(f)) out.add(basename(f));
-      for (const t of d.ledger.listTodos({ statuses: ["running", "queued"] })) out.add(basename(t.folder));
+      for (const t of d.ledger.listTodos({ statuses: ["running", "queued", "waiting"] })) out.add(basename(t.folder));
       return out;
     }) ?? new Set<string>();
   return [...names].filter(Boolean).sort();
@@ -488,8 +550,10 @@ export const HEALTH_ICON: Record<ProjectHealth, string> = { ok: "🟢", attentio
 /** The project list: one summary per known project, health first then name, at most `limit` rows;
  *  `total` counts them all. */
 export function projectSummaries(d: Omit<ProjectViewDeps, "read">, now: number, limit: number): { rows: ProjectSummary[]; total: number } {
+  // One needs-you read for the whole list; a failed read leaves each project to read its own.
+  const needs = faults.guard("projectView.needsYou", () => allNeedsYou(d, now), {});
   const all = knownProjects(d)
-    .map((n) => projectSummary(d, n, now))
+    .map((n) => projectSummary(d, n, now, needs))
     .filter((s): s is ProjectSummary => s !== undefined)
     .sort((a, b) => HEALTH_RANK[a.health] - HEALTH_RANK[b.health] || a.name.localeCompare(b.name));
   return { rows: all.slice(0, Math.max(0, limit)), total: all.length };
@@ -499,8 +563,8 @@ const SEVERITIES = ["high", "normal", "low"] as const;
 
 /** One line per project — `/project` with no name and the company's `sessions` tool. */
 export function summaryLine(s: ProjectSummary): string {
-  const att = SEVERITIES.filter((k) => s.attention[k]).map((k) => `${s.attention[k]} ${k}`).join(", ");
-  return [`${s.name} · ${HEALTH_ICON[s.health]} ${s.health}`, s.state ?? "no session", `queue ${s.queue}`, att ? `attention ${att}` : "no attention"].join(" · ");
+  const att = [s.needs ? `${s.needs} needs you` : "nothing needs you", ...(s.housekeeping ? [`${s.housekeeping} housekeeping`] : [])];
+  return [`${s.name} · ${HEALTH_ICON[s.health]} ${s.health}`, s.state ?? "no session", `queue ${s.queue}`, ...att].join(" · ");
 }
 
 /** The console link that opens one project's dashboard (the Projects tab reads `#project=`). */
@@ -518,8 +582,10 @@ export function renderProject(v: ProjectView, now: number, o: { maxLines: number
   L.push(v.now ? `now: ${v.now.line}${th ? ` — ${todoTitle(th.title)} · ${th.ref}` : ""}` : "now: no session open");
 
   const running = v.queue.filter((q) => q.status === "running");
-  const queued = v.queue.length - running.length;
-  L.push(v.queue.length ? `queue: ${[...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : [])].join(", ")}` : "queue: empty");
+  const count = (st: string) => v.queue.filter((q) => q.status === st).length;
+  const [queued, retry, waiting, failed] = [count("queued"), count("retry"), count("waiting"), count("failed")];
+  const parts = [...running.map((r) => `#${r.id} running`), ...(queued ? [`${queued} queued`] : []), ...(retry ? [`${retry} to retry`] : []), ...(waiting ? [`${waiting} waiting on a decision`] : []), ...(failed ? [`${failed} failed (/todo retry <id>)`] : [])];
+  L.push(parts.length ? `queue: ${parts.join(", ")}` : "queue: empty");
 
   const g = v.git;
   const head = [g.branch, g.lastCommit ? todoTitle(g.lastCommit) : undefined].filter(Boolean).join(" ");
@@ -548,8 +614,10 @@ export function renderProject(v: ProjectView, now: number, o: { maxLines: number
     L.push(`plans: ${line}${p.ref ? ` · ${p.ref}` : ""}`);
   }
 
-  const counts = SEVERITIES.map((k) => [k, v.attention.filter((a) => a.severity === k).length] as const).filter(([, n]) => n);
-  L.push(v.attention.length ? `attention: ${v.attention.length} open — ${counts.map(([k, n]) => `${n} ${k}`).join(" · ")}` : "attention: nothing open");
+  const needs = v.needsYou.length;
+  const house = v.attention.filter((a) => a.cls === "housekeeping").length;
+  const counts = [...(needs ? [`${needs} need${needs === 1 ? "s" : ""} you`] : []), ...(house ? [`${house} housekeeping`] : [])];
+  L.push(v.attention.length || needs ? `attention: ${v.attention.length} open — ${counts.join(" · ")}` : "attention: nothing open");
   for (const r of v.restartGated ?? []) L.push(`restart-gated: ${todoTitle(r.title)}`);
 
   if (L.length <= o.maxLines) return L.join("\n");

@@ -2,6 +2,7 @@
 // Mirrors operant's precedence (env > config.json > defaults) but trimmed.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { Provider } from "./types";
 import { type ContextPolicyCfg, CACHE_OBS_WINDOW } from "./engine/context-policy";
 import { DEFAULT_LIVENESS_THRESHOLDS, type LivenessThresholds } from "./engine/liveness";
@@ -12,16 +13,33 @@ import type { HealthCfg } from "./engine/health";
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "./engine/sqlite";
 import { DEFAULT_GOVERNOR_CFG, type GovernorCfg } from "./engine/governor";
 import { readPlansCfg, type PlansCfg } from "./engine/plans";
+import { readCommitFinishCfg, type CommitFinishCfg } from "./engine/commit-finish";
+import { readDecisionSettleCfg, type DecisionSettleCfg } from "./engine/decision-settle";
 import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
+import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
+import { readLanesCfg, type LanesCfg } from "./engine/lanes";
+import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
+import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
+import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
+import { readTodoSummaryCfg, type TodoSummaryCfg } from "./engine/todo-summary-cfg";
+import { readHistoryCfg } from "./engine/history/cfg";
+import { readBackupCfg, type BackupCfg } from "./engine/backup/cfg";
+import type { HistoryCfg } from "./engine/history/defaults";
+import { readWaitingSweepCfg, type WaitingSweepCfg } from "./engine/waiting-sweep";
+import { readMdFilesCfg, type MdFilesCfg } from "./engine/md-file";
 import { readRestartCfg, type RestartCfg } from "./engine/producers/restart";
 import { readGithubCfg, type GithubCfg } from "./engine/producers/github";
 import { readProjectsCfg, type ProjectCfg } from "./engine/producers/git";
 import { DISPATCH_SPIN_DIGESTS_DEFAULT, TOOL_LOOP_EXEMPT_DEFAULT, TOOL_LOOP_LIMIT_DEFAULT } from "./engine/dispatch-report";
 import { isLang, type Lang } from "./frontends/web/langs";
+import type { EffortLevel } from "./engine/session-runner";
 
 /** What a bad end does to the rest of a project's todo queue (ADR-0008). */
 export type TodoFailurePolicy = "continue" | "pause";
 export const TODO_FAILURE_POLICIES: readonly TodoFailurePolicy[] = ["continue", "pause"];
+/** Default todo retry backoff (ADR-0027): 15 min, 1 h, 4 h, 12 h — four automatic retries spread over
+ *  about 17 hours, long enough to outlast an account or API outage. */
+export const TODO_RETRY_BACKOFF_MS_DEFAULT: readonly number[] = [15 * 60_000, 60 * 60_000, 4 * 60 * 60_000, 12 * 60 * 60_000];
 
 /** Reasoning-effort levels accepted by the SDK. */
 export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -76,7 +94,7 @@ export interface MemoryCfg {
 }
 
 export type WorkerPathName =
-  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff" | "secretary";
+  | "company" | "project" | "dispatch" | "loop" | "judge" | "ingress" | "handoff" | "secretary" | "consult";
 
 export interface NeoConfig {
   telegramToken: string;
@@ -96,6 +114,9 @@ export interface NeoConfig {
   webHost: string;
   /** Port the web operator console listens on (WEB_PORT env). Default 3003. */
   webPort: number;
+  /** When the web console cannot bind (e.g. its Docker bridge IP is not up yet after a reboot), retry
+   *  this often instead of exiting — Telegram keeps working meanwhile. Default 15s. */
+  webBindRetryMs: number;
   /** Public HTTPS base URL the console is reached at (e.g. https://neo.example.com), used for the
    *  startup hint only. From PUBLIC_URL env; empty → no public URL is advertised. */
   publicUrl: string;
@@ -124,6 +145,8 @@ export interface NeoConfig {
   budgetWindowMs: number;
   /** Shared secret for machine-to-machine POST /agent/ingress (from AGENT_INGRESS_SECRET env). */
   agentIngressSecret: string;
+  /** Its own secret for POST /inbox (from INBOX_INGEST_SECRET env); empty = use agentIngressSecret. */
+  inboxIngestSecret?: string;
   /** Customer-reply gateway /send endpoint — Neo POSTs an approved inbox reply here to email it
    *  (Neo itself holds no email/Cloudflare creds). From GATEWAY_SEND_URL env; empty → sending off. */
   gatewaySendUrl: string;
@@ -146,6 +169,10 @@ export interface NeoConfig {
   businessName: string;
   /** When true (default), the daemon runs the loop scheduler. Disable with NEO_LOOP_SCHEDULER=0. */
   loopSchedulerEnabled: boolean;
+  /** The disk guard (ADR-0068): a heartbeat step that runs the installed disk kit's Tier A under disk
+   *  pressure and in its daily hour, and alerts before the disk is full. Its thresholds live in the kit's
+   *  config; here only on/off (NEO_DISK_GUARD=0) and the installed kit's folder. */
+  diskGuard?: { enabled: boolean; kitDir: string };
   /** Abort a dispatched sub-run that has produced NO activity for this long (ms). Default 5 min.
    *  The only automatic abort: a dispatch has no wall-clock limit, so a busy worker streaming
    *  activity runs until it is done, however long that takes (ADR-0007). */
@@ -177,6 +204,14 @@ export interface NeoConfig {
    *  short by a reload or restart): `continue` with the next todo and report the failure, or `pause`
    *  the queue until it is resumed (ADR-0008). Default `continue`; any other value fails closed to it. */
   todoOnFailure: TodoFailurePolicy;
+  /** The backoff (ms per retry) before a todo that ended for a passing reason re-runs (ADR-0027). The
+   *  number of automatic retries is DERIVED from its length. `[]` turns automatic retries off. Any value
+   *  that is not an array of positive numbers fails closed to the default. */
+  todoRetryBackoffMs: readonly number[];
+  /** Where Neo keeps its handoff notes (ADR-0029) — OUTSIDE every project repo, so Neo never writes a
+   *  project's own HANDOFF.md. A relative path resolves against the daemon's working folder (/home/neo).
+   *  Default data/handoffs. */
+  handoffNotesDir: string;
   /** Second-tier API-throttle backoff ladder (ms per attempt) — the wait before re-sending a
    *  rate-limited brief when the API gave no real reset time. The number of automatic retries is
    *  DERIVED from this array's length (not a separate knob). Default [30s, 2m, 8m]. */
@@ -184,6 +219,27 @@ export interface NeoConfig {
   /** Jitter magnitude (0-1) applied to every retry wait so co-throttled workers don't sync up:
    *  ladder waits get ±frac, reset-based waits get +frac (upward only). Default 0.2 (±20%). */
   apiRetryJitterFrac: number;
+  /** ADR-0060: when a turn goes through, the same provider's other limit-held runs wake early instead
+   *  of waiting for their reset (the limit is gone). Default true. */
+  apiLimitWakeEarly?: boolean;
+  /** ADR-0060: each early-woken run waits a random 0..this ms first, so they do not re-send at once.
+   *  Default 30 s. */
+  apiLimitWakeJitterMs?: number;
+  /** ADR-0061: the chief of staff's `project_message` — at most `maxChars` per message (longer is new
+   *  work: dispatch) and `perProjectPerHour` delivered per project. Read by readProjectMessageCfg. */
+  projectMessage?: ProjectMessageCfg;
+  /** ADR-0063: the `planner` subagent every dispatch, project and loop run gets for its DESIGN phase and final
+   *  review — the strongest model at the highest effort. `model` is a tier alias or an id; the engine pins
+   *  an alias to its id through `models.aliases` (ADR-0005). Read by readPlannerCfg. */
+  planner?: PlannerCfg;
+  /** ADR-0059: the AI summary of each new todo (`ai`, `model`, `effort`, `timeoutMs`). Read by readTodoSummaryCfg. */
+  todoSummary?: TodoSummaryCfg;
+  /** ADR-0067: the task history (hybrid search over past work). Secrets are named by their env variables
+   *  (`embedder.keyEnv`, `vectors.urlEnv`, `vectors.keyEnv`), never written here. Read by readHistoryCfg. */
+  history?: HistoryCfg;
+  /** ADR-0067 Decision 8: the snapshot backup of Neo's SQLite files (`history.db` by default; the ledger
+   *  only by the operator's decision). Read by readBackupCfg. */
+  backup?: BackupCfg;
   /** Engine-wide hold (ms) on NEW background work after a throttle report, so retries + the
    *  scheduler can't amplify a rate-limit storm. Default 60 s. */
   apiCooldownMs: number;
@@ -240,9 +296,34 @@ export interface NeoConfig {
   /** The plan registry (ADR-0019): where plans live, whether new versions are sent, the size cap and
    *  the Execute brief. Optional like `trace`; `loadConfig` always fills it. */
   plans?: PlansCfg;
+  /** The commit finish (ADR-0037): a dispatch run that settles with its own changes uncommitted is
+   *  asked once, in the same session, to commit them. `enabled` (default true), `ignore` (repo-relative
+   *  globs never counted: the handoff notes). Optional like `plans`; `loadConfig` always fills it. */
+  commitFinish?: CommitFinishCfg;
+  /** Settle stale decisions (ADR-0038, ADR-0054): a decision asked again, or whose plan is settled, is
+   *  superseded, so its thread stops waiting. A chat answer is recorded by the `decision` tool.
+   *  Optional like `plans`; `loadConfig` always fills it. */
+  decisionSettle?: DecisionSettleCfg;
   /** Attention items (ADR-0018): how long a paused queue, a waiting thread or an open decision may
    *  last before it needs the operator. Optional like `plans`; `loadConfig` always fills it. */
   attention?: AttentionCfg;
+  /** Project notes (ADR-0043): sizes, caps and the notes block's bounds. Optional like `plans`;
+   *  `loadConfig` always fills it. */
+  notes?: NotesCfg;
+  /** Side lanes (ADR-0057): the switch, caps and the `code` worktree root. Optional like `plans`;
+   *  `loadConfig` always fills it. */
+  lanes?: LanesCfg;
+  /** Stop or background one running tool call (ADR-0058): kill grace, Telegram notice, Docker socket.
+   *  Optional like `plans`; `loadConfig` always fills it. */
+  toolControl?: ToolControlCfg;
+  /** The shared tools catalogue (ADR-0044): relay switch and caps, card limits, search knobs. Optional like
+   *  `plans`; `loadConfig` always fills it. */
+  tools?: ToolsCfg;
+  /** The waiting sweep (ADR-0045): re-judge delay and reminder size. */
+  waitingSweep?: WaitingSweepCfg;
+  /** Markdown file links in the console (ADR-0046): the readable roots and the size cap. Optional like
+   *  `plans`; `loadConfig` always fills it (roots default to `[workRoot]`). */
+  mdFiles?: MdFilesCfg;
   /** Restart-gated work (spec §8.4, `/gated`): the branch prefixes that count as work waiting to
    *  merge. Optional like `plans`; `loadConfig` always fills it. */
   restart?: RestartCfg;
@@ -325,6 +406,27 @@ export const DEFAULT_UPDATES: UpdatesCfg = {
 
 /** The shipped model pin (ADR-0005). Exported so anything building a `NeoConfig` — `DEFAULTS`
  *  below, and test fixtures — states the pin once instead of copying the ids around. */
+/** The planner subagent's model and effort (ADR-0063). */
+export interface PlannerCfg {
+  model: string;
+  effort: EffortLevel;
+}
+
+/** The strongest model the subscription runs without extra usage credits (Opus; Fable is budgeted like
+ *  Sonnet and needs credits, docs/sdk-notes.md), at the SDK's deepest effort. */
+export const DEFAULT_PLANNER: PlannerCfg = { model: "opus", effort: "max" };
+
+const EFFORTS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** Config `planner`: a non-blank model and a known effort are kept; anything else is the default. */
+export function readPlannerCfg(raw: unknown): PlannerCfg {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    model: typeof r.model === "string" && r.model.trim() ? r.model.trim() : DEFAULT_PLANNER.model,
+    effort: EFFORTS.includes(r.effort as EffortLevel) ? (r.effort as EffortLevel) : DEFAULT_PLANNER.effort,
+  };
+}
+
 export const DEFAULT_MODELS: ModelsCfg = {
   default: CLAUDE_TIER_MODELS.opus,
   aliases: { ...CLAUDE_TIER_MODELS },
@@ -342,6 +444,7 @@ const DEFAULTS = {
   trustNewProjects: true,
   webHost: "127.0.0.1",
   webPort: 3003,
+  webBindRetryMs: 15_000,
   budgetWindowUsd: 20,
   budgetWindowMs: 5 * 60 * 60 * 1000,
   idleCloseMs: 24 * 60 * 60 * 1000,
@@ -351,10 +454,14 @@ const DEFAULTS = {
   dispatchProgressMs: 10 * 60 * 1000,
   dispatchRecoverWindowMs: 24 * 60 * 60 * 1000,
   todoOnFailure: "continue" as TodoFailurePolicy,
+  todoRetryBackoffMs: TODO_RETRY_BACKOFF_MS_DEFAULT,
+  handoffNotesDir: "data/handoffs",
   // API-throttle recovery policy (see api-retry.ts). These reproduce the pre-config constants
   // exactly, so behavior is byte-identical until an operator overrides them.
   apiRetryLadderMs: [30_000, 120_000, 480_000],
   apiRetryJitterFrac: 0.2,
+  apiLimitWakeEarly: true,
+  apiLimitWakeJitterMs: 30_000,
   apiCooldownMs: 60_000,
   // Ledger retention caps (see ledger.ts) — operator policy, not a fact; defaults preserve today's.
   routeKeep: 20_000,
@@ -420,6 +527,10 @@ const DEFAULTS = {
     // The secretary reviews the queue on the LATEST model (a config.json override recommends the
     // newest model); the empty default keeps today's model until the operator sets one.
     secretary: {},
+    // A consult run answers another agent's question, read-only (ADR-0050 §6). Its tool limits live in
+    // worker-profile.ts and its turn cap in notes.questions.consultMaxTurns; the empty default keeps the
+    // pinned model until the operator sets one here.
+    consult: {},
   } satisfies Record<WorkerPathName, WorkerProfile>,
   workerEnv: {} as Record<string, string>,
   // QUALITY INVARIANT: scopes:[] is the pin — the memory system is a total no-op until an
@@ -437,17 +548,26 @@ const DEFAULTS = {
 };
 
 /** Minimal `.env` loader (KEY=VALUE lines). Values only fill gaps in process.env. */
-function loadDotEnv(dir: string): void {
+export function loadDotEnv(dir: string): string[] {
+  const names: string[] = [];
   const p = join(dir, ".env");
-  if (!existsSync(p)) return;
+  if (!existsSync(p)) return names;
   for (const line of readFileSync(p, "utf8").split("\n")) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
     if (!m) continue;
     const key = m[1];
     const value = m[2];
+    // Bun may already have loaded the file before any code runs, so the key counts as an engine
+    // key whether or not it was missing from process.env (ADR-0050 §7). Names only, never values.
+    if (!names.includes(key)) names.push(key);
     if (process.env[key] === undefined) process.env[key] = value;
   }
+  return names;
 }
+
+/** Key names in the engine's own env file at the last loadConfig (names only; the daemon reports them). */
+let dotEnvKeys: string[] = [];
+export function loadedDotEnvKeys(): string[] { return [...dotEnvKeys]; }
 
 /** Lowercase every key of a record, so a case-insensitive lookup can never miss an operator's entry. */
 function lowercaseKeys(o: Record<string, string>): Record<string, string> {
@@ -467,7 +587,7 @@ function wholeAtLeast(v: unknown, min: number, d: number): number {
 }
 
 export function loadConfig(dir: string = process.cwd()): NeoConfig {
-  loadDotEnv(dir);
+  dotEnvKeys = loadDotEnv(dir);
 
   let fileCfg: Partial<NeoConfig> = {};
   const cfgPath = join(dir, "config.json");
@@ -479,6 +599,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     }
   }
 
+  const workRoot = process.env.WORK_ROOT ?? fileCfg.workRoot ?? DEFAULTS.workRoot;
   return {
     telegramToken: process.env.TELEGRAM_TOKEN ?? "",
     telegramAllowFrom: fileCfg.telegramAllowFrom ?? [],
@@ -487,16 +608,18 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     decisionsChatId: process.env.DECISIONS_CHAT_ID ? Number(process.env.DECISIONS_CHAT_ID) : fileCfg.decisionsChatId,
     webHost: process.env.WEB_HOST ?? fileCfg.webHost ?? DEFAULTS.webHost,
     webPort: process.env.WEB_PORT ? Number(process.env.WEB_PORT) : (fileCfg.webPort ?? DEFAULTS.webPort),
+    webBindRetryMs: fileCfg.webBindRetryMs ?? DEFAULTS.webBindRetryMs,
     publicUrl: process.env.PUBLIC_URL ?? fileCfg.publicUrl ?? "",
     providers: fileCfg.providers ?? DEFAULTS.providers,
     subscriptionInteractiveReservePct:
       fileCfg.subscriptionInteractiveReservePct ?? DEFAULTS.subscriptionInteractiveReservePct,
-    workRoot: process.env.WORK_ROOT ?? fileCfg.workRoot ?? DEFAULTS.workRoot,
+    workRoot,
     companyFolder: process.env.COMPANY_FOLDER ?? fileCfg.companyFolder ?? DEFAULTS.companyFolder,
     trustNewProjects: fileCfg.trustNewProjects ?? DEFAULTS.trustNewProjects,
     budgetWindowUsd: fileCfg.budgetWindowUsd ?? DEFAULTS.budgetWindowUsd,
     budgetWindowMs: fileCfg.budgetWindowMs ?? DEFAULTS.budgetWindowMs,
     agentIngressSecret: process.env.AGENT_INGRESS_SECRET ?? "",
+    inboxIngestSecret: process.env.INBOX_INGEST_SECRET ?? "",
     gatewaySendUrl: process.env.GATEWAY_SEND_URL ?? fileCfg.gatewaySendUrl ?? "",
     idleCloseMs: fileCfg.idleCloseMs ?? DEFAULTS.idleCloseMs,
     stitchApiKey: process.env.STITCH_API_KEY ?? "",
@@ -506,6 +629,10 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     businessName: process.env.BUSINESS_NAME ?? fileCfg.businessName ?? "",
     loopSchedulerEnabled:
       process.env.NEO_LOOP_SCHEDULER === "0" ? false : (fileCfg.loopSchedulerEnabled ?? true),
+    diskGuard: {
+      enabled: process.env.NEO_DISK_GUARD === "0" ? false : (fileCfg.diskGuard?.enabled ?? true),
+      kitDir: (typeof fileCfg.diskGuard?.kitDir === "string" && fileCfg.diskGuard.kitDir ? fileCfg.diskGuard.kitDir : "~/.local/share/neo/disk").replace(/^~(?=\/|$)/, homedir()),
+    },
     dispatchStallMs: fileCfg.dispatchStallMs ?? DEFAULTS.dispatchStallMs,
     dispatchGraceMs: fileCfg.dispatchGraceMs ?? DEFAULTS.dispatchGraceMs,
     dispatchSpinDigests: wholeAtLeast(fileCfg.dispatchSpinDigests, 2, DISPATCH_SPIN_DIGESTS_DEFAULT),
@@ -517,8 +644,15 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     todoOnFailure: TODO_FAILURE_POLICIES.includes(fileCfg.todoOnFailure as TodoFailurePolicy)
       ? (fileCfg.todoOnFailure as TodoFailurePolicy)
       : DEFAULTS.todoOnFailure,
+    handoffNotesDir: typeof fileCfg.handoffNotesDir === "string" && fileCfg.handoffNotesDir.trim() ? fileCfg.handoffNotesDir : DEFAULTS.handoffNotesDir,
+    todoRetryBackoffMs:
+      Array.isArray(fileCfg.todoRetryBackoffMs) && fileCfg.todoRetryBackoffMs.every((x) => typeof x === "number" && Number.isFinite(x) && x > 0)
+        ? (fileCfg.todoRetryBackoffMs as number[])
+        : DEFAULTS.todoRetryBackoffMs,
     apiRetryLadderMs: fileCfg.apiRetryLadderMs ?? DEFAULTS.apiRetryLadderMs,
     apiRetryJitterFrac: fileCfg.apiRetryJitterFrac ?? DEFAULTS.apiRetryJitterFrac,
+    apiLimitWakeEarly: typeof fileCfg.apiLimitWakeEarly === "boolean" ? fileCfg.apiLimitWakeEarly : DEFAULTS.apiLimitWakeEarly,
+    apiLimitWakeJitterMs: typeof fileCfg.apiLimitWakeJitterMs === "number" && Number.isFinite(fileCfg.apiLimitWakeJitterMs) && fileCfg.apiLimitWakeJitterMs >= 0 ? fileCfg.apiLimitWakeJitterMs : DEFAULTS.apiLimitWakeJitterMs,
     apiCooldownMs: fileCfg.apiCooldownMs ?? DEFAULTS.apiCooldownMs,
     routeKeep: fileCfg.routeKeep ?? DEFAULTS.routeKeep,
     eventsKeep: fileCfg.eventsKeep ?? DEFAULTS.eventsKeep,
@@ -536,7 +670,20 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     governor: { ...DEFAULTS.governor, ...(fileCfg.governor ?? {}) },
     trace: { ...DEFAULT_TRACE, ...(fileCfg.trace ?? {}) },
     plans: readPlansCfg(fileCfg.plans),
+    commitFinish: readCommitFinishCfg(fileCfg.commitFinish),
+    decisionSettle: readDecisionSettleCfg(fileCfg.decisionSettle),
     attention: readAttentionCfg(fileCfg.attention),
+    notes: readNotesCfg(fileCfg.notes),
+    lanes: readLanesCfg(fileCfg.lanes),
+    toolControl: readToolControlCfg(fileCfg.toolControl),
+    tools: readToolsCfg(fileCfg.tools),
+    projectMessage: readProjectMessageCfg(fileCfg.projectMessage),
+    planner: readPlannerCfg(fileCfg.planner),
+    todoSummary: readTodoSummaryCfg(fileCfg.todoSummary),
+    history: readHistoryCfg(fileCfg.history),
+    backup: readBackupCfg(fileCfg.backup),
+    waitingSweep: readWaitingSweepCfg(fileCfg.waitingSweep),
+    mdFiles: readMdFilesCfg(fileCfg.mdFiles, workRoot),
     restart: readRestartCfg(fileCfg.restart),
     github: readGithubCfg(fileCfg.github),
     projects: readProjectsCfg(fileCfg.projects),

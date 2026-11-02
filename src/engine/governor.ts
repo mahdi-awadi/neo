@@ -4,8 +4,11 @@
 // firewall). Wired into the SDK twice, through this ONE function: a PreToolUse hook (runs before a
 // project's settings allow rules; ADR-0006) and the `canUseTool` callback. Autonomous paths (loops,
 // customer-driven briefs) auto-deny escalations, so for them default-escalate = default-deny.
-import { resolve, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import type { Verdict } from "../types";
+import { GIT_WRITE, gitCall, realish, walkBash, writeTargets } from "./bash-walk";
+import { laneVerdict, type SessionLane } from "./lanes";
 
 /** `governor.outOfFolderWrites`: the operator's standing answer to an out-of-folder file write
  *  (ADR-0012). "allow" = no escalation; "ask" = a fence escalation (ADR-0011). */
@@ -29,11 +32,96 @@ export const DEFAULT_GOVERNOR_CFG: GovernorCfg = {
   approvalTimeoutMs: 2 * 60 * 60 * 1000,
 };
 
+/** The project fence (ADR-0031): a dispatched or loop worker — and its helper agents, whose calls
+ *  re-enter the same hook — writes only in its own project. `root` is the work root whose top-level
+ *  folders are projects (/home); `allow` lists engine folders under it any worker may write
+ *  (Neo's handoff notes). */
+export interface ProjectFence {
+  root: string;
+  allow?: string[];
+}
+
 /** Per-session context the governor judges against (the worker's project folder = SDK cwd). */
 export interface GovernorCtx {
   folder: string;
   /** Absent or anything but "allow" = "ask" (fails closed). */
   outOfFolderWrites?: OutOfFolderWrites;
+  /** Set for dispatch and loop workers; absent = no cross-project check (operator sessions). */
+  projectFence?: ProjectFence;
+  /** A side-lane session (ADR-0057): its kind's rules are checked first and a breach is DENIED. */
+  lane?: SessionLane;
+  /** Where an `mcp__*` tool's server came from (the SDK's `mcpServer.source`): `sdk` = an in-process
+   *  server Neo registered. Absent on non-MCP tools and on CLIs that predate the field. */
+  mcpSource?: string;
+}
+
+/** The OTHER project root `target` lies in (e.g. "/home/eticket-v3"), or undefined when it is in the
+ *  session's own project, outside the work root, or in an allowed engine folder. */
+export function foreignProject(target: string, folder: string, fence: ProjectFence): string | undefined {
+  try {
+    const root = resolve(fence.root);
+    const t = realish(resolve(resolve(folder), target));
+    if (!t.startsWith(root + sep)) return undefined;
+    if ((fence.allow ?? []).some((a) => t === resolve(a) || t.startsWith(resolve(a) + sep))) return undefined;
+    const top = (p: string) => p.slice(root.length + 1).split(sep)[0] ?? "";
+    const own = realish(resolve(folder));
+    if (own.startsWith(root + sep) && top(own) === top(t)) return undefined;
+    const other = root + sep + top(t);
+    // A sibling git worktree of the session's own repository is its own project.
+    if (own.startsWith(root + sep) && worktreeOf(other, root + sep + top(own))) return undefined;
+    return other;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `dir` is a git worktree of the repository at `repo`: its `.git` FILE points into
+ *  `<repo>/.git/worktrees/`. Pure file reads — no git process. */
+function worktreeOf(dir: string, repo: string): boolean {
+  try {
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(join(dir, ".git"), "utf8"));
+    return !!m && resolve(dir, m[1]!.trim()).startsWith(join(realish(repo), ".git", "worktrees") + sep);
+  } catch {
+    return false;
+  }
+}
+
+const CROSS = (dir: string) =>
+  `write into another project (${dir}). Stay in your own project; send work for another project there with the \`project_notes\` tool.`;
+
+/** The other project a shell command writes into, or undefined (ADR-0031). Defense in depth: it reads
+ *  the usual shapes (git -C / cd + git, --git-dir/--work-tree, redirections, cp/mv/tee/mkdir/sed -i)
+ *  through the shared shell reader (bash-walk.ts). */
+function bashForeignWrite(command: string, folder: string, fence: ProjectFence): string | undefined {
+  return walkBash(command, folder, (seg) => {
+    // Resolved against the shell's current folder, judged against the SESSION's own project.
+    const at = (p: string) => foreignProject(resolve(resolve(seg.cwd), p), folder, fence);
+    for (const r of seg.redirects) {
+      const hit = at(r);
+      if (hit) return hit;
+    }
+    const git = gitCall(seg);
+    if (git) return GIT_WRITE.test(git.sub) ? at(git.repo) : undefined;
+    for (const p of writeTargets(seg)) {
+      const hit = at(p);
+      if (hit) return hit;
+    }
+    return undefined;
+  });
+}
+
+const PUSH = (command: string) =>
+  `git push needs the operator's approval (operator rule: commit locally; push once, when the whole task is done, after asking — every push starts paid CI/CD runs): ${command}`;
+
+/** True when a shell command runs `git push` in any shape the shell reader parses (`git -C`, `cd … &&`,
+ *  `VAR=… git`, `sh -c '…'`). ADR-0069. */
+function gitPushIn(command: string, folder: string): boolean {
+  return (
+    walkBash(command, folder, (seg) => {
+      const git = gitCall(seg);
+      return git && (git.sub === "push" || (git.sub === "subtree" && git.args[0] === "push")) ? "push" : undefined;
+    }) !== undefined
+  );
 }
 
 /** Risky bash patterns that must never auto-run — they escalate to Neo. Defense-in-depth
@@ -77,18 +165,35 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
   // worker to ask in plain text — the channel surfaces that and the reply returns as a follow-up.
   if (tool === "AskUserQuestion") {
     return {
-      deny: "Neo has no structured-question UI. Ask the operator your question in plain text instead; their reply arrives as a normal follow-up message. Do not assume a default — wait for the answer.",
+      deny:
+        "Neo has no structured-question UI here. Ask the operator in plain text instead, written for a non-technical reader in their language: say what is happening and why a choice is needed, list the options numbered with what each one does and its risk, and say which you recommend and why. No code names or ADR numbers unless explained. Their reply arrives as a normal follow-up message. Do not assume a default — wait for the answer.",
     };
+  }
+
+  // A side lane (ADR-0057) never interferes with its project's main task: denied, never escalated —
+  // the answer is always no. The normal rules below still apply to what the lane allows.
+  if (ctx.lane) {
+    const why = laneVerdict(tool, input, { folder: ctx.folder, lane: ctx.lane });
+    if (why) return { deny: why };
   }
 
   if (SAFE_TOOLS.has(tool)) return { allow: true };
 
-  // Neo's own in-process MCP tools (dispatch, ...). Foreign mcp__* falls to default-escalate.
-  if (tool.startsWith("mcp__neo__")) return { allow: true };
+  // Neo's own in-process MCP tools (dispatch, ...), trusted by PROVENANCE, not by name (reach plan P0.4):
+  // a project's configured server named "neo" is foreign. No source (an older CLI) keeps the old rule.
+  // Foreign mcp__* falls to default-escalate.
+  if (tool.startsWith("mcp__neo__")) {
+    if (ctx.mcpSource === undefined || ctx.mcpSource === "sdk") return { allow: true };
+    return { escalate: `a tool named like Neo's own (${tool}) served by a ${ctx.mcpSource} MCP server, not by Neo` };
+  }
 
   if (FENCED_TOOLS.has(tool)) {
     const raw = tool === "NotebookEdit" ? input.notebook_path : input.file_path;
     const path = typeof raw === "string" ? raw : "";
+    // Another project is never a plain write (ADR-0031): the operator decides. Checked first, so a
+    // symlink inside the folder that leads to another project is judged where it really leads.
+    const other = path && ctx.projectFence ? foreignProject(path, ctx.folder, ctx.projectFence) : undefined;
+    if (other) return { escalate: CROSS(other), fenced: true };
     if (insideFolder(path, ctx.folder)) return { allow: true };
     // The operator's standing approval (ADR-0012). Still needs a path: an empty one writes nothing.
     if (path && ctx.outOfFolderWrites === "allow") return { allow: true };
@@ -101,6 +206,10 @@ export function decide(tool: string, input: Record<string, unknown>, ctx: Govern
 
   if (tool === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
+    const other = ctx.projectFence ? bashForeignWrite(command, ctx.folder, ctx.projectFence) : undefined;
+    if (other) return { escalate: CROSS(other), fenced: true };
+    // A push starts paid CI/CD runs: always the operator's call, never trust's (ADR-0069).
+    if (gitPushIn(command, ctx.folder)) return { escalate: PUSH(command), fenced: true };
     if (RISKY_BASH.test(command)) return { escalate: `risky shell command: ${command}` };
     return { allow: true };
   }

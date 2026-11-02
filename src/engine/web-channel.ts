@@ -3,11 +3,16 @@
 // worker output + escalations as events an HTTP/SSE layer can fan out, and resolves
 // Allow/Deny approvals out-of-band (the web equivalent of Telegram's inline buttons).
 // All logic lives here (tested); frontends/web.ts is just Bun.serve glue over it.
+import { controlTool, DEFAULT_TOOL_CONTROL_CFG, type ToolAction, type ToolControlResult } from "./tool-control";
+import type { RunningBuild } from "./producers/restart";
 import { applyAttentionAction, type AttentionAction, type AttentionActionResult } from "./attention-actions";
 import { DEFAULT_ATTENTION_CFG } from "./producers/engine";
+import { rmSync } from "node:fs";
 import { basename } from "node:path";
+import { saveInbound, withAttachments, type AttachedFile } from "./files";
 import { handleMessage, type PipelineDeps } from "./pipeline";
-import { sharedCodebaseMemoryIndexer } from "./codebase-memory";
+import { parseOrder } from "./orders";
+import { ledgerIndexStore, sharedCodebaseMemoryIndexer } from "./codebase-memory";
 import {
   handleCommand,
   selectProject as engineSelectProject,
@@ -27,18 +32,25 @@ import {
   type LoopInfo,
 } from "./loops";
 import type { LoopInput } from "./loop-validate";
-import { dashboardSnapshot, type DashState } from "./dashboard";
-import { mdToHtml, snippetHtml } from "./format";
+import { dashboardSnapshot, todoDetail, type DashState, type TodoDetail } from "./dashboard";
+import { snippetHtml, TELEGRAM_MAX } from "./format";
+import { feedLine, reasonHtml, type LineTone } from "./feed-line";
 import { styleLine } from "./priority";
 import type { UsageMeter } from "./usage";
 import { knownIds, type LineIds, type OperatorBus } from "./operator-bus";
 import { setWorkerSdk, type WorkerSdkState } from "./sdk-choice";
-import type { Cause, ThreadChange } from "./trace";
+import type { Cause, ThreadChange, ThreadCloseResult } from "./trace";
 import { faults } from "./fault";
-import { applyPlanAction, planActions, planDepsFrom, type PlanAction } from "./plans";
-import { routeThreadMessage } from "./reply-routing";
+import { applyPlanAction, planActions, planDepsFrom, planState, type PlanAction, type PlanActionResult, type PlanState } from "./plans";
+import { answerDecision, routeThreadMessage } from "./reply-routing";
 import { projectDeps, projectSummaries, projectView, type ProjectSummary, type ProjectView } from "./project-view";
 import { PAGE_MAX, type MessageRow, type PlanRow, type SearchHit, type ThreadArtifacts, type ThreadFilter, type ThreadListRow, type ThreadRow } from "./ledger";
+import { waitingWork, type WaitingItem } from "./waiting-work";
+import { answerable, DEFAULT_KEEP_PATTERNS, textAnswerRefusal } from "./decision-settle";
+import { answerText, isComplete } from "./structured-question";
+import { needsYou, pin, type NeedsYouItem } from "./needs-you";
+import { itemDetail, type ItemDetail } from "./needs-you-detail";
+import type { PinState } from "./ledger";
 
 /** Engine dependencies shared with the Telegram frontend (everything but the channel I/O). */
 export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
@@ -46,39 +58,65 @@ export type EngineDeps = Omit<PipelineDeps, "reply" | "askApproval">;
 // A feed line names its recorded message and thread when the engine traced it (spec §6), so the
 // console can open the thread a line belongs to.
 export type WebEvent =
-  | ({ type: "message"; text: string; project?: string } & LineIds)
+  // `text` is safe HTML (feedLine, ADR-0025); `tone` is the row's colour class.
+  | ({ type: "message"; text: string; tone: LineTone; project?: string } & LineIds)
   // The operator's own message typed on the OTHER surface (Telegram), mirrored here so both
   // surfaces show the full thread. Rendered as a `me` row (raw text, escaped client-side).
   | ({ type: "echo"; text: string } & LineIds)
   // Display-only chrome mirrored from the other surface (e.g. "approval pending on Telegram").
   | { type: "notice"; text: string }
-  | { type: "escalation"; id: string; reason: string }
+  | { type: "escalation"; id: string; reason: string; html: string }
   | { type: "projects"; text: string; items: SelectableProject[] }
   | { type: "loops"; items: LoopInfo[] }
   | { type: "sdk"; sdk: WorkerSdkState }
   | { type: "file"; name: string; url: string; project?: string }
   // What needs the operator (ADR-0018, /attention): the list and its one-tap items.
   | { type: "attention"; text: string; items: NonNullable<CommandResult["attention"]>; snoozeHours: number }
+  // `/forget` typed here (ADR-0067): the entry (safe HTML, feedLine) and its ref; the console links the History
+  // tab, whose Forget button asks for the reason and confirms. Nothing is removed by the command itself.
+  | { type: "history_forget"; text: string; ref: string }
   // A thread changed state (ADR-0017): the console moves its row without a re-fetch.
   | ({ type: "thread"; ref?: string } & ThreadChange & Partial<Pick<ThreadListRow, "messages" | "openDecisions" | "activeTodos">>);
 
 /** One thread as the console shows it (spec §6). `next` is the cursor for the older messages. */
 export interface ThreadView {
   thread: ThreadRow & { ref?: string };
-  messages: MessageRow[];
+  /** An assistant row carries its rendered `html` and `tone` (ADR-0025); an operator row stays text. */
+  messages: Array<MessageRow & { html?: string; tone?: LineTone }>;
   next?: number;
   orders: ThreadArtifacts["orders"];
   todos: ThreadArtifacts["todos"];
   decisions: ThreadArtifacts["decisions"];
   /** Each plan with the actions its status offers (the card's buttons). */
-  plans: Array<PlanRow & { actions: PlanAction[] }>;
+  plans: Array<PlanRow & { state: PlanState; actions: PlanAction[] }>;
   toolActions: number;
 }
+
+/** A staged attachment as the composer sees it: the token to send, the saved name and its size. */
+export interface StagedFile {
+  token: string;
+  name: string;
+  size: number;
+}
+
+export type SendCheck = { ok: true } | { error: "expired" | "command" };
+
+/** A staged attachment nobody sent is forgotten after this long (its file stays in the inbox). */
+export const STAGE_TTL_MS = 6 * 60 * 60 * 1000;
 
 export interface WebChannel {
   /** Operator sent a message — drive the pipeline; streamed output arrives as events. `threadId`:
    *  the composer was opened inside that thread, so the message joins it (spec §4.1 rule 2). */
-  send(text: string, opts?: { threadId?: number }): Promise<void>;
+  send(text: string, opts?: { threadId?: number; attachments?: string[] }): Promise<void>;
+  /** Would `send` take this message? `expired`: a staged file is unknown or gone (reload, TTL).
+   *  `command`: files with a slash line that is not an order. Synchronous, so /msg can answer at once. */
+  check(text: string, opts?: { attachments?: string[] }): SendCheck;
+  /** Stage a file attached in the composer (ADR-0026): save it to an inbox (the thread's project when
+   *  `threadId` names one with a folder, else the active project) and return a one-shot token that
+   *  `send` turns into the message's file list. Nothing is sent. */
+  stage(file: { name: string; bytes: Uint8Array }, opts?: { threadId?: number }): StagedFile | { error: string };
+  /** The operator took a staged file out of the composer: forget it and delete it. False: unknown token. */
+  discard(token: string): boolean;
   /** Subscribe an SSE listener. The replay window is replayed first, then events go live; each
    *  event carries an increasing id. With `after` (a resume point), only later events replay. A
    *  pending escalation older than the window is replayed too (ADR-0014). */
@@ -108,8 +146,10 @@ export interface WebChannel {
   /** A Queue-tab action (`cancel 12`, `up 12`, `pause eticket-v3`, `resume eticket-v3`, or "" to
    *  list) — runs the shared /todo command, so the console and Telegram share one set of rules. */
   todo(args: string): { ok: boolean; text: string };
+  /** Stop or background one running tool call (ADR-0058), as the operator in the console. */
+  toolControl(sessionId: string, toolUseId: string, action: ToolAction): Promise<ToolControlResult>;
   /** The thread list (ADR-0017): newest-updated first, filtered, keyset-paged; each row has its ref. */
-  threads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: Array<ThreadListRow & { ref?: string }>; next?: string };
+  threads(f: ThreadFilter, page: { before?: string; limit: number }): { rows: Array<ThreadListRow & { ref?: string; waiting?: WaitingItem[] }>; next?: string };
   /** One thread: a page of its messages (newest first) and what it produced. Undefined: no such thread. */
   thread(id: number, page: { before?: number; limit: number }): ThreadView | undefined;
   /** The projects that have threads, with their thread counts (the console's project rail). */
@@ -118,11 +158,23 @@ export interface WebChannel {
   search(q: string, f: { project?: string; before?: number; limit: number }): { rows: Array<SearchHit & { ref?: string; threadRef?: string }>; next?: number };
   /** A plan card action (ADR-0019) — the same engine rules as a Telegram tap. "changes" needs the
    *  operator's text, which the console does not carry yet, so it is refused here. */
-  planAction(id: number, action: PlanAction, version?: number): Promise<{ ok: boolean; text: string }>;
+  planAction(id: number, action: PlanAction, version?: number): Promise<PlanActionResult>;
+  /** The operator closes a thread (ADR-0038). Undefined: no such thread (or no tracing). */
+  closeThread(id: number): (ThreadCloseResult & { ok: true }) | undefined;
   /** An attention item's one-tap action (ADR-0018) — the same engine rules as a Telegram tap. */
   attentionAction(id: number, action: AttentionAction): Promise<AttentionActionResult>;
   /** The project list (P6, spec §9): one summary per known project, health first, at most PAGE_MAX. */
   projects(): { rows: ProjectSummary[]; total: number };
+  /** ADR-0065: everything that needs the operator (the pinned strip). */
+  needsYou(): NeedsYouItem[];
+  /** ADR-0065: pin, unpin or clear one item; refused for a closed or unknown one. */
+  pin(ref: string, state: PinState | null): { ok: true; text: string } | { ok: false; error: string };
+  /** ADR-0065: one todo's detail, or undefined. */
+  todoDetail(id: number): TodoDetail | undefined;
+  /** ADR-0071: the item a pin names, with what is needed to act on it; undefined for a bad or gone ref. */
+  item(ref: string): (ItemDetail & { snoozeHours: number }) | undefined;
+  /** ADR-0071: answer (or acknowledge) a decision from the console — the same path as a Telegram answer. */
+  answerDecision(id: string, input: { answer?: string; acknowledge?: boolean; picks?: number[][] }): Promise<{ ok: boolean; text: string }>;
   /** One project's dashboard, with the snooze hours its attention buttons name. Undefined: no such project. */
   project(name: string): Promise<(ProjectView & { snoozeHours: number }) | undefined>;
   /** Push a line into the operator feed (used to surface customer-driven company work). */
@@ -133,7 +185,7 @@ export interface WebChannel {
   _testSendFile(path: string, caption?: string): string;
 }
 
-export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; neoFolder?: string }): WebChannel {
+export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usage?: UsageMeter; requestReload?: () => void; bus?: OperatorBus; updates?: CommandDeps["updates"]; gated?: CommandDeps["gated"]; deployGap?: CommandDeps["deployGap"]; build?: RunningBuild; neoFolder?: string }): WebChannel {
   // The replay window (ADR-0014): only the newest cfg.webFeedWindow feed events are kept. The
   // feed is a live view — the ledger and Telegram keep the record — so older events just drop out.
   const replay: Array<{ id: number; e: WebEvent }> = [];
@@ -151,10 +203,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     for (const l of listeners) l(e, id);
     return id;
   }
-  // Worker/engine lines are Markdown — render to safe HTML once, here, so the feed shows
-  // formatting (bold, code, bullets) instead of raw ** and #.
-  const message = (text: string, project?: string, ids: LineIds = {}): void =>
-    void emit({ type: "message", text: mdToHtml(text), project, ...knownIds(ids) });
+  // Worker/engine lines render to safe HTML once, here (ADR-0025): Markdown as formatted content, an
+  // engine step line's command or output as code, plus the row's colour tone.
+  const message = (text: string, project?: string, ids: LineIds = {}): void => {
+    const { html, tone } = feedLine(text);
+    void emit({ type: "message", text: html, tone, project, ...knownIds(ids) });
+  };
 
   // Register this surface as an operator sink: lines mirrored from the OTHER surface (Telegram)
   // render here. Output-only — deliver never re-enters the pipeline, so no mirrored line can become
@@ -195,10 +249,37 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
     return token;
   }
 
+  // Staged attachments (ADR-0026): token -> the saved file, until a send takes it or it expires. The
+  // browser only ever holds the token, never a server path.
+  const stagedFiles = new Map<string, AttachedFile & { at: number }>();
+  const dropExpired = (now: number): void => {
+    for (const [token, f] of stagedFiles) if (now - f.at > STAGE_TTL_MS) stagedFiles.delete(token);
+  };
+  /** The staged files named by `tokens`, in the order given; undefined when any is unknown or expired
+   *  (a reload or the TTL forgot it). Read-only: `send` deletes them once the message is routed. */
+  const stagedFor = (tokens: string[] = []): AttachedFile[] | undefined => {
+    dropExpired(Date.now());
+    const out: AttachedFile[] = [];
+    for (const token of tokens) {
+      const f = stagedFiles.get(token);
+      if (!f) return undefined;
+      out.push({ name: f.name, path: f.path });
+    }
+    return out;
+  };
+  const check = (text: string, sendOpts?: { attachments?: string[] }): SendCheck => {
+    const attached = stagedFor(sendOpts?.attachments);
+    if (!attached) return { error: "expired" };
+    // A console command cannot carry files, and any other slash line reaches the pipeline as an order:
+    // only a real order (/open) may take them.
+    if (attached.length && text.trim().startsWith("/") && "error" in parseOrder(text, "neo", opts.chatId)) return { error: "command" };
+    return { ok: true };
+  };
+
   const deps: PipelineDeps = {
     ...opts.engine,
     usage: opts.usage,
-    codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg),
+    codebaseMemory: sharedCodebaseMemoryIndexer(opts.engine.cfg, ledgerIndexStore(opts.engine.ledger)),
     reply: (_chatId, text, project, priority, meta) => {
       const ids = { msgId: meta?.msgId, threadId: meta?.cause?.threadId };
       message(styleLine(text, priority), project, ids); // local delivery, styled by priority (Feature 2)
@@ -208,7 +289,7 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       new Promise<"allow" | "deny">((resolve) => {
         const id = crypto.randomUUID();
         pending.set(id, resolve);
-        const e: WebEvent = { type: "escalation", id, reason };
+        const e: WebEvent = { type: "escalation", id, reason, html: reasonHtml(reason) };
         pendingEvents.set(id, { id: emit(e), e });
         // The engine gave up waiting (approval timeout, ADR-0012): drop the prompt, and stop
         // replaying it to reconnecting consoles (ADR-0014, the feed window) — nothing left to click.
@@ -231,34 +312,50 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
   };
 
   return {
-    send: async (text, sendOpts) => {
+    check,
+    send: async (typed, sendOpts) => {
+      // Staged files travel with the words they belong to (ADR-0026): one message, one row, one prompt.
+      // A message with files is never a console command — the files must reach a worker. A send that
+      // fails `check` does nothing: /msg already told the composer, which keeps its text and chips.
+      if ("error" in check(typed, sendOpts)) return;
+      const attached = stagedFor(sendOpts?.attachments) ?? [];
+      const text = withAttachments(typed, attached);
+      const commandable = attached.length === 0;
       // Bare /loop → a loops event the UI renders as run buttons (vs Telegram's text list).
-      if (text.trim() === "/loop") {
+      if (commandable && text.trim() === "/loop") {
         emit({ type: "loops", items: listLoops(opts.engine.ledger) });
         return;
       }
       // /loop <name> runs a long verifiable loop in the background, streaming progress.
-      if (handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace, plans: loopPlans })) return;
+      if (commandable && handleLoop(text, opts.chatId, { reply: (_c, t) => message(t), store: opts.engine.ledger, cfg: opts.engine.cfg, trace: opts.engine.trace, plans: loopPlans })) return;
 
       // Commands (/list, /usage, …) resolve synchronously and emit their reply; everything
       // else is an order or follow-up for the pipeline.
-      const command = handleCommand(text, opts.chatId, {
+      const command = !commandable ? null : handleCommand(text, opts.chatId, {
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
+        ...(opts.engine.cfg.toolControl ? { toolControl: opts.engine.cfg.toolControl } : {}),
         usage: opts.usage,
         trust: opts.engine.trust,
         requestReload: opts.requestReload,
         updates: opts.updates,
         gated: opts.gated,
+        deployGap: opts.deployGap,
         cfg: opts.engine.cfg,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
         todo: opts.engine.todo,
         trace: opts.engine.trace,
         neoFolder: opts.neoFolder,
+        // The task history (ADR-0067): /find, /remember and /forget, as on Telegram.
+        ...(opts.engine.history ? { history: opts.engine.history } : {}),
+        historySurface: "console",
       });
       if (command !== null) {
         if (command.later) {
-          message((await command.later).text); // /project: the console's own tab has its buttons
+          const later = await command.later;
+          // /forget: the History tab is the console's Forget button; /project: the console's own tab has its buttons.
+          if (later.forget) emit({ type: "history_forget", text: feedLine(later.text).html, ref: later.forget.ref });
+          else message(later.text);
           return;
         }
         if (command.sdk) emit({ type: "sdk", sdk: command.sdk });
@@ -288,17 +385,38 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
           { chatId: opts.chatId, threadId: sendOpts.threadId, text },
         );
         if ("clarify" in routing) {
-          message(routing.clarify);
+          message(routing.clarify); // the files stay staged for the resend
           return;
         }
         deliver = routing.deliver;
       }
+      for (const token of sendOpts?.attachments ?? []) stagedFiles.delete(token); // routed: one-shot
       opts.bus?.mirror("web", { kind: "echo", text, ...knownIds({ msgId: cause?.msgId, threadId: cause?.threadId }) });
       await handleMessage(deliver, opts.chatId, deps, "neo", cause);
       // The thread's one-shot focus took the chat's only focus slot: once it is used, the pin returns.
       if (threaded && pin?.mode === "pinned" && !registry.getFocus(opts.chatId) && registry.get(pin.session.id)) {
         registry.setFocus(opts.chatId, pin.session.id, "pinned");
       }
+    },
+    stage(file, stageOpts) {
+      const now = Date.now();
+      dropExpired(now);
+      // Inside a thread the file belongs to that thread's project; otherwise the active project, as
+      // Telegram's attachments do.
+      const threadFolder = stageOpts?.threadId === undefined ? undefined : opts.engine.ledger.threadById(stageOpts.threadId)?.folder;
+      const folder = threadFolder || (opts.engine.registry.findByChat(opts.chatId) ?? opts.engine.registry.getDefault())?.order.folder;
+      if (!folder) return { error: "no active project" };
+      const path = saveInbound(folder, file.name || "file", file.bytes);
+      const token = crypto.randomUUID();
+      stagedFiles.set(token, { name: basename(path), path, at: now });
+      return { token, name: basename(path), size: file.bytes.byteLength };
+    },
+    discard(token) {
+      const f = stagedFiles.get(token);
+      if (!f) return false;
+      stagedFiles.delete(token);
+      rmSync(f.path, { force: true });
+      return true;
     },
     subscribe(listener, sub) {
       const after = sub?.after ?? 0;
@@ -376,7 +494,10 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       return result.ok ? { ok: true, sdk: result.sdk } : { ok: false, error: result.error, sdk: result.sdk };
     },
     state() {
+      const deploy = opts.deployGap?.();
       return dashboardSnapshot({
+        ...(deploy ? { deploy } : {}),
+        ...(opts.build ? { build: opts.build } : {}),
         registry: opts.engine.registry,
         ledger: opts.engine.ledger,
         usage: opts.usage,
@@ -384,12 +505,25 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
         reposRoot: opts.engine.cfg.workRoot, // scan the operator's configured project root
         sdkProvider: opts.engine.cfg.providers.ownWork,
         windowTokensByModel: opts.engine.cfg.contextPolicy.windowTokensByModel,
+        ...(opts.engine.cfg.decisionSettle ? { keepPatterns: opts.engine.cfg.decisionSettle.keepPatterns } : {}),
       });
     },
     threads(f, page) {
       const trace = opts.engine.trace;
       const r = opts.engine.ledger.listThreads(f, page);
-      return { ...r, rows: r.rows.map((t) => ({ ...t, ...(trace ? { ref: trace.ref(t.id) } : {}) })) };
+      // A WAITING row says who owes what (ADR-0054): its decision items, read once per page.
+      const byThread = new Map<number, WaitingItem[]>();
+      if (r.rows.some((t) => t.state === "waiting")) {
+        const keepPatterns = opts.engine.cfg.decisionSettle?.keepPatterns ?? DEFAULT_KEEP_PATTERNS;
+        for (const i of waitingWork(opts.engine.ledger, { keepPatterns })) {
+          if (i.threadId === undefined || i.kind === "parked_todo") continue;
+          byThread.set(i.threadId, [...(byThread.get(i.threadId) ?? []), i]);
+        }
+      }
+      return {
+        ...r,
+        rows: r.rows.map((t) => ({ ...t, ...(trace ? { ref: trace.ref(t.id) } : {}), ...(t.state === "waiting" && byThread.has(t.id) ? { waiting: byThread.get(t.id)! } : {}) })),
+      };
     },
     thread(id, page) {
       const { ledger, trace } = opts.engine;
@@ -402,12 +536,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const art = ledger.threadArtifacts(id, PAGE_MAX);
       return {
         thread: { ...t, ...(trace ? { ref: trace.ref(id) } : {}) },
-        messages,
+        messages: messages.map((m) => (m.role === "assistant" ? { ...m, ...feedLine(m.content) } : m)),
         ...(rows.length > limit ? { next: messages.at(-1)!.id } : {}),
         orders: art.orders,
         todos: art.todos,
         decisions: art.decisions,
-        plans: ledger.plansInThread(id, PAGE_MAX).map((p) => ({ ...p, actions: planActions(p.status) })),
+        plans: ledger.plansInThread(id, PAGE_MAX).map((p) => ({ ...p, state: planState(p), actions: planActions(p) })),
         toolActions: art.toolActions,
       };
     },
@@ -425,10 +559,28 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       }));
       return { rows, ...(hits.length > limit ? { next: rows.at(-1)!.id } : {}) };
     },
+    closeThread(id) {
+      const { ledger, trace } = opts.engine;
+      if (!trace || !ledger.threadById(id)) return undefined;
+      return { ok: true as const, ...trace.close(id) };
+    },
     async planAction(id, action, version) {
       if (action === "changes") return { ok: false, text: "reply to the plan card on Telegram with your changes" };
-      const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action, version);
+      const r = await applyPlanAction(planDepsFrom(opts.engine, opts.engine.cfg.plans), id, action, version, { canResume: true });
       opts.bus?.mirror("web", { kind: "notice", text: `plan #${id}: ${r.text} (web console)` });
+      // Approve & build on a plan a worker is held on (ADR-0036): answer its decision — the same path
+      // as a Telegram answer — so that worker resumes and builds.
+      const dec = r.resume ? opts.engine.ledger.decisionById(r.resume.decisionId) : undefined;
+      if (r.resume && dec) {
+        const { registry, ledger, todo, cfg } = opts.engine;
+        const resumed = answerDecision(
+          { registry, ledger, worker: cfg.providers.ownWork, ...(todo ? { parked: (d, a) => !!todo.decisionAnswered(d.id, d.question, a) } : {}) },
+          dec,
+          r.resume.answer,
+          opts.chatId,
+        );
+        if (resumed) void faults.contain("web.planResume", handleMessage(resumed.brief, resumed.homeChat, deps, "neo", inbound(r.resume.answer, dec.cause?.threadId)));
+      }
       return r;
     },
     async attentionAction(id, action) {
@@ -436,6 +588,60 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const r = await applyAttentionAction({ ledger, registry, todo, trace, snoozeMs: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours * 3_600_000 }, id, action, Date.now());
       opts.bus?.mirror("web", { kind: "notice", text: `attention #${id}: ${r.text} (web console)` });
       return r;
+    },
+    needsYou() {
+      const { ledger, cfg } = opts.engine;
+      return needsYou({ ledger, keepPatterns: cfg.decisionSettle?.keepPatterns ?? DEFAULT_KEEP_PATTERNS }, Date.now());
+    },
+    pin(ref, state) {
+      return pin(opts.engine.ledger, ref, state, Date.now());
+    },
+    todoDetail(id) {
+      return todoDetail(opts.engine.ledger, id);
+    },
+    item(ref) {
+      const d = itemDetail({ ledger: opts.engine.ledger }, ref, Date.now());
+      // An attention item's snooze button names the configured hours, as on the project page.
+      return d ? { ...d, snoozeHours: (opts.engine.cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours } : undefined;
+    },
+    async answerDecision(id, input) {
+      const { registry, ledger, todo, cfg } = opts.engine;
+      const dec = ledger.decisionById(id);
+      if (!dec) return { ok: false, text: "no such decision" };
+      if (!answerable(dec)) return { ok: false, text: "already answered" };
+      const refusal = textAnswerRefusal(dec, ledger);
+      // An alert's OK closes it: nothing waits on its answer, so no worker is resumed.
+      if (refusal === "alert" && input.acknowledge) {
+        ledger.dismissDecision(dec.id);
+        opts.bus?.mirror("web", { kind: "notice", text: `✅ acknowledged (web console): ${dec.question.slice(0, 120)}` });
+        return { ok: true, text: "acknowledged" };
+      }
+      if (refusal === "plan") return { ok: false, text: "a plan is approved or dropped with its own buttons" };
+      if (refusal === "approval") return { ok: false, text: "an approval is answered with Allow or Deny on its card" };
+      if (refusal === "alert") return { ok: false, text: "an alert is acknowledged, not answered" };
+      // A structured card (ADR-0049) answers with its picks, joined exactly as a Telegram Submit joins them.
+      let answer: string;
+      if (input.picks !== undefined) {
+        const ask = dec.spec;
+        // Every pick an option of its question, at most one for a single-select question, none twice.
+        const valid =
+          !!ask &&
+          input.picks.length === ask.questions.length &&
+          input.picks.every((q, i) => q.every((o) => Number.isInteger(o) && o >= 0 && o < ask.questions[i]!.options.length) && new Set(q).size === q.length && (ask.questions[i]!.multiSelect || q.length <= 1));
+        if (!ask || !valid || !isComplete(ask, input.picks)) return { ok: false, text: "pick an answer for every question" };
+        answer = answerText(ask, input.picks);
+      } else answer = (input.answer ?? "").trim();
+      // The same bound a Telegram answer has: Telegram cannot carry a longer message.
+      if (!answer || answer.length > TELEGRAM_MAX) return { ok: false, text: `an answer is 1–${TELEGRAM_MAX} characters` };
+      const resumed = answerDecision(
+        { registry, ledger, worker: cfg.providers.ownWork, ...(todo ? { parked: (d, a) => !!todo.decisionAnswered(d.id, d.question, a) } : {}) },
+        dec,
+        answer,
+        opts.chatId,
+      );
+      opts.bus?.mirror("web", { kind: "notice", text: `✅ answered (web console) — ${dec.project ?? "Neo"}: ${dec.question.slice(0, 120)}` });
+      if (resumed) void faults.contain("web.decisionResume", handleMessage(resumed.brief, resumed.homeChat, deps, "neo", inbound(answer, dec.cause?.threadId)));
+      return { ok: true, text: resumed ? `answered — resuming ${dec.project ?? "the project"}` : "answered" };
     },
     projects() {
       const { ledger, registry, cfg } = opts.engine;
@@ -445,6 +651,12 @@ export function createWebChannel(opts: { engine: EngineDeps; chatId: number; usa
       const { ledger, registry, cfg } = opts.engine;
       const v = await projectView(projectDeps({ ledger, registry, cfg, neoFolder: opts.neoFolder }), name, Date.now());
       return v ? { ...v, snoozeHours: (cfg.attention ?? DEFAULT_ATTENTION_CFG).snoozeHours } : undefined;
+    },
+    toolControl(sessionId, toolUseId, action) {
+      return controlTool(
+        { registry: opts.engine.registry, ledger: opts.engine.ledger, cfg: opts.engine.cfg.toolControl ?? DEFAULT_TOOL_CONTROL_CFG },
+        { sessionId, toolUseId, action, by: { kind: "operator", surface: "web" } },
+      );
     },
     todo(args) {
       const r = handleCommand(`/todo ${args}`.trim(), opts.chatId, {

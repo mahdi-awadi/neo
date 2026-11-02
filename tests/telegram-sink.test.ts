@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { makeTelegramSink, decisionKeyboard, decisionCard, createTelegramBot } from "../src/frontends/telegram";
+import { checkDecision } from "../src/engine/structured-question";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -180,7 +181,7 @@ test("a reply to a mirrored project line joins its thread through the route, and
   const gold = r.registry.add({ id: "o-gold", source: "neo", folder: "/home/gold", task: "t", chatId: ADMIN, createdAt: 1 });
   r.registry.setStatus(gold.id, "running");
   const delivered: Array<{ text: string; cause?: { msgId: number; threadId: number } }> = [];
-  r.registry.attachControl(gold.id, { followUp: (text, cause) => void delivered.push({ text, cause }), interrupt: async () => {} });
+  r.registry.attachControl(gold.id, { followUp: (text, _timing, cause) => void delivered.push({ text, cause }), interrupt: async () => {} });
   // A gold line recorded on the web and mirrored to Telegram: its route remembers the line and thread.
   const root = r.trace.inbound({ chatId: 0, text: "ship gold", surface: "web" });
   const line = r.trace.outbound({ chatId: 0, text: "gold: tests green", cause: root, project: "gold" });
@@ -270,4 +271,42 @@ test("the Decisions-group card ends with its thread ref in monospace; showRefs o
   // The ref is a code entity (tap to copy), counted in UTF-16 units like Telegram.
   expect(card.entities).toEqual([{ type: "code", offset: card.text.length - 4, length: 4 }]);
   expect(decisionCard({ project: "gold", ref: "m4g2" }, "Postgres or Mongo?", "off")).toEqual(plain);
+});
+
+// ADR-0049: the card shows what the worker wrote — context, numbered options with explanations, the
+// recommendation — not the title alone.
+test("a decision card with a spec renders the whole decision body, with the ref still a code entity", () => {
+  const r = checkDecision({
+    title: "Which app should move to the new Redis logins first?",
+    context: "We are switching the shared cache from one shared password to a login per app.",
+    options: [
+      { label: "adminli first", explanation: "Few users, so a mistake affects almost nobody." },
+      { label: "Bot first", explanation: "Every app using the bot library changes at once." },
+    ],
+    recommended: { option: "adminli first", reason: "Smallest risk." },
+  });
+  if (!r.ok) throw new Error(r.problems.join("; "));
+  const card = decisionCard({ project: "eticket-v3", ref: "mast7" }, "ignored title", "auto", r.ask);
+  expect(card.text).toContain("#eticket_v3 Which app should move to the new Redis logins first?");
+  expect(card.text).toContain("We are switching the shared cache");
+  expect(card.text).toContain("1. adminli first ⭐ — Few users");
+  expect(card.text).toContain("2. Bot first — Every app");
+  expect(card.text).toContain("⭐ Recommended: 1. adminli first — Smallest risk.");
+  expect(card.text.endsWith(" · mast7")).toBe(true);
+  expect(card.entities).toEqual([{ type: "code", offset: card.text.length - 5, length: 5 }]);
+});
+
+test("a decision card never exceeds Telegram's 4096-character message limit", () => {
+  const card = decisionCard({ project: "gold", ref: "m4g2" }, "x".repeat(5000), "auto");
+  expect(card.text.length).toBeLessThanOrEqual(4096);
+  expect(card.text.endsWith(" · m4g2")).toBe(true);
+});
+
+test("a decision card cut at the limit never splits an emoji in half", () => {
+  for (let k = 0; k < 4; k++) {
+    const card = decisionCard({ project: "gold" }, "a".repeat(4070 + k) + "😀".repeat(20), "auto");
+    expect(card.text.length).toBeLessThanOrEqual(4096);
+    const before = card.text.charCodeAt(card.text.length - 2); // the char before "…"
+    expect(before >= 0xd800 && before <= 0xdbff).toBe(false);
+  }
 });

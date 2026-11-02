@@ -6,6 +6,24 @@
 // history endpoints (/api/threads, /api/threads/:id, /api/search — ADR-0017).
 import { createConsoleI18n, isLang } from "./i18n";
 import { pastedImages } from "./paste";
+import { INSTALL_DISMISSED_KEY, installMode, isIos } from "./pwa";
+import { CONFIRM_WINDOW_MS, armedFor, confirmTap } from "./confirm";
+import { type DetailView, backAction, enterAction, popDetail, staleOnLoad } from "./nav";
+import { createCodeEnhancer } from "./code-blocks";
+import { linkMdPaths, mdFileHref } from "./md-links";
+import { keyboardInset } from "./viewport";
+import { type Attachment, type SendBody, createAttachments, formatSize } from "./attachments";
+import { bindComposeBoxes, clearBox } from "./compose-box";
+import { linesHtml } from "./text-lines";
+import { buildLabel } from "./build-label";
+import { dismissSplash } from "./splash";
+import { runAct, type ActResult } from "./act";
+import { mountHistory, numericDate } from "./history";
+import { THREAD_ORIGINS } from "../../engine/thread-origins";
+import { CODED_FACTS } from "../../engine/attention-facts";
+
+/** The project kill button's icon: an inline SVG, so it never depends on a font having "✕". */
+const KILL_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
 const root = document.documentElement;
 const i18n = createConsoleI18n(isLang(root.lang) ? root.lang : "en");
@@ -14,15 +32,25 @@ type Vars = Record<string, string | number>;
 const t = (key: string, vars?: Vars): string => i18n.t(key, vars ?? {});
 /** Plain text (textContent, title, placeholder, dialogs): the DOM does not parse it, so no escaping. */
 const tx = (key: string, vars?: Vars): string => i18n.t(key, { ...vars, interpolation: { escapeValue: false } });
+/** Syntax colours (lazy, visible blocks only), copy buttons and folding of long blocks for the
+ *  server-rendered code blocks (ADR-0025). */
+const code = createCodeEnhancer((key, vars) => tx(key, vars));
+/** Every rendered row, thread and card: code blocks, then Markdown file links (ADR-0046). */
+const enhanceCode = (root: HTMLElement): void => {
+  code.enhance(root);
+  linkMdPaths(root, tx("files.download"));
+};
 
 const FEED_WINDOW = Number(root.dataset.feedWindow) || 500;
 const POLL_MS = 15000;
+/** How long a toast stays (ADR-0065). */
+const TOAST_MS = 4000;
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 const val = (id: string): string => ($(id) as HTMLInputElement).value;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
-let S: Any = { projects: [], sdk: { provider: "subscription", label: "", choices: [] }, usage: null, loops: [], recent: [], repos: [], todos: [] };
+let S: Any = { projects: [], sdk: { provider: "subscription", label: "", choices: [] }, usage: null, loops: [], recent: [], repos: [], todos: [], waiting: [] };
 
 function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -38,6 +66,33 @@ function iso(s: unknown): string {
 }
 function post(p: string, b: unknown): Promise<Response> {
   return fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
+}
+/** A toast (ADR-0065): one short line in the polite live region, gone after a few seconds. The text is
+ *  set as text, never HTML; `dir="auto"` keeps ids and numbers in their own direction. */
+function toast(text: string, ok: boolean): void {
+  const box = $("toasts");
+  const el = document.createElement("div");
+  el.className = "toast" + (ok ? "" : " bad");
+  el.setAttribute("dir", "auto");
+  el.textContent = text;
+  box.appendChild(el);
+  while (box.children.length > 3) box.firstElementChild?.remove();
+  // Re-shown each time, so it is the newest top-layer element — above an open sheet.
+  if (box.matches(":popover-open")) box.hidePopover();
+  box.showPopover();
+  setTimeout(() => {
+    el.remove();
+    if (!box.children.length && box.matches(":popover-open")) box.hidePopover();
+  }, TOAST_MS);
+}
+/** Every console button's action (ADR-0065): busy while it runs, then a toast with the engine's reply.
+ *  `okText`: the console's own words for a success (a pin), instead of the engine's English reply.
+ *  `words`: the console's own words for any reply, from its body (the History tab's ref or reason code). */
+function act(btn: Element | null, path: string, body: unknown, okText?: string, words?: (ok: boolean, text: string, data: unknown) => string): Promise<ActResult> {
+  return runAct(btn as HTMLButtonElement | null, () => post(path, body), {
+    toast: (text, ok, data) => toast(words ? words(ok, text, data) : ok && okText ? okText : text, ok),
+    fallback: (ok) => tx(ok ? "toast.done" : "toast.failed"),
+  });
 }
 function fmt(n: number): string {
   n = n || 0;
@@ -60,6 +115,11 @@ const LOCALE = `${root.lang}-u-nu-latn`;
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
 }
+/** A resume time: the clock today, with the date when it is another day (a weekly limit, ADR-0047). */
+function resumeAt(at: number): string {
+  if (new Date(at).toDateString() === new Date().toDateString()) return clock(at);
+  return new Date(at).toLocaleString(LOCALE, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
 
 /** The page shell's static text: every `data-i18n*` attribute is filled from the catalogue. */
 function applyStatic(): void {
@@ -67,6 +127,7 @@ function applyStatic(): void {
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => (el.textContent = tx(el.dataset.i18n!)));
   document.querySelectorAll<HTMLInputElement>("[data-i18n-placeholder]").forEach((el) => (el.placeholder = tx(el.dataset.i18nPlaceholder!)));
   document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((el) => (el.title = tx(el.dataset.i18nTitle!)));
+  document.querySelectorAll<HTMLElement>("[data-i18n-aria]").forEach((el) => el.setAttribute("aria-label", tx(el.dataset.i18nAria!)));
 }
 
 // One /api/state request at a time: a burst of 'projects' events coalesces into one follow-up load.
@@ -85,6 +146,7 @@ function loadState(): Promise<void> {
     })
     .catch(() => {})
     .then(() => {
+      loadPins();
       stateLoad = null;
       if (stateAgain) {
         stateAgain = false;
@@ -105,6 +167,9 @@ function renderAll(): void {
   renderRepos();
   if (changed("sdk", S.sdk)) renderSdk();
   if (changed("projects", S.projects)) renderProjects();
+  if (changed("deploy", S.deploy ?? null)) renderDeploy();
+  if (changed("build", S.build ?? null)) renderBuild();
+  renderRunning(); // clock-dependent ages: always
   renderTodos(); // clock-dependent ("running 4m"): always
   if (changed("loops", S.loops)) renderLoops();
   if (changed("usage", S.usage)) renderUsage();
@@ -153,22 +218,18 @@ function renderSdk(): void {
     b.textContent = tx(c.provider === "codex" ? "sdk.codex" : "sdk.claude");
     b.title = c.label;
     b.className = c.active ? "on" : "";
-    b.onclick = () => setSdk(c.provider);
+    b.onclick = () => setSdk(c.provider, b);
     seg.appendChild(b);
   });
   box.appendChild(seg);
 }
-function setSdk(provider: string): void {
-  void post("/api/sdk", { provider })
-    .then((r) => r.json())
-    .then((d) => {
-      if (!d.ok) {
-        alert(d.error || tx("sdk.switchFailed"));
-        return;
-      }
-      S.sdk = d.sdk;
-      renderSdk();
-    });
+function setSdk(provider: string, btn: Element): void {
+  void act(btn, "/api/sdk", { provider }).then((r) => {
+    const d = r.data as Any;
+    if (!r.ok || !d?.sdk) return;
+    S.sdk = d.sdk;
+    renderSdk();
+  });
 }
 
 // ctx% against the sweet spot (ADR-0021): the band colours the chip; the last reset rides along.
@@ -181,6 +242,8 @@ function ctxChip(p: Any): string {
   const tip = tx(`ctx.band.${b}`) + (p.lastReset ? " — " + tx("ctx.lastReset", { verdict }) : "");
   return `<span class="ctx ${esc(b)}" title="${esc(tip)}">${esc(text)}</span>`;
 }
+/** Armed kill buttons by project id → when armed (two-tap confirm, ./confirm.ts). */
+const killArms = new Map<string | number, number>();
 function renderProjects(): void {
   const box = $("projects");
   $("pcount").textContent = S.projects.length || "";
@@ -197,23 +260,107 @@ function renderProjects(): void {
     const busy = p.state === "working" || p.state === "quiet";
     d.innerHTML = `<span class="dot ${p.state === "wedged" ? "" : busy ? "running" : "idle"}"></span><div class="meta"><div class="nm">${esc(p.name)}${ctxChip(p)}</div><div class="fo">${ltr(p.folder)} · ${esc(p.line || p.state)}</div></div>`;
     d.onclick = () => {
+      closeDrawer(false);
       setFilter(p.name);
       tab("activity");
       void post("/select", { id: p.id }).then(loadState);
     };
     const k = document.createElement("button");
     k.className = "kbtn";
-    k.textContent = "✕";
+    k.innerHTML = KILL_ICON;
     k.title = tx("projects.kill");
+    k.setAttribute("aria-label", tx("projects.kill"));
+    // Two taps on every pointer (a destructive action; on a phone the button sits next to the row's own
+    // tap target). The arm lives in killArms, so a re-render inside the window keeps it.
+    const armed = (at: number): void => {
+      k.classList.add("arm");
+      k.textContent = tx("projects.killConfirm");
+      k.setAttribute("aria-label", tx("projects.killConfirm"));
+      setTimeout(() => {
+        if (killArms.get(p.id) !== at) return; // fired or re-armed since
+        killArms.delete(p.id);
+        k.classList.remove("arm");
+        k.innerHTML = KILL_ICON;
+        k.setAttribute("aria-label", tx("projects.kill"));
+      }, Math.max(0, at + CONFIRM_WINDOW_MS - Date.now()));
+    };
+    const live = armedFor(killArms, p.id, Date.now());
+    if (live !== undefined) armed(live);
     k.onclick = (ev) => {
       ev.stopPropagation();
-      void post("/kill", { id: p.id }).then(loadState);
+      const now = Date.now();
+      if (confirmTap(armedFor(killArms, p.id, now), now) === "arm") {
+        killArms.set(p.id, now);
+        armed(now);
+        return;
+      }
+      killArms.delete(p.id);
+      void act(k, "/kill", { id: p.id }).then(loadState);
     };
     d.appendChild(k);
     box.appendChild(d);
     if (p.active) active = p;
   });
   $("who").textContent = active ? tx("projects.active", { name: active.name }) : tx("projects.openNoneActive", { count: S.projects.length });
+}
+/** "Running now" (ADR-0058): every running tool call, newest first, with Stop (confirmed) and
+ *  Background. The command stays LTR in both languages. */
+function renderRunning(): void {
+  const el = $("runstrip");
+  const R: Any[] = S.running || [];
+  el.hidden = !R.length;
+  if (!R.length) return void (el.innerHTML = "");
+  const now = Date.now();
+  el.innerHTML = `<h4>${t("tools.running")}</h4>`;
+  for (const c of R) {
+    const row = document.createElement("div");
+    row.className = "runrow";
+    row.innerHTML = `<span class="rp">${iso(c.name)} · ${esc(c.tool)} · ${ltr(age(now - c.since))}</span><span class="rc" title="${esc(c.summary)}">${esc(c.summary)}</span>`;
+    const control = (action: "stop" | "background", btn: Element) => {
+      void act(btn, `/api/tool/${action}`, { session: c.session, toolUseId: c.toolUseId }).then((r) => {
+        if (r.text) feedMsg("⋯ " + esc(r.text), "me", null);
+        void loadState();
+      });
+    };
+    if (c.provider === "claude") {
+      const bg = document.createElement("button");
+      bg.className = "chip";
+      bg.textContent = tx("tools.background");
+      bg.title = tx("tools.backgroundTitle");
+      bg.onclick = () => control("background", bg);
+      row.appendChild(bg);
+    }
+    const stop = document.createElement("button");
+    stop.className = "chip no";
+    stop.textContent = tx("tools.stop");
+    stop.title = tx("tools.stopTitle");
+    stop.onclick = () => {
+      if (confirm(tx("tools.confirmStop", { cmd: c.summary, project: c.project }))) control("stop", stop);
+    };
+    row.appendChild(stop);
+    el.appendChild(row);
+  }
+}
+/** The build label under the logo (ADR-0056): the running build from the boot record, LTR in both
+ *  languages (the element carries dir="ltr"). Hidden when the boot recorded no commit. */
+function renderBuild(): void {
+  const el = $("ver");
+  el.hidden = !S.build;
+  if (!S.build) return;
+  const { text, title } = buildLabel(tx, S.build);
+  el.textContent = text;
+  el.title = title;
+}
+/** Finished work that does not run (ADR-0054): a header chip, loud once it is older than the limit. */
+function renderDeploy(): void {
+  const el = $("deploy");
+  const g = S.deploy;
+  el.hidden = !g;
+  if (!g) return;
+  // The sign stays with its number (`+87`, never `87+` in RTL): one LTR isolate. ltr() escapes.
+  el.innerHTML = tx("deploy.gap", { integration: ltr(g.integration), n: ltr("+" + g.commits), days: ltr(g.days) });
+  el.title = tx("deploy.title", { integration: g.integration, n: g.commits, days: g.days, running: g.running, branch: g.branch });
+  el.className = "tchip " + (g.high ? "deploy-high" : "own-sweep");
 }
 
 function openProject(): void {
@@ -223,8 +370,10 @@ function openProject(): void {
     alert(tx("newProject.missing"));
     return;
   }
-  void post("/api/open", { folder, task }).then(() => {
-    ($("task") as HTMLTextAreaElement).value = "";
+  void act($("open-project"), "/api/open", { folder, task }).then((r) => {
+    if (!r.ok) return;
+    closeDrawer(false);
+    clearBox($("task") as HTMLTextAreaElement);
     tab("activity");
     setTimeout(loadState, 500);
   });
@@ -241,7 +390,7 @@ function renderLoops(): void {
     `<input id="lc-name" placeholder="${ph("loops.name")}" class="lci">` +
     `<input id="lc-sum" placeholder="${ph("loops.summary")}" class="lci">` +
     `<input id="lc-folder" placeholder="${ph("loops.folder")}" class="lci">` +
-    `<textarea id="lc-prompt" class="itx" placeholder="${ph("loops.prompt")}"></textarea>` +
+    `<textarea id="lc-prompt" class="itx" dir="auto" data-compose="text" placeholder="${ph("loops.prompt")}"></textarea>` +
     `<select id="lc-gk" class="lci"><option value="command">${t("loops.goalCommand")}</option><option value="judge">${t("loops.goalJudge")}</option></select>` +
     `<input id="lc-gv" placeholder="${ph("loops.goalValue")}" class="lci">` +
     `<select id="lc-tk" class="lci"><option value="manual">${t("loops.triggerManual")}</option><option value="interval">${t("loops.triggerInterval")}</option><option value="cron">${t("loops.triggerCron")}</option></select>` +
@@ -268,13 +417,13 @@ function renderLoops(): void {
     const run = document.createElement("button");
     run.className = "run";
     run.textContent = tx("loops.run");
-    run.onclick = () => void post("/api/loop", { name: l.name }).then(() => tab("activity"));
+    run.onclick = () => void act(run, "/api/loop", { name: l.name }).then((r) => r.ok && tab("activity"));
     row.appendChild(run);
     if (l.scheduled) {
       const tg = document.createElement("button");
       tg.className = "chip" + (l.enabled ? " ok" : "");
       tg.textContent = tx(l.enabled ? "loops.on" : "loops.off");
-      tg.onclick = () => void post("/api/loop/enable", { name: l.name, on: !l.enabled }).then(loadState);
+      tg.onclick = () => void act(tg, "/api/loop/enable", { name: l.name, on: !l.enabled }).then(loadState);
       row.appendChild(tg);
     }
     if (l.custom) {
@@ -282,7 +431,7 @@ function renderLoops(): void {
       del.className = "chip no";
       del.textContent = tx("loops.delete");
       del.onclick = () => {
-        if (confirm(tx("loops.confirmDelete", { name: l.name }))) void post("/api/loop/delete", { name: l.name }).then(loadState);
+        if (confirm(tx("loops.confirmDelete", { name: l.name }))) void act(del, "/api/loop/delete", { name: l.name }).then(loadState);
       };
       row.appendChild(del);
     }
@@ -290,7 +439,7 @@ function renderLoops(): void {
   });
   v.appendChild(card);
 }
-function submitLoop(): void {
+function submitLoop(btn: Element | null): void {
   const body: Any = {
     name: val("lc-name"),
     summary: val("lc-sum"),
@@ -306,12 +455,10 @@ function submitLoop(): void {
   if (body.triggerKind === "cron") body.cronExpr = val("lc-tv");
   const bud = val("lc-bud");
   if (bud) body.budgetUsd = Number(bud);
-  void post("/api/loop/create", body)
-    .then((r) => r.json())
-    .then((d) => {
-      if (d.ok) void loadState();
-      else $("lc-err").textContent = d.error || tx("loops.invalid");
-    });
+  void act(btn, "/api/loop/create", body).then((r) => {
+    if (r.ok) void loadState();
+    else $("lc-err").textContent = r.text || tx("loops.invalid");
+  });
 }
 
 function renderUsage(): void {
@@ -346,16 +493,14 @@ function renderUsage(): void {
 }
 
 // Queue — per-project todo queues (ADR-0008): running first, then each queue in order.
-function todoAct(action: string, arg: number | string): void {
+function todoAct(action: string, arg: number | string, btn: Element | null): Promise<ActResult> {
   const b: Any = { action };
   if (typeof arg === "number") b.id = arg;
   else b.project = arg;
-  void post("/api/todo", b)
-    .then((r) => r.json())
-    .then((d) => {
-      if (d && d.text) feedMsg("⋯ " + esc(d.text), "me", null);
-      void loadState();
-    });
+  return act(btn, "/api/todo", b).then((r) => {
+    void loadState();
+    return r;
+  });
 }
 function renderTodos(): void {
   const v = $("vtodos");
@@ -364,11 +509,22 @@ function renderTodos(): void {
   const bd = $("tbadge");
   bd.textContent = q ? " " + q : "";
   bd.className = "ibadge" + (q ? " on" : "");
+  // What holds work back, with who owes it (ADR-0054). Parked todos show in their queue below.
+  const W: Any[] = (S.waiting || []).filter((i: Any) => i.kind !== "parked_todo");
+  const waitingCard = W.length
+    ? `<div class="card"><h3>${t("waiting.title")} ${ltr(W.length)}</h3>` +
+      W.map(
+        (i) =>
+          `<div class="rrow"><div style="flex:1;min-width:0"><div class="tw">${waitingLine(i)}</div>` +
+          `<div class="tm">${ltr("#" + String(i.id).slice(0, 8))}${i.project ? " · " + iso(i.project) : ""} · ${t("waiting.since", { age: age(Date.now() - i.since) })}</div></div></div>`,
+      ).join("") +
+      `</div>`
+    : "";
   if (!T.length) {
-    v.innerHTML = `<div class="card"><h3>${t("queue.title")}</h3><div class="empty">${t("queue.empty")}</div></div>`;
+    v.innerHTML = waitingCard + `<div class="card"><h3>${t("queue.title")}</h3><div class="empty">${t("queue.empty")}</div></div>`;
     return;
   }
-  v.innerHTML = "";
+  v.innerHTML = waitingCard;
   const by: Record<string, Any[]> = {};
   const order: string[] = [];
   T.forEach((x) => {
@@ -388,27 +544,71 @@ function renderTodos(): void {
     const pr = document.createElement("button");
     pr.className = "chip";
     pr.textContent = tx(paused ? "queue.resume" : "queue.pause");
-    pr.onclick = () => todoAct(paused ? "resume" : "pause", p);
+    pr.onclick = () => void todoAct(paused ? "resume" : "pause", p, pr);
     card.appendChild(pr);
-    by[p]!.forEach((x) => {
+    // Main-lane rows first, then the project's side lanes (ADR-0057) under their own heading.
+    const rows: Any[] = by[p]!;
+    rows.sort((a, b) => Number(a.lane === "side") - Number(b.lane === "side"));
+    rows.forEach((x, i) => {
+      if (x.lane === "side" && (i === 0 || rows[i - 1].lane !== "side")) {
+        const sh = document.createElement("h4");
+        sh.textContent = tx("queue.sideLanes");
+        card.appendChild(sh);
+      }
       const row = document.createElement("div");
       row.className = "rrow";
-      const lead = x.status === "running" ? t("queue.running", { age: age(Date.now() - (x.startedAt || x.createdAt)) }) : ltr(x.position + ".");
-      row.innerHTML = `<span>${lead}</span><div style="flex:1;min-width:0"><div>${ltr("#" + x.id)} ${esc(x.title)}</div></div>`;
-      if (x.status === "queued") {
-        if (x.position > 1) {
+      const kind = x.lane === "side" ? tx(`queue.kind.${x.kind}`) : "";
+      const lead =
+        x.lane === "side"
+          ? x.status === "running"
+            ? t("queue.sideRunning", { kind, age: age(Date.now() - (x.startedAt || x.createdAt)) })
+            : x.status === "queued"
+              ? t("queue.sideWaiting", { kind })
+              : x.status === "retry"
+                ? t("queue.retryWait", { n: x.attempts, age: age(Math.max(0, (x.retryAt || Date.now()) - Date.now())) })
+                : x.status === "failed"
+                  ? t("queue.failed")
+                  : t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
+          : x.status === "running" && x.limitResumesAt
+          ? tx("queue.limitWait", { time: ltr(resumeAt(x.limitResumesAt)) }) // ADR-0047: still running, waiting out a limit
+          : x.status === "running" && x.apiResumesAt
+          ? tx("queue.apiWait", { time: ltr(resumeAt(x.apiResumesAt)) }) // ADR-0060: an API error backoff
+          : x.status === "running"
+          ? t("queue.running", { age: age(Date.now() - (x.startedAt || x.createdAt)) })
+          : x.status === "retry"
+            ? t("queue.retryWait", { n: x.attempts, age: age(Math.max(0, (x.retryAt || Date.now()) - Date.now())) })
+            : x.status === "failed"
+              ? t("queue.failed")
+              : x.status === "waiting"
+                ? t("queue.waiting", { id: (x.waitingOn || "").slice(0, 8) })
+                : ltr(x.position + ".");
+      // ADR-0059: the todo's summary. ADR-0065: the row is one tap target that opens the todo's detail.
+      row.innerHTML = todoRowHtml(x, `<span>${lead}</span>`);
+      // ADR-0027: kept work — a failed todo or a waiting retry can be re-run (the same todo). ADR-0060: a run
+      // held in an API wait resumes now (the same run, the brief re-sent once).
+      const held = x.status === "running" && (x.limitResumesAt || x.apiResumesAt);
+      if (x.status === "failed" || x.status === "retry" || held) {
+        const r = document.createElement("button");
+        r.className = "chip";
+        r.textContent = tx(held ? "queue.resumeNow" : "queue.retry");
+        r.onclick = () => void todoAct("retry", x.id, r);
+        row.appendChild(r);
+      }
+      if (x.status === "queued" || x.status === "retry" || x.status === "waiting" || x.status === "failed") {
+        if (x.status === "queued" && x.position > 1) {
           const up = document.createElement("button");
           up.className = "chip";
           up.textContent = "↑";
           up.title = tx("queue.moveUp");
-          up.onclick = () => todoAct("up", x.id);
+          up.setAttribute("aria-label", tx("queue.moveUp"));
+          up.onclick = () => void todoAct("up", x.id, up);
           row.appendChild(up);
         }
         const c = document.createElement("button");
         c.className = "chip no";
         c.textContent = tx("queue.cancel");
         c.onclick = () => {
-          if (confirm(tx("queue.confirmCancel", { id: x.id }))) todoAct("cancel", x.id);
+          if (confirm(tx("queue.confirmCancel", { id: x.id }))) void todoAct("cancel", x.id, c);
         };
         row.appendChild(c);
       }
@@ -423,8 +623,10 @@ function renderRecent(): void {
   let h = `<div class="card"><h3>${t("recent.title")}</h3>`;
   if (!S.recent.length) h += `<div class="empty">${t("recent.empty")}</div>`;
   S.recent.forEach((o: Any) => {
-    const ic = o.status === "done" ? "✓" : o.status === "error" ? "✗" : "⏳";
-    h += `<div class="rrow"><span>${ic}</span><div style="flex:1;min-width:0"><div>${esc(o.task)}</div><div class="rfo">${ltr(o.folder)}</div></div></div>`;
+    // `interrupted` (ADR-0054): a restart cut it off — not running, so never the ⏳ of pending work.
+    const ic = o.status === "done" ? "✓" : o.status === "error" ? "✗" : o.status === "interrupted" ? "⊘" : "⏳";
+    const tip = o.status === "interrupted" ? ` title="${esc(tx("recent.interrupted"))}"` : "";
+    h += `<div class="rrow"><span${tip}>${ic}</span><div style="flex:1;min-width:0"><div>${esc(o.task)}</div><div class="rfo">${ltr(o.folder)}</div></div></div>`;
   });
   v.innerHTML = h + "</div>" + renderContextEvents();
 }
@@ -477,14 +679,14 @@ function renderInbox(items: Any[]): void {
     h += `<div class="isubj">${i.subject ? esc(i.subject) : t("inbox.noSubject")}</div>`;
     h += `<div class="ibody">${esc((i.text || "").slice(0, 800))}</div>`;
     if (i.status === "new") {
-      h += `<div class="iact"><input class="iinp" id="instr-${id}" placeholder="${ph("inbox.instructions")}"><button class="run" data-act="inbox-agent" data-id="${id}">${t("inbox.sendToAgent")}</button></div>`;
+      h += `<div class="iact"><textarea class="iinp" id="instr-${id}" rows="1" dir="auto" data-compose="send" placeholder="${ph("inbox.instructions")}"></textarea><button class="run" data-act="inbox-agent" data-compose-submit data-id="${id}">${t("inbox.sendToAgent")}</button></div>`;
     } else if (i.status === "with-agent") {
       h += `<div class="iact"><span class="rfo">${t("inbox.drafting")}</span></div>`;
     } else if (i.status === "drafted") {
       h += `<div class="rfo" style="margin-top:9px">${t("inbox.draftHint")}</div>`;
-      h += `<textarea class="itx" id="draft-${id}">${esc(i.draft || "")}</textarea>`;
+      h += `<textarea class="itx" id="draft-${id}" dir="auto" data-compose="text">${esc(i.draft || "")}</textarea>`;
       h += `<div class="iact"><button class="run ok" data-act="inbox-send" data-id="${id}">${t("inbox.sendToCustomer")}</button>`;
-      h += `<input class="iinp" id="notes-${id}" placeholder="${ph("inbox.notes")}"><button class="run" data-act="inbox-redraft" data-id="${id}">${t("inbox.redraft")}</button></div>`;
+      h += `<textarea class="iinp" id="notes-${id}" rows="1" dir="auto" data-compose="send" placeholder="${ph("inbox.notes")}"></textarea><button class="run" data-act="inbox-redraft" data-compose-submit data-id="${id}">${t("inbox.redraft")}</button></div>`;
     } else if (i.status === "replied") {
       h += `<div class="rfo" style="margin-top:7px">${t("inbox.replied")}${i.draft ? ` — "${esc(i.draft.slice(0, 90))}…"` : ""}</div>`;
     }
@@ -496,23 +698,17 @@ function dim(id: string, o: string): void {
   const row = document.getElementById("ir-" + id);
   if (row) row.style.opacity = o;
 }
-function inboxDraft(id: string, field: "instr" | "notes"): void {
-  const el = document.getElementById(`${field}-${id}`) as HTMLInputElement | null;
+function inboxDraft(id: string, field: "instr" | "notes", btn: Element | null): void {
+  const el = document.getElementById(`${field}-${id}`) as HTMLTextAreaElement | null;
   dim(id, "0.55");
-  void post("/api/inbox/draft", { id, instructions: el ? el.value : "" }).then(loadInbox).catch(loadInbox);
+  void act(btn, "/api/inbox/draft", { id, instructions: el ? el.value : "" }).then(loadInbox);
   setTimeout(loadInbox, 800);
 }
-function sendReply(id: string): void {
+function sendReply(id: string, btn: Element | null): void {
   const el = document.getElementById("draft-" + id) as HTMLTextAreaElement | null;
   const reply = el ? el.value : "";
   if (!reply.trim() || !confirm(tx("inbox.confirmSend"))) return;
-  void post("/api/inbox/send", { id, reply })
-    .then((r) => r.json())
-    .then((d) => {
-      if (!d.ok) alert(tx("inbox.sendFailed"));
-      void loadInbox();
-    })
-    .catch(() => alert(tx("inbox.sendFailed")));
+  void act(btn, "/api/inbox/send", { id, reply }).then(() => void loadInbox());
 }
 function deleteInbox(id: string): void {
   if (!confirm(tx("inbox.confirmDelete"))) return;
@@ -520,16 +716,89 @@ function deleteInbox(id: string): void {
   void fetch("/api/inbox/" + encodeURIComponent(id), { method: "DELETE" }).then(loadInbox).catch(loadInbox);
 }
 
-const VIEWS = ["activity", "threads", "projects", "todos", "loops", "usage", "recent", "inbox"];
+// ── Phone and tablet layout (spec 2026-10-07, AC2–AC5) ──────────────────────────────────────────
+const MEDIUM = matchMedia("(max-width:1024px)");
+const NARROW = matchMedia("(max-width:768px)");
+function reducedMotion(): boolean {
+  return matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+/** The sidebar as a drawer on medium and narrow screens: closed it is off-canvas and inert (no focus,
+ *  no screen reader); the menu button's aria-expanded and label follow the state. */
+function setDrawer(open: boolean, moveFocus: boolean): void {
+  const app = document.querySelector(".app")!;
+  const was = app.classList.contains("drawer-open");
+  app.classList.toggle("drawer-open", open);
+  const menu = $("menu");
+  menu.setAttribute("aria-expanded", String(open));
+  menu.setAttribute("aria-label", tx(open ? "nav.close" : "nav.menu"));
+  menu.title = tx(open ? "nav.close" : "nav.menu");
+  // While the drawer is open, the content behind the scrim is out of reach (Tab, screen readers).
+  (document.querySelector("main") as HTMLElement).inert = open;
+  // Focus inside a closing drawer goes to the menu button first, so it never drops to <body>.
+  if (!open && MEDIUM.matches && $("side").contains(document.activeElement)) $("menu").focus();
+  ($("side") as HTMLElement & { inert: boolean }).inert = MEDIUM.matches && !open;
+  if (!moveFocus || was === open) return;
+  if (open) $("side").querySelector<HTMLElement>("select,textarea,button,[tabindex]")?.focus();
+  else $("menu").focus();
+}
+function closeDrawer(moveFocus = true): void {
+  setDrawer(false, moveFocus);
+}
+/** Narrow master–detail (AC4): opening a thread or a project shows its pane full width. On a narrow
+ *  screen the step is a history entry, so the browser's back (Android's back button) returns to the list. */
+function enterDetail(view: DetailView): void {
+  $(view).classList.add("detail");
+  const act = enterAction(history.state, view, NARROW.matches); // ./nav.ts: push, replace or nothing
+  if (act === "push") history.pushState({ detail: view }, "");
+  else if (act === "replace") history.replaceState({ detail: view }, "");
+}
+function leaveDetail(): void {
+  ["vthreads", "vprojects"].forEach((id) => $(id).classList.remove("detail"));
+}
+/** The master–detail view on screen (Threads or Projects), or null. */
+function detailView(): DetailView | null {
+  return (["vthreads", "vprojects"] as const).find((id) => $(id).classList.contains("on")) ?? null;
+}
+function back(): void {
+  const action = backAction(history.state, detailView());
+  if (action === "history") return history.back(); // popstate leaves the detail view
+  if (action === "local-clear") history.replaceState(null, "");
+  leaveDetail();
+}
+/** The app height follows the visual viewport, so the composer stays above the on-screen keyboard (AC5).
+ *  At most one write per animation frame; a browser without visualViewport keeps 100dvh. */
+function fitViewport(): void {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  let queued = false;
+  const fit = (): void => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
+      // ADR-0071: on iOS the keyboard covers the layout's bottom; a bottom sheet is lifted by that much.
+      root.style.setProperty("--kb", `${keyboardInset(window.innerHeight, vv)}px`);
+    });
+  };
+  vv.addEventListener("resize", fit);
+  vv.addEventListener("scroll", fit);
+  fit();
+}
+
+const VIEWS = ["activity", "threads", "projects", "history", "todos", "loops", "usage", "recent", "inbox"];
 function tab(name: string): void {
   VIEWS.forEach((n) => {
     $("v" + n).classList.toggle("on", n === name);
     const b = document.querySelector(`.tab[data-v="${n}"]`);
     if (b) b.classList.toggle("on", n === name);
   });
+  // On a narrow screen the tab row scrolls sideways: keep the active tab in view (AC3).
+  document.querySelector(`.tab[data-v="${name}"]`)?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: reducedMotion() ? "instant" : "smooth" });
   if (name === "inbox") void loadInbox();
   if (name === "threads") openThreads();
   if (name === "projects") loadProjects();
+  if (name === "history") $("hq").focus({ preventScroll: true });
 }
 
 // ── Activity feed (ADR-0014: a bounded live window) ─────────────────────────────────────────────
@@ -588,38 +857,194 @@ function pushFeed(node: FeedNode, kind: string, project: string | null | undefin
     if (i >= 0) {
       const [o] = feedNodes.splice(i, 1);
       o!.remove();
+      code.forget(o!);
       if (nodeVisible(o!) && !feedNodes.some(nodeVisible)) ph.style.display = "";
     }
   }
   if (v) scheduleTail();
 }
-function feedMsg(html: string, kind: string, project: string | null | undefined): HTMLElement {
+/** A feed row. `html` is safe markup (escaped here, or rendered by the server); `tone` colours it. */
+function feedMsg(html: string, kind: string, project: string | null | undefined, tone?: string): HTMLElement {
   const d = document.createElement("div") as FeedNode;
-  d.className = "row " + (kind === "me" ? "me" : "out");
+  d.className = "row " + (kind === "me" ? "me" : "out") + (tone ? ` tone-${tone}` : "");
   d.innerHTML = html;
+  enhanceCode(d);
   pushFeed(d, kind, project);
   return d;
 }
-function say(text: string): void {
-  const v = (text || "").trim();
-  if (!v) return;
-  feedMsg("› " + esc(v), "me", filterProject);
-  void post("/msg", { text: v });
+// ── Composer attachments (ADR-0026) ─────────────────────────────────────────────────────────────
+// Attaching uploads at once and stages a chip; nothing is sent. Send posts the text and the chips'
+// tokens as ONE message, so the worker gets the files in the same turn as the words. The 📎 picker and
+// a pasted image share this one path, in the main composer and inside a thread.
+interface Composer {
+  /** Stage files (picked or pasted): a chip each, uploading now. */
+  add(files: Iterable<File>): void;
+  /** Post the text and the staged files as ONE /msg. Resolves with what was sent (the chips clear), or
+   *  null when Send is not allowed or the server refused it (the chips stay and a note says why). */
+  send(text: string): Promise<{ body: SendBody; names: string[] } | null>;
+  /** Drop every chip and discard its staged file (the thread composer moved to another thread). */
+  reset(): void;
 }
-/** The one upload path: the 📎 picker and a pasted image both land in the project's inbox/. */
-function sendFile(f: File): void {
-  const fd = new FormData();
-  fd.append("file", f);
-  void fetch("/upload", { method: "POST", body: fd }).then((r) => {
-    if (!r.ok) alert(tx("feed.uploadFailed", { status: r.status }));
+/** Why /msg or /upload refused, as the composer's note says it. */
+const COMPOSE_NOTE: Record<string, string> = { expired: "feed.attExpired", command: "feed.attCommand", "no active project": "feed.attNoProject" };
+function attachComposer(o: { form: string; box: string; note: string; input: string; file: string; attach: string; threadId: () => number | undefined }): Composer {
+  const s = createAttachments();
+  const noteEl = $(o.note);
+  let note = "";
+  let busy = false; // a /msg is in flight
+  const files = new Map<number, File>();
+  const uploads = new Map<number, XMLHttpRequest>();
+  const box = $(o.box);
+  const sendBtn = ($(o.form) as HTMLFormElement).querySelector<HTMLButtonElement>("button[type=submit]")!;
+  const discard = (token: string) => void post("/upload/discard", { token }).catch(() => {});
+  const status = (a: Attachment) =>
+    a.state === "uploading" ? t("feed.attUploading", { pct: a.progress }) : a.state === "failed" ? t("feed.attFailed") : "";
+  const chip = (a: Attachment) =>
+    `<div class="att ${a.state === "ready" ? "ok" : a.state === "failed" ? "err" : "up"}" role="listitem" data-id="${a.id}" style="--p:${a.progress}%">` +
+    `<span class="an" title="${esc(a.name)}">${esc(a.name)}</span><span class="as">${iso(formatSize(a.size, LOCALE))}</span>` +
+    `<span class="ast" role="status">${status(a)}</span>` +
+    (a.state === "failed" ? `<button type="button" class="aretry" data-act="retry">${t("feed.attRetry")}</button>` : "") +
+    `<button type="button" class="ax" data-act="remove" aria-label="${t("feed.attRemove", { name: a.name })}">${KILL_ICON}</button><i class="abar"></i></div>`;
+  const render = () => {
+    const all = s.list();
+    box.hidden = all.length === 0;
+    box.innerHTML = all.map(chip).join("");
+    sendBtn.disabled = busy || all.some((a) => a.state !== "ready"); // Send waits for every upload
+    noteEl.hidden = note === "";
+    noteEl.textContent = note;
+  };
+  // Progress repaints only the bar and the status line, so a chip's buttons keep their focus.
+  const paint = (id: number) => {
+    const a = s.get(id);
+    const el = box.querySelector<HTMLElement>(`.att[data-id="${id}"]`);
+    if (!a || !el) return;
+    el.style.setProperty("--p", `${a.progress}%`);
+    el.querySelector(".ast")!.innerHTML = status(a);
+  };
+  const upload = (id: number) => {
+    const f = files.get(id);
+    if (!f) return;
+    const fd = new FormData();
+    fd.append("file", f);
+    const th = o.threadId();
+    if (th !== undefined) fd.append("threadId", String(th));
+    const x = new XMLHttpRequest();
+    uploads.set(id, x);
+    x.open("POST", "/upload");
+    x.responseType = "json";
+    x.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      s.progress(id, e.loaded, e.total);
+      paint(id);
+    };
+    x.onload = () => {
+      uploads.delete(id);
+      const token = x.status === 200 && typeof x.response?.token === "string" ? (x.response.token as string) : undefined;
+      if (!s.get(id)) {
+        if (token) discard(token); // the chip was removed while its upload finished
+        return;
+      }
+      if (token) s.ready(id, token);
+      else {
+        s.fail(id);
+        const why = COMPOSE_NOTE[String(x.response?.error)];
+        if (why) note = tx(why);
+      }
+      render();
+    };
+    x.onerror = () => {
+      uploads.delete(id);
+      s.fail(id);
+      render();
+    };
+    x.send(fd);
+  };
+  const drop = (id: number) => {
+    uploads.get(id)?.abort();
+    uploads.delete(id);
+    const a = s.remove(id);
+    if (a?.token) discard(a.token);
+    files.delete(id);
+  };
+  box.addEventListener("click", (ev) => {
+    const btn = (ev.target as Element).closest<HTMLButtonElement>("button[data-act]");
+    const id = Number(btn?.closest<HTMLElement>(".att")?.dataset.id);
+    if (!btn || !id) return;
+    note = "";
+    if (btn.dataset.act === "retry") {
+      s.retry(id);
+      render();
+      upload(id);
+      return;
+    }
+    drop(id);
+    render();
+    ($(o.input) as HTMLTextAreaElement).focus();
   });
+  const add = (list: Iterable<File>) => {
+    note = "";
+    for (const f of list) {
+      const id = s.add(f.name, f.size);
+      files.set(id, f);
+      upload(id);
+    }
+    render();
+  };
+  const picker = $(o.file) as HTMLInputElement;
+  $(o.attach).onclick = () => picker.click();
+  picker.onchange = () => {
+    if (picker.files) add(picker.files);
+    picker.value = "";
+  };
+  $(o.input).addEventListener("paste", (e) => {
+    // Pasted images stage like picked files; the default paste is NOT cancelled, so text still lands.
+    add(pastedImages((e as ClipboardEvent).clipboardData?.items, Date.now()));
+  });
+  return {
+    add,
+    async send(text) {
+      if (busy || !s.canSend(text)) return null;
+      const out = { body: s.body(text, o.threadId()), names: s.list().map((a) => a.name) };
+      busy = true;
+      note = "";
+      render();
+      let error: string | undefined;
+      try {
+        const r = await post("/msg", out.body);
+        if (!r.ok) error = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? "failed";
+      } catch {
+        error = "failed";
+      }
+      busy = false;
+      if (error) {
+        if (error === "expired") for (const a of s.list()) s.fail(a.id); // Retry uploads the kept file again
+        note = tx(COMPOSE_NOTE[error] ?? "feed.attNotSent");
+        render();
+        return null;
+      }
+      s.clear();
+      files.clear();
+      render();
+      return out;
+    },
+    reset() {
+      for (const a of s.list()) drop(a.id);
+      note = "";
+      render();
+    },
+  };
 }
-function uploadFile(): void {
-  const i = $("file") as HTMLInputElement;
-  if (!i.files || !i.files.length) return;
-  sendFile(i.files[0]!);
-  i.value = "";
+/** The operator's own line in the feed or a thread: the text line by line, each line in its own
+ *  direction (ADR-0033), then the names of the files it carried. */
+function ownLine(text: string, names: string[]): string {
+  return linesHtml(text) + (names.length ? `<span class="matt">📎 ${names.map((n) => `<bdi>${esc(n)}</bdi>`).join(", ")}</span>` : "");
 }
+/** An own line as a feed row's body: the › mark beside the text, never on a line of its own. */
+function ownRow(html: string): string {
+  return `<span class="mk">›</span><div class="tx">${html}</div>`;
+}
+const mainComposer = attachComposer({ form: "ff", box: "ffatts", note: "ffnote", input: "msg", file: "file", attach: "attach", threadId: () => undefined });
+const threadComposer = attachComposer({ form: "tform", box: "tformatts", note: "tformnote", input: "tmsg", file: "tfile", attach: "tattach", threadId: () => TH.open });
 
 // ── Threads (ADR-0017): project rail · thread list · thread pane, paged from the ledger ─────────
 const SINCE_MS: Record<string, number> = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 };
@@ -655,7 +1080,7 @@ function openThreads(): void {
   if (TH.started) return;
   TH.started = true;
   fillSelect("tstate", ["", "open", "waiting", "done", "failed"], (v) => `threads.state.${v || "all"}`);
-  fillSelect("torigin", ["", "operator", "loop", "attention", "ingress", "legacy"], (v) => `threads.origin.${v || "all"}`);
+  fillSelect("torigin", ["", ...THREAD_ORIGINS], (v) => `threads.origin.${v || "all"}`);
   fillSelect("tsince", ["", "day", "week", "month"], (v) => `threads.since.${v || "all"}`);
   ["tstate", "torigin", "tsince"].forEach((id) => ($(id).onchange = () => loadThreads(true)));
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -678,11 +1103,26 @@ function loadThreadProjects(): void {
     })
     .catch(() => {});
 }
+/** One waiting item (ADR-0054): who owes it and the next action. Ids stay left-to-right. */
+function waitingLine(i: Any): string {
+  const next =
+    i.next === "resumes"
+      ? tx("waiting.next.resumes", { on: ltr("#" + i.on) }) // ltr()/iso() output is already escaped
+      : tx(`waiting.next.${i.next}`, { ask: iso(String(i.ask ?? "").replace(/\s+/g, " ").slice(0, 160)) }); // iso(): escaped, isolated
+  return (
+    `<span class="tchip own-${esc(i.owner)}">${t(`waiting.owner.${i.owner}`)}</span>` +
+    (i.keep ? `<span class="tchip keep">${t("waiting.keep")}</span>` : "") +
+    `<span class="wn" dir="auto">${next}</span>`
+  );
+}
 function threadRowHtml(r: Any): string {
   const counts = r.messages === undefined ? "" : " · " + t("threads.counts", { messages: r.messages, decisions: r.openDecisions, todos: r.activeTodos });
+  const W: Any[] = r.waiting || [];
+  const waiting = W.length ? `<div class="tw">${waitingLine(W[0])}${W.length > 1 ? `<span>${t("waiting.more", { n: W.length - 1 })}</span>` : ""}</div>` : "";
   return (
     `<div class="tt"><span class="tchip st-${esc(r.state)}">${t(`threads.state.${r.state}`)}</span>${r.ref ? ltr(r.ref) : ""}<span class="ttl" dir="auto">${r.title ? esc(r.title) : t("threads.untitled")}</span></div>` +
-    `<div class="tm">${r.project ? iso(r.project) + " · " : ""}${iso(age(Date.now() - r.updatedAt))}${counts}</div>`
+    `<div class="tm">${r.project ? iso(r.project) + " · " : ""}${iso(age(Date.now() - r.updatedAt))}${counts}</div>` +
+    waiting
   );
 }
 function threadRow(r: Any): HTMLElement {
@@ -740,6 +1180,8 @@ function loadHits(q: string, seq: number): void {
     .catch(() => (box.innerHTML = ""));
 }
 function openThread(id: number): void {
+  // Files staged for another thread went to that thread's project: they never follow to this one.
+  if (TH.open !== id) threadComposer.reset();
   TH.open = id;
   document.querySelectorAll(".trow").forEach((el) => el.classList.toggle("on", (el as HTMLElement).dataset.id === String(id)));
   void fetch(`/api/threads/${id}?limit=50`, { cache: "no-store" })
@@ -752,19 +1194,50 @@ function openThread(id: number): void {
     .catch(() => ($("tbody").innerHTML = `<div class="empty">${t("threads.loadFailed")}</div>`));
 }
 function messageHtml(m: Any, html?: string): string {
-  const who = m.role === "user" ? t("threads.you") : m.project ? iso(m.project) : t("threads.neo");
+  // ADR-0061: the chief of staff spoke to a project's session — labelled so, never as the project or "neo".
+  const who =
+    m.kind === "agent_message" ? tx("threads.agentTo", { project: iso(m.project ?? "") }) : m.role === "user" ? t("threads.you") : m.project ? iso(m.project) : t("threads.neo");
   // Message text has no fixed direction (an English line in the Arabic console, or the reverse).
-  return `<div class="tmsg ${m.role === "user" ? "user" : ""}"><div class="tw">${who} · ${ltr(clock(m.at))}</div><div dir="auto">${html ?? esc(m.content)}</div></div>`;
+  // An assistant row arrives rendered by the server (m.html, ADR-0025); the operator's own text is escaped.
+  const tone = m.tone ? ` tone-${esc(m.tone)}` : "";
+  return `<div class="tmsg ${m.role === "user" ? "user" : ""}${tone}"><div class="tw">${who} · ${ltr(clock(m.at))}</div><div dir="auto" class="tx">${html ?? m.html ?? linesHtml(m.content)}</div></div>`;
+}
+/** A decision card's body (ADR-0049): the context, then each question's numbered options with what
+ *  each one does, the recommended one marked, and the recommendation. Worker text runs in its own
+ *  direction; numbers stay LTR. An old multi-question row lists each question first. Empty when the
+ *  decision has no spec. */
+function decisionCardHtml(spec: Any): string {
+  const qs: Any[] = spec?.questions ?? [];
+  if (!qs.length) return "";
+  let h = spec.context ? `<div dir="auto" class="rfo">${esc(spec.context)}</div>` : "";
+  for (const q of qs) {
+    if (qs.length > 1) h += `<div dir="auto">${esc(q.header ? `${q.header}: ${q.question}` : q.question)}</div>`;
+    h += (q.options as string[])
+      .map((label, i) => {
+        const star = q.recommended === i ? ` <span class="tchip">⭐ ${t("decision.recommended")}</span>` : "";
+        const detail = q.optionDetails?.[i] ? ` — <span dir="auto">${esc(q.optionDetails[i])}</span>` : "";
+        return `<div>${ltr(i + 1 + ".")} <bdi dir="auto">${esc(label)}</bdi>${star}${detail}</div>`;
+      })
+      .join("");
+  }
+  const q0 = qs.length === 1 ? qs[0] : undefined;
+  if (q0 && q0.recommended !== undefined) {
+    const why = spec.recommendation ? ` — <span dir="auto">${esc(spec.recommendation)}</span>` : "";
+    h += `<div>⭐ ${t("decision.recommended")}: ${ltr(q0.recommended + 1 + ".")} <bdi dir="auto">${esc(q0.options[q0.recommended])}</bdi>${why}</div>`;
+  }
+  return h;
 }
 function renderThreadPane(v: Any): void {
   const th = v.thread;
-  let h = `<div class="thead">${th.ref ? ltr(th.ref) : ""}${th.project ? " · " + iso(th.project) : ""} <span class="tchip st-${esc(th.state)}">${t(`threads.state.${th.state}`)}</span></div>`;
+  // The operator may close any thread that is not closed yet (ADR-0038): it stops waiting.
+  const close = !th.closedByOperator ? ` <button class="chip" data-act="thread-close" data-id="${th.id}">${t("threads.close")}</button>` : "";
+  let h = `<div class="thead">${th.ref ? ltr(th.ref) : ""}${th.project ? " · " + iso(th.project) : ""} <span class="tchip st-${esc(th.state)}">${t(`threads.state.${th.state}`)}</span>${close}</div>`;
   h += `<div class="ttitle" dir="auto">${th.title ? esc(th.title) : t("threads.untitled")}</div>`;
   if (v.next) h += `<button class="run" id="tolder" data-act="thread-older">${t("threads.olderMessages")}</button>`;
   h += `<div id="tmsgs">${(v.messages as Any[]).slice().reverse().map((m) => messageHtml(m)).join("")}</div>`;
   if (v.decisions.length) {
     h += `<div class="tsect"><h4>${t("threads.decisions")}</h4>`;
-    h += v.decisions.map((d: Any) => `<div class="tart"><span class="tchip">${t(`threads.decisionStatus.${d.status}`)}</span>${iso(d.question)}${d.answer ? ` → ${iso(d.answer)}` : ""}</div>`).join("");
+    h += v.decisions.map((d: Any) => `<div class="tart"><span class="tchip">${t(`threads.decisionStatus.${d.status}`)}</span>${iso(d.question)}${d.answer ? ` → ${iso(d.answer)}` : ""}${d.status === "open" ? decisionCardHtml(d.spec) : ""}</div>`).join("");
     h += "</div>";
   }
   if (v.todos.length) {
@@ -776,7 +1249,7 @@ function renderThreadPane(v: Any): void {
     h += `<div class="tsect"><h4>${t("threads.plans")}</h4>`;
     h += v.plans
       .map((p: Any) => {
-        const line = t("threads.planLine", { status: tx(`threads.planStatus.${p.status}`), done: p.stepsDone, total: p.stepsTotal, version: p.version });
+        const line = t("threads.planLine", { status: tx(`threads.planState.${p.state}`), done: p.stepsDone, total: p.stepsTotal, version: p.version });
         const buttons = (p.actions as string[])
           .filter((a) => a !== "changes")
           .map((a) => `<button class="chip" data-act="plan" data-id="${p.id}" data-action="${esc(a)}" data-version="${p.version}">${t(`threads.planAction.${a}`)}</button>`)
@@ -788,6 +1261,7 @@ function renderThreadPane(v: Any): void {
   }
   h += `<div class="tsect rfo">${t("threads.toolActions", { count: v.toolActions })}</div>`;
   $("tbody").innerHTML = h;
+  enhanceCode($("tbody"));
   ($("tform") as HTMLFormElement).hidden = false;
   const msgs = $("tbody");
   msgs.scrollTop = msgs.scrollHeight;
@@ -801,6 +1275,7 @@ function olderMessages(): void {
       if (TH.open !== id) return;
       TH.msgNext = v.next;
       $("tmsgs").insertAdjacentHTML("afterbegin", (v.messages as Any[]).slice().reverse().map((m) => messageHtml(m)).join(""));
+      enhanceCode($("tmsgs"));
       if (!v.next) document.getElementById("tolder")?.remove();
     })
     .catch(() => {});
@@ -810,6 +1285,7 @@ function appendThreadLine(m: Any, html?: string): void {
   const box = document.getElementById("tmsgs");
   if (!box) return;
   box.insertAdjacentHTML("beforeend", messageHtml(m, html));
+  enhanceCode(box);
   const b = $("tbody");
   b.scrollTop = b.scrollHeight;
 }
@@ -843,16 +1319,14 @@ function attentionButtons(it: Any, snoozeHours: number, box: HTMLElement, row: H
     b.className = "chip";
     b.textContent = tx(`attention.${action}`, { id: it.id, hours: snoozeHours });
     b.onclick = () => {
-      void post("/api/attention", { id: it.id, action })
-        .then((r) => r.json())
-        .then((x) => {
-          answer(x.text || x.error || "");
-          if (x.drop) {
-            row.remove();
-            dropped?.();
-          }
-        })
-        .catch(() => answer(tx("attention.failed")));
+      // The toast carries the reply ("→ todo #912", or why it was refused); the row keeps it too.
+      void act(b, "/api/attention", { id: it.id, action }).then((r) => {
+        answer(r.text);
+        if ((r.data as Any)?.drop) {
+          row.remove();
+          dropped?.();
+        }
+      });
     };
     box.appendChild(b);
   });
@@ -877,8 +1351,9 @@ const SEV_ICON: Record<string, string> = { high: "🔴", normal: "🟡", low: "�
 function healthChip(h: string): string {
   return `<span class="tchip ${HEALTH_CLASS[h] ?? ""}">${t(`pj.health.${h}`)}</span>`;
 }
-function attentionCounts(a: Any): string {
-  const parts = ["high", "normal", "low"].filter((k) => a && a[k]).map((k) => t(`pj.sev.${k}`, { n: a[k] }));
+/** ADR-0065: what needs the operator, then housekeeping — never the producers' severities. */
+function attentionCounts(s: Any): string {
+  const parts = [...(s.needs ? [tx("pj.needs", { n: ltr(s.needs) })] : []), ...(s.housekeeping ? [tx("pj.housekeeping", { n: ltr(s.housekeeping) })] : [])];
   return parts.length ? parts.join(" · ") : t("pj.noAttention");
 }
 function projectCard(s: Any): string {
@@ -886,7 +1361,7 @@ function projectCard(s: Any): string {
   return (
     `<div class="trow${PJ.open === s.name ? " on" : ""}" data-act="project-open" data-project="${esc(s.name)}">` +
     `<div class="tt">${healthChip(s.health)}<span class="ttl">${iso(s.name)}</span></div>` +
-    `<div class="tm">${state} · ${t("pj.queueCount", { n: s.queue })} · ${attentionCounts(s.attention)}</div></div>`
+    `<div class="tm">${state} · ${t("pj.queueCount", { n: s.queue })} · ${attentionCounts(s)}</div></div>`
   );
 }
 function loadProjects(): void {
@@ -935,9 +1410,7 @@ function renderProjectPane(v: Any): void {
   // QUEUE — running first, then the queue in order.
   h += pjSect(
     "pj.sect.queue",
-    (v.queue as Any[]).map(
-      (x) => `<div class="tart">${ltr("#" + x.id)}<span class="tchip">${x.status === "running" ? t("pj.running") : t("pj.queued", { pos: x.position })}</span><span dir="auto">${esc(x.title)}</span></div>`,
-    ),
+    (v.queue as Any[]).map((x) => todoRowHtml(x, `<span class="tchip">${x.status === "running" ? t("pj.running") : t("pj.queued", { pos: x.position })}</span>`)),
   );
   // GIT — read live; a failed read is named, never hidden.
   const g = v.git || {};
@@ -968,7 +1441,7 @@ function renderProjectPane(v: Any): void {
   // DECIDE — open decisions, oldest first.
   h += pjSect(
     "pj.sect.decide",
-    (v.decisions as Any[]).map((d) => `<div class="tart"><span dir="auto">${esc(d.question)}</span><span class="rfo">${esc(age(d.ageMs))}</span>${d.ref ? ltr(d.ref) : ""}</div>`),
+    (v.decisions as Any[]).map((d) => `<div class="tart"><span dir="auto">${esc(d.question)}</span><span class="rfo">${esc(age(d.ageMs))}</span>${d.ref ? ltr(d.ref) : ""}${decisionCardHtml(d.spec)}</div>`),
   );
   // PLANS — status and steps; a plan whose file is gone says so (spec §11.7).
   h += pjSect(
@@ -980,7 +1453,19 @@ function renderProjectPane(v: Any): void {
     ),
   );
   // ATTENTION — each item with the shared one-tap buttons (filled in below).
-  h += `<div class="tsect"><h4 id="pjatth">${t("pj.sect.attention", { n: v.attention.length })}</h4><div class="rfo pjnote" id="pjnote"></div><div id="pjatt"></div></div>`;
+  // ADR-0065: what needs the operator first; housekeeping collapsed under its count.
+  // Grouped by the needs-you list itself, so the section always matches the badge: a hidden needs-you
+  // item moves to housekeeping (where Pin brings it back), a pinned housekeeping item moves up.
+  const needRefs = new Set(((v.needsYou ?? []) as Any[]).map((it) => it.ref));
+  const needs = (v.attention as Any[]).filter((it) => needRefs.has(`att:${it.id}`));
+  const house = (v.attention as Any[]).filter((it) => !needRefs.has(`att:${it.id}`));
+  // The section is the project's share of the needs-you list (the badge's count): plans, decisions and
+  // failed todos as strip rows, then the needs-you attention items with their own buttons.
+  const others = ((v.needsYou ?? []) as Any[]).filter((it) => it.kind !== "attention");
+  h +=
+    `<div class="tsect"><h4 id="pjatth">${tx("pj.sect.needsYou", { n: ltr(others.length + needs.length) })}</h4><div class="rfo pjnote" id="pjnote"></div><div id="pjneeds" class="pinl"></div><div id="pjatt"></div>` +
+    (house.length ? `<details class="hk"><summary id="pjhkh">${tx("pj.sect.housekeeping", { n: ltr(house.length) })}</summary><div id="pjhk"></div></details>` : "") +
+    `</div>`;
   // THREADS — each opens in the Threads tab.
   h += pjSect(
     "pj.sect.threads",
@@ -992,40 +1477,482 @@ function renderProjectPane(v: Any): void {
   if (v.restartGated) h += pjSect("pj.sect.restart", (v.restartGated as Any[]).map((r) => `<div class="tart"><span dir="auto">${esc(r.title)}</span></div>`));
   $("pjbody").innerHTML = h;
   const box = $("pjatt");
-  if (!v.attention.length) box.innerHTML = `<div class="tart rfo">${t("pj.none")}</div>`;
-  (v.attention as Any[]).forEach((it) => {
+  const reload = (): void => (loadPins(), showProject(v.name));
+  for (const it of others) $("pjneeds").appendChild(pinRow(it, reload));
+  if (!needs.length && !others.length) box.innerHTML = `<div class="tart rfo">${t("pj.none")}</div>`;
+  const recount = (): void => {
+    $("pjatth").innerHTML = tx("pj.sect.needsYou", { n: ltr(others.length + box.querySelectorAll(".tart[data-att]").length) });
+    const hk = document.getElementById("pjhk");
+    if (hk) $("pjhkh").innerHTML = tx("pj.sect.housekeeping", { n: ltr(hk.querySelectorAll(".tart[data-att]").length) });
+  };
+  [...needs, ...house].forEach((it) => {
     const row = document.createElement("div");
     row.className = "tart";
     row.dataset.att = String(it.id);
-    row.innerHTML = `<span>${SEV_ICON[it.severity] ?? ""}</span>${ltr("#" + it.id)}<span dir="auto">${esc(it.title)}</span><span class="rfo">${esc(age(it.ageMs))}</span>`;
+    // A project note names its sender (ADR-0043).
+    const from = it.fromProject ? `<span class="rfo" dir="auto">${tx("pj.noteFrom", { project: esc(it.fromProject) })}</span>` : "";
+    // A note's kind (`question` too) and, once it moved on, its state (`acknowledged`, `answered`) — ADR-0050.
+    const chip = it.noteKind ? `<span class="rfo">${tx(`notes.kind.${it.noteKind}`)}${it.noteState && it.noteState !== "open" ? " · " + tx(`notes.state.${it.noteState}`) : ""}</span>` : "";
+    row.innerHTML = attentionItemHtml(it, chip, from);
     attentionButtons(it, v.snoozeHours, row, row, (text) => ($("pjnote").textContent = text), () => {
-      $("pjatth").textContent = tx("pj.sect.attention", { n: box.querySelectorAll(".tart[data-att]").length });
+      recount();
       loadProjects();
     });
-    box.appendChild(row);
+    // Pin puts any item on the strip (and brings back a hidden one); a needs-you item is already there.
+    if (it.pinned || !needRefs.has(`att:${it.id}`)) {
+      const b = document.createElement("button");
+      b.className = "chip";
+      b.type = "button";
+      b.textContent = tx(it.pinned ? "pins.unpin" : "pins.pin");
+      b.onclick = () => void act(b, "/api/pin", { ref: `att:${it.id}`, state: it.pinned ? null : "pinned" }, tx(it.pinned ? "pins.unpinned" : "pins.pinned")).then(() => (loadPins(), showProject(v.name)));
+      row.appendChild(b);
+    }
+    (needRefs.has(`att:${it.id}`) ? box : $("pjhk")).appendChild(row);
   });
+}
+/** The facts a description template may name (ADR-0059). A fact an item lacks reads `att.unknown`. */
+/** Facts that are references: shown as "#N". */
+const ATT_REFS = new Set(["pr", "issue", "alert", "decision"]);
+const ATT_FACTS = ["age", "label", "reason", "decision", "pct", "model", "files", "days", "pr", "dep", "from", "to", "workflow", "branch", "issue", "severity", "alert", "secretType", "ahead", "upstream", "base", "hours", "path"];
+/** One attention item, self-explaining (ADR-0059): severity, #id, its kind badge and project, a plain title,
+ *  why it is there (`att.why.<badge>` from its facts), its links, what → todo will do (`att.next.<badge>`)
+ *  and the exact brief on tap. Every value is escaped and isolated (`iso`), so ids and branch names stay
+ *  left-to-right in Arabic. */
+function attentionItemHtml(it: Any, noteChip: string, from: string): string {
+  const facts = (it.facts ?? {}) as Record<string, string | number>;
+  const vars: Record<string, string> = {};
+  // A ref keeps its "#", a percentage its "%", and both stay one left-to-right unit in Arabic (#31, not 31#).
+  for (const k of ATT_FACTS) {
+    const v = facts[k];
+    vars[k] = v === undefined || v === "" ? iso(tx("att.unknown")) : ATT_REFS.has(k) ? ltr(`#${v}`) : k === "pct" ? ltr(`${v}%`) : typeof v === "number" ? ltr(v) : iso(v);
+  }
+  if (typeof facts.since === "number") vars.age = iso(age(Date.now() - facts.since));
+  // A coded fact (a history reason code) reads in the operator's language from its own catalogue section.
+  for (const [k, section] of Object.entries(CODED_FACTS[it.badge] ?? {})) {
+    const v = facts[k];
+    if (v !== undefined && i18n.exists(`${section}.${v}`)) vars[k] = esc(tx(`${section}.${v}`));
+  }
+  const badge = esc(it.badge ?? "other");
+  const links = ((it.links ?? []) as Any[])
+    .map((l) => (typeof l.href === "string" && /^https?:\/\//.test(l.href) ? `<a href="${esc(l.href)}" target="_blank" rel="noopener noreferrer">${l.kind === "url" ? esc(tx("att.openLink")) : ltr(l.label)}</a>` : ltr(l.label)))
+    .join(" · ");
+  const next = it.brief
+    ? `<div class="rfo">${esc(tx("att.nextLabel"))} ${esc(tx(`att.next.${badge}`))}</div><details class="rfo"><summary>${esc(tx("att.showBrief"))}</summary><div dir="auto" style="white-space:pre-wrap">${esc(it.brief)}</div></details>`
+    : `<div class="rfo">${esc(tx("att.noBrief"))}</div>`;
+  return (
+    `<div style="flex:1 1 100%;min-width:0"><div><span>${SEV_ICON[it.severity] ?? ""}</span> ${ltr("#" + it.id)} <span class="tchip">${esc(tx(`att.kind.${badge}`))}</span> ${iso(it.project ?? "")}${noteChip}${from} <span class="rfo">${esc(age(it.ageMs))}</span></div>` +
+    `<div dir="auto"><b>${esc(it.plain ?? it.title)}</b></div>` +
+    // A reason with a gap (an older row, until its next scan) is not shown: the item's own title stands in.
+    `<div class="rfo" dir="auto">${it.reasonOk === false ? esc(it.title) : tx(`att.why.${badge}`, vars)}</div>` +
+    (links ? `<div class="rfo">${links}</div>` : "") +
+    next +
+    `</div>`
+  );
 }
 /** A console link `#project=<name>` (the Telegram dashboard's "open console") opens that project. */
 function openFromHash(): void {
-  const m = /^#project=(.+)$/.exec(location.hash);
+  const m = /^#(project|history)=(.+)$/.exec(location.hash);
   if (!m) return;
   let name: string;
   try {
-    name = decodeURIComponent(m[1]!);
+    name = decodeURIComponent(m[2]!);
   } catch {
     return; // a malformed link (`#project=%E0`) is ignored — it must never stop the console starting
   }
+  if (m[1] === "history") {
+    // A Telegram `/find` reply links here with its query (ADR-0067).
+    tab("history");
+    return historyPanel.search(name);
+  }
   tab("projects");
+  enterDetail("vprojects");
   showProject(name);
 }
-function planAction(id: number, action: string, version: number): void {
-  void post("/api/plan", { id, action, version })
-    .then((r) => r.json())
-    .then((d) => {
-      feedMsg("⋯ " + esc(d.text || ""), "me", null);
+/** Close a thread (ADR-0038): confirm, then the engine's one close action, then redraw the thread. */
+function closeThread(id: number, btn: Element | null): void {
+  if (!confirm(tx("threads.confirmClose"))) return;
+  void act(btn, "/api/thread/close", { id }).then((r) => {
+      const d = (r.data ?? {}) as Any;
+      // linesHtml: dir="auto" and the count stays an LTR run inside Arabic (the numbers rule).
+      if (d.ok) feedMsg("⋯ " + linesHtml(tx("threads.closedNote", { decisions: d.decisions })), "me", null);
+      openThread(id);
+      loadThreads(true);
+  });
+}
+/** A plan card action; resolves to whether the engine took it. */
+function planAction(id: number, action: string, version: number, btn: Element | null): Promise<boolean> {
+  return act(btn, "/api/plan", { id, action, version }).then((r) => {
+      const d = (r.data ?? {}) as Any;
+      const row = feedMsg("⋯ " + linesHtml(r.text), "me", null);
+      // A done plan (ADR-0034): the reply says why nothing started and offers Run anyway.
+      if (d.offer === "anyway") {
+        const b = document.createElement("button");
+        b.className = "chip";
+        b.textContent = tx("threads.planAction.anyway");
+        b.onclick = () => void planAction(id, "anyway", version, b);
+        row.appendChild(b);
+      }
       if (TH.open !== undefined) openThread(TH.open);
+      loadPins();
+      return r.ok;
+  });
+}
+
+// ── Pinned — needs you (ADR-0065): on every tab, what only the operator can move ─────────────────
+/** Rows the strip shows before "show all". */
+const PIN_SHOWN = 5;
+/** Unchanged items still re-render this often, so their ages stay true. */
+const PIN_AGE_MS = 60_000;
+const PIN = { items: [] as Any[], json: "", at: 0, all: false, shut: localStorage.getItem("neo.pins.shut") === "1", seq: 0 };
+/** Read the strip. It re-renders only when its items changed (or their ages are a minute old), and never
+ *  under a busy or focused control — a rebuild would drop the busy state and let a second tap through. */
+function loadPins(): void {
+  const seq = ++PIN.seq;
+  void fetch("/api/needs-you?_=" + Date.now(), { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (seq !== PIN.seq || !d || !Array.isArray(d.items)) return;
+      const box = $("pins");
+      if (box.querySelector(".busy")) return; // its action reloads the strip when it ends
+      const json = JSON.stringify(d.items);
+      const same = json === PIN.json;
+      if (same && (box.contains(document.activeElement) || Date.now() - PIN.at < PIN_AGE_MS)) return;
+      PIN.items = d.items;
+      PIN.json = json;
+      renderPins();
+    })
+    .catch(() => {});
+}
+function renderPins(): void {
+  const box = $("pins");
+  const items = PIN.items;
+  PIN.at = Date.now();
+  box.hidden = !items.length;
+  if (!items.length) return void (box.innerHTML = "");
+  box.classList.toggle("shut", PIN.shut);
+  box.innerHTML =
+    `<button class="pinh" type="button" id="pinh" aria-expanded="${PIN.shut ? "false" : "true"}" aria-controls="pinl" title="${esc(tx("pins.toggle"))}">` +
+    `<span>${esc(tx("pins.title"))}</span><span class="n">${ltr(items.length)}</span><span class="car" aria-hidden="true">▾</span></button><div class="pinl" id="pinl"></div>`;
+  $("pinh").onclick = () => {
+    PIN.shut = !PIN.shut;
+    localStorage.setItem("neo.pins.shut", PIN.shut ? "1" : "0");
+    renderPins();
+  };
+  const list = $("pinl");
+  for (const it of PIN.all ? items : items.slice(0, PIN_SHOWN)) list.appendChild(pinRow(it, loadPins));
+  if (items.length > PIN_SHOWN) {
+    const m = document.createElement("button");
+    m.type = "button";
+    m.className = "chip pinmore";
+    m.innerHTML = PIN.all ? esc(tx("pins.less")) : tx("pins.more", { n: ltr(items.length) });
+    m.onclick = () => ((PIN.all = !PIN.all), renderPins());
+    list.appendChild(m);
+  }
+}
+/** One needs-you row (the strip and a project's "Needs you" section): kind, project, age, the one-line why,
+ *  its action, and × to take it off the list. `after` runs once a hide is answered. */
+function pinRow(it: Any, after: () => void): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "pinr";
+  row.innerHTML =
+    `<div class="pw"><div class="pt"><span class="tchip">${esc(tx(`pins.kind.${it.kind}`))}</span>${iso(it.project ?? tx("pins.noProject"))}<span>${iso(age(Date.now() - it.since))}</span></div>` +
+    `<div class="py" dir="auto" title="${esc(it.why)}">${esc(it.why)}</div></div>`;
+  const a = document.createElement("button");
+  a.type = "button";
+  a.className = "pinact";
+  a.textContent = tx(`pins.action.${it.action}`);
+  a.onclick = () => pinAction(it, a);
+  row.appendChild(a);
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "pinx";
+  x.innerHTML = KILL_ICON;
+  x.title = tx("pins.hide");
+  x.setAttribute("aria-label", tx("pins.hide"));
+  x.onclick = () => void act(x, "/api/pin", { ref: it.ref, state: "unpinned" }, tx("pins.hidden")).then(after);
+  row.appendChild(x);
+  return row;
+}
+/** A strip row's button (ADR-0071): Retry a failed todo stays one tap; a todo opens its own sheet; every
+ *  other item opens itself — its full text and the actions it needs — never a page where it cannot be
+ *  answered, and never a plan approved unread. */
+function pinAction(it: Any, btn: HTMLElement): void {
+  if (it.action === "retry" && it.todoId !== undefined) return void todoAct("retry", it.todoId, btn).then(loadPins);
+  if (it.kind === "todo" && it.todoId !== undefined) return openTodo(it.todoId, btn);
+  openItem(it.ref, btn);
+}
+
+// ── An opened item (ADR-0071): a decision, a plan or an attention item, in the one sheet ──────────
+function openItem(ref: string, btn: Element | null): void {
+  if (btn?.classList.contains("busy")) return;
+  btn?.classList.add("busy");
+  btn?.setAttribute("aria-busy", "true");
+  void fetch(`/api/item?ref=${encodeURIComponent(ref)}`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (!d) return void (toast(tx("item.notFound"), false), loadPins());
+      renderItemSheet(d);
+      if (!sheet().open) sheet().showModal();
+    })
+    .catch(() => toast(tx("toast.failed"), false))
+    .finally(() => {
+      btn?.classList.remove("busy");
+      btn?.removeAttribute("aria-busy");
     });
 }
+function renderItemSheet(d: Any): void {
+  const kind = d.type === "attention" ? "attention" : d.type === "plan" ? "plan" : d.decision.kind === "alert" ? "alert" : "decision";
+  $("tdhead").innerHTML = `<span class="tchip" id="tdtitle">${esc(tx(`pins.kind.${kind}`))}</span>`;
+  const body = $("tdbody");
+  body.innerHTML = "";
+  // Once the item is answered, approved or dropped, the strip reloads and the sheet closes.
+  const done = (): void => {
+    loadPins();
+    if (sheet().open) sheet().close();
+  };
+  if (d.type === "decision") return void body.appendChild(decisionBlock(d.decision, done));
+  if (d.type === "plan") return void body.appendChild(planBlock(d.plan, done));
+  // An attention item: the project page's own renderer and buttons.
+  const row = document.createElement("div");
+  row.className = "tart";
+  row.innerHTML = attentionItemHtml(d.attention, "", "");
+  body.appendChild(row);
+  const note = document.createElement("div");
+  note.className = "rfo";
+  note.setAttribute("aria-live", "polite");
+  body.appendChild(note);
+  attentionButtons(d.attention, d.snoozeHours, row, row, (text) => (note.textContent = text), done);
+  // A reminder about an open decision (decision_stale) carries the decision: answer it right here.
+  if (d.linked) {
+    const h = document.createElement("h4");
+    h.textContent = tx("item.about");
+    body.appendChild(h);
+    body.appendChild(d.linked.type === "plan" ? planBlock(d.linked.plan, done) : decisionBlock(d.linked.decision, done));
+  }
+}
+/** A decision: its full question, its card (ADR-0049), one button per option, and a reply box. An alert is
+ *  acknowledged; a closed one shows its answer. */
+function decisionBlock(dec: Any, done: () => void): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "itemb";
+  const meta = [dec.project ? iso(dec.project) : "", iso(age(Date.now() - dec.createdAt))].filter(Boolean).join(" · ");
+  box.innerHTML = `<h2 dir="auto">${esc(dec.question)}</h2><div class="rfo">${meta}</div>${decisionCardHtml(dec.spec)}`;
+  if (!dec.answerable) {
+    box.insertAdjacentHTML("beforeend", `<div class="rfo" dir="auto">${tx("item.closed", { answer: iso(dec.answer ?? "") })}</div>`);
+    return box;
+  }
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const button = (label: string, cls: string, onclick: (b: HTMLButtonElement) => void): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.dir = "auto";
+    b.textContent = label;
+    b.onclick = () => onclick(b);
+    acts.appendChild(b);
+  };
+  const qs: Any[] = dec.spec?.questions ?? [];
+  // A one-question, one-choice card (or plain options) answers with a tap.
+  const oneTap = qs.length === 1 && !qs[0].multiSelect;
+  if (dec.closedBy === "approval") {
+    // A governor approval is released only by Allow/Deny on its card, which unblocks the waiting tool call.
+    box.insertAdjacentHTML("beforeend", `<div class="rfo" dir="auto">${esc(tx("item.approvalHint"))}</div>`);
+  } else if (dec.closedBy === "alert") {
+    button(tx("pins.action.acknowledge"), "run", (b) => answerDecision(dec.id, { acknowledge: true }, b, done));
+  } else if (!qs.length || oneTap) {
+    const options: string[] = dec.options ?? qs[0]?.options ?? [];
+    for (const label of options) button(label, "chip", (b) => answerDecision(dec.id, { answer: label }, b, done));
+  } else {
+    // Several questions, or a multi-select one: pick in each, then one Submit (joined as Telegram joins it).
+    const form = document.createElement("form");
+    form.className = "ipicks";
+    form.innerHTML = qs
+      .map(
+        (q, i) =>
+          `<fieldset><legend dir="auto">${esc(q.header ? `${q.header}: ${q.question}` : q.question)}</legend>` +
+          (q.options as string[]).map((label, o) => `<label dir="auto"><input type="${q.multiSelect ? "checkbox" : "radio"}" name="q${i}" value="${o}"> ${esc(label)}</label>`).join("") +
+          `</fieldset>`,
+      )
+      .join("") + `<button class="run" type="submit">${esc(tx("item.submit"))}</button>`;
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      const picks = qs.map((_, i) => [...form.querySelectorAll<HTMLInputElement>(`input[name="q${i}"]:checked`)].map((x) => Number(x.value)));
+      answerDecision(dec.id, { picks }, form.querySelector("button"), done);
+    };
+    box.appendChild(form);
+  }
+  if (dec.threadId !== undefined) {
+    button(tx("todoDetail.openThread"), "chip", () => {
+      sheet().close();
+      tab("threads");
+      enterDetail("vthreads");
+      openThread(dec.threadId);
+    });
+  }
+  box.appendChild(acts);
+  if (dec.closedBy === "text") {
+    const form = document.createElement("form");
+    form.className = "ireply";
+    form.innerHTML =
+      `<label class="rfo" for="itans">${esc(tx("item.reply.label"))}</label>` +
+      `<textarea id="itans" class="itx" rows="3" dir="auto" data-compose="send" placeholder="${esc(tx("item.reply.placeholder"))}"></textarea>` +
+      `<button class="run" type="submit" data-compose-submit>${esc(tx("item.reply.send"))}</button>`;
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      const ta = form.querySelector("textarea")!;
+      if (!ta.value.trim()) return ta.focus();
+      answerDecision(dec.id, { answer: ta.value }, form.querySelector("button"), done);
+    };
+    box.appendChild(form);
+  }
+  return box;
+}
+/** Answer (or acknowledge) a decision: the engine's one answer path, then the strip reloads. */
+function answerDecision(id: string, body: { answer?: string; acknowledge?: boolean; picks?: number[][] }, btn: Element | null, done: () => void): void {
+  void act(btn, "/api/decision/answer", { id, ...body }, tx("item.answered")).then((r) => {
+    if (r.ok) done();
+    else loadPins();
+  });
+}
+/** A plan card: the plan rendered (the console's safe renderer, via /md-file, ADR-0046), a Download link
+ *  to the same file, Approve & build and Drop — read first, decide after. */
+function planBlock(pl: Any, done: () => void): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "itemb";
+  const href = mdFileHref(pl.file);
+  box.innerHTML =
+    `<h2 dir="auto">${esc(pl.title)}</h2><div class="rfo">${iso(pl.project)} · ${esc(tx(`threads.planState.${pl.state}`))} · ${ltr("v" + pl.version)}</div>` +
+    `<div class="rfo"><a class="mdl" href="${esc(href)}" download dir="ltr">${esc(tx("item.plan.download"))}</a> <span dir="ltr">${esc(pl.path)}</span></div>` +
+    `<div class="tmsg plandoc"><div class="tx" dir="auto">${esc(tx("item.plan.loading"))}</div></div><div class="acts stick"></div>`;
+  const doc = box.querySelector<HTMLElement>(".plandoc .tx")!;
+  const dl = box.querySelector<HTMLElement>("a.mdl")!;
+  void fetch(href + "&view=html", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : r.text().then((t) => Promise.reject(new Error(t)))))
+    .then((v: Any) => {
+      doc.innerHTML = v.html;
+      enhanceCode(doc);
+    })
+    .catch((e: unknown) => {
+      doc.textContent = tx("item.plan.missing", { reason: e instanceof Error ? e.message : "" });
+      // Too large to show is still downloadable; anything else (gone, outside the roots) is not served at all.
+      if (!(e instanceof Error && /download/.test(e.message))) dl.hidden = true;
+    });
+  const acts = box.querySelector<HTMLElement>(".acts")!;
+  const button = (label: string, cls: string, onclick: (b: HTMLButtonElement) => void): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.textContent = label;
+    b.onclick = () => onclick(b);
+    acts.appendChild(b);
+  };
+  const actions = (pl.actions ?? []) as string[];
+  if (actions.includes("approve")) button(tx("threads.planAction.approve"), "run", (b) => void planAction(pl.id, "approve", pl.version, b).then((ok) => ok && done()));
+  if (actions.includes("drop")) {
+    button(tx("threads.planAction.drop"), "chip no", (b) => {
+      if (!confirm(tx("item.plan.confirmDrop"))) return;
+      void planAction(pl.id, "drop", pl.version, b).then((ok) => ok && done());
+    });
+  }
+  if (actions.includes("changes")) acts.insertAdjacentHTML("beforeend", `<div class="rfo">${esc(t("threads.changesHint"))}</div>`);
+  return box;
+}
+
+// ── Todo detail (ADR-0065): a tap on any todo row opens it ───────────────────────────────────────
+/** One todo row: a button (one tap target) with its lead, #id and summary. */
+function todoRowHtml(x: Any, lead: string): string {
+  return (
+    `<button class="qrow" type="button" data-act="todo-open" data-id="${esc(x.id)}" aria-label="${esc(tx("todoDetail.open", { id: x.id }))}: ${esc(x.title)}">` +
+    `${lead}${ltr("#" + x.id)}<span class="qt" dir="auto">${esc(x.title)}</span><span class="car" aria-hidden="true">›</span></button>`
+  );
+}
+function sheet(): HTMLDialogElement {
+  return $("tdsheet") as HTMLDialogElement;
+}
+function openTodo(id: number, btn: Element | null): void {
+  if (btn?.classList.contains("busy")) return;
+  btn?.classList.add("busy");
+  btn?.setAttribute("aria-busy", "true");
+  void fetch(`/api/todo/${encodeURIComponent(String(id))}`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (!d) return toast(tx("todoDetail.notFound"), false);
+      renderTodoSheet(d);
+      if (!sheet().open) sheet().showModal();
+    })
+    .catch(() => toast(tx("toast.failed"), false))
+    .finally(() => {
+      btn?.classList.remove("busy");
+      btn?.removeAttribute("aria-busy");
+    });
+}
+function renderTodoSheet(d: Any): void {
+  const now = Date.now();
+  const when = (at?: number): string => (at ? `${ltr(clock(at))} · ${tx("todoDetail.ago", { age: iso(age(now - at)) })}` : "");
+  $("tdhead").innerHTML = `${ltr("#" + d.id)} <span class="tchip">${esc(tx(`todoDetail.status.${d.status}`))}</span>`;
+  const rows: Array<[string, string]> = [
+    ["todoDetail.project", iso(d.project)],
+    ["todoDetail.lane", d.lane === "side" ? tx("todoDetail.laneSide", { kind: iso(tx(`queue.kind.${d.kind}`)) }) : esc(tx("todoDetail.laneMain"))],
+    ["todoDetail.state", esc(tx(`todoDetail.status.${d.status}`)) + (d.position ? " · " + tx("todoDetail.position", { pos: ltr(d.position) }) : "")],
+    ["todoDetail.created", when(d.createdAt)],
+  ];
+  if (d.startedAt) rows.push(["todoDetail.started", when(d.startedAt)]);
+  if (d.endedAt) rows.push(["todoDetail.ended", when(d.endedAt)]);
+  if (d.attempts) rows.push(["todoDetail.attempts", ltr(d.attempts)]);
+  if (d.failure) rows.push(["todoDetail.failure", ltr(d.failure)]);
+  let h = `<h2 id="tdtitle" dir="auto">${esc(d.title)}</h2><dl>${rows.map(([k, v]) => `<dt>${esc(tx(k))}</dt><dd>${v}</dd>`).join("")}</dl>`;
+  if (d.result) h += `<h4>${esc(tx("todoDetail.result"))}</h4><pre dir="auto">${esc(d.result)}</pre>`;
+  if ((d.attention ?? []).length) h += `<h4>${esc(tx("todoDetail.items"))}</h4>` + (d.attention as Any[]).map((a) => `<div class="rfo" dir="auto">${ltr("#" + a.id)} ${esc(a.title)}</div>`).join("");
+  h += `<details><summary>${esc(tx("todoDetail.brief"))}</summary><pre dir="auto">${esc(d.brief)}</pre></details><div class="acts" id="tdacts"></div>`;
+  $("tdbody").innerHTML = h;
+  const acts = $("tdacts");
+  const button = (label: string, cls: string, onclick: (b: HTMLButtonElement) => void): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip" + cls;
+    b.textContent = label;
+    b.onclick = () => onclick(b);
+    acts.appendChild(b);
+  };
+  for (const a of d.actions as string[]) {
+    const label = a === "retry" ? tx(d.status === "running" ? "queue.resumeNow" : "queue.retry") : a === "up" ? tx("queue.moveUp") : tx("queue.cancel");
+    button(label, a === "cancel" ? " no" : "", (b) => {
+      if (a === "cancel" && !confirm(tx("queue.confirmCancel", { id: d.id }))) return;
+      void todoAct(a, d.id, b).then((r) => r.ok && (loadPins(), openTodo(d.id, null)));
+    });
+  }
+  if (d.threadId !== undefined) {
+    button(tx("todoDetail.openThread"), "", () => {
+      sheet().close();
+      tab("threads");
+      enterDetail("vthreads");
+      openThread(d.threadId);
+    });
+  }
+  button(tx(d.pinned ? "pins.unpin" : "pins.pin"), "", (b) => void act(b, "/api/pin", { ref: `todo:${d.id}`, state: d.pinned ? null : "pinned" }, tx(d.pinned ? "pins.unpinned" : "pins.pinned")).then(() => (loadPins(), openTodo(d.id, null))));
+}
+$("tdclose").onclick = () => sheet().close();
+// A tap on the backdrop (outside the sheet's box) closes it.
+sheet().addEventListener("click", (ev) => {
+  if (ev.target === sheet()) sheet().close();
+});
+// ADR-0071: on a phone the keyboard takes half the screen. The sheet's height follows the visual viewport
+// (--app-h, CSS); once the keyboard has opened, a focused field is scrolled back into view.
+sheet().addEventListener("focusin", (ev) => {
+  const el = ev.target as HTMLElement;
+  if (!el.matches("textarea,input")) return;
+  setTimeout(() => el.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "instant" : "smooth" }), 300);
+});
+
+// ── History (ADR-0067): search past work, remember a fact, forget an entry ───────────────────────
+const historyPanel = mountHistory({
+  fmt: { esc, ltr, iso, t, tx, date: numericDate },
+  $,
+  act,
+  toast,
+  enhance: enhanceCode,
+});
 
 // ── Wiring ──────────────────────────────────────────────────────────────────────────────────
 document.addEventListener("click", (ev) => {
@@ -1041,13 +1968,13 @@ document.addEventListener("click", (ev) => {
     case "clear-filter":
       return clearFilter();
     case "create-loop":
-      return submitLoop();
+      return submitLoop(el);
     case "inbox-agent":
-      return inboxDraft(id, "instr");
+      return inboxDraft(id, "instr", el);
     case "inbox-redraft":
-      return inboxDraft(id, "notes");
+      return inboxDraft(id, "notes", el);
     case "inbox-send":
-      return sendReply(id);
+      return sendReply(id, el);
     case "inbox-delete":
       return deleteInbox(id);
     case "thread-project":
@@ -1057,45 +1984,127 @@ document.addEventListener("click", (ev) => {
     case "threads-older":
       return loadThreads(false);
     case "thread-open":
+      enterDetail("vthreads");
       return openThread(Number(id));
     case "thread-older":
       return olderMessages();
     case "plan":
-      return planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version));
+      return void planAction(Number(id), el.dataset.action ?? "", Number(el.dataset.version), el);
+    case "thread-close":
+      return closeThread(Number(id), el);
+    case "todo-open":
+      return openTodo(Number(id), el);
+    case "history-forget":
+      return historyPanel.forget(el.dataset.ref ?? "");
     case "project-open":
+      enterDetail("vprojects");
       return showProject(el.dataset.project ?? "");
     case "project-thread":
       tab("threads");
+      enterDetail("vthreads");
       return openThread(Number(id));
+    case "back":
+      return back();
   }
 });
 $("open-project").onclick = openProject;
-$("attach").onclick = () => $("file").click();
-$("file").onchange = uploadFile;
+// Every message/brief field is a compose box (ADR-0033): one delegated binding for the whole page.
+bindComposeBoxes(document);
+$("menu").onclick = () => setDrawer(!document.querySelector(".app")!.classList.contains("drawer-open"), true);
+$("scrim").onclick = () => closeDrawer();
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && document.querySelector(".app")!.classList.contains("drawer-open")) closeDrawer();
+});
+// Back to a wide screen: the sidebar is a column again, never a stuck-open drawer.
+MEDIUM.addEventListener("change", () => setDrawer(false, false));
+window.addEventListener("popstate", () => {
+  leaveDetail();
+  const v = popDetail(history.state, detailView());
+  if (v) $(v).classList.add("detail");
+});
+// A detail entry that survived a reload names a view no longer in detail: clear it.
+if (staleOnLoad(history.state)) history.replaceState(null, "");
+setDrawer(false, false);
+fitViewport();
 $("lang").onclick = () => {
   // The other language, remembered in a cookie the server reads to render the page's lang/dir.
   document.cookie = `neo_lang=${root.lang === "ar" ? "en" : "ar"}; path=/; max-age=31536000; samesite=lax`;
   location.reload();
 };
-// Paste-to-attach: images go through sendFile; the default paste is NOT cancelled, so text still lands.
-$("msg").addEventListener("paste", (e) => {
-  pastedImages((e as ClipboardEvent).clipboardData?.items, Date.now()).forEach(sendFile);
+
+// The installable console (ADR-0022): the shell-only service worker, registered only where browsers
+// allow it. A failed registration is logged and ignored — the console never depends on the worker.
+if (isSecureContext && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch((err) => console.warn("service worker registration failed", err));
+}
+// The install chip follows installMode(): the browser's own prompt where it offers one, the iOS share
+// hint on iPhone/iPad, nothing once installed or dismissed.
+type InstallPrompt = Event & { prompt(): Promise<unknown> };
+let installPrompt: InstallPrompt | null = null;
+function installDismissed(): boolean {
+  try {
+    return localStorage.getItem(INSTALL_DISMISSED_KEY) === "1";
+  } catch {
+    return false; // storage blocked: offer it again, never break the page
+  }
+}
+function renderInstall(): void {
+  const standalone = matchMedia("(display-mode: standalone)").matches || (navigator as Any).standalone === true;
+  const mode = installMode({ standalone, prompt: installPrompt !== null, ios: isIos(navigator.userAgent, navigator.maxTouchPoints), dismissed: installDismissed() });
+  $("install").hidden = mode === "none";
+  $("install").dataset.mode = mode;
+  if (mode === "none") $("ioshint").hidden = true;
+}
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault(); // keep it for the chip instead of the browser's own banner
+  installPrompt = e as InstallPrompt;
+  renderInstall();
 });
+window.addEventListener("appinstalled", () => {
+  installPrompt = null;
+  renderInstall();
+});
+$("install").onclick = () => {
+  if ($("install").dataset.mode === "ios-hint") {
+    $("ioshint").hidden = false;
+    return;
+  }
+  const p = installPrompt;
+  installPrompt = null; // a prompt event is single-use
+  renderInstall();
+  if (p) void p.prompt().catch((err) => console.warn("install prompt failed", err));
+};
+$("ioshint-x").onclick = () => {
+  try {
+    localStorage.setItem(INSTALL_DISMISSED_KEY, "1");
+  } catch {
+    // storage blocked: the hint just closes for this page
+  }
+  $("ioshint").hidden = true;
+  renderInstall();
+};
+renderInstall();
 ($("ff") as HTMLFormElement).onsubmit = (ev) => {
   ev.preventDefault();
-  const m = $("msg") as HTMLInputElement;
-  say(m.value);
-  m.value = "";
+  const m = $("msg") as HTMLTextAreaElement;
+  const typed = m.value;
+  void mainComposer.send(typed).then((sent) => {
+    if (!sent) return; // refused: the text and the chips stay
+    feedMsg(ownRow(ownLine(sent.body.text, sent.names)), "me", filterProject);
+    if (m.value === typed) clearBox(m);
+  });
 };
 ($("tform") as HTMLFormElement).onsubmit = (ev) => {
   ev.preventDefault();
-  const m = $("tmsg") as HTMLInputElement;
-  const text = m.value.trim();
-  if (!text || TH.open === undefined) return;
+  const m = $("tmsg") as HTMLTextAreaElement;
+  if (TH.open === undefined) return;
   // The composer inside a thread names it, so the message joins that thread (spec §4.1 rule 2).
-  void post("/msg", { text, threadId: TH.open });
-  appendThreadLine({ role: "user", content: text, at: Date.now() });
-  m.value = "";
+  const typed = m.value;
+  void threadComposer.send(typed).then((sent) => {
+    if (!sent) return; // refused: the text and the chips stay
+    appendThreadLine({ role: "user", content: sent.body.text, at: Date.now() }, ownLine(sent.body.text, sent.names));
+    if (m.value === typed) clearBox(m);
+  });
 };
 
 const es = new EventSource("/stream");
@@ -1109,14 +2118,20 @@ es.onopen = () => {
 es.onmessage = (ev) => {
   const e = JSON.parse(ev.data);
   if (e.type === "message") {
-    feedMsg((e.project ? `<span class="ptag">${esc(e.project)}</span>` : "") + e.text, "out", e.project);
-    if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "assistant", project: e.project, at: Date.now() }, e.text);
+    // The body takes its direction from its own text (an English line in the Arabic UI stays LTR).
+    feedMsg((e.project ? `<span class="ptag">${esc(e.project)}</span>` : "") + `<div class="tx" dir="auto">${e.text}</div>`, "out", e.project, e.tone);
+    if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "assistant", project: e.project, at: Date.now(), tone: e.tone }, e.text);
   } else if (e.type === "echo") {
-    feedMsg("› " + esc(e.text), "me", filterProject);
+    feedMsg(ownRow(ownLine(e.text, [])), "me", filterProject);
     if (e.threadId !== undefined && e.threadId === TH.open) appendThreadLine({ role: "user", content: e.text, at: Date.now() });
   } else if (e.type === "notice") feedMsg("⋯ " + esc(e.text), "me", filterProject);
   else if (e.type === "projects") void loadState();
   else if (e.type === "attention") renderAttention(e);
+  else if (e.type === "history_forget") {
+    // `/forget` typed here (ADR-0067): the entry, then a link to it in the History tab, whose Forget button
+    // asks for the reason and confirms.
+    feedMsg(`<div class="tx" dir="auto">${e.text}</div><div class="rfo">${esc(tx("history.forgetInTab"))} <a href="#history=${encodeURIComponent(e.ref)}">${ltr(e.ref)}</a></div>`, "out", null);
+  }
   else if (e.type === "sdk") {
     S.sdk = e.sdk;
     renderSdk();
@@ -1124,20 +2139,24 @@ es.onmessage = (ev) => {
   else if (e.type === "escalation") {
     const c = document.createElement("div") as FeedNode;
     c.className = "escc";
-    c.innerHTML = "⚠ " + esc(e.reason);
+    // The server renders the reason (a shell command as a code block); an older daemon sends text only.
+    c.innerHTML = "⚠ " + (e.html ?? esc(e.reason));
+    enhanceCode(c);
     const a = document.createElement("div");
     a.className = "acts";
     (["allow", "deny"] as const).forEach((dec) => {
       const b = document.createElement("button");
       b.className = "chip " + (dec === "allow" ? "ok" : "no");
       b.textContent = tx(`feed.${dec}`);
-      b.onclick = () => {
-        void post("/approve", { id: e.id, decision: dec });
-        c.remove();
-        const ix = feedNodes.indexOf(c);
-        if (ix >= 0) feedNodes.splice(ix, 1);
-        refreshFeed();
-      };
+      b.onclick = () =>
+        void act(b, "/approve", { id: e.id, decision: dec }).then((r) => {
+          // No reply (offline): the card stays for another tap. A reply — decided, or already gone — removes it.
+          if (r.data === undefined) return;
+          c.remove();
+          const ix = feedNodes.indexOf(c);
+          if (ix >= 0) feedNodes.splice(ix, 1);
+          refreshFeed();
+        });
       a.appendChild(b);
     });
     c.appendChild(a);
@@ -1154,7 +2173,8 @@ es.onmessage = (ev) => {
 applyStatic();
 renderSdk();
 $("who").textContent = tx("projects.noneActive");
-void loadState();
+// The first state load is "ready": the Core splash fades once it settles and its intro has played.
+dismissSplash(loadState());
 void loadInbox();
 openFromHash();
 window.addEventListener("hashchange", openFromHash);
