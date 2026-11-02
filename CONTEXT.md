@@ -246,6 +246,32 @@ todo at a time; the rest wait in order and are never merged or dropped. The oper
 can reorder, cancel, pause and resume it.
 _Avoid_: backlog, task list, session queue
 
+**Claim** (ADR-0073):
+What a worker SAYS its dispatched work ended as, declared through the `report` tool as data: a
+status (ready, blocked, failed, dropped, no_change_needed, handback), one plain summary, the
+commands it ran with exit codes, the files changed, a PR or commit ref, risks, assumptions and
+evidence. The engine validates the shape and records it; it never reads an outcome from prose.
+_Avoid_: result (the dispatcher's line), summary alone, "the worker said it is done"
+
+**Verdict** (ADR-0073):
+What the ENGINE assigns a dispatch's end, from the claim, how the run ended and the gate: one of the
+claim's statuses, or `unreported` (no claim) or `stale` (HEAD moved after the checks). `ready` is
+earned, never taken from the claim. The verdict rides on `dispatch_end` and on every result line,
+beside the claim when they differ.
+_Avoid_: outcome (ambiguous), status (the registry's word)
+
+**Verification policy** (ADR-0073):
+The checks `.neo/checks.json` declares (argv arrays) and the files they depend on, hashed and FROZEN
+at dispatch start (`policy_frozen`). The gate runs the frozen policy; a change to those files during
+the run is `policyChanged` and blocks a `ready` claim until an operator accepts it.
+_Avoid_: test command, CI config
+
+**Gate** (ADR-0073):
+The engine running the frozen policy's checks for ONE revision (the run's HEAD) in a clean worktree
+outside the project, with the worker-scrubbed environment. Its evidence (each command, exit code and
+output tail) is bound to that sha; HEAD moving makes it stale. It verifies the commit, never the tree.
+_Avoid_: the worker's own test run, "tests pass" (a claim)
+
 **Bounded command** (ADR-0072):
 A child process the engine runs and does not stream (a check, a gate script, a git or gh read, the
 updater, a loop's command goal), through the one runner `run-command.ts`. It has a timeout, a

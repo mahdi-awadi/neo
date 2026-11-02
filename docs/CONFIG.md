@@ -519,6 +519,33 @@ stream with a visible marker, and when a caller asks it runs with the worker-scr
 A missing or bad value keeps its default. A spawn failure (missing binary, deleted folder) is exit
 127 with `spawnError`, never an exception.
 
+## Verification gate (`verify`) — ADR-0073
+
+At a dispatch's settled end the engine runs the project's checks, FROZEN at the run's start, in a
+clean worktree at the run's HEAD, and assigns the verdict beside the worker's `report` claim. A
+project declares its checks in `.neo/checks.json`:
+
+```json
+{ "checks": [["bun", "test"], ["bunx", "tsc", "--noEmit"]], "dependsOn": ["scripts/check.sh"] }
+```
+
+Each check is an argv array (never a shell string). The checks file, `package.json`, `bunfig.toml`,
+`tsconfig.json`, the usual test configs, `go.mod`, scripts a check names and `dependsOn` are hashed
+into the frozen policy; a change to them during the run blocks a `ready` claim. No file → no checks:
+the claim stands, marked unverified.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `verify.enabled` | `true` | Off: nothing is frozen or run; every verdict is the claim's (or `unreported`). |
+| `verify.checkTimeoutMs` | `600000` (10 min) | One check's bound. |
+| `verify.maxTotalMs` | `900000` (15 min) | All checks together; the rest are not run and count as failed. |
+| `verify.worktreeRoot` | `<tmpdir>/neo-verify` | Where the clean worktrees are made (removed after each gate). |
+| `verify.requireReport` | `false` | On: an `unreported`, `stale` or contradicted end is a bad end for the todo queue (`failure: "verify"`). Off: recorded and shown only. |
+| `verify.evidenceTailChars` | `2000` | Chars of each check's output kept on `dispatch_verified`. |
+
+The checks run through the bounded runner (`commands`) with the worker-scrubbed environment plus
+`NEO_VERIFY=1` and `CI=1`.
+
 ## Disk guard (`diskGuard`) — ADR-0068
 
 A heartbeat step that runs the installed disk kit's Tier A at once under disk pressure and once in its

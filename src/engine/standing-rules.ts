@@ -47,3 +47,8 @@ export function plannerPrompt(): string {
     "Return a short summary of what you wrote or found.",
   ].join("\n");
 }
+
+/** The end-of-work claim (plan 2026-11-02 W1.1, ADR-0073): the `report` tool is the worker's last call;
+ *  the engine verifies the claim on the commit and assigns the outcome, never from prose. */
+export const REPORT_RULE =
+  "End with the `report` tool: your claim (status, what ran, what changed). The engine verifies it on your commit and assigns the outcome.";

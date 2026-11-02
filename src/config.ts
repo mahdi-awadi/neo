@@ -20,6 +20,7 @@ import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
 import { readLanesCfg, type LanesCfg } from "./engine/lanes";
 import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
 import { readCommandsCfg, type CommandsCfg } from "./engine/run-command";
+import { readVerifyCfg, type VerifyCfg } from "./engine/verify";
 import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
 import { readTodoSummaryCfg, type TodoSummaryCfg } from "./engine/todo-summary-cfg";
@@ -321,6 +322,9 @@ export interface NeoConfig {
    *  the per-stream output cap and the kill grace every engine-run command gets when its caller
    *  passes no knob of its own. */
   commands?: CommandsCfg;
+  /** The verification gate (plan 2026-11-02 W1.4, `verify.ts`): the project's frozen checks run in a
+   *  clean worktree at the run's HEAD; the verdict is assigned by the engine. */
+  verify?: VerifyCfg;
   /** The shared tools catalogue (ADR-0044): relay switch and caps, card limits, search knobs. Optional like
    *  `plans`; `loadConfig` always fills it. */
   tools?: ToolsCfg;
@@ -682,6 +686,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     lanes: readLanesCfg(fileCfg.lanes),
     toolControl: readToolControlCfg(fileCfg.toolControl),
     commands: readCommandsCfg(fileCfg.commands),
+    verify: readVerifyCfg(fileCfg.verify),
     tools: readToolsCfg(fileCfg.tools),
     projectMessage: readProjectMessageCfg(fileCfg.projectMessage),
     planner: readPlannerCfg(fileCfg.planner),

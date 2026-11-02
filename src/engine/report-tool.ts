@@ -133,6 +133,19 @@ export function checkClaim(input: ClaimInput): { ok: true; claim: Claim } | { ok
   };
 }
 
+/** The newest claim a worker recorded for an order (W1.3 reads it at the settled end). A claim with no
+ *  order id (the tool was built without one) is found by the run's SDK session id instead. */
+export function latestClaim(
+  ledger: { listEvents(opts?: { kind?: string; orderId?: string; limit?: number }): Array<{ sessionId?: string; data?: Record<string, unknown> }> },
+  orderId: string,
+  sessionId?: string,
+): Claim | undefined {
+  const byOrder = ledger.listEvents({ kind: CLAIM_EVENT, orderId, limit: 1 })[0];
+  const hit = byOrder ?? (sessionId ? ledger.listEvents({ kind: CLAIM_EVENT, limit: 50 }).find((e) => e.sessionId === sessionId) : undefined);
+  const claim = hit?.data?.claim;
+  return claim && typeof claim === "object" ? (claim as Claim) : undefined;
+}
+
 /** The one-line form of a claim for a result line or a digest. */
 export function claimLine(c: Claim): string {
   const checks = c.ran.length ? ` · ran ${c.ran.length} (${c.ran.filter((r) => r.exit === 0).length} ok)` : " · ran nothing";

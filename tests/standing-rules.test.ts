@@ -45,7 +45,7 @@ test("a loop iteration is told it never pushes (a loop cannot ask the operator)"
 test("the preamble stays under the ceiling with a long codebase-memory line", () => {
   const pre = briefWithProjectDocs("");
   // 5000 (ADR-0063), plus the operator's push rule verbatim (ADR-0069).
-  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5200);
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5350) /* + the report rule (ADR-0073) */;
 });
 
 test("a loop iteration's brief starts with the standing rules, then the loop's own prompt", () => {

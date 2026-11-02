@@ -14,6 +14,8 @@ import { startOrder, type RunHandlers, type RunResult } from "../src/engine/sess
 import { trackHandoff, continuationBrief, type ContextPolicyCfg, type ContextSignals } from "../src/engine/context-policy";
 import { DEFAULT_MODELS } from "../src/config";
 import { createApiWaits } from "../src/engine/api-wait";
+import { spawnSync } from "node:child_process";
+import { DEFAULT_VERIFY_CFG } from "../src/engine/verify";
 
 const TEST_CONTEXT_POLICY: ContextPolicyCfg = {
   sweetSpotPct: 0.65, checkpointPct: 0.8, handoffNoteMaxChars: 20_000, handoffOrientationMaxSteps: 70,
@@ -1343,9 +1345,9 @@ test("the dispatch preamble tells every worker to write decisions for a non-tech
 test("the dispatch preamble stays terse — every worker pays for it on every run", () => {
   // A ceiling, not a target: the preamble is engine-owned context charged to the operator on each
   // dispatch, so a new rule must be phrased tightly rather than appended as prose.
-  expect(briefWithProjectDocs("").length).toBeLessThan(5200); // 5000 + the operator's push rule (ADR-0069)
+  expect(briefWithProjectDocs("").length).toBeLessThan(5350); // 5000 + the operator's push rule (ADR-0069) + the report rule (ADR-0073)
   // ...including the codebase-memory line the engine adds once the index is known (a long name)
-  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5200);
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + briefWithProjectDocs("")).length).toBeLessThan(5350);
 });
 
 test("the preamble keeps the operator's standing wording: the planner on the highest effort, long checks in background Bash", () => {
@@ -1947,7 +1949,7 @@ test("the final result goes to the dispatcher with wake, and is kept in the inbo
   ctl.resolve!({ ok: true, sessionId: "s", summary: "built the thing", costUsd: 0 });
   await settle();
   expect(sent).toHaveLength(0);
-  expect(d.ledger.pendingDispatcherReports().map((r) => r.text)).toEqual(["[dispatch result] eticket-v3: built the thing"]);
+  expect(d.ledger.pendingDispatcherReports().map((r) => r.text)).toEqual(["[dispatch result] eticket-v3: built the thing\nverdict unreported (the worker ended without calling `report`)"]);
   up = true; // the next dispatch's result flushes the backlog too
   const second = drivenStart();
   await dispatchToProject("eticket-v3", "t2", d, 1, { start: second.start as never, root });
@@ -2014,7 +2016,7 @@ test("without a wired dispatcher the result still reaches a live company control
   await dispatchToProject("eticket-v3", "t", d, 1, { start: start as never, root });
   ctl.resolve!({ ok: true, sessionId: "s", summary: "ok", costUsd: 0 });
   await settle();
-  expect(got).toEqual(["[dispatch result] eticket-v3: ok"]);
+  expect(got).toEqual(["[dispatch result] eticket-v3: ok\nverdict unreported (the worker ended without calling `report`)"]);
 });
 
 test("a brief pushed into an operator-opened session does not promise a result back to the dispatcher", async () => {
@@ -2333,4 +2335,82 @@ test("report rejects a shapeless claim with every problem named and records noth
   expect(res.content[0]?.text).toContain("`summary` is empty");
   expect(res.content[0]?.text).toContain("`ready` with nothing in `ran`");
   expect(d.ledger.listEvents({ kind: "report_claimed" })).toHaveLength(0);
+});
+
+// ---- the verdict at the settled end (plan W1.2–W1.4): claim + frozen policy + gate → one word ----------
+
+function gitRepo(root: string, name: string, checks: string[][]): string {
+  const dir = join(root, name);
+  mkdirSync(join(dir, ".neo"), { recursive: true });
+  const g = (...a: string[]) => { const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" }); if (r.status !== 0) throw new Error(r.stderr); return r.stdout; };
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(dir, ".neo", "checks.json"), JSON.stringify({ checks }));
+  writeFileSync(join(dir, "ok.txt"), "ok\n");
+  g("add", "-A"); g("commit", "-qm", "init");
+  return dir;
+}
+const fakeRun = (done: Promise<RunResult>) => (() => ({ followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done })) as never;
+const settledEnd = async (ledger: { listEvents(o: { kind: string }): unknown[] }) => {
+  // The gate really runs (a worktree add, the checks, a remove): wait for the end event, bounded.
+  for (let i = 0; i < 400 && ledger.listEvents({ kind: "dispatch_end" }).length === 0; i++) await new Promise((r) => setTimeout(r, 25));
+};
+
+test("a run with no claim ends unreported: recorded on dispatch_end, shown on the line, and (by default) not a bad end", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-verd-"));
+  gitRepo(root, "proj", []);
+  const { d, replies } = makeDeps();
+  await dispatchToProject("proj", "t", d, 1, { start: fakeRun(Promise.resolve({ ok: true, sessionId: "s1", summary: "all green", costUsd: 0 })), now: () => 1000, root });
+  await settledEnd(d.ledger);
+  const end = d.ledger.listEvents({ kind: "dispatch_end" })[0]!;
+  expect(end.data).toMatchObject({ ok: true, verdict: "unreported", disagree: false });
+  expect(typeof end.data?.policyHash).toBe("string");
+  expect(d.ledger.listEvents({ kind: "policy_frozen" })).toHaveLength(1);
+  expect(replies.find((r) => r.text.includes("finished"))?.text).toContain("verdict unreported");
+});
+
+test("a ready claim against a failing frozen check: verdict failed, disagreement shown, evidence recorded for that HEAD", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-verd-"));
+  const dir = gitRepo(root, "proj", [["sh", "-c", "echo nope >&2; exit 3"]]);
+  const { d, replies } = makeDeps();
+  const deps: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 1, messageId: 1 }), verify: { ...DEFAULT_VERIFY_CFG, worktreeRoot: join(root, "wt") } };
+  let orderId = "";
+  const start = (() => {
+    orderId = d.ledger.listEvents({ kind: "dispatch_start" })[0]!.orderId!;
+    d.ledger.recordEvent("report_claimed", { orderId, folder: dir, data: { claim: { status: "ready", summary: "Done.", ran: [{ cmd: "bun test", exit: 0 }], changed: ["ok.txt"], ref: null, risks: [], assumptions: [], evidence: [] } } });
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: Promise.resolve<RunResult>({ ok: true, sessionId: "s2", summary: "done", costUsd: 0 }) };
+  }) as never;
+  await dispatchToProject("proj", "t", deps, 1, { start, now: () => 1000, root });
+  await settledEnd(d.ledger);
+  const end = d.ledger.listEvents({ kind: "dispatch_end" })[0]!;
+  expect(end.data).toMatchObject({ ok: true, verdict: "failed", disagree: true, gate: { ran: true, declared: 1, passed: 0, stale: false } });
+  expect(String(end.data?.verdictReason)).toContain("exited 3");
+  const verified = d.ledger.listEvents({ kind: "dispatch_verified" })[0]!;
+  expect(verified.orderId).toBe(orderId);
+  expect((verified.data?.evidence as Array<{ tail: string }>)[0]!.tail).toContain("nope");
+  expect(replies.find((r) => r.text.includes("finished"))?.text).toContain("claim ready ≠ verdict failed");
+  expect(d.ledger.pendingDispatcherReports()[0]!.text).toContain("claim ready ≠ verdict failed: sh -c echo nope >&2; exit 3 exited 3");
+});
+
+test("requireReport turns an unreported end into a bad end with failure `verify`", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-verd-"));
+  gitRepo(root, "proj", []);
+  const { d } = makeDeps();
+  const notes: Array<[boolean, string | undefined]> = [];
+  const deps: DispatchDeps = { ...d, verify: { ...DEFAULT_VERIFY_CFG, requireReport: true } };
+  await dispatchToProject("proj", "t", deps, 1, { start: fakeRun(Promise.resolve({ ok: true, sessionId: "s3", summary: "done", costUsd: 0 })), now: () => 1000, root, hooks: { resultNote: (ok, failure) => { notes.push([ok, failure]); return undefined; } } });
+  await settledEnd(d.ledger);
+  expect(notes).toEqual([[false, "verify"]]);
+  expect(d.ledger.listEvents({ kind: "dispatch_end" })[0]!.data).toMatchObject({ ok: false, verdict: "unreported" });
+});
+
+test("verify.enabled=false freezes nothing and assigns no gate: the claim alone decides", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-verd-"));
+  gitRepo(root, "proj", [["false"]]);
+  const { d } = makeDeps();
+  const deps: DispatchDeps = { ...d, verify: { ...DEFAULT_VERIFY_CFG, enabled: false } };
+  await dispatchToProject("proj", "t", deps, 1, { start: fakeRun(Promise.resolve({ ok: true, sessionId: "s4", summary: "done", costUsd: 0 })), now: () => 1000, root });
+  await settledEnd(d.ledger);
+  expect(d.ledger.listEvents({ kind: "policy_frozen" })).toHaveLength(0);
+  expect(d.ledger.listEvents({ kind: "dispatch_end" })[0]!.data).toMatchObject({ verdict: "unreported" });
+  expect(d.ledger.listEvents({ kind: "dispatch_verified" })).toHaveLength(0);
 });

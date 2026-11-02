@@ -1477,3 +1477,21 @@ The `report` tool: a worker's end-of-work claim as data (2026-11-02, ADR-0073, p
   says; the verdict (W1.3/W1.4) is what the engine assigns after its gate.
 
 Restart-gated.
+
+Done is assigned by the engine, for one revision, under a frozen policy (2026-11-02, ADR-0073, plan W1.2–W1.4).
+
+- At dispatch start the project's verification policy is frozen (`checks.ts`: the checks in
+  `.neo/checks.json` and the hashes of the files they depend on; `policy_frozen` event). At the
+  settled end the gate (`verify.ts`) runs the FROZEN checks in a detached clean worktree at the
+  run's HEAD, with the worker-scrubbed env, keeps a bounded output tail per check, removes the
+  worktree, and marks the result stale when HEAD moved. The verdict (`verdict.ts`, one pure rule)
+  combines the worker's `report` claim, how the run ended and the gate: `ready` is earned only when
+  the run ended well, the tree is committed, the policy is unchanged and every check passed; no claim
+  is `unreported`. The verdict, its reason, the disagreement flag, the HEAD sha and the policy hash
+  ride on `dispatch_end`; the evidence on `dispatch_verified`; every result line shows
+  `verdict …` or `claim ready ≠ verdict failed: …`. Config `verify` (`docs/CONFIG.md`);
+  `requireReport` (default off) makes an unreported, stale or contradicted end a bad end for the todo
+  queue. The preamble gains the one-sentence report rule; its ceiling moves by that length (the
+  ADR-0069 precedent). Not yet: resuming the session with the failing output (the plan's retries).
+
+Restart-gated.

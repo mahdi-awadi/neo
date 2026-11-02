@@ -104,10 +104,13 @@ export function formatStopPoint(s: StopPoint): string {
 
 /** The final-result text the dispatcher receives. `ref` (the thread's ref, e.g. `m4g2`) tells the
  *  company which operator thread the result answers: `[dispatch result · m4g2]`. */
-export function dispatchResultText(p: { project: string; ok: boolean; summary: string; stop?: StopPoint; ref?: string }): string {
+export function dispatchResultText(p: { project: string; ok: boolean; summary: string; stop?: StopPoint; ref?: string; verdict?: string }): string {
   const head = `[dispatch result${p.ref ? ` · ${p.ref}` : ""}] ${p.project}: ${p.summary || (p.ok ? "done" : "failed")}`;
   const stop = p.stop ? formatStopPoint(p.stop) : "";
-  return stop ? `${head}\n${stop}` : head;
+  // The verdict (plan W1.3): what the engine assigned, beside what the worker claimed — one line,
+  // so the dispatcher never has to read the summary to know whether the work was verified.
+  const lines = [head, ...(p.verdict ? [p.verdict] : []), ...(stop ? [stop] : [])];
+  return lines.join("\n");
 }
 
 /** The default link: a follow-up into the company's LIVE control. It cannot wake an idle company

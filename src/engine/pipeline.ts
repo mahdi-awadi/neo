@@ -668,6 +668,8 @@ export function dispatchDepsFrom(deps: PipelineDeps, chatId?: number): DispatchD
     companyFolder: deps.cfg.companyFolder,
     plans: deps.cfg.plans,
     commitFinish: deps.cfg.commitFinish,
+    verify: deps.cfg.verify,
+    commands: deps.cfg.commands,
     lanes: deps.cfg.lanes,
     toolControl: deps.cfg.toolControl,
     ...(chatId !== undefined ? { dispatcher: companyLink(deps, chatId) } : {}),

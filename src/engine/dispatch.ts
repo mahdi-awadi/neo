@@ -14,7 +14,12 @@ import type { FollowUpTiming, Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
 import { checkDecision, decisionBody, DECISION_LIMITS, MAX_OPTIONS, type StructuredAsk, type DecisionInput } from "./structured-question";
-import { CLAIM_EVENT, checkClaim, claimShape, type ClaimInput } from "./report-tool";
+import { CLAIM_EVENT, checkClaim, claimShape, latestClaim, type ClaimInput } from "./report-tool";
+import { freezePolicy, resolveChecks } from "./checks";
+import { assignVerdict, verdictLine } from "./verdict";
+import { DEFAULT_VERIFY_CFG, runGate, type GateOutcome, type VerifyCfg } from "./verify";
+import type { CommandsCfg } from "./run-command";
+import { headOf } from "./git-read";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import { PAGE_MAX, type Cause, type Ledger, type MessageKind } from "./ledger";
 import type { Trace } from "./trace";
@@ -22,7 +27,7 @@ import type { Registry } from "./registry";
 import { budgetHoldMessage, heldByReserve, DEFAULT_WORK_CLASS, type Meter, type WorkClass } from "./budget";
 import type { UsageMeter } from "./usage";
 import { noteProjectStart, type TrustStore } from "./trust";
-import { runOrder, startOrder, type RunResult } from "./session-runner";
+import { defaultEnvScrubOptions, runOrder, startOrder, type RunResult } from "./session-runner";
 import { createHash } from "node:crypto";
 import {
   dispatchResultText,
@@ -96,7 +101,7 @@ import {
   type ApiCooldown,
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
-import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
+import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, REPORT_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
 import { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT } from "./chats";
 
 /** Real backoff wait (tests inject opts.sleep instead). */
@@ -150,6 +155,11 @@ export interface DispatchDeps {
   /** Config `commitFinish` (ADR-0037): a run that settles with its own changes uncommitted is asked
    *  once, in the same session, to commit them. Absent → off. */
   commitFinish?: CommitFinishCfg;
+  /** Config `verify` (plan 2026-11-02 W1.4, ADR-0073): the project's checks, frozen at start, run in a
+   *  clean worktree at the run's HEAD; the engine assigns the verdict. Absent → the shipped defaults. */
+  verify?: VerifyCfg;
+  /** Config `commands` (ADR-0072): the bounded runner's defaults for the gate's checks. */
+  commands?: CommandsCfg;
   /** Post a raised decision to the operator's high-priority Decisions channel and return the sent
    *  message id (so a reply/edit can find it). The frontend supplies this — it builds the inline
    *  keyboard from `options` (tappable answers) + an "other / type an answer" affordance. Its
@@ -421,7 +431,7 @@ export function briefWithProjectDocs(task: string): string {
     "only for a trivial edit; say so.)\n" +
     "  BUILD — implement against that spec with `superpowers:test-driven-development` (failing test first, " +
     "per acceptance criterion), then `superpowers:verification-before-completion`, a final `planner` " +
-    `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE} ${PUSH_RULE}\n\n` +
+    `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE} ${PUSH_RULE} ${REPORT_RULE}\n\n` +
     "REQUIRED — engineering baseline (operator hard rule): code that is not industry-standard is a " +
     `failure, even when it works. ${QUALITY_RULE} (1) i18n via standard per-locale catalogues (react-i18next or ` +
     "equivalent), namespaced keys, AR+EN complete — never literal UI strings or a bespoke " +
@@ -934,6 +944,17 @@ export async function dispatchToProject(
 
     const startedAt = now();
     event("dispatch_start", { orderId: order.id, folder, data: { project: name, workClass, resume: !!gatedResume, stallMs, progressMs } });
+    // The verification policy, FROZEN now (plan W1.2, ADR-0073): the checks `.neo/checks.json` declares
+    // and the hashes of the files they depend on. The gate at the end runs THIS policy, so a worker that
+    // edits the checks or `package.json` scripts during the run changes nothing for its own gate.
+    const frozenPolicy = deps.verify?.enabled === false ? undefined : faults.guard("dispatch.freezePolicy", () => freezePolicy(folder, resolveChecks(folder), now()), { folder });
+    if (frozenPolicy) {
+      event("policy_frozen", {
+        orderId: order.id,
+        folder,
+        data: { project: name, hash: frozenPolicy.hash, checks: frozenPolicy.checks, files: Object.keys(frozenPolicy.files), source: frozenPolicy.source },
+      });
+    }
     // Every registry write below is pure observation: a failure in it must never surface into the
     // worker's own path (the same contract the activity tracker has always had).
     const noteRegistry = (fn: () => void) => {
@@ -1323,13 +1344,35 @@ export async function dispatchToProject(
     // Armed, but the checkpoint could not complete (work appeared after it): the worker was told to
     // stop part-way, so this is NOT a finished task — it ends as a failure that says why.
     const checkpointLost = !!armed && !atCheckpoint && result.ok && !timedOut && !reloading;
-    const ok = result.ok && !checkpointLost;
+    const settledOk = result.ok && !checkpointLost;
+    // The verdict (plan W1.3/W1.4, ADR-0073): the worker's CLAIM (its newest `report` for this order),
+    // the GATE (the frozen policy's checks, in a clean worktree at the run's HEAD, scrubbed env), and one
+    // pure rule. A run that handed off at a checkpoint or wrapped up for a reload is not an end: no
+    // verdict. The gate is bounded (its own total time) and never throws; a gate that cannot run says so.
+    const isEnd = !atCheckpoint && !reloading;
+    const claim = isEnd ? latestClaim(deps.ledger, order.id, result.sessionId || lastSessionId) : undefined;
+    const headNow = isEnd ? headOf(folder) : undefined;
+    let gate: GateOutcome | undefined;
+    if (isEnd && frozenPolicy && deps.verify?.enabled !== false && headNow) {
+      try {
+        gate = await runGate({ folder, policy: frozenPolicy, headSha: headNow, cfg: deps.verify ?? DEFAULT_VERIFY_CFG }, { scrub: defaultEnvScrubOptions() });
+      } catch (e) {
+        gate = { ran: false, declared: frozenPolicy.checks.length, passed: 0, failed: [], stale: false, dirty: [], policyChanged: [], headSha: headNow, policyHash: frozenPolicy.hash, evidence: [], error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    const endedHow = timedOut ? "stall" : checkpointLost ? "checkpoint" : !result.ok ? (result.apiError ? `api:${result.apiError}` : "error") : undefined;
+    const verdict = isEnd ? assignVerdict({ claim, runOk: settledOk && !timedOut, failure: endedHow, gate }) : undefined;
+    // `requireReport` (config, default false while workers learn the tool): an unreported, stale or
+    // contradicted end is a bad end for the todo queue. Off, the verdict is recorded and shown only.
+    const verifyBad = !!verdict && !!deps.verify?.requireReport && (verdict.verdict === "unreported" || verdict.verdict === "stale" || verdict.disagree);
+    const ok = settledOk && !verifyBad;
     const stop = timedOut || !ok || reloading ? stopPoint() : undefined;
     // Why it ended badly, from facts only (ADR-0027) — the todo queue decides retry vs failed from this.
     const good = ok && !timedOut && !reloading;
     const failure = good
       ? undefined
-      : reloading ? "reload" : timedOut ? "stall" : checkpointLost ? "checkpoint" : !result.ok && result.apiError ? `api:${result.apiError}` : undefined;
+      : reloading ? "reload" : timedOut ? "stall" : checkpointLost ? "checkpoint" : verifyBad ? "verify" : !result.ok && result.apiError ? `api:${result.apiError}` : undefined;
+    const verdictText = verdict ? verdictLine(verdict, claim) : "";
     const summary = atCheckpoint
       ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
       : checkpointLost
@@ -1340,6 +1383,7 @@ export async function dispatchToProject(
     const stopLine = stop ? formatStopPoint(stop) : "";
     const line =
       (ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
+      (verdictText ? ` · ${verdictText}` : "") +
       (stopLine ? `\n${stopLine}` : "");
     // The run is over: every brief delivered into it is answered (spec §5). Read before the entry
     // may be removed below.
@@ -1362,15 +1406,39 @@ export async function dispatchToProject(
         sessionId: result.sessionId || undefined,
         folder,
         // workClass + costUsd together are what lets the meter report interactive vs background spend.
-        data: { project: name, workClass, ok, timedOut, costUsd: result.costUsd, apiError: result.apiError, ...(checkpointLost ? { checkpointLost: true } : {}) },
+        data: {
+          project: name,
+          workClass,
+          ok,
+          timedOut,
+          costUsd: result.costUsd,
+          apiError: result.apiError,
+          ...(checkpointLost ? { checkpointLost: true } : {}),
+          // The verdict beside the claim (W1.3): what the engine assigned, what the worker said, and the
+          // revision and policy it holds for. The evidence tails are on `dispatch_verified`.
+          ...(verdict
+            ? {
+                verdict: verdict.verdict,
+                verdictReason: verdict.reason,
+                disagree: verdict.disagree,
+                ...(claim ? { claim } : {}),
+                ...(headNow ? { headSha: headNow } : {}),
+                ...(frozenPolicy ? { policyHash: frozenPolicy.hash } : {}),
+                ...(gate
+                  ? { gate: { ran: gate.ran, declared: gate.declared, passed: gate.passed, failed: gate.failed.map((f) => ({ cmd: f.cmd, exit: f.exit })), stale: gate.stale, dirty: gate.dirty.length, policyChanged: gate.policyChanged, ...(gate.error ? { error: gate.error } : {}) } }
+                  : {}),
+              }
+            : {}),
+        },
       });
+      if (gate?.ran) event("dispatch_verified", { orderId: order.id, folder, data: { project: name, headSha: gate.headSha, policyHash: gate.policyHash, evidence: gate.evidence } });
       let note: string | undefined;
       try {
         note = hooks.resultNote?.(good, failure);
       } catch {
         note = undefined; // the queue's note is extra — the result itself must still be queued
       }
-      const report = dispatchResultText({ project: name, ok, summary, stop, ref: resultRef(deps, cause) });
+      const report = dispatchResultText({ project: name, ok, summary, stop, ref: resultRef(deps, cause), ...(verdictText ? { verdict: verdictText } : {}) });
       deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now(), cause);
     } catch {
       // observer only — never surfaces into the worker path

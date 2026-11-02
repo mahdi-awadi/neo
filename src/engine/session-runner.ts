@@ -778,6 +778,8 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
  *  RunDeps value overrides it. Absent = no scrub. */
 let defaultEnvScrub: EnvScrubOptions | undefined;
 export function setDefaultEnvScrub(o: EnvScrubOptions | undefined): void { defaultEnvScrub = o; }
+/** The scrub the daemon set, for engine-run commands that must see what a worker sees (verify.ts). */
+export function defaultEnvScrubOptions(): EnvScrubOptions | undefined { return defaultEnvScrub; }
 
 export function mergedSdkEnv(
   provider: Provider,
