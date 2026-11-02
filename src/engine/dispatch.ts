@@ -412,6 +412,53 @@ export function codebaseMemoryLine(index: { project?: string }): string {
   );
 }
 
+/** What rides BELOW the preamble and the brief (plan W1.13; W4.2 keeps the cached prefix stable): the
+ *  operator's order in their own words, so the worker checks the chief of staff's brief against its
+ *  source ("a routing note never substitutes for the original context"), and, when the folder's last
+ *  dispatch ended badly or unreported, the recovery line (check the tree, the log and GitHub before
+ *  repeating any outside action). Pure. */
+export function briefTail(brief: string, ctx: { verbatim?: string; recovery?: string }): string {
+  const parts = [brief];
+  if (ctx.verbatim) parts.push(`## Operator's order (verbatim)\n${ctx.verbatim}`);
+  if (ctx.recovery) {
+    parts.push(
+      `## Resumed after an abnormal end\n${ctx.recovery} Before repeating any outside action (push, PR, deploy, message), ` +
+        "check the working tree, `git log` and GitHub for what already happened; continue from there.",
+    );
+  }
+  return parts.join("\n\n");
+}
+
+/** Cap for the verbatim order section (the brief already carries the task; this is its source). */
+export const VERBATIM_MAX = 2000;
+
+/** The sections' inputs from the ledger: the cause message's own text (an operator's message, never the
+ *  engine's or a worker's), and the folder's previous end when it was bad or unreported. */
+export function orderTail(
+  ledger: Pick<Ledger, "messageById" | "listEvents">,
+  folder: string,
+  cause: Cause | undefined,
+  task: string,
+): { verbatim?: string; recovery?: string } {
+  const out: { verbatim?: string; recovery?: string } = {};
+  const msg = cause ? ledger.messageById(cause.msgId) : undefined;
+  if (msg && msg.role === "user" && msg.content.trim() && msg.content.trim() !== task.trim()) {
+    const text = msg.content.trim();
+    out.verbatim = text.length > VERBATIM_MAX ? `${text.slice(0, VERBATIM_MAX)}…` : text;
+  }
+  const last = ledger.listEvents({ kind: "dispatch_end", limit: 200 }).find((e) => e.folder === folder);
+  const d = last?.data ?? {};
+  if (last) {
+    const bad =
+      d.ok === false ? `The previous run of this project ended badly${typeof d.verdictReason === "string" ? ` (${d.verdictReason})` : ""}.`
+      : d.timedOut === true ? "The previous run of this project was stopped by the stall limit."
+      : d.verdict === "unreported" || d.verdict === "stale" ? `The previous run of this project ended ${String(d.verdict)}${typeof d.verdictReason === "string" ? ` (${d.verdictReason})` : ""}.`
+      : undefined;
+    if (bad) out.recovery = bad;
+  }
+  return out;
+}
+
 /** The notice tail for a run that ended on a plan card (ADR-0029): its Execute tap queues the work. */
 export function planWaitTail(d: { id: string; question: string }): string {
   return `paused: waiting on plan approval #${d.id.slice(0, 8)} — ${d.question} (its Execute tap queues the work)`;
@@ -630,7 +677,7 @@ export async function dispatchToProject(
     id: orderId,
     source: "neo",
     folder: laneWt?.path ?? folder,
-    task: briefWithProjectDocs(teamAgents ? teamLeadPreamble(laneTask) : laneTask),
+    task: briefTail(briefWithProjectDocs(teamAgents ? teamLeadPreamble(laneTask) : laneTask), orderTail(deps.ledger, folder, cause, task)),
     chatId: sideKind ? SIDE_CHAT : SUB_CHAT,
     createdAt: now(),
   };

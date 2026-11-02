@@ -2437,3 +2437,40 @@ test("the diff lint names what the run's commits did to the tests, on dispatch_e
   expect(replies.find((r) => r.text.includes("finished"))?.text).toContain("lint: 1 finding — test file deleted in tests/a.test.ts");
   expect(d.ledger.pendingDispatcherReports()[0]!.text).toContain("lint: 1 finding");
 });
+
+// ---- the brief's tail (plan W1.13): the operator's words, and the recovery line after a bad end ----
+
+test("the operator's order rides verbatim below the brief when the cause is their message; the brief itself is unchanged above it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-tail-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const msgId = d.ledger.insertMessage({ chatId: 1, role: "user", content: "  make the login page say 'Welcome back' in both languages ", at: 5 });
+  let seen: Order | undefined;
+  const start = ((o: Order) => { seen = o; return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: Promise.resolve<RunResult>({ ok: true, sessionId: "s", summary: "ok", costUsd: 0 }) }; }) as never;
+  await dispatchToProject("eticket-v3", "CRAFTED BRIEF", d, 1, { start, now: () => 1, root, cause: { msgId, threadId: msgId } });
+  expect(seen!.task.startsWith(briefWithProjectDocs("CRAFTED BRIEF"))).toBe(true);
+  expect(seen!.task).toContain("## Operator's order (verbatim)\nmake the login page say 'Welcome back' in both languages");
+  expect(seen!.task).not.toContain("Resumed after an abnormal end");
+});
+
+test("a dispatch after a bad or unreported end of the same project carries the recovery line; a good end does not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-tail-"));
+  mkdirSync(join(root, "eticket-v3"));
+  const { d } = makeDeps();
+  const folder = join(root, "eticket-v3");
+  const ends = () => d.ledger.listEvents({ kind: "dispatch_end", limit: 100 }).length;
+  const run = async () => {
+    let seen: Order | undefined;
+    const before = ends();
+    const start = ((o: Order) => { seen = o; return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: Promise.resolve<RunResult>({ ok: true, sessionId: "s", summary: "ok", costUsd: 0 }) }; }) as never;
+    await dispatchToProject("eticket-v3", "brief", d, 1, { start, now: () => 1, root });
+    for (let i = 0; i < 400 && ends() === before; i++) await new Promise((r) => setTimeout(r, 25)); // this run's own end lands (async)
+    return seen!.task;
+  };
+  d.ledger.recordEvent("dispatch_end", { folder, data: { ok: false, verdict: "failed", verdictReason: "bun test exited 1" } });
+  expect(await run()).toContain("## Resumed after an abnormal end\nThe previous run of this project ended badly (bun test exited 1). Before repeating any outside action");
+  d.ledger.recordEvent("dispatch_end", { folder, data: { ok: true, verdict: "unreported" } });
+  expect(await run()).toContain("ended unreported");
+  d.ledger.recordEvent("dispatch_end", { folder, data: { ok: true, verdict: "ready" } });
+  expect(await run()).toBe(briefWithProjectDocs("brief"));
+});

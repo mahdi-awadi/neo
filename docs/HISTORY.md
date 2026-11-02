@@ -1506,3 +1506,14 @@ The diff lint: what a run's commits did to the things that verify it (2026-11-02
   and both shas ride on `dispatch_end`.
 
 Restart-gated.
+
+The brief's tail: the operator's order verbatim, and a recovery line after a bad end (2026-11-02, plan W1.13).
+
+- Below the preamble and the chief of staff's brief (so the cached prefix stays stable), a dispatched
+  order now carries `## Operator's order (verbatim)` — the cause message's own text, when it is the
+  operator's — so the worker checks the brief against its source; and, when the project's previous
+  dispatch ended badly, by the stall limit, unreported or stale, `## Resumed after an abnormal end`
+  with the reason and the rule: check the tree, `git log` and GitHub before repeating any outside
+  action. Pure helpers `briefTail` / `orderTail` in `dispatch.ts`; a good previous end adds nothing.
+
+Restart-gated.
