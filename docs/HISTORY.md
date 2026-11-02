@@ -1464,3 +1464,16 @@ A read-only ledger metrics snapshot (2026-11-02, plan W0.7).
   a subscription), interventions per dispatch (decisions and approvals attributed to the dispatched
   order or session), and one named line per number a later phase fills in (claim ≠ verdict W1.3,
   tokens per verified task W1.12/W4.1, reopened incidents W2.8, merged PRs W3.6, window share W4.1).
+
+The `report` tool: a worker's end-of-work claim as data (2026-11-02, ADR-0073, plan W1.1).
+
+- Every operator-path worker gets `report`, gated exactly like `ask_operator` (never the customer
+  path, never a consult run). A claim is a schema (`src/engine/report-tool.ts`): status in {ready,
+  blocked, failed, dropped, no_change_needed, handback}, one plain summary, the commands run with exit
+  codes, the files changed, a PR or commit ref or null, risks, assumptions, evidence. The engine
+  rejects a shapeless claim with every problem named (`ready` with nothing run, a non-zero exit under
+  `ready`, a hash in the summary, `no_change_needed` without evidence, `handback` without a reason)
+  and records a good one as a `report_claimed` event on the order. The claim is what the worker
+  says; the verdict (W1.3/W1.4) is what the engine assigns after its gate.
+
+Restart-gated.

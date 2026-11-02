@@ -14,6 +14,7 @@ import type { FollowUpTiming, Order, SessionInfo } from "../types";
 import type { NeoConfig, WorkerPathName, WorkerProfile, MemoryCfg } from "../config";
 import type { Priority } from "./priority";
 import { checkDecision, decisionBody, DECISION_LIMITS, MAX_OPTIONS, type StructuredAsk, type DecisionInput } from "./structured-question";
+import { CLAIM_EVENT, checkClaim, claimShape, type ClaimInput } from "./report-tool";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import { PAGE_MAX, type Cause, type Ledger, type MessageKind } from "./ledger";
 import type { Trace } from "./trace";
@@ -1855,6 +1856,48 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
               },
             ],
           };
+        },
+      ),
+    );
+  }
+  // `report` (plan 2026-11-02 W1.1, ADR-0073): the worker's END-OF-WORK CLAIM as a schema, never prose.
+  // Same gate as `ask_operator` (an operator surface wired `postDecision`; never the customer path).
+  // The engine records the claim as an event; the settle path reads the newest one for the order,
+  // runs the gate and assigns the VERDICT — a claim is what the worker says, not what happened.
+  if (!consult && deps.postDecision) {
+    tools.push(
+      tool(
+        "report",
+        "Your LAST call before you end a dispatched task: declare what happened, as data. The engine verifies it (it reruns the project's checks on your commit) and assigns the outcome; " +
+          "a task that ends without this call is recorded as UNREPORTED, never as done. `ready` means the deliverable is complete, self-reviewed and every check you list exited 0; " +
+          "an incomplete draft is `blocked` (say what you need) or `failed`, never `ready`. Commit your work before calling (the engine verifies the commit, not the tree). " +
+          "Call it once; if the engine rejects the claim it tells you every problem, fix them and call again.",
+        claimShape,
+        async (args: ClaimInput) => {
+          const checked = checkClaim(args);
+          if (!checked.ok) {
+            return {
+              isError: true,
+              content: [{ type: "text" as const, text: "Not recorded — fix every problem and call report again:\n" + checked.problems.map((p) => `- ${p}`).join("\n") }],
+            };
+          }
+          const { claim } = checked;
+          faults.guard("report.record", () =>
+            deps.ledger.recordEvent(CLAIM_EVENT, {
+              ...(opts.orderId ? { orderId: opts.orderId } : {}),
+              ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+              folder: opts.folder,
+              data: { ...(opts.projectName ? { project: opts.projectName } : {}), claim },
+              ...(opts.cause?.() ? { cause: opts.cause() } : {}),
+            }),
+          );
+          const next =
+            claim.status === "handback"
+              ? "The request goes back to the dispatcher with your reason."
+              : claim.status === "blocked"
+                ? "The operator sees what you need; their answer resumes this session."
+                : "The engine now verifies it and assigns the outcome.";
+          return { content: [{ type: "text" as const, text: `Recorded: ${claim.status}. ${next} End your turn now; do not start new work.` }] };
         },
       ),
     );

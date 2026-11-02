@@ -2288,3 +2288,49 @@ test("the preamble sends work for another project through project_notes", () => 
   expect(out).toContain("`project_notes`");
   expect(out).not.toContain("goes back to Neo to dispatch");
 });
+
+// ---- `report` (plan 2026-11-02 W1.1): the worker's end-of-work claim, recorded as data -------------
+
+const CLAIM_ARGS = {
+  status: "ready",
+  summary: "The settings page saves without the duplicate warning.",
+  ran: [{ cmd: "bun test", exit: 0 }],
+  changed: ["src/settings.ts"],
+  ref: { commit: "0badf00d1" },
+  risks: [],
+  assumptions: [],
+};
+
+test("report attaches on operator paths exactly like ask_operator (never without postDecision)", () => {
+  const { d } = makeDeps();
+  expect(neoToolNames(neoMcpServers(d, 1, { dispatch: false, folder: "/home/acme" }))).not.toContain("report");
+  const withPost: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 1, messageId: 1 }) };
+  expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme" }))).toContain("report");
+  expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: true, folder: "/home/acme" }))).toContain("report");
+  expect(neoToolNames(neoMcpServers(withPost, 1, { dispatch: false, folder: "/home/acme", profile: "consult" }))).not.toContain("report");
+});
+
+test("report records the normalised claim as a report_claimed event on the order, and tells the worker to end its turn", async () => {
+  const { d } = makeDeps();
+  const deps: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 1, messageId: 1 }) };
+  const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", projectName: "acme", orderId: "ord-9", sessionId: "s-9" }), "report")!;
+  const res = await handler(CLAIM_ARGS, {});
+  expect(res.isError).toBeFalsy();
+  expect(res.content[0]?.text).toContain("Recorded: ready");
+  expect(res.content[0]?.text).toContain("End your turn now");
+  const ev = d.ledger.listEvents({ kind: "report_claimed", orderId: "ord-9" });
+  expect(ev).toHaveLength(1);
+  expect(ev[0]).toMatchObject({ orderId: "ord-9", sessionId: "s-9", folder: "/home/acme" });
+  expect(ev[0]!.data).toMatchObject({ project: "acme", claim: { status: "ready", summary: CLAIM_ARGS.summary, ref: { commit: "0badf00d1" }, evidence: [] } });
+});
+
+test("report rejects a shapeless claim with every problem named and records nothing", async () => {
+  const { d } = makeDeps();
+  const deps: DispatchDeps = { ...d, postDecision: async () => ({ chatId: 1, messageId: 1 }) };
+  const handler = neoToolHandler(neoMcpServers(deps, 1, { dispatch: false, folder: "/home/acme", orderId: "ord-9" }), "report")!;
+  const res = await handler({ ...CLAIM_ARGS, summary: "", ran: [] }, {});
+  expect(res.isError).toBe(true);
+  expect(res.content[0]?.text).toContain("`summary` is empty");
+  expect(res.content[0]?.text).toContain("`ready` with nothing in `ran`");
+  expect(d.ledger.listEvents({ kind: "report_claimed" })).toHaveLength(0);
+});
