@@ -27,6 +27,15 @@ test("config.json overrides codebaseMemoryIndexTimeoutMs", () => {
   expect(loadConfig(d).codebaseMemoryIndexTimeoutMs).toBe(1000);
 });
 
+test("telegram plan-card retry delay is configurable and invalid values fail closed to the dev-safe default", () => {
+  expect(loadConfig(dir()).telegramPlanEditRetryMs).toBe(250);
+  const d = dir();
+  writeFileSync(join(d, "config.json"), JSON.stringify({ telegramPlanEditRetryMs: 750 }));
+  expect(loadConfig(d).telegramPlanEditRetryMs).toBe(750);
+  writeFileSync(join(d, "config.json"), JSON.stringify({ telegramPlanEditRetryMs: 0 }));
+  expect(loadConfig(d).telegramPlanEditRetryMs).toBe(250);
+});
+
 test("stitchApiKey reads STITCH_API_KEY from env (empty when unset)", () => {
   // Hermetic: control the var directly (Bun auto-loads the repo .env into process.env).
   const saved = process.env.STITCH_API_KEY;

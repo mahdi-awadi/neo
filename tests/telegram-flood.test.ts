@@ -53,6 +53,30 @@ describe("createFloodGate", () => {
     expect(h.logs[0]).toContain("chat not found");
   });
 
+  test("retries an idempotent plan-caption edit once after a transient Telegram 502", async () => {
+    const h = harness();
+    const results: ApiResult[] = [
+      { ok: false, error_code: 502, description: "Bad Gateway" },
+      OK,
+    ];
+    let calls = 0;
+    const r = await h.gate.run("editMessageCaption", 7, async () => results[calls++]!);
+    expect(r.ok).toBe(true);
+    expect(calls).toBe(2);
+    expect(h.slept).toHaveLength(1);
+    expect(h.logs).toHaveLength(1);
+    expect(h.logs[0]).toContain("502");
+  });
+
+  test("does not retry a non-idempotent send after a transient Telegram 502", async () => {
+    const h = harness();
+    let calls = 0;
+    const r = await h.gate.run("sendDocument", 7, async () => (calls++, { ok: false, error_code: 502, description: "Bad Gateway" }));
+    expect(r.ok).toBe(false);
+    expect(calls).toBe(1);
+    expect(h.slept).toEqual([]);
+  });
+
   test("a short 429 waits retry_after and retries once", async () => {
     const h = harness(30_000);
     const results = [tooMany(3), OK];

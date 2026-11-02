@@ -3,8 +3,8 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { Api } from "grammy";
-import { createTelegramBot, createPlanEditor, createPlanPoster, planKeyboard } from "../src/frontends/telegram";
+import { Api } from "grammy";
+import { createTelegramBot, createPlanEditor, createPlanPoster, installFloodGate, planKeyboard } from "../src/frontends/telegram";
 import { planActions, PLAN_LABELS, type EditPlanCard } from "../src/engine/plans";
 import en from "../src/frontends/web/locales/en/console.json";
 import ar from "../src/frontends/web/locales/ar/console.json";
@@ -43,6 +43,36 @@ test("createPlanEditor: edits the card's caption and buttons in place; 'not modi
   expect(callbacks((calls[0]![2] as { reply_markup: ReturnType<typeof planKeyboard> }).reply_markup)).toEqual([["Done", "plan:5:2:done"], ["Drop", "plan:5:2:drop"]]);
   const failing = { editMessageCaption: async () => Promise.reject(new Error("boom")) } as unknown as Api;
   expect(await createPlanEditor(failing)({ chatId: 1, messageId: 1 }, { planId: 5, version: 1, caption: "c", actions: [] })).toBe(false);
+});
+
+test("createPlanEditor: a transient Telegram gateway response retries the idempotent caption edit", async () => {
+  let calls = 0;
+  const api = installFloodGate(new Api("123456:TESTTOKEN", {
+    fetch: (async () => {
+      calls++;
+      const response = calls === 1
+        ? { ok: false, error_code: 502, description: "Bad Gateway" }
+        : { ok: true, result: true };
+      return new Response(JSON.stringify(response), { headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch,
+  }));
+  expect(await createPlanEditor(api)({ chatId: -100, messageId: 7 }, { planId: 5, version: 2, caption: "c", actions: ["done"] })).toBe(true);
+  expect(calls).toBe(2);
+});
+
+test("createPlanEditor: an ambiguous transient edit is successful when Telegram already applied it", async () => {
+  let calls = 0;
+  const api = installFloodGate(new Api("123456:TESTTOKEN", {
+    fetch: (async () => {
+      calls++;
+      const response = calls === 1
+        ? { ok: false, error_code: 502, description: "Bad Gateway" }
+        : { ok: false, error_code: 400, description: "Bad Request: message is not modified" };
+      return new Response(JSON.stringify(response), { headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch,
+  }));
+  expect(await createPlanEditor(api)({ chatId: -100, messageId: 7 }, { planId: 5, version: 2, caption: "c", actions: ["done"] })).toBe(true);
+  expect(calls).toBe(2);
 });
 
 test("createPlanPoster: the file as a document in the target chat, with its caption and buttons; no target or a failed send → undefined", async () => {

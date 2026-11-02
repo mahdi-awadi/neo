@@ -23,6 +23,8 @@ export interface FloodGateOpts {
   log?: (line: string) => void;
   /** Longest 429 wait handled by sleeping and retrying; longer ones block the chat. */
   maxWaitMs: number;
+  /** Backoff before the one safe retry for a transient plan-card caption edit. */
+  planEditRetryMs?: number;
   /** Called once when a blocked chat sends again, with how many messages were not delivered. */
   onRecovered?: (chatId: number | string, dropped: number) => void;
 }
@@ -32,11 +34,24 @@ export interface FloodGate {
 }
 
 const GATED_METHOD = /^(send|edit|copy|forward)/;
+const TRANSIENT_PLAN_EDIT_STATUS = new Set([502, 503, 504]);
+const DEFAULT_PLAN_EDIT_RETRY_MS = 250;
+
+/** A caption edit converges on one desired state, unlike a send which could duplicate a message.
+ * Telegram can return a gateway error after applying that edit, and the second attempt then gets
+ * the harmless "message is not modified" response that the plan editor already accepts. */
+function retryablePlanCaptionEdit(method: string, result: ApiResult): boolean {
+  return method === "editMessageCaption" && TRANSIENT_PLAN_EDIT_STATUS.has(result.error_code ?? 0);
+}
 
 export function createFloodGate(opts: FloodGateOpts): FloodGate {
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const log = opts.log ?? ((line: string) => console.error(line));
+  const requestedPlanEditRetryMs = opts.planEditRetryMs;
+  const planEditRetryMs: number = typeof requestedPlanEditRetryMs === "number" && Number.isInteger(requestedPlanEditRetryMs) && requestedPlanEditRetryMs > 0
+    ? requestedPlanEditRetryMs
+    : DEFAULT_PLAN_EDIT_RETRY_MS;
   const blocks = new Map<string, { until: number; dropped: number }>();
 
   const retryMs = (r: ApiResult) => (r.parameters?.retry_after ?? 0) * 1000;
@@ -67,6 +82,11 @@ export function createFloodGate(opts: FloodGateOpts): FloodGate {
       if (!result.ok && result.error_code === 429 && retryMs(result) <= opts.maxWaitMs) {
         log(`[telegram] ${method} to chat ${key}: 429, waiting ${retryMs(result)}ms then retrying once`);
         await sleep(retryMs(result));
+        result = await call();
+      }
+      if (!result.ok && retryablePlanCaptionEdit(method, result)) {
+        log(`[telegram] ${method} to chat ${key}: ${result.error_code}, waiting ${planEditRetryMs}ms then retrying once`);
+        await sleep(planEditRetryMs);
         result = await call();
       }
       if (result.ok) return result;

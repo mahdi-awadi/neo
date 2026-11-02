@@ -262,6 +262,7 @@ export function createTelegramBot(
   // the operator is told how many messages they missed.
   floodGate = createFloodGate({
     maxWaitMs: cfg.telegramFloodMaxWaitMs,
+    planEditRetryMs: cfg.telegramPlanEditRetryMs,
     onRecovered: (chatId, dropped) =>
       faults.contain("telegram.send", () =>
         bot.api.sendMessage(
@@ -1333,4 +1334,3 @@ export function superviseTelegramPolling(
   };
   void run().catch((e) => deps.report(e)); // report/exit/sleep throwing must not become a rejection
 }
-
