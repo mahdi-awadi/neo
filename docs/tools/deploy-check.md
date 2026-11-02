@@ -27,6 +27,11 @@ steps:
 ---
 ## How to call
 
+Native GitHub protection/rulesets are optional, including for private repositories; absence or a paid
+feature limitation is not a deployment prerequisite. Preserve existing protection and all independent
+[release safeguards](../release-policy.md). This recipe verifies health only, not authorization or the
+CI/security, source/image identity, backup/migration, concurrency and rollback checks.
+
 1. Find the service's health URL and its key pages in the project's own deploy docs (`docs/DEPLOY.md`
    or the equivalent). Request the health URL first (`curl -fsS <url>`); a non-2xx status is the finding.
 2. Follow the steps above. Check the running build: when the health reply has a version or commit, compare

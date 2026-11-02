@@ -4,12 +4,13 @@ import { expect, test } from "bun:test";
 import { briefForSize, briefWithProjectDocs, codebaseMemoryLine } from "../src/engine/dispatch";
 import { stripEngineBlocks, unwrapContinuation } from "../src/engine/history/extract";
 import { continuationBrief } from "../src/engine/context-policy";
-import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "../src/engine/standing-rules";
+import { FINISH_RULE, GITHUB_PROTECTION_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "../src/engine/standing-rules";
 import { ORDER_SIZES } from "../src/engine/order-size";
 
 const sha256 = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
-// Characterization: briefWithProjectDocs("TASK") as it was before the paragraphs moved into constants.
-const BIG_SHA = "3f991cd6c5c7302dae53bf92ddc9b8f2343cd933b530e00bca6f3fe453926a31";
+// ADR-0079 adds only the delivery policy; retain the earlier characterization as well.
+const PRE_POLICY_BIG_SHA = "3f991cd6c5c7302dae53bf92ddc9b8f2343cd933b530e00bca6f3fe453926a31";
+const BIG_SHA = "79f85c6687ec6444c90a0025345963e26c4601f33fa4b90deb9b90665fee1680";
 const TASK = "Fix the seat release: when a booking is cancelled the bus seats are not freed.\n\nSee todo #884.";
 const LONG_MEMORY_LINE = codebaseMemoryLine({ project: "home-" + "x".repeat(80) });
 
@@ -22,8 +23,10 @@ const paragraph = (head: string) => {
 const SECURITY = paragraph("REQUIRED — security:");
 const FENCE = paragraph("REQUIRED — stay in this project:");
 
-test("characterization: the big preamble is unchanged", () => {
+test("characterization: the big preamble adds only the ADR-0079 delivery policy", () => {
   expect(sha256(briefWithProjectDocs("TASK"))).toBe(BIG_SHA);
+  const earlier = briefWithProjectDocs("TASK").replace(`REQUIRED — delivery policy: ${GITHUB_PROTECTION_RULE}\n\n`, "");
+  expect(sha256(earlier)).toBe(PRE_POLICY_BIG_SHA);
 });
 
 test("big is today's preamble, byte for byte", () => {
@@ -65,10 +68,11 @@ test("each rule sentence appears once in each size", () => {
 test("the ceilings hold, also with the long codebase-memory line", () => {
   const withLine = (b: string) => `${LONG_MEMORY_LINE}\n\n${b}`;
   const q = briefForSize("quick", ""), s = briefForSize("standard", "");
-  expect(q.length).toBeLessThan(3_000);
-  expect(withLine(q).length).toBeLessThan(3_700);
-  expect(s.length).toBeLessThan(4_500);
-  expect(withLine(s).length).toBeLessThan(5_200);
+  // ADR-0079 adds the shared optional-protection policy without dropping safeguards.
+  expect(q.length).toBeLessThan(3_200);
+  expect(withLine(q).length).toBeLessThan(3_900);
+  expect(s.length).toBeLessThan(4_650);
+  expect(withLine(s).length).toBeLessThan(5_300);
   expect(q.length).toBeLessThan(s.length);
   expect(s.length).toBeLessThan(briefForSize("big", "").length);
 });

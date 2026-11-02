@@ -2,13 +2,31 @@
 // rich plans made with the `planner` subagent (the strongest model at the highest effort), production-grade
 // code, the best technology with an ADR. One text, used by every brief the engine builds.
 import { expect, test } from "bun:test";
-import { briefWithProjectDocs, codebaseMemoryLine } from "../src/engine/dispatch";
+import { briefForSize, briefWithProjectDocs, codebaseMemoryLine } from "../src/engine/dispatch";
 import { consultPrompt } from "../src/engine/consult";
-import { FINISH_RULE, LOOP_PUSH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, TECH_RULE, loopBrief } from "../src/engine/standing-rules";
+import { FINISH_RULE, GITHUB_PROTECTION_RULE, LOOP_PUSH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, TECH_RULE, loopBrief, plannerPrompt } from "../src/engine/standing-rules";
 import { profileDeps } from "../src/engine/worker-profile";
 import { DEFAULT_MODELS, DEFAULT_PLANNER } from "../src/config";
 
 const cfg = (over: Record<string, unknown> = {}) => ({ workers: {} as never, workerEnv: {}, models: DEFAULT_MODELS, ...over });
+
+test("all worker and advisory briefs treat native GitHub protection as optional while retaining delivery safeguards", () => {
+  const briefs = [
+    ...(["quick", "standard", "big"] as const).map((size) => briefForSize(size, "TASK")),
+    loopBrief("TASK"), plannerPrompt(),
+    consultPrompt({ asker: "gold", need: "info", question: "May a private repo publish?", matches: [], answerMaxChars: 2000 }),
+  ];
+  for (const brief of briefs) {
+    expect(brief.split(GITHUB_PROTECTION_RULE)).toHaveLength(2);
+    const policy = "GitHub branch protection/rulesets are optional hardening";
+    expect(brief.split(policy)).toHaveLength(2);
+    expect(brief).toContain("including private repos");
+    expect(brief).toContain("never require paid upgrades or native protection for publication/deployment");
+    expect(brief).toContain("Preserve configured protection");
+    for (const check of ["CI/tests/security gates", "least-privilege secrets", "source/image identity", "backups/migrations", "release concurrency", "health checks", "rollback"]) expect(brief).toContain(check);
+    expect(brief).toContain("grants no deployment authority");
+  }
+});
 
 test("the dispatch preamble carries all five standing rules once, merged into its sections", () => {
   const pre = briefWithProjectDocs("TASK");
@@ -44,8 +62,8 @@ test("a loop iteration is told it never pushes (a loop cannot ask the operator)"
 
 test("the preamble stays under the ceiling with a long codebase-memory line", () => {
   const pre = briefWithProjectDocs("");
-  // 5000 (ADR-0063), plus the operator's push rule verbatim (ADR-0069).
-  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5200);
+  // ADR-0079 explicitly budgets the new delivery policy, retaining all existing safeguards.
+  expect((codebaseMemoryLine({ project: "home-" + "x".repeat(80) }) + "\n\n" + pre).length).toBeLessThan(5650);
 });
 
 test("a loop iteration's brief starts with the standing rules, then the loop's own prompt", () => {

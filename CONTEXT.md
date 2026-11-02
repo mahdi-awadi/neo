@@ -1521,6 +1521,19 @@ whose review hash matches the card. Files sent with `send_file` before the updat
 their bytes, and a bot cannot read Telegram's history.
 _Avoid_: imported, recovered
 
+## Delivery policy
+
+**GitHub repository protection**:
+Optional host-enforced hardening (branch protection and repository rulesets), including on private
+repositories. Existing configured protection remains applicable; its absence or paid availability
+does not determine publication/deployment readiness or authority.
+_Avoid_: launch prerequisite, required paid upgrade
+
+**Independent delivery safeguards**:
+The existing CI/test/security, scoped-secret, source/image identity, backup/migration, release
+concurrency, health and rollback checks that remain required independently of GitHub protection.
+_Avoid_: replacement approval gate, protection waiver
+
 ## Scoped Codex production work
 
 **Codex production-launch grant**:

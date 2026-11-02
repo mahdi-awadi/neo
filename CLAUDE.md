@@ -100,6 +100,15 @@ Every dispatched worker gets this automatically: the dispatch preamble (`briefWi
 `src/engine/dispatch.ts`) carries it, because a worker sent into another folder loads *that*
 project's CLAUDE.md, never this one. Don't re-type it into briefs.
 
+## GitHub protection policy (operator, 2026-11-02)
+
+Native GitHub branch protection/rulesets and paid protection features are **optional hardening**,
+including private repositories; never make them prerequisites to publication/deployment or demand
+a paid upgrade. Preserve configured protection and independent CI/test/security gates, least-privilege
+secrets, verified source/image identity, backups/migrations, release concurrency, health and rollback.
+This adds no approval gate or deployment authority. See [release policy](docs/release-policy.md)
+and ADR-0079; the shared dispatch/advice rule lives in `src/engine/standing-rules.ts`.
+
 ## Security checks (ADR-0024)
 
 The kit in `tools/security/` scans at four layers: each edited file (Claude Code hook), pre-commit,

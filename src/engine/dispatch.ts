@@ -96,7 +96,7 @@ import {
   type ApiCooldown,
 } from "./api-retry";
 import { heldLine, type ApiWaits, type WaitEndReason } from "./api-wait";
-import { FINISH_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
+import { FINISH_RULE, GITHUB_PROTECTION_RULE, PLAN_RULE, PUSH_RULE, QUALITY_RULE, STOP_RULE, TECH_RULE } from "./standing-rules";
 import { DEFAULT_SIZES_CFG, ORDER_SIZES, PLAN_WAITS_TEXT, SIZE_GUIDE, operatorUpLine, parseSizeOverride, resolveSize, sizeReason, sizeTag, type OrderSize, type SizesCfg, type SizeUp } from "./order-size";
 import { createSizeGuard, type SizeEnd, type SizeGuard } from "./size-guard";
 import { SUB_CHAT, CUSTOMER_CHAT, SIDE_CHAT } from "./chats";
@@ -485,6 +485,7 @@ export function briefWithProjectDocs(task: string): string {
     `review and \`requesting-code-review\` before claiming done. ${FINISH_RULE} ${PUSH_RULE}\n\n` +
     BASELINE_PARAGRAPH +
     SECURITY_PARAGRAPH +
+    `REQUIRED — delivery policy: ${GITHUB_PROTECTION_RULE}\n\n` +
     FENCE_PARAGRAPH +
     CHALLENGE_PARAGRAPH +
     ALIVE_PARAGRAPH +
@@ -515,6 +516,7 @@ function quickBrief(task: string): string {
     "never literal UI strings; numbers stay LTR in RTL. (2) `.env`, dev by default. (3) Docker. (4) No hardcoding. " +
     "(5) Reuse the existing code, never a second implementation.\n\n" +
     SECURITY_PARAGRAPH +
+    `REQUIRED — delivery policy: ${GITHUB_PROTECTION_RULE}\n\n` +
     FENCE_PARAGRAPH +
     "REQUIRED — ask the operator (ask_operator) only for a real decision (product/UX policy, cost, an irreversible, prod or " +
     "external action): for a non-technical reader, in the operator's language, one decision per card. Otherwise do the " +
@@ -543,6 +545,7 @@ function standardBrief(task: string): string {
     "  RESULT — end with a short result: what changed (files), the tests, the commits.\n\n" +
     BASELINE_PARAGRAPH +
     SECURITY_PARAGRAPH +
+    `REQUIRED — delivery policy: ${GITHUB_PROTECTION_RULE}\n\n` +
     FENCE_PARAGRAPH +
     CHALLENGE_PARAGRAPH +
     ALIVE_PARAGRAPH +

@@ -26,13 +26,17 @@ export const QUALITY_RULE = "Code is production-grade and well tested.";
 export const TECH_RULE =
   "Pick the best technology (a real queue, search or time-series store) for correctness, scale and quality, never the quickest hack; record it and the rejected alternatives in an ADR.";
 
+/** Operator policy, 2026-11-02 (ADR-0079): optional host hardening is not release authority. */
+export const GITHUB_PROTECTION_RULE =
+  "GitHub branch protection/rulesets are optional hardening, including private repos; never require paid upgrades or native protection for publication/deployment. Preserve configured protection. Keep CI/tests/security gates, least-privilege secrets, verified source/image identity, safe backups/migrations, release concurrency, health checks and rollback. This rule grants no deployment authority.";
+
 /** When a worker may stop (merged into "challenge yourself": the same list of what the operator decides). */
 export const STOP_RULE = "Stop only for such a decision or a hard blocker, and say what remains.";
 
 /** A loop iteration's brief: the standing rules, then the loop's own standing prompt (ADR-0004 amended by
  *  ADR-0063: the engine adds the rules, it still never rewrites the loop's prompt). */
 export function loopBrief(prompt: string): string {
-  return `Standing rules (Neo): plan the iteration fully. ${FINISH_RULE} Stop only for a real operator decision or a hard blocker, and say what remains. ${LOOP_PUSH_RULE} ${QUALITY_RULE} ${TECH_RULE}\n\n${prompt}`;
+  return `Standing rules (Neo): plan the iteration fully. ${FINISH_RULE} Stop only for a real operator decision or a hard blocker, and say what remains. ${LOOP_PUSH_RULE} ${QUALITY_RULE} ${TECH_RULE} ${GITHUB_PROTECTION_RULE}\n\n${prompt}`;
 }
 
 /** The `planner` subagent's own instructions (its model and effort come from config `planner`). */
@@ -42,6 +46,7 @@ export function plannerPrompt(): string {
     "Read the project's rule files and the code first (the codebase-memory map when there is one).",
     PLAN_RULE,
     TECH_RULE,
+    GITHUB_PROTECTION_RULE,
     "Follow the project's design discipline: CONTEXT.md terms, an ADR per real decision with the rejected alternatives, acceptance criteria and edge cases, one clean seam.",
     "Write a spec or plan under docs/superpowers/specs/ or docs/superpowers/plans/. For a review, check the change against its spec and report findings, most severe first, with file:line.",
     "Return a short summary of what you wrote or found.",

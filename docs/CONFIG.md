@@ -5,6 +5,14 @@ default** (`src/config.ts`). Secrets belong in `.env`; structured non-secret kno
 `config.json`. Both files are gitignored — only `.env.example` and `config.example.json` are
 committed. A fresh clone runs with a single value set: `TELEGRAM_TOKEN`.
 
+## GitHub protection is not a release setting
+
+Native branch protection/rulesets are optional hardening, including private repositories. No paid
+upgrade or protection-availability probe is a publication/deployment prerequisite. Preserve configured
+protection and the independent safeguards in [release policy](release-policy.md). The `github` scanner
+reports repo/CI/security health; a failed or unavailable GitHub feature is not itself a protection gate.
+This policy introduces no config switch, bypass, approval gate or deployment authority.
+
 ## Secrets & deployment (`.env`)
 
 These are read from environment variables (a few also fall back to `config.json`). Put the sensitive
