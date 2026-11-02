@@ -2414,3 +2414,26 @@ test("verify.enabled=false freezes nothing and assigns no gate: the claim alone 
   expect(d.ledger.listEvents({ kind: "dispatch_end" })[0]!.data).toMatchObject({ verdict: "unreported" });
   expect(d.ledger.listEvents({ kind: "dispatch_verified" })).toHaveLength(0);
 });
+
+test("the diff lint names what the run's commits did to the tests, on dispatch_end and on both result lines (W1.7)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "neo-lint-"));
+  const dir = gitRepo(root, "proj", []);
+  const g = (...a: string[]) => { const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" }); if (r.status !== 0) throw new Error(r.stderr); };
+  mkdirSync(join(dir, "tests"), { recursive: true });
+  writeFileSync(join(dir, "tests", "a.test.ts"), "test('x', () => { expect(1).toBe(1); });\n");
+  g("add", "-A"); g("commit", "-qm", "base with a test");
+  const { d, replies } = makeDeps();
+  const start = (() => {
+    // the worker's run: it deletes the test and commits
+    g("rm", "-q", "tests/a.test.ts"); g("commit", "-qm", "remove the test");
+    return { followUp: () => {}, queued: () => 0, interrupt: async () => {}, close: () => {}, done: Promise.resolve<RunResult>({ ok: true, sessionId: "s5", summary: "done", costUsd: 0 }) };
+  }) as never;
+  await dispatchToProject("proj", "t", d, 1, { start, now: () => 1000, root });
+  await settledEnd(d.ledger);
+  const end = d.ledger.listEvents({ kind: "dispatch_end" })[0]!;
+  expect(end.data?.lint).toEqual([{ kind: "test_file_deleted", path: "tests/a.test.ts", detail: "1 lines" }]);
+  expect(typeof end.data?.baseSha).toBe("string");
+  expect(end.data?.baseSha).not.toBe(end.data?.headSha);
+  expect(replies.find((r) => r.text.includes("finished"))?.text).toContain("lint: 1 finding — test file deleted in tests/a.test.ts");
+  expect(d.ledger.pendingDispatcherReports()[0]!.text).toContain("lint: 1 finding");
+});

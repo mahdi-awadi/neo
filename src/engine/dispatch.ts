@@ -19,7 +19,8 @@ import { freezePolicy, resolveChecks } from "./checks";
 import { assignVerdict, verdictLine } from "./verdict";
 import { DEFAULT_VERIFY_CFG, runGate, type GateOutcome, type VerifyCfg } from "./verify";
 import type { CommandsCfg } from "./run-command";
-import { headOf } from "./git-read";
+import { git, headOf } from "./git-read";
+import { lintDiff, lintLine } from "./diff-lint";
 import { memorySnapshot, memoryEnabledFor } from "./memory";
 import { PAGE_MAX, type Cause, type Ledger, type MessageKind } from "./ledger";
 import type { Trace } from "./trace";
@@ -948,11 +949,14 @@ export async function dispatchToProject(
     // and the hashes of the files they depend on. The gate at the end runs THIS policy, so a worker that
     // edits the checks or `package.json` scripts during the run changes nothing for its own gate.
     const frozenPolicy = deps.verify?.enabled === false ? undefined : faults.guard("dispatch.freezePolicy", () => freezePolicy(folder, resolveChecks(folder), now()), { folder });
+    // The run's base: HEAD now. The diff lint (W1.7) reads base..HEAD at the end; the evidence (W1.3)
+    // names both shas.
+    const baseSha = headOf(folder);
     if (frozenPolicy) {
       event("policy_frozen", {
         orderId: order.id,
         folder,
-        data: { project: name, hash: frozenPolicy.hash, checks: frozenPolicy.checks, files: Object.keys(frozenPolicy.files), source: frozenPolicy.source },
+        data: { project: name, hash: frozenPolicy.hash, checks: frozenPolicy.checks, files: Object.keys(frozenPolicy.files), source: frozenPolicy.source, ...(baseSha ? { baseSha } : {}) },
       });
     }
     // Every registry write below is pure observation: a failure in it must never surface into the
@@ -1373,6 +1377,13 @@ export async function dispatchToProject(
       ? undefined
       : reloading ? "reload" : timedOut ? "stall" : checkpointLost ? "checkpoint" : verifyBad ? "verify" : !result.ok && result.apiError ? `api:${result.apiError}` : undefined;
     const verdictText = verdict ? verdictLine(verdict, claim) : "";
+    // The diff lint (W1.7, ADR-0073): what this run's commits did to the things that verify it —
+    // findings on the line and the ledger, never a deny. Base..HEAD only; a run that committed
+    // nothing lints nothing.
+    const lint = isEnd && baseSha && headNow && baseSha !== headNow
+      ? faults.guard("dispatch.diffLint", () => lintDiff(git(folder, ["diff", "--unified=0", `${baseSha}..${headNow}`]) ?? "", frozenPolicy ? Object.keys(frozenPolicy.files) : []), { folder }) ?? []
+      : [];
+    const lintText = lintLine(lint);
     const summary = atCheckpoint
       ? `handed off at a safe checkpoint (${Math.round(armed!.occupancy * 100)}% of the context window) — the task continues in a fresh session`
       : checkpointLost
@@ -1384,6 +1395,7 @@ export async function dispatchToProject(
     const line =
       (ok ? `${name} finished: ${summary || "done"}` : `${name}: ${summary || "failed"}`) +
       (verdictText ? ` · ${verdictText}` : "") +
+      (lintText ? ` · ${lintText}` : "") +
       (stopLine ? `\n${stopLine}` : "");
     // The run is over: every brief delivered into it is answered (spec §5). Read before the entry
     // may be removed below.
@@ -1423,6 +1435,8 @@ export async function dispatchToProject(
                 disagree: verdict.disagree,
                 ...(claim ? { claim } : {}),
                 ...(headNow ? { headSha: headNow } : {}),
+                ...(baseSha ? { baseSha } : {}),
+                ...(lint.length ? { lint } : {}),
                 ...(frozenPolicy ? { policyHash: frozenPolicy.hash } : {}),
                 ...(gate
                   ? { gate: { ran: gate.ran, declared: gate.declared, passed: gate.passed, failed: gate.failed.map((f) => ({ cmd: f.cmd, exit: f.exit })), stale: gate.stale, dirty: gate.dirty.length, policyChanged: gate.policyChanged, ...(gate.error ? { error: gate.error } : {}) } }
@@ -1438,7 +1452,8 @@ export async function dispatchToProject(
       } catch {
         note = undefined; // the queue's note is extra — the result itself must still be queued
       }
-      const report = dispatchResultText({ project: name, ok, summary, stop, ref: resultRef(deps, cause), ...(verdictText ? { verdict: verdictText } : {}) });
+      const verdictLines = [verdictText, lintText].filter(Boolean).join("\n");
+      const report = dispatchResultText({ project: name, ok, summary, stop, ref: resultRef(deps, cause), ...(verdictLines ? { verdict: verdictLines } : {}) });
       deps.ledger.queueDispatcherReport(name, note ? `${report}\n${note}` : report, now(), cause);
     } catch {
       // observer only — never surfaces into the worker path

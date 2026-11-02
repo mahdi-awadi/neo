@@ -1495,3 +1495,14 @@ Done is assigned by the engine, for one revision, under a frozen policy (2026-11
   ADR-0069 precedent). Not yet: resuming the session with the failing output (the plan's retries).
 
 Restart-gated.
+
+The diff lint: what a run's commits did to the things that verify it (2026-11-02, ADR-0073, plan W1.7).
+
+- `src/engine/diff-lint.ts` reads the run's base..HEAD diff and names, as findings on the result
+  lines and on `dispatch_end` (never a deny: TDD is the convention): a deleted test file, assertions
+  removed net of the ones added back, a test skipped or focused (`.only`), hooks bypassed
+  (`--no-verify`), an error silenced outside tests (`@ts-ignore`, `eslint-disable`, `noqa`, `nolint`),
+  and a verification-policy file changed. The run's base sha is recorded at start (`policy_frozen`)
+  and both shas ride on `dispatch_end`.
+
+Restart-gated.
