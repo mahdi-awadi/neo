@@ -656,7 +656,7 @@ export async function dispatchToProject(
   const providerCfg: Pick<NeoConfig, "workers" | "workerEnv"> &
     Partial<Pick<NeoConfig, "providers" | "models" | "governor">> = {
     ...workerCfg,
-    providers: deps.providers,
+    providers: deps.providers ? { ...deps.providers } : undefined,
     models: deps.models,
     governor: deps.governor,
   };
@@ -664,7 +664,7 @@ export async function dispatchToProject(
   // value, so a config flip during this dispatch can never give a quick preamble with no guard.
   const ownWork = providerCfg.providers?.ownWork;
   /** Whose account this run spends: a usage limit is one provider's (ADR-0060). */
-  let runProvider: string = ownWork ?? "claude";
+  const runProvider: string = ownWork ?? "claude";
   // Opt-in team: only SDKs that support the `agents` run field get the subagent map + lead
   // preamble. Codex receives the original brief as a normal single-worker coding task.
   const teamAgents =
@@ -899,7 +899,7 @@ export async function dispatchToProject(
 
   // Only ever resume an id this worker SDK minted — a Codex thread id fed to Claude (or vice
   // versa) is rejected outright, and before the ownership check that read as an API failure.
-  let worker = ownWork;
+  const worker = ownWork;
   const resume = sideKind
     ? undefined // a side lane always starts fresh — never the main session's context
     : (canResumeWith(existing?.sdkProvider, worker) ? existing?.sdkSessionId : undefined) ||
@@ -929,7 +929,7 @@ export async function dispatchToProject(
     // Never measure (or resume) a folder another gate is handing off — e.g. the previous dispatch's
     // end-of-run handoff. Its resume id is read again AFTER the wait: the handoff clears it.
     let gatedResume = resume;
-    // Index before resolving the provider and resume: this can await while the SDK is switched.
+    // Index using the SDK accepted with this order. Later SDK selections apply to later orders.
     let indexingPrefix: string | undefined;
     if (deps.codebaseMemory && !sideKind) {
       let index: IndexResult = {};
@@ -942,15 +942,6 @@ export async function dispatchToProject(
       }
       indexingPrefix = codebaseMemoryLine(index);
     }
-    const reconcileWorker = (): void => {
-      const selectedWorker = providerCfg.providers?.ownWork;
-      if (selectedWorker !== worker) {
-        worker = selectedWorker;
-        runProvider = worker ?? "claude";
-        gatedResume = undefined;
-      }
-    };
-    reconcileWorker();
     if (gatedResume && policy) {
       // A handoff that outlived its hold may still own the session: start fresh, touch nothing.
       const waited = await awaitHandoff(folder);
@@ -959,7 +950,6 @@ export async function dispatchToProject(
         deps.ledger.lastSessionFor(folder, SUB_CHAT, worker) ||
         undefined;
       gatedResume = waited === "timed-out" ? undefined : current;
-      reconcileWorker();
     }
     if (gatedResume && policy) {
       try {
@@ -994,8 +984,6 @@ export async function dispatchToProject(
         // context-policy is best-effort observer work — fail OPEN, keep the original resume id.
       }
     }
-
-    reconcileWorker();
 
     // Frozen memory snapshot: injected ONLY on a genuine fresh start — i.e. once the resume id
     // that will ACTUALLY be used for this run is settled (gatedResume === undefined), which covers

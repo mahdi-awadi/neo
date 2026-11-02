@@ -770,8 +770,9 @@ export function createTodoQueue(q: TodoQueueDeps): TodoQueue {
       const mustWait = busy(folder) || queued(folder).length > 0 || !!paused || commitHeld(folder);
       // The order's size (ADR-0072), decided once, here. Big when a smaller size cannot be guarded or is
       // not allowed: a customer-driven run, a Codex worker (no governor hook), a team order.
-      const forced = replyChat === CUSTOMER_CHAT ? "customer" : deps.providers?.ownWork === "codex" ? "codex" : p.team ? "team" : undefined;
       const sideKind = p.lane === "side" && p.kind ? p.kind : undefined;
+      // Codex read-only side work is constrained by its native sandbox rather than a size guard.
+      const forced = replyChat === CUSTOMER_CHAT ? "customer" : deps.providers?.ownWork === "codex" && sideKind !== "read-only" ? "codex" : p.team ? "team" : undefined;
       const sized = resolveSize(
         { chosen: p.size, override: p.operatorSize, engine: p.engineSize, ...(sideKind ? { side: sideKind } : {}), ...(forced ? { forced } : {}) },
         deps.sizes ?? DEFAULT_SIZES_CFG,

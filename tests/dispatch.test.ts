@@ -2319,7 +2319,7 @@ test("the preamble sends work for another project through project_notes", () => 
   expect(out).not.toContain("goes back to Neo to dispatch");
 });
 
-test('a provider change during dispatch preparation never resumes the old SDK thread', async () => {
+test('a provider change during preparation preserves the accepted quick dispatch SDK and its matching thread', async () => {
   const root = mkdtempSync(join(tmpdir(), 'neo-dispatch-switch-'));
   const folder = join(root, 'project'); mkdirSync(folder);
   const { d } = makeDeps();
@@ -2332,11 +2332,11 @@ test('a provider change during dispatch preparation never resumes the old SDK th
   const held = new Promise<void>(resolve => { release = resolve; });
   d.codebaseMemory = { ensureIndexed: async () => { enter(); await held; return {}; } } as never;
   let seen: { provider?: string; resume?: string } | undefined;
-  await dispatchToProject('project', 'test switch', d, 1, { root, start: ((_order: unknown, _handlers: unknown, deps?: import("../src/engine/session-runner").RunDeps) => { seen = { provider: deps?.provider, resume: deps?.resume }; return { followUp() {}, interrupt: async () => {}, close() {}, queued: () => 0, done: Promise.resolve({ ok: true, sessionId: 'new', summary: 'done', costUsd: 0 }) }; }) as never });
+  await dispatchToProject('project', 'test switch', d, 1, { root, size: 'quick', start: ((_order: unknown, _handlers: unknown, deps?: import("../src/engine/session-runner").RunDeps) => { seen = { provider: deps?.provider, resume: deps?.resume }; return { followUp() {}, interrupt: async () => {}, close() {}, queued: () => 0, done: Promise.resolve({ ok: true, sessionId: 'new', summary: 'done', costUsd: 0 }) }; }) as never });
   await entered;
   providers.ownWork = 'codex'; release();
   for (let n = 0; n < 100 && !seen; n++) await new Promise(resolve => setTimeout(resolve, 5));
-  expect(seen).toEqual({ provider: 'codex', resume: undefined });
+  expect(seen).toEqual({ provider: 'subscription', resume: 'claude-only-id' });
 });
 
 test('Codex receives exactly the company or project Neo tool scope', async () => {
@@ -2371,7 +2371,7 @@ test('SDK switching waits for a dispatched worker retry to be delivered', async 
   expect(ctl.closes).toBe(1);
 });
 
-test('a switch while waiting for a context handoff never sends the old thread to the new SDK', async () => {
+test('a switch during context handoff preserves the accepted SDK and drops the handed-off thread', async () => {
   const root = mkdtempSync(join(tmpdir(), 'neo-disp-switch-handoff-')); const folder = join(root, 'project'); mkdirSync(folder);
   const { d } = makeDeps(); const providers = { ownWork: 'subscription' as 'subscription' | 'codex', customerWork: 'gemini' as const }; d.providers = providers; d.contextPolicy = TEST_CONTEXT_POLICY;
   const previous: Order = { id: 'old-handoff', source: 'neo', folder, task: 'old', chatId: SUB_CHAT, createdAt: 1 };
@@ -2382,7 +2382,7 @@ test('a switch while waiting for a context handoff never sends the old thread to
   providers.ownWork = 'codex'; release();
   for (let n = 0; n < 100 && !seen; n++) await new Promise(resolve => setTimeout(resolve, 5));
   expect(mismatches).toBe(0);
-  expect(seen).toEqual({ provider: 'codex', resume: undefined });
+  expect(seen).toEqual({ provider: 'subscription', resume: undefined });
 });
 
 test('Codex dispatch is not instructed to use the unavailable codebase-memory server', async () => {
