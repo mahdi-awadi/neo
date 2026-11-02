@@ -1455,3 +1455,12 @@ Every engine-run command is bounded and credential-free (2026-11-02, ADR-0072, p
   bounded by the default instead of running forever.
 
 Restart-gated.
+
+A read-only ledger metrics snapshot (2026-11-02, plan W0.7).
+
+- `bun tools/metrics-snapshot.ts [--ledger <path>] [--days <n>] [--json]` opens the ledger with
+  `readonly: true` (the backup's precedent) and prints the "before" numbers the plan's phases are
+  measured against: dispatches (count, ok, failed, the SDK's usage estimate per dispatch, a proxy on
+  a subscription), interventions per dispatch (decisions and approvals attributed to the dispatched
+  order or session), and one named line per number a later phase fills in (claim ≠ verdict W1.3,
+  tokens per verified task W1.12/W4.1, reopened incidents W2.8, merged PRs W3.6, window share W4.1).
