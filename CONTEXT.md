@@ -205,6 +205,35 @@ project. A write, a branch or a commit in another top-level folder under the wor
 fenced escalation; reading it, and writing outside the work root, are allowed (ADR-0031).
 _Avoid_: path fence (that is the older "inside the session folder" rule, ADR-0011)
 
+**Codex workspace grant**:
+The narrow filesystem capability Neo gives a writable Codex turn in addition to its project folder:
+only Git's resolved metadata directories, plus one exact Docker socket when that project has
+explicitly opted in. It never means a grant to a work root or `/var/run`.
+_Avoid_: sandbox bypass, broad mount, host access
+
+**Git metadata grant**:
+The exact canonical `git-dir` and `git-common-dir` write rules a Codex worker needs for Git's index
+locks, refs and objects. Git itself resolves them; Neo never guesses by parsing a `.git` pointer.
+_Avoid_: repository mount, Git workaround
+
+**Docker socket grant**:
+One exact project-configured Unix socket in a native Codex permission profile. It is disabled by
+default and does not make Docker itself unprivileged; a project that enables it has the Docker
+daemon authority its host policy permits (ADR-0074).
+_Avoid_: Docker sandbox, Docker permission fix
+
+**Host DAC**:
+The operating system's UID, GID, supplementary-group and socket-mode check, which remains in force
+after Codex's sandbox profile allows a path. A profile cannot make an unreadable Docker socket
+usable (ADR-0074).
+_Avoid_: sandbox permission, Docker configuration
+
+**Effective Codex profile**:
+The one native permission profile that remains after Neo excludes ambient Codex user configuration
+for a profile-backed turn. It is run-scoped and contains only that turn's workspace, Git metadata
+and any explicit Docker socket grant (ADR-0074).
+_Avoid_: user config, global sandbox mode
+
 **Shared browser**:
 The one memory-capped Chromium service (`neo-browser`, loopback 9222) that workers' Playwright and
 Chrome DevTools MCPs attach to over CDP, instead of each starting its own browser (ADR-0032).
@@ -956,6 +985,18 @@ The skill that the engine generates from an `active` card and installs in the us
 every Claude worker in every project sees the card's when-to-use line. It is never edited by hand.
 _Avoid_: tool prompt, tool instructions
 
+**External MCP capability**:
+A disabled-by-default Neo configuration record that names one Codex MCP server, its exact project
+scope, transport and approved tool names, plus only the NAMES of any authentication environment
+variables. It is the sole way a non-Neo MCP server reaches a Codex worker; an ambient user-configured
+server is not a capability (ADR-0075).
+_Avoid_: plugin, global MCP, allowed server
+
+**MCP tool manifest**:
+The explicit finite list of a capability's MCP tools that Codex may automatically approve. A server
+connection alone grants no authority; a missing or changed manifest fails closed.
+_Avoid_: wildcard tools, server permission
+
 **API relay**:
 The engine's one worker tool that calls an `api`-kind card when a worker asks for it. The engine adds
 the key from its own env, so the key never reaches a worker or a project. The engine never calls an
@@ -1251,3 +1292,31 @@ operator approved. The send is refused (*stale*) when the draft changed since, o
 already replied (from any channel). A second Send while one is in flight is refused (*busy*). This is the send's
 idempotency key: a customer never gets a reply twice or a reply the operator did not see.
 _Avoid_: revision, draft id
+
+## Scoped Codex production work
+
+**Codex production-launch grant**:
+One durable, operator-created and one-use authority record for one Codex dispatch turn. It binds a
+project, root order, approved plan content hash, expiry and declared workflow capabilities. It is
+revalidated before every Codex CLI process and cannot be inferred from a worker prompt, path or
+plan title. A grant is neither a project-wide deployment setting nor Codex's own approval prompt.
+_Avoid_: production mode, deploy flag, trusted prompt
+
+**Declared workflow capability**:
+One named, operator-configured authority a production-launch grant may select: resolved Git
+metadata, a single Docker authorization socket, an enforceable egress destination set, or a
+prod-ops broker endpoint. It is absent by default and scoped to the one project/order/grant.
+_Avoid_: worker environment, privileged profile, blanket access
+
+**Environment reference**:
+The validated *name* of a daemon-held environment value that a declared workflow needs. Configuration,
+events, worker instructions and command arguments carry the name, never its value. The value is
+injected only while the matching unexpired grant is active and the worker environment is in strict
+allowlist mode.
+_Avoid_: secret config, token setting, ambient credential
+
+**Prod-ops broker**:
+A narrowly authenticated local transport that accepts only the approved product, target and
+operation for a live production-launch grant, records the request and enforces expiry. It replaces
+access to a general SSH key, agent, Tailscale admin socket or home directory.
+_Avoid_: SSH access, deploy key, Tailscale access
