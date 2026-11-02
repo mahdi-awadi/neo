@@ -246,6 +246,14 @@ todo at a time; the rest wait in order and are never merged or dropped. The oper
 can reorder, cancel, pause and resume it.
 _Avoid_: backlog, task list, session queue
 
+**Bounded command** (ADR-0072):
+A child process the engine runs and does not stream (a check, a gate script, a git or gh read, the
+updater, a loop's command goal), through the one runner `run-command.ts`. It has a timeout, a
+per-stream output cap and, when the caller asks, the worker-scrubbed environment. It never throws and
+never waits for a grandchild that outlives it. A worker's own session is not a bounded command: the
+SDK streams it.
+_Avoid_: exec, spawn, shell out (the mechanism), unbounded command
+
 **Lane** (ADR-0057):
 Where a todo runs in its project. The **main lane** is the project's one session, the one the todo
 queue feeds: it owns the working tree, the branch and the containers. A **side lane** is a separate,

@@ -19,6 +19,7 @@ import { readAttentionCfg, type AttentionCfg } from "./engine/producers/engine";
 import { readNotesCfg, type NotesCfg } from "./engine/project-notes";
 import { readLanesCfg, type LanesCfg } from "./engine/lanes";
 import { readToolControlCfg, type ToolControlCfg } from "./engine/tool-control";
+import { readCommandsCfg, type CommandsCfg } from "./engine/run-command";
 import { readToolsCfg, type ToolsCfg } from "./engine/tools-catalogue";
 import { readProjectMessageCfg, type ProjectMessageCfg } from "./engine/project-message-cfg";
 import { readTodoSummaryCfg, type TodoSummaryCfg } from "./engine/todo-summary-cfg";
@@ -316,6 +317,10 @@ export interface NeoConfig {
   /** Stop or background one running tool call (ADR-0058): kill grace, Telegram notice, Docker socket.
    *  Optional like `plans`; `loadConfig` always fills it. */
   toolControl?: ToolControlCfg;
+  /** The bounded command runner's defaults (plan 2026-11-02 W0.4, `run-command.ts`): the timeout,
+   *  the per-stream output cap and the kill grace every engine-run command gets when its caller
+   *  passes no knob of its own. */
+  commands?: CommandsCfg;
   /** The shared tools catalogue (ADR-0044): relay switch and caps, card limits, search knobs. Optional like
    *  `plans`; `loadConfig` always fills it. */
   tools?: ToolsCfg;
@@ -676,6 +681,7 @@ export function loadConfig(dir: string = process.cwd()): NeoConfig {
     notes: readNotesCfg(fileCfg.notes),
     lanes: readLanesCfg(fileCfg.lanes),
     toolControl: readToolControlCfg(fileCfg.toolControl),
+    commands: readCommandsCfg(fileCfg.commands),
     tools: readToolsCfg(fileCfg.tools),
     projectMessage: readProjectMessageCfg(fileCfg.projectMessage),
     planner: readPlannerCfg(fileCfg.planner),

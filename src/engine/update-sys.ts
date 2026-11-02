@@ -4,37 +4,27 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExecResult, McpLaunch, UpdateSys } from "./updater";
+import { EXIT_SPAWN, EXIT_TIMEOUT, runCommand } from "./run-command";
 
 const FETCH_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
+/** A git log, a gh JSON listing or an updater build log; never a worker's stream. */
+const EXEC_OUTPUT_MAX = 10 * 1024 * 1024;
 /** GitHub's API refuses requests without a User-Agent. */
 const HEADERS = { "user-agent": "neo-updater", accept: "application/json, text/plain, */*" };
 /** The MCP protocol version the probe offers; servers answer with the one they speak. */
 const MCP_PROTOCOL = "2025-06-18";
 
 /** One bounded child process: never throws (a missing binary or cwd is code 127), killed past its
- *  timeout (code 124). `env` adds to the daemon's environment. The engine's one async spawn (the
- *  updater, and git/gh reads through git-read.ts). */
+ *  timeout (code 124). `env` adds to the daemon's environment. A thin shape over the engine's one
+ *  runner (`run-command.ts`, W0.4): the updater, and git/gh reads through git-read.ts, keep this
+ *  `ExecResult` contract; the output cap is the runner's (large enough for any git or gh read). */
 export async function exec(cmd: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<ExecResult> {
-  let proc: ReturnType<typeof Bun.spawn>;
-  try {
-    proc = Bun.spawn(cmd, { cwd: opts.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: opts.env ? { ...process.env, ...opts.env } : process.env });
-  } catch (e) {
-    return { code: 127, out: "", err: e instanceof Error ? e.message : String(e) }; // missing binary / cwd
-  }
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    proc.kill();
-  }, opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS);
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout as ReadableStream).text(),
-    new Response(proc.stderr as ReadableStream).text(),
-    proc.exited,
-  ]);
-  clearTimeout(timer);
-  return timedOut ? { code: 124, out, err: `${err}\n[timed out after ${opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS}ms]` } : { code, out, err };
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
+  const r = await runCommand(cmd, { cwd: opts.cwd, timeoutMs, env: opts.env, maxOutputChars: EXEC_OUTPUT_MAX });
+  if (r.spawnError !== undefined) return { code: EXIT_SPAWN, out: "", err: r.spawnError }; // missing binary / cwd
+  return r.timedOut ? { code: EXIT_TIMEOUT, out: r.stdout, err: `${r.stderr}\n[timed out after ${timeoutMs}ms]` } : { code: r.exit, out: r.stdout, err: r.stderr };
 }
 
 /** Start an MCP stdio server, `initialize`, `tools/list`, stop it. */

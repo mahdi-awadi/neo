@@ -502,6 +502,23 @@ the line isn't already there — **never** the tracked `.gitignore` (machine-loc
 per-machine/per-checkout state, not something to commit). Fail-open and a no-op outside a git repo;
 runs at most once per process per folder.
 
+## Bounded commands (`commands`) — ADR-0072
+
+Every child process the engine runs and does not stream (a check, a gate script, a git or gh read,
+the updater, a loop's command goal) goes through one runner (`src/engine/run-command.ts`). It never
+throws, it returns at its timeout even when a grandchild still holds the pipe, it caps each output
+stream with a visible marker, and when a caller asks it runs with the worker-scrubbed environment
+(no engine key, no relay key). These are the defaults a caller gets when it passes no knob.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `commands.timeoutMs` | `600000` (10 min) | The longest one engine-run command may take. Exit 124 past it. |
+| `commands.maxOutputChars` | `200000` | Per stream. The rest is read and dropped; `[output truncated at N chars]` is appended. |
+| `commands.killGraceMs` | `2000` | SIGTERM, then SIGKILL after this, at the timeout. |
+
+A missing or bad value keeps its default. A spawn failure (missing binary, deleted folder) is exit
+127 with `spawnError`, never an exception.
+
 ## Disk guard (`diskGuard`) — ADR-0068
 
 A heartbeat step that runs the installed disk kit's Tier A at once under disk pressure and once in its

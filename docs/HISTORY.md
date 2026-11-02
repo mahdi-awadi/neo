@@ -1443,3 +1443,15 @@ A disk guard in the heartbeat (2026-10-30, ADR-0068, note #555).
 - Run by hand the same day: Tier A freed 95.4 GB (95.3 % → 73.1 %).
 
 Restart-gated.
+
+Every engine-run command is bounded and credential-free (2026-11-02, ADR-0072, plan W0.4).
+
+- One runner, `src/engine/run-command.ts`: a timeout that returns even when a grandchild still holds
+  the pipe (the old `exec` and `commandGoal` waited for the orphan; the goal timeout test took 5 s),
+  a per-stream output cap with a visible marker, and on request the worker-scrubbed environment
+  (no engine key, no relay key). It never throws: exit 127 with `spawnError` for a process that could
+  not start, exit 124 for a timeout. `exec` (the updater, git/gh reads) and `commandGoal` keep their
+  shapes and delegate. Config `commands` (`docs/CONFIG.md`); a command goal with no timeout is now
+  bounded by the default instead of running forever.
+
+Restart-gated.

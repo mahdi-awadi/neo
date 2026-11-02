@@ -3,6 +3,7 @@
 // The engine stays AI-free: the judge's verdict comes from a worker (Claude, your subscription),
 // and the engine only parses its strict last line (docs/loops.md).
 import { runOrder, type RunDeps } from "./session-runner";
+import { DEFAULT_COMMANDS_CFG, runCommand } from "./run-command";
 import type { Order } from "../types";
 
 /** `output`: a command goal's whole stdout (capped at GOAL_OUTPUT_MAX), for a loop that reports its
@@ -22,37 +23,17 @@ export type Goal =
  * A non-zero exit (or a timeout) means not-met — which keeps the loop going. */
 export function commandGoal(opts: { command: string[]; cwd: string; timeoutMs?: number }): GoalCheck {
   return async () => {
-    // Bun.spawn throws synchronously if the binary can't be found OR the cwd doesn't exist (a
-    // deleted project folder is reported as ENOENT on the executable). Treat that as not-met rather
-    // than letting it escape — the scheduler contains loop failures now, but a goal-check should
-    // never throw in the first place. (2026-07-24 crash: a loop's folder was deleted.)
-    let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
-    try {
-      proc = Bun.spawn(opts.command, { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
-    } catch (err) {
-      return { met: false, detail: `spawn error: ${err instanceof Error ? err.message : String(err)}` };
-    }
+    // The engine's one runner (run-command.ts, W0.4): a missing binary or a deleted project folder
+    // (Bun.spawn's ENOENT on the executable) is a spawn error, never a throw — a goal-check must not
+    // escape into the scheduler (2026-07-24 crash: a loop's folder was deleted). A timeout is not-met
+    // and returns at once even when a grandchild still holds the pipe. No timeout given → the
+    // runner's default bound, never unbounded.
+    const r = await runCommand(opts.command, { cwd: opts.cwd, ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}) });
+    if (r.spawnError !== undefined) return { met: false, detail: `spawn error: ${r.spawnError}` };
+    if (r.timedOut) return { met: false, detail: `timed out after ${opts.timeoutMs ?? DEFAULT_COMMANDS_CFG.timeoutMs}ms` };
 
-    let timedOut = false;
-    const timer = opts.timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          proc.kill();
-        }, opts.timeoutMs)
-      : undefined;
-
-    // Drain the pipes while the process runs to avoid deadlock on large output.
-    const [exited, out, err] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    if (timer) clearTimeout(timer);
-
-    if (timedOut) return { met: false, detail: `timed out after ${opts.timeoutMs}ms` };
-
-    const tail = `${out}${err}`.trim().split("\n").filter(Boolean).at(-1) ?? "";
-    return { met: exited === 0, detail: `exit ${exited}${tail ? `: ${tail.slice(0, 140)}` : ""}`, output: out.trim().slice(0, GOAL_OUTPUT_MAX) };
+    const tail = `${r.stdout}${r.stderr}`.trim().split("\n").filter(Boolean).at(-1) ?? "";
+    return { met: r.exit === 0, detail: `exit ${r.exit}${tail ? `: ${tail.slice(0, 140)}` : ""}`, output: r.stdout.trim().slice(0, GOAL_OUTPUT_MAX) };
   };
 }
 
