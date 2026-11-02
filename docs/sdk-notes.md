@@ -213,6 +213,9 @@ Neo wrapper behavior:
   a turn, the main worker and its native subagents each initialize their own server/transport behind
   the same authenticated bridge, so one client's initialization cannot displace another.
 - Codex does **not** expose Claude's `canUseTool` callback or Anthropic's in-process MCP server shape. Neo maps read-only judge deny-lists to `sandboxMode: "read-only"`. Registered Neo-owned servers are bridged via authenticated loopback; unrelated configured MCP servers are disabled for the run. Unsupported external servers and Claude-only controls are reported. This does not make the Codex sandbox equivalent to the Claude governor.
+- Codex read-only side lanes use a forced read-only sandbox, no network, no escalation, and no MCP,
+  plugins, hooks or subagents (ADR-0078). Other side-lane kinds stay in the main queue because their
+  command-level restrictions cannot be enforced by the Codex SDK.
 - With `NEO_CODEX_PLANNER_MODEL` in `workerEnv`, project, dispatch and loop turns register a native
   Codex planner role in a daemon-private temporary role file. The configured planner effort defaults
   to `high`; Neo deletes the file at the end of each turn. The main agent is instructed to invoke

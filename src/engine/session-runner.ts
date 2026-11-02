@@ -779,12 +779,13 @@ function codexEffort(effort: EffortLevel | undefined): CodexReasoningEffort | un
 
 function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   const model = resolveModelSelection("codex", deps);
+  const sideReadOnly = deps.lane?.kind === "read-only";
   const c: CodexThreadOptions = {
     workingDirectory: order.folder,
-    approvalPolicy: deps.codexApprovalPolicy ?? "on-request",
+    approvalPolicy: sideReadOnly ? "never" : deps.codexApprovalPolicy ?? "on-request",
     skipGitRepoCheck: deps.codexSkipGitRepoCheck ?? true,
   };
-  if (!deps.codexWorkspaceProfile) c.sandboxMode = codexSandboxMode(deps);
+  if (sideReadOnly || !deps.codexWorkspaceProfile) c.sandboxMode = codexSandboxMode(deps);
   const configuredModel = deps.env?.NEO_CODEX_MODEL ?? process.env.NEO_CODEX_MODEL;
   const selectedModel = model.model || configuredModel?.trim();
   if (selectedModel) c.model = selectedModel;
@@ -795,18 +796,36 @@ function codexThreadOptions(order: Order, deps: RunDeps): CodexThreadOptions {
   if (effort) c.modelReasoningEffort = effort;
   // A native permission profile owns network policy. The SDK's legacy workspace-write network
   // setting serializes a competing sandbox policy and may replace the exact socket allowlist.
-  if (!deps.codexWorkspaceProfile && deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
-  if (deps.codexWebSearchMode) c.webSearchMode = deps.codexWebSearchMode;
+  if (sideReadOnly) {
+    c.networkAccessEnabled = false;
+    c.webSearchMode = "disabled";
+  } else {
+    if (!deps.codexWorkspaceProfile && deps.codexNetworkAccessEnabled !== undefined) c.networkAccessEnabled = deps.codexNetworkAccessEnabled;
+    if (deps.codexWebSearchMode) c.webSearchMode = deps.codexWebSearchMode;
+  }
   return c;
 }
 
 function codexSandboxMode(deps: RunDeps): CodexSandboxMode {
+  if (deps.lane?.kind === "read-only") return "read-only";
   return deps.codexSandboxMode ?? (readOnlySandboxRequested(deps.disallowedTools) ? "read-only" : "workspace-write");
+}
+
+function assertCodexLane(deps: RunDeps): void {
+  if (deps.lane && deps.lane.kind !== "read-only") throw new Error("Codex only supports read-only side lanes");
+  if (deps.lane?.kind === "read-only" && Object.keys(deps.mcpServers ?? {}).length) {
+    // MCP handlers run outside the sandbox. Even memory_search can initialize an on-disk index.
+    throw new Error("Codex read-only side lanes cannot attach MCP tools");
+  }
 }
 
 /** Prepare the capabilities one Codex CLI process needs. Each live-session follow-up starts a new
  * process, so this capability is intentionally not shared across turns. */
 async function prepareCodexTurn(order: Order, deps: RunDeps): Promise<{ deps: RunDeps; close(): Promise<void> }> {
+  if (deps.lane?.kind === "read-only") return {
+    deps: { ...deps, codexWorkspaceConfig: undefined, codexWorkspaceProfile: false, codexPathOverride: undefined, codexPlannerConfig: undefined },
+    close: async () => {},
+  };
   if (codexSandboxMode(deps) !== "workspace-write") return { deps, close: async () => {} };
   const prepare = deps.codexWorkspaceFactory ?? prepareCodexWorkspace;
   const workspace = await prepare(order.folder, deps.codexDockerSocket);
@@ -886,7 +905,10 @@ async function makeCodexClient(deps: RunDeps, cwd: string, handlers: RunHandlers
     ? Object.fromEntries(Object.entries(deps.codexWorkspaceConfig ?? {}).filter(([key]) =>
         !key.startsWith("permissions.neo-project.filesystem.") && !key.startsWith("permissions.neo-project.network.unix_sockets.")))
     : deps.codexWorkspaceConfig ?? {};
-  options.config = { ...workspaceConfig, ...disabled, ...(deps.codexPlannerConfig ?? {}), ...(bridges.length ? { mcp_servers: servers } : {}) };
+  const sideRestrictions: NonNullable<CodexOptions["config"]> = deps.lane?.kind === "read-only"
+    ? { "features.hooks": false, "features.plugins": false, "features.multi_agent": false }
+    : {};
+  options.config = { ...workspaceConfig, ...disabled, ...(deps.codexPlannerConfig ?? {}), ...sideRestrictions, ...(bridges.length ? { mcp_servers: servers } : {}) };
   if (bridges.length || options.env) options.env = env;
   return factory(options);
 }
@@ -1164,6 +1186,7 @@ async function runCodexOrder(
   handlers: RunHandlers,
   deps: RunDeps = {},
 ): Promise<RunResult> {
+  assertCodexLane(deps);
   deps = resolvedRunDeps(deps, "codex", handlers);
   handlers.onEvent?.("session_start", { folder: order.folder, resume: !!deps.resume, provider: "codex" });
   const unsupported = codexUnsupportedFields(deps);
@@ -1357,6 +1380,7 @@ function startCodexOrder(
   handlers: RunHandlers,
   deps: RunDeps = {},
 ): SessionRun {
+  assertCodexLane(deps);
   deps = resolvedRunDeps(deps, "codex", handlers);
   const queue = createTextTurnQueue(order.task);
   let currentAbort: AbortController | undefined;

@@ -1103,6 +1103,16 @@ test("ask_operator description forces self-challenge, one decision per call, and
   expect(desc).toContain("operator's language");
 });
 
+test("Codex company tools describe the side lanes that can actually run", () => {
+  const { d } = makeDeps();
+  d.providers = { ownWork: "codex", customerWork: "gemini" };
+  const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/tmp" });
+  const neo = servers.neo as { instance: { _registeredTools: Record<string, { description: string }> } };
+  const description = neo.instance._registeredTools.dispatch!.description;
+  expect(description).toContain("Codex supports read-only side lanes");
+  expect(description).toContain("ops, test and code");
+});
+
 test("the company `dispatch` MCP tool exposes an optional, enum-guarded `team` param (backward-compatible)", () => {
   const { d } = makeDeps();
   const servers = neoMcpServers(d, 1, { dispatch: true, folder: "/home/neo/agent" });

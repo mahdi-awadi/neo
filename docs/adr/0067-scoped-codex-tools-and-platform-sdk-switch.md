@@ -1,5 +1,7 @@
 # ADR-0067: Scope Codex tools and persist the operator SDK switch
 
+**Amendment:** ADR-0078 subsequently enables sandboxed read-only Codex side lanes; other side-lane kinds remain queued.
+
 ## Decision
 
 The operator SDK selection is persisted in the ledger and shared by console and `/sdk`. New operator work uses that SDK. Running sessions drain accepted inputs and close gracefully; subsequent input starts under the latest selected provider without reusing a foreign thread ID. Untagged legacy IDs start fresh on Codex, whose missing-thread recovery is not yet available; Claude retains its existing retry behavior. Long-running loops resolve their provider and judge on each iteration. The console indicates sessions that have not switched.

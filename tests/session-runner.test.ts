@@ -817,6 +817,31 @@ test("Codex read-only runs never receive a planner role even if one was supplied
   expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only" });
 });
 
+test("a Codex read-only side lane cannot override its sandbox, approvals or networking", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  let clientConfig: Record<string, unknown> = {};
+  await runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex", codexFactory: async (opts) => { clientConfig = opts.config as Record<string, unknown>; return f.factory(); },
+    lane: { kind: "read-only", projectFolder: "/tmp" },
+    codexSandboxMode: "danger-full-access", codexApprovalPolicy: "on-request", codexNetworkAccessEnabled: true,
+    codexWorkspaceProfile: true, codexWorkspaceConfig: { default_permissions: "unrestricted" },
+  });
+  expect(f.starts[0]).toMatchObject({ sandboxMode: "read-only", approvalPolicy: "never", networkAccessEnabled: false, webSearchMode: "disabled" });
+  expect(clientConfig).toMatchObject({ "features.hooks": false, "features.plugins": false, "features.multi_agent": false });
+  expect(clientConfig.default_permissions).toBeUndefined();
+});
+
+test("Codex refuses other side-lane kinds even if the provider changes after queue selection", async () => {
+  const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
+  await expect(runOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex", codexFactory: f.factory, lane: { kind: "ops", projectFolder: "/tmp" },
+  })).rejects.toThrow("Codex only supports read-only side lanes");
+  expect(() => startOrder(order(), { onMessage: () => {}, onEscalation: async () => "deny" }, {
+    provider: "codex", codexFactory: f.factory, lane: { kind: "code", projectFolder: "/tmp" },
+  })).toThrow("Codex only supports read-only side lanes");
+  expect(f.starts).toHaveLength(0);
+});
+
 test("a read-only Codex turn never creates a workspace capability", async () => {
   const f = fakeCodexFactory({ turns: () => [{ type: "turn.completed", usage: null }] });
   let prepared = false;

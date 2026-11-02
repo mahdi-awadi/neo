@@ -5,7 +5,7 @@
 // (a tailored prompt), so the sub-project gets a clear order, not the operator's raw message.
 import { registerCodexMcpTools } from "./codex-mcp-bridge";
 import { controlByProject, DEFAULT_TOOL_CONTROL_CFG, type ToolControlCfg } from "./tool-control";
-import { DEFAULT_LANES_CFG, LANE_GUIDE, LANE_KINDS, laneArgError, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
+import { CODEX_LANE_GUIDE, DEFAULT_LANES_CFG, LANE_GUIDE, LANE_KINDS, laneArgError, lanePreamble, type LaneKind, type LanesCfg } from "./lanes";
 import { createLaneWorktree, endLaneWorktree, type LaneWorktree, type LaneWorktreeEnd } from "./lane-worktree";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
@@ -585,12 +585,13 @@ export async function dispatchToProject(
     return budgetHoldMessage(deps.meter.spent(now()), deps.meter.allowance());
   }
 
-  // A side lane (ADR-0057) is enforced by the Claude governor hook; the Codex SDK has no such hook.
+  // Codex can enforce the read-only side lane with its OS sandbox. Other lane kinds need the
+  // Claude governor's per-command controls and must remain queued.
   const sideKind = opts.lane?.kind;
-  if (sideKind && providerCfg.providers?.ownWork === "codex") {
+  if (sideKind && sideKind !== "read-only" && providerCfg.providers?.ownWork === "codex") {
     event("dispatch_refused", { data: { project, workClass, reason: "lane_unsupported", kind: sideKind } });
     hooks.onRefused?.("lane_unsupported");
-    return `Side lanes need the Claude worker SDK (its governor hook enforces the lane); the worker SDK is Codex, so this brief was not run as a side lane. Queue it instead (lane "queue").`;
+    return `This side lane needs the Claude worker SDK's governor; Codex supports read-only side lanes. Queue this brief instead (lane "queue").`;
   }
   const orderId = crypto.randomUUID();
   // A `code` side lane works in its own temporary worktree on `side/<key>` — never in the main folder.
@@ -1178,7 +1179,7 @@ export async function dispatchToProject(
       },
       profileDeps(providerCfg, "dispatch", {
         resume: gatedResume,
-        codexDockerSocket: deps.projects?.[name]?.codexDockerSocket,
+        codexDockerSocket: worker === "codex" && sideKind === "read-only" ? undefined : deps.projects?.[name]?.codexDockerSocket,
         // Attach the in-process "neo" MCP server so a dispatched sub-project worker gets the same
         // operator-facing tools a directly-opened project does: `send_file` and — when the frontend
         // wired `postDecision` — `ask_operator` (the ONE way it raises a blocking question). Without
@@ -1187,7 +1188,8 @@ export async function dispatchToProject(
         // stay gated by memoryGate (off unless the folder is in scope). The sub-worker inherits THIS
         // dispatch's work class, so a sub-dispatch would follow the same originating trigger (inert
         // while recursive dispatch stays off — the invariant holds by construction, not by memory).
-        mcpServers: neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, sessionId: session.id, orderId: order.id, cause: liveCause }),
+        mcpServers: worker === "codex" && sideKind === "read-only" ? {} : neoMcpServers(deps, replyChat, { dispatch: false, workClass, folder, projectName: name, sessionId: session.id, orderId: order.id, cause: liveCause }),
+        ...(worker === "codex" && sideKind === "read-only" ? { codexSandboxMode: "read-only" as const, codexApprovalPolicy: "never" as const, codexNetworkAccessEnabled: false } : {}),
         ...(teamAgents ? { agents: teamAgents } : {}),
         // The governor denies what this side lane's kind may not do (ADR-0057).
         ...(sessionLane ? { lane: sessionLane } : {}),
@@ -1740,6 +1742,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
   const consult = opts.profile === "consult";
   // The consult set reads only the ConsultToolDeps fields (every other branch below is `!consult`).
   const deps = given as DispatchDeps;
+  const laneGuide = deps.providers?.ownWork === "codex" ? CODEX_LANE_GUIDE : LANE_GUIDE;
   /** Where new work is filed (ADR-0053): under the thread the dispatcher names, else the live cause,
    *  else its own new thread (origin `dispatcher`). A string is the refusal for an unknown ref. */
   const workCauseFor = (thread: string | undefined, title: string, project?: string): Cause | string | undefined => {
@@ -1988,7 +1991,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           "If the project is busy (mid-task), the brief is QUEUED in that project's todo queue and the reply says \"queued as #N for <project>, position P\": it starts by itself when the current task is done, so confirm the number and position to the operator and never re-send or forward it. " +
           "The run has NO time limit — it works until it is done, even for hours; only a worker that goes completely silent (hung) is stopped. While it runs you get a `[dispatch progress]` line every few minutes (FYI — no reply needed), and you ALWAYS get a `[dispatch result]` message when it ends — including when it was cut short, in which case the result says where it stopped (last commit / latest note) so you can dispatch a follow-up that resumes from there. " +
           "Set `team: \"frontend-backend\"` ONLY when the operator wants the work split across a lead-orchestrated backend + frontend subagent team; omit it for a normal single-worker run. " +
-          LANE_GUIDE,
+          laneGuide,
         {
           project: z.string().describe('project folder name under the operator\'s project root, e.g. "eticket-v3"'),
           task: z.string().describe("a clear, self-contained brief/prompt for that project to execute"),
@@ -2047,7 +2050,7 @@ export function neoMcpServers(given: DispatchDeps | ConsultToolDeps, replyChat: 
           "The per-project todo queues. Every brief you `dispatch` is a todo (#N): it runs now when the project is free, else it waits in that project's queue and starts BY ITSELF when the current task is done — so never re-send or forward a queued brief, and never push a brief into a project mid-task. " +
             "Actions: `list` (all projects, or one with `project`), `add` (same as dispatch: needs `project` + `task`), `reorder` (`id` + 1-based `position`), `cancel` (`id`, queued or retry todos only), `retry` (`id`: re-run a failed todo, or a waiting retry now — the SAME todo; never dispatch a new brief to redo a failed one; on a RUNNING todo held in a usage-limit wait or an API retry wait — `list` and `sessions` show \"held: limit wait\" or \"held: API retry\" — it resumes that run NOW: the brief goes back into the same session, no second run. Never tell the operator to /kill a held todo: `retry` it), `pause` / `resume` (`project`). " +
             "A todo that stopped for a passing reason (stall, restart, API or account error) is kept as `retry` and re-runs by itself. " +
-            "For `add`, " + LANE_GUIDE + " Returns text.",
+            "For `add`, " + laneGuide + " Returns text.",
           {
             action: z.enum(["list", "add", "reorder", "cancel", "retry", "pause", "resume"]),
             project: z.string().optional().describe("project folder name, e.g. \"eticket-v3\""),

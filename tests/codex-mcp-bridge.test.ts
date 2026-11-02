@@ -65,6 +65,21 @@ test('one Codex turn gives the main worker and its planner independent MCP sessi
   } finally { await bridge.close(); }
 });
 
+test('read-only Codex side lanes reject Neo tools that can mutate outside the sandbox', async () => {
+  const { runOrder } = await import('../src/engine/session-runner');
+  const { registerCodexMcpTools } = await import('../src/engine/codex-mcp-bridge');
+  const server = createSdkMcpServer({ name: 'neo', version: '1', tools: [tool('project_notes', 'notes', {}, async () => ({ content: [] }))] });
+  registerCodexMcpTools(server, ['project_notes']);
+  await expect(runOrder({ id: 'side', source: 'neo', folder: '/tmp', task: 'read', chatId: 1, createdAt: 1 }, { onMessage() {}, onEscalation: async () => 'deny' }, {
+    provider: 'codex', lane: { kind: 'read-only', projectFolder: '/tmp' }, mcpServers: { neo: server },
+  })).rejects.toThrow('cannot attach MCP tools');
+  const memory = createSdkMcpServer({ name: 'neo', version: '1', tools: [tool('memory_search', 'search', {}, async () => ({ content: [] }))] });
+  registerCodexMcpTools(memory, ['memory_search']);
+  await expect(runOrder({ id: 'side', source: 'neo', folder: '/tmp', task: 'read', chatId: 1, createdAt: 1 }, { onMessage() {}, onEscalation: async () => 'deny' }, {
+    provider: 'codex', lane: { kind: 'read-only', projectFolder: '/tmp' }, mcpServers: { neo: memory },
+  })).rejects.toThrow('cannot attach MCP tools');
+});
+
 test('Codex worker receives the scoped server and closes it after the turn', async () => {
   const { runOrder } = await import('../src/engine/session-runner');
   const bridge = await import('../src/engine/codex-mcp-bridge');

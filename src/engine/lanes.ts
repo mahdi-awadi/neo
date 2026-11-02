@@ -186,11 +186,11 @@ export function lanePreamble(kind: LaneKind, project: string, wt?: { path: strin
 /** Whether a side todo may start now (ADR-0057): `ok`; `wait` for a side slot (a cap or a hold), or
  *  `queue` — it cannot be a side lane at all here, so it goes to the main lane's queue. */
 export function canStartSide(
-  s: { sideRunning: number; hostRunning: number; codex: boolean; hold?: string },
+  s: { sideRunning: number; hostRunning: number; codex: boolean; kind?: LaneKind; hold?: string },
   cfg: LanesCfg,
 ): { ok: true } | { wait: string } | { queue: string } {
   if (!cfg.enabled) return { queue: "side lanes are off (lanes.enabled)" };
-  if (s.codex) return { queue: "side lanes need the Claude worker SDK's governor hook, and the worker SDK is Codex" };
+  if (s.codex && s.kind !== "read-only") return { queue: "this side lane needs the Claude worker SDK's governor hook; Codex supports read-only side lanes" };
   if (s.hold) return { wait: s.hold };
   if (s.sideRunning >= cfg.maxSidePerProject) {
     return { wait: `${cfg.maxSidePerProject} side lane${cfg.maxSidePerProject === 1 ? "" : "s"} already run${cfg.maxSidePerProject === 1 ? "s" : ""} in this project (lanes.maxSidePerProject)` };
@@ -216,6 +216,11 @@ export const LANE_GUIDE =
   "`read-only` (look and report), `code` (a small change that needs no running stack — made in its own worktree on a side branch; the engine queues a main-lane todo to merge it). " +
   "The engine enforces the kind: a side lane that edits the project, runs git writes or restarts containers is denied. " +
   'Anything else, or when unsure: `lane: "queue"` (the default) — the brief waits its turn in the main lane.';
+
+/** Codex cannot enforce Claude's command-level ops, test and code lane restrictions. */
+export const CODEX_LANE_GUIDE =
+  'Codex supports read-only side lanes: for a short inspection beside a busy project use `lane: "side"` and `kind: "read-only"`. ' +
+  'The lane cannot write project files, access the network, Docker or MCP tools, or alter running services. For ops, test and code use `lane: "queue"`; those tasks wait for the main lane.';
 
 /** The refusal for `lane: "side"` without a valid kind, else undefined. */
 export function laneArgError(lane: unknown, kind: unknown): string | undefined {
