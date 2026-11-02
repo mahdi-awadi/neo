@@ -5,7 +5,9 @@
 > checkbox (`- [ ]`) syntax for tracking. Read `CLAUDE.md` first. **Build against `dev`, not
 > `master`.** `dev` is 249 commits ahead (ADR-0022 to ADR-0071) and holds most of the baseline.
 
-**Status:** PLAN ONLY. Waiting for operator approval. No engine code is changed by this document.
+**Status:** APPROVED by the operator ("Go", 2026-11-02). **Progress (branch `ccr-9d792239-urpnnd`, on top of `dev`):**
+W0.4, W0.7, W1.1, W1.2, W1.3, W1.4, W1.7, W1.12, W1.13 built (TDD, tsc clean, HISTORY + ADR-0072/0073). W0.1/0.2/0.3/0.5/0.6
+wait on decisions 1–3. Next: W1.5, 1.6, 1.8, 1.9, 1.10, 1.11, then W2.
 
 **Source:** the research report `docs/research/reports/Neo world class coding agent.md` (2026-11-02),
 its nine notes, and an operator review of revision 1 (2026-11-02). Revision 1 was written against

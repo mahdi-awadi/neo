@@ -1,3 +1,28 @@
+# HANDOFF — 2026-11-02: verified done, W0–W1 of the world-class coding agent plan (ADR-0072/0073, branch `ccr-9d792239-urpnnd`, restart-gated)
+
+Built on `origin/dev` + the plan `docs/superpowers/plans/2026-11-02-world-class-coding-agent.md` (rev. 2) and the
+research `docs/research/reports/Neo world class coding agent.md`. On the branch, each its own commit, TDD, tsc clean:
+W0.4 one bounded, credential-free command runner (`run-command.ts`; `exec` and `commandGoal` delegate; the goal timeout
+test that waited 5 s for an orphaned `sleep` now passes in 100 ms); W0.7 `bun tools/metrics-snapshot.ts` (read-only
+"before" numbers); W1.1 the `report` tool (a worker's end-of-work claim as a schema, gated like `ask_operator`);
+W1.2 the verification policy frozen at dispatch start (`checks.ts`, `.neo/checks.json`, `policy_frozen`); W1.3/W1.4
+the verdict (`verdict.ts`) and the gate (`verify.ts`: frozen checks in a detached clean worktree at the run's HEAD,
+scrubbed env, evidence bound to the sha, stale on a moved HEAD), on `dispatch_end`/`dispatch_verified` and every result
+line (`claim ready ≠ verdict failed: …`); W1.7 the diff lint; W1.12 verdict metrics; W1.13 the brief's tail (verbatim
+order, recovery line). Config: `commands`, `verify` (`docs/CONFIG.md`); `verify.requireReport` default off. The preamble
+gained `REPORT_RULE`; its ceiling moved to 5,350 by that length (the ADR-0069 precedent). Full suite: 3,100 pass; the
+only failures are the 9 pre-existing environmental ones in this container (loop tests needing `/home/<project>`).
+
+Not done in W1 (next, in order): 1.5 verification profiles by task kind (`kind` on dispatch/todo; `ui` needs
+Playwright captures), 1.6 the `Stop` hook that keeps the turn alive while the gate fails, 1.8 the fresh-context
+reviewer fed the gate's evidence, 1.9 acceptance items on `project_todos` (migration v18), 1.10 the held-out suite,
+1.11 the no-progress detector (check-failure signature repeats). Also the plan's `dispatchCheckRetries` (resume the
+session with the failing output) is deliberately not built: it re-enters the commit-finish's still-open-session path.
+W0.1/0.2/0.3/0.5/0.6 wait on operator decisions 1–3 (restart, worker uid, Codex default). Nothing is live until the
+operator restarts; `dev` has not been touched — merge the branch into `dev` first.
+
+---
+
 # HANDOFF — 2026-10-30: a pin's Open lands on the item; plans are read before approval (ADR-0071, on dev, restart-gated)
 
 Open on a pinned item now opens the item itself in one sheet: a decision with its options, picks and a reply
