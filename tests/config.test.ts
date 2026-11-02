@@ -333,16 +333,17 @@ test("updates: defaults — daily, auto-apply on for every category, breaking up
   expect(u.everyMs).toBe(24 * 60 * 60 * 1000);
   expect(u.autoApply).toEqual({ sdk: true, plugins: true, mcp: true });
   expect(u.holdBreaking).toBe(true);
-  expect(u.baseBranch).toBe("master");
+  expect(u.baseBranch).toBe("main");
   expect(u.npmGlobals["playwright-mcp"]).toBe("@playwright/mcp");
   expect(u.codebaseMemory.repo).toBe("DeusData/codebase-memory-mcp");
 });
 
 test("updates: config.json merges per key — one autoApply category off keeps the others", () => {
   const d = dir();
-  writeFileSync(join(d, "config.json"), JSON.stringify({ updates: { everyMs: 1000, autoApply: { mcp: false } } }));
+  writeFileSync(join(d, "config.json"), JSON.stringify({ updates: { everyMs: 1000, autoApply: { mcp: false }, baseBranch: "dev" } }));
   const u = loadConfig(d).updates;
   expect(u.everyMs).toBe(1000);
+  expect(u.baseBranch).toBe("dev");
   expect(u.autoApply).toEqual({ sdk: true, plugins: true, mcp: false });
   expect(u.holdBreaking).toBe(true);
 });

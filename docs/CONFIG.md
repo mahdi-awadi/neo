@@ -360,7 +360,7 @@ day.
 | `updates.autoApply` | `{ "sdk": true, "plugins": true, "mcp": true }` | Per category: apply what is newer, or only report it as `available`. Merged per key. |
 | `updates.holdBreaking` | `true` | A release whose notes say breaking / incompatible / migration / rebuild / removed is **held** until `/updates apply <item>`. |
 | `updates.retryDeferredMs` | `1800000` (30 min) | Plugin and MCP changes wait while a session is running (`deferred`). The retry runs this soon after, once no session runs. |
-| `updates.baseBranch` | `"master"` | The branch a green SDK bump fast-forwards (local only, never pushed). |
+| `updates.baseBranch` | `"main"` | The branch a green SDK bump fast-forwards (local only, never pushed). Explicit configuration overrides remain supported. |
 | `updates.verifyTimeoutMs` | `60000` | Time an updated MCP server gets to answer `initialize` + `tools/list`. A failed probe rolls it back. |
 | `updates.npmGlobals` | `{ "playwright-mcp": "@playwright/mcp" }` | MCP launch command → the global npm package that installs it. Merged per key. |
 | `updates.codebaseMemory` | `{ "repo": "DeusData/codebase-memory-mcp", "asset": "codebase-memory-mcp-linux-amd64.tar.gz" }` | Where the `codebase-memory-mcp` binary (`CODEBASE_MEMORY_BIN`) is released. The download is checked against the release `checksums.txt`; the old binary is kept as `<bin>.bak`. |

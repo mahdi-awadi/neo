@@ -404,7 +404,7 @@ export const DEFAULT_UPDATES: UpdatesCfg = {
   holdBreaking: true,
   // A deferred item (a session was running) is retried this soon once the engine is idle.
   retryDeferredMs: 30 * 60 * 1000,
-  baseBranch: "master",
+  baseBranch: "main",
   verifyTimeoutMs: 60_000,
   // The one npm-global MCP server Neo launches (dispatch.ts PLAYWRIGHT_MCP).
   npmGlobals: { "playwright-mcp": "@playwright/mcp" },
